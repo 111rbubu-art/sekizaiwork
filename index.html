@@ -201,21 +201,22 @@ var currentTab = 0;
 // ===== ログイン =====
 document.getElementById('login-btn').addEventListener('click', function() {
   msal.loginRedirect({ scopes: SCOPES });
-    startApp();
-  }).catch(function(e) {
-    var el = document.getElementById('login-err');
-    el.textContent = 'ログインに失敗しました: ' + e.message;
-    el.classList.remove('hidden');
-  });
 });
 
-// ページ読み込み時にキャッシュチェック
-msal.handleRedirectPromise().then(function() {
+// ページ読み込み時にリダイレクト結果を処理
+msal.handleRedirectPromise().then(function(resp) {
+  if (resp) {
+    msal.setActiveAccount(resp.account);
+  }
   var accounts = msal.getAllAccounts();
   if (accounts.length > 0) {
     msal.setActiveAccount(accounts[0]);
     startApp();
   }
+}).catch(function(e) {
+  var el = document.getElementById('login-err');
+  el.textContent = 'ログインエラー: ' + e.message;
+  el.classList.remove('hidden');
 });
 
 function startApp() {
@@ -226,15 +227,13 @@ function startApp() {
 
 document.getElementById('logout-btn').addEventListener('click', function() {
   msal.logoutRedirect();
-    document.getElementById('login-screen').classList.remove('hidden');
-  });
 });
 
 // ===== トークン取得 =====
 function getToken() {
   return msal.acquireTokenSilent({ scopes: SCOPES, account: msal.getActiveAccount() })
     .catch(function() {
-      return msal.acquireTokenPopup({ scopes: SCOPES });
+      return msal.acquireTokenRedirect({ scopes: SCOPES });
     });
 }
 
@@ -267,12 +266,15 @@ function loadItems() {
   });
 }
 
+// ===== フィールドマッピング =====
+function G(d,k){var M={'顧客名':'_x9867__x5ba2__x540d_','お寺':'_x304a__x5bfa_','分類':'_x5206__x985e_','フリガナ':'_x30d5__x30ea__x30ac__x30ca_','電話番号':'_x96fb__x8a71__x756a__x53f7_','顧客No':'_x9867_No','状況':'situation','郵便番号':'_x90f5__x4fbf__x756a__x53f7_','住所1':'_x4f4f__x6240_1','住所2':'_x4f4f__x6240_2','宛名':'addressee','注意事項メモ':'_x6ce8__x610f__x4e8b__x9805__x30','納骨時間':'_x7d0d__x9aa8__x6642__x9593_','納骨担当':'personincharge','戒切納期':'_x7d0d__x671f__xff08__x7d0d__x9a','依頼日':'RequestDate','依頼情報提供者':'Informer','請求書郵送日':'DateInvoice','入金日':'PaymentDate','社内連絡':'InternalCommunication','納骨備考':'noukotu_kaisi_jyoutai'};return d[M[k]!==undefined?M[k]:k];}
+
 // ===== 一覧描画 =====
 function renderList() {
   var q = document.getElementById('srch').value || '';
   var items = allItems.filter(function(d) {
-    var status = (d['状況'] || d['Title'] || '');
-    var nokOk = d['未_x002f_完'] === true || (d['未_x002f_完'] || '') === 'true';
+    var status = G(d,'状況') || d['Title'] || '';
+    var nokOk = d['DelRedText'] === true || d['FinDelRedText'] === true;
     if (currentFilter === 'micom' && nokOk) return false;
     if (currentFilter === 'follow' && !d['check']) return false;
     if (currentFilter === 'nyukin' && !(status.includes('入金'))) return false;
@@ -292,25 +294,23 @@ function renderList() {
 
   var html = '<div class="cards">' + items.map(function(d, idx) {
     var title = d['Title'] || '';
-    var family = title.split(/[_　\s]/)[0] || title;
-    var name = d['顧客名'] || '';
-    var temple = d['お寺'] || '';
-    var num = d['顧客No'] || '';
-    var status = d['状況'] || '';
-    var nokDate = d['納骨日'] ? d['納骨日'].substring(0, 10) : '';
-    var nokTanto = d['納骨担当'] || '';
-    var nokOk = d['未_x002f_完'] === true || (d['未_x002f_完'] || '') === 'true';
-    var chkOk = d['朱有'] === true;
+    var name = G(d,'顧客名') || '';
+    var temple = G(d,'お寺') || '';
+    var num = G(d,'顧客No') || '';
+    var status = G(d,'状況') || '';
+    var nokTanto = G(d,'納骨担当') || '';
+    var nokOk = d['DelRedText'] === true || d['FinDelRedText'] === true;
+    var chkOk = d['check'] === true;
     var follow = d['check'] === true;
-    var sc = status.includes('完了') ? 'green' : status.includes('入金') ? 'blue' : status ? 'red' : 'gray';
+    var sc = status && status !== '-----' ? (status.includes('完了') ? 'green' : status.includes('入金') ? 'blue' : 'red') : 'gray';
     var star = follow ? '<div class="star-mark">★</div>' : '';
     var ntag = nokOk
-      ? '<div class="stag sg"><div class="slbl">納骨</div><div class="sval">完了 ' + nokDate + '</div></div>'
-      : '<div class="stag sy"><div class="slbl">納骨</div><div class="sval">' + (nokDate || '日程未定') + '<br>担当:' + (nokTanto || '未定') + '</div></div>';
+      ? '<div class="stag sg"><div class="slbl">納骨</div><div class="sval">完了</div></div>'
+      : '<div class="stag sy"><div class="slbl">納骨</div><div class="sval">担当:' + (nokTanto || '未定') + '</div></div>';
     var ctag = chkOk
-      ? '<div class="stag sg"><div class="slbl">彫刻</div><div class="sval">完了</div></div>'
-      : '<div class="stag sy"><div class="slbl">彫刻</div><div class="sval">' + (d['校正彫刻担当'] || '未定') + '</div></div>';
-    var displayName = family ? family + (name ? '　' + name : '') : (name || title);
+      ? '<div class="stag sg"><div class="slbl">チェック</div><div class="sval">済</div></div>'
+      : '<div class="stag sy"><div class="slbl">チェック</div><div class="sval">未</div></div>';
+    var displayName = name || title;
     return '<div class="card" data-idx="' + idx + '">' +
       '<div class="card-inner">' + star +
       '<div class="card-left">' +
@@ -380,71 +380,58 @@ function fld(label, val, wide, pre) {
 
 function showTab(i, d) {
   var b = document.getElementById('det-body');
-  var nokOk = d['未_x002f_完'] === true || (d['未_x002f_完'] || '') === 'true';
+  var nokOk = d['DelRedText'] === true || d['FinDelRedText'] === true;
   var chkOk = d['check'] === true;
-  var nokDate = d['納骨日'] ? d['納骨日'].substring(0, 10) : '';
 
   if (i === 0) {
     b.innerHTML =
       '<div class="sec"><span class="sec-hdr bg1">基本情報</span>' +
       '<div class="fgrid">' +
-      fld('顧客名', d['顧客名']) +
-      fld('フリガナ', d['フリガナ']) +
-      fld('電話番号', d['電話番号']) +
-      fld('お寺', d['お寺']) +
-      fld('顧客No', d['顧客No']) +
-      fld('状況', d['状況']) +
+      fld('顧客名', G(d,'顧客名')) +
+      fld('フリガナ', G(d,'フリガナ')) +
+      fld('電話番号', G(d,'電話番号')) +
+      fld('お寺', G(d,'お寺')) +
+      fld('顧客No', G(d,'顧客No')) +
+      fld('状況', G(d,'状況')) +
       '</div></div>' +
       '<div class="sec"><span class="sec-hdr bg2">資料郵送先</span>' +
       '<div class="fgrid">' +
-      fld('郵便番号', d['郵便番号']) +
-      fld('宛名', d['宛名']) +
-      fld('住所', (d['住所1'] || '') + (d['住所2'] ? ' ' + d['住所2'] : ''), true) +
+      fld('郵便番号', G(d,'郵便番号')) +
+      fld('宛名', G(d,'宛名')) +
+      fld('住所', (G(d,'住所1') || '') + (G(d,'住所2') ? ' ' + G(d,'住所2') : ''), true) +
       '</div></div>';
   } else if (i === 1) {
     b.innerHTML =
       '<div class="sec"><span class="sec-hdr bg3">依頼内容</span>' +
       '<div class="fgrid">' +
-      fld('内容', d['分類']) +
-      fld('依頼日（受付日）', d['依頼日（受付日）']) +
-      fld('提供者', d['依頼情報提供者']) +
+      fld('内容', G(d,'分類')) +
+      fld('依頼日（受付日）', G(d,'依頼日')) +
+      fld('提供者', G(d,'依頼情報提供者')) +
       '</div></div>' +
       '<div class="sec"><span class="sec-hdr bg4">彫刻</span>' +
       '<div class="fgrid">' +
-      fld('彫刻者名', d['彫刻者名'], true, true) +
-      fld('戒切納期', d['戒切納期']) +
-      fld('校正彫刻担当', d['校正彫刻担当']) +
-      fld('彫刻作業依頼日', d['彫刻作業依頼日']) +
-      fld('彫刻完了日', d['彫刻完了日']) +
+      fld('戒切納期', G(d,'戒切納期')) +
+      fld('担当', G(d,'納骨担当')) +
       '</div></div>';
   } else if (i === 2) {
     b.innerHTML =
       '<div class="sec"><span class="sec-hdr bg4">納骨</span>' +
       '<div class="fgrid">' +
-      fld('納骨日', nokDate) +
-      fld('納骨時間', d['納骨時間']) +
-      fld('担当', d['納骨担当']) +
-      '<div class="fi"><label>未/完</label><span class="pill ' + (nokOk ? 'pg' : 'py') + '">' + (nokOk ? '完了' : '未完了') + '</span></div>' +
-      fld('お寺', d['お寺']) +
-      fld('納骨時問題点', d['納骨時問題点'], true) +
+      fld('納骨時間', G(d,'納骨時間')) +
+      fld('担当', G(d,'納骨担当')) +
+      '<div class="fi"><label>完了</label><span class="pill ' + (nokOk ? 'pg' : 'py') + '">' + (nokOk ? '完了' : '未完了') + '</span></div>' +
+      fld('お寺', G(d,'お寺')) +
+      fld('納骨備考', G(d,'納骨備考'), true) +
       '</div></div>' +
       '<div class="sec"><span class="sec-hdr bg5">注意事項メモ</span>' +
-      '<div class="memo-area">' + (d['注意事項メモ'] || 'なし') + '</div></div>';
+      '<div class="memo-area">' + (G(d,'注意事項メモ') || 'なし') + '</div></div>';
   } else {
     b.innerHTML =
       '<div class="sec"><span class="sec-hdr bg2">代金処理</span>' +
       '<div class="fgrid">' +
-      fld('請求書郵送日', d['請求書郵送日']) +
-      fld('入金日', d['入金日']) +
-      fld('領収書発行日', d['領収書発行日']) +
-      fld('入金額', d['入金額'] ? '¥' + Number(d['入金額']).toLocaleString() : '') +
-      '</div></div>' +
-      '<div class="sec"><span class="sec-hdr bg5">追加分</span>' +
-      '<div class="fgrid">' +
-      fld('追加分_請求日', d['追加分＿請求日']) +
-      fld('追加分_入金日', d['追加分＿入金日']) +
-      fld('社内連絡', d['社内連絡'], true, true) +
-      fld('追加修繕', d['追加修繕'], true, true) +
+      fld('請求書郵送日', G(d,'請求書郵送日')) +
+      fld('入金日', G(d,'入金日')) +
+      fld('社内連絡', G(d,'社内連絡'), true, true) +
       '</div></div>';
   }
 }

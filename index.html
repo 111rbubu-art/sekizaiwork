@@ -115,6 +115,15 @@ body{font-family:'Hiragino Sans','Meiryo',sans-serif;background:#f0f2f5;color:#1
 .attach-empty{font-size:13px;color:#aaa;padding:10px;text-align:center}
 .attach-loading{font-size:13px;color:#888;padding:10px;text-align:center}
 .attach-list{display:flex;flex-direction:column}
+.img-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px}
+.img-thumb{aspect-ratio:1;object-fit:cover;border-radius:6px;cursor:pointer;width:100%;background:#f0f0f0}
+.img-thumb:active{opacity:0.8}
+.img-viewer{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.img-viewer-close{position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:24px;width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.img-viewer-img{max-width:95vw;max-height:80vh;object-fit:contain;border-radius:8px}
+.img-viewer-name{color:rgba(255,255,255,0.7);font-size:12px;margin-top:8px;text-align:center;padding:0 16px}
+.img-viewer-nav{display:flex;gap:16px;margin-top:12px}
+.img-viewer-btn{background:rgba(255,255,255,0.15);border:none;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -474,19 +483,89 @@ function loadAttachments(itemId) {
       area.innerHTML = '<div class="attach-empty">添付ファイルなし</div>';
       return;
     }
-    area.innerHTML = files.map(function(f) {
-      var ext = (f.FileName || '').split('.').pop().toUpperCase() || 'FILE';
-      var isImg = /^(JPG|JPEG|PNG|GIF|WEBP|BMP)$/.test(ext);
-      var color = isImg ? '#0f6e56' : ext === 'PDF' ? '#c0392b' : '#1565c0';
+    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
+    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
+    var html = '';
+    // 画像グリッド
+    if (imgs.length > 0) {
+      html += '<div class="img-grid">';
+      imgs.forEach(function(f, idx) {
+        var fullUrl = 'https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl;
+        html += '<img class="img-thumb" src="' + fullUrl + '" data-idx="' + idx + '" data-itemid="' + itemId + '" alt="' + f.FileName + '" loading="lazy">';
+      });
+      html += '</div>';
+    }
+    // その他ファイル
+    others.forEach(function(f) {
+      var ext = (f.FileName || '').split('.').pop().toUpperCase();
+      var color = ext === 'PDF' ? '#c0392b' : '#1565c0';
       var fullUrl = 'https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl;
-      return '<a href="' + fullUrl + '" target="_blank" class="attach-row" style="text-decoration:none">' +
+      html += '<a href="' + fullUrl + '" target="_blank" class="attach-row" style="text-decoration:none">' +
         '<div class="attach-icon-sm" style="background:' + color + '">' + ext.substring(0,4) + '</div>' +
         '<span class="attach-name">' + f.FileName + '</span>' +
         '<span class="attach-arrow">›</span></a>';
-    }).join('');
+    });
+    area.innerHTML = html;
+    // 画像タップでビューアー表示
+    area.querySelectorAll('.img-thumb').forEach(function(img) {
+      img.addEventListener('click', function() {
+        openImageViewer(imgs, parseInt(this.getAttribute('data-idx')));
+      });
+      // 認証付きで画像を読み込む
+      loadAuthImage(img, img.src);
+    });
   }).catch(function(e) {
     area.innerHTML = '<div class="attach-empty" style="color:#c0392b">エラー: ' + e.message + '</div>';
   });
+}
+
+function loadAuthImage(imgEl, url) {
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.blob(); })
+  .then(function(blob) {
+    imgEl.src = URL.createObjectURL(blob);
+  }).catch(function() {
+    imgEl.style.background = '#ddd';
+  });
+}
+
+function openImageViewer(imgs, startIdx) {
+  var idx = startIdx;
+  var old = document.getElementById('img-viewer');
+  if (old) old.remove();
+  var viewer = document.createElement('div');
+  viewer.id = 'img-viewer';
+  viewer.className = 'img-viewer';
+  viewer.innerHTML =
+    '<button class="img-viewer-close" id="iv-close">✕</button>' +
+    '<img class="img-viewer-img" id="iv-img" src="" alt="">' +
+    '<div class="img-viewer-name" id="iv-name"></div>' +
+    '<div class="img-viewer-nav">' +
+    '<button class="img-viewer-btn" id="iv-prev">‹ 前</button>' +
+    '<span style="color:#fff;font-size:13px;padding:8px 0" id="iv-count"></span>' +
+    '<button class="img-viewer-btn" id="iv-next">次 ›</button>' +
+    '</div>';
+  document.body.appendChild(viewer);
+
+  function showImg(i) {
+    idx = i;
+    var f = imgs[i];
+    var fullUrl = 'https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl;
+    document.getElementById('iv-name').textContent = f.FileName;
+    document.getElementById('iv-count').textContent = (i+1) + ' / ' + imgs.length;
+    var ivImg = document.getElementById('iv-img');
+    ivImg.src = '';
+    loadAuthImage(ivImg, fullUrl);
+  }
+  showImg(idx);
+  document.getElementById('iv-close').onclick = function() { viewer.remove(); };
+  document.getElementById('iv-prev').onclick = function() { showImg((idx - 1 + imgs.length) % imgs.length); };
+  document.getElementById('iv-next').onclick = function() { showImg((idx + 1) % imgs.length); };
+  viewer.addEventListener('click', function(e) { if (e.target === viewer) viewer.remove(); });
 }
 
 </script>

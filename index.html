@@ -145,6 +145,10 @@ body{font-family:'Hiragino Sans','Meiryo',sans-serif;background:#f0f2f5;color:#1
 .card-meta{text-align:right;flex-shrink:0}
 .card-mdate{font-size:11px;color:#555;white-space:nowrap}
 .card-mtanto{font-size:11px;color:#888;margin-top:1px;white-space:nowrap}
+.date-field-wrap{display:flex;gap:4px;align-items:center}
+.date-input{flex:1;padding:8px 10px;border:1.5px solid #1a2535;border-radius:8px;font-size:14px;font-family:inherit;color:#1a1a1a;background:#fff}
+.date-today-btn{padding:6px 10px;border:1.5px solid #1a2535;border-radius:8px;font-size:12px;background:#1a2535;color:#fff;cursor:pointer;white-space:nowrap;font-family:inherit}
+.date-today-btn:active{opacity:0.8}
 .card-naibu{font-size:11px;color:#e67e22;margin-top:3px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
 .edit-btn{background:#1a2535;color:#fff;border:none;padding:7px 16px;border-radius:16px;font-size:13px;cursor:pointer;font-family:inherit;float:right;margin-bottom:8px}
 .edit-btn.cancel{background:#888}
@@ -358,7 +362,9 @@ function renderList() {
     if (currentFilter === 'micom' && isComplete) return false;
     // フォローフィルター：未完了(false) かつ checkあり
     if (currentFilter === 'follow' && (isComplete || !d['check'])) return false;
-    if (currentFilter === 'nyukin' && !(status.includes('入金'))) return false;
+    // 入金待ち：本体または追加分で請求済・未入金
+    var isNyukinMachi = (d['DateInvoice'] && !d['PaymentDate']) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);
+    if (currentFilter === 'nyukin' && !isNyukinMachi) return false;
     if (q) {
       var name = (G(d,'顧客名') || d['Title'] || '');
       if (!name.includes(q)) return false;
@@ -406,7 +412,7 @@ function renderList() {
     var kinCls = nyukinDate ? 'tag-done' : (seikyuDate ? 'tag-yet' : 'tag-alert');
     grp1 += '<span class="tag-pill ' + kinCls + '">' + kinLabel + '</span>';
     // フォローチェック
-    if (follow) grp1 += '<span class="tag-pill tag-blue">★</span>';
+    // ★フォロータグは削除
     // 彫刻進捗タグ（PowerAppsの式を再現）
     var bunrui2 = G(d,'分類') || '';
     if (bunrui2 === '納骨戒切' || bunrui2 === '戒切') {
@@ -571,13 +577,63 @@ function loadEditsFromStorage() {
   // セッション内のみ保持（リロードで消える）
 }
 
+// 日付フィールドかどうか判定
+function isDateField(label, field) {
+  var dateKeywords = ['日','Date','date','tui'];
+  var dateLabels = ['日','日付','納期','受取','郵送','返却','依頼日','完了日','発行日','受付','承了'];
+  return dateLabels.some(function(k){ return label.includes(k); }) ||
+         dateKeywords.some(function(k){ return field.includes(k) && field !== 'DateFinalProofreading'; }) ||
+         field === 'DateFinalProofreading' || field === 'ReceiptIssuanceDate' ||
+         field === 'SendDocumentsCustomer' || field === 'ReturnDocumentsCus' ||
+         field === 'SendDocuVendor' || field === 'GotManuscript';
+}
+
+// 日付フォーマット判定（フィールドごとに元フォーマットを保持）
+var DATE_SLASH_FIELDS = ['PaymentDate','DateInvoice','CompletionDate','GotManuscript',
+  'DateFinalProofreading','SendDocumentsCustomer','ReturnDocumentsCus','SendDocuVendor',
+  'ReceiptIssuanceDate','Estimate_tui','IssueDate_tui','CompletionDate_tui',
+  'DateInvoice_tui','PaymentDate_tui','_x6212__x5207__x7d0d__x671f_',
+  '_x7d0d__x671f__xff08__x7d0d__x9a','納骨日','戒切納期','戒切納期','追見積日',
+  '追契約日','追加分_請求日','追加分_入金日','追工事完了日','校正完了日',
+  '確認資料郵送日','彫刻内容承了日','彫刻作業依頼日','彫刻完了日','領収書発行日','原稿受取'];
+var DATE_HYPHEN_FIELDS = ['RequestDate'];
+
+function formatDateForSave(field, isoVal) {
+  // input[type=date]はYYYY-MM-DDを返す
+  if (!isoVal) return '';
+  var parts = isoVal.split('-');
+  if (parts.length !== 3) return isoVal;
+  if (DATE_HYPHEN_FIELDS.indexOf(field) >= 0) {
+    return isoVal; // YYYY-MM-DD
+  }
+  return parts[0] + '/' + parts[1] + '/' + parts[2]; // YYYY/MM/DD
+}
+
+function parseDateToISO(val) {
+  if (!val) return '';
+  // YYYY/MM/DD → YYYY-MM-DD
+  var s = val.replace(/\//g,'-').replace(/年/g,'-').replace(/月/g,'-').replace(/日/g,'');
+  var m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + '-' + m[2].padStart(2,'0') + '-' + m[3].padStart(2,'0');
+  return '';
+}
+
 function efld(label, itemId, field, val, wide, multiline) {
   var cls = 'fi' + (wide ? ' w' : '');
   var currentVal = getEdit(itemId, field, val || '');
   if (editMode) {
-    var inputHtml = multiline
-      ? '<textarea class="edit-textarea" data-id="' + itemId + '" data-field="' + field + '">' + (currentVal||'').replace(/</g,'&lt;') + '</textarea>'
-      : '<input class="edit-field" type="text" data-id="' + itemId + '" data-field="' + field + '" value="' + (currentVal||'').replace(/"/g,'&quot;') + '">';
+    var inputHtml;
+    if (isDateField(label, field)) {
+      var isoVal = parseDateToISO(currentVal);
+      inputHtml = '<div class="date-field-wrap">' +
+        '<input class="date-input" type="date" data-id="' + itemId + '" data-field="' + field + '" value="' + isoVal + '">' +
+        '<button class="date-today-btn" data-id="' + itemId + '" data-field="' + field + '" onclick="setTodayDate(this)">今日</button>' +
+        '</div>';
+    } else if (multiline) {
+      inputHtml = '<textarea class="edit-textarea" data-id="' + itemId + '" data-field="' + field + '">' + (currentVal||'').replace(/</g,'&lt;') + '</textarea>';
+    } else {
+      inputHtml = '<input class="edit-field" type="text" data-id="' + itemId + '" data-field="' + field + '" value="' + (currentVal||'').replace(/"/g,'&quot;') + '">';
+    }
     return '<div class="' + cls + '"><label class="edit-label">✏️ ' + label + '</label>' + inputHtml + '</div>';
   } else {
     var dispVal = currentVal;
@@ -591,13 +647,33 @@ function efld(label, itemId, field, val, wide, multiline) {
 function bindEditInputs(itemId) {
   document.querySelectorAll('[data-id="' + itemId + '"]').forEach(function(el) {
     el.addEventListener('input', function() {
-      setEdit(itemId, this.getAttribute('data-field'), this.value);
+      var val = this.value;
+      if (this.type === 'date' && val) {
+        val = formatDateForSave(this.getAttribute('data-field'), val);
+      }
+      setEdit(itemId, this.getAttribute('data-field'), val);
     });
     el.addEventListener('change', function() {
-      setEdit(itemId, this.getAttribute('data-field'), this.value);
+      var val = this.value;
+      if (this.type === 'date' && val) {
+        val = formatDateForSave(this.getAttribute('data-field'), val);
+      }
+      setEdit(itemId, this.getAttribute('data-field'), val);
       saveEditsToStorage();
     });
   });
+}
+
+function setTodayDate(btn) {
+  var itemId = btn.getAttribute('data-id');
+  var field = btn.getAttribute('data-field');
+  var today = new Date();
+  var iso = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+  var el = document.querySelector('input[data-id="' + itemId + '"][data-field="' + field + '"]');
+  if (el) { el.value = iso; el.dispatchEvent(new Event('change')); }
+  var formatted = formatDateForSave(field, iso);
+  setEdit(itemId, field, formatted);
+  saveEditsToStorage();
 }
 
 function toggleEditMode(d, tabIdx) {
@@ -623,11 +699,11 @@ function showTab(i, d) {
     b.innerHTML = editBtnHtml +
       '<div class="sec"><span class="sec-hdr bg1">基本情報</span>' +
       '<div class="fgrid">' +
-      fld('顧客名', G(d,'顧客名')) +
-      fld('フリガナ', G(d,'フリガナ')) +
-      fld('電話番号', G(d,'電話番号')) +
-      fld('お寺', G(d,'お寺')) +
-      fld('顧客No', G(d,'顧客No')) +
+      efld('顧客名', itemId, '顧客名', G(d,'顧客名')) +
+      efld('フリガナ', itemId, 'フリガナ', G(d,'フリガナ')) +
+      efld('電話番号', itemId, '電話番号', G(d,'電話番号')) +
+      efld('お寺', itemId, 'お寺', G(d,'お寺')) +
+      efld('顧客No', itemId, '顧客No', G(d,'顧客No')) +
       efld('顧客リストID', itemId, 'Cus_ID', d['Cus_ID'] ? String(d['Cus_ID']) : '') +
       '</div></div>' +
       '<div class="sec"><span class="sec-hdr bg2">資料郵送先</span>' +
@@ -637,8 +713,7 @@ function showTab(i, d) {
       efld('住所', itemId, '住所', (G(d,'住所1') || '') + (G(d,'住所2') ? ' ' + G(d,'住所2') : ''), true) +
       '</div></div>' +
       '<div class="sec"><span class="sec-hdr bg5">注意事項メモ</span>' +
-      (editMode ? '<div class="fgrid"><div class="fi w"><textarea class="edit-textarea" data-id="' + itemId + '" data-field="注意事項メモ" style="min-height:120px">' + (getEdit(itemId,'注意事項メモ', G(d,'注意事項メモ'))||'').replace(/</g,'&lt;') + '</textarea></div></div>' : '<div class="memo-area">' + (getEdit(itemId,'注意事項メモ', G(d,'注意事項メモ')) || 'なし') + '</div>') +
-      editBtnHtml;
+      (editMode ? '<div class="fgrid"><div class="fi w"><textarea class="edit-textarea" data-id="' + itemId + '" data-field="注意事項メモ" style="min-height:120px">' + (getEdit(itemId,'注意事項メモ', G(d,'注意事項メモ'))||'').replace(/</g,'&lt;') + '</textarea></div></div>' : '<div class="memo-area">' + (getEdit(itemId,'注意事項メモ', G(d,'注意事項メモ')) || 'なし') + '</div>');
     bindEditInputs(itemId);
   } else if (i === 1) {
     b.innerHTML = editBtnHtml +

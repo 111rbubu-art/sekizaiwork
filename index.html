@@ -173,6 +173,10 @@ body{font-family:'Hiragino Sans','Meiryo',sans-serif;background:#f0f2f5;color:#1
 .local-img-thumb{aspect-ratio:1;object-fit:cover;border-radius:6px;width:100%;cursor:pointer}
 .local-img-del{position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 .attach-file-link{display:block;padding:10px 12px;background:#f0f2f5;border-radius:8px;color:#1a2535;font-size:13px;text-decoration:none;word-break:break-all}
+.attach-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.attach-item{display:flex;flex-direction:column;gap:3px}
+.attach-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;border:0.5px solid #e0e0e0}
+.attach-label{font-size:10px;color:#888;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tag-orange{background:#fdebd0;color:#784212}
 .tag-purple{background:#e8daef;color:#4a235a}
 .card-date{font-size:11px;color:#555;white-space:nowrap}
@@ -471,12 +475,12 @@ function renderCustomerList() {
     var addr1 = d['address_1'] || '';
     var addr2 = d['address_2'] || '';
     var hasAttach = d['Attachments'] === true;
-    // 撤去マーク
+    var spId = d['id'] || '';
     var isTekky = name.includes('撤去');
-    // 添付ファイルアイコン（Attachments=trueならとりあえず写真アイコン、詳細はdetailで判定）
-    var attachTag = hasAttach ? '<span class="tag-pill tag-gray">📷</span>' : '';
     var tekkyTag = isTekky ? '<span class="tag-pill tag-alert">🚧撤去</span>' : '';
-    var tags = tekkyTag + attachTag;
+    // 添付アイコンは非同期で後から更新するためプレースホルダー
+    var attachPlaceholder = hasAttach ? '<span id="attach-icon-' + spId + '" class="tag-pill tag-gray">📷</span>' : '';
+    var tags = tekkyTag + attachPlaceholder;
     return '<div class="card" data-idx="' + idx + '">' +
       (tags ? '<div class="card-tags"><div class="tag-group">' + tags + '</div></div>' : '') +
       '<div class="card-main">' +
@@ -497,6 +501,39 @@ function renderCustomerList() {
       showCustomerDetail(items[idx]);
     });
   });
+  // 添付ファイルアイコンを非同期で更新
+  updateAttachIcons(items);
+}
+
+function updateAttachIcons(items) {
+  var withAttach = items.filter(function(d) { return d['Attachments'] === true && d['id']; });
+  if (withAttach.length === 0) return;
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    // 最大20件だけアイコン更新（パフォーマンス）
+    var targets = withAttach.slice(0, 20);
+    targets.forEach(function(d) {
+      var spId = d['id'];
+      var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items(" + spId + ")/AttachmentFiles?$select=FileName";
+      fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var files = (data.d && data.d.results) ? data.d.results : [];
+          var iconEl = document.getElementById('attach-icon-' + spId);
+          if (!iconEl) return;
+          var hasMap = files.some(function(f) { return f.FileName.toLowerCase().includes('map'); });
+          var hasOther = files.some(function(f) { return !f.FileName.toLowerCase().includes('map'); });
+          var icons = '';
+          if (hasMap) icons += '<span class="tag-pill tag-blue">🗺️地図</span>';
+          if (hasOther) icons += '<span class="tag-pill tag-gray">📷写真</span>';
+          if (icons) iconEl.outerHTML = icons;
+          else iconEl.remove();
+        }).catch(function() {});
+    });
+  }).catch(function() {});
 }
 
 function showCustomerDetail(d) {

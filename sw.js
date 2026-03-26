@@ -314,7 +314,7 @@ function loadItems() {
 }
 
 // ===== フィールドマッピング =====
-function G(d,k){var M={'顧客名':'_x9867__x5ba2__x540d_','お寺':'_x304a__x5bfa_','分類':'_x5206__x985e_','フリガナ':'_x30d5__x30ea__x30ac__x30ca_','電話番号':'_x96fb__x8a71__x756a__x53f7_','顧客No':'_x9867_No','状況':'situation','郵便番号':'_x90f5__x4fbf__x756a__x53f7_','住所1':'_x4f4f__x6240_1','住所2':'_x4f4f__x6240_2','宛名':'addressee','注意事項メモ':'_x6ce8__x610f__x4e8b__x9805__x30','納骨時間':'_x7d0d__x9aa8__x6642__x9593_','納骨日':'_x7d0d__x671f__xff08__x7d0d__x9a','納骨担当':'personincharge','戒切納期':'_x6212__x5207__x7d0d__x671f_','依頼日':'RequestDate','依頼情報提供者':'Informer','請求書郵送日':'DateInvoice','入金日':'PaymentDate','社内連絡':'InternalCommunication','納骨備考':'noukotu_kaisi_jyoutai','資料':'_x8cc7__x6599_','フォルダー':'_x8cc7__x6599_','未完':'_x524a__x9664_'};return d[M[k]!==undefined?M[k]:k];}
+function G(d,k){var M={'顧客名':'_x9867__x5ba2__x540d_','お寺':'_x304a__x5bfa_','分類':'_x5206__x985e_','フリガナ':'_x30d5__x30ea__x30ac__x30ca_','電話番号':'_x96fb__x8a71__x756a__x53f7_','顧客No':'_x9867_No','状況':'situation','郵便番号':'_x90f5__x4fbf__x756a__x53f7_','住所1':'_x4f4f__x6240_1','住所2':'_x4f4f__x6240_2','宛名':'addressee','注意事項メモ':'_x6ce8__x610f__x4e8b__x9805__x30','納骨時間':'_x7d0d__x9aa8__x6642__x9593_','納骨日':'_x7d0d__x671f__xff08__x7d0d__x9a','納骨担当':'personincharge','戒切納期':'_x6212__x5207__x7d0d__x671f_','依頼日':'RequestDate','依頼情報提供者':'Informer','請求書郵送日':'DateInvoice','入金日':'PaymentDate','社内連絡':'InternalCommunication','納骨備考':'noukotu_kaisi_jyoutai','資料':'資料','フォルダー':'資料','未完':'_x524a__x9664_'};return d[M[k]!==undefined?M[k]:k];}
 
 // ===== 一覧描画 =====
 function renderList() {

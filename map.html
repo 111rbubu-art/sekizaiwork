@@ -398,6 +398,11 @@ let editingAreaId=null;  // 現在ハンドル操作中のエリアID
 let resizeHandle=null;   // 'nw','n','ne','e','se','s','sw','w','move'
 let resizeDragStart=null;
 let resizeAreaStart=null; // ドラッグ開始時のエリア座標
+// 区画移動・リサイズ用
+let plotEditIdx=-1;       // 選択中の区画インデックス
+let plotResizeHandle=null;
+let plotResizeDragStart=null;
+let plotResizeStart=null; // ドラッグ開始時の区画座標(r1,r2,c1,c2)
 
 const HANDLE_SIZE=8; // ハンドルの半径px
 
@@ -416,6 +421,37 @@ function hitTest(mx,my){
 }
 function getActiveArea(){return savedAreas.find(a=>a.id===activeAreaId)||null;}
 
+// 区画のピクセル座標を取得
+function getPlotPx(p){
+  const x=CP[p.c1], y=RP[p.r1];
+  const x2=CP[p.c2+1]??CP[CP.length-1], y2=RP[p.r2+1]??RP[RP.length-1];
+  return {x,y,w:x2-x,h:y2-y};
+}
+// ピクセル座標からグリッド座標に変換
+function pxToGrid(px,arr){
+  for(let i=0;i<arr.length-1;i++) if(px>=arr[i]&&px<arr[i+1]) return i;
+  return arr.length-2;
+}
+// 選択中区画のハンドルポイント取得
+function getPlotHandlePoints(){
+  if(plotEditIdx<0||plotEditIdx>=PLOTS.length) return [];
+  const p=PLOTS[plotEditIdx];
+  const{x,y,w,h}=getPlotPx(p);
+  const cx=x+w/2,cy=y+h/2;
+  return[
+    {id:'nw',x,y},{id:'n',x:cx,y},{id:'ne',x:x+w,y},
+    {id:'e',x:x+w,y:cy},{id:'se',x:x+w,y:y+h},{id:'s',x:cx,y:y+h},
+    {id:'sw',x,y:y+h},{id:'w',x,y:cy},{id:'move',x:cx,y:cy}
+  ];
+}
+function getPlotHitHandle(mx,my){
+  const HS=8;
+  for(const hp of getPlotHandlePoints()){
+    if(Math.abs(mx-hp.x)<HS&&Math.abs(my-hp.y)<HS) return hp.id;
+  }
+  return null;
+}
+
 // ===== Canvas→画面座標変換 =====
 function mapToScreen(mx,my){
   const cr=mc.getBoundingClientRect();
@@ -432,7 +468,19 @@ function mapToScreen(mx,my){
 function draw(){
   ctx.clearRect(0,0,mc.width,mc.height);
   ctx.fillStyle='#f0ece0'; ctx.fillRect(0,0,mc.width,mc.height);
-  PLOTS.forEach((p,i)=>drawPlot(p,i===selIdx));
+  PLOTS.forEach((p,i)=>drawPlot(p,i===selIdx||i===plotEditIdx));
+  // 選択中区画のリサイズハンドル描画
+  if(editMode&&plotEditIdx>=0&&plotEditIdx<PLOTS.length){
+    const HS=8;
+    ctx.fillStyle='#ffffff';
+    ctx.strokeStyle='#1a5a9a';
+    ctx.lineWidth=1.5;
+    getPlotHandlePoints().forEach(hp=>{
+      ctx.beginPath();
+      ctx.rect(PAD+hp.x-HS/2,PAD+hp.y-HS/2,HS,HS);
+      ctx.fill();ctx.stroke();
+    });
+  }
   // 印刷設定パネルが開いているときだけ印刷範囲枠を表示
   const _panel=document.getElementById('printPanel');
   if(_panel && _panel.classList.contains('visible')){
@@ -602,12 +650,13 @@ function toggleEdit(){
   editMode=!editMode;
   const mh=document.getElementById('mhint');
   if(editMode){
+    plotEditIdx=-1;
     document.getElementById('eBtn').className='btn on';
     document.getElementById('eBtn').textContent='✏️ 編集中（クリックで終了）';
     document.getElementById('aBtn').disabled=false;
     mc.style.cursor='pointer';
     mh.className='mhint edit';
-    mh.innerHTML='✏️ <b>編集モード：</b>区画を<b>左クリック</b>で編集 ／ <b>右クリック</b>で削除メニュー';
+    mh.innerHTML='✏️ <b>編集モード：</b>区画を<b>左クリックで選択→ドラッグで移動・ハンドルでリサイズ</b> ／ <b>右クリック</b>で編集・削除メニュー';
   }else{
     document.getElementById('eBtn').className='btn out';
     document.getElementById('eBtn').textContent='✏️ 編集モード';
@@ -942,6 +991,35 @@ mc.addEventListener('mousedown',e=>{
   }
   if(dragMode==='add'){dragStart=canvasXY(e);dragCur=canvasXY(e);return;}
 
+  // 区画移動・リサイズ（編集モード）
+  if(editMode&&!addMode){
+    const{mx,my}=canvasXY(e);
+    // まず選択中区画のハンドルをチェック
+    if(plotEditIdx>=0){
+      const handle=getPlotHitHandle(mx,my);
+      if(handle){
+        e.preventDefault();
+        plotResizeHandle=handle;
+        dragMode='plotresize';
+        plotResizeDragStart={mx,my};
+        const p=PLOTS[plotEditIdx];
+        plotResizeStart={r1:p.r1,r2:p.r2,c1:p.c1,c2:p.c2,...getPlotPx(p)};
+        return;
+      }
+    }
+    // 区画選択
+    const idx=hitTest(mx,my);
+    if(idx>=0){
+      plotEditIdx=idx;
+      selIdx=idx;
+      draw();
+      return;
+    } else {
+      plotEditIdx=-1;
+      draw();
+    }
+  }
+
   // ハンドル操作（印刷モードでアクティブエリアあり）
   if(document.getElementById('printPanel').classList.contains('visible')&&activeAreaId&&!pendingArea){
     const{mx,my}=canvasXY(e);
@@ -975,6 +1053,48 @@ mc.addEventListener('mousemove',e=>{
     showDragBox(dragStart,{mx,my},'#4060c0','rgba(100,140,255,.1)');
     return;
   }
+  // 区画移動・リサイズ中
+  if(dragMode==='plotresize'&&plotResizeDragStart&&plotEditIdx>=0){
+    const p=PLOTS[plotEditIdx];
+    const dx=mx-plotResizeDragStart.mx, dy=my-plotResizeDragStart.my;
+    const{x,y,w,h,r1:sr1,r2:sr2,c1:sc1,c2:sc2}=plotResizeStart;
+    // ドラッグ量をグリッド座標に変換
+    switch(plotResizeHandle){
+      case 'move':
+        p.c1=Math.max(0,pxToGrid(x+dx,CP));
+        p.r1=Math.max(0,pxToGrid(y+dy,RP));
+        p.c2=Math.min(CP.length-2,p.c1+(sc2-sc1));
+        p.r2=Math.min(RP.length-2,p.r1+(sr2-sr1));
+        break;
+      case 'se': case 'e':
+        p.c2=Math.max(p.c1,pxToGrid(x+w+dx,CP));
+        if(plotResizeHandle==='se') p.r2=Math.max(p.r1,pxToGrid(y+h+dy,RP));
+        break;
+      case 's':
+        p.r2=Math.max(p.r1,pxToGrid(y+h+dy,RP)); break;
+      case 'nw':
+        p.c1=Math.min(sc2,pxToGrid(x+dx,CP));
+        p.r1=Math.min(sr2,pxToGrid(y+dy,RP)); break;
+      case 'n':
+        p.r1=Math.min(sr2,pxToGrid(y+dy,RP)); break;
+      case 'ne':
+        p.r1=Math.min(sr2,pxToGrid(y+dy,RP));
+        p.c2=Math.max(p.c1,pxToGrid(x+w+dx,CP)); break;
+      case 'sw':
+        p.c1=Math.min(sc2,pxToGrid(x+dx,CP));
+        p.r2=Math.max(p.r1,pxToGrid(y+h+dy,RP)); break;
+      case 'w':
+        p.c1=Math.min(sc2,pxToGrid(x+dx,CP)); break;
+    }
+    draw(); return;
+  }
+
+  // カーソル変更（編集モード・区画選択中）
+  if(editMode&&plotEditIdx>=0&&!dragMode){
+    const handle=getPlotHitHandle(mx,my);
+    if(handle){ mc.style.cursor=getHandleCursor(handle); return; }
+  }
+
   if(dragMode==='resize'&&resizeDragStart){
     const dx=mx-resizeDragStart.mx, dy=my-resizeDragStart.my;
     const a=savedAreas.find(x=>x.id===activeAreaId);
@@ -1023,6 +1143,14 @@ mc.addEventListener('mousemove',e=>{
 });
 
 mc.addEventListener('mouseup',e=>{
+  // 区画移動・リサイズ終了
+  if(dragMode==='plotresize'){
+    dragMode=null;plotResizeHandle=null;plotResizeDragStart=null;plotResizeStart=null;
+    autoSave();
+    draw();
+    mc.style.cursor='pointer';
+    return;
+  }
   // リサイズ/移動終了
   if(dragMode==='resize'){
     dragMode=null;resizeHandle=null;resizeDragStart=null;resizeAreaStart=null;

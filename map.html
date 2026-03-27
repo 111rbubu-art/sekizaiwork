@@ -1641,28 +1641,48 @@ draw();
   }
 })();
 
-// ===== スマホ対応：キャンバスのピンチズーム =====
-// canvasのwidthとheightを直接変更してズームする方式（座標系を保持）
+// ===== スマホ対応：キャンバスのピンチズーム（中点固定）=====
 (function() {
   var mapWrap = document.querySelector('.map-wrap');
   if (!mapWrap) return;
 
   var currentScale = 1;
-  var baseW = mc.width;  // 元のキャンバス幅（CSS）
-  var baseH = mc.height; // 元のキャンバス高さ（CSS）
-  // キャンバスのCSSサイズを変更してズーム（内部解像度は変えない）
+  var baseW = mc.width;
+  var baseH = mc.height;
   mc.style.width = baseW + 'px';
   mc.style.height = baseH + 'px';
 
-  function setScale(s) {
-    currentScale = Math.min(Math.max(s, 0.3), 4);
+  function setScaleAt(newScale, focalX, focalY) {
+    // focalX/Y: mapWrap内の座標（スクロール考慮済み）
+    // ズーム前のスクロール位置に対する割合を保持
+    newScale = Math.min(Math.max(newScale, 0.3), 4);
+    var ratio = newScale / currentScale;
+    currentScale = newScale;
     mc.style.width = Math.round(baseW * currentScale) + 'px';
     mc.style.height = Math.round(baseH * currentScale) + 'px';
+    // focalPointがズーム後も同じ画面位置になるようスクロール調整
+    mapWrap.scrollLeft = focalX * ratio - (focalX - mapWrap.scrollLeft) * ratio + mapWrap.scrollLeft * (ratio - 1);
+    mapWrap.scrollLeft = Math.round(focalX * ratio - (focalX - mapWrap.scrollLeft / ratio));
+  }
+
+  function applyScaleAt(newScale, clientMidX, clientMidY) {
+    newScale = Math.min(Math.max(newScale, 0.3), 4);
+    var ratio = newScale / currentScale;
+    // mapWrap上のピンチ中点座標（スクロール込み）
+    var wrapRect = mapWrap.getBoundingClientRect();
+    var focalX = (clientMidX - wrapRect.left) + mapWrap.scrollLeft;
+    var focalY = (clientMidY - wrapRect.top) + mapWrap.scrollTop;
+    currentScale = newScale;
+    mc.style.width = Math.round(baseW * currentScale) + 'px';
+    mc.style.height = Math.round(baseH * currentScale) + 'px';
+    // ズーム後のfocalPointが同じ画面位置に来るようスクロール
+    mapWrap.scrollLeft = Math.round(focalX * ratio - (clientMidX - wrapRect.left));
+    mapWrap.scrollTop = Math.round(focalY * ratio - (clientMidY - wrapRect.top));
   }
 
   var lastDist = 0;
+  var lastMidX = 0, lastMidY = 0;
   var isPinching = false;
-  var pinchMidX = 0, pinchMidY = 0;
 
   mapWrap.addEventListener('touchstart', function(e) {
     if (e.touches.length === 2) {
@@ -1670,8 +1690,8 @@ draw();
       var dx = e.touches[0].clientX - e.touches[1].clientX;
       var dy = e.touches[0].clientY - e.touches[1].clientY;
       lastDist = Math.sqrt(dx*dx + dy*dy);
-      pinchMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      pinchMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      lastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
     } else {
       isPinching = false;
     }
@@ -1683,20 +1703,16 @@ draw();
       var dx = e.touches[0].clientX - e.touches[1].clientX;
       var dy = e.touches[0].clientY - e.touches[1].clientY;
       var dist = Math.sqrt(dx*dx + dy*dy);
+      var midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       if (lastDist > 0) {
         var ratio = dist / lastDist;
-        var prevScale = currentScale;
-        // スクロール位置を補正してズームの中心を維持
-        var scrollX = mapWrap.scrollLeft;
-        var scrollY = mapWrap.scrollTop;
-        var wrapRect = mapWrap.getBoundingClientRect();
-        var relX = pinchMidX - wrapRect.left + scrollX;
-        var relY = pinchMidY - wrapRect.top + scrollY;
-        setScale(currentScale * ratio);
-        mapWrap.scrollLeft = relX * (currentScale / prevScale) - (pinchMidX - wrapRect.left);
-        mapWrap.scrollTop = relY * (currentScale / prevScale) - (pinchMidY - wrapRect.top);
+        // 中点（2本指の間）を固定点としてズーム
+        applyScaleAt(currentScale * ratio, midX, midY);
       }
       lastDist = dist;
+      lastMidX = midX;
+      lastMidY = midY;
     }
   }, { passive: false });
 
@@ -1707,7 +1723,7 @@ draw();
     }
   }, { passive: true });
 
-  // ズームボタンを追加
+  // ズームボタン
   var zoomBar = document.createElement('div');
   zoomBar.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:300;display:flex;flex-direction:column;gap:4px';
   zoomBar.innerHTML =
@@ -1716,8 +1732,18 @@ draw();
     '<button onclick="mapZoomReset()" style="width:36px;height:36px;background:#1a1a1a;color:#f0ece0;border:none;font-size:11px;cursor:pointer;border-radius:4px;opacity:0.85">1:1</button>';
   document.body.appendChild(zoomBar);
 
-  window.mapZoom = function(ratio) { setScale(currentScale * ratio); };
-  window.mapZoomReset = function() { setScale(1); mapWrap.scrollLeft = 0; mapWrap.scrollTop = 0; };
+  window.mapZoom = function(ratio) {
+    // ボタン操作時は画面中央を固定点に
+    var wrapRect = mapWrap.getBoundingClientRect();
+    applyScaleAt(currentScale * ratio, wrapRect.left + wrapRect.width/2, wrapRect.top + wrapRect.height/2);
+  };
+  window.mapZoomReset = function() {
+    currentScale = 1;
+    mc.style.width = baseW + 'px';
+    mc.style.height = baseH + 'px';
+    mapWrap.scrollLeft = 0;
+    mapWrap.scrollTop = 0;
+  };
 })();
 
 // ===== highlightパラメーター処理 =====

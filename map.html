@@ -228,7 +228,7 @@ var MAP_DATA_gansen = {
     <div class="sep"></div>
     <button class="btn out" id="pBtn" onclick="togglePrintPanel()">🖨 印刷設定</button>
     <div class="sep"></div>
-    <button class="btn out" onclick="exportJSON()">💾 保存（HTML更新）</button>
+    <button class="btn out" onclick="saveToSP()">💾 保存（SP）</button>
     <button class="btn out" onclick="document.getElementById('imp').click()">📂 読込</button>
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importJSON(event)"/>
   </div>
@@ -1556,6 +1556,141 @@ function generateFilename(params) {
 // localStorageキーをお寺ごとに分ける
 var _templeId = (new URLSearchParams(location.search)).get('temple') || 'chouzenji';
 const LS_KEY = 'mapData_' + _templeId;
+
+// ===== SharePoint保存・読込 =====
+var SP_DRIVE_PATH = '/sites/stoneworks/Shared%20Documents/%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA';
+
+function getSPToken() {
+  // index.htmlのMSALがlocalStorageにトークンを保存しているので流用
+  var keys = Object.keys(localStorage);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k.indexOf('accesstoken') > -1 && k.indexOf('shojisekizai.sharepoint.com') > -1) {
+      try {
+        var item = JSON.parse(localStorage.getItem(k));
+        if (item && item.secret && new Date(item.expiresOn * 1000) > new Date()) {
+          return item.secret;
+        }
+      } catch(e) {}
+    }
+  }
+  return null;
+}
+
+function saveToSP(callback) {
+  var token = getSPToken();
+  if (!token) {
+    showSPStatus('SharePoint未ログイン。ビューアーからマップを開いてください。', 'err');
+    return;
+  }
+  var data = {
+    version: '2.0',
+    savedAt: new Date().toISOString(),
+    plots: PLOTS,
+    savedAreas: savedAreas
+  };
+  var jsonStr = JSON.stringify(data, null, 2);
+  var fileName = 'data_' + _templeId + '.json';
+  var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/GetFolderByServerRelativeUrl('' +
+    '/sites/stoneworks/Shared%20Documents/%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA' +
+    '')/Files/Add(url='' + fileName + '',overwrite=true)';
+  showSPStatus('SharePointに保存中...', 'ing');
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/json;odata=verbose',
+      'Content-Type': 'application/octet-stream',
+      'X-RequestDigest': 'disabled'
+    },
+    body: jsonStr
+  })
+  .then(function(r) {
+    if (r.ok) {
+      showSPStatus('✅ SharePointに保存しました (' + new Date().toLocaleTimeString('ja-JP') + ')', 'ok');
+      // localStorageにも保存
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
+      if (callback) callback();
+    } else {
+      return r.text().then(function(t) {
+        throw new Error(r.status + ': ' + t.substring(0, 100));
+      });
+    }
+  })
+  .catch(function(e) {
+    showSPStatus('❌ SP保存エラー: ' + e.message, 'err');
+    // エラー時はlocalStorageのみ保存
+    localStorage.setItem(LS_KEY, JSON.stringify(data));
+  });
+}
+
+function loadFromSP(callback) {
+  var token = getSPToken();
+  if (!token) {
+    // トークンなし→localStorageから読込
+    loadFromLocalStorage(callback);
+    return;
+  }
+  var fileName = 'data_' + _templeId + '.json';
+  var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/GetFolderByServerRelativeUrl('' +
+    '/sites/stoneworks/Shared%20Documents/%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA' +
+    '')/Files('' + fileName + '')/$value';
+  fetch(url, {
+    headers: { 'Authorization': 'Bearer ' + token }
+  })
+  .then(function(r) {
+    if (r.ok) return r.json();
+    if (r.status === 404) return null; // ファイルなし
+    throw new Error(r.status);
+  })
+  .then(function(data) {
+    if (data && data.plots) {
+      PLOTS = data.plots;
+      savedAreas = data.savedAreas || [];
+      draw(); updateStats();
+      showSPStatus('✅ SharePointから読み込みました (' + (data.savedAt || '').substring(0,16).replace('T',' ') + ')', 'ok');
+      if (callback) callback();
+    } else {
+      // SPにデータなし→localStorageから
+      loadFromLocalStorage(callback);
+    }
+  })
+  .catch(function(e) {
+    loadFromLocalStorage(callback);
+  });
+}
+
+function loadFromLocalStorage(callback) {
+  try {
+    var raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (data && data.plots) {
+      PLOTS = data.plots;
+      savedAreas = data.savedAreas || [];
+      draw(); updateStats();
+    }
+    if (callback) callback();
+  } catch(e) {}
+}
+
+function showSPStatus(msg, type) {
+  var el = document.getElementById('sp-status');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sp-status';
+    el.style.cssText = 'position:fixed;bottom:60px;right:12px;z-index:400;font-size:11px;padding:6px 12px;border-radius:4px;max-width:280px;font-family:inherit;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = type==='ok' ? '#d4f0d4' : type==='err' ? '#fdd' : '#fffbe6';
+  el.style.color = type==='ok' ? '#1a5a1a' : type==='err' ? '#8b0000' : '#6a4a00';
+  el.style.border = '1px solid ' + (type==='ok' ? '#2a7a2a' : type==='err' ? '#c00' : '#c8a000');
+  clearTimeout(el._timer);
+  if (type === 'ok') el._timer = setTimeout(function() { el.style.display='none'; }, 4000);
+  else el.style.display = '';
+}
+
 let _lastSaveHash = ''; // 前回保存時のハッシュ（変更がある時だけ保存）
 
 function _dataHash() {
@@ -1679,16 +1814,11 @@ function exportJSON() {
 // ============================================================
 setPaper('A4','landscape');
 
-// localStorage から最新データを自動読込
-const loaded = autoLoad();
-if (!loaded) {
-  // 保存データなし → HTMLの初期データをそのまま使用
-  console.log('初期データで起動');
-}
-
+// SharePoint優先で読込（SP失敗時はlocalStorage）
 updateStats();
 renderAreaList();
 draw();
+loadFromSP(null); // 非同期でSPから最新データを読込
 
 
 // エクスポートモード判定

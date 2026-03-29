@@ -581,19 +581,145 @@ function drawPendingArea(){
 
 // ===== ビューアー連携 =====
 const VIEWER_URL = 'index.html'; // ビューアーURL（変更する場合はここを編集）
+function closeViewerPopup(){
+  var p = document.getElementById('viewer-popup');
+  if(p) p.remove();
+}
+
 function openViewerForPlot(plotName){
-  // ポップアップで確認
-  const popup = document.createElement('div');
-  popup.id = 'viewer-popup';
-  popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border:2px solid #1a1a1a;padding:20px 24px;z-index:800;min-width:260px;box-shadow:4px 4px 0 rgba(0,0,0,0.2)';
-  popup.innerHTML = `
-    <div style="font-family:'Noto Serif JP',serif;font-size:15px;font-weight:600;margin-bottom:8px">📋 顧客情報を開く</div>
-    <div style="font-size:13px;color:#555;margin-bottom:16px">「<b>${plotName}</b>」の顧客情報を<br>石材業務ビューアーで開きます</div>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn out" onclick="document.getElementById('viewer-popup').remove()">キャンセル</button>
-      <button class="btn" onclick="window.open('${VIEWER_URL}?map=${encodeURIComponent(plotName)}&temple=${_templeId}','sekizaiviewer');document.getElementById('viewer-popup').remove()">開く</button>
-    </div>`;
-  document.body.appendChild(popup);
+  closeViewerPopup();
+
+  // オーバーレイ
+  var overlay = document.createElement('div');
+  overlay.id = 'viewer-popup';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) closeViewerPopup(); });
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#fff;width:100%;max-width:400px;max-height:85vh;overflow-y:auto;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;flex-direction:column';
+
+  panel.innerHTML =
+    '<div style="background:#1a2535;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;flex-shrink:0">' +
+      '<span style="font-size:14px;font-weight:500">📋 ' + plotName + '</span>' +
+      '<button onclick="closeViewerPopup()" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;padding:0 4px;line-height:1">✕</button>' +
+    '</div>' +
+    '<div id="vp-body" style="padding:14px;flex:1">' +
+      '<div style="text-align:center;padding:20px;color:#888;font-size:12px">読み込み中...</div>' +
+    '</div>' +
+    '<div style="padding:10px 14px;border-top:1px solid #eee;display:flex;gap:8px;flex-shrink:0">' +
+      '<button class="btn out" onclick="closeViewerPopup()" style="flex:1">閉じる</button>' +
+      '<button class="btn" onclick="window.open(VIEWER_URL+'?map='+encodeURIComponent(''+plotName+'')+'&temple='+_templeId,'sekizaiviewer');closeViewerPopup()" style="flex:2">📱 詳細を開く</button>' +
+    '</div>';
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+
+  // SPから顧客情報を取得
+  loadPlotCustomerInfo(plotName);
+}
+
+function loadPlotCustomerInfo(plotName) {
+  var body = document.getElementById('vp-body');
+  if(!body) return;
+
+  // localStorageからMSALトークンを取得
+  var token = getSPToken();
+  if(!token){
+    body.innerHTML = '<div style="padding:12px;font-size:12px;color:#888">ビューアーからログインすると顧客情報が表示されます</div>' +
+      '<div style="padding:0 0 8px 12px"><a href="index.html" target="sekizaiviewer" style="font-size:12px;color:#185fa5">→ ビューアーを開く</a></div>';
+    return;
+  }
+
+  // 顧客リストからmap1フィールドでplotNameを検索
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab'; // 顧客リスト
+
+  fetch('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+
+    '/items?expand=fields&$filter=fields/_x006d_ap1 eq ''+encodeURIComponent(plotName)+''&$top=1',
+    { headers: { Authorization: 'Bearer '+token } })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    var items = data.value || [];
+    if(items.length === 0){
+      // 顧客名で部分検索（mapフィールドに名前が入っているケース）
+      body.innerHTML = renderPlotNoCustomer(plotName);
+      return;
+    }
+    renderPlotCustomer(items[0].fields);
+  })
+  .catch(function(){
+    body.innerHTML = '<div style="padding:12px;font-size:12px;color:#c00">データ取得エラー</div>';
+  });
+}
+
+function renderPlotNoCustomer(plotName){
+  return '<div style="padding:8px 0;font-size:12px;color:#888;text-align:center">「'+plotName+'」に紐づく顧客データが見つかりません</div>';
+}
+
+function renderPlotCustomer(f){
+  var body = document.getElementById('vp-body');
+  if(!body) return;
+
+  var name   = f['CusName'] || f['Title'] || '';
+  var furi   = f['furigana'] || '';
+  var tel    = f['telephonenumber'] || '';
+  var temple = f['Temple'] || '';
+  var cusNo  = f['CusNumber'] || '';
+  var addr1  = f['address_1'] || '';
+  var addr2  = f['address_2'] || '';
+  var zip    = f['Zipcode'] || '';
+  var sekishu= f['sekitou_sekisyu'] || '';
+  var hame   = f['hame_sekisyu'] || '';
+  var sesyu  = f['sesyu_name'] || '';
+  var bikou  = f['noukotu_bikou'] || '';
+
+  // 工事履歴
+  var koujiHtml = '';
+  try{
+    var logs = JSON.parse(f['KoujiLogJson'] || '[]');
+    if(logs.length > 0){
+      koujiHtml = '<div style="margin-top:10px"><div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">工事履歴（'+logs.length+'件）</div>';
+      logs.slice(0,3).forEach(function(l){
+        koujiHtml += '<div style="padding:5px 8px;border-left:3px solid #1a5a9a;margin-bottom:4px;font-size:11px">' +
+          '<span style="color:#666">'+( l.date||l.工事日||'').substring(0,10)+'</span> ' +
+          '<b>'+(l.title||l.工事内容||'')+'</b>' +
+          (l.amount||l.金額 ? ' <span style="color:#1a5a1a">¥'+(l.amount||l.金額)+'</span>' : '') +
+          '</div>';
+      });
+      if(logs.length > 3) koujiHtml += '<div style="font-size:10px;color:#888;text-align:center;padding:2px">他 '+(logs.length-3)+'件</div>';
+      koujiHtml += '</div>';
+    }
+  }catch(e){}
+
+  body.innerHTML =
+    // 基本情報
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">' +
+      vpField('顧客名', name) +
+      vpField('フリガナ', furi) +
+      vpField('電話', tel) +
+      vpField('お寺', temple) +
+      vpField('顧客No', cusNo) +
+      (zip||addr1 ? vpField('住所', (zip?'〒'+zip+' ':'')+addr1+(addr2?' '+addr2:''), true) : '') +
+    '</div>' +
+    // 墓石情報
+    (sekishu||hame||sesyu ?
+      '<div style="background:#f5f0e8;border-radius:4px;padding:8px 10px;margin-bottom:8px;font-size:11px">' +
+        '<div style="font-size:10px;font-weight:600;color:#6a4a00;margin-bottom:4px">墓石情報</div>' +
+        (sekishu ? '<div>石塔石種：'+sekishu+'</div>' : '') +
+        (hame ? '<div>羽目石種：'+hame+'</div>' : '') +
+        (sesyu ? '<div>施主名：'+sesyu+'</div>' : '') +
+        (bikou ? '<div style="color:#888;margin-top:3px">'+bikou+'</div>' : '') +
+      '</div>' : '') +
+    // 工事履歴
+    koujiHtml;
+}
+
+function vpField(label, val, wide){
+  if(!val) return '';
+  return '<div style="'+(wide?'grid-column:1/-1;':'')+'">' +
+    '<div style="font-size:10px;color:#185fa5;font-weight:500;margin-bottom:1px">'+label+'</div>' +
+    '<div style="font-size:12px;color:#111">'+val+'</div>' +
+  '</div>';
 }
 function goToViewer(){
   window.open(VIEWER_URL, 'sekizaiviewer');

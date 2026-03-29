@@ -344,7 +344,7 @@ var SP_HOST   = 'shojisekizai.sharepoint.com';
 var SP_SITE   = 'stoneworks';
 var LIST_NAME = '納骨・戒切';
 var CUSTOMER_LIST_NAME = '顧客リスト';
-var APP_VERSION = 'v1.8.0';
+var APP_VERSION = 'v1.8.1';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -750,6 +750,80 @@ function openNewJobModal(d) {
   }, 100);
 }
 
+// ===== 工事履歴インライン編集 =====
+function khUpdateLog(input) {
+  var idx = parseInt(input.getAttribute('data-idx'));
+  var field = input.getAttribute('data-field');
+  if (!window._khEditLogs) return;
+  if (!window._khEditLogs[idx]) window._khEditLogs[idx] = {};
+  window._khEditLogs[idx][field] = input.value;
+}
+
+function khDeleteLog(idx) {
+  if (!window._khEditLogs) return;
+  if (!confirm('この工事履歴を削除しますか？')) return;
+  window._khEditLogs.splice(idx, 1);
+  // 再描画
+  var d = window._khEditItem || currentItem;
+  d['KoujiLogJson'] = JSON.stringify(window._khEditLogs);
+  showCustomerTab(1, d);
+}
+
+function khAddLog() {
+  if (!window._khEditLogs) window._khEditLogs = [];
+  // 新しいIDを設定
+  var newId = (window._khEditLogs.length > 0)
+    ? Math.max.apply(null, window._khEditLogs.map(function(l){ return l['ID']||0; })) + 1
+    : 1;
+  window._khEditLogs.push({'ID': newId, '時期': '', '内容': '', '依頼': '', '決済金額': '', '備考': ''});
+  // 再描画
+  var d = window._khEditItem || currentItem;
+  d['KoujiLogJson'] = JSON.stringify(window._khEditLogs);
+  showCustomerTab(1, d);
+  // スクロールを一番下に
+  setTimeout(function() {
+    var wrap = document.getElementById('kh-edit-wrap');
+    if (wrap) wrap.scrollIntoView({behavior:'smooth', block:'end'});
+  }, 100);
+}
+
+function saveKoujiHistory(d, tabIdx) {
+  if (!editMode) {
+    // 編集モードに切り替え
+    editMode = true;
+    showCustomerTab(tabIdx, d);
+    return;
+  }
+  // 保存モード：_khEditLogsをKoujiLogJsonに書き戻してPATCH
+  if (!window._khEditLogs) { editMode = false; showCustomerTab(tabIdx, d); return; }
+  var newJson = JSON.stringify(window._khEditLogs);
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+  var itemId = d['id'];
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/fields',
+      {
+        method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ KoujiLogJson: newJson })
+      });
+  })
+  .then(function(r) {
+    if (r.ok) {
+      // currentItemも更新
+      d['KoujiLogJson'] = newJson;
+      if (currentItem) currentItem['KoujiLogJson'] = newJson;
+      editMode = false;
+      window._khEditLogs = null;
+      showCustomerTab(tabIdx, d);
+      showSaveToast(true, '工事履歴を保存しました');
+    } else {
+      r.json().then(function(e) { showSaveToast(false, '保存エラー: ' + (e.error && e.error.message || r.status)); });
+    }
+  })
+  .catch(function(e) { showSaveToast(false, 'ネットワークエラー'); });
+}
+
 function checkMapParam() {
   var params = new URLSearchParams(window.location.search);
   var mapName = params.get('map');
@@ -1011,32 +1085,63 @@ function showCustomerTab(i, d) {
     // 工事履歴
     var logs = [];
     try { logs = JSON.parse(d['KoujiLogJson'] || '[]'); } catch(e) {}
-    var countLabel = logs.length > 0 ? '<div style="font-size:11px;color:#888;margin-bottom:10px">工事履歴 — ' + logs.length + '件</div>' : '';
-    var logHtml = logs.length > 0
-      ? logs.map(function(l) {
-          var date = l['時期'] || '—';
-          var title = l['内容'] || '（不明）';
-          var iraisha = l['依頼'] || '';
-          var bikou = l['備考'] || '';
-          var kingaku = l['決済金額'] || '';
-          return '<div class="kh-item">' +
-            '<div class="kh-header">' +
-            '<div class="kh-date">' + date + '</div>' +
-            '<div class="kh-title">' + title + '</div>' +
-            '</div>' +
-            '<div class="kh-body">' +
-            (iraisha ? '<div class="kh-field"><div class="kh-lbl">依頼主</div><div class="kh-val">' + iraisha + '</div></div>' : '') +
-            (kingaku ? '<div class="kh-field"><div class="kh-lbl">金額</div><div class="kh-val amount">' + kingaku + '</div></div>' : '') +
-            (bikou ? '<div class="kh-field wide"><div class="kh-lbl">備考</div><div class="kh-val">' + bikou + '</div></div>' : '') +
-            '</div></div>';
-        }).join('')
-      : '<div class="attach-empty">工事履歴なし</div>';
+
     var editBtnHtmlKouji = '<div style="padding:0 0 10px;display:flex;justify-content:space-between;align-items:center">' +
-      '<span></span>' +
-      '<button class="edit-btn" onclick="toggleEditMode(currentItem,' + i + ')">' + (editMode ? '✅ 保存' : '✏️ 編集') + '</button>' +
-    '</div>' + (editMode ? '<div class="edit-note">✏️ 編集中 — 保存ボタンでSharePointに反映されます</div>' : '');
-    b.innerHTML = editBtnHtmlKouji + '<div class="sec"><span class="sec-hdr bg3">工事履歴</span>' + countLabel + logHtml + '</div>';
-    bindEditInputs(itemId);
+      (editMode ? '<button class="edit-btn cancel" onclick="cancelEdit(' + i + ')">✖ 戻る</button>' : '<span></span>') +
+      '<button class="edit-btn" onclick="saveKoujiHistory(currentItem,' + i + ')">' + (editMode ? '✅ 保存' : '✏️ 編集') + '</button>' +
+    '</div>' + (editMode ? '<div class="edit-note">✏️ 工事履歴を編集中 — 保存ボタンでSharePointに反映されます</div>' : '');
+
+    var logHtml = '';
+    if (!editMode) {
+      // 表示モード
+      logHtml = logs.length > 0
+        ? '<div style="font-size:11px;color:#888;margin-bottom:10px">工事履歴 — ' + logs.length + '件</div>' +
+          logs.map(function(l) {
+            var date = l['時期'] || '—';
+            var title = l['内容'] || '（不明）';
+            var iraisha = l['依頼'] || '';
+            var bikou = l['備考'] || '';
+            var kingaku = l['決済金額'] || '';
+            return '<div class="kh-item">' +
+              '<div class="kh-header"><div class="kh-date">' + date + '</div><div class="kh-title">' + title + '</div></div>' +
+              '<div class="kh-body">' +
+              (iraisha ? '<div class="kh-field"><div class="kh-lbl">依頼主</div><div class="kh-val">' + iraisha + '</div></div>' : '') +
+              (kingaku ? '<div class="kh-field"><div class="kh-lbl">金額</div><div class="kh-val amount">' + kingaku + '</div></div>' : '') +
+              (bikou ? '<div class="kh-field wide"><div class="kh-lbl">備考</div><div class="kh-val">' + bikou + '</div></div>' : '') +
+              '</div></div>';
+          }).join('')
+        : '<div class="attach-empty">工事履歴なし</div>';
+    } else {
+      // 編集モード：各ログをインライン編集フォームに変換
+      var niS = 'width:100%;font-size:12px;padding:5px 8px;border:1.5px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box';
+      logHtml = '<div id="kh-edit-wrap">';
+      logs.forEach(function(l, idx) {
+        logHtml += '<div class="kh-edit-item" data-idx="' + idx + '" style="background:#f9f9f9;border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:10px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+            '<span style="font-size:11px;font-weight:600;color:#1a2535">工事 #' + (idx + 1) + '</span>' +
+            '<button onclick="khDeleteLog(' + idx + ')" style="font-size:10px;padding:2px 8px;background:#fff;border:1px solid #c00;color:#c00;border-radius:3px;cursor:pointer">✕ 削除</button>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">' +
+            '<div><label style="font-size:10px;color:#185fa5;font-weight:500;display:block;margin-bottom:2px">時期</label>' +
+            '<input style="' + niS + '" data-field="時期" data-idx="' + idx + '" value="' + (l['時期']||'').replace(/"/g,'&quot;') + '" oninput="khUpdateLog(this)"></div>' +
+            '<div><label style="font-size:10px;color:#185fa5;font-weight:500;display:block;margin-bottom:2px">内容</label>' +
+            '<input style="' + niS + '" data-field="内容" data-idx="' + idx + '" value="' + (l['内容']||'').replace(/"/g,'&quot;') + '" oninput="khUpdateLog(this)"></div>' +
+            '<div><label style="font-size:10px;color:#185fa5;font-weight:500;display:block;margin-bottom:2px">依頼主</label>' +
+            '<input style="' + niS + '" data-field="依頼" data-idx="' + idx + '" value="' + (l['依頼']||'').replace(/"/g,'&quot;') + '" oninput="khUpdateLog(this)"></div>' +
+            '<div><label style="font-size:10px;color:#185fa5;font-weight:500;display:block;margin-bottom:2px">決済金額</label>' +
+            '<input style="' + niS + '" data-field="決済金額" data-idx="' + idx + '" value="' + (l['決済金額']||'').replace(/"/g,'&quot;') + '" oninput="khUpdateLog(this)"></div>' +
+            '<div style="grid-column:1/-1"><label style="font-size:10px;color:#185fa5;font-weight:500;display:block;margin-bottom:2px">備考</label>' +
+            '<input style="' + niS + '" data-field="備考" data-idx="' + idx + '" value="' + (l['備考']||'').replace(/"/g,'&quot;') + '" oninput="khUpdateLog(this)"></div>' +
+          '</div></div>';
+      });
+      logHtml += '<button onclick="khAddLog()" style="width:100%;padding:8px;background:#1a2535;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-family:inherit">＋ 工事履歴を追加</button>';
+      logHtml += '</div>';
+      // 編集用データをwindowに保持
+      window._khEditLogs = JSON.parse(JSON.stringify(logs));
+      window._khEditItem = d;
+    }
+
+    b.innerHTML = editBtnHtmlKouji + '<div class="sec"><span class="sec-hdr bg3">工事履歴</span>' + logHtml + '</div>';
   } else if (i === 2) {
     // 墓石情報タブ
     var mapPos = d['_x006d_ap1'] || '';
@@ -1733,6 +1838,8 @@ function openSPImage(src, allSrcs, idx) {
 }
 
 function cancelEdit(tabIdx) {
+  window._khEditLogs = null;
+  window._khEditItem = null;
   editMode = false;
   if (currentListMode === 'customer') {
     showCustomerTab(tabIdx, currentItem);

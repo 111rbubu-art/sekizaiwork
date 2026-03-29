@@ -705,7 +705,7 @@ function renderPlotList(items, plotName) {
 
 function renderPlotCustomer_byIdx(idx) {
   var items = window._vpItems || [];
-  if(items[idx]) renderPlotCustomer(items[idx].fields);
+  if(items[idx]) renderPlotCustomer(items[idx].fields || items[idx]);
 }
 
 function renderPlotNoCustomer(plotName){
@@ -719,8 +719,6 @@ function renderPlotCustomer(f){
   var name   = f['CusName'] || f['Title'] || '';
   var furi   = f['furigana'] || '';
   var tel    = f['telephonenumber'] || '';
-  var temple = f['Temple'] || '';
-  var cusNo  = f['CusNumber'] || '';
   var addr1  = f['address_1'] || '';
   var addr2  = f['address_2'] || '';
   var zip    = f['Zipcode'] || '';
@@ -728,33 +726,40 @@ function renderPlotCustomer(f){
   var hame   = f['hame_sekisyu'] || '';
   var sesyu  = f['sesyu_name'] || '';
   var bikou  = f['noukotu_bikou'] || '';
+  var itemId = f['id'] || f['ID'];  // SPのListItemId
 
-  // 工事履歴
+  // 工事履歴（KoujiLogJsonのフィールド: ID,依頼,備考,内容,時期,金額 等）
   var koujiHtml = '';
   try{
     var logs = JSON.parse(f['KoujiLogJson'] || '[]');
     if(logs.length > 0){
-      koujiHtml = '<div style="margin-top:10px"><div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">工事履歴（'+logs.length+'件）</div>';
-      logs.slice(0,3).forEach(function(l){
-        koujiHtml += '<div style="padding:5px 8px;border-left:3px solid #1a5a9a;margin-bottom:4px;font-size:11px">' +
-          '<span style="color:#666">'+( l.date||l.工事日||'').substring(0,10)+'</span> ' +
-          '<b>'+(l.title||l.工事内容||'')+'</b>' +
-          (l.amount||l.金額 ? ' <span style="color:#1a5a1a">¥'+(l.amount||l.金額)+'</span>' : '') +
-          '</div>';
+      koujiHtml = '<div style="margin-top:10px">' +
+        '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">工事履歴（'+logs.length+'件）</div>';
+      logs.slice().reverse().slice(0,5).forEach(function(l){
+        var jiki = l['時期'] || l['date'] || '';
+        var naiyou = l['内容'] || l['title'] || l['工事内容'] || '';
+        var irai = l['依頼'] || '';
+        var bikou2 = l['備考'] || '';
+        var kingaku = l['金額'] || l['amount'] || '';
+        koujiHtml += '<div style="padding:5px 8px;border-left:3px solid #1a5a9a;margin-bottom:5px;font-size:11px">' +
+          (jiki ? '<div style="color:#888;font-size:10px">'+jiki+'</div>' : '') +
+          (naiyou ? '<div style="font-weight:600;color:#1a1a1a">'+naiyou+'</div>' : '') +
+          (irai ? '<div style="color:#555">依頼：'+irai+'</div>' : '') +
+          (bikou2 ? '<div style="color:#666">'+bikou2+'</div>' : '') +
+          (kingaku ? '<div style="color:#1a5a1a">¥'+kingaku+'</div>' : '') +
+        '</div>';
       });
-      if(logs.length > 3) koujiHtml += '<div style="font-size:10px;color:#888;text-align:center;padding:2px">他 '+(logs.length-3)+'件</div>';
+      if(logs.length > 5) koujiHtml += '<div style="font-size:10px;color:#888;text-align:center;padding:2px">他 '+(logs.length-5)+'件</div>';
       koujiHtml += '</div>';
     }
-  }catch(e){}
+  }catch(e){ koujiHtml = '<div style="font-size:10px;color:#c00">工事履歴の読み込みエラー</div>'; }
 
   body.innerHTML =
-    // 基本情報
+    // 基本情報（お寺・顧客No不要）
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">' +
       vpField('顧客名', name) +
       vpField('フリガナ', furi) +
       vpField('電話', tel) +
-      vpField('お寺', temple) +
-      vpField('顧客No', cusNo) +
       (zip||addr1 ? vpField('住所', (zip?'〒'+zip+' ':'')+addr1+(addr2?' '+addr2:''), true) : '') +
     '</div>' +
     // 墓石情報
@@ -767,7 +772,62 @@ function renderPlotCustomer(f){
         (bikou ? '<div style="color:#888;margin-top:3px">'+bikou+'</div>' : '') +
       '</div>' : '') +
     // 工事履歴
-    koujiHtml;
+    koujiHtml +
+    // 添付ファイル（後からロード）
+    '<div id="vp-attach" style="margin-top:10px">' +
+      '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">添付ファイル</div>' +
+      '<div id="vp-attach-list" style="font-size:11px;color:#888;padding:4px 0">読み込み中...</div>' +
+    '</div>';
+
+  // 添付ファイルを非同期で取得（SP REST API）
+  loadPlotAttachments(f);
+}
+
+function loadPlotAttachments(f){
+  // SPのListItemId（数値ID）を取得
+  var spId = f['id'] || null;
+  if(!spId){
+    var el = document.getElementById('vp-attach-list');
+    if(el) el.textContent = 'ID不明のため取得できません';
+    return;
+  }
+  var token = getSPToken();
+  if(!token){ 
+    var el = document.getElementById('vp-attach-list');
+    if(el) el.textContent = '（ログイン後に表示）';
+    return;
+  }
+  // AllSites.Readスコープ用のSP REST API
+  var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items("+spId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+  fetch(url, {
+    headers: {
+      'Authorization': 'Bearer '+token,
+      'Accept': 'application/json;odata=verbose'
+    }
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    var el = document.getElementById('vp-attach-list');
+    if(!el) return;
+    var files = d.d ? d.d.results : (d.value || []);
+    if(files.length === 0){
+      el.textContent = 'なし';
+      return;
+    }
+    el.innerHTML = files.map(function(file){
+      var fname = file.FileName || file.fileName || '';
+      var url2 = 'https://shojisekizai.sharepoint.com' + (file.ServerRelativeUrl || '');
+      var isImg = /[.](jpg|jpeg|png|gif|webp|bmp)$/i.test(fname);
+      var imgHtml = isImg ? '<img src="'+url2+'" style="max-width:100%;max-height:120px;border-radius:4px;display:block;margin-bottom:3px">' : '';
+      return '<div style="margin-bottom:6px">' + imgHtml +
+        '<a href="'+url2+'" target="_blank" style="font-size:11px;color:#185fa5;text-decoration:none">📎 '+fname+'</a>' +
+      '</div>';
+    }).join('');
+  })
+  .catch(function(){
+    var el = document.getElementById('vp-attach-list');
+    if(el) el.textContent = '添付ファイルの取得に失敗しました';
+  });
 }
 
 function vpField(label, val, wide){

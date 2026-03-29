@@ -344,7 +344,7 @@ var SP_HOST   = 'shojisekizai.sharepoint.com';
 var SP_SITE   = 'stoneworks';
 var LIST_NAME = '納骨・戒切';
 var CUSTOMER_LIST_NAME = '顧客リスト';
-var APP_VERSION = 'v1.7.5';
+var APP_VERSION = 'v1.7.6';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -505,6 +505,11 @@ function openNewItemModal() {
   document.getElementById('ni-date').value = '';
   document.getElementById('ni-time').value = '';
   document.getElementById('ni-error').style.display = 'none';
+  document.getElementById('ni-file-list').innerHTML = '';
+  document.getElementById('ni-files').value = '';
+  niFileStore = [];
+  var addrChk = document.getElementById('ni-addr-same');
+  if (addrChk) addrChk.checked = false;
   document.getElementById('ni-submit').disabled = false;
   document.getElementById('ni-submit').textContent = '✅ SharePointに登録';
   document.getElementById('new-modal').style.display = 'block';
@@ -512,6 +517,83 @@ function openNewItemModal() {
 
 function closeNewItemModal() {
   document.getElementById('new-modal').style.display = 'none';
+}
+
+// 宛名と顧客名の同期
+function niSyncAddressee() {
+  var chk = document.getElementById('ni-addr-same');
+  var addrEl = document.getElementById('ni-addressee');
+  if (chk && chk.checked) {
+    addrEl.value = document.getElementById('ni-name').value;
+    addrEl.readOnly = true;
+    addrEl.style.background = '#f0f0f0';
+  } else {
+    addrEl.readOnly = false;
+    addrEl.style.background = '';
+  }
+}
+
+// 添付ファイル管理
+var niFileStore = [];
+function niAddFiles(files) {
+  for (var i = 0; i < files.length; i++) {
+    niFileStore.push(files[i]);
+  }
+  niRenderFileList();
+}
+function niRemoveFile(idx) {
+  niFileStore.splice(idx, 1);
+  niRenderFileList();
+}
+function niRenderFileList() {
+  var ul = document.getElementById('ni-file-list');
+  ul.innerHTML = '';
+  niFileStore.forEach(function(f, i) {
+    var size = f.size < 1024*1024 ? Math.round(f.size/1024)+'KB' : (f.size/1024/1024).toFixed(1)+'MB';
+    var div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;background:#f5f5f5;border-radius:3px;font-size:11px';
+    div.innerHTML = '📄 ' + f.name + ' <span style="color:#999">(' + size + ')</span>' +
+      '<button onclick="niRemoveFile(' + i + ')" style="margin-left:auto;background:none;border:none;color:#c00;cursor:pointer;font-size:12px">✕</button>';
+    ul.appendChild(div);
+  });
+}
+
+// 登録後に添付ファイルをアップロード
+function niUploadAttachments(itemId, callback) {
+  if (niFileStore.length === 0) { callback(); return; }
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var promises = niFileStore.map(function(file) {
+      return fetch(
+        'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/attachments',
+        {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, contentBytes: null })
+        }
+      ).then(function() {
+        // Graph APIの添付はBase64で送る
+        return new Promise(function(res, rej) {
+          var reader = new FileReader();
+          reader.onload = function(e) {
+            var b64 = e.target.result.split(',')[1];
+            fetch(
+              'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/attachments',
+              {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: file.name, contentBytes: b64 })
+              }
+            ).then(res).catch(rej);
+          };
+          reader.readAsDataURL(file);
+        });
+      });
+    });
+    Promise.all(promises).then(callback).catch(callback);
+  });
 }
 
 function todayStr() {
@@ -573,7 +655,7 @@ function submitNewItem() {
   if (addr1)    fields['_x4f4f__x6240_1'] = addr1;
   if (addr2)    fields['_x4f4f__x6240_2'] = addr2;
   if (sculptor) fields['SculptureName'] = sculptor;
-  if (gotMs)    fields['GotManuscript'] = gotMs;
+  if (gotMs)    fields['GotManuscript'] = gotMs ? (gotMs + 'T00:00:00Z') : '';
   if (msContrib)fields['ManuscriptContributor'] = msContrib;
 
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
@@ -595,11 +677,20 @@ function submitNewItem() {
     return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
   })
   .then(function(data) {
-    closeNewItemModal();
-    showSaveToast(true, '「' + name + '」を登録しました');
-    // リスト再読込
-    allItems = [];
-    loadNoukotsuList();
+    var newItemId = data.id;
+    // 添付ファイルがあればアップロード
+    if (niFileStore.length > 0 && newItemId) {
+      submitBtn.textContent = 'ファイル添付中...';
+      niUploadAttachments(newItemId, function() {
+        closeNewItemModal();
+        showSaveToast(true, '「' + name + '」を登録しました（添付' + niFileStore.length + '件）');
+        allItems = []; loadNoukotsuList();
+      });
+    } else {
+      closeNewItemModal();
+      showSaveToast(true, '「' + name + '」を登録しました');
+      allItems = []; loadNoukotsuList();
+    }
   })
   .catch(function(e) {
     submitBtn.disabled = false;
@@ -2064,7 +2155,7 @@ function openImageViewer(imgs, startIdx) {
         <div class="ni-grid">
           <div class="ni-full">
             <label class="ni-lbl">顧客名 <span class="ni-req">*</span></label>
-            <input id="ni-name" class="ni-inp" type="text" placeholder="例：山田　太郎">
+            <input id="ni-name" class="ni-inp" type="text" placeholder="例：山田　太郎" oninput="niSyncAddressee()">
           </div>
           <div class="ni-full">
             <label class="ni-lbl">フリガナ</label>
@@ -2106,14 +2197,18 @@ function openImageViewer(imgs, startIdx) {
               <button class="ni-today" onclick="document.getElementById('ni-req-date').value=todayStr()">今日</button>
             </div>
           </div>
-          <div>
-            <label class="ni-lbl">依頼情報提供者</label>
-            <input id="ni-informer" class="ni-inp" type="text" placeholder="情報提供者名">
+          <div class="ni-full">
+            <label class="ni-lbl">依頼情報提供者（Informer）</label>
+            <select id="ni-informer" class="ni-inp">
+              <option value="">―</option>
+              <option>お客様</option><option>ご家族</option><option>お寺</option>
+              <option>業者</option><option>社内</option><option>その他</option>
+            </select>
           </div>
         </div>
       </div>
 
-      <!-- 住所情報 -->
+      <!-- 資料郵送先 -->
       <div class="ni-sec">
         <span class="ni-sec-hdr orange">📮 資料郵送先</span>
         <div class="ni-grid">
@@ -2123,7 +2218,13 @@ function openImageViewer(imgs, startIdx) {
           </div>
           <div>
             <label class="ni-lbl">宛名</label>
-            <input id="ni-addressee" class="ni-inp" type="text" placeholder="宛名">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:10px;color:#666;display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="ni-addr-same" onchange="niSyncAddressee()" style="cursor:pointer">
+                顧客名と同上
+              </label>
+              <input id="ni-addressee" class="ni-inp" type="text" placeholder="宛名">
+            </div>
           </div>
           <div class="ni-full">
             <label class="ni-lbl">住所1</label>
@@ -2142,20 +2243,17 @@ function openImageViewer(imgs, startIdx) {
         <div class="ni-grid">
           <div>
             <label class="ni-lbl">納骨日</label>
-            <div class="ni-date-wrap">
-              <input id="ni-date" class="ni-inp" type="date">
-              <button class="ni-today" onclick="document.getElementById('ni-date').value=todayStr()">今日</button>
-            </div>
+            <input id="ni-date" class="ni-inp" type="date">
           </div>
           <div>
             <label class="ni-lbl">納骨時間</label>
             <input id="ni-time" class="ni-inp" type="time">
           </div>
           <div class="ni-full">
-            <label class="ni-lbl">納骨時間状態</label>
+            <label class="ni-lbl">納骨時間状態（noukotu_kaisi_jyoutai）</label>
             <select id="ni-nok-state" class="ni-inp">
               <option value="">―</option>
-              <option>確定</option><option>未確定</option><option>調整中</option>
+              <option>確定</option><option>未確定</option><option>調整中</option><option>時間指定なし</option>
             </select>
           </div>
         </div>
@@ -2166,21 +2264,43 @@ function openImageViewer(imgs, startIdx) {
         <span class="ni-sec-hdr blue">🪨 彫刻グループ</span>
         <div class="ni-grid">
           <div>
-            <label class="ni-lbl">彫刻者名</label>
-            <input id="ni-sculptor" class="ni-inp" type="text" placeholder="彫刻業者名">
-          </div>
-          <div>
-            <label class="ni-lbl">原稿受取</label>
-            <select id="ni-got-ms" class="ni-inp">
+            <label class="ni-lbl">彫刻者名（SculptureName）</label>
+            <select id="ni-sculptor" class="ni-inp">
               <option value="">―</option>
-              <option>受取済</option><option>未受取</option>
+              <option>アートストン</option><option>内田</option><option>その他</option>
             </select>
           </div>
+          <div>
+            <label class="ni-lbl">原稿受取日（GotManuscript）</label>
+            <div class="ni-date-wrap">
+              <input id="ni-got-ms" class="ni-inp" type="date">
+              <button class="ni-today" onclick="document.getElementById('ni-got-ms').value=todayStr()">今日</button>
+            </div>
+          </div>
           <div class="ni-full">
-            <label class="ni-lbl">原稿提供者</label>
-            <input id="ni-ms-contrib" class="ni-inp" type="text" placeholder="原稿提供者名">
+            <label class="ni-lbl">原稿提供者（ManuscriptContributor）</label>
+            <select id="ni-ms-contrib" class="ni-inp">
+              <option value="">―</option>
+              <option>お客様</option><option>ご家族</option><option>お寺</option>
+              <option>業者</option><option>社内</option><option>その他</option>
+            </select>
           </div>
         </div>
+      </div>
+
+      <!-- 添付ファイル -->
+      <div class="ni-sec">
+        <span class="ni-sec-hdr orange">📎 添付ファイル</span>
+        <div style="border:2px dashed #ccc;border-radius:4px;padding:12px;text-align:center;cursor:pointer;background:#fafafa"
+          onclick="document.getElementById('ni-files').click()"
+          ondragover="event.preventDefault();this.style.borderColor='#1a5a9a'"
+          ondragleave="this.style.borderColor='#ccc'"
+          ondrop="event.preventDefault();this.style.borderColor='#ccc';niAddFiles(event.dataTransfer.files)">
+          <div style="font-size:12px;color:#888;margin-bottom:6px">📂 クリックまたはドラッグ＆ドロップでファイルを追加</div>
+          <div style="font-size:10px;color:#aaa">写真・PDF・その他のファイルを複数選択可</div>
+          <input type="file" id="ni-files" multiple style="display:none" onchange="niAddFiles(this.files)">
+        </div>
+        <div id="ni-file-list" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
       </div>
 
       <!-- 注意事項 -->

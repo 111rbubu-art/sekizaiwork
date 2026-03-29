@@ -735,24 +735,29 @@ function renderPlotCustomer(f){
     if(logs.length > 0){
       koujiHtml = '<div style="margin-top:10px">' +
         '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">工事履歴（'+logs.length+'件）</div>';
-      logs.slice().reverse().slice(0,5).forEach(function(l){
+      // 最新3件を逆順で表示
+      logs.slice().reverse().slice(0,3).forEach(function(l){
         var jiki = l['時期'] || l['date'] || '';
         var naiyou = l['内容'] || l['title'] || l['工事内容'] || '';
         var irai = l['依頼'] || '';
         var bikou2 = l['備考'] || '';
         var kingaku = l['金額'] || l['amount'] || '';
-        koujiHtml += '<div style="padding:5px 8px;border-left:3px solid #1a5a9a;margin-bottom:5px;font-size:11px">' +
-          (jiki ? '<div style="color:#888;font-size:10px">'+jiki+'</div>' : '') +
-          (naiyou ? '<div style="font-weight:600;color:#1a1a1a">'+naiyou+'</div>' : '') +
-          (irai ? '<div style="color:#555">依頼：'+irai+'</div>' : '') +
-          (bikou2 ? '<div style="color:#666">'+bikou2+'</div>' : '') +
-          (kingaku ? '<div style="color:#1a5a1a">¥'+kingaku+'</div>' : '') +
+        // 日付を見やすく整形（例: S53.4 or 2024/03 等）
+        var jikiDisp = jiki ? jiki.replace(/[年]/g,'.').replace(/[月]/g,'.').replace(/[日]/g,'').trim() : '';
+        koujiHtml += '<div style="padding:6px 8px;background:#fafafa;border-radius:4px;margin-bottom:5px;font-size:11px;border:1px solid #eee">' +
+          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">' +
+            '<span style="font-weight:600;color:#1a1a1a">'+(naiyou||'―')+'</span>' +
+            (jikiDisp ? '<span style="font-size:10px;color:#1a5a9a;background:#e8f0fb;padding:1px 6px;border-radius:10px">'+jikiDisp+'</span>' : '') +
+          '</div>' +
+          (irai ? '<div style="color:#555;font-size:10px">依頼：'+irai+'</div>' : '') +
+          (bikou2 ? '<div style="color:#666;font-size:10px">'+bikou2+'</div>' : '') +
+          (kingaku ? '<div style="color:#1a5a1a;font-size:10px;font-weight:500">¥'+kingaku+'</div>' : '') +
         '</div>';
       });
-      if(logs.length > 5) koujiHtml += '<div style="font-size:10px;color:#888;text-align:center;padding:2px">他 '+(logs.length-5)+'件</div>';
+      if(logs.length > 3) koujiHtml += '<div style="font-size:10px;color:#888;text-align:center;padding:2px">（最新3件を表示）</div>';
       koujiHtml += '</div>';
     }
-  }catch(e){ koujiHtml = '<div style="font-size:10px;color:#c00">工事履歴の読み込みエラー</div>'; }
+  }catch(e){ koujiHtml = '<div style="font-size:10px;color:#c00">工事履歴エラー</div>'; }
 
   body.innerHTML =
     // 基本情報（お寺・顧客No不要）
@@ -784,50 +789,78 @@ function renderPlotCustomer(f){
 }
 
 function loadPlotAttachments(f){
-  // SPのListItemId（数値ID）を取得
   var spId = f['id'] || null;
-  if(!spId){
-    var el = document.getElementById('vp-attach-list');
-    if(el) el.textContent = 'ID不明のため取得できません';
-    return;
-  }
-  var token = getSPToken();
-  if(!token){ 
-    var el = document.getElementById('vp-attach-list');
-    if(el) el.textContent = '（ログイン後に表示）';
-    return;
-  }
-  // AllSites.Readスコープ用のSP REST API
+  var el = document.getElementById('vp-attach-list');
+  if(!el) return;
+  if(!spId){ el.textContent = 'ID不明'; return; }
+
+  // SP REST API用トークン
+  var token = getSPToken(true);
+  if(!token){ el.textContent = '（ログイン後に表示）'; return; }
+
   var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items("+spId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
   fetch(url, {
-    headers: {
-      'Authorization': 'Bearer '+token,
-      'Accept': 'application/json;odata=verbose'
-    }
+    headers: { 'Authorization': 'Bearer '+token, 'Accept': 'application/json;odata=verbose' }
   })
   .then(function(r){ return r.json(); })
   .then(function(d){
-    var el = document.getElementById('vp-attach-list');
-    if(!el) return;
-    var files = d.d ? d.d.results : (d.value || []);
-    if(files.length === 0){
-      el.textContent = 'なし';
-      return;
+    var el2 = document.getElementById('vp-attach-list');
+    if(!el2) return;
+    var files = (d.d && d.d.results) ? d.d.results : (d.value || []);
+    if(files.length === 0){ el2.textContent = 'なし'; return; }
+
+    // 画像ファイルとその他に分類
+    var imgs = [], others = [];
+    files.forEach(function(file){
+      var fname = file.FileName || '';
+      var furl = 'https://shojisekizai.sharepoint.com' + (file.ServerRelativeUrl || '');
+      if(/[.](jpg|jpeg|png|gif|webp|bmp)$/i.test(fname)) imgs.push({name:fname, url:furl});
+      else others.push({name:fname, url:furl});
+    });
+
+    var html = '';
+
+    // 画像スライダー
+    if(imgs.length > 0){
+      html += '<div id="vp-slider" style="position:relative;background:#000;border-radius:6px;overflow:hidden;margin-bottom:8px">';
+      imgs.forEach(function(img, idx){
+        html += '<div class="vp-slide" style="display:'+(idx===0?'block':'none')+'">' +
+          '<a href="'+img.url+'" target="_blank">' +
+          '<img src="'+img.url+'" style="width:100%;max-height:180px;object-fit:contain;display:block;cursor:pointer">' +
+          '</a>' +
+          '<div style="font-size:10px;color:#ccc;text-align:center;padding:3px;background:rgba(0,0,0,0.6)">'+img.name+'</div>' +
+        '</div>';
+      });
+      if(imgs.length > 1){
+        html += '<button onclick="vpSlide(-1)" style="position:absolute;left:4px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;cursor:pointer;line-height:1">‹</button>';
+        html += '<button onclick="vpSlide(1)" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:#fff;border:none;border-radius:50%;width:28px;height:28px;font-size:16px;cursor:pointer;line-height:1">›</button>';
+        html += '<div style="text-align:center;padding:3px;background:rgba(0,0,0,0.4);font-size:10px;color:#ccc" id="vp-slide-counter">1 / '+imgs.length+'</div>';
+      }
+      html += '</div>';
     }
-    el.innerHTML = files.map(function(file){
-      var fname = file.FileName || file.fileName || '';
-      var url2 = 'https://shojisekizai.sharepoint.com' + (file.ServerRelativeUrl || '');
-      var isImg = /[.](jpg|jpeg|png|gif|webp|bmp)$/i.test(fname);
-      var imgHtml = isImg ? '<img src="'+url2+'" style="max-width:100%;max-height:120px;border-radius:4px;display:block;margin-bottom:3px">' : '';
-      return '<div style="margin-bottom:6px">' + imgHtml +
-        '<a href="'+url2+'" target="_blank" style="font-size:11px;color:#185fa5;text-decoration:none">📎 '+fname+'</a>' +
-      '</div>';
-    }).join('');
+
+    // その他ファイル
+    others.forEach(function(f2){
+      html += '<div><a href="'+f2.url+'" target="_blank" style="font-size:11px;color:#185fa5;text-decoration:none">📎 '+f2.name+'</a></div>';
+    });
+
+    el2.innerHTML = html;
+    window._vpSlideIdx = 0;
+    window._vpSlideTotal = imgs.length;
   })
-  .catch(function(){
-    var el = document.getElementById('vp-attach-list');
-    if(el) el.textContent = '添付ファイルの取得に失敗しました';
+  .catch(function(e){
+    var el2 = document.getElementById('vp-attach-list');
+    if(el2) el2.textContent = 'エラー: '+e.message;
   });
+}
+
+function vpSlide(dir){
+  var slides = document.querySelectorAll('.vp-slide');
+  if(!slides.length) return;
+  window._vpSlideIdx = ((window._vpSlideIdx||0) + dir + slides.length) % slides.length;
+  slides.forEach(function(s,i){ s.style.display = i===window._vpSlideIdx ? 'block' : 'none'; });
+  var counter = document.getElementById('vp-slide-counter');
+  if(counter) counter.textContent = (window._vpSlideIdx+1) + ' / ' + slides.length;
 }
 
 function vpField(label, val, wide){
@@ -1931,10 +1964,13 @@ const LS_KEY = 'mapData_' + _templeId;
 var SP_DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
 var SP_FOLDER   = '%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA'; // 業務アプリ
 
-function getSPToken() {
-  // MSALがlocalStorageに保存したGraph APIトークンを取得
+function getSPToken(forSP) {
+  // MSALがlocalStorageに保存したトークンを取得
+  // forSP=true: SharePoint REST API用（shojisekizai.sharepoint.com）
+  // forSP=false/undefined: Graph API用
   var now = Date.now() / 1000;
   var storages = [localStorage, sessionStorage];
+  var fallback = null;
   for (var si = 0; si < storages.length; si++) {
     var st = storages[si];
     try {
@@ -1946,11 +1982,15 @@ function getSPToken() {
         if (!item || !item.secret) continue;
         var exp = item.expiresOn || item.extended_expires_on || '0';
         var expTime = isNaN(exp) ? new Date(exp).getTime() / 1000 : Number(exp);
-        if (expTime > now + 60) return item.secret;
+        if (expTime <= now + 60) continue;
+        var target = item.target || '';
+        if (forSP && target.indexOf('shojisekizai.sharepoint.com') >= 0) return item.secret;
+        if (!forSP && target.indexOf('graph.microsoft.com') >= 0) return item.secret;
+        fallback = item.secret;
       }
     } catch(e) {}
   }
-  return null;
+  return fallback;
 }
 
 function saveToSP(callback) {

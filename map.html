@@ -139,6 +139,7 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
   .map-wrap{padding:0;overflow:visible;}
 }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="data_chouzenji.js"></script>
 <script src="data_gansen.js"></script>
 <script src="data_soshuji.js"></script>
@@ -183,8 +184,10 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
     <div class="sep"></div>
     <button class="btn out" id="pBtn" onclick="togglePrintPanel()">🖨 印刷設定</button>
     <div class="sep"></div>
+    <button class="btn" onclick="exportMapPDF()" title="指定範囲をPDFで出力（範囲未設定時は全体）">📄 PDF出力</button>
     <button class="btn out" onclick="syncFromSP()" id="syncFromBtn" title="SharePointの最新データをマップに反映">📥 SP→マップ</button>
     <button class="btn"     onclick="syncToSP()"   id="syncToBtn"   title="現在のマップをSharePointに保存">📤 マップ→SP</button>
+    <button class="btn out" onclick="exportMapPDF()" title="現在の印刷範囲をPDFで出力">📄 PDF出力</button>
     <button class="btn out" onclick="document.getElementById('imp').click()" title="JSONファイルから読込">📂 読込</button>
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importJSON(event)"/>
   </div>
@@ -1970,6 +1973,134 @@ function getSPToken(forSP) {
     } catch(e) {}
   }
   return fallback;
+}
+
+// ============================================================
+// ===== PDF出力（ベクター） =====
+// ============================================================
+function exportMapPDF() {
+  if (typeof window.jspdf === 'undefined') {
+    showSPStatus('jsPDFを読み込み中...再度お試しください', 'err');
+    return;
+  }
+  var jsPDF = window.jspdf.jsPDF;
+
+  // 出力範囲を決定
+  // savedAreasがあればそれを使用、なければマップ全体
+  var area = null;
+  if (savedAreas && savedAreas.length > 0) {
+    area = savedAreas[0]; // 最初のエリアを使用
+  }
+
+  // 出力するピクセル範囲（PAD込みのcanvas座標）
+  var srcX, srcY, srcW, srcH;
+  if (area) {
+    srcX = PAD + area.x;
+    srcY = PAD + area.y;
+    srcW = area.w;
+    srcH = area.h;
+  } else {
+    srcX = 0;
+    srcY = 0;
+    srcW = mc.width;
+    srcH = mc.height;
+  }
+
+  // PDF用紙サイズ（A4横）
+  var PDF_W = 297; // mm
+  var PDF_H = 210; // mm
+  var MARGIN = 8;  // mm
+  var drawW = PDF_W - MARGIN * 2;
+  var drawH = PDF_H - MARGIN * 2;
+
+  // スケール計算（範囲をA4に収める）
+  var scale = Math.min(drawW / srcW, drawH / srcH);
+  var pdfPlotW = srcW * scale;
+  var pdfPlotH = srcH * scale;
+  var offsetX = MARGIN + (drawW - pdfPlotW) / 2;
+  var offsetY = MARGIN + (drawH - pdfPlotH) / 2;
+
+  // jsPDF初期化
+  var doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+  // 背景
+  doc.setFillColor(240, 236, 224);
+  doc.rect(offsetX, offsetY, pdfPlotW, pdfPlotH, 'F');
+
+  // 各区画を描画
+  PLOTS.forEach(function(p) {
+    var px = getPlotPx(p);
+    // 範囲外はスキップ
+    var absX = PAD + px.x;
+    var absY = PAD + px.y;
+    if (absX + px.w < srcX || absX > srcX + srcW) return;
+    if (absY + px.h < srcY || absY > srcY + srcH) return;
+
+    // PDF座標に変換
+    var pdfX = offsetX + (absX - srcX) * scale;
+    var pdfY = offsetY + (absY - srcY) * scale;
+    var pdfW = px.w * scale;
+    var pdfH = px.h * scale;
+
+    // 背景色
+    var bg = p.status === 'building' ? [184, 212, 168] :
+             p.status === 'empty'    ? [240, 237, 228] : [214, 208, 196];
+    doc.setFillColor(bg[0], bg[1], bg[2]);
+    doc.setDrawColor(160, 155, 145);
+    doc.setLineWidth(0.15);
+    doc.rect(pdfX, pdfY, pdfW, pdfH, 'FD');
+
+    // テキスト（区画名）
+    if (p.name && pdfW > 1 && pdfH > 1) {
+      var minDim = Math.min(pdfW, pdfH);
+      var fs = Math.min(3.5, Math.max(1.2, minDim * 0.32));
+      doc.setFontSize(fs);
+      doc.setTextColor(30, 30, 30);
+      // テキストを区画中央に配置
+      var cx = pdfX + pdfW / 2;
+      var cy = pdfY + pdfH / 2;
+      doc.text(p.name, cx, cy, { align: 'center', baseline: 'middle' });
+    }
+  });
+
+  // タイトル
+  doc.setFontSize(10);
+  doc.setTextColor(30, 30, 30);
+  var title = MAP_DATA.name + ' 墓地マップ';
+  if (area) title += '（指定範囲）';
+  doc.text(title, PDF_W / 2, MARGIN - 2, { align: 'center' });
+
+  // 凡例
+  var legY = offsetY + pdfPlotH + 3;
+  if (legY < PDF_H - 5) {
+    doc.setFontSize(5);
+    var legends = [
+      { color: [214,208,196], label: '使用中' },
+      { color: [240,237,228], label: '空き' },
+      { color: [184,212,168], label: '建物' }
+    ];
+    var legX = offsetX;
+    legends.forEach(function(l) {
+      doc.setFillColor(l.color[0], l.color[1], l.color[2]);
+      doc.setDrawColor(120,120,120);
+      doc.setLineWidth(0.1);
+      doc.rect(legX, legY, 3, 2, 'FD');
+      doc.setTextColor(30,30,30);
+      doc.text(l.label, legX + 3.5, legY + 1.5);
+      legX += 14;
+    });
+  }
+
+  // 出力日時
+  doc.setFontSize(4);
+  doc.setTextColor(120, 120, 120);
+  var now = new Date().toLocaleString('ja-JP');
+  doc.text('出力: ' + now, PDF_W - MARGIN, PDF_H - 3, { align: 'right' });
+
+  // ダウンロード
+  var fileName = MAP_DATA.name + '_マップ_' + new Date().toLocaleDateString('ja-JP').replace(/\//g,'') + '.pdf';
+  doc.save(fileName);
+  showSPStatus('✅ PDF出力しました: ' + fileName, 'ok');
 }
 
 // ===== SharePoint 同期 =====

@@ -8,9 +8,8 @@
 // 【フォーマット】
 //   r1/r2: 行範囲（0始まり）  c1/c2: 列範囲（0始まり）
 //   name: 契約者名（空き区画は空文字列 ""）
-//   status: "used"（契約中）/ "empty"（空き）/ "building"（建物等）
 
-var MAP_DATA = {
+var MAP_DATA_chouzenji = {
   // --- お寺情報 ---
   id: "chouzenji",   // ファイル識別子（URLパラメーターに使用）
   name: "長泉寺",     // 表示名

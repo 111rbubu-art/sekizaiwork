@@ -353,7 +353,7 @@ var SP_SITE   = 'stoneworks';
 var LIST_NAME = '納骨・戒切';
 var CUSTOMER_LIST_NAME = '顧客リスト';
 var KOUJI_LIST_ID = 'dea1de47-62cc-4216-afb3-7c313485eba4'; // 工事関連
-var APP_VERSION = 'v1.8.5';
+var APP_VERSION = 'v1.8.7';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1934,13 +1934,23 @@ function showSaveToast(ok, msg) {
       'box-shadow:0 2px 12px rgba(0,0,0,0.2);white-space:nowrap;transition:opacity 0.3s;';
     document.body.appendChild(el);
   }
+  // ok=null は処理中（グレー、自動消えなし）
+  if (ok === null) {
+    el.textContent = msg;
+    el.style.background = '#e8e8e8';
+    el.style.color = '#333';
+    el.style.border = '1px solid #aaa';
+    el.style.opacity = '1';
+    clearTimeout(el._t);
+    return;
+  }
   el.textContent = ok ? '✅ ' + msg : '❌ ' + msg;
   el.style.background = ok ? '#d4f0d4' : '#fdd';
   el.style.color = ok ? '#1a5a1a' : '#8b0000';
   el.style.border = '1px solid ' + (ok ? '#2a7a2a' : '#c00');
   el.style.opacity = '1';
   clearTimeout(el._t);
-  el._t = setTimeout(function() { el.style.opacity = '0'; }, 3000);
+  el._t = setTimeout(function() { el.style.opacity = '0'; }, 4000);
 }
 
 function saveEditsToStorage() {
@@ -2367,6 +2377,10 @@ function renderLocalPhotos(itemId, tabIdx) {
     html += '</div>';
   }
   html += '</div>';
+  // SPに保存ボタン
+  html += '<button onclick="uploadLocalPhotosToSP(\'' + itemId + '\',' + tabIdx + ')" ' +
+    'style="margin-top:8px;width:100%;padding:10px;background:#1a2535;color:#fff;border:none;border-radius:6px;' +
+    'cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">☁️ SharePointに保存</button>';
   return html;
 }
 function handleLocalImgClick(el) {
@@ -2383,6 +2397,85 @@ function handleLocalImgDel(el) {
 }
 function renderLocalPhotoThumbs(itemId, tabIdx) {
   // 動的にサムネイルを更新する（タブ再描画不要）
+}
+
+// ローカル写真をSP REST APIでアップロード
+function uploadLocalPhotosToSP(itemId, tabIdx) {
+  var arr = getLocalPhotos(itemId, tabIdx);
+  if (arr.length === 0) { showSaveToast(false, 'アップロードする写真がありません'); return; }
+
+  // どのリストか判定
+  var listTitle = (currentListMode === 'noukotsu') ? '納骨・戒切' : '顧客リスト';
+  var listTitleEnc = encodeURIComponent("'" + listTitle + "'");
+
+  showSaveToast(null, '⏳ アップロード中... (0/' + arr.length + ')');
+
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read',
+             'https://shojisekizai.sharepoint.com/Sites.ReadWrite.All'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var done = 0;
+    var errors = 0;
+
+    // 順番にアップロード（並列だとSPが拒否することがある）
+    function uploadNext(idx) {
+      if (idx >= arr.length) {
+        // 完了
+        if (errors === 0) {
+          showSaveToast(true, '✅ ' + done + '枚をSharePointに保存しました');
+          // ローカルリストをクリア
+          getLocalPhotos(itemId, tabIdx).length = 0;
+          // タブ再描画
+          if (currentListMode === 'noukotsu') showTab(tabIdx, currentItem);
+          else showCustomerTab(tabIdx, currentItem);
+        } else {
+          showSaveToast(false, done + '枚成功、' + errors + '枚失敗');
+        }
+        return;
+      }
+      var dataURL = arr[idx];
+      var b64 = dataURL.split(',')[1];
+      var mimeType = dataURL.split(';')[0].split(':')[1] || 'image/jpeg';
+      var ext = mimeType.split('/')[1] || 'jpg';
+      var timestamp = new Date().toISOString().replace(/[:.]/g,'-').substring(0,19);
+      var fileName = 'photo_' + timestamp + '_' + (idx+1) + '.' + ext;
+
+      // SP REST API: AddUsingPath
+      var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(" +
+        listTitleEnc + ")/items(" + itemId + ")/AttachmentFiles/add(FileName='" +
+        encodeURIComponent(fileName) + "')";
+
+      // Base64をバイナリに変換
+      var binary = atob(b64);
+      var bytes = new Uint8Array(binary.length);
+      for (var j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+      var blob = new Blob([bytes], { type: mimeType });
+
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' },
+        body: blob
+      })
+      .then(function(r) {
+        if (r.ok) {
+          done++;
+          showSaveToast(null, '⏳ アップロード中... (' + done + '/' + arr.length + ')');
+        } else {
+          errors++;
+        }
+        uploadNext(idx + 1);
+      })
+      .catch(function() {
+        errors++;
+        uploadNext(idx + 1);
+      });
+    }
+    uploadNext(0);
+  }).catch(function(e) {
+    showSaveToast(false, 'トークン取得失敗: ' + e.message);
+  });
 }
 
 function addLocalPhoto(itemId, input, tabIdx) {
@@ -2590,8 +2683,8 @@ function openImageViewer(imgs, startIdx) {
 </script>
 
 <!-- ===== 新規作成モーダル（納骨・戒切） ===== -->
-<div id="new-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:800;overflow-y:auto;padding:20px 0">
-  <div style="background:#fff;max-width:460px;margin:0 auto;border-radius:8px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
+<div id="new-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:800;overflow-y:auto;padding:20px 0;display:none;align-items:flex-start;justify-content:center">
+  <div style="background:#fff;max-width:460px;width:100%;margin:20px auto;border-radius:8px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column;max-height:calc(100vh - 40px)">
     <div style="background:#1a2535;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-size:14px;font-weight:500">＋ 新規作成（納骨・戒切）</span>
       <button onclick="closeNewItemModal()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">✕</button>
@@ -2612,7 +2705,7 @@ function openImageViewer(imgs, startIdx) {
 .ni-date-wrap .ni-inp{flex:1}
 .ni-today{font-size:11px;padding:5px 8px;background:#1a2535;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;font-family:inherit}
 .ni-today:hover{background:#2a3545}
-</style>    <div style="padding:14px;max-height:80vh;overflow-y:auto">
+</style>    <div style="padding:14px;max-height:calc(100vh - 160px);overflow-y:auto;-webkit-overflow-scrolling:touch">
       <div style="font-size:11px;color:#888;margin-bottom:12px">※ 必須項目（<span style="color:#c00">*</span>）を入力してSharePointに新規登録します</div>
 
       <!-- 基本情報 -->
@@ -2763,16 +2856,19 @@ function openImageViewer(imgs, startIdx) {
       <!-- 添付ファイル -->
       <div class="ni-sec">
         <span class="ni-sec-hdr orange">📎 添付ファイル</span>
-        <div style="border:2px dashed #ccc;border-radius:4px;padding:12px;text-align:center;cursor:pointer;background:#fafafa"
-          onclick="document.getElementById('ni-files').click()"
-          ondragover="event.preventDefault();this.style.borderColor='#1a5a9a'"
-          ondragleave="this.style.borderColor='#ccc'"
-          ondrop="event.preventDefault();this.style.borderColor='#ccc';niAddFiles(event.dataTransfer.files)">
-          <div style="font-size:12px;color:#888;margin-bottom:6px">📂 クリックまたはドラッグ＆ドロップでファイルを追加</div>
-          <div style="font-size:10px;color:#aaa">写真・PDF・その他のファイルを複数選択可</div>
-          <input type="file" id="ni-files" multiple style="display:none" onchange="niAddFiles(this.files)">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button type="button" onclick="document.getElementById('ni-files').click()"
+            style="flex:1;padding:10px 8px;border:2px dashed #ccc;border-radius:4px;background:#fafafa;cursor:pointer;font-family:inherit;font-size:12px;color:#555">
+            📂 ファイルを選択
+          </button>
+          <button type="button" onclick="document.getElementById('ni-camera').click()"
+            style="flex:1;padding:10px 8px;border:2px dashed #2a7a2a;border-radius:4px;background:#f0faf0;cursor:pointer;font-family:inherit;font-size:12px;color:#1a5a1a">
+            📷 カメラで撮影
+          </button>
         </div>
-        <div id="ni-file-list" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
+        <input type="file" id="ni-files" multiple accept="image/*,application/pdf,.pdf" style="display:none" onchange="niAddFiles(this.files)">
+        <input type="file" id="ni-camera" accept="image/*" capture="environment" style="display:none" onchange="niAddFiles(this.files)">
+        <div id="ni-file-list" style="display:flex;flex-direction:column;gap:4px"></div>
       </div>
 
       <!-- 注意事項 -->
@@ -2783,9 +2879,12 @@ function openImageViewer(imgs, startIdx) {
 
       <div id="ni-error" style="display:none;color:#c00;font-size:11px;padding:6px 10px;background:#fff0f0;border-radius:4px;margin-top:4px"></div>
 
-      <div style="display:flex;gap:8px;margin-top:14px;position:sticky;bottom:0;background:#fff;padding-top:10px;border-top:1px solid #eee">
-        <button onclick="closeNewItemModal()" style="flex:1;padding:10px;background:#f0f0f0;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-family:inherit;font-size:13px">キャンセル</button>
-        <button onclick="submitNewItem()" id="ni-submit" style="flex:2;padding:10px;background:#1a2535;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500">✅ SharePointに登録</button>
+    </div>
+    <!-- 保存ボタン：スクロールエリアの外に固定 -->
+    <div style="padding:10px 14px;background:#fff;border-top:1px solid #eee;flex-shrink:0">
+      <div style="display:flex;gap:8px">
+        <button onclick="closeNewItemModal()" style="flex:1;padding:11px;background:#f0f0f0;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-family:inherit;font-size:13px">キャンセル</button>
+        <button onclick="submitNewItem()" id="ni-submit" style="flex:2;padding:11px;background:#1a2535;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:500">✅ SharePointに登録</button>
       </div>
     </div>
   </div>

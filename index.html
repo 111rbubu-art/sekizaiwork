@@ -344,7 +344,7 @@ var SP_HOST   = 'shojisekizai.sharepoint.com';
 var SP_SITE   = 'stoneworks';
 var LIST_NAME = '納骨・戒切';
 var CUSTOMER_LIST_NAME = '顧客リスト';
-var APP_VERSION = 'v1.8.2';
+var APP_VERSION = 'v1.8.3';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -2214,12 +2214,14 @@ function loadAttachments(itemId) {
     var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
     var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
     var html = '';
-    // 画像グリッド
+    // 画像グリッド（src=1pxプレースホルダー、data-relpathで後からBlob読込）
     if (imgs.length > 0) {
       html += '<div class="img-grid">';
       imgs.forEach(function(f, idx) {
-        var fullUrl = 'https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl;
-        html += '<img class="img-thumb" src="' + fullUrl + '" data-idx="' + idx + '" data-itemid="' + itemId + '" alt="' + f.FileName + '" loading="lazy">';
+        html += '<img class="img-thumb" ' +
+          'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+          'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
+          'data-idx="' + idx + '" data-itemid="' + itemId + '" alt="' + f.FileName + '">';
       });
       html += '</div>';
     }
@@ -2234,13 +2236,13 @@ function loadAttachments(itemId) {
         '<span class="attach-arrow">›</span></a>';
     });
     area.innerHTML = html;
-    // 画像タップでビューアー表示
+    // 画像タップでビューアー表示 + 認証付きBlob読込
     area.querySelectorAll('.img-thumb').forEach(function(img) {
       img.addEventListener('click', function() {
         openImageViewer(imgs, parseInt(this.getAttribute('data-idx')));
       });
-      // 認証付きで画像を読み込む
-      loadAuthImage(img, img.src);
+      // data-relpathからBlob URLを生成
+      loadAuthImage(img, '');
     });
   }).catch(function(e) {
     area.innerHTML = '<div class="attach-empty" style="color:#c0392b">エラー: ' + e.message + '</div>';
@@ -2248,14 +2250,25 @@ function loadAttachments(itemId) {
 }
 
 function loadAuthImage(imgEl, url) {
+  // urlはServerRelativeUrl（エンコード済み）またはフルURL
+  // $valueエンドポイントを使ってBlob取得
+  var relPath = imgEl.getAttribute('data-relpath');
+  var fetchUrl;
+  if (relPath) {
+    var decoded = decodeURIComponent(relPath);
+    fetchUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+               decoded.replace(/'/g, "''") + "')/$value";
+  } else {
+    fetchUrl = url;
+  }
   msalApp.acquireTokenSilent({
     scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
     account: msalApp.getActiveAccount()
   }).then(function(resp) {
-    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
-  }).then(function(r) { return r.blob(); })
+    return fetch(fetchUrl, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.ok ? r.blob() : null; })
   .then(function(blob) {
-    imgEl.src = URL.createObjectURL(blob);
+    if (blob) imgEl.src = URL.createObjectURL(blob);
   }).catch(function() {
     imgEl.style.background = '#ddd';
   });

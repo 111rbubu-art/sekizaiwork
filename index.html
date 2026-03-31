@@ -356,7 +356,7 @@ var SP_SITE   = 'stoneworks';
 var LIST_NAME = '納骨・戒切';
 var CUSTOMER_LIST_NAME = '顧客リスト';
 var KOUJI_LIST_ID = 'dea1de47-62cc-4216-afb3-7c313485eba4'; // 工事関連
-var APP_VERSION = 'v1.8.23';
+var APP_VERSION = 'v1.8.24';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1921,16 +1921,17 @@ function loadCustomerAttachments(spItemId) {
     // map含む→地図、それ以外→写真
     var imgs = files.filter(function(f) { return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
     var others = files.filter(function(f) { return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
-    var imgUrls = imgs.map(function(f) { return 'https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl; });
     var html = '<div class="attach-grid">';
     imgs.forEach(function(f, fi) {
       var isMap = f.FileName.toLowerCase().includes('map');
       var label = isMap ? '🗺️ 地図' : '📷 写真';
-      var allUrlsJson = JSON.stringify(imgUrls).replace(/'/g, "\'").replace(/"/g, '&quot;');
+      // data-relpathでBlobURL方式（直接URLはCORSで表示不可）
       html += '<div class="attach-item">' +
-        '<img class="attach-thumb" src="' + imgUrls[fi] + '" ' +
-        'onerror="this.style.display=\'none\'" ' +
-        'onclick="openSPImage(this.src,[' + imgUrls.map(function(u){return '&quot;'+u+'&quot;';}).join(',') + '],' + fi + ')">' +
+        '<img class="attach-thumb cust-img-lazy" ' +
+        'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+        'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
+        'data-fi="' + fi + '" ' +
+        'style="background:#e0e0e0">' +
         '<div class="attach-label">' + label + ' ' + f.FileName + '</div>' +
         '</div>';
     });
@@ -1941,6 +1942,30 @@ function loadCustomerAttachments(spItemId) {
     });
     html += '</div>';
     area.innerHTML = html;
+
+    // Blob URL方式で各画像を読み込む
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var t2 = resp.accessToken;
+      area.querySelectorAll('.cust-img-lazy').forEach(function(imgEl) {
+        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+                     relPath.replace(/'/g, "''") + "')/$value";
+        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
+        .then(function(r) { return r.ok ? r.blob() : null; })
+        .then(function(blob) {
+          if (blob) {
+            var blobUrl = URL.createObjectURL(blob);
+            imgEl.src = blobUrl;
+            imgEl.style.background = '';
+            // クリックでプレビュー（blobUrl使用）
+            imgEl.onclick = function() { openCustImgPreview(blobUrl); };
+          }
+        }).catch(function(){});
+      });
+    }).catch(function(){});
   })
   .catch(function(e) {
     if (area) area.innerHTML = '<div class="err-banner">エラー: ' + e.message + '</div>';
@@ -2503,6 +2528,25 @@ function setTodayDate(btn) {
   var formatted = formatDateForSave(field, iso);
   setEdit(itemId, field, formatted);
   saveEditsToStorage();
+}
+
+function openCustImgPreview(blobUrl) {
+  var old = document.getElementById('cust-img-preview');
+  if (old) old.remove();
+  var viewer = document.createElement('div');
+  viewer.id = 'cust-img-preview';
+  viewer.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:1000;display:flex;align-items:center;justify-content:center';
+  var img = document.createElement('img');
+  img.src = blobUrl;
+  img.style.cssText = 'max-width:92vw;max-height:88vh;object-fit:contain;border-radius:4px';
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'position:absolute;top:12px;right:12px;background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:24px;width:36px;height:36px;border-radius:50%;cursor:pointer';
+  closeBtn.addEventListener('click', function(){ viewer.remove(); });
+  viewer.appendChild(img);
+  viewer.appendChild(closeBtn);
+  viewer.addEventListener('click', function(e){ if(e.target===viewer) viewer.remove(); });
+  document.body.appendChild(viewer);
 }
 
 function openSPImage(src, allSrcs, idx) {

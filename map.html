@@ -1025,32 +1025,65 @@ function updateCustomerMapName(oldName, newName) {
   var groupId = TEMPLE_GROUP[_templeId] || 6;
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
-  // 旧名で顧客リストを検索
+
+  showSPStatus('顧客リスト検索中... (groupId=' + groupId + ', 旧名=' + oldName + ')', 'ing');
+  console.log('[顧客連動] 検索開始:', { groupId, oldName, newName, templeId: _templeId });
+
+  // まずGroupだけでフィルター（_x006d_ap1のフィルターはインデックス外のため後でJS側で絞り込む）
   var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
-    '/items?$expand=fields&$filter=fields/Group eq ' + groupId + ' and fields/_x006d_ap1 eq \'' + oldName.replace(/'/g, "''") + '\'&$top=10';
+    '/items?$expand=fields&$filter=fields/Group eq ' + groupId + '&$top=500&$select=id,fields';
+
   fetch(url, { headers: { Authorization: 'Bearer ' + token } })
-  .then(function(r){ return r.json(); })
-  .then(function(data){
-    var items = data.value || [];
-    if(items.length === 0){ alert('顧客リストに「' + oldName + '」の地図番号が見つかりませんでした'); return; }
-    // 一致した全アイテムを更新
-    var promises = items.map(function(item){
-      return fetch(
-        'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + item.id + '/fields',
-        {
-          method: 'PATCH',
-          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ '_x006d_ap1': newName })
-        }
-      );
-    });
-    Promise.all(promises).then(function(){
-      // キャッシュをクリア
-      window._vpCachedItems = null;
-      alert('顧客リスト（' + items.length + '件）の地図番号を更新しました');
-    });
+  .then(function(r){
+    console.log('[顧客連動] HTTP status:', r.status);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
   })
-  .catch(function(e){ alert('更新エラー: ' + e.message); });
+  .then(function(data){
+    var all = (data.value || []).map(function(i){ return {id: i.id, fields: i.fields}; });
+    console.log('[顧客連動] 取得件数:', all.length);
+    // JS側で_x006d_ap1の完全一致
+    var matched = all.filter(function(i){
+      var mapVal = (i.fields['_x006d_ap1'] || '').trim();
+      console.log('[顧客連動] id=' + i.id + ', _x006d_ap1=' + mapVal);
+      return mapVal === oldName.trim();
+    });
+    console.log('[顧客連動] 一致件数:', matched.length);
+    showSPStatus('一致: ' + matched.length + '件 / 全' + all.length + '件 → 更新中...', 'ing');
+
+    if(matched.length === 0){
+      showSPStatus('⚠️ 「' + oldName + '」の地図番号が顧客リストに見つかりません', 'err');
+      alert('顧客リストに「' + oldName + '」の地図番号が見つかりませんでした\n(Group=' + groupId + '内 ' + all.length + '件を検索)');
+      return;
+    }
+    var promises = matched.map(function(item){
+      return getToken().then(function(resp2){
+        return fetch(
+          'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + item.id + '/fields',
+          {
+            method: 'PATCH',
+            headers: { 'Authorization': 'Bearer ' + resp2.accessToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ '_x006d_ap1': newName })
+          }
+        ).then(function(r2){
+          console.log('[顧客連動] PATCH id=' + item.id + ' status:', r2.status);
+          return r2;
+        });
+      });
+    });
+    return Promise.all(promises);
+  })
+  .then(function(results){
+    if(!results) return;
+    window._vpCachedItems = null;
+    showSPStatus('✅ 顧客リスト（' + results.length + '件）の地図番号を更新しました', 'ok');
+    console.log('[顧客連動] 更新完了:', results.length + '件');
+  })
+  .catch(function(e){
+    console.error('[顧客連動] エラー:', e);
+    showSPStatus('❌ 顧客リスト更新エラー: ' + e.message, 'err');
+    alert('更新エラー: ' + e.message);
+  });
 }
 // モーダル内の削除ボタンから削除
 function deleteFromModal(){

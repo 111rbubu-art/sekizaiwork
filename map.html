@@ -1001,11 +1001,55 @@ function openModal(idx,mode){
 function closeModal(){document.getElementById('modal').className='';selIdx=-1;draw();}
 function applyModal(){
   if(modalIdx<0||modalIdx>=PLOTS.length)return;
-  PLOTS[modalIdx].name=document.getElementById('mName').value.trim();
+  var oldName = PLOTS[modalIdx].name || '';
+  var newName = document.getElementById('mName').value.trim();
+  PLOTS[modalIdx].name = newName;
   PLOTS[modalIdx].status=document.getElementById('mStatus').value;
   if(!PLOTS[modalIdx].name&&PLOTS[modalIdx].status==='used')PLOTS[modalIdx].status='empty';
   closeModal();showSaved();updateStats();draw();
   autoSave();
+  // 契約者名が変更され、かつ旧名がある場合→顧客リスト連動確認
+  if(newName && oldName && newName !== oldName) {
+    if(confirm('契約者名が「' + oldName + '」→「' + newName + '」に変更されました。
+顧客リストの地図番号も更新しますか？')) {
+      updateCustomerMapName(oldName, newName);
+    }
+  }
+}
+
+function updateCustomerMapName(oldName, newName) {
+  var token = getSPToken();
+  if(!token) { alert('ビューアーからログインが必要です'); return; }
+  var TEMPLE_GROUP = { 'chouzenji': 6, 'gansen': 1, 'soshuji': 2, 'jikoji': 3 };
+  var groupId = TEMPLE_GROUP[_templeId] || 6;
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+  // 旧名で顧客リストを検索
+  var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
+    '/items?$expand=fields&$filter=fields/Group eq ' + groupId + ' and fields/_x006d_ap1 eq '' + encodeURIComponent(oldName).replace(/%20/g,' ') + ''&$top=10';
+  fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    var items = data.value || [];
+    if(items.length === 0){ alert('顧客リストに「' + oldName + '」の地図番号が見つかりませんでした'); return; }
+    // 一致した全アイテムを更新
+    var promises = items.map(function(item){
+      return fetch(
+        'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + item.id + '/fields',
+        {
+          method: 'PATCH',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ '_x006d_ap1': newName })
+        }
+      );
+    });
+    Promise.all(promises).then(function(){
+      // キャッシュをクリア
+      window._vpCachedItems = null;
+      alert('顧客リスト（' + items.length + '件）の地図番号を更新しました');
+    });
+  })
+  .catch(function(e){ alert('更新エラー: ' + e.message); });
 }
 // モーダル内の削除ボタンから削除
 function deleteFromModal(){
@@ -1967,7 +2011,7 @@ function changeFontScale(delta) {
   _fontScale = Math.round(Math.max(0.5, Math.min(3.0, _fontScale + delta)) * 10) / 10;
   var lbl = document.getElementById('fontScaleLabel');
   if (lbl) lbl.textContent = _fontScale.toFixed(1) + '×';
-  drawAll();
+  draw();
 }
 
 // 初期ラベル反映

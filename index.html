@@ -801,7 +801,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.55';
+var APP_VERSION = 'v1.8.56';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1146,18 +1146,29 @@ function submitNewItem() {
   })
   .then(function(data) {
     var newItemId = data.id;
-    // 添付ファイルがあればアップロード
+    var siteId2 = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+    var listId2 = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+    var afterAttach = function() {
+      closeNewItemModal();
+      showSaveToast(true, '「' + name + '」を登録しました');
+      _newItemCusSpId = null;
+      allItems = []; loadItems();
+    };
+    var doCopy = function(cb) {
+      if (_newItemCusSpId) {
+        submitBtn.textContent = '添付コピー中...';
+        copyCustomerAttachments(_newItemCusSpId, siteId2, listId2, newItemId, cb);
+      } else { cb(); }
+    };
     if (niFileStore.length > 0 && newItemId) {
       submitBtn.textContent = 'ファイル添付中...';
       niUploadAttachments(newItemId, function() {
-        closeNewItemModal();
-        showSaveToast(true, '「' + name + '」を登録しました（添付' + niFileStore.length + '件）');
-        allItems = []; loadItems();
+        doCopy(function() {
+          afterAttach();
+        });
       });
     } else {
-      closeNewItemModal();
-      showSaveToast(true, '「' + name + '」を登録しました');
-      allItems = []; loadItems();
+      doCopy(afterAttach);
     }
   })
   .catch(function(e) {
@@ -1170,6 +1181,7 @@ function submitNewItem() {
 
 // 顧客リストから納骨・戒切新規登録を開く
 function openNewJobModal(d) {
+  _newItemCusSpId = (d && d['id']) ? String(d['id']) : null;
   // 新規作成モーダルを開く
   openNewItemModal();
   // 顧客情報を自動入力
@@ -1324,10 +1336,21 @@ function submitNewKouji() {
     if (r.ok) return r.json();
     return r.json().then(function(e){ throw new Error((e.error&&e.error.message)||r.status); });
   })
-  .then(function() {
-    closeNewKoujiModal();
-    showSaveToast(true, '「' + name + '」を工事関連に登録しました');
-    allItems = []; loadKoujiList();
+  .then(function(data) {
+    var newItemId = data && data.id;
+    var siteId2 = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+    var afterCopy = function() {
+      closeNewKoujiModal();
+      showSaveToast(true, '「' + name + '」を工事関連に登録しました');
+      _newItemCusSpId = null;
+      allItems = []; loadKoujiList();
+    };
+    if (_newItemCusSpId && newItemId) {
+      submitBtn.textContent = '添付コピー中...';
+      copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, afterCopy);
+    } else {
+      afterCopy();
+    }
   })
   .catch(function(e) {
     submitBtn.disabled = false;
@@ -1337,8 +1360,58 @@ function submitNewKouji() {
   });
 }
 
+// ===== 顧客リスト添付ファイルを新規アイテムにコピー =====
+var _newItemCusSpId = null; // 顧客リストのSP内部ID（添付コピー用）
+
+function copyCustomerAttachments(cusSpId, targetSiteId, targetListId, newItemId, callback) {
+  if (!cusSpId) { callback(); return; }
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items(" + cusSpId + ")/AttachmentFiles";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var files = (d && d.d && d.d.results) ? d.d.results : [];
+        if (files.length === 0) { callback(); return; }
+        return getToken().then(function(resp2) {
+          var uploadToken = resp2.accessToken;
+          var promises = files.map(function(f) {
+            var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+              f.ServerRelativeUrl.replace(/'/g, "''") + "')/$value";
+            return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+              .then(function(r) { return r.arrayBuffer(); })
+              .then(function(buf) {
+                var bytes = new Uint8Array(buf);
+                var binary = '';
+                bytes.forEach(function(b) { binary += String.fromCharCode(b); });
+                var b64 = btoa(binary);
+                return fetch(
+                  'https://graph.microsoft.com/v1.0/sites/' + targetSiteId + '/lists/' + targetListId + '/items/' + newItemId + '/attachments',
+                  {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + uploadToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: f.FileName, contentBytes: b64 })
+                  }
+                );
+              });
+          });
+          return Promise.all(promises);
+        });
+      });
+  })
+  .then(function() { callback(); })
+  .catch(function(e) {
+    console.warn('添付コピーエラー:', e.message);
+    callback();
+  });
+}
+
 // ===== 顧客リストから工事新規登録 =====
 function openNewKoujiFromCustomer(d) {
+  _newItemCusSpId = (d && d['id']) ? String(d['id']) : null;
   openNewKoujiModal(d);
 }
 function khUpdateLog(input) {

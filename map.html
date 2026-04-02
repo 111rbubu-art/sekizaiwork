@@ -63,6 +63,7 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
 
 /* エリアリスト */
 .area-list{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;}
+.area-slot-btn.active{background:#4a4a9a;color:#fff;border-color:#4a4a9a;}
 .area-item{display:flex;align-items:center;gap:6px;padding:5px 8px;
   border:1.5px solid #ddd;background:#fafafa;font-size:11px;cursor:pointer;}
 .area-item:hover{background:#f0f0f0;}
@@ -245,17 +246,22 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
       </div>
     </div>
     <div class="pp-sec">
-      <div class="pp-lbl">📐 印刷範囲（番号で管理）
-        <span style="font-size:10px;color:#888;font-weight:400;margin-left:4px;">クリックで選択</span>
+      <div class="pp-lbl">📐 印刷範囲</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:6px">
+        <button class="btn out area-slot-btn active" id="aslot-0" onclick="selectAreaSlot(0)">全体</button>
+        <button class="btn out area-slot-btn" id="aslot-1" onclick="selectAreaSlot(1)">1</button>
+        <button class="btn out area-slot-btn" id="aslot-2" onclick="selectAreaSlot(2)">2</button>
+        <button class="btn out area-slot-btn" id="aslot-3" onclick="selectAreaSlot(3)">3</button>
+        <button class="btn out area-slot-btn" id="aslot-4" onclick="selectAreaSlot(4)">4</button>
+        <button class="btn out area-slot-btn" id="aslot-5" onclick="selectAreaSlot(5)">5</button>
       </div>
-      <div class="area-list" id="areaList">
-        <div class="area-empty">範囲が登録されていません</div>
+      <div id="areaSlotInfo" style="font-size:10px;color:#888;padding:4px 6px;background:#f5f5f5;border-radius:3px;margin-bottom:5px">
+        全体を選択中
       </div>
-      <div style="display:flex;gap:5px;margin-top:6px;">
-        <button class="btn out" style="flex:1;" id="btnSelectArea" onclick="startAreaSelect()">📐 ドラッグで範囲指定</button>
-        <button class="btn out" onclick="selectAllArea()">全体</button>
-      </div>
-      <div class="pp-info" id="areaInfo">マップ上でドラッグして範囲を指定できます</div>
+      <button class="btn out" style="width:100%;font-size:11px" id="btnSetSlot" onclick="startAreaSlotSelect()" disabled>
+        📐 ドラッグでこの範囲を設定
+      </button>
+      <div class="pp-info" id="areaInfo">範囲1〜5を選んで「ドラッグで設定」してください</div>
     </div>
     <div class="pp-sec">
       <div class="pp-lbl">👁 プレビュー</div>
@@ -1027,36 +1033,46 @@ function updateCustomerMapName(oldName, newName) {
   var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
 
   showSPStatus('顧客リスト検索中... (groupId=' + groupId + ', 旧名=' + oldName + ')', 'ing');
-  console.log('[顧客連動] 検索開始:', { groupId, oldName, newName, templeId: _templeId });
+  console.log('[顧客連動] 検索開始:', { groupId: groupId, oldName: oldName, newName: newName, templeId: _templeId });
 
-  // まずGroupだけでフィルター（_x006d_ap1のフィルターはインデックス外のため後でJS側で絞り込む）
-  var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
+  // ページネーションで全件取得
+  var allItems = [];
+  var firstUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
     '/items?$expand=fields&$filter=fields/Group eq ' + groupId + '&$top=500&$select=id,fields';
 
-  fetch(url, { headers: { Authorization: 'Bearer ' + token } })
-  .then(function(r){
-    console.log('[顧客連動] HTTP status:', r.status);
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
-  })
-  .then(function(data){
-    var all = (data.value || []).map(function(i){ return {id: i.id, fields: i.fields}; });
-    console.log('[顧客連動] 取得件数:', all.length);
-    // JS側で_x006d_ap1の完全一致
-    var matched = all.filter(function(i){
+  function fetchAll(url) {
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        var items = (data.value || []).map(function(i){ return {id: i.id, fields: i.fields}; });
+        allItems = allItems.concat(items);
+        console.log('[顧客連動] 取得累計:', allItems.length);
+        if (data['@odata.nextLink']) {
+          return fetchAll(data['@odata.nextLink']);
+        }
+        return allItems;
+      });
+  }
+
+  fetchAll(firstUrl)
+  .then(function(all) {
+    console.log('[顧客連動] 全件取得完了:', all.length);
+    var matched = all.filter(function(i) {
       var mapVal = (i.fields['_x006d_ap1'] || '').trim();
-      console.log('[顧客連動] id=' + i.id + ', _x006d_ap1=' + mapVal);
       return mapVal === oldName.trim();
     });
     console.log('[顧客連動] 一致件数:', matched.length);
     showSPStatus('一致: ' + matched.length + '件 / 全' + all.length + '件 → 更新中...', 'ing');
 
-    if(matched.length === 0){
+    if (matched.length === 0) {
       showSPStatus('⚠️ 「' + oldName + '」の地図番号が顧客リストに見つかりません', 'err');
       alert('顧客リストに「' + oldName + '」の地図番号が見つかりませんでした\n(Group=' + groupId + '内 ' + all.length + '件を検索)');
       return;
     }
-    var promises = matched.map(function(item){
+    var promises = matched.map(function(item) {
       var token2 = getSPToken();
       if (!token2) return Promise.resolve();
       return fetch(
@@ -1066,20 +1082,18 @@ function updateCustomerMapName(oldName, newName) {
           headers: { 'Authorization': 'Bearer ' + token2, 'Content-Type': 'application/json' },
           body: JSON.stringify({ '_x006d_ap1': newName })
         }
-      ).then(function(r2){
+      ).then(function(r2) {
         console.log('[顧客連動] PATCH id=' + item.id + ' status:', r2.status);
         return r2;
       });
     });
-    return Promise.all(promises);
+    return Promise.all(promises).then(function(results) {
+      window._vpCachedItems = null;
+      showSPStatus('✅ 顧客リスト（' + results.length + '件）の地図番号を更新しました', 'ok');
+      console.log('[顧客連動] 更新完了:', results.length + '件');
+    });
   })
-  .then(function(results){
-    if(!results) return;
-    window._vpCachedItems = null;
-    showSPStatus('✅ 顧客リスト（' + results.length + '件）の地図番号を更新しました', 'ok');
-    console.log('[顧客連動] 更新完了:', results.length + '件');
-  })
-  .catch(function(e){
+  .catch(function(e) {
     console.error('[顧客連動] エラー:', e);
     showSPStatus('❌ 顧客リスト更新エラー: ' + e.message, 'err');
     alert('更新エラー: ' + e.message);
@@ -1155,16 +1169,48 @@ function setPaper(p,o){
 // Step2: ドラッグ終了 → pendingArea にセット、アクションバー表示
 // Step3: 確定 → savedAreas に追加 / 再指定 → pendingArea クリアして再ドラッグ / キャンセル → 全クリア
 
+// ===== 固定スロット方式の印刷範囲 =====
+function selectAreaSlot(id) {
+  document.querySelectorAll('.area-slot-btn').forEach(function(b){ b.classList.remove('active'); });
+  var btn = document.getElementById('aslot-' + id);
+  if (btn) btn.classList.add('active');
+  var setBtn = document.getElementById('btnSetSlot');
+  var infoEl = document.getElementById('areaSlotInfo');
+  if (id === 0) {
+    activeAreaId = null;
+    if(setBtn) setBtn.disabled = true;
+    if(infoEl){ infoEl.textContent = '全体を選択中'; infoEl.style.color='#888'; }
+  } else {
+    activeAreaId = id;
+    if(setBtn) setBtn.disabled = false;
+    var area = savedAreas.find(function(a){ return a.id === id; });
+    if (area) {
+      if(infoEl){ infoEl.textContent = '範囲 ' + id + ' 設定済み（W:' + Math.round(area.w) + ' H:' + Math.round(area.h) + '）'; infoEl.style.color='#2a6a2a'; }
+    } else {
+      if(infoEl){ infoEl.textContent = '範囲 ' + id + '：未設定 — ドラッグで設定してください'; infoEl.style.color='#c07000'; }
+    }
+  }
+  draw(); updatePreview();
+}
+
+function startAreaSlotSelect() {
+  if (!activeAreaId) return;
+  savedAreas = savedAreas.filter(function(a){ return a.id !== activeAreaId; });
+  window._pendingSlotId = activeAreaId;
+  startAreaSelect();
+}
+
+
 function startAreaSelect(){
-  // 既存の pending があればクリア
+  if (!activeAreaId) return; // 全体選択中は不可
   pendingArea=null;
   hideActionBar();
   areaSelecting=true;
   dragMode='area';
   mc.style.cursor='crosshair';
-  document.getElementById('btnSelectArea').className='btn on';
+  window._pendingSlotId = activeAreaId;
   document.getElementById('mhint').className='mhint print';
-  document.getElementById('mhint').innerHTML='📐 <b>ドラッグ中：</b>マップ上でドラッグして印刷エリアを指定 ／ <kbd>Esc</kbd>でキャンセル';
+  document.getElementById('mhint').innerHTML='📐 <b>ドラッグ中：</b>範囲 ' + activeAreaId + ' をドラッグで指定 ／ <kbd>Esc</kbd>でキャンセル';
   draw();
 }
 
@@ -1174,7 +1220,7 @@ function stopAreaSelectMode(){
   dragStart=null;dragCur=null;
   hideDragBox();
   mc.style.cursor='crosshair';
-  document.getElementById('btnSelectArea').className='btn out';
+  // btnSelectAreaは固定スロット方式では不使用
 }
 
 // ドラッグ完了後 → 仮エリア表示 + アクションバー
@@ -1208,19 +1254,23 @@ function hideActionBar(){
   document.getElementById('areaActionBar').className='';
 }
 
-// 確定
+// 確定（固定スロット方式）
 function confirmArea(){
   if(!pendingArea)return;
-  const name=prompt(`印刷範囲 No.${nextAreaId} の名前（例：A区、省略可）`,'')||'';
-  const area={id:nextAreaId++,name,x:pendingArea.x,y:pendingArea.y,w:pendingArea.w,h:pendingArea.h};
+  var slotId = window._pendingSlotId || activeAreaId;
+  if(!slotId) return;
+  // 同じIDのスロットがあれば上書き、なければ追加
+  savedAreas = savedAreas.filter(function(a){ return a.id !== slotId; });
+  var area = {id:slotId, name:'範囲'+slotId, x:pendingArea.x, y:pendingArea.y, w:pendingArea.w, h:pendingArea.h};
   savedAreas.push(area);
-  activeAreaId=area.id;
-  pendingArea=null;
+  activeAreaId = slotId;
+  pendingArea = null;
+  window._pendingSlotId = null;
   hideActionBar();
-  renderAreaList();draw();updatePreview();
-  document.getElementById('areaInfo').textContent=`No.${area.id}「${area.name||'名称なし'}」を登録しました`;
+  renderAreaList(); draw(); updatePreview();
+  document.getElementById('areaInfo').textContent = '範囲 ' + slotId + ' を設定しました';
   document.getElementById('mhint').className='mhint print';
-  document.getElementById('mhint').innerHTML='🖨 <b>印刷設定：</b>範囲を登録しました。続けて指定するか「印刷実行」してください';
+  document.getElementById('mhint').innerHTML='🖨 <b>印刷設定：</b>範囲 ' + slotId + ' を登録しました';
 }
 
 // 再指定（pendingAreaを破棄してドラッグし直し）
@@ -1252,31 +1302,36 @@ document.addEventListener('keydown',e=>{
 
 // 全体選択
 function selectAllArea(){
-  activeAreaId=null;pendingArea=null;
-  hideActionBar();stopAreaSelectMode();
-  document.getElementById('areaInfo').textContent='全体を印刷します';
-  renderAreaList();draw();updatePreview();
+  selectAreaSlot(0);
 }
 
-// ===== エリアリスト =====
+// ===== エリアリスト（固定スロット方式） =====
 function renderAreaList(){
-  const list=document.getElementById('areaList');
-  if(savedAreas.length===0){
-    list.innerHTML='<div class="area-empty">範囲が登録されていません<br><span style="font-size:10px;">「ドラッグで範囲指定」で追加できます</span></div>';
-    return;
+  for (var i = 1; i <= 5; i++) {
+    var btn = document.getElementById('aslot-' + i);
+    if (!btn) continue;
+    var area = savedAreas.find(function(a){ return a.id === i; });
+    btn.textContent = area ? i + ' ✓' : String(i);
+    btn.style.borderColor = area ? '#2a6a2a' : '';
+    btn.style.color = area ? '#2a6a2a' : '';
+    btn.classList.toggle('active', activeAreaId === i);
   }
-  list.innerHTML=savedAreas.map(a=>`
-    <div class="area-item${a.id===activeAreaId?' active':''}" onclick="selectArea(${a.id})">
-      <span class="area-num">${a.id}</span>
-      <span class="area-name">${a.name||'（名称なし）'}</span>
-      <span class="area-sz">${Math.round(a.w)}×${Math.round(a.h)}</span>
-      <span class="area-btns">
-        <button class="area-btn" onclick="event.stopPropagation();editAreaName(${a.id})" title="名前変更">✏️</button>
-        <button class="area-btn" onclick="event.stopPropagation();reSelectArea(${a.id})" title="範囲を再指定">📐</button>
-        <button class="area-btn del" onclick="event.stopPropagation();deleteArea(${a.id})" title="削除">✕</button>
-      </span>
-    </div>
-  `).join('');
+  var s0 = document.getElementById('aslot-0');
+  if(s0) s0.classList.toggle('active', !activeAreaId);
+  var infoEl = document.getElementById('areaSlotInfo');
+  var setBtn = document.getElementById('btnSetSlot');
+  if (!activeAreaId) {
+    if(infoEl){ infoEl.textContent = '全体を選択中'; infoEl.style.color='#888'; }
+    if(setBtn) setBtn.disabled = true;
+  } else {
+    var a2 = savedAreas.find(function(a){ return a.id === activeAreaId; });
+    if (a2) {
+      if(infoEl){ infoEl.textContent = '範囲 ' + activeAreaId + ' 設定済み（W:' + Math.round(a2.w) + ' H:' + Math.round(a2.h) + '）'; infoEl.style.color='#2a6a2a'; }
+    } else {
+      if(infoEl){ infoEl.textContent = '範囲 ' + activeAreaId + '：未設定'; infoEl.style.color='#c07000'; }
+    }
+    if(setBtn) setBtn.disabled = false;
+  }
 }
 
 function selectArea(id){activeAreaId=id;renderAreaList();draw();updatePreview();}
@@ -2098,123 +2153,50 @@ function exportMapPDF() {
   }
   var jsPDF = window.jspdf.jsPDF;
 
-  // 出力範囲を決定
-  // savedAreasがあればそれを使用、なければマップ全体
-  var area = null;
-  if (savedAreas && savedAreas.length > 0) {
-    area = savedAreas[0]; // 最初のエリアを使用
-  }
+  // アクティブエリアを優先、なければsavedAreasの最初、なければ全体
+  var area = getActiveArea() || (savedAreas.length > 0 ? savedAreas[0] : null);
 
-  // 出力するピクセル範囲（PAD込みのcanvas座標）
+  // Canvas全体または指定範囲を画像として取得
   var srcX, srcY, srcW, srcH;
   if (area) {
-    srcX = PAD + area.x;
-    srcY = PAD + area.y;
-    srcW = area.w;
-    srcH = area.h;
+    srcX = Math.max(0, PAD + area.x);
+    srcY = Math.max(0, PAD + area.y);
+    srcW = Math.min(area.w, mc.width  - srcX);
+    srcH = Math.min(area.h, mc.height - srcY);
   } else {
-    srcX = 0;
-    srcY = 0;
-    srcW = mc.width;
-    srcH = mc.height;
+    srcX = 0; srcY = 0; srcW = mc.width; srcH = mc.height;
   }
 
-  // PDF用紙サイズ（A4横）
-  var PDF_W = 297; // mm
-  var PDF_H = 210; // mm
-  var MARGIN = 8;  // mm
+  // 一時Canvasに範囲をコピー
+  var tmp = document.createElement('canvas');
+  tmp.width  = srcW;
+  tmp.height = srcH;
+  tmp.getContext('2d').drawImage(mc, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+  var imgData = tmp.toDataURL('image/jpeg', 0.95);
+
+  // PDF用紙（A4横）
+  var PDF_W = 297, PDF_H = 210, MARGIN = 8;
   var drawW = PDF_W - MARGIN * 2;
   var drawH = PDF_H - MARGIN * 2;
-
-  // スケール計算（範囲をA4に収める）
   var scale = Math.min(drawW / srcW, drawH / srcH);
-  var pdfPlotW = srcW * scale;
-  var pdfPlotH = srcH * scale;
-  var offsetX = MARGIN + (drawW - pdfPlotW) / 2;
-  var offsetY = MARGIN + (drawH - pdfPlotH) / 2;
+  var pdfW  = srcW * scale;
+  var pdfH  = srcH * scale;
+  var offX  = MARGIN + (drawW - pdfW) / 2;
+  var offY  = MARGIN + (drawH - pdfH) / 2;
 
-  // jsPDF初期化
   var doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  doc.addImage(imgData, 'JPEG', offX, offY, pdfW, pdfH);
 
-  // 背景
-  doc.setFillColor(240, 236, 224);
-  doc.rect(offsetX, offsetY, pdfPlotW, pdfPlotH, 'F');
-
-  // 各区画を描画
-  PLOTS.forEach(function(p) {
-    var px = getPlotPx(p);
-    // 範囲外はスキップ
-    var absX = PAD + px.x;
-    var absY = PAD + px.y;
-    if (absX + px.w < srcX || absX > srcX + srcW) return;
-    if (absY + px.h < srcY || absY > srcY + srcH) return;
-
-    // PDF座標に変換
-    var pdfX = offsetX + (absX - srcX) * scale;
-    var pdfY = offsetY + (absY - srcY) * scale;
-    var pdfW = px.w * scale;
-    var pdfH = px.h * scale;
-
-    // 背景色
-    var bg = p.status === 'building' ? [184, 212, 168] :
-             p.status === 'empty'    ? [240, 237, 228] : [214, 208, 196];
-    doc.setFillColor(bg[0], bg[1], bg[2]);
-    doc.setDrawColor(160, 155, 145);
-    doc.setLineWidth(0.15);
-    doc.rect(pdfX, pdfY, pdfW, pdfH, 'FD');
-
-    // テキスト（区画名）
-    if (p.name && pdfW > 1 && pdfH > 1) {
-      var minDim = Math.min(pdfW, pdfH);
-      var fs = Math.min(3.5, Math.max(1.2, minDim * 0.32));
-      doc.setFontSize(fs);
-      doc.setTextColor(30, 30, 30);
-      // テキストを区画中央に配置
-      var cx = pdfX + pdfW / 2;
-      var cy = pdfY + pdfH / 2;
-      doc.text(p.name, cx, cy, { align: 'center', baseline: 'middle' });
-    }
-  });
-
-  // タイトル
-  doc.setFontSize(10);
+  // タイトル（画像の上にオーバーレイ）
+  doc.setFontSize(9);
   doc.setTextColor(30, 30, 30);
-  var title = MAP_DATA.name + ' 墓地マップ';
-  if (area) title += '（指定範囲）';
-  doc.text(title, PDF_W / 2, MARGIN - 2, { align: 'center' });
+  doc.text(MAP_DATA.name + ' 墓地マップ' + (area ? '（指定範囲）' : ''),
+           PDF_W / 2, MARGIN - 2, { align: 'center' });
 
-  // 凡例
-  var legY = offsetY + pdfPlotH + 3;
-  if (legY < PDF_H - 5) {
-    doc.setFontSize(5);
-    var legends = [
-      { color: [214,208,196], label: '使用中' },
-      { color: [240,237,228], label: '空き' },
-      { color: [184,212,168], label: '建物' }
-    ];
-    var legX = offsetX;
-    legends.forEach(function(l) {
-      doc.setFillColor(l.color[0], l.color[1], l.color[2]);
-      doc.setDrawColor(120,120,120);
-      doc.setLineWidth(0.1);
-      doc.rect(legX, legY, 3, 2, 'FD');
-      doc.setTextColor(30,30,30);
-      doc.text(l.label, legX + 3.5, legY + 1.5);
-      legX += 14;
-    });
-  }
-
-  // 出力日時
-  doc.setFontSize(4);
-  doc.setTextColor(120, 120, 120);
-  var now = new Date().toLocaleString('ja-JP');
-  doc.text('出力: ' + now, PDF_W - MARGIN, PDF_H - 3, { align: 'right' });
-
-  // ダウンロード
-  var fileName = MAP_DATA.name + '_マップ_' + new Date().toLocaleDateString('ja-JP').replace(/\//g,'') + '.pdf';
-  doc.save(fileName);
-  showSPStatus('✅ PDF出力しました: ' + fileName, 'ok');
+  doc.save(MAP_DATA.name + '_map.pdf');
+  showSPStatus('✅ PDF出力しました', 'ok');
 }
+
 
 // ===== SharePoint 同期 =====
 

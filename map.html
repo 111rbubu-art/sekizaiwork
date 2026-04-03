@@ -142,6 +142,7 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-authentication-library/3.11.0/msal-browser.min.js"></script>
 <script src="data_chouzenji.js"></script>
 <script src="data_gansen.js"></script>
 <script src="data_soshuji.js"></script>
@@ -188,11 +189,12 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
     <div class="sep"></div>
     <button class="btn out" id="pBtn" onclick="togglePrintPanel()">🖨 印刷設定</button>
     <div class="sep"></div>
-    <button class="btn" onclick="exportMapPDF()" title="指定範囲をPDFで出力（範囲未設定時は全体）">📄 PDF出力</button>
-    <button class="btn out" onclick="syncFromSP()" id="syncFromBtn" title="SharePointの最新データをマップに反映">📥 SP→マップ</button>
-    <button class="btn"     onclick="syncToSP()"   id="syncToBtn"   title="現在のマップをSharePointに保存">📤 マップ→SP</button>
-    <button class="btn out" onclick="exportMapPDF()" title="現在の印刷範囲をPDFで出力">📄 PDF出力</button>
-    <button class="btn out" onclick="document.getElementById('imp').click()" title="JSONファイルから読込">📂 読込</button>
+    <button class="btn" onclick="startPdfExport()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
+    <button class="btn out" onclick="syncFromSP()" id="syncFromBtn" title="SharePointの最新データをマップに反映">📥 SP読込</button>
+    <button class="btn out" onclick="mapRelogin()" id="relogin-btn" title="認証トークンを更新" style="display:none">🔑 再ログイン</button>
+    <button class="btn"     onclick="syncToSP()"   id="syncToBtn"   title="現在のマップをSharePointに保存">📤 SP保存</button>
+    <button class="btn out" onclick="startPdfExport()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
+
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importJSON(event)"/>
     <div class="sep"></div>
     <span style="font-size:12px;font-weight:500;">文字：</span>
@@ -481,7 +483,7 @@ function drawPlot(p,selected){
   else if(isEx){ctx.strokeStyle='#e05a00';ctx.lineWidth=2;ctx.strokeRect(x+1,y+1,w-2,h-2);}
   else if(isPt){ctx.strokeStyle='#e05a00';ctx.lineWidth=1.5;ctx.strokeRect(x+.75,y+.75,w-1.5,h-1.5);}
   else if(p.status==='building'){ctx.strokeStyle='#7aaa62';ctx.lineWidth=0.8;ctx.strokeRect(x+.4,y+.4,w-.8,h-.8);}
-  else if(p.status==='road'){ctx.strokeStyle='#8aacbf';ctx.lineWidth=0.5;ctx.strokeRect(x+.25,y+.25,w-.5,h-.5);}
+  else if(p.status==='road'){ctx.strokeStyle='#b8c8d4';ctx.lineWidth=0.5;ctx.strokeRect(x+.25,y+.25,w-.5,h-.5);}
   else if(p.status==='empty'){ctx.strokeStyle='#d0ccc4';ctx.lineWidth=0.5;ctx.strokeRect(x+.25,y+.25,w-.5,h-.5);}
   else{ctx.strokeStyle='#9a9488';ctx.lineWidth=0.5;ctx.strokeRect(x+.25,y+.25,w-.5,h-.5);}
   let tc='#2a2520';
@@ -632,14 +634,22 @@ function loadPlotCustomerInfo(plotName) {
 
   body.innerHTML = '<div style="text-align:center;padding:20px;color:#888;font-size:12px">読み込み中...</div>';
 
-  // $top=500で全件取得（applyMapSearchと同様）
-  var url = 'https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+
+  // ページネーション対応で全件取得
+  var _allCustomers = [];
+  var firstUrl = 'https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+
     '/items?$expand=fields&$filter=fields/Group eq '+groupId+'&$top=500';
-
-  fetch(url, { headers: { Authorization: 'Bearer '+token } })
-  .then(function(r){ return r.json(); })
-  .then(function(data){
-    window._vpCachedItems = (data.value || []).map(function(i){ return i.fields; });
+  function fetchAllCustomers(url) {
+    return fetch(url, { headers: { Authorization: 'Bearer '+token } })
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        _allCustomers = _allCustomers.concat((data.value || []).map(function(i){ return i.fields; }));
+        if (data['@odata.nextLink']) return fetchAllCustomers(data['@odata.nextLink']);
+        return _allCustomers;
+      });
+  }
+  fetchAllCustomers(firstUrl)
+  .then(function(items){
+    window._vpCachedItems = items;
     window._vpCachedGroupId = groupId;
     _findAndShowPlot(plotName);
   })
@@ -2264,6 +2274,53 @@ function vpDeleteAttachment(encRelUrl, encFileName) {
 var SP_DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
 var SP_FOLDER   = '%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA'; // 業務アプリ
 
+
+// ===== map.html内MSAL（トークン更新用）=====
+var _mapMsalApp = null;
+var _MAP_CLIENT_ID = 'f6d7ca4a-f786-4a91-bdb0-6d8e576e6aea';
+var _MAP_TENANT_ID = 'c78b3598-1933-4363-91f1-744a380bd9c9';
+var _MAP_SCOPES    = ['User.Read','Sites.Read.All','Files.ReadWrite.All',
+                      'https://shojisekizai.sharepoint.com/AllSites.Read',
+                      'https://shojisekizai.sharepoint.com/AllSites.Write'];
+
+function initMapMsal() {
+  if (_mapMsalApp) return Promise.resolve(_mapMsalApp);
+  if (typeof msal === 'undefined') return Promise.reject(new Error('MSAL未読込'));
+  _mapMsalApp = new msal.PublicClientApplication({
+    auth: {
+      clientId   : _MAP_CLIENT_ID,
+      authority  : 'https://login.microsoftonline.com/' + _MAP_TENANT_ID,
+      redirectUri: window.location.origin + '/sekizaiwork/'
+    },
+    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+  });
+  return _mapMsalApp.initialize().then(function(){ return _mapMsalApp; });
+}
+
+function mapRelogin() {
+  initMapMsal().then(function(app) {
+    var accounts = app.getAllAccounts();
+    var req = { scopes: _MAP_SCOPES };
+    var p = accounts.length > 0
+      ? app.acquireTokenSilent(Object.assign({ account: accounts[0] }, req))
+          .catch(function(){ return app.loginPopup(req); })
+      : app.loginPopup(req);
+    return p;
+  })
+  .then(function() {
+    showSPStatus('✅ 認証を更新しました', 'ok');
+    document.getElementById('relogin-btn').style.display = 'none';
+  })
+  .catch(function(e){ showSPStatus('❌ 再ログイン失敗: ' + e.message, 'err'); });
+}
+
+// トークン切れを検知してボタンを表示
+function checkTokenAndShowBtn() {
+  var t = getSPToken();
+  var btn = document.getElementById('relogin-btn');
+  if (btn) btn.style.display = t ? 'none' : '';
+}
+
 function getSPToken(forSP) {
   // MSALがlocalStorageに保存したトークンを取得
   // forSP=true: SharePoint REST API用（shojisekizai.sharepoint.com）
@@ -2296,6 +2353,18 @@ function getSPToken(forSP) {
 // ============================================================
 // ===== PDF出力（ベクター） =====
 // ============================================================
+function startPdfExport() {
+  // 印刷設定パネルを開き、範囲選択を促す
+  if (!document.getElementById('printPanel').classList.contains('visible')) {
+    togglePrintPanel();
+  }
+  // アクションバーにPDF出力ボタンを表示するためのガイド表示
+  showSPStatus('📐 印刷範囲を選択して「🖨 印刷実行」→ または範囲不要なら直接 PDF出力', 'ing');
+  // 3秒後に自動でPDF出力（範囲が設定済みの場合はそのまま）
+  // ユーザーが範囲を変更できるよう待機、確定後はパネルから印刷実行を使う
+  exportMapPDF();
+}
+
 function exportMapPDF() {
   if (typeof window.jspdf === 'undefined') {
     showSPStatus('jsPDFを読み込み中...再度お試しください', 'err');
@@ -2364,11 +2433,11 @@ function syncFromSP() {
   setSyncBtnState('syncFromBtn', 'loading', '⏳ 読込中...');
   showSPStatus('SharePointから最新データを読み込んでいます...', 'ing');
   loadFromSP(function() {
-    setSyncBtnState('syncFromBtn', 'idle', '📥 SP→マップ');
+    setSyncBtnState('syncFromBtn', 'idle', '📥 SP読込');
   });
   // エラー時もボタン戻す
   setTimeout(function() {
-    setSyncBtnState('syncFromBtn', 'idle', '📥 SP→マップ');
+    setSyncBtnState('syncFromBtn', 'idle', '📥 SP読込');
   }, 8000);
 }
 
@@ -2376,11 +2445,11 @@ function syncFromSP() {
 function syncToSP() {
   setSyncBtnState('syncToBtn', 'loading', '⏳ 保存中...');
   saveToSP(function() {
-    setSyncBtnState('syncToBtn', 'idle', '📤 マップ→SP');
+    setSyncBtnState('syncToBtn', 'idle', '📤 SP保存');
   });
   // エラー時もボタン戻す
   setTimeout(function() {
-    setSyncBtnState('syncToBtn', 'idle', '📤 マップ→SP');
+    setSyncBtnState('syncToBtn', 'idle', '📤 SP保存');
   }, 10000);
 }
 
@@ -2413,7 +2482,7 @@ function saveToSP(callback) {
   .then(function(r) {
     if (r.ok || r.status === 201) {
       showSPStatus('✅ SharePointに保存しました (' + new Date().toLocaleTimeString('ja-JP') + ')', 'ok');
-      setSyncBtnState('syncToBtn', 'idle', '📤 マップ→SP');
+      setSyncBtnState('syncToBtn', 'idle', '📤 SP保存');
       localStorage.setItem(LS_KEY, jsonStr);
       if (callback) callback();
     } else {
@@ -2454,7 +2523,7 @@ function loadFromSP(callback) {
       }
       draw(); updateStats();
       showSPStatus('✅ SharePointから読み込みました (' + (data.savedAt||'').substring(0,16).replace('T',' ') + ')', 'ok');
-      setSyncBtnState('syncFromBtn', 'idle', '📥 SP→マップ');
+      setSyncBtnState('syncFromBtn', 'idle', '📥 SP読込');
       setDataSource('sp', data.savedAt || null);
       if (callback) callback();
     } else {
@@ -2582,6 +2651,9 @@ function autoSave() {
     console.warn('autoSave失敗:', e.message);
   }
 }
+
+// 起動時にトークン状態チェック
+setTimeout(checkTokenAndShowBtn, 2000);
 
 // 起動時に自動読込
 function autoLoad() {

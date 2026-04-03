@@ -691,6 +691,7 @@ function renderPlotNoCustomer(plotName){
 }
 
 function renderPlotCustomer(f){
+  window._vpCurrentCustomer = f; // JPEG出力用に保持
   var body = document.getElementById('vp-body');
   if(!body) return;
 
@@ -758,7 +759,10 @@ function renderPlotCustomer(f){
     koujiHtml +
     // 添付ファイル（後からロード）
     '<div id="vp-attach" style="margin-top:10px">' +
-      '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">添付ファイル</div>' +
+      '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px;display:flex;align-items:center;justify-content:space-between">' +
+        '<span>添付ファイル</span>' +
+        '<button id="vp-jpeg-btn" onclick="vpSaveMapJpeg()" style="font-size:10px;padding:2px 8px;background:#2a4a7a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">🗺️ 地図JPEG → 添付保存</button>' +
+      '</div>' +
       '<div id="vp-attach-list" style="font-size:11px;color:#888;padding:4px 0">読み込み中...</div>' +
     '</div>';
 
@@ -802,11 +806,17 @@ function loadPlotAttachments(f){
     if(imgs.length > 0){
       html += '<div id="vp-slider" style="position:relative;background:#111;border-radius:6px;overflow:hidden;margin-bottom:8px">';
       imgs.forEach(function(img, idx){
+        var encName = encodeURIComponent(img.name);
+        var encRel  = encodeURIComponent(img.relUrl);
         html += '<div class="vp-slide" style="display:'+(idx===0?'block':'none')+'">' +
-          '<img data-relurl="'+encodeURIComponent(img.relUrl)+'" ' +
+          '<img data-relurl="'+encRel+'" ' +
                'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
                'style="width:100%;max-height:180px;object-fit:contain;display:block;background:#222">' +
-          '<div style="font-size:10px;color:#ccc;text-align:center;padding:3px;background:rgba(0,0,0,0.6)">'+img.name+'</div>' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 6px;background:rgba(0,0,0,0.6)">' +
+            '<span style="font-size:10px;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+img.name+'</span>' +
+            '<button onclick="vpDeleteAttachment(\''+encRel+'\',\''+encName+'\')" '+
+              'style="flex-shrink:0;font-size:10px;padding:1px 7px;background:rgba(180,0,0,0.8);color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit;margin-left:6px">削除</button>' +
+          '</div>' +
         '</div>';
       });
       if(imgs.length > 1){
@@ -817,7 +827,13 @@ function loadPlotAttachments(f){
       html += '</div>';
     }
     others.forEach(function(f2){
-      html += '<div><a href="https://shojisekizai.sharepoint.com'+f2.relUrl+'" target="_blank" style="font-size:11px;color:#185fa5;text-decoration:none">📎 '+f2.name+'</a></div>';
+      var encName2 = encodeURIComponent(f2.name);
+      var encRel2  = encodeURIComponent(f2.relUrl);
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0">' +
+        '<a href="https://shojisekizai.sharepoint.com'+f2.relUrl+'" target="_blank" style="font-size:11px;color:#185fa5;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📎 '+f2.name+'</a>' +
+        '<button onclick="vpDeleteAttachment(\''+encRel2+'\',\''+encName2+'\')" '+
+          'style="flex-shrink:0;font-size:10px;padding:1px 7px;background:#c00;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit;margin-left:6px">削除</button>' +
+      '</div>';
     });
 
     el2.innerHTML = html;
@@ -2109,6 +2125,105 @@ function changeFontScale(delta) {
   var lbl = document.getElementById('fontScaleLabel');
   if (lbl) lbl.textContent = _fontScale.toFixed(1) + '×';
 })();
+
+
+// ===== VPポップアップ：地図JPEG→顧客リスト添付保存 =====
+function vpSaveMapJpeg() {
+  var f = window._vpCurrentCustomer;
+  if (!f) { alert('顧客データが取得できていません'); return; }
+  var token = getSPToken();
+  if (!token) { alert('ビューアーからログインが必要です'); return; }
+
+  var btn = document.getElementById('vp-jpeg-btn');
+  if (btn) { btn.textContent = '⏳ 処理中...'; btn.disabled = true; }
+
+  var cusName  = f['CusName'] || f['Title'] || 'unknown';
+  var spItemId = f['id'];
+  var hlName   = f['_x006d_ap1'] || '';
+
+  // アクティブエリアを取得
+  var area = getActiveArea() || null;
+  var srcX, srcY, srcW, srcH;
+  if (area) {
+    srcX = Math.max(0, PAD + area.x); srcY = Math.max(0, PAD + area.y);
+    srcW = Math.min(area.w, mc.width - srcX); srcH = Math.min(area.h, mc.height - srcY);
+  } else {
+    srcX = 0; srcY = 0; srcW = mc.width; srcH = mc.height;
+  }
+
+  // ハイライト区画を一時描画してからJPEG生成
+  if (hlName) {
+    var hlIdx = PLOTS.findIndex(function(p){ return p.name === hlName; });
+    if (hlIdx >= 0) {
+      var prevSel = selIdx;
+      selIdx = hlIdx;
+      draw();
+      selIdx = prevSel;
+    }
+  }
+
+  var tmp = document.createElement('canvas');
+  tmp.width = srcW; tmp.height = srcH;
+  tmp.getContext('2d').drawImage(mc, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+  tmp.toBlob(function(blob) {
+    if (!blob) { if(btn){btn.textContent='🗺️ 地図JPEG → 添付保存';btn.disabled=false;} alert('JPEG生成失敗'); return; }
+    var dateStr  = new Date().toLocaleDateString('ja-JP').replace(/[/]/g, '');
+    var fileName = '地図_' + cusName + '_' + dateStr + '.jpg';
+    var listTitle = '%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88';
+    var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/' +
+      'lists/getbytitle('' + listTitle + '')' +
+      '/items(' + spItemId + ')/AttachmentFiles/add(FileName='' + encodeURIComponent(fileName) + '')';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose', 'Content-Type': 'application/octet-stream' },
+      body: blob
+    })
+    .then(function(r) {
+      if (btn) { btn.textContent = '🗺️ 地図JPEG → 添付保存'; btn.disabled = false; }
+      if (r.ok || r.status === 201) {
+        showSPStatus('✅ 地図を保存しました: ' + fileName, 'ok');
+        // 添付リストを再読込
+        if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+      } else {
+        r.json().then(function(e){ showSPStatus('❌ 保存エラー: ' + ((e.error&&e.error.message)||r.status), 'err'); });
+      }
+    })
+    .catch(function(e) {
+      if (btn) { btn.textContent = '🗺️ 地図JPEG → 添付保存'; btn.disabled = false; }
+      showSPStatus('❌ エラー: ' + e.message, 'err');
+    });
+  }, 'image/jpeg', 0.92);
+}
+
+// ===== VPポップアップ：添付ファイル削除 =====
+function vpDeleteAttachment(encRelUrl, encFileName) {
+  var fileName = decodeURIComponent(encFileName);
+  if (!confirm('「' + fileName + '」を削除しますか？')) return;
+  var token = getSPToken();
+  if (!token) { alert('ビューアーからログインが必要です'); return; }
+  var relUrl = decodeURIComponent(encRelUrl);
+  var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+    relUrl.replace(/'/g, "''") + "')";
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/json;odata=verbose',
+      'X-HTTP-Method': 'DELETE',
+      'IF-MATCH': '*'
+    }
+  })
+  .then(function(r) {
+    if (r.ok || r.status === 204 || r.status === 200) {
+      showSPStatus('✅ 削除しました: ' + fileName, 'ok');
+      if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+    } else {
+      showSPStatus('❌ 削除エラー: ' + r.status, 'err');
+    }
+  })
+  .catch(function(e){ showSPStatus('❌ エラー: ' + e.message, 'err'); });
+}
 
 // ===== SharePoint保存・読込（Graph API方式）=====
 var SP_DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';

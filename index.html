@@ -807,7 +807,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.74';
+var APP_VERSION = 'v1.8.75';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1427,15 +1427,18 @@ var _custRegData = null;
 var _custRegMode = null;
 var _custRegCusItem = null;
 
-// 和暦変換
+// 和暦変換（R8.4.5 形式）
 function toWareki(dateStr) {
   if (!dateStr) return '';
   var s = dateStr.substring(0,10);
-  var d = new Date(s);
-  if (isNaN(d.getTime())) return dateStr;
-  try {
-    return d.toLocaleDateString('ja-JP-u-ca-japanese', {era:'long', year:'numeric', month:'long', day:'numeric'});
-  } catch(e) { return s; }
+  var dt = new Date(s);
+  if (isNaN(dt.getTime())) return dateStr;
+  var y = dt.getFullYear(), m = dt.getMonth()+1, day = dt.getDate();
+  var era, ey;
+  if (y > 2019 || (y===2019 && m>=5)) { era='R'; ey=y-2018; }
+  else if (y > 1989 || (y===1989 && m>=1 && day>=8)) { era='H'; ey=y-1988; }
+  else { era='S'; ey=y-1925; }
+  return era+ey+'.'+m+'.'+day;
 }
 
 function openCustRegModal(d, mode) {
@@ -1452,7 +1455,8 @@ function openCustRegModal(d, mode) {
   var payDateWareki = toWareki(payDate);
   // 工事履歴用：依頼主=Customers、決済金額=InvoiceAmount
   var iraisha  = mode==='kouji' ? (d['Customers']||'') : (d['_x9867__x5ba2__x540d_']||'');
-  var money    = d['InvoiceAmount'] ? Number(d['InvoiceAmount']).toLocaleString('ja-JP')+'円' : '―';
+  var rawAmt   = mode==='kouji' ? d['InvoiceAmount'] : d['PaymentValue'];
+  var money    = rawAmt ? Math.round(Number(rawAmt)/1000)+'千円' : '―';
   var tanto    = mode==='kouji' ? (d['PersonInCharge']||d['Editor0']||'') : (d['personincharge']||d['Editor0']||'');
 
   document.getElementById('crm-name').textContent = name;
@@ -1493,6 +1497,16 @@ function openCustRegModal(d, mode) {
     }
   }
 
+  // 彫刻前状態：納骨リスト(d)から直接取得（顧客情報取得前に表示）
+  setCrmCur('crm-cur-left',  d['_x73fe__x72b6__xff08__x77f3__x58']  || '');
+  setCrmCur('crm-cur-back',  d['_x73fe__x72b6__xff08__x77f3__x580'] || '');
+  setCrmCur('crm-cur-right', d['_x73fe__x72b6__xff08__x77f3__x581'] || '');
+  setCrmCur('crm-cur-boshi', d['_x5893__x8a8c_'] || '');
+  // 彫刻場所：納骨リストの彫刻場所・行数を自動セット
+  var epEl = document.getElementById('crm-engrave-place');
+  var elEl = document.getElementById('crm-engrave-line');
+  if (epEl) epEl.value = d['_x5f6b__x523b__x5834__x6240_'] || '';
+  if (elEl) elEl.value = d['_x4f55__x884c__x76ee_'] ? String(d['_x4f55__x884c__x76ee_']) : '';
   // 彫刻場所セクション：納骨・戒切のみ
   var eps = document.getElementById('crm-engrave-place-section');
   if (eps) eps.style.display = mode==='noukotsu' ? '' : 'none';
@@ -1519,11 +1533,8 @@ function openCustRegModal(d, mode) {
     setCrmCur('crm-cur-zip',  f['Zipcode']||'');
     setCrmCur('crm-cur-addr', (f['address_1']||'')+(f['address_2']?' '+f['address_2']:''));
     // 彫刻
+    // 現在の顧客リスト彫刻内容のみセット（彫刻前状態は納骨リストから取得済み）
     setCrmCur('crm-cur-engrave', f['choukoku']||'');
-    setCrmCur('crm-cur-left',    f['_x73fe__x72b6__xff08__x77f3__x58']||'');
-    setCrmCur('crm-cur-back',    f['_x73fe__x72b6__xff08__x77f3__x580']||'');
-    setCrmCur('crm-cur-right',   f['_x73fe__x72b6__xff08__x77f3__x581']||'');
-    setCrmCur('crm-cur-boshi',   f['_x5893__x8a8c_']||'');
     // 石材パーツ
     var PARTS=[
       {k:'sekitou',n:'sekitou_toshi',     s:'sekitou_sekisyu',       b:'sekitou_bikou'},
@@ -1602,23 +1613,35 @@ function crmEngraveTab(tab){
   if(tabBo){tabBo.style.background=tab==='boshi'?'#1a2535':'#e8ecf2';tabBo.style.color=tab==='boshi'?'#fff':'#666';}
 }
 // 基本情報チェックボックスでテキスト入力を有効化
-function crmBasicToggle(chk, inputId, curVal) {
+function crmBasicToggle(chk, inputId) {
   var inp = document.getElementById(inputId);
   if (!inp) return;
   inp.disabled = !chk.checked;
   inp.style.background = chk.checked ? '#fff' : '#f5f5f5';
   inp.style.color = chk.checked ? '#1a1a1a' : '#999';
-  // 備考自動生成
+  crmRebuildBikou();
+}
+// 備考を1行にまとめて再構築
+function crmRebuildBikou() {
+  var today = new Date().toLocaleDateString('ja-JP', {year:'numeric',month:'numeric',day:'numeric'});
+  var defs = [
+    {chkId:'crm-chk-name', curId:'crm-cur-name'},
+    {chkId:'crm-chk-tel',  curId:'crm-cur-tel'},
+    {chkId:'crm-chk-zip',  curId:'crm-cur-zip'},
+    {chkId:'crm-chk-addr', curId:'crm-cur-addr'},
+  ];
+  var changed = [];
+  defs.forEach(function(f) {
+    var chkEl = document.getElementById(f.chkId);
+    var curEl = document.getElementById(f.curId);
+    if (chkEl && chkEl.checked && curEl) {
+      var val = curEl.textContent || '';
+      if (val) changed.push(val);
+    }
+  });
   var bikEl = document.getElementById('crm-basic-bikou');
   if (!bikEl) return;
-  var today = new Date().toLocaleDateString('ja-JP');
-  var oldVal = chk.getAttribute('data-cur') || curVal || '';
-  var marker = '（'+today+'変更前：'+oldVal+'）';
-  if (chk.checked) {
-    if (!bikEl.value.includes(marker)) bikEl.value = (bikEl.value ? bikEl.value+'\n' : '') + marker;
-  } else {
-    bikEl.value = bikEl.value.replace('\n'+marker,'').replace(marker,'').trim();
-  }
+  bikEl.value = changed.length > 0 ? '（'+today+'変更前：'+changed.join('　')+'）' : '';
 }
 
 function khUpdateLog(input) {
@@ -4957,7 +4980,7 @@ function openImageViewer(imgs, startIdx) {
         <span class="crm-badge">現顧客リスト</span>
         <span id="crm-cur-name" class="crm-cur"></span>
         <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-name" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-name',this.getAttribute('data-cur'))">
+        <input type="checkbox" id="crm-chk-name" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange=\"crmBasicToggle(this,'crm-src-name')\">
         <input id="crm-src-name" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
       </div>
       <!-- 電話番号 -->
@@ -4966,7 +4989,7 @@ function openImageViewer(imgs, startIdx) {
         <span class="crm-badge">現顧客リスト</span>
         <span id="crm-cur-tel" class="crm-cur"></span>
         <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-tel" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-tel',this.getAttribute('data-cur'))">
+        <input type="checkbox" id="crm-chk-tel" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange=\"crmBasicToggle(this,'crm-src-tel')\">
         <input id="crm-src-tel" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
       </div>
       <!-- 郵便番号 -->
@@ -4975,7 +4998,7 @@ function openImageViewer(imgs, startIdx) {
         <span class="crm-badge">現顧客リスト</span>
         <span id="crm-cur-zip" class="crm-cur"></span>
         <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-zip" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-zip',this.getAttribute('data-cur'))">
+        <input type="checkbox" id="crm-chk-zip" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange=\"crmBasicToggle(this,'crm-src-zip')\">
         <input id="crm-src-zip" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
       </div>
       <!-- 住所 -->
@@ -4984,7 +5007,7 @@ function openImageViewer(imgs, startIdx) {
         <span class="crm-badge">現顧客リスト</span>
         <span id="crm-cur-addr" class="crm-cur"></span>
         <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-addr" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-addr',this.getAttribute('data-cur'))">
+        <input type="checkbox" id="crm-chk-addr" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange=\"crmBasicToggle(this,'crm-src-addr')\">
         <input id="crm-src-addr" type="text" class="crm-src-inp" disabled placeholder="入力">
       </div>
       <!-- 備考 -->

@@ -807,7 +807,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.89';
+var APP_VERSION = 'v1.8.90';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1875,9 +1875,17 @@ function submitCustReg() {
     if (bEl && bEl.value) fields[p.fBik]  = bEl.value;
   });
 
-  // ---- PATCHで送信 ----
+  // ---- PATCHで送信 → 完了後に添付コピー ----
   var btn = document.querySelector('#cust-reg-modal button[onclick="submitCustReg()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 登録中...'; }
+
+  // 選択された添付ファイルを収集
+  var selectedAttach = [];
+  document.querySelectorAll('#crm-attach-list .crm-attach-chk').forEach(function(chk) {
+    if (chk.checked) {
+      selectedAttach.push({ url: chk.getAttribute('data-url'), name: chk.getAttribute('data-name') });
+    }
+  });
 
   getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/fields',
@@ -1887,8 +1895,16 @@ function submitCustReg() {
   .then(function(r) {
     if (btn) { btn.disabled = false; btn.textContent = '✅ 顧客リストに登録'; }
     if (r.ok) {
-      showSaveToast(true, '顧客リストに登録しました');
-      closeCustRegModal();
+      // 添付ファイルコピー
+      if (selectedAttach.length > 0) {
+        copyCrmAttachments(cusId, selectedAttach, function() {
+          showSaveToast(true, '顧客リストに登録しました');
+          closeCustRegModal();
+        });
+      } else {
+        showSaveToast(true, '顧客リストに登録しました');
+        closeCustRegModal();
+      }
     } else {
       r.json().then(function(e){ showSaveToast(false, '登録エラー: ' + ((e.error&&e.error.message)||r.status)); });
     }
@@ -2445,7 +2461,7 @@ function showKoujiTab(i, d) {
         : '<div id="kouji-attach-area-' + itemId + '"><div class="attach-empty">添付ファイルなし</div></div>') +
       '</div>' +
       '<div class="sec" style="margin-top:12px">' +
-      '<button class="photo-add-btn" onclick="document.getElementById(\'kouji-file-' + itemId + '\').click()">📷 写真・ファイルを追加</button>' +
+      '<div id="kouji-drop-' + itemId + '" ondragover="event.preventDefault();this.style.background=\'#d0e8ff\'" ondragleave="this.style.background=\'\'" ondrop="handleDropKouji(event,\'' + itemId + '\')" style="border:2px dashed #b5d4f4;border-radius:10px;background:#e6f1fb;padding:14px;text-align:center;margin-bottom:8px;color:#1565c0;font-size:13px;cursor:pointer" onclick="document.getElementById(\'kouji-file-' + itemId + '\').click()">📷 写真・ファイルをドロップ または タップして追加</div>' +
       '<input type="file" id="kouji-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadKoujiAttachments(\'' + itemId + '\',this)">' +
       '</div>';
     if (hasAttach) loadKoujiAttachments(itemId);
@@ -4543,18 +4559,22 @@ function showTab(i, d) {
         ? '<div id="attach-area-' + itemId + '"><div class="attach-loading">読み込み中...</div></div>'
         : '<div class="attach-empty">添付ファイルなし</div>') +
       '</div>';
+    // D&Dドロップゾーン + アップロードボタン追加
+    var attachAreaId = hasAttach ? 'attach-area-' + itemId : null;
+    var dropHtml = '<div class="sec" style="margin-top:8px">' +
+      '<div id="nok-drop-' + itemId + '" ondragover="event.preventDefault();this.style.background=\'#d0e8ff\'" ondragleave="this.style.background=\'\'" ondrop="handleDropNok(event,\'' + itemId + '\')" style="border:2px dashed #b5d4f4;border-radius:10px;background:#e6f1fb;padding:14px;text-align:center;margin-bottom:8px;color:#1565c0;font-size:13px;cursor:pointer" onclick="document.getElementById(\'nok-file-' + itemId + '\').click()">📷 写真・ファイルをドロップ または タップして追加</div>' +
+      '<input type="file" id="nok-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadNokAttachments(\'' + itemId + '\',this)">' +
+      '</div>';
+    b.innerHTML += dropHtml;
     if (hasAttach) { loadAttachments(itemId); }
     // ローカル写真の表示と追加ボタン
     setTimeout(function() {
       var area = document.getElementById('det-body');
       if (!area) return;
-      // ファイルタブのローカル写真エリアを追加
       var localDiv = document.createElement('div');
       localDiv.className = 'sec';
       localDiv.id = 'local-photo-sec';
       localDiv.innerHTML = '<span class="sec-hdr bg4" style="margin-bottom:10px;display:inline-block">📱 追加写真（端末保存）</span>' +
-        '<button class="photo-add-btn" onclick="document.getElementById(&quot;file-photo-' + itemId + '&quot;).click()">📷 写真を追加（カメラ / ファイル）</button>' +
-        '<input type="file" id="file-photo-' + itemId + '" accept="image/*" capture="environment" style="display:none" onchange="addLocalPhoto(\'' + itemId + '\', this, 4)">' +
         renderLocalPhotos(itemId, 4);
       area.appendChild(localDiv);
     }, 200);
@@ -4874,6 +4894,119 @@ function loadKoujiAttachments(itemId) {
     var area2 = document.getElementById('kouji-attach-area-' + itemId);
     if (area2) area2.innerHTML = '<div class="attach-empty" style="color:#c00">エラー: ' + e.message + '</div>';
   });
+}
+
+
+// ===== 納骨リスト 添付アップロード =====
+function uploadNokAttachments(itemId, input) {
+  var files = input ? input.files : null;
+  if (!files || files.length === 0) return;
+  showSaveToast(null, '⏳ アップロード中... (0/' + files.length + ')');
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var done = 0; var errors = 0;
+    function uploadNext(idx) {
+      if (idx >= files.length) {
+        if (input) input.value = '';
+        if (errors === 0) {
+          showSaveToast(true, done + '件アップロードしました');
+          if (currentItem) currentItem['Attachments'] = true;
+          loadAttachments(itemId);
+        } else {
+          showSaveToast(false, done + '件成功、' + errors + '件失敗');
+        }
+        return;
+      }
+      var file = files[idx];
+      var fname = file.name;
+      var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('納骨・戒切')" +
+        "/items(" + itemId + ")/AttachmentFiles/add(FileName='" + encodeURIComponent(fname) + "')";
+      fetch(url, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' },
+        body: file
+      }).then(function(r) {
+        if (r.ok || r.status === 201) done++;
+        else errors++;
+        showSaveToast(null, '⏳ アップロード中... (' + (done+errors) + '/' + files.length + ')');
+        uploadNext(idx + 1);
+      }).catch(function() { errors++; uploadNext(idx + 1); });
+    }
+    uploadNext(0);
+  }).catch(function(e) { showSaveToast(false, 'トークン取得失敗: ' + e.message); });
+}
+
+// ===== D&Dハンドラー =====
+function handleDropKouji(event, itemId) {
+  event.preventDefault();
+  var dropZone = document.getElementById('kouji-drop-' + itemId);
+  if (dropZone) dropZone.style.background = '';
+  var files = event.dataTransfer.files;
+  if (!files || files.length === 0) return;
+  // DataTransfer.files をそのままuploadに渡す
+  uploadKoujiAttachments(itemId, { files: files, value: '' });
+}
+
+function handleDropNok(event, itemId) {
+  event.preventDefault();
+  var dropZone = document.getElementById('nok-drop-' + itemId);
+  if (dropZone) dropZone.style.background = '';
+  var files = event.dataTransfer.files;
+  if (!files || files.length === 0) return;
+  uploadNokAttachments(itemId, { files: files, value: '' });
+}
+
+// ===== 顧客リスト登録モーダル：添付ファイルコピー =====
+function copyCrmAttachments(cusId, selectedFiles, callback) {
+  if (!selectedFiles || selectedFiles.length === 0) { callback(); return; }
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    return getToken().then(function(resp2) {
+      var graphToken = resp2.accessToken;
+      var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+      var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+      var done = 0; var errors = 0;
+      function copyNext(idx) {
+        if (idx >= selectedFiles.length) {
+          showSaveToast(errors === 0, errors === 0 ? done + '件コピーしました' : done + '件成功、' + errors + '件失敗');
+          callback();
+          return;
+        }
+        var f = selectedFiles[idx];
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+          f.url.replace(/'/g, "''") + "')/$value";
+        fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+          .then(function(r) { return r.arrayBuffer(); })
+          .then(function(buf) {
+            var bytes = new Uint8Array(buf);
+            var binary = '';
+            bytes.forEach(function(b) { binary += String.fromCharCode(b); });
+            var b64 = btoa(binary);
+            return fetch(
+              'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/attachments',
+              {
+                method: 'POST',
+                headers: { Authorization: 'Bearer ' + graphToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: f.name, contentBytes: b64 })
+              }
+            );
+          })
+          .then(function(r) {
+            if (r.ok || r.status === 201) done++;
+            else errors++;
+            copyNext(idx + 1);
+          })
+          .catch(function() { errors++; copyNext(idx + 1); });
+      }
+      copyNext(0);
+    });
+  }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); callback(); });
 }
 
 function uploadKoujiAttachments(itemId, input) {

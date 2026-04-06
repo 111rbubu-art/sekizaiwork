@@ -807,7 +807,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.81';
+var APP_VERSION = 'v1.8.82';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1441,11 +1441,50 @@ function toWareki(dateStr) {
   return era+ey+'.'+m+'.'+day;
 }
 
+
+// ===== 顧客リスト登録モーダル：添付ファイル読み込み =====
+function loadCrmAttachments(mode, d) {
+  var el = document.getElementById('crm-attach-list');
+  if (!el) return;
+  el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">読み込み中...</div>';
+  var listTitle = mode === 'kouji' ? '工事関連' : '納骨・戒切';
+  var itemId = d['id'];
+  if (!itemId) { el.textContent = '添付なし'; return; }
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('" + listTitle + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+  }).then(function(r){ return r.json(); })
+  .then(function(d2) {
+    var files = (d2.d && d2.d.results) ? d2.d.results : [];
+    if (files.length === 0) {
+      el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付ファイルなし</div>';
+      return;
+    }
+    el.innerHTML = files.map(function(f) {
+      var fname = f.FileName || '';
+      var isImg = /\.(jpg|jpeg|png|gif|webp)$/i.test(fname);
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid #eee">' +
+        '<input type="checkbox" class="crm-attach-chk" data-url="' + (f.ServerRelativeUrl||'') + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#1a5a1a">' +
+        '<span style="font-size:13px">' + (isImg ? '📷' : '📄') + '</span>' +
+        '<span style="font-size:12px;color:#185fa5;flex:1">' + fname + '</span>' +
+      '</div>';
+    }).join('');
+  })
+  .catch(function(e) { el.innerHTML = '<div style="color:#c00;font-size:11px">読込エラー: ' + e.message + '</div>'; });
+}
+
+
 function openCustRegModal(d, mode) {
   _custRegData = d; _custRegMode = mode; _custRegCusItem = null;
   var cusId = d['Cus_ID'] ? parseInt(d['Cus_ID']) : null;
   if (!cusId) { alert('顧客リストIDが未設定のため登録できません'); return; }
   document.getElementById('cust-reg-modal').style.display = 'flex';
+  // 添付ファイルを読み込み
+  loadCrmAttachments(mode, d);
 
   var name     = mode==='kouji' ? (d['Customers']||d['Title']||'') : (d['_x9867__x5ba2__x540d_']||d['Title']||'');
   var temple   = mode==='kouji' ? (d['Temples']||'') : (d['_x304a__x5bfa_']||'');
@@ -1479,7 +1518,7 @@ function openCustRegModal(d, mode) {
     var sekitouPlace= d['_x77f3__x5854__x5f6b__x523b__x4f'] || d['OData__x77f3__x5854__x5f6b__x523b__x4f'] || '';
     var nokMidPlace = boshiPlace || sekitouPlace;
     var nokLine     = boshiPlace
-      ? (d['_x5893__x8a8c__x3007__x884c__x76'] ? String(d['_x5893__x8a8c__x3007__x884c__x76']) + '行目' : '')
+      ? ((d['OData__x5893__x8a8c__x3007__x884c__x76']||d['_x5893__x8a8c__x3007__x884c__x76']) ? String(d['OData__x5893__x8a8c__x3007__x884c__x76']||d['_x5893__x8a8c__x3007__x884c__x76']) + '行目' : '')
       : (d['_x4f55__x884c__x76ee_'] ? String(d['_x4f55__x884c__x76ee_']) + '行目' : '');
     var nokContent  = d['SculptureName'] || '';
     // 備考欄：「納骨：担当者 / 彫刻場所・[墓誌/石塔場所]・行数・彫刻内容」
@@ -1632,7 +1671,99 @@ function closeCustRegModal(){
   document.getElementById('cust-reg-modal').style.display='none';
   _custRegData=null;_custRegMode=null;_custRegCusItem=null;
 }
-function submitCustReg(){alert('この機能は現在準備中です。');}
+function submitCustReg() {
+  if (!_custRegCusItem) { alert('顧客情報が読み込まれていません。少し待ってから再試行してください。'); return; }
+  var cusId = _custRegData && _custRegData['Cus_ID'] ? parseInt(_custRegData['Cus_ID']) : null;
+  if (!cusId) { alert('顧客IDが不明です'); return; }
+  if (!confirm('顧客リストに登録します。よろしいですか？')) return;
+
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+  var fields = {};
+
+  // ---- 基本情報の更新（チェックされた項目のみ）----
+  var basicMap = [
+    {chkId:'crm-chk-name', inpId:'crm-src-name', field:'CusName'},
+    {chkId:'crm-chk-tel',  inpId:'crm-src-tel',  field:'telephonenumber'},
+    {chkId:'crm-chk-zip',  inpId:'crm-src-zip',  field:'Zipcode'},
+    {chkId:'crm-chk-addr', inpId:'crm-src-addr',  field:'address_1'},
+  ];
+  basicMap.forEach(function(m) {
+    var chk = document.getElementById(m.chkId);
+    var inp = document.getElementById(m.inpId);
+    if (chk && chk.checked && inp) fields[m.field] = inp.value;
+  });
+  // 備考(memo)
+  var bikouEl = document.getElementById('crm-basic-bikou');
+  if (bikouEl && bikouEl.value) fields['memo'] = bikouEl.value;
+
+  // ---- 工事履歴（本体）：登録不要チェックがなければ追加 ----
+  var skipMain = document.getElementById('crm-skip-main');
+  if (!skipMain || !skipMain.checked) {
+    var catEl  = document.getElementById('crm-f-category');
+    var iraEl  = document.getElementById('crm-f-iraisha');
+    var monEl  = document.getElementById('crm-f-money');
+    var datEl  = document.getElementById('crm-f-paydate');
+    var bikEl  = document.getElementById('crm-f-bikou');
+    var mainLog = {
+      '内容':    catEl  ? catEl.value  : '',
+      '依頼':    iraEl  ? iraEl.value  : '',
+      '決済金額': monEl  ? monEl.value  : '',
+      '時期':    datEl  ? datEl.value  : '',
+      '備考':    bikEl  ? bikEl.value  : ''
+    };
+    var existingLogs = [];
+    try { existingLogs = JSON.parse(_custRegCusItem['KoujiLogJson']||'[]'); } catch(e){}
+    existingLogs.push(mainLog);
+    fields['KoujiLogJson'] = JSON.stringify(existingLogs);
+  }
+
+  // ---- 工事履歴（追加工事）：登録不要チェックがなければ追加 ----
+  var skipTui = document.getElementById('crm-skip-tui');
+  var tuiSection = document.getElementById('crm-tui-section');
+  if (tuiSection && tuiSection.style.display !== 'none' && (!skipTui || !skipTui.checked)) {
+    var tuiCat = document.getElementById('crm-tui-content');
+    var tuiIra = document.getElementById('crm-tui-iraisha');
+    var tuiMon = document.getElementById('crm-tui-money');
+    var tuiDat = document.getElementById('crm-tui-paydate');
+    var tuiBik = document.getElementById('crm-tui-bikou');
+    var tuiLog = {
+      '内容':    tuiCat ? tuiCat.value : '',
+      '依頼':    tuiIra ? tuiIra.value : '',
+      '決済金額': tuiMon ? tuiMon.value : '',
+      '時期':    tuiDat ? tuiDat.value : '',
+      '備考':    tuiBik ? tuiBik.value : ''
+    };
+    var logs2 = fields['KoujiLogJson']
+      ? JSON.parse(fields['KoujiLogJson'])
+      : (function(){ try { return JSON.parse(_custRegCusItem['KoujiLogJson']||'[]'); } catch(e){ return []; } })();
+    logs2.push(tuiLog);
+    fields['KoujiLogJson'] = JSON.stringify(logs2);
+  }
+
+  // ---- PATCHで送信 ----
+  var btn = document.querySelector('#cust-reg-modal button[onclick="submitCustReg()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 登録中...'; }
+
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/fields',
+      { method: 'PATCH', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields) });
+  })
+  .then(function(r) {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ 顧客リストに登録'; }
+    if (r.ok) {
+      showSaveToast(true, '顧客リストに登録しました');
+      closeCustRegModal();
+    } else {
+      r.json().then(function(e){ showSaveToast(false, '登録エラー: ' + ((e.error&&e.error.message)||r.status)); });
+    }
+  })
+  .catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ 顧客リストに登録'; }
+    showSaveToast(false, 'ネットワークエラー: ' + e.message);
+  });
+}
 function toggleStonePanel(){
   var p=document.getElementById('crm-stone-panel');
   var c=document.getElementById('crm-stone-caret');
@@ -4994,9 +5125,6 @@ function openImageViewer(imgs, startIdx) {
     <span style="font-size:13px;font-weight:500">📋 顧客リストに完了情報を登録</span>
     <button onclick="closeCustRegModal()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1">✕</button>
   </div>
-  <div style="font-size:11px;color:#c07000;background:#fff8e6;border-bottom:0.5px solid #f0c000;padding:5px 14px;flex-shrink:0">
-    ⚠️ 現在準備中です。登録ボタンは無効化されています。
-  </div>
   <div style="padding:12px 14px;overflow-y:auto;-webkit-overflow-scrolling:touch">
 
     <!-- 登録先 -->
@@ -5064,6 +5192,11 @@ function openImageViewer(imgs, startIdx) {
         <span style="font-size:11px;font-weight:500;color:#fff">工事履歴に追加（本体）</span>
         <span style="font-size:10px;background:#e8f4ff;color:#185fa5;border-radius:10px;padding:1px 7px">自動取得・手動修正可</span>
       </div>
+      <!-- 登録不要チェック -->
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#f0f0f0;border-radius:5px;margin-bottom:6px">
+        <input type="checkbox" id="crm-skip-main" style="width:15px;height:15px;accent-color:#c00">
+        <label for="crm-skip-main" style="font-size:12px;color:#555;cursor:pointer">この履歴は登録不要</label>
+      </div>
       <!-- 既存履歴 -->
       <div style="margin-bottom:6px">
         <div style="font-size:10px;color:#888;margin-bottom:3px">▼ 顧客リスト登録済み履歴（直近3件）</div>
@@ -5090,6 +5223,11 @@ function openImageViewer(imgs, startIdx) {
       <div style="background:#7a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
         <span style="font-size:11px;font-weight:500;color:#fff">工事履歴に追加（追加工事）</span>
         <span style="font-size:10px;background:#e8f4ff;color:#185fa5;border-radius:10px;padding:1px 7px">自動取得・手動修正可</span>
+      </div>
+      <!-- 登録不要チェック -->
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#f0f0f0;border-radius:5px;margin-bottom:6px">
+        <input type="checkbox" id="crm-skip-tui" style="width:15px;height:15px;accent-color:#c00">
+        <label for="crm-skip-tui" style="font-size:12px;color:#555;cursor:pointer">この履歴は登録不要</label>
       </div>
       <div id="crm-tui-dup-warn" style="display:none;font-size:11px;color:#c00;background:#fee;border:0.5px solid #fcc;border-radius:4px;padding:5px 8px;margin-bottom:6px">
         ⚠️ 追加工事の履歴が既に存在します。登録すると重複します。
@@ -5317,7 +5455,7 @@ function openImageViewer(imgs, startIdx) {
   <!-- フッター -->
   <div style="padding:10px 14px;border-top:1px solid #eee;flex-shrink:0;display:flex;gap:8px">
     <button onclick="closeCustRegModal()" style="flex:1;padding:11px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px">キャンセル</button>
-    <button onclick="submitCustReg()" disabled style="flex:2;padding:11px;background:#aaa;color:#fff;border:none;border-radius:6px;cursor:not-allowed;font-family:inherit;font-size:13px;font-weight:500">✅ 顧客リストに登録（準備中）</button>
+    <button onclick="submitCustReg()" style="flex:2;padding:11px;background:#1a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500">✅ 顧客リストに登録</button>
   </div>
 </div>
 </div>

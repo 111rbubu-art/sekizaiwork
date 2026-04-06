@@ -191,9 +191,9 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
     <div class="sep"></div>
     <button class="btn" onclick="startPdfExport()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
     <button class="btn out" onclick="syncFromSP()" id="syncFromBtn" title="SharePointの最新データをマップに反映">📥 SP読込</button>
+    <button class="btn out" onclick="location.reload()" title="ページを再読み込み">🔄 リロード</button>
     <button class="btn out" onclick="mapRelogin()" id="relogin-btn" title="認証トークンを更新" style="display:none">🔑 再ログイン</button>
     <button class="btn"     onclick="syncToSP()"   id="syncToBtn"   title="現在のマップをSharePointに保存">📤 SP保存</button>
-    <button class="btn out" onclick="startPdfExport()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
 
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importJSON(event)"/>
     <div class="sep"></div>
@@ -786,10 +786,27 @@ function loadPlotAttachments(f){
   if(!el) return;
   if(!spId){ el.textContent = 'ID不明'; return; }
 
-  var token = getSPToken(true);
-  if(!token){ el.textContent = '（ログイン後に表示）'; return; }
+  // まずlocalStorageから取得を試み、失敗したらMSAL非同期で取得
+  var tokenSync = getSPToken(true);
+  if(tokenSync){
+    _doLoadPlotAttachments(spId, tokenSync, el);
+    return;
+  }
+  // 初回ロード等でlocalStorageにまだトークンがない場合はMSAL経由で取得
+  if(typeof msalApp === 'undefined'){ el.textContent = '（ログイン後に表示）'; return; }
+  var acct = msalApp.getAllAccounts()[0];
+  if(!acct){ el.textContent = '（ログイン後に表示）'; return; }
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: acct
+  }).then(function(resp){
+    _doLoadPlotAttachments(spId, resp.accessToken, el);
+  }).catch(function(e){
+    el.textContent = 'トークン取得失敗: ' + e.message;
+  });
+}
 
-  // ファイル一覧取得
+function _doLoadPlotAttachments(spId, token, el){
   var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items("+spId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
   fetch(listUrl, {
     headers: { 'Authorization': 'Bearer '+token, 'Accept': 'application/json;odata=verbose' }
@@ -855,8 +872,7 @@ function loadPlotAttachments(f){
       var relUrl = decodeURIComponent(imgEl.getAttribute('data-relurl'));
       var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
                    relUrl.replace(/'/g,"''") + "')/$value";
-      var t2 = getSPToken(true);
-      fetch(binUrl, { headers: { 'Authorization': 'Bearer '+t2 } })
+      fetch(binUrl, { headers: { 'Authorization': 'Bearer '+token } })
       .then(function(r){ return r.ok ? r.blob() : null; })
       .then(function(blob){
         if(blob) imgEl.src = URL.createObjectURL(blob);
@@ -954,7 +970,7 @@ function toggleEdit(){
     document.getElementById('aBtn').disabled=true;
     if(addMode)stopAdd();
     mc.style.cursor='pointer';
-    mh.className='mhint';selIdx=-1;closeCtx();draw();
+    mh.className='mhint';selIdx=-1;plotEditIdx=-1;closeCtx();draw();
   }
 }
 
@@ -1008,8 +1024,11 @@ function closeCtx(){document.getElementById('ctx').style.display='none';}
 document.addEventListener('click',e=>{if(!document.getElementById('ctx').contains(e.target)&&e.target!==mc)closeCtx();});
 function ctxEdit(){closeCtx();openModal(selIdx,'編集');}
 function ctxDel(){
-  closeCtx();pendDelIdx=selIdx;
-  const p=PLOTS[selIdx];
+  var delIdx = selIdx; // closeCtx前に保存
+  pendDelIdx = delIdx;
+  closeCtx();
+  if(delIdx < 0 || delIdx >= PLOTS.length) return;
+  const p=PLOTS[delIdx];
   document.getElementById('delMsg').innerHTML=`<b>「${p.name||'空き区画'}」</b>を削除しますか？<br><span style="font-size:10px;color:#888;">サイズ：${p.r2-p.r1+1}行×${p.c2-p.c1+1}列</span><br><br>この操作は元に戻せません。`;
   document.getElementById('delDlg').className='v';
 }

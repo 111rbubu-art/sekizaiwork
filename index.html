@@ -646,21 +646,12 @@ var _menuSearchCache = {}; // {mode: items}
 var _menuSearchTimer = null;
 
 function menuSearch(q) {
-  var box = document.getElementById('menu-search-results');
-  var inp = document.getElementById('menu-search');
   q = q.trim();
-  if (q.length < 1) { box.style.display = 'none'; return; }
-
-  // 検索ボックスの位置に合わせて検索結果を配置
-  if (inp) {
-    var rect = inp.getBoundingClientRect();
-    box.style.top    = (rect.bottom + 4) + 'px';
-    box.style.left   = rect.left + 'px';
-    box.style.width  = rect.width + 'px';
+  if (q.length < 1) {
+    // 空欄に戻ったら社内連絡リストを再表示
+    loadMenuNauchi();
+    return;
   }
-  box.style.display = 'block';
-  box.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.5);font-size:12px;text-align:center">検索中...</div>';
-
   clearTimeout(_menuSearchTimer);
   _menuSearchTimer = setTimeout(function() {
     _menuSearchExec(q);
@@ -668,25 +659,112 @@ function menuSearch(q) {
 }
 
 function _menuSearchExec(q) {
-  var box = document.getElementById('menu-search-results');
   var ql = q.replace(/\s/g, '');
 
-  // キャッシュ済みデータを使ってフィルター（未読込なら取得）
   var needed = [];
   if (!_menuSearchCache['noukotsu']) needed.push('noukotsu');
   if (!_menuSearchCache['kouji'])    needed.push('kouji');
-  if (!_menuSearchCache['customer']) needed.push('customer');
 
   if (needed.length > 0) {
-    // 初回：各リストをfetchしてキャッシュ
-    _menuSearchFetchAll(function() { _menuSearchRender(q, ql); });
+    _menuSearchFetchAll(function() { _menuSearchRenderInCard(q, ql); });
   } else {
-    _menuSearchRender(q, ql);
+    _menuSearchRenderInCard(q, ql);
   }
 }
 
 
 // ===== I-6: メニュー画面 社内連絡リスト表示 =====
+function _menuSearchRenderInCard(q, ql) {
+  var isTelSearch = /^[0-9\-]+$/.test(ql);
+  var cacheNok   = _menuSearchCache['noukotsu'] || [];
+  var cacheKouji = _menuSearchCache['kouji'] || [];
+
+  // 納骨フィルター
+  var nokResults = cacheNok.filter(function(d) {
+    var name = (d['_x9867__x5ba2__x540d_'] || '').replace(/\s/g,'');
+    var tel  = d['_x96fb__x8a71__x756a__x53f7_'] || '';
+    return name.includes(ql) || tel.includes(ql);
+  });
+  // 工事フィルター
+  var koujiResults = cacheKouji.filter(function(d) {
+    var name = (d['Customers'] || '').replace(/\s/g,'');
+    var tel  = d['telephonenumber'] || '';
+    return name.includes(ql) || tel.includes(ql);
+  });
+
+  // 納骨カード内に表示
+  var nokDiv = document.getElementById('menu-nauchi-noukotsu');
+  var nokBadge = document.getElementById('menu-badge-nok');
+  if (nokDiv) {
+    if (nokResults.length > 0) {
+      nokDiv.style.display = '';
+      if (nokBadge) { nokBadge.textContent = nokResults.length+'件'; nokBadge.style.display = ''; }
+      nokDiv.innerHTML = nokResults.map(function(d) {
+        var name   = d['_x9867__x5ba2__x540d_'] || d['Title'] || '';
+        var temple = d['_x304a__x5bfa_'] || '';
+        var tel    = d['_x96fb__x8a71__x756a__x53f7_'] || '';
+        var isDone = d['_x524a__x9664_'] === true;
+        var nauchi = d['InternalCommunication'] || '';
+        var sub    = isTelSearch && tel ? tel : temple;
+        var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
+        return '<div onclick="menuNauchiSelect(\'noukotsu\',' + dJson + ')" ' +
+          'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
+          'onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
+          '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin-bottom:' + (nauchi?'3px':'0') + '">' +
+            '<div style="display:flex;align-items:baseline;gap:6px">' +
+              '<span style="font-size:13px;font-weight:600;color:#1a2535">' + name + '</span>' +
+              '<span style="font-size:10px;color:#888">' + sub + '</span>' +
+            '</div>' +
+            (isDone ? '<span style="font-size:10px;color:#4caf50;font-weight:600;white-space:nowrap">✅完了</span>' : '') +
+          '</div>' +
+          (nauchi ? '<div style="font-size:11px;color:#185fa5;background:#e8f2ff;border-radius:4px;padding:2px 7px;line-height:1.4">' + nauchi + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } else {
+      nokDiv.style.display = '';
+      if (nokBadge) { nokBadge.textContent = '0件'; nokBadge.style.display = ''; }
+      nokDiv.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:#aaa">「' + q + '」は見つかりませんでした</div>';
+    }
+  }
+
+  // 工事カード内に表示
+  var koujiDiv = document.getElementById('menu-nauchi-kouji');
+  var kBadge = document.getElementById('menu-badge-kouji');
+  if (koujiDiv) {
+    if (koujiResults.length > 0) {
+      koujiDiv.style.display = '';
+      if (kBadge) { kBadge.textContent = koujiResults.length+'件'; kBadge.style.display = ''; }
+      koujiDiv.innerHTML = koujiResults.map(function(d) {
+        var name    = d['Customers'] || d['Title'] || '';
+        var temple  = d['Temples'] || '';
+        var tel     = d['telephonenumber'] || '';
+        var endinfo = d['endinfo'] || '';
+        var statusLabel = endinfo || '進行中';
+        var statusColor = endinfo === '完了' ? '#4caf50' : endinfo ? '#888' : '#c07000';
+        var nauchi  = d['InternalCommunication'] || '';
+        var sub     = isTelSearch && tel ? tel : temple;
+        var dJson   = JSON.stringify(d).replace(/"/g,'&quot;');
+        return '<div onclick="menuNauchiSelect(\'kouji\',' + dJson + ')" ' +
+          'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
+          'onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
+          '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin-bottom:' + (nauchi?'3px':'0') + '">' +
+            '<div style="display:flex;align-items:baseline;gap:6px">' +
+              '<span style="font-size:13px;font-weight:600;color:#1a2535">' + name + '</span>' +
+              '<span style="font-size:10px;color:#888">' + sub + '</span>' +
+            '</div>' +
+            '<span style="font-size:10px;color:' + statusColor + ';white-space:nowrap;font-weight:500">' + statusLabel + '</span>' +
+          '</div>' +
+          (nauchi ? '<div style="font-size:11px;color:#185fa5;background:#e8f2ff;border-radius:4px;padding:2px 7px;line-height:1.4">' + nauchi + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } else {
+      koujiDiv.style.display = '';
+      if (kBadge) { kBadge.textContent = '0件'; kBadge.style.display = ''; }
+      koujiDiv.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:#aaa">「' + q + '」は見つかりませんでした</div>';
+    }
+  }
+}
+
 function loadMenuNauchi() {
   var cacheNok = _menuSearchCache['noukotsu'] || [];
   var cacheKouji = _menuSearchCache['kouji'] || [];
@@ -1023,7 +1101,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.110';
+var APP_VERSION = 'v1.8.111';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 

@@ -1235,7 +1235,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.124';
+var APP_VERSION = 'v1.8.125';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -4598,64 +4598,52 @@ function loadEditsFromStorage() {
 
 // 選択肢定義
 // SPから動的取得（起動時にloadSPFieldChoices()で設定される）
-var FIELD_CHOICES = {
-  'Temples': ['光明院','願泉寺','慈宏寺','宗福寺','福寿院','長泉寺','十善戒寺','浄因寺','家屋','他の寺','多磨霊園'],
-  'category': ['墓新規','修繕','撤去','花立交換','彫刻変更','クリーニング','移設','小工事','他工事'],
-  'endinfo': ['完了','キャンセル','延期、保留','参考見積','音信不通','3カ月以上　返事なし']
-};
+// 選択肢は全てSPから動的取得（起動時にloadSPFieldChoicesで読み込む）
+var FIELD_CHOICES = {};
 
 // SPリストのフィールド定義から選択肢を動的取得
-// 内部名 → FIELD_CHOICESのキーへのマッピング
+// 内部名 → FIELD_CHOICESのキーへのマッピング（日本語キーのefldのみ変換）
 var _SP_FIELD_KEY_MAP = {
-  // 日本語キーのefldに対応するもののみ変換
   '_x5206__x985e_': '分類',
   '_x304a__x5bfa_': 'お寺',
   'Informer': '依頼情報提供者',
-  // 以下はefldのsave_keyが既にSP内部名なのでマッピング不要
-  // （FIELD_CHOICESに直接SP内部名でセットされる）
 };
 
 function loadSPFieldChoices() {
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-  var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480'; // 納骨・戒切
+  var nokListId   = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var koujiListId = KOUJI_LIST_ID;
+
   getToken().then(function(resp) {
-    return fetch(
-      'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
-      '/columns?$select=name,displayName,choice&$top=200',
-      { headers: { Authorization: 'Bearer ' + resp.accessToken } }
-    );
+    var token = resp.accessToken;
+    var headers = { Authorization: 'Bearer ' + token };
+
+    // 納骨リストと工事関連リストの両方からcolumnsを取得
+    var p1 = fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/' + nokListId + '/columns?$select=name,displayName,choice&$top=300',
+      { headers: headers }).then(function(r){ return r.json(); });
+
+    var p2 = fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/' + koujiListId + '/columns?$select=name,displayName,choice&$top=300',
+      { headers: headers }).then(function(r){ return r.json(); });
+
+    return Promise.all([p1, p2]);
   })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    (data.value || []).forEach(function(col) {
-      if (!col.choice || !col.choice.choices || col.choice.choices.length === 0) return;
-      var key = _SP_FIELD_KEY_MAP[col.name] || col.name;
-      FIELD_CHOICES[key] = col.choice.choices;
+  .then(function(results) {
+    // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）
+    results.forEach(function(data) {
+      (data.value || []).forEach(function(col) {
+        if (!col.choice || !col.choice.choices || col.choice.choices.length === 0) return;
+        var key = _SP_FIELD_KEY_MAP[col.name] || col.name;
+        if (!FIELD_CHOICES[key]) {
+          FIELD_CHOICES[key] = col.choice.choices;
+        }
+      });
     });
     console.log('[FIELD_CHOICES] SP取得完了:', Object.keys(FIELD_CHOICES).length + '種類');
   })
   .catch(function(e) {
-    console.warn('[FIELD_CHOICES] SP取得失敗（フォールバック使用）:', e.message);
-    // フォールバック（既知の選択肢）
-    FIELD_CHOICES = {
-      '分類': ['戒切','納骨','納骨戒切','骨出し'],
-      'お寺': ['久我山墓地','他の寺','光明院','十善戒寺','多磨霊園','宗福寺','慈宏寺','浄因寺','福寿院','緑ヶ丘霊園','長泉寺','願泉寺'],
-      '依頼情報提供者': ['お客','お寺','業者マキノ'],
-      'Resubmission': ['問題なし','再提出','彫刻キャンセル'],
-      '_x5f6b__x523b__x5834__x6240_': ['石塔','墓誌','不明'],
-      '_x77f3__x5854__x306e__x7a2e__x98': ['プレート','不明','和型7寸','和型8寸','和型9寸','和型9寸以上','和型尺以上','洋型'],
-      '_x77f3__x5854__x5f6b__x523b__x4f': ['右面','左面','裏面','上台　左面'],
-      '_x5893__x8a8c__x5834__x6240_': ['表面','裏面'],
-      '_x5893__x8a8c_': ['有','無'],
-      '_x73fe__x72b6__xff08__x77f3__x581': ['有','無','要確認'],
-      '_x73fe__x72b6__xff08__x77f3__x58': ['有','無','要確認'],
-      '_x73fe__x72b6__xff08__x77f3__x580': ['有','無','要確認'],
-      'RedMark': ['未確認','朱有（朱取不明）','朱有（朱取不要）','朱有（朱取必要）','朱無'],
-      'hakacover': ['コンクリート','パッカ','上切拝石','丘カロート','埋　拝石','通常拝石（厚45）','通常拝石（厚60）','難易度高（メモへ）'],
-      'joint': ['グレーコーキング','濃灰セメント','無→無','目地無→コーキング','目地無→セメント','黒コーキング','黒セメント'],
-      'sekitou_meji': ['コーキング（劣化）','コーキング（良好）','セメント（カケ有）','セメント（良好）'],
-      'noukotu_kaisi_jyoutai': ['本堂でお経開始','墓前でお経開始','墓前で集合（お経無）','自宅等の他場所でお経開始'],
-    };
+    console.warn('[FIELD_CHOICES] SP取得失敗:', e.message);
   });
 }
 

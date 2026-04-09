@@ -1264,7 +1264,7 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.157';
+var APP_VERSION = 'v1.8.159';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -3916,7 +3916,7 @@ function buildDetTitle(d, mode) {
 
 function registerOutlookContact(d, mode) {
   var cusName = mode === 'kouji' ? (d['Customers'] || '') : (d['_x9867__x5ba2__x540d_'] || '');
-  var tel     = mode === 'kouji' ? (d['telephonenumber'] || '') : (d['_x96fb__x8a71__x756a__x53f7_'] || '');
+  var telRaw  = mode === 'kouji' ? (d['telephonenumber'] || '') : (d['_x96fb__x8a71__x756a__x53f7_'] || '');
   var temple  = mode === 'kouji' ? (d['Temples'] || '') : (d['_x304a__x5bfa_'] || '');
   var cusNo   = mode === 'kouji' ? (d['no'] ? String(d['no']) : '') : (d['_x9867_No'] ? String(d['_x9867_No']) : '');
   var cusId   = d['Cus_ID'] ? String(d['Cus_ID']) : '';
@@ -3925,39 +3925,68 @@ function registerOutlookContact(d, mode) {
   var appUrl  = 'https://111rbubu-art.github.io/sekizaiwork/?id=' + cusId;
 
   if (!cusName) { showSaveToast(false, '顧客名が取得できません'); return; }
-  if (!tel) { showSaveToast(false, '電話番号が登録されていません'); return; }
+  if (!telRaw)  { showSaveToast(false, '電話番号が登録されていません'); return; }
 
-  var displayName = cusName + (temple ? '（' + temple + '）' : '');
+  // 電話番号を分割（「、」「,」「/」「・」「 」「\n」で区切り）
+  var tels = telRaw.split(/[、,\/・\s\n]+/).map(function(t){ return t.trim(); }).filter(Boolean);
+  var mobileTel   = tels[0] || '';
+  var businessTel = tels[1] || '';
+
+  var displayName = cusName + (temple ? ' ' + temple : '') + (cusId ? ' ' + cusId : '');
+  var givenName   = cusName;
+  var surname     = [temple, cusId].filter(Boolean).join(' ');
+  var noteId      = 'sekizaiwork_id:' + cusId; // 検索キー
   var notes = [
+    noteId,
     '受付日: ' + (recDate || '未設定'),
     '分類: ' + (category || '未設定'),
     '顧客リストID: ' + (cusId || '未設定'),
     cusId ? '🔗 ' + appUrl : ''
   ].filter(Boolean).join('\n');
 
+  showSaveToast(null, '🔍 既存連絡先を検索中...');
+
   getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+
     var body = {
       displayName: displayName,
+      givenName: givenName,
+      surname: surname,
       companyName: temple,
-      mobilePhone: tel,
+      mobilePhone: mobileTel,
       personalNotes: notes
     };
-    return fetch('https://graph.microsoft.com/v1.0/me/contacts', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + resp.accessToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
+    if (businessTel) body.businessPhones = [businessTel];
+
+    // 既存連絡先を検索（personalNotesのsekizaiwork_idで照合）
+    return fetch(
+      "https://graph.microsoft.com/v1.0/me/contacts?$filter=contains(personalNotes,'" + noteId + "')&$select=id,displayName",
+      { headers: { Authorization: 'Bearer ' + token } }
+    ).then(function(r){ return r.json(); })
+    .then(function(data) {
+      var existing = data.value && data.value[0];
+      if (existing) {
+        // 既存あり → PATCH（更新）
+        return fetch(
+          'https://graph.microsoft.com/v1.0/me/contacts/' + existing.id,
+          { method: 'PATCH', headers: headers, body: JSON.stringify(body) }
+        ).then(function(r) {
+          if (r.ok) showSaveToast(true, '📇 連絡先を更新しました：' + displayName);
+          else r.json().then(function(e){ showSaveToast(false, '更新失敗: ' + (e.error && e.error.message || r.status)); });
+        });
+      } else {
+        // 既存なし → POST（新規）
+        return fetch(
+          'https://graph.microsoft.com/v1.0/me/contacts',
+          { method: 'POST', headers: headers, body: JSON.stringify(body) }
+        ).then(function(r) {
+          if (r.ok || r.status === 201) showSaveToast(true, '📇 連絡先に登録しました：' + displayName);
+          else r.json().then(function(e){ showSaveToast(false, '登録失敗: ' + (e.error && e.error.message || r.status)); });
+        });
+      }
     });
-  }).then(function(r) {
-    if (r.ok || r.status === 201) {
-      showSaveToast(true, '📇 Outlook連絡先に登録しました：' + displayName);
-    } else {
-      return r.json().then(function(e) {
-        showSaveToast(false, '登録失敗: ' + (e.error && e.error.message || r.status));
-      });
-    }
   }).catch(function(e) { showSaveToast(false, 'エラー: ' + e.message); });
 }
 

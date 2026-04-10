@@ -1406,6 +1406,7 @@ function isPC() {
 // ===== 表示モード切り替え =====
 function openSettingsPage() {
   initTantoFilter();
+  loadEnvSenderToSettings();
   document.getElementById('settings-screen').classList.remove('hidden');
   var verEl = document.getElementById('settings-ver');
   if (verEl) verEl.textContent = APP_VERSION || '';
@@ -1686,16 +1687,91 @@ function getTempleFile(d) {
   return 'map.html?temple=' + templeId;
 }
 
-// 封筒印刷
+// 封筒印刷（pptx生成）
+function saveEnvSender() {
+  var c = (document.getElementById('env-company')||{}).value || '';
+  var i = (document.getElementById('env-info')||{}).value || '';
+  localStorage.setItem('envSender', JSON.stringify({ company: c, info: i }));
+  var msg = document.getElementById('env-save-msg');
+  if (msg) { msg.style.display = ''; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
+}
+
+function loadEnvSenderToSettings() {
+  var s = {}; try { s = JSON.parse(localStorage.getItem('envSender') || '{}'); } catch(e){}
+  var ec = document.getElementById('env-company');
+  var ei = document.getElementById('env-info');
+  if (ec) ec.value = s.company || '';
+  if (ei) ei.value = s.info || '';
+}
+
 function openEnvelopePrint(d) {
-  var data = {
-    zip:   G(d,'郵便番号') || '',
-    name:  G(d,'宛名') || '',
-    addr1: G(d,'住所1') || '',
-    addr2: G(d,'住所2') || ''
-  };
-  sessionStorage.setItem('envelopeData', JSON.stringify(data));
-  window.open('envelope.html', 'envelope_print', 'width=900,height=750');
+  var zip   = G(d,'郵便番号') || d['Zipcode'] || d['_x90f5__x4fbf__x756a__x53f7_'] || '';
+  var name  = G(d,'宛名') || d['atena'] || d['addressee'] || '';
+  var addr1 = G(d,'住所1') || d['address_xff11_'] || d['address_1'] || d['_x4f4f__x6240_1'] || '';
+  var addr2 = G(d,'住所2') || d['address_xff12_'] || d['address_2'] || d['_x4f4f__x6240_2'] || '';
+  var sender = {}; try { sender = JSON.parse(localStorage.getItem('envSender') || '{}'); } catch(e){}
+
+  function mm(v) { return v / 25.4; }
+
+  function generate() {
+    var pptx = new PptxGenJS();
+    pptx.defineLayout({ name: 'NAGAGATA3', width: mm(120), height: mm(235) });
+    pptx.layout = 'NAGAGATA3';
+    var slide = pptx.addSlide();
+    slide.background = { color: 'FFFFFF' };
+    var W = mm(120), H = mm(235);
+
+    // === 郵便番号 ===
+    var zipStr = zip.replace(/[^0-9]/g, '');
+    var bW = mm(7), bH = mm(7), zipY = mm(13);
+    // 7桁ボックス位置(mm): 3桁+ハイフン+4桁, 右端が右8mm
+    var bXmm = [54, 62, 70, 81, 89, 97, 105];
+    bXmm.forEach(function(xmm, i) {
+      var x = mm(xmm);
+      slide.addShape(pptx.ShapeType.rect, { x:x, y:zipY, w:bW, h:bH, line:{color:'CC0000',width:1.5}, fill:{color:'FFFFFF'} });
+      if (zipStr[i]) slide.addText(zipStr[i], { x:x, y:zipY, w:bW, h:bH, align:'center', valign:'middle', fontSize:9, color:'111111', fontFace:'MS Mincho' });
+    });
+    slide.addText('-', { x:mm(77), y:zipY, w:mm(4), h:bH, align:'center', valign:'middle', fontSize:9, bold:true, color:'CC0000', fontFace:'MS Mincho' });
+
+    // === 住所（縦書き） ===
+    var addrY = mm(17), addrH = mm(120), addrColW = mm(11);
+    var addrR = W - mm(4.5);
+    if (addr1) slide.addText(addr1, { x:addrR-addrColW, y:addrY, w:addrColW, h:addrH, vert:'eaVert', fontSize:10, color:'111111', fontFace:'MS Mincho', valign:'top' });
+    if (addr2) slide.addText(addr2, { x:addrR-addrColW*2-mm(2), y:addrY, w:addrColW, h:addrH, vert:'eaVert', fontSize:10, color:'111111', fontFace:'MS Mincho', valign:'top' });
+
+    // === 宛名（縦書き） ===
+    if (name) {
+      slide.addText(name, { x:mm(37), y:mm(25), w:mm(15), h:mm(140), vert:'eaVert', fontSize:20, bold:true, color:'111111', fontFace:'MS Mincho', valign:'top' });
+      slide.addText('様', { x:mm(23), y:mm(85), w:mm(11), h:mm(20), vert:'eaVert', fontSize:14, color:'111111', fontFace:'MS Mincho', valign:'top' });
+    }
+
+    // === 差出人 ===
+    var sbY = H - mm(28);
+    if (sender.company) {
+      slide.addText(sender.company, { x:mm(5), y:sbY, w:W-mm(10), h:mm(8), align:'center', fontSize:9, color:'111111', fontFace:'MS Mincho' });
+      sbY += mm(9);
+    }
+    if (sender.info) {
+      sender.info.split('\n').forEach(function(line) {
+        if (!line.trim()) return;
+        slide.addText(line, { x:mm(5), y:sbY, w:W-mm(10), h:mm(5), align:'center', fontSize:7, color:'333333', fontFace:'MS Mincho' });
+        sbY += mm(5);
+      });
+    }
+
+    pptx.writeFile({ fileName: '封筒_' + (name||'output') + '.pptx' })
+      .then(function(){ showSaveToast(true, '✉️ 封筒pptxをダウンロードしました'); })
+      .catch(function(e){ showSaveToast(false, '生成失敗: ' + e.message); });
+  }
+
+  if (typeof PptxGenJS === 'undefined') {
+    showSaveToast(null, '📄 準備中...');
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+    s.onload = generate;
+    s.onerror = function(){ showSaveToast(false, 'ライブラリ読み込み失敗'); };
+    document.head.appendChild(s);
+  } else { generate(); }
 }
 
 
@@ -6842,6 +6918,25 @@ function openImageViewer(imgs, startIdx) {
       <div style="font-size:13px;font-weight:700;color:#1a2535;margin-bottom:10px;display:flex;align-items:center;gap:6px">📅 Googleカレンダー連携（納骨リスト）</div>
       <div style="background:#fff8e6;border:0.5px solid #f0c000;border-radius:6px;padding:8px 10px;font-size:11px;color:#8a6000">
         ⏳ 実装予定。Google Cloud ConsoleでのOAuth設定が完了後に有効化されます。
+      </div>
+    </div>
+
+    <!-- 封筒差出人情報 -->
+    <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">
+      <div style="font-size:13px;font-weight:700;color:#1a2535;margin-bottom:10px">✉️ 封筒差出人情報</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:4px">会社名</div>
+          <input id="env-company" type="text" placeholder="有限会社 庄司石材店"
+            style="width:100%;font-size:12px;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-family:inherit">
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:4px">住所・連絡先（複数行可）</div>
+          <textarea id="env-info" rows="4" placeholder="〒123-4567 東京都○○区..."
+            style="width:100%;font-size:12px;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical"></textarea>
+        </div>
+        <button onclick="saveEnvSender()" style="padding:8px;background:#1a2535;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">💾 保存</button>
+        <div id="env-save-msg" style="font-size:11px;color:#2a7a2a;display:none">✅ 保存しました</div>
       </div>
     </div>
 

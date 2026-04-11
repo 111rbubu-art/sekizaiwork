@@ -1191,32 +1191,105 @@ function menuNauchiSelect(mode, d) {
 function _menuSearchFetchAll(cb) {
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listIdC = '29524f89-0370-44ea-8d01-161f34e5a1ab';
-  var GROUPS = [1,2,3,4,5,6,7,8,9,10];
+
+  // オフライン時はIndexedDBから読み込み
+  if (isOffline()) {
+    console.log('[Cache] オフライン：IndexedDBから読み込み');
+    Promise.all([
+      idbGet('noukotsu'),
+      idbGet('kouji'),
+      idbGet('customer')
+    ]).then(function(results) {
+      if (results[0]) _menuSearchCache['noukotsu'] = results[0].data;
+      if (results[1]) _menuSearchCache['kouji'] = results[1].data;
+      if (results[2]) _menuSearchCache['customer'] = results[2].data;
+      loadMenuNauchi();
+      if (cb) cb();
+      showSaveToast(false, '📵 オフライン：キャッシュデータを表示中');
+    });
+    return;
+  }
+
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    var p1 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
-      '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items?$expand=fields&$top=500', token)
-      .then(function(items){ _menuSearchCache['noukotsu'] = items; });
-    var p2 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
-      '/lists/' + KOUJI_LIST_ID + '/items?$expand=fields&$top=500', token)
-      .then(function(items){ _menuSearchCache['kouji'] = items; });
-    var cusPromises = GROUPS.map(function(g) {
-      return fetchAllPages('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listIdC+
-        '/items?$expand=fields&$filter=fields/Group eq '+g+'&$top=500', token)
-        .then(function(items){ return {g:g, items:items}; });
+
+    // 工事・納骨：進行中のみ取得（完了チェックなし）
+    var p1 = fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items?$expand=fields' +
+      '&$filter=fields/_x524a__x9664_ ne true&$top=999', {
+      headers: { Authorization: 'Bearer ' + token }
+    }).then(function(r){ return r.json(); })
+    .then(function(data) {
+      var items = (data.value||[]).map(function(i){ var f=i.fields||{}; f['id']=i.id; f['ID']=i.id; return f; });
+      _menuSearchCache['noukotsu'] = items;
+      return idbSet('noukotsu', items);
     });
-    var p3 = Promise.all(cusPromises).then(function(results) {
-      var byGroup = {};
-      results.forEach(function(r){ byGroup[r.g] = r.items; });
-      _menuSearchCache['customer'] = byGroup;
+
+    var p2 = fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/' + KOUJI_LIST_ID + '/items?$expand=fields' +
+      '&$filter=fields/endinfo eq null&$top=999', {
+      headers: { Authorization: 'Bearer ' + token }
+    }).then(function(r){ return r.json(); })
+    .then(function(data) {
+      var items = (data.value||[]).map(function(i){ var f=i.fields||{}; f['id']=i.id; f['ID']=i.id; return f; });
+      _menuSearchCache['kouji'] = items;
+      return idbSet('kouji', items);
     });
+
+    // 顧客リスト：更新日時チェック → 必要時のみ再取得
+    var p3 = _fetchCustomerWithCache(siteId, listIdC, token);
+
     return Promise.all([p1, p2, p3]);
   }).then(function(){
     loadMenuNauchi();
     if (cb) cb();
   }).catch(function(e){
     console.warn('menuSearch fetch error:', e.message);
-    if (cb) cb();
+    // エラー時はIndexedDBから復元
+    Promise.all([idbGet('noukotsu'), idbGet('kouji'), idbGet('customer')]).then(function(r){
+      if (r[0] && !_menuSearchCache['noukotsu']) _menuSearchCache['noukotsu'] = r[0].data;
+      if (r[1] && !_menuSearchCache['kouji']) _menuSearchCache['kouji'] = r[1].data;
+      if (r[2] && !_menuSearchCache['customer']) _menuSearchCache['customer'] = r[2].data;
+      loadMenuNauchi();
+      if (cb) cb();
+    });
+  });
+}
+
+// 顧客リスト：SPの更新日時を確認して必要時のみ再取得
+function _fetchCustomerWithCache(siteId, listIdC, token) {
+  var SP_CHECK_URL = 'https://graph.microsoft.com/v1.0/sites/' + siteId +
+    '/lists/' + listIdC + '?$select=lastModifiedDateTime';
+  return idbGet('customer').then(function(cached) {
+    return fetch(SP_CHECK_URL, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r){ return r.json(); })
+      .then(function(meta) {
+        var spTime = new Date(meta.lastModifiedDateTime || 0).getTime();
+        var cachedTime = cached ? cached.savedAt : 0;
+        if (cached && spTime <= cachedTime) {
+          // キャッシュが最新 → そのまま使用
+          console.log('[Cache] 顧客リスト：キャッシュ使用（更新なし）');
+          _menuSearchCache['customer'] = cached.data;
+          return;
+        }
+        // 更新あり or 初回 → 全件取得（軽量項目のみ）
+        console.log('[Cache] 顧客リスト：SP再取得');
+        return fetchAllPages('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listIdC+
+          '/items?$expand=fields&$top=999', token)
+          .then(function(items) {
+            // 軽量化：必要フィールドのみ保存
+            var light = items.map(function(i){ return cusLighten(i); });
+            // グループ別に分類
+            var byGroup = {};
+            light.forEach(function(i) {
+              var g = i['Group'] || 0;
+              if (!byGroup[g]) byGroup[g] = [];
+              byGroup[g].push(i);
+            });
+            _menuSearchCache['customer'] = byGroup;
+            return idbSet('customer', byGroup);
+          });
+      });
   });
 }
 
@@ -1545,7 +1618,70 @@ function hideDetScreen() {
   }
 }
 
-var APP_VERSION = 'v1.8.187';
+
+// ============================================================
+// IndexedDB キャッシュ管理
+// ============================================================
+var IDB_NAME = 'sekizaiwork_cache';
+var IDB_VERSION = 1;
+var IDB_STORE = 'lists';
+var _idb = null;
+
+function idbOpen() {
+  if (_idb) return Promise.resolve(_idb);
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = function(e) {
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = function(e) { _idb = e.target.result; resolve(_idb); };
+    req.onerror = function(e) { reject(e.target.error); };
+  });
+}
+
+function idbGet(key) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(IDB_STORE, 'readonly');
+      var req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = function() { resolve(req.result || null); };
+      req.onerror = function() { resolve(null); };
+    });
+  });
+}
+
+function idbSet(key, data) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put({ key: key, data: data, savedAt: Date.now() });
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function() { reject(tx.error); };
+    });
+  });
+}
+
+// オフライン判定
+function isOffline() { return !navigator.onLine; }
+
+// 顧客リスト：キャッシュに保存する軽量フィールドのみ抽出
+var CUS_LIGHT_FIELDS = [
+  'id','ID','CusName','furigana','Zipcode','address_1','address_2',
+  'Temple','Group','Cus_ID','ReceptionDay','HakaName','telephonenumber',
+  'atena','addressee','memo','choukoku','noukotu_bikou','sekitou_bikou',
+  'MapPosition','MapPlotNumber'
+];
+
+function cusLighten(item) {
+  var out = {};
+  CUS_LIGHT_FIELDS.forEach(function(k) { if (item[k] !== undefined) out[k] = item[k]; });
+  return out;
+}
+
+var APP_VERSION = 'v1.8.188';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -1666,12 +1802,11 @@ function startApp() {
   document.getElementById('menu-user-name').textContent = name ? 'ログイン中：' + name : '';
   document.getElementById('menu-screen').classList.remove('hidden');
   currentListMode = 'noukotsu';
-  // 起動時に社内連絡リストをバックグラウンドで読み込み
-  if (!_menuSearchCache['noukotsu'] || !_menuSearchCache['kouji']) {
-    _menuSearchFetchAll(null);
-  } else {
-    loadMenuNauchi();
+  // 起動時にキャッシュ読み込み（オフライン対応）
+  if (isOffline()) {
+    showSaveToast(false, '📵 オフライン：キャッシュデータを使用');
   }
+  _menuSearchFetchAll(null);
   var newBtn = document.getElementById('new-btn');
   if (newBtn) newBtn.style.display = 'block';
   var filterBar = document.querySelector('.bnav');
@@ -3316,6 +3451,8 @@ function renderKoujiList(filter) {
 
 function showKoujiDetail(d) {
   currentItem = d;
+  // バックグラウンドで全フィールド補完（KoujiLogJson等）
+  setTimeout(function(){ _bgReloadFull(d, 'kouji'); }, 500);
   document.getElementById('det-title').textContent = buildDetTitle(d, 'kouji');
   highlightActiveCard(d['id']);
   showDetScreen();
@@ -5162,6 +5299,38 @@ function buildTempleList() {
 }
 
 // ===== 詳細画面 =====
+// バックグラウンドで全フィールド再取得（重いフィールドを補完）
+var _bgReloading = false;
+function _bgReloadFull(d, listMode) {
+  if (isOffline() || _bgReloading) return;
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = listMode === 'kouji' ? KOUJI_LIST_ID
+    : listMode === 'customer' ? '29524f89-0370-44ea-8d01-161f34e5a1ab'
+    : '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var itemId = d['id'] || d['ID'] || '';
+  if (!itemId) return;
+  _bgReloading = true;
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/' + listId + '/items/' + itemId + '?$expand=fields',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r){ return r.json(); })
+  .then(function(item) {
+    var f = item.fields || {};
+    f['id'] = item.id || itemId;
+    f['ID'] = f['id'];
+    if (currentItem && (currentItem['id'] === itemId || currentItem['ID'] === itemId)) {
+      currentItem = f;
+      _bgReloading = false;
+      if (listMode === 'kouji') showKoujiDetail(f);
+      else if (listMode === 'customer') showCustomerDetail(f);
+      else openDetail(f);
+    } else {
+      _bgReloading = false;
+    }
+  }).catch(function(e){ _bgReloading = false; console.warn('[BG Reload]', e.message); });
+}
+
 function openDetail(d) {
   currentItem = d;
   currentTab = 0;
@@ -5181,9 +5350,9 @@ function openDetail(d) {
     '<button class="tab" data-i="7">その他</button>' +
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>';
   showTab(0, d);
+  // バックグラウンドで全フィールド補完（KoujiLogJson等の重いデータ）
+  setTimeout(function(){ _bgReloadFull(d, 'noukotsu'); }, 800);
 }
-
-document.getElementById('back-btn').addEventListener('click', function() {
   editMode = false;
   highlightActiveCard(null);
   hideDetScreen();

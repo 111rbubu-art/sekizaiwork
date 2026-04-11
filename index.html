@@ -515,11 +515,14 @@ body.force-sp #panel-resizer { display: none !important; }
         <!-- 横断検索（上部固定） -->
         <div class="menu-search-sticky">
           <div style="display:flex;gap:8px;align-items:center">
-            <input id="menu-search" type="text" placeholder="🔍 顧客名・電話番号で検索..."
-              oninput="menuSearch(this.value)"
-              style="flex:1;padding:12px 16px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;"
-              onfocus="this.style.borderColor='rgba(255,255,255,0.5)'"
-              onblur="this.style.borderColor='rgba(255,255,255,0.2)'">
+            <div style="flex:1;position:relative">
+              <input id="menu-search" type="text" placeholder="🔍 顧客名・電話番号で検索..."
+                oninput="menuSearch(this.value)"
+                style="width:100%;padding:12px 16px 12px 16px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;"
+                onfocus="this.style.borderColor='rgba(255,255,255,0.5)'"
+                onblur="this.style.borderColor='rgba(255,255,255,0.2)'">
+              <span id="search-cache-badge" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:10px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,0.15);color:rgba(255,255,255,0.6);pointer-events:none">📦 未完了</span>
+            </div>
             <input id="menu-search-id" type="number" placeholder="# ID"
               oninput="menuSearchId(this.value)"
               style="width:72px;padding:12px 10px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;text-align:center;"
@@ -1003,8 +1006,9 @@ function _menuSearchExec(q) {
 function _menuSearchRenderInCard(q, ql) {
   var isIdSearch  = false;
   var isTelSearch = /^[0-9\-]+$/.test(ql);
-  var cacheNok   = _menuSearchCache['noukotsu'] || [];
-  var cacheKouji = _menuSearchCache['kouji'] || [];
+  // 全件キャッシュがあれば使用、なければ未完了のみ
+  var cacheNok   = _menuSearchCache['noukotsu_all'] || _menuSearchCache['noukotsu'] || [];
+  var cacheKouji = _menuSearchCache['kouji_all'] || _menuSearchCache['kouji'] || [];
 
   // 納骨フィルター
   var nokResults = cacheNok.filter(function(d) {
@@ -1252,6 +1256,57 @@ function menuNauchiSelect(mode, d) {
   }, 800);
 }
 
+// 全件キャッシュが揃っているか
+var _fullCacheReady = false;
+
+// キャッシュバッジを更新
+function updateCacheBadge() {
+  var badge = document.getElementById('search-cache-badge');
+  if (!badge) return;
+  if (isOffline()) {
+    badge.textContent = '📵 オフライン';
+    badge.style.background = 'rgba(255,100,100,0.3)';
+    badge.style.color = 'rgba(255,200,200,0.9)';
+  } else if (_fullCacheReady) {
+    badge.textContent = '🔄 全件';
+    badge.style.background = 'rgba(100,200,100,0.2)';
+    badge.style.color = 'rgba(150,255,150,0.9)';
+  } else {
+    badge.textContent = '📦 未完了';
+    badge.style.background = 'rgba(255,255,255,0.15)';
+    badge.style.color = 'rgba(255,255,255,0.6)';
+  }
+}
+
+// バックグラウンドで全件取得してIndexedDBに保存・キャッシュをマージ
+function _bgFetchAllItems() {
+  if (isOffline()) return;
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var p1 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items?$expand=fields&$top=999', token)
+      .then(function(items) {
+        _menuSearchCache['noukotsu_all'] = items;
+        return idbSet('noukotsu_all', items);
+      });
+    var p2 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
+      '/lists/' + KOUJI_LIST_ID + '/items?$expand=fields&$top=999', token)
+      .then(function(items) {
+        _menuSearchCache['kouji_all'] = items;
+        return idbSet('kouji_all', items);
+      });
+    return Promise.all([p1, p2]);
+  }).then(function() {
+    _fullCacheReady = true;
+    updateCacheBadge();
+    console.log('[BG] 全件取得完了 納骨:', (_menuSearchCache['noukotsu_all']||[]).length,
+      '件 工事:', (_menuSearchCache['kouji_all']||[]).length, '件');
+  }).catch(function(e) {
+    console.warn('[BG] 全件取得失敗:', e.message);
+  });
+}
+
 function _menuSearchFetchAll(cb) {
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listIdC = '29524f89-0370-44ea-8d01-161f34e5a1ab';
@@ -1269,6 +1324,13 @@ function _menuSearchFetchAll(cb) {
       if (results[2]) _menuSearchCache['customer'] = results[2].data;
       loadMenuNauchi();
       if (cb) cb();
+      // オフライン時は全件キャッシュも読み込む
+      Promise.all([idbGet('noukotsu_all'), idbGet('kouji_all')]).then(function(r) {
+        if (r[0]) { _menuSearchCache['noukotsu_all'] = r[0].data; }
+        if (r[1]) { _menuSearchCache['kouji_all'] = r[1].data; }
+        _fullCacheReady = !!(r[0] && r[1]);
+        updateCacheBadge();
+      });
       showSaveToast(false, '📵 オフライン：キャッシュデータを表示中');
     });
     return;
@@ -1306,7 +1368,10 @@ function _menuSearchFetchAll(cb) {
     return Promise.all([p1, p2, p3]);
   }).then(function(){
     loadMenuNauchi();
+    updateCacheBadge();
     if (cb) cb();
+    // バックグラウンドで全件取得（完了済み含む）
+    setTimeout(function(){ _bgFetchAllItems(); }, 2000);
   }).catch(function(e){
     console.warn('menuSearch fetch error:', e.message);
     // エラー時はIndexedDBから復元
@@ -1683,7 +1748,7 @@ function hideDetScreen() {
 }
 
 
-var APP_VERSION = 'v1.8.191';
+var APP_VERSION = 'v1.8.192';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 

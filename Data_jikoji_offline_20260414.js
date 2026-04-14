@@ -1,7 +1,7 @@
 // 慈宏寺 オフラインマップデータ
 // 生成日: 2026-04-14
 // 区画数: 613
-// mapname=地図管理番号表示, name=顧客名（手入力）
+// mapname=地図表示用（管理番号+姓）, name=顧客名（手入力）, tel/address/memo=空
 
 var OFFLINE_TEMPLE_NAME = "慈宏寺";
 var OFFLINE_DATA_DATE = "20260414";
@@ -290,8 +290,7 @@ var OFFLINE_PLOTS = [
     "c1": 85,
     "c2": 87,
     "status": "building",
-    "mapname": "東京ガス",
-    "name": ""
+    "mapname": "東京ガス"
   },
   {
     "r1": 6,
@@ -6671,8 +6670,7 @@ var OFFLINE_PLOTS = [
     "c1": 4,
     "c2": 10,
     "status": "building",
-    "mapname": "久遠塔",
-    "name": ""
+    "mapname": "久遠塔"
   },
   {
     "r1": 90,
@@ -6764,8 +6762,7 @@ var OFFLINE_PLOTS = [
     "c1": 15,
     "c2": 74,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 90,
@@ -6905,8 +6902,7 @@ var OFFLINE_PLOTS = [
     "c1": 18,
     "c2": 25,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 100,
@@ -6938,8 +6934,7 @@ var OFFLINE_PLOTS = [
     "c1": 18,
     "c2": 25,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 110,
@@ -7259,8 +7254,7 @@ var OFFLINE_PLOTS = [
     "c1": 14,
     "c2": 17,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 104,
@@ -7388,8 +7382,7 @@ var OFFLINE_PLOTS = [
     "c1": 64,
     "c2": 64,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 13,
@@ -7397,8 +7390,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 76,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 20,
@@ -7406,8 +7398,7 @@ var OFFLINE_PLOTS = [
     "c1": 64,
     "c2": 76,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 40,
@@ -7415,8 +7406,7 @@ var OFFLINE_PLOTS = [
     "c1": 11,
     "c2": 76,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 36,
@@ -7448,8 +7438,7 @@ var OFFLINE_PLOTS = [
     "c1": 60,
     "c2": 60,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 30,
@@ -7457,8 +7446,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 76,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7466,8 +7454,7 @@ var OFFLINE_PLOTS = [
     "c1": 53,
     "c2": 53,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7475,8 +7462,7 @@ var OFFLINE_PLOTS = [
     "c1": 46,
     "c2": 46,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7484,8 +7470,7 @@ var OFFLINE_PLOTS = [
     "c1": 39,
     "c2": 39,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7493,8 +7478,7 @@ var OFFLINE_PLOTS = [
     "c1": 34,
     "c2": 34,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7502,8 +7486,7 @@ var OFFLINE_PLOTS = [
     "c1": 29,
     "c2": 29,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7511,8 +7494,7 @@ var OFFLINE_PLOTS = [
     "c1": 24,
     "c2": 24,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 9,
@@ -7520,8 +7502,7 @@ var OFFLINE_PLOTS = [
     "c1": 19,
     "c2": 19,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 21,
@@ -7529,8 +7510,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 45,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 41,
@@ -7538,8 +7518,7 @@ var OFFLINE_PLOTS = [
     "c1": 12,
     "c2": 12,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 8,
@@ -7547,8 +7526,7 @@ var OFFLINE_PLOTS = [
     "c1": 14,
     "c2": 14,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 47,
@@ -7556,8 +7534,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 62,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 54,
@@ -7565,8 +7542,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 63,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 70,
@@ -7574,8 +7550,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 45,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7583,8 +7558,7 @@ var OFFLINE_PLOTS = [
     "c1": 26,
     "c2": 27,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7592,8 +7566,7 @@ var OFFLINE_PLOTS = [
     "c1": 19,
     "c2": 20,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7601,8 +7574,7 @@ var OFFLINE_PLOTS = [
     "c1": 32,
     "c2": 33,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7610,8 +7582,7 @@ var OFFLINE_PLOTS = [
     "c1": 39,
     "c2": 39,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7619,8 +7590,7 @@ var OFFLINE_PLOTS = [
     "c1": 53,
     "c2": 53,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 55,
@@ -7628,8 +7598,7 @@ var OFFLINE_PLOTS = [
     "c1": 60,
     "c2": 60,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 78,
@@ -7637,8 +7606,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 45,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 79,
@@ -7646,8 +7614,7 @@ var OFFLINE_PLOTS = [
     "c1": 47,
     "c2": 71,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 58,
@@ -7655,8 +7622,7 @@ var OFFLINE_PLOTS = [
     "c1": 64,
     "c2": 64,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 30,
@@ -7664,8 +7630,7 @@ var OFFLINE_PLOTS = [
     "c1": 13,
     "c2": 18,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 31,
@@ -7673,8 +7638,7 @@ var OFFLINE_PLOTS = [
     "c1": 14,
     "c2": 14,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 21,
@@ -7682,8 +7646,7 @@ var OFFLINE_PLOTS = [
     "c1": 12,
     "c2": 12,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 57,
@@ -7691,8 +7654,7 @@ var OFFLINE_PLOTS = [
     "c1": 5,
     "c2": 5,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 44,
@@ -7700,8 +7662,7 @@ var OFFLINE_PLOTS = [
     "c1": 6,
     "c2": 8,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 14,
@@ -7709,8 +7670,7 @@ var OFFLINE_PLOTS = [
     "c1": 88,
     "c2": 125,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 19,
@@ -7718,8 +7678,7 @@ var OFFLINE_PLOTS = [
     "c1": 88,
     "c2": 121,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 5,
@@ -7727,8 +7686,7 @@ var OFFLINE_PLOTS = [
     "c1": 116,
     "c2": 116,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 7,
@@ -7736,8 +7694,7 @@ var OFFLINE_PLOTS = [
     "c1": 88,
     "c2": 115,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 8,
@@ -7745,8 +7702,7 @@ var OFFLINE_PLOTS = [
     "c1": 88,
     "c2": 89,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 5,
@@ -7754,8 +7710,7 @@ var OFFLINE_PLOTS = [
     "c1": 117,
     "c2": 124,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 33,
@@ -7763,8 +7718,7 @@ var OFFLINE_PLOTS = [
     "c1": 83,
     "c2": 120,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 34,
@@ -7772,8 +7726,7 @@ var OFFLINE_PLOTS = [
     "c1": 112,
     "c2": 115,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 41,
@@ -7781,8 +7734,7 @@ var OFFLINE_PLOTS = [
     "c1": 106,
     "c2": 123,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 26,
@@ -7790,8 +7742,7 @@ var OFFLINE_PLOTS = [
     "c1": 84,
     "c2": 107,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 28,
@@ -7799,8 +7750,7 @@ var OFFLINE_PLOTS = [
     "c1": 83,
     "c2": 84,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 15,
@@ -7808,8 +7758,7 @@ var OFFLINE_PLOTS = [
     "c1": 86,
     "c2": 88,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 18,
@@ -7817,8 +7766,7 @@ var OFFLINE_PLOTS = [
     "c1": 85,
     "c2": 85,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 14,
@@ -7826,8 +7774,7 @@ var OFFLINE_PLOTS = [
     "c1": 120,
     "c2": 121,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 19,
@@ -7835,8 +7782,7 @@ var OFFLINE_PLOTS = [
     "c1": 119,
     "c2": 120,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 75,
@@ -7844,8 +7790,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 71,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 70,
@@ -7853,8 +7798,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 71,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 65,
@@ -7862,8 +7806,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 71,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 60,
@@ -7871,8 +7814,7 @@ var OFFLINE_PLOTS = [
     "c1": 65,
     "c2": 71,
     "status": "road",
-    "mapname": "",
-    "name": ""
+    "mapname": ""
   },
   {
     "r1": 58,

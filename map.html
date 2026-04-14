@@ -189,9 +189,9 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
     <div class="sep"></div>
     <button class="btn out" id="pBtn" onclick="togglePrintPanel()">🖨 印刷設定</button>
     <div class="sep"></div>
-    <button class="btn" onclick="startPdfExport()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
+    <button class="btn" id="pdfExportBtn" onclick="startPdfExportGuard()" title="範囲を選択してPDFで出力">📄 PDF出力</button>
     <button class="btn out" onclick="syncFromSP()" id="syncFromBtn" title="SharePointの最新データをマップに反映">📥 SP読込</button>
-    <button class="btn out" onclick="location.reload()" title="ページを再読み込み">🔄 リロード</button>
+    <button class="btn out" onclick="mapReload()" title="データを再読み込み（SPから最新を取得）">🔄 再読込</button>
     <button class="btn out" onclick="mapRelogin()" id="relogin-btn" title="認証トークンを更新" style="display:none">🔑 再ログイン</button>
     <button class="btn"     onclick="syncToSP()"   id="syncToBtn"   title="現在のマップをSharePointに保存">📤 SP保存</button>
 
@@ -802,7 +802,15 @@ function loadPlotAttachments(f){
   }).then(function(resp){
     _doLoadPlotAttachments(spId, resp.accessToken, el);
   }).catch(function(e){
-    el.textContent = 'トークン取得失敗: ' + e.message;
+    // サイレント取得失敗時はポップアップで再認証
+    msalApp.acquireTokenPopup({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: acct
+    }).then(function(resp){
+      _doLoadPlotAttachments(spId, resp.accessToken, el);
+    }).catch(function(e2){
+      el.textContent = '認証失敗: ' + e2.message;
+    });
   });
 }
 
@@ -955,6 +963,9 @@ mc.addEventListener('mouseleave', ()=>{
 // ===== 編集モード =====
 function toggleEdit(){
   editMode=!editMode;
+  // M-1: 編集モード切替時にハイライトをクリア
+  exactHL.clear(); partHL.clear();
+  document.getElementById('ri').innerHTML = '';
   const mh=document.getElementById('mhint');
   if(editMode){
     plotEditIdx=-1;
@@ -1029,7 +1040,8 @@ function ctxDel(){
   closeCtx();
   if(delIdx < 0 || delIdx >= PLOTS.length) return;
   const p=PLOTS[delIdx];
-  document.getElementById('delMsg').innerHTML=`<b>「${p.name||'空き区画'}」</b>を削除しますか？<br><span style="font-size:10px;color:#888;">サイズ：${p.r2-p.r1+1}行×${p.c2-p.c1+1}列</span><br><br>この操作は元に戻せません。`;
+  var _dname = p.mapname || p.name || '空き区画';
+  document.getElementById('delMsg').innerHTML=`<b>「${_dname}」</b>を削除しますか？<br><span style="font-size:10px;color:#888;">サイズ：${p.r2-p.r1+1}行×${p.c2-p.c1+1}列</span><br><br>この操作は元に戻せません。`;
   document.getElementById('delDlg').className='v';
 }
 function closeDelDlg(){document.getElementById('delDlg').className='';pendDelIdx=-1;}
@@ -1049,7 +1061,7 @@ function openModal(idx,mode){
   document.getElementById('modal').className='v';
   document.getElementById('mName').focus();
 }
-function closeModal(){document.getElementById('modal').className='';selIdx=-1;draw();}
+function closeModal(){document.getElementById('modal').className='';selIdx=-1;exactHL.clear();partHL.clear();draw();}
 function applyModal(){
   if(modalIdx<0||modalIdx>=PLOTS.length)return;
   var oldName = PLOTS[modalIdx].name || '';
@@ -2316,6 +2328,12 @@ function initMapMsal() {
   return _mapMsalApp.initialize().then(function(){ return _mapMsalApp; });
 }
 
+// M-2: 再読込（SPトークンあり→SP再読込、なし→ページリロード）
+function mapReload(){
+  var token = getSPToken();
+  if(token){ syncFromSP(); } else { location.reload(); }
+}
+
 function mapRelogin() {
   initMapMsal().then(function(app) {
     var accounts = app.getAllAccounts();
@@ -2372,6 +2390,19 @@ function getSPToken(forSP) {
 // ============================================================
 // ===== PDF出力（ベクター） =====
 // ============================================================
+var _pdfExporting = false;
+function startPdfExportGuard(){
+  if(_pdfExporting) return;
+  _pdfExporting = true;
+  var btn = document.getElementById('pdfExportBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ PDF準備中...'; }
+  startPdfExport();
+  setTimeout(function(){
+    _pdfExporting = false;
+    if(btn){ btn.disabled = false; btn.textContent = '📄 PDF出力'; }
+  }, 15000);
+}
+
 function startPdfExport() {
   // 印刷設定パネルを開き、範囲選択を促す
   if (!document.getElementById('printPanel').classList.contains('visible')) {

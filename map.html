@@ -2631,15 +2631,22 @@ function loadFromSP(callback) {
   var fileName = 'data_' + _templeId + '.json';
   var url = 'https://graph.microsoft.com/v1.0/drives/' + SP_DRIVE_ID +
             '/root:/' + SP_FOLDER + '/' + encodeURIComponent(fileName) + ':/content';
-  fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+  // 8秒タイムアウト
+  var ctrl = new AbortController();
+  var timer = setTimeout(function(){ ctrl.abort(); }, 8000);
+  fetch(url, { headers: { 'Authorization': 'Bearer ' + token }, signal: ctrl.signal })
   .then(function(r) {
+    clearTimeout(timer);
     if (r.ok) return r.json();
     if (r.status === 404) { setDataSource('github', null); return null; }
     throw new Error(r.status);
   })
   .then(function(data) {
-    if (data && data.plots) {
-      PLOTS = data.plots;
+    // plots（小文字）とPLOTS（大文字）の両方に対応
+    var rawPlots = (data && (data.plots || data.PLOTS)) || null;
+    if (data && rawPlots) {
+      data.plots = rawPlots;
+      PLOTS = rawPlots;
       savedAreas = data.savedAreas || [];
       if (data.fontScale) {
         _fontScale = data.fontScale;
@@ -2656,6 +2663,12 @@ function loadFromSP(callback) {
     }
   })
   .catch(function(e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') {
+      // タイムアウト → ローカルデータで続行
+      console.warn('[loadFromSP] タイムアウト（8秒）');
+      showSPStatus('⚠️ SP読込タイムアウト。ローカルデータを使用します', 'err');
+    }
     loadFromLocalStorage(callback);
   });
 }
@@ -2957,8 +2970,13 @@ setPaper('A4','landscape');
 updateStats();
 renderAreaList();
 draw();
-setDataSource('init', null); // 読込前の初期状態
-loadFromSP(null); // 非同期でSPから最新データを読込
+if (_isOfflineMode) {
+  // オフラインモード：SP読込をスキップ、初期データをそのまま使用
+  setDataSource('github', null);
+} else {
+  setDataSource('init', null); // 読込前の初期状態
+  loadFromSP(null); // 非同期でSPから最新データを読込
+}
 
 
 // エクスポートモード判定

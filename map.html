@@ -146,15 +146,29 @@ h1{font-family:'Noto Serif JP',serif;font-size:16px;font-weight:600;letter-spaci
 <script src="map_config.js" onerror="void(0)"></script>
 <script>
 // ===== オフラインモード設定 =====
-// map_config.js で OFFLINE_MODE_TEMPLE / FORCE_OFFLINE を定義可能
 var _isOfflineMode = (typeof FORCE_OFFLINE !== 'undefined' && FORCE_OFFLINE) 
                   || location.protocol === 'file:';
 var _offlineTemple = (typeof OFFLINE_MODE_TEMPLE !== 'undefined') ? OFFLINE_MODE_TEMPLE : 'jikoji';
+var _offlineDataFile = (typeof OFFLINE_DATA_FILE !== 'undefined') ? OFFLINE_DATA_FILE : null;
 
-// オフラインモード時はMSALを不要にするためダミーを準備
 if (_isOfflineMode) {
   console.log('[Offline] オフラインモードで起動します temple:', _offlineTemple);
 }
+</script>
+<!-- オフラインデータファイルの読み込み（map_config.jsでOFFLINE_DATA_FILEを指定） -->
+<script>
+(function() {
+  if (!_isOfflineMode) return;
+  // OFFLINE_DATA_FILE が指定されていればそのファイルを読み込む
+  // 指定がなければ data_{temple}_offline_*.js を自動検索はできないため
+  // map_config.js に OFFLINE_DATA_FILE = 'data_jikoji_offline_20260414.js'; と記載が必要
+  if (!_offlineDataFile) {
+    console.warn('[Offline] OFFLINE_DATA_FILE が未指定です。map_config.js に設定してください。');
+    return;
+  }
+  // 同期的に読み込むためdocument.writeを使用（headタグ内のみ有効）
+  document.write('<script src="' + _offlineDataFile + '"><\/script>');
+})();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-authentication-library/3.11.0/msal-browser.min.js"></script>
 <script src="data_chouzenji.js"></script>
@@ -205,6 +219,15 @@ if (_isOfflineMode) {
 </script>
 </head>
 <body>
+<!-- オフライン用情報パネル（バナー直下に表示） -->
+<div id="offline-panel" style="display:none;background:#fff;border-bottom:2px solid #1a2535;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:490;position:relative">
+  <div style="background:#1a2535;color:#fff;padding:8px 16px;display:flex;justify-content:space-between;align-items:center">
+    <span id="offline-panel-title" style="font-size:13px;font-weight:500">区画情報</span>
+    <button onclick="document.getElementById('offline-panel').style.display='none';exactHL.clear();partHL.clear();selIdx=-1;draw();" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:0 4px;line-height:1">✕</button>
+  </div>
+  <div id="vp-body" style="padding:10px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;align-items:start"></div>
+</div>
+
 <div class="hdr">
   <div class="title-row">
     <h1>⛩ 長泉寺　墓地マップ</h1>
@@ -219,7 +242,7 @@ if (_isOfflineMode) {
     <input type="text" id="si" placeholder="契約者名" oninput="doSearch()"/>
     <button class="btn out" onclick="clearSearch()">クリア</button>
     <div class="sep"></div>
-    <button class="btn out" id="eBtn" onclick="toggleEdit()">✏️ 編集モード</button>
+    <button class="btn out" id="eBtn" onclick="toggleEdit()">✏️ マップ編集</button>
     <button class="btn out" id="aBtn" onclick="toggleAdd()" disabled>＋ 区画追加</button>
     <div class="sep"></div>
     <button class="btn out" id="pBtn" onclick="togglePrintPanel()">🖨 印刷設定</button>
@@ -346,6 +369,29 @@ if (_isOfflineMode) {
     </div>
   </div>
 </div>
+<!-- オフライン編集モーダル -->
+<div id="offline-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:600;display:none;align-items:center;justify-content:center;">
+  <div class="mbox">
+    <div class="mhdr2">
+      <span id="offline-modal-title">区画情報を編集</span>
+      <button class="mclose" onclick="closeOfflineModal()">✕</button>
+    </div>
+    <div class="mbody">
+      <div class="mf"><label style="font-size:11px;color:#666;display:block;margin-bottom:3px">管理番号</label>
+        <div id="om-mapname" style="font-size:13px;font-weight:700;color:#1a2535;padding:4px 0"></div>
+      </div>
+      <div class="mf"><label>代表者名</label><input type="text" id="om-name" placeholder="代表者名"/></div>
+      <div class="mf"><label>電話番号</label><input type="text" id="om-tel" placeholder="000-0000-0000"/></div>
+      <div class="mf"><label>住所</label><input type="text" id="om-address" placeholder="住所"/></div>
+      <div class="mf"><label>メモ</label><textarea id="om-memo" placeholder="メモ" style="width:100%;font-family:'Noto Sans JP',sans-serif;font-size:13px;padding:7px 10px;border:1.5px solid #ccc;outline:none;resize:vertical;min-height:60px;box-sizing:border-box;" onfocus="this.style.borderColor='#1a1a1a'" onblur="this.style.borderColor='#ccc'"></textarea></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn out" onclick="closeOfflineModal()">キャンセル</button>
+      <button class="btn" onclick="applyOfflineModal()">✓ 保存する</button>
+    </div>
+  </div>
+</div>
+
 <!-- 削除確認 -->
 <div id="delDlg">
   <div class="dbox">
@@ -625,25 +671,30 @@ function openViewerForPlot(plotName){
   if (_isOfflineMode) {
     var p = PLOTS.find(function(p){ return p.mapname === plotName; });
     if (!p) return;
-    var vp = document.getElementById('vp');
+    var panel = document.getElementById('offline-panel');
     var body = document.getElementById('vp-body');
-    if (!vp || !body) return;
-    vp.style.display = '';
+    if (!panel || !body) return;
+    panel.style.display = 'block';
     _currentPlotName = plotName;
     var pidx = PLOTS.indexOf(p);
+    document.getElementById('offline-panel-title').textContent = p.mapname || '区画情報';
+    function _field(lbl, val, id) {
+      return '<div style="background:#f5f5f5;border-radius:4px;padding:6px 10px">' +
+        '<div style="font-size:10px;color:#888;margin-bottom:2px">' + lbl + '</div>' +
+        '<div id="' + id + '" style="font-size:13px;font-weight:500;color:#1a2535">' + (val||'―') + '</div>' +
+      '</div>';
+    }
     body.innerHTML =
-      '<div style="margin-bottom:10px">' +
-        '<div style="font-size:11px;color:#888;margin-bottom:4px">管理番号</div>' +
-        '<div style="font-size:16px;font-weight:700;color:#1a2535">' + (p.mapname||'―') + '</div>' +
+      '<div style="background:#e8ecf0;border-radius:4px;padding:6px 10px">' +
+        '<div style="font-size:10px;color:#888;margin-bottom:2px">管理番号</div>' +
+        '<div style="font-size:15px;font-weight:700;color:#1a2535">' + (p.mapname||'―') + '</div>' +
       '</div>' +
-      '<div style="display:grid;grid-template-columns:80px 1fr;gap:6px;font-size:12px">' +
-        '<div style="color:#888">顧客名</div><div id="off-name" style="font-weight:600">' + (p.name||'―') + '</div>' +
-        '<div style="color:#888">電話</div><div id="off-tel">' + (p.tel||'―') + '</div>' +
-        '<div style="color:#888">住所</div><div id="off-addr" style="white-space:pre-line">' + (p.address||'―') + '</div>' +
-        '<div style="color:#888">メモ</div><div id="off-memo" style="white-space:pre-line">' + (p.memo||'―') + '</div>' +
-      '</div>' +
-      '<div style="margin-top:12px;display:flex;gap:6px">' +
-        '<button onclick="offlineEditPlot(' + pidx + ')" style="flex:1;padding:6px;background:#1a2535;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px">✏️ 編集</button>' +
+      _field('代表者名', p.name, 'off-name') +
+      _field('電話', p.tel, 'off-tel') +
+      _field('住所', p.address, 'off-addr') +
+      _field('メモ', p.memo, 'off-memo') +
+      '<div style="display:flex;align-items:center">' +
+        '<button onclick="offlineEditPlot(' + pidx + ')" style="padding:6px 16px;background:#1a2535;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px;white-space:nowrap">✏️ 編集</button>' +
       '</div>';
     return;
   }
@@ -991,6 +1042,7 @@ function goToViewer(){
 // ===== 検索 =====
 function doSearch(){
   const q=document.getElementById('si').value.trim().replace(/\s/g,'');
+  selIdx=-1;
   exactHL.clear();partHL.clear();
   const ri=document.getElementById('ri');
   if(!q){ri.innerHTML='';draw();return;}
@@ -1048,7 +1100,7 @@ function toggleEdit(){
     document.getElementById('aBtn').disabled=false;
     mc.style.cursor='pointer';
     mh.className='mhint edit';
-    mh.innerHTML='✏️ <b>編集モード：</b>区画を<b>左クリックで選択→ドラッグで移動・ハンドルでリサイズ</b> ／ <b>ダブルクリック or 右クリック</b>で名前・状態を編集';
+    mh.innerHTML='✏️ <b>マップ編集：</b>区画を<b>左クリックで選択→ドラッグで移動・ハンドルでリサイズ</b> ／ <b>ダブルクリック or 右クリック</b>で名前・状態を編集';
   }else{
     document.getElementById('eBtn').className='btn out';
     document.getElementById('eBtn').textContent='✏️ 編集モード';
@@ -1061,6 +1113,20 @@ function toggleEdit(){
 
 // ===== クリック（左）=====
 mc.addEventListener('dblclick',e=>{
+  // オフラインモード：ダブルクリックで顧客情報編集
+  if(_isOfflineMode){
+    const{mx,my}=canvasXY(e);
+    const idx=hitTest(mx,my);
+    if(idx>=0){
+      const p=PLOTS[idx];
+      if(p.status!=='road'&&p.status!=='building'){
+        // まずパネルを開いてから編集モーダルを起動
+        openViewerForPlot(p.mapname);
+        setTimeout(function(){ offlineEditPlot(idx); }, 100);
+      }
+    }
+    return;
+  }
   if(!editMode)return;
   closeCtx();
   if(areaSelecting||dragMode||addMode)return;
@@ -1083,9 +1149,27 @@ mc.addEventListener('click',e=>{
     // 閲覧モード：区画クリックでビューアーへ遷移
     if(idx>=0){
       const p=PLOTS[idx];
-      if(p.mapname && p.status==='used'){        selIdx=idx;draw();
-        openViewerForPlot(p.mapname);
+      if(_isOfflineMode) {
+        // オフライン：road/building以外は全区画クリック可能
+        if(p.status !== 'road' && p.status !== 'building') {
+          exactHL.clear(); partHL.clear();
+          selIdx=idx; draw();
+          openViewerForPlot(p.mapname);
+        } else {
+          // road等をクリックしたらハイライト解除
+          exactHL.clear(); partHL.clear(); selIdx=-1; draw();
+        }
+      } else {
+        if(p.mapname && p.status==='used'){ selIdx=idx; draw();
+          openViewerForPlot(p.mapname);
+        } else {
+          // 空き・未登録クリックでハイライト解除
+          exactHL.clear(); partHL.clear(); selIdx=-1; draw();
+        }
       }
+    } else {
+      // 区画外クリックでハイライト解除
+      exactHL.clear(); partHL.clear(); selIdx=-1; draw();
     }
   }
 });
@@ -1263,7 +1347,7 @@ function stopAdd(){
   mc.style.cursor='pointer';
   const mh=document.getElementById('mhint');
   mh.className='mhint edit';
-  mh.innerHTML='✏️ <b>編集モード：</b>区画を<b>左クリック</b>で編集 ／ <b>右クリック</b>で削除メニュー';
+  mh.innerHTML='✏️ <b>マップ編集：</b>区画を<b>左クリック</b>で編集 ／ <b>右クリック</b>で削除メニュー';
 }
 
 // ===== 印刷パネル =====
@@ -1803,12 +1887,12 @@ function doPrint(){
   oc.fillStyle='#555';
   oc.font=`${9*DPI/3.5}px 'Noto Sans JP',sans-serif`;
   oc.textAlign='right';oc.textBaseline='bottom';
-  oc.fillText(`長泉寺 墓地マップ　${aLabel}${dateStr}`,outW-margin*DPI,outH-3*DPI);
+  oc.fillText(`${MAP_DATA.name} 墓地マップ　${aLabel}${dateStr}`,outW-margin*DPI,outH-3*DPI);
   const dataURL=off.toDataURL('image/png');
   const win=window.open('','_blank','width=800,height=600');
   if(!win){alert('ポップアップがブロックされています。許可してください。');return;}
   win.document.write(`<!DOCTYPE html><html><head>
-    <title>印刷 - 長泉寺 墓地マップ</title>
+    <title>印刷 - ${MAP_DATA.name} 墓地マップ</title>
     <style>*{margin:0;padding:0;}body{background:white;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;}
     img{max-width:100%;max-height:100vh;object-fit:contain;}
     .ctrl{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:100;}
@@ -1848,7 +1932,7 @@ function exportJSON(){
   );
   const jsonLink = document.createElement('a');
   jsonLink.href     = URL.createObjectURL(jsonBlob);
-  jsonLink.download = `長泉寺_バックアップ_${dateStr}_${timeStr}.json`;
+  jsonLink.download = `${MAP_DATA.name}_バックアップ_${dateStr}_${timeStr}.json`;
   jsonLink.click();
 
   // ===== ② HTML自体のデータを最新に書き換えて保存 =====
@@ -2183,7 +2267,7 @@ function generateExportPNG(params) {
       oc.textAlign   = 'right';
       oc.textBaseline= 'bottom';
       oc.fillText(
-        `長泉寺 墓地マップ　${aLabel}${nameLabel}${dateStr}`,
+        `${MAP_DATA.name} 墓地マップ　${aLabel}${nameLabel}${dateStr}`,
         outW - margin * DPI, outH - 3 * DPI
       );
 
@@ -2427,6 +2511,7 @@ function mapRelogin() {
 
 // トークン切れを検知してボタンを表示
 function checkTokenAndShowBtn() {
+  if (_isOfflineMode) return; // オフライン時は再ログインボタン不要
   var t = getSPToken();
   var btn = document.getElementById('relogin-btn');
   if (btn) btn.style.display = t ? 'none' : '';
@@ -2775,20 +2860,29 @@ function _dataHash() {
 // ===== オフラインモード初期化 =====
 (function() {
   if (!_isOfflineMode) return;
-  // SP関連ボタンを非表示
-  var spBtns = ['syncFromBtn','syncToBtn','relogin-btn','pdfExportBtn'];
-  spBtns.forEach(function(id) {
+  // オフライン時に不要なボタンを非表示
+  ['syncFromBtn','syncToBtn','relogin-btn'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
+  // 顧客情報ボタン（goToViewer）を非表示
+  var vpBtn = document.querySelector('button[onclick="goToViewer()"]');
+  if (vpBtn) vpBtn.style.display = 'none';
+  // データソースバッジを非表示（オフライン時は意味なし）
+  var badge = document.getElementById('data-source-badge');
+  if (badge) badge.style.display = 'none';
   // ヘッダーにオフラインバナーを追加
   var hdr = document.querySelector('.hdr');
+  var offlinePanel = document.getElementById('offline-panel');
   if (hdr) {
     var banner = document.createElement('div');
+    banner.id = 'offline-banner';
     banner.style.cssText = 'background:#1a5a1a;color:#fff;font-size:11px;padding:3px 16px;display:flex;align-items:center;justify-content:space-between';
     banner.innerHTML = '<span>📵 オフラインモード ― ' + MAP_DATA.name + ' (' + (typeof OFFLINE_DATA_DATE !== "undefined" ? OFFLINE_DATA_DATE : "日付不明") + ')</span>' +
       '<button onclick="offlineSaveData()" style="font-size:10px;padding:2px 8px;background:#fff;color:#1a5a1a;border:none;border-radius:3px;cursor:pointer;font-family:inherit">💾 データ保存（ダウンロード）</button>';
     hdr.after(banner);
+    // offline-panelをバナーの直後に移動
+    if (offlinePanel) banner.after(offlinePanel);
   }
   // 編集モードボタンは有効のまま
 })();
@@ -2796,32 +2890,52 @@ function _dataHash() {
 // ===== オフライン保存（ダウンロード） =====
 
 // ===== オフライン時の区画編集 =====
+var _offlineEditIdx = -1;
+
 function offlineEditPlot(pidx) {
   var p = PLOTS[pidx];
   if (!p) return;
-  var newName = prompt('顧客名を入力してください', p.name || '');
-  if (newName === null) return;
-  var newTel = prompt('電話番号', p.tel || '');
-  if (newTel === null) return;
-  var newAddr = prompt('住所', p.address || '');
-  if (newAddr === null) return;
-  var newMemo = prompt('メモ', p.memo || '');
-  if (newMemo === null) return;
+  _offlineEditIdx = pidx;
+  // モーダルに現在値をセット
+  document.getElementById('offline-modal-title').textContent = '区画情報を編集：' + (p.mapname || '');
+  document.getElementById('om-mapname').textContent = p.mapname || '';
+  document.getElementById('om-name').value    = p.name    || '';
+  document.getElementById('om-tel').value     = p.tel     || '';
+  document.getElementById('om-address').value = p.address || '';
+  document.getElementById('om-memo').value    = p.memo    || '';
+  // モーダル表示
+  var modal = document.getElementById('offline-modal');
+  modal.style.display = 'flex';
+  setTimeout(function(){ document.getElementById('om-name').focus(); }, 100);
+}
 
-  PLOTS[pidx].name = newName;
-  PLOTS[pidx].tel = newTel;
-  PLOTS[pidx].address = newAddr;
-  PLOTS[pidx].memo = newMemo;
+function closeOfflineModal() {
+  document.getElementById('offline-modal').style.display = 'none';
+  _offlineEditIdx = -1;
+}
 
-  // 表示更新
+function applyOfflineModal() {
+  if (_offlineEditIdx < 0) return;
+  var pidx = _offlineEditIdx;
+  var p = PLOTS[pidx];
+  if (!p) return;
+
+  PLOTS[pidx].name    = document.getElementById('om-name').value.trim();
+  PLOTS[pidx].tel     = document.getElementById('om-tel').value.trim();
+  PLOTS[pidx].address = document.getElementById('om-address').value.trim();
+  PLOTS[pidx].memo    = document.getElementById('om-memo').value.trim();
+
+  // サイドパネルの表示更新
   var body = document.getElementById('vp-body');
   if (body) {
-    body.querySelector('#off-name').textContent = newName || '―';
-    body.querySelector('#off-tel').textContent = newTel || '―';
-    body.querySelector('#off-addr').textContent = newAddr || '―';
-    body.querySelector('#off-memo').textContent = newMemo || '―';
+    var el;
+    el = body.querySelector('#off-name'); if(el) el.textContent = PLOTS[pidx].name    || '―';
+    el = body.querySelector('#off-tel');  if(el) el.textContent = PLOTS[pidx].tel     || '―';
+    el = body.querySelector('#off-addr'); if(el) el.textContent = PLOTS[pidx].address || '―';
+    el = body.querySelector('#off-memo'); if(el) el.textContent = PLOTS[pidx].memo    || '―';
   }
-  // 自動保存メッセージ
+
+  closeOfflineModal();
   showSaved && showSaved();
   console.log('[Offline] 区画データ更新:', p.mapname);
 }
@@ -2831,31 +2945,49 @@ function offlineSaveData() {
   var dateStr = today.getFullYear().toString() +
     String(today.getMonth()+1).padStart(2,'0') +
     String(today.getDate()).padStart(2,'0');
-  var fileName = 'data_' + _offlineTemple + '_offline_' + dateStr + '.js';
 
-  var output = [
-    '// ' + MAP_DATA.name + ' オフラインマップデータ',
-    '// 生成日: ' + today.toISOString().substring(0,10),
-    '// mapname=地図表示用（管理番号+姓）, name=顧客名（手入力）',
-    '',
-    'var OFFLINE_TEMPLE_NAME = "' + MAP_DATA.name + '";',
-    'var OFFLINE_DATA_DATE = "' + dateStr + '";',
-    'var OFFLINE_FONT_SCALE = ' + (_fontScale || 1.7) + ';',
-    '',
-    'var OFFLINE_PLOTS = ' + JSON.stringify(PLOTS, null, 2) + ';',
-    '',
-    'var OFFLINE_SAVED_AREAS = ' + JSON.stringify(savedAreas, null, 2) + ';'
-  ].join('\n');
+  // 共通のデータ内容を生成
+  function buildOutput(label) {
+    return [
+      '// ' + MAP_DATA.name + ' オフラインマップデータ',
+      '// 生成日: ' + today.toISOString().substring(0,10),
+      '// mapname=地図表示用（管理番号+姓）, name=顧客名（手入力）',
+      '',
+      'var OFFLINE_TEMPLE_NAME = "' + MAP_DATA.name + '";',
+      'var OFFLINE_DATA_DATE = "' + dateStr + '";',
+      'var OFFLINE_FONT_SCALE = ' + (_fontScale || 1.7) + ';',
+      '',
+      'var OFFLINE_PLOTS = ' + JSON.stringify(PLOTS, null, 2) + ';',
+      '',
+      'var OFFLINE_SAVED_AREAS = ' + JSON.stringify(savedAreas, null, 2) + ';'
+    ].join('\n');
+  }
 
-  var blob = new Blob([output], {type: 'text/javascript;charset=utf-8'});
-  var link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(link.href);
+  function downloadFile(content, fileName) {
+    var blob = new Blob([content], {type: 'text/javascript;charset=utf-8'});
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
 
-  // メッセージ表示
-  alert('ファイルをダウンロードしました。\n\n「' + fileName + '」\n\n★ map.html と同じフォルダ（USBドライブ）に保存してください。');
+  var output = buildOutput();
+
+  // ① バックアップファイル（日付付き）
+  var backupName = 'data_' + _offlineTemple + '_offline_' + dateStr + '.js';
+  downloadFile(output, backupName);
+
+  // ② カレントファイル（固定名・map_config.jsが常にこれを参照）
+  setTimeout(function() {
+    var currentName = 'data_' + _offlineTemple + '_offline_current.js';
+    downloadFile(output, currentName);
+
+    alert('2ファイルをダウンロードしました。\n\n' +
+      '① ' + backupName + '（バックアップ）\n' +
+      '② ' + currentName + '（カレント）\n\n' +
+      '★ 両方を map.html と同じフォルダ（USBドライブ）に保存してください。');
+  }, 500);
 }
 
 function autoSave() {

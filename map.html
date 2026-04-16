@@ -233,7 +233,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.2</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.3</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -734,17 +734,24 @@ function loadPlotCustomerInfo(plotName) {
   var body = document.getElementById('vp-body');
   if(!body) return;
 
-  // Graph API用トークンをMSAL経由で取得
-  var _GRAPH_SCOPES = ['User.Read','Sites.Read.All','Sites.ReadWrite.All','Files.ReadWrite.All'];
-
+  // Graph API用トークン取得（キャッシュ優先 → MSAL fallback）
   function getGraphToken() {
-    return initMapMsal().then(function(app) {
+    // ① まずlocalStorageキャッシュからGraphトークンを取得
+    var cached = getSPToken(false);
+    if (cached) return Promise.resolve(cached);
+    // ② キャッシュになければMSAL経由（_MAP_SCOPESでログイン済みのはず）
+    var tokenPromise = initMapMsal().then(function(app) {
       var accounts = app.getAllAccounts();
       if (accounts.length === 0) return Promise.reject(new Error('未ログイン'));
-      return app.acquireTokenSilent({ scopes: _GRAPH_SCOPES, account: accounts[0] })
-        .catch(function() { return app.acquireTokenPopup({ scopes: _GRAPH_SCOPES }); })
+      return app.acquireTokenSilent({ scopes: _MAP_SCOPES, account: accounts[0] })
+        .catch(function() { return app.acquireTokenPopup({ scopes: _MAP_SCOPES }); })
         .then(function(r) { return r.accessToken; });
     });
+    // ③ 15秒タイムアウト（ポップアップブロック等でハング防止）
+    var timeout = new Promise(function(_, rej) {
+      setTimeout(function() { rej(new Error('トークン取得がタイムアウトしました（再ログインが必要です）')); }, 15000);
+    });
+    return Promise.race([tokenPromise, timeout]);
   }
 
   // まずキャッシュチェック
@@ -771,7 +778,14 @@ function loadPlotCustomerInfo(plotName) {
 
     function fetchAllCustomers(url) {
       return fetch(url, { headers: { Authorization: 'Bearer '+token }, signal: _globalCtrl.signal })
-        .then(function(r){ return r.json(); })
+        .then(function(r){
+          if (!r.ok) {
+            return r.json().then(function(e){
+              throw new Error('HTTP ' + r.status + ': ' + (e.error && e.error.message ? e.error.message : r.statusText));
+            }).catch(function(){ throw new Error('HTTP ' + r.status + ': ' + r.statusText); });
+          }
+          return r.json();
+        })
         .then(function(data){
           _allCustomers = _allCustomers.concat((data.value || []).map(function(i){ return i.fields; }));
           if (data['@odata.nextLink']) return fetchAllCustomers(data['@odata.nextLink']);

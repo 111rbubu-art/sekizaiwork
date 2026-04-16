@@ -1766,7 +1766,7 @@ function hideDetScreen() {
 }
 
 
-var APP_VERSION = 'v1.8.200';
+var APP_VERSION = 'v1.8.201';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -3875,6 +3875,11 @@ function toggleKoujiEdit(d, tabIdx) {
               idbSet(ckey, arr).catch(function(){});
             }
           });
+          // allItemsも更新（左リストの再表示時に古いデータが出ないよう）
+          if (Array.isArray(allItems)) {
+            var ai = allItems.findIndex(function(x){ return x['id'] === itemId; });
+            if (ai >= 0) Object.assign(allItems[ai], edits);
+          }
           // トップ画面の社内連絡を再描画
           loadMenuNauchi();
           showKoujiTab(tabIdx, currentItem);
@@ -4663,30 +4668,88 @@ function hlText(text, q) {
     '<span style="background:#ffe066;color:#1a1a1a;border-radius:2px;padding:0 1px">$1</span>');
 }
 
+// 工事リストの状況ラベルを返す
+function _koujiStatusLabel(d) {
+  var endInfo = d['endinfo'] || '';
+  if (endInfo === '完了') return '完了';
+  if (endInfo === 'キャンセル') return 'キャンセル';
+  if (endInfo === '延期、保留') return '保留';
+  if (endInfo === '参考見積') return '参考見積';
+  if (endInfo === '音信不通' || endInfo === '3カ月以上　返事なし') return '音信不通';
+  if (d['PaymentDate']) return '入金済';
+  if (d['billing']) return '請求中';
+  if (d['ConstructionCompletionDate']) return '工完・請求待';
+  if (d['OrderDay']) return '契約済';
+  if (d['Estimate']) return '見積済';
+  return '見積検討中';
+}
+
+// 納骨リストの追加分状況ラベルを返す
+function _nokTuiStatusLabel(d) {
+  if (d['PaymentDate_tui']) return '完了';
+  if (d['DateInvoice_tui']) return '入金待';
+  if (d['CompletionDate_tui']) return '請求待';
+  if (d['IssueDate_tui']) return '契約済';
+  return '';
+}
+
 function registerOutlookContact(d, mode) {
-  var cusName = mode === 'kouji' ? (d['Customers'] || '') : (d['_x9867__x5ba2__x540d_'] || '');
-  var telRaw  = mode === 'kouji' ? (d['telephonenumber'] || '') : (d['_x96fb__x8a71__x756a__x53f7_'] || '');
-  var temple  = mode === 'kouji' ? (d['Temples'] || '') : (d['_x304a__x5bfa_'] || '');
-  var cusNo   = mode === 'kouji' ? (d['no'] ? String(d['no']) : '') : (d['_x9867_No'] ? String(d['_x9867_No']) : '');
+  var cusName = mode === 'kouji'
+    ? (d['Customers'] || '')
+    : (d['_x9867__x5ba2__x540d_'] || '');
+  var telRaw  = mode === 'kouji'
+    ? (d['telephonenumber'] || '')
+    : (d['_x96fb__x8a71__x756a__x53f7_'] || '');
+  var temple  = mode === 'kouji'
+    ? (d['Temples'] || '')
+    : (d['_x304a__x5bfa_'] || '');
   var cusId   = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-  var recDate = mode === 'kouji' ? ((d['ReceptionDay'] || '').substring(0,10)) : ((d['RequestDate'] || '').substring(0,10));
-  var category = mode === 'kouji' ? (d['category'] || '') : (d['_x5206__x985e_'] || '');
+  var recDate = mode === 'kouji'
+    ? ((d['ReceptionDay'] || '').substring(0,10))
+    : ((d['RequestDate'] || '').substring(0,10));
+  var category = mode === 'kouji'
+    ? (d['category'] || '')
+    : (d['_x5206__x985e_'] || '');
   var appUrl  = 'https://111rbubu-art.github.io/sekizaiwork/?id=' + cusId;
 
   if (!cusName) { showSaveToast(false, '顧客名が取得できません'); return; }
   if (!telRaw)  { showSaveToast(false, '電話番号が登録されていません'); return; }
 
-  // 電話番号を分割（「、」「,」「/」「・」「 」「\n」で区切り）
+  // 電話番号を分割
   var tels = telRaw.split(/[、,\/・\s\n]+/).map(function(t){ return t.trim(); }).filter(Boolean);
   var mobileTel   = tels[0] || '';
   var businessTel = tels[1] || '';
 
+  // surname の生成
+  var surnameParts = [temple, cusId].filter(Boolean);
+  if (mode === 'kouji') {
+    // 工事：未完了なら工事内容＋状況ラベルを追加
+    var isKoujiDone = !!(d['endinfo']);
+    if (!isKoujiDone) {
+      var koujiNaiyou = d['ConstructionContents'] || '';
+      var koujiStatus = _koujiStatusLabel(d);
+      if (koujiNaiyou) surnameParts.push(koujiNaiyou);
+      if (koujiStatus) surnameParts.push(koujiStatus);
+    }
+  } else {
+    // 納骨：未完了なら納骨日を追加
+    var isNokDone = d['_x524a__x9664_'] === true;
+    if (!isNokDone) {
+      var nokDate = (d['_x7d0d__x671f__xff08__x7d0d__x9a'] || '').substring(0, 10);
+      if (nokDate) surnameParts.push('納骨日:' + nokDate);
+    } else {
+      // 完了済みで追加分あり
+      var hasTui = d['CompletionDate_tui'] || d['IssueDate_tui'];
+      if (hasTui) {
+        var tuiStatus = _nokTuiStatusLabel(d);
+        surnameParts.push('納骨済_追加' + (tuiStatus ? ':' + tuiStatus : ''));
+      }
+    }
+  }
+  var surname = surnameParts.join(' ');
+
   var displayName = cusName + (temple ? ' ' + temple : '') + (cusId ? ' ' + cusId : '');
-  var givenName   = cusName;
-  var surname     = [temple, cusId].filter(Boolean).join(' ');
-  var noteId      = 'sekizaiwork_id:' + cusId; // 検索キー
   var notes = [
-    noteId,
     '受付日: ' + (recDate || '未設定'),
     '分類: ' + (category || '未設定'),
     '顧客リストID: ' + (cusId || '未設定'),
@@ -4701,7 +4764,7 @@ function registerOutlookContact(d, mode) {
 
     var body = {
       displayName: displayName,
-      givenName: givenName,
+      givenName: cusName,
       surname: surname,
       companyName: temple,
       mobilePhone: mobileTel,
@@ -4709,15 +4772,18 @@ function registerOutlookContact(d, mode) {
     };
     if (businessTel) body.businessPhones = [businessTel];
 
-    // 既存連絡先を検索（personalNotesのsekizaiwork_idで照合）
+    // 電話番号で既存連絡先を検索（mobilePhone / businessPhones 両方）
+    var searchTel = mobileTel.replace(/-/g, '');
+    var filterQ = "mobilePhone eq '" + mobileTel + "'" +
+      (businessTel ? " or businessPhones/any(p:p eq '" + businessTel + "')" : '') +
+      " or mobilePhone eq '" + searchTel + "'";
     return fetch(
-      "https://graph.microsoft.com/v1.0/me/contacts?$filter=contains(personalNotes,'" + noteId + "')&$select=id,displayName",
+      'https://graph.microsoft.com/v1.0/me/contacts?$filter=' + encodeURIComponent(filterQ) + '&$select=id,displayName,mobilePhone',
       { headers: { Authorization: 'Bearer ' + token } }
     ).then(function(r){ return r.json(); })
     .then(function(data) {
       var existing = data.value && data.value[0];
       if (existing) {
-        // 既存あり → PATCH（更新）
         return fetch(
           'https://graph.microsoft.com/v1.0/me/contacts/' + existing.id,
           { method: 'PATCH', headers: headers, body: JSON.stringify(body) }
@@ -4726,7 +4792,6 @@ function registerOutlookContact(d, mode) {
           else r.json().then(function(e){ showSaveToast(false, '更新失敗: ' + (e.error && e.error.message || r.status)); });
         });
       } else {
-        // 既存なし → POST（新規）
         return fetch(
           'https://graph.microsoft.com/v1.0/me/contacts',
           { method: 'POST', headers: headers, body: JSON.stringify(body) }
@@ -6123,7 +6188,8 @@ function showTab(i, d) {
     var cusRegBtnNok = !editMode && d['Cus_ID']
       ? '<button onclick="openCustRegModal(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>'
       : '';
-    var uketsukeBtnNok = '<button onclick="openUketsukeNok(currentItem)" style="padding:8px 14px;background:#185fa5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🖨️ 受付票</button>';
+    var uketsukeBtnNok = '<button onclick="openUketsukeNok(currentItem)" style="padding:8px 14px;background:#185fa5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🖨️ 受付票</button>' +
+      '<button onclick="registerOutlookContact(currentItem,\'noukotsu\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>';
     var cusLinkBtnNok = d['Cus_ID']
       ? '<button onclick="openCusFromNok(' + d['Cus_ID'] + ')" style="padding:8px 16px;background:#5a3a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">👥 顧客リスト</button>'
       : '<button disabled style="padding:8px 16px;background:#ccc;color:#999;border:none;border-radius:8px;font-size:13px;font-weight:500;font-family:inherit;cursor:not-allowed">👥 顧客リスト</button>';

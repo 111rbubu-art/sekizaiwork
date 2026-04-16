@@ -233,7 +233,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.3</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.4</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -734,22 +734,38 @@ function loadPlotCustomerInfo(plotName) {
   var body = document.getElementById('vp-body');
   if(!body) return;
 
-  // Graph API用トークン取得（キャッシュ優先 → MSAL fallback）
+  // Graph API用トークン取得
+  // getSPToken(false)はtarget内に'graph.microsoft.com'がないため常に失敗する。
+  // そのためlocalStorageを直接スキャンし、SPトークン以外（=Graphトークン）を返す。
   function getGraphToken() {
-    // ① まずlocalStorageキャッシュからGraphトークンを取得
-    var cached = getSPToken(false);
-    if (cached) return Promise.resolve(cached);
-    // ② キャッシュになければMSAL経由（_MAP_SCOPESでログイン済みのはず）
+    // ① localStorageを直接スキャン（SPドメインを含まないトークン = Graphトークン）
+    var now = Date.now() / 1000;
+    try {
+      var lsKeys = Object.keys(localStorage);
+      for (var li = 0; li < lsKeys.length; li++) {
+        var lk = lsKeys[li];
+        if (lk.indexOf('accesstoken') < 0) continue;
+        var litem = JSON.parse(localStorage.getItem(lk));
+        if (!litem || !litem.secret) continue;
+        var lexp = litem.expiresOn || litem.extended_expires_on || '0';
+        var lexpTime = isNaN(lexp) ? new Date(lexp).getTime() / 1000 : Number(lexp);
+        if (lexpTime <= now + 60) continue;
+        var ltarget = (litem.target || '').toLowerCase();
+        // SPトークンを除外（targetにshojisekizai.sharepoint.comが含まれる）
+        if (ltarget.indexOf('shojisekizai.sharepoint.com') >= 0 || ltarget.length === 0) continue;
+        return Promise.resolve(litem.secret); // Graphトークン発見
+      }
+    } catch(e) {}
+    // ② キャッシュになければMSAL acquireTokenSilent（ポップアップなし・10秒タイムアウト）
     var tokenPromise = initMapMsal().then(function(app) {
       var accounts = app.getAllAccounts();
       if (accounts.length === 0) return Promise.reject(new Error('未ログイン'));
       return app.acquireTokenSilent({ scopes: _MAP_SCOPES, account: accounts[0] })
-        .catch(function() { return app.acquireTokenPopup({ scopes: _MAP_SCOPES }); })
-        .then(function(r) { return r.accessToken; });
+        .then(function(r) { return r.accessToken; })
+        .catch(function() { return Promise.reject(new Error('セッション切れです。再ログインしてください')); });
     });
-    // ③ 15秒タイムアウト（ポップアップブロック等でハング防止）
     var timeout = new Promise(function(_, rej) {
-      setTimeout(function() { rej(new Error('トークン取得がタイムアウトしました（再ログインが必要です）')); }, 15000);
+      setTimeout(function() { rej(new Error('認証タイムアウト。再ログインしてください')); }, 10000);
     });
     return Promise.race([tokenPromise, timeout]);
   }

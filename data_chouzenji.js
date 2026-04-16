@@ -1,5 +1,5 @@
 // 長泉寺 マップデータ
-// savedAt: 2026-04-16T12:25:05.000Z
+// savedAt: 2026-04-16T13:28:12.000Z
 // CP/RP/TW/THはmap.html側で動的計算（25px均一グリッド）
 
 var MAP_DATA_chouzenji = {

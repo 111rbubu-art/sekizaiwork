@@ -1852,6 +1852,40 @@ function _gcalBuildEvent(d) {
     start: start, end: end
   };
 }
+
+// itemIdでカレンダーを検索して既存イベントIDを返す
+// 納骨日前後1ヶ月に絞って検索（全件検索を回避）
+function _gcalFindEvent(token, itemId, nokDate, callback) {
+  var identifier = _gcalIdentifier(itemId);
+
+  // 検索範囲：納骨日前後1ヶ月
+  var base = nokDate ? new Date(nokDate + 'T00:00:00+09:00') : new Date();
+  var timeMin = new Date(base); timeMin.setMonth(timeMin.getMonth() - 1);
+  var timeMax = new Date(base); timeMax.setMonth(timeMax.getMonth() + 1);
+
+  var params = '?q=' + encodeURIComponent(identifier) +
+    '&timeMin=' + encodeURIComponent(timeMin.toISOString()) +
+    '&timeMax=' + encodeURIComponent(timeMax.toISOString()) +
+    '&maxResults=10&fields=items(id,description)';
+
+  var ctrl = new AbortController();
+  var timer = setTimeout(function(){ ctrl.abort(); }, 10000);
+  fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events' + params,
+    { headers: { Authorization: 'Bearer ' + token }, signal: ctrl.signal }
+  ).then(function(r){ return r.json(); })
+  .then(function(data) {
+    clearTimeout(timer);
+    var found = (data.items || []).find(function(ev) {
+      return ev.description && ev.description.includes(identifier);
+    });
+    callback(found ? found.id : null);
+  }).catch(function(e){
+    clearTimeout(timer);
+    console.warn('_gcalFindEvent error:', e.message);
+    callback(null);
+  });
+}
+
 // カレンダー登録・更新
 function registerGcalEvent() {
   if (!currentItem) return;
@@ -1864,7 +1898,7 @@ function registerGcalEvent() {
     var eventBody = _gcalBuildEvent(d);
     if (!eventBody) { showSaveToast(false, '納骨日が取得できません'); return; }
     // 既存イベントを検索
-    _gcalFindEvent(token, d['id'], function(existingId) {
+    _gcalFindEvent(token, d['id'], (G(d,'納骨日')||'').substring(0,10).split('/').join('-'), function(existingId) {
       var method = existingId ? 'PUT' : 'POST';
       var url = existingId
         ? 'https://www.googleapis.com/calendar/v3/calendars/primary/events/' + existingId
@@ -1894,7 +1928,7 @@ function deleteGcalEvent() {
   if (!confirm('Googleカレンダーのイベントを削除しますか？')) return;
   showSaveToast(null, '📅 カレンダーイベントを削除中...');
   gcalSignIn(function(token) {
-    _gcalFindEvent(token, currentItem['id'], function(existingId) {
+    _gcalFindEvent(token, currentItem['id'], (G(currentItem,'納骨日')||'').substring(0,10).split('/').join('-'), function(existingId) {
       if (!existingId) { showSaveToast(false, '登録済みのイベントが見つかりません'); return; }
       fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + existingId, {
         method: 'DELETE',
@@ -1921,7 +1955,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.206';
+var APP_VERSION = 'v1.8.207';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 

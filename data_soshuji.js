@@ -1,5 +1,5 @@
 // 宗福寺 マップデータ
-// savedAt: 2026-04-16T12:25:05.000Z
+// savedAt: 2026-04-16T13:28:12.000Z
 // CP/RP/TW/THはmap.html側で動的計算（25px均一グリッド）
 
 var MAP_DATA_soshuji = {
@@ -66,7 +66,7 @@ var MAP_DATA_soshuji = {
     "r2": 7,
     "c1": 65,
     "c2": 78,
-    "status": "building",
+    "status": "used",
     "mapname": "宗福寺住職"
   },
   {
@@ -74,7 +74,7 @@ var MAP_DATA_soshuji = {
     "r2": 7,
     "c1": 79,
     "c2": 82,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮2"
   },
   {
@@ -82,7 +82,7 @@ var MAP_DATA_soshuji = {
     "r2": 7,
     "c1": 83,
     "c2": 85,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮7"
   },
   {
@@ -162,7 +162,7 @@ var MAP_DATA_soshuji = {
     "r2": 10,
     "c1": 79,
     "c2": 82,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮"
   },
   {
@@ -234,7 +234,7 @@ var MAP_DATA_soshuji = {
     "r2": 16,
     "c1": 73,
     "c2": 78,
-    "status": "building",
+    "status": "used",
     "mapname": "納骨堂"
   },
   {
@@ -242,7 +242,7 @@ var MAP_DATA_soshuji = {
     "r2": 13,
     "c1": 79,
     "c2": 82,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮3"
   },
   {
@@ -274,7 +274,7 @@ var MAP_DATA_soshuji = {
     "r2": 16,
     "c1": 83,
     "c2": 85,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮1"
   },
   {
@@ -338,7 +338,7 @@ var MAP_DATA_soshuji = {
     "r2": 16,
     "c1": 79,
     "c2": 82,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮6"
   },
   {
@@ -530,7 +530,7 @@ var MAP_DATA_soshuji = {
     "r2": 55,
     "c1": 79,
     "c2": 85,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮4"
   },
   {
@@ -826,7 +826,7 @@ var MAP_DATA_soshuji = {
     "r2": 49,
     "c1": 13,
     "c2": 16,
-    "status": "building",
+    "status": "used",
     "mapname": "小宮5"
   },
   {
@@ -987,7 +987,7 @@ var MAP_DATA_soshuji = {
     "c1": 65,
     "c2": 70,
     "status": "used",
-    "mapname": "田村2"
+    "mapname": "田中4"
   },
   {
     "r1": 56,
@@ -1162,7 +1162,7 @@ var MAP_DATA_soshuji = {
     "r2": 75,
     "c1": 11,
     "c2": 12,
-    "status": "used",
+    "status": "road",
     "mapname": "7"
   },
   {
@@ -1170,7 +1170,7 @@ var MAP_DATA_soshuji = {
     "r2": 75,
     "c1": 21,
     "c2": 22,
-    "status": "used",
+    "status": "road",
     "mapname": "6"
   },
   {
@@ -1178,32 +1178,32 @@ var MAP_DATA_soshuji = {
     "r2": 75,
     "c1": 31,
     "c2": 32,
-    "status": "used",
+    "status": "road",
     "mapname": "5"
   },
   {
-    "r1": 73,
-    "r2": 75,
+    "r1": 4,
+    "r2": 144,
     "c1": 43,
     "c2": 44,
-    "status": "used",
-    "mapname": "4"
+    "status": "road",
+    "mapname": ""
   },
   {
-    "r1": 73,
-    "r2": 75,
+    "r1": 4,
+    "r2": 144,
     "c1": 57,
     "c2": 58,
-    "status": "used",
-    "mapname": "3"
+    "status": "road",
+    "mapname": ""
   },
   {
-    "r1": 73,
-    "r2": 75,
+    "r1": 8,
+    "r2": 144,
     "c1": 71,
     "c2": 72,
-    "status": "used",
-    "mapname": "2"
+    "status": "road",
+    "mapname": ""
   },
   {
     "r1": 76,
@@ -2148,6 +2148,118 @@ var MAP_DATA_soshuji = {
     "c2": 42,
     "status": "used",
     "mapname": "鈴賀1"
+  },
+  {
+    "r1": 71,
+    "r2": 75,
+    "c1": 86,
+    "c2": 87,
+    "status": "road",
+    "mapname": "1"
+  },
+  {
+    "r1": 4,
+    "r2": 144,
+    "c1": 86,
+    "c2": 88,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 11,
+    "c2": 104,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 86,
+    "c2": 87,
+    "status": "road",
+    "mapname": "1"
+  },
+  {
+    "r1": 71,
+    "r2": 75,
+    "c1": 71,
+    "c2": 72,
+    "status": "road",
+    "mapname": "2"
+  },
+  {
+    "r1": 71,
+    "r2": 75,
+    "c1": 57,
+    "c2": 58,
+    "status": "road",
+    "mapname": "3"
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 43,
+    "c2": 44,
+    "status": "road",
+    "mapname": "4"
+  },
+  {
+    "r1": 4,
+    "r2": 147,
+    "c1": 31,
+    "c2": 32,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 31,
+    "c2": 32,
+    "status": "road",
+    "mapname": "5"
+  },
+  {
+    "r1": 4,
+    "r2": 147,
+    "c1": 21,
+    "c2": 22,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 21,
+    "c2": 22,
+    "status": "road",
+    "mapname": "6"
+  },
+  {
+    "r1": 6,
+    "r2": 147,
+    "c1": 11,
+    "c2": 12,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 72,
+    "r2": 75,
+    "c1": 11,
+    "c2": 12,
+    "status": "road",
+    "mapname": "7"
+  },
+  {
+    "r1": 68,
+    "r2": 70,
+    "c1": 37,
+    "c2": 42,
+    "status": "used",
+    "mapname": "八木1"
   },
   ]
 };

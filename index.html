@@ -1769,7 +1769,165 @@ function hideDetScreen() {
 // 工事保存後のマージ待ちデータ（SP再取得時に上書きされないよう保持）
 var _pendingKoujiMerge = {}; // {itemId: editsObj}
 
-var APP_VERSION = 'v1.8.202';
+
+// ============================================================
+// ===== Google Calendar 連携 =====
+// ============================================================
+var _GCAL_CLIENT_ID = '695783251822-vr8hkhpeunmv82e7oiptdvkl1tkp0uql.apps.googleusercontent.com';
+var _GCAL_SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+var _gcalToken = null;
+
+// identifierをdescriptionに埋め込むキー
+function _gcalIdentifier(itemId) {
+  return 'sekizaiwork-nok:' + itemId;
+}
+
+// Googleログイン（OAuth2 Implicit Flow・ポップアップ）
+function gcalSignIn(callback) {
+  if (_gcalToken) { callback(_gcalToken); return; }
+  var redirectUri = encodeURIComponent(location.origin + location.pathname);
+  var url = 'https://accounts.google.com/o/oauth2/v2/auth' +
+    '?client_id=' + _GCAL_CLIENT_ID +
+    '&redirect_uri=' + redirectUri +
+    '&response_type=token' +
+    '&scope=' + encodeURIComponent(_GCAL_SCOPES) +
+    '&prompt=select_account';
+  var popup = window.open(url, 'gcal_auth', 'width=500,height=600,left=200,top=100');
+  var timer = setInterval(function() {
+    try {
+      if (!popup || popup.closed) { clearInterval(timer); return; }
+      var hash = popup.location.hash;
+      if (hash && hash.includes('access_token')) {
+        clearInterval(timer);
+        popup.close();
+        var params = {};
+        hash.substring(1).split('&').forEach(function(p) {
+          var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1]);
+        });
+        _gcalToken = params['access_token'];
+        if (_gcalToken) callback(_gcalToken);
+        else showSaveToast(false, 'Google認証に失敗しました');
+      }
+    } catch(e) {}
+  }, 500);
+}
+
+// イベントbodyを構築
+function _gcalBuildEvent(d) {
+  var name    = d['_x9867__x5ba2__x540d_'] || '';
+  var temple  = d['_x304a__x5bfa_'] || '';
+  var nokDate = (G(d,'納骨日') || '').substring(0,10);
+  var nokTime = (d['_x7d0d__x9aa8__x6642__x9593_'] || '').substring(0,5);
+  var category= d['_x5206__x985e_'] || '';
+  var memo    = d['noukotu_kaisi_jyoutai'] || '';
+  var itemId  = d['id'] || '';
+  if (!nokDate) return null;
+  var start, end;
+  if (nokTime && nokTime.length >= 4) {
+    start = { dateTime: nokDate + 'T' + nokTime + ':00', timeZone: 'Asia/Tokyo' };
+    var h = parseInt(nokTime.split(':')[0]);
+    var m = nokTime.split(':')[1] || '00';
+    end = { dateTime: nokDate + 'T' + String(h+1).padStart(2,'0') + ':' + m + ':00', timeZone: 'Asia/Tokyo' };
+  } else {
+    start = { date: nokDate };
+    end   = { date: nokDate };
+  }
+  return {
+    summary: name + (temple ? '\u3000' + temple : '') + '\u3000\u7d0d\u9aa8',
+    description: [
+      category ? '分類：' + category : '',
+      memo ? '備考：' + memo : '',
+      _gcalIdentifier(itemId)  // 識別キー（SPに列不要）
+    ].filter(Boolean).join('\n'),
+    start: start, end: end
+  };
+}
+
+// itemIdでカレンダーを検索して既存イベントIDを返す
+function _gcalFindEvent(token, itemId, callback) {
+  var identifier = _gcalIdentifier(itemId);
+  fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events' +
+    '?q=' + encodeURIComponent(identifier) + '&maxResults=5&fields=items(id,description)',
+    { headers: { Authorization: 'Bearer ' + token } }
+  ).then(function(r){ return r.json(); })
+  .then(function(data) {
+    var found = (data.items || []).find(function(ev) {
+      return ev.description && ev.description.includes(identifier);
+    });
+    callback(found ? found.id : null);
+  }).catch(function(){ callback(null); });
+}
+
+// カレンダー登録・更新
+function registerGcalEvent() {
+  if (!currentItem) return;
+  var d = currentItem;
+  if (!(G(d,'納骨日') || '').substring(0,10)) {
+    showSaveToast(false, '納骨日が登録されていません'); return;
+  }
+  showSaveToast(null, '📅 Googleカレンダーに登録中...');
+  gcalSignIn(function(token) {
+    var eventBody = _gcalBuildEvent(d);
+    if (!eventBody) { showSaveToast(false, '納骨日が取得できません'); return; }
+    // 既存イベントを検索
+    _gcalFindEvent(token, d['id'], function(existingId) {
+      var method = existingId ? 'PUT' : 'POST';
+      var url = existingId
+        ? 'https://www.googleapis.com/calendar/v3/calendars/primary/events/' + existingId
+        : 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+      fetch(url, {
+        method: method,
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(eventBody)
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(ev) {
+        if (ev.id) {
+          showSaveToast(true, '📅 カレンダーに' + (existingId ? '更新' : '登録') + 'しました');
+          _gcalUpdateBtn(true);
+        } else {
+          showSaveToast(false, 'カレンダー登録エラー: ' + (ev.error && ev.error.message || ''));
+        }
+      })
+      .catch(function(e){ showSaveToast(false, 'エラー: ' + e.message); });
+    });
+  });
+}
+
+// カレンダーイベント削除
+function deleteGcalEvent() {
+  if (!currentItem) return;
+  if (!confirm('Googleカレンダーのイベントを削除しますか？')) return;
+  showSaveToast(null, '📅 カレンダーイベントを削除中...');
+  gcalSignIn(function(token) {
+    _gcalFindEvent(token, currentItem['id'], function(existingId) {
+      if (!existingId) { showSaveToast(false, '登録済みのイベントが見つかりません'); return; }
+      fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + existingId, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer ' + token }
+      })
+      .then(function(r) {
+        if (r.ok || r.status === 204) {
+          showSaveToast(true, '📅 カレンダーイベントを削除しました');
+          _gcalUpdateBtn(false);
+        } else {
+          showSaveToast(false, '削除エラー: ' + r.status);
+        }
+      })
+      .catch(function(e){ showSaveToast(false, 'エラー: ' + e.message); });
+    });
+  });
+}
+
+// ボタン表示更新
+function _gcalUpdateBtn(hasEvent) {
+  var regBtn = document.getElementById('gcal-reg-btn');
+  var delBtn = document.getElementById('gcal-del-btn');
+  if (regBtn) regBtn.textContent = hasEvent ? '📅 カレンダー更新' : '📅 カレンダー登録';
+  if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
+}
+
+var APP_VERSION = 'v1.8.204';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -6204,7 +6362,9 @@ function showTab(i, d) {
       ? '<button onclick="openCustRegModal(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>'
       : '';
     var uketsukeBtnNok = '<button onclick="openUketsukeNok(currentItem)" style="padding:8px 14px;background:#185fa5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🖨️ 受付票</button>' +
-      '<button onclick="registerOutlookContact(currentItem,\'noukotsu\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>';
+      '<button onclick="registerOutlookContact(currentItem,\'noukotsu\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>' +
+      '<button id="gcal-reg-btn" onclick="registerGcalEvent()" style="padding:8px 14px;background:#0f9d58;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📅 カレンダー登録</button>' +
+      '<button id="gcal-del-btn" onclick="deleteGcalEvent()" style="padding:8px 14px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;display:none">📅 カレンダー削除</button>';
     var cusLinkBtnNok = d['Cus_ID']
       ? '<button onclick="openCusFromNok(' + d['Cus_ID'] + ')" style="padding:8px 16px;background:#5a3a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">👥 顧客リスト</button>'
       : '<button disabled style="padding:8px 16px;background:#ccc;color:#999;border:none;border-radius:8px;font-size:13px;font-weight:500;font-family:inherit;cursor:not-allowed">👥 顧客リスト</button>';

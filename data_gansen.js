@@ -1,5 +1,5 @@
 // 願泉寺 マップデータ
-// savedAt: 2026-04-16T12:25:05.000Z
+// savedAt: 2026-04-16T13:28:12.000Z
 // CP/RP/TW/THはmap.html側で動的計算（25px均一グリッド）
 
 var MAP_DATA_gansen = {
@@ -8,8 +8,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 35,
     "r2": 36,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "淵1"
   },
@@ -38,10 +38,10 @@ var MAP_DATA_gansen = {
     "mapname": "大根"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 5,
-    "c2": 6,
+    "r1": 37,
+    "r2": 38,
+    "c1": 4,
+    "c2": 5,
     "status": "used",
     "mapname": "中山"
   },
@@ -80,8 +80,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 10,
     "r2": 11,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "林1"
   },
@@ -102,10 +102,10 @@ var MAP_DATA_gansen = {
     "mapname": "田屋"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 9,
-    "c2": 10,
+    "r1": 37,
+    "r2": 38,
+    "c1": 8,
+    "c2": 9,
     "status": "used",
     "mapname": "梅澤"
   },
@@ -118,18 +118,18 @@ var MAP_DATA_gansen = {
     "mapname": "塚田"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 11,
-    "c2": 12,
+    "r1": 37,
+    "r2": 38,
+    "c1": 10,
+    "c2": 11,
     "status": "used",
     "mapname": "加藤2"
   },
   {
     "r1": 12,
     "r2": 13,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "加藤1"
   },
@@ -144,8 +144,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 37,
     "r2": 38,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "礪波"
   },
@@ -224,8 +224,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 4,
     "r2": 5,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "阿部"
   },
@@ -240,8 +240,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 4,
     "r2": 5,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "中村2"
   },
@@ -256,8 +256,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 20,
     "r2": 21,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "平井"
   },
@@ -280,8 +280,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 14,
     "r2": 15,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "一法師"
   },
@@ -304,16 +304,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 14,
     "r2": 15,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "本吉"
   },
   {
     "r1": 20,
     "r2": 21,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "臼田"
   },
@@ -328,8 +328,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 29,
     "r2": 30,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "小林3"
   },
@@ -344,16 +344,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 16,
     "r2": 17,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "坂本"
   },
   {
     "r1": 29,
     "r2": 30,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "荒川1"
   },
@@ -366,18 +366,18 @@ var MAP_DATA_gansen = {
     "mapname": "三村"
   },
   {
-    "r1": 1,
-    "r2": 2,
-    "c1": 23,
-    "c2": 24,
+    "r1": 0,
+    "r2": 1,
+    "c1": 24,
+    "c2": 25,
     "status": "building",
     "mapname": "水"
   },
   {
     "r1": 6,
     "r2": 7,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "峠"
   },
@@ -392,16 +392,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 22,
     "r2": 23,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "荻田"
   },
   {
     "r1": 31,
     "r2": 32,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "empty",
     "mapname": "空"
   },
@@ -424,8 +424,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 18,
     "r2": 19,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "小森2"
   },
@@ -448,8 +448,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 6,
     "r2": 7,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "後藤2"
   },
@@ -472,16 +472,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 31,
     "r2": 32,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "永江"
   },
   {
     "r1": 8,
     "r2": 9,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "鳥羽"
   },
@@ -502,10 +502,10 @@ var MAP_DATA_gansen = {
     "mapname": "安達"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 5,
-    "c2": 6,
+    "r1": 35,
+    "r2": 36,
+    "c1": 4,
+    "c2": 5,
     "status": "used",
     "mapname": "山口1"
   },
@@ -518,10 +518,10 @@ var MAP_DATA_gansen = {
     "mapname": "江端1"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 7,
-    "c2": 8,
+    "r1": 37,
+    "r2": 38,
+    "c1": 6,
+    "c2": 7,
     "status": "used",
     "mapname": "間"
   },
@@ -552,16 +552,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 10,
     "r2": 11,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "吉野谷"
   },
   {
     "r1": 33,
     "r2": 34,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "伊藤3"
   },
@@ -600,16 +600,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 35,
     "r2": 36,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "大坂谷"
   },
   {
     "r1": 16,
     "r2": 17,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "折尾"
   },
@@ -622,10 +622,10 @@ var MAP_DATA_gansen = {
     "mapname": "斉藤"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 17,
-    "c2": 18,
+    "r1": 37,
+    "r2": 38,
+    "c1": 16,
+    "c2": 17,
     "status": "used",
     "mapname": "神谷"
   },
@@ -640,16 +640,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 33,
     "r2": 34,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "伊藤4"
   },
   {
     "r1": 18,
     "r2": 19,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "building",
     "mapname": "納骨堂"
   },
@@ -672,8 +672,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 18,
     "r2": 19,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "高橋4"
   },
@@ -686,18 +686,18 @@ var MAP_DATA_gansen = {
     "mapname": "田中4"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 7,
-    "c2": 8,
+    "r1": 35,
+    "r2": 36,
+    "c1": 6,
+    "c2": 7,
     "status": "used",
     "mapname": "久保島"
   },
   {
     "r1": 27,
     "r2": 28,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "髙畑"
   },
@@ -712,8 +712,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 8,
     "r2": 9,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "石川2"
   },
@@ -768,8 +768,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 4,
     "r2": 5,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "溝淵"
   },
@@ -822,10 +822,10 @@ var MAP_DATA_gansen = {
     "mapname": "五十嵐1"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 1,
-    "c2": 2,
+    "r1": 37,
+    "r2": 38,
+    "c1": 0,
+    "c2": 1,
     "status": "used",
     "mapname": "飯田"
   },
@@ -838,18 +838,18 @@ var MAP_DATA_gansen = {
     "mapname": "安部"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 3,
-    "c2": 4,
+    "r1": 37,
+    "r2": 38,
+    "c1": 2,
+    "c2": 3,
     "status": "used",
     "mapname": "林3"
   },
   {
     "r1": 10,
     "r2": 11,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "小森1"
   },
@@ -872,8 +872,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 6,
     "r2": 7,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "清水"
   },
@@ -912,8 +912,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 12,
     "r2": 13,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "梶間"
   },
@@ -943,9 +943,9 @@ var MAP_DATA_gansen = {
   },
   {
     "r1": 0,
-    "r2": 33,
+    "r2": 32,
     "c1": 0,
-    "c2": 18,
+    "c2": 17,
     "status": "building",
     "mapname": "本堂"
   },
@@ -960,8 +960,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 37,
     "r2": 38,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "木村"
   },
@@ -1040,8 +1040,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 20,
     "r2": 21,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "滝澤"
   },
@@ -1064,8 +1064,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 29,
     "r2": 30,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "大野2"
   },
@@ -1136,16 +1136,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 22,
     "r2": 23,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "若月"
   },
   {
     "r1": 22,
     "r2": 23,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "直江"
   },
@@ -1184,8 +1184,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 8,
     "r2": 9,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "empty",
     "mapname": "空16"
   },
@@ -1200,16 +1200,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 8,
     "r2": 9,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "小杉"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 13,
-    "c2": 14,
+    "r1": 35,
+    "r2": 36,
+    "c1": 12,
+    "c2": 13,
     "status": "used",
     "mapname": "篠"
   },
@@ -1222,18 +1222,18 @@ var MAP_DATA_gansen = {
     "mapname": "櫻木"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 15,
-    "c2": 16,
+    "r1": 35,
+    "r2": 36,
+    "c1": 14,
+    "c2": 15,
     "status": "used",
     "mapname": "古川"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 17,
-    "c2": 18,
+    "r1": 35,
+    "r2": 36,
+    "c1": 16,
+    "c2": 17,
     "status": "empty",
     "mapname": "空13"
   },
@@ -1256,16 +1256,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 33,
     "r2": 34,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "石川3"
   },
   {
     "r1": 33,
     "r2": 34,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "佐藤3"
   },
@@ -1288,16 +1288,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 35,
     "r2": 36,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "empty",
     "mapname": "空19"
   },
   {
     "r1": 10,
     "r2": 11,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "empty",
     "mapname": "空"
   },
@@ -1312,8 +1312,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 35,
     "r2": 36,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "堀之内3"
   },
@@ -1326,10 +1326,10 @@ var MAP_DATA_gansen = {
     "mapname": "沼野"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 13,
-    "c2": 14,
+    "r1": 37,
+    "r2": 38,
+    "c1": 12,
+    "c2": 13,
     "status": "used",
     "mapname": "松田"
   },
@@ -1350,10 +1350,10 @@ var MAP_DATA_gansen = {
     "mapname": "谷口"
   },
   {
-    "r1": 38,
-    "r2": 39,
-    "c1": 15,
-    "c2": 16,
+    "r1": 37,
+    "r2": 38,
+    "c1": 14,
+    "c2": 15,
     "status": "used",
     "mapname": "長屋"
   },
@@ -1368,8 +1368,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 12,
     "r2": 13,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "富田"
   },
@@ -1384,8 +1384,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 12,
     "r2": 13,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "堀之内1"
   },
@@ -1440,8 +1440,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 27,
     "r2": 28,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "田中2"
   },
@@ -1472,8 +1472,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 27,
     "r2": 28,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "山田2"
   },
@@ -1496,8 +1496,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 14,
     "r2": 15,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "山田1"
   },
@@ -1512,16 +1512,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 14,
     "r2": 15,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "小林2"
   },
   {
     "r1": 27,
     "r2": 28,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "高尾"
   },
@@ -1576,8 +1576,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 4,
     "r2": 5,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "中馬"
   },
@@ -1608,24 +1608,24 @@ var MAP_DATA_gansen = {
   {
     "r1": 31,
     "r2": 32,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "松原2"
   },
   {
     "r1": 6,
     "r2": 7,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "河西"
   },
   {
     "r1": 22,
     "r2": 23,
-    "c1": 32,
-    "c2": 33,
+    "c1": 33,
+    "c2": 34,
     "status": "used",
     "mapname": "本間"
   },
@@ -1648,16 +1648,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 37,
     "r2": 38,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "池田"
   },
   {
     "r1": 37,
     "r2": 38,
-    "c1": 26,
-    "c2": 27,
+    "c1": 28,
+    "c2": 29,
     "status": "used",
     "mapname": "田中3"
   },
@@ -1688,8 +1688,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 31,
     "r2": 32,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "堀内"
   },
@@ -1710,18 +1710,18 @@ var MAP_DATA_gansen = {
     "mapname": "高橋6"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 1,
-    "c2": 2,
+    "r1": 35,
+    "r2": 36,
+    "c1": 0,
+    "c2": 1,
     "status": "used",
     "mapname": "丸茂"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 3,
-    "c2": 4,
+    "r1": 35,
+    "r2": 36,
+    "c1": 2,
+    "c2": 3,
     "status": "used",
     "mapname": "篠田"
   },
@@ -1776,16 +1776,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 20,
     "r2": 21,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "工藤"
   },
   {
     "r1": 29,
     "r2": 30,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "金澤　高見"
   },
@@ -1808,8 +1808,8 @@ var MAP_DATA_gansen = {
   {
     "r1": 16,
     "r2": 17,
-    "c1": 24,
-    "c2": 25,
+    "c1": 26,
+    "c2": 27,
     "status": "used",
     "mapname": "宅間"
   },
@@ -1838,10 +1838,10 @@ var MAP_DATA_gansen = {
     "mapname": "佐々木2"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 9,
-    "c2": 10,
+    "r1": 35,
+    "r2": 36,
+    "c1": 8,
+    "c2": 9,
     "status": "used",
     "mapname": "淵2"
   },
@@ -1872,16 +1872,16 @@ var MAP_DATA_gansen = {
   {
     "r1": 16,
     "r2": 17,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "折田"
   },
   {
     "r1": 18,
     "r2": 19,
-    "c1": 30,
-    "c2": 31,
+    "c1": 31,
+    "c2": 32,
     "status": "used",
     "mapname": "北村"
   },
@@ -1950,10 +1950,10 @@ var MAP_DATA_gansen = {
     "mapname": "青地"
   },
   {
-    "r1": 36,
-    "r2": 37,
-    "c1": 11,
-    "c2": 12,
+    "r1": 35,
+    "r2": 36,
+    "c1": 10,
+    "c2": 11,
     "status": "empty",
     "mapname": "空18"
   },
@@ -1964,6 +1964,134 @@ var MAP_DATA_gansen = {
     "c2": 20,
     "status": "used",
     "mapname": "佐藤2"
+  },
+  {
+    "r1": 0,
+    "r2": 39,
+    "c1": 18,
+    "c2": 18,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 34,
+    "r2": 34,
+    "c1": 0,
+    "c2": 17,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 39,
+    "r2": 39,
+    "c1": 0,
+    "c2": 18,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 2,
+    "r2": 7,
+    "c1": 52,
+    "c2": 53,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 10,
+    "r2": 38,
+    "c1": 52,
+    "c2": 53,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 8,
+    "r2": 9,
+    "c1": 52,
+    "c2": 52,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 24,
+    "r2": 26,
+    "c1": 38,
+    "c2": 51,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 2,
+    "r2": 3,
+    "c1": 18,
+    "c2": 51,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 4,
+    "r2": 38,
+    "c1": 35,
+    "c2": 35,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 4,
+    "r2": 38,
+    "c1": 30,
+    "c2": 30,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 4,
+    "r2": 38,
+    "c1": 40,
+    "c2": 41,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 4,
+    "r2": 38,
+    "c1": 46,
+    "c2": 47,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 4,
+    "r2": 38,
+    "c1": 23,
+    "c2": 25,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 0,
+    "r2": 2,
+    "c1": 19,
+    "c2": 23,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 24,
+    "r2": 26,
+    "c1": 19,
+    "c2": 34,
+    "status": "road",
+    "mapname": ""
+  },
+  {
+    "r1": 25,
+    "r2": 26,
+    "c1": 36,
+    "c2": 37,
+    "status": "road",
+    "mapname": ""
   },
   ]
 };

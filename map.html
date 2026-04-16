@@ -235,7 +235,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.7</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.8</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -2538,7 +2538,17 @@ function initMapMsal() {
     },
     cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
   });
-  return _mapMsalApp.initialize().then(function(){ return _mapMsalApp; });
+  return _mapMsalApp.initialize().then(function(){
+    // リダイレクト認証後の結果処理（必須）
+    return _mapMsalApp.handleRedirectPromise();
+  }).then(function(response){
+    if (response) {
+      // リダイレクトから戻った場合：キャッシュクリアして再取得
+      window._vpCachedItems = null;
+      window._vpCachedGroupId = null;
+    }
+    return _mapMsalApp;
+  });
 }
 
 // M-2: 再読込（SPトークンあり→SP再読込、なし→ページリロード）
@@ -2548,20 +2558,45 @@ function mapReload(){
 }
 
 function mapRelogin() {
+  showSPStatus('🔑 ログイン処理中...', 'ing');
   initMapMsal().then(function(app) {
     var accounts = app.getAllAccounts();
     var req = { scopes: _MAP_SCOPES };
-    var p = accounts.length > 0
-      ? app.acquireTokenSilent(Object.assign({ account: accounts[0] }, req))
-          .catch(function(){ return app.loginPopup(req); })
-      : app.loginPopup(req);
+    var p;
+    if (accounts.length > 0) {
+      p = app.acquireTokenSilent(Object.assign({ account: accounts[0] }, req))
+           .catch(function() {
+             return app.acquireTokenPopup(req)
+               .catch(function() {
+                 // ポップアップがブロックされた場合はリダイレクト認証
+                 return app.acquireTokenRedirect(req);
+               });
+           });
+    } else {
+      p = app.loginPopup(req)
+           .catch(function() {
+             return app.loginRedirect(req);
+           });
+    }
     return p;
   })
   .then(function() {
     showSPStatus('✅ 認証を更新しました', 'ok');
-    document.getElementById('relogin-btn').style.display = 'none';
+    var btn = document.getElementById('relogin-btn');
+    if (btn) btn.style.display = 'none';
+    // キャッシュをクリアして顧客情報を再取得
+    window._vpCachedItems = null;
+    window._vpCachedGroupId = null;
+    // 現在開いているモーダルがあれば再取得
+    var plotModal = document.getElementById('viewer-popup');
+    if (plotModal && window._currentPlotName) {
+      loadPlotCustomerInfo(window._currentPlotName);
+    }
   })
-  .catch(function(e){ showSPStatus('❌ 再ログイン失敗: ' + e.message, 'err'); });
+  .catch(function(e) {
+    if (e && e.message && e.message.indexOf('redirect') >= 0) return; // redirect中は正常
+    showSPStatus('❌ 再ログイン失敗: ' + e.message, 'err');
+  });
 }
 
 // トークン切れを検知してボタンを表示

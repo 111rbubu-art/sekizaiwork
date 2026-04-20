@@ -1315,25 +1315,49 @@ function updateCacheBadge() {
 function _bgFetchAllItems() {
   if (isOffline()) return;
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var nokListId  = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var koujiListId = KOUJI_LIST_ID;
+
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    var p1 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
-      '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items?$expand=fields&$top=999', token)
-      .then(function(items) {
-        _menuSearchCache['noukotsu_all'] = items;
-        return idbSet('noukotsu_all', items);
+
+    // SP更新日時をまず確認し、変更がなければIndexedDBキャッシュを使う
+    function checkAndFetch(listId, cacheKey) {
+      var checkUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId +
+        '/lists/' + listId + '?$select=lastModifiedDateTime';
+      return Promise.all([
+        fetch(checkUrl, { headers: { Authorization: 'Bearer ' + token } }).then(function(r){ return r.json(); }),
+        idbGet(cacheKey)
+      ]).then(function(results) {
+        var meta = results[0];
+        var cached = results[1];
+        var spTime = new Date(meta.lastModifiedDateTime || 0).getTime();
+        var cachedTime = cached ? cached.savedAt : 0;
+        if (cached && spTime <= cachedTime) {
+          // キャッシュが最新 → IndexedDBから復元
+          console.log('[BG] ' + cacheKey + '：キャッシュ使用（更新なし）');
+          _menuSearchCache[cacheKey] = cached.data;
+          return cached.data;
+        }
+        // 更新あり → SP全件取得
+        console.log('[BG] ' + cacheKey + '：SP再取得');
+        return fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
+          '/lists/' + listId + '/items?$expand=fields&$top=999', token)
+          .then(function(items) {
+            _menuSearchCache[cacheKey] = items;
+            return idbSet(cacheKey, items).then(function(){ return items; });
+          });
       });
-    var p2 = fetchAllPages('https://graph.microsoft.com/v1.0/sites/' + siteId +
-      '/lists/' + KOUJI_LIST_ID + '/items?$expand=fields&$top=999', token)
-      .then(function(items) {
-        _menuSearchCache['kouji_all'] = items;
-        return idbSet('kouji_all', items);
-      });
-    return Promise.all([p1, p2]);
+    }
+
+    return Promise.all([
+      checkAndFetch(nokListId,   'noukotsu_all'),
+      checkAndFetch(koujiListId, 'kouji_all')
+    ]);
   }).then(function() {
     _fullCacheReady = true;
     updateCacheBadge();
-    console.log('[BG] 全件取得完了 納骨:', (_menuSearchCache['noukotsu_all']||[]).length,
+    console.log('[BG] 全件準備完了 納骨:', (_menuSearchCache['noukotsu_all']||[]).length,
       '件 工事:', (_menuSearchCache['kouji_all']||[]).length, '件');
   }).catch(function(e) {
     console.warn('[BG] 全件取得失敗:', e.message);
@@ -1970,7 +1994,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.215';
+var APP_VERSION = 'v1.8.216';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 

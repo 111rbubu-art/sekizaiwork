@@ -1419,16 +1419,21 @@ function _menuSearchFetchAll(cb) {
       return idbSet('kouji', items);
     });
 
-    // 顧客リスト：更新日時チェック → 必要時のみ再取得
+    // 顧客リスト：更新日時チェック → 必要時のみ再取得（納骨・工事の後で非同期実行）
     var p3 = _fetchCustomerWithCache(siteId, listIdC, token);
 
-    return Promise.all([p1, p2, p3]);
-  }).then(function(){
-    loadMenuNauchi();
-    updateCacheBadge();
-    if (cb) cb();
-    // バックグラウンドで全件取得（完了済み含む）
-    setTimeout(function(){ _bgFetchAllItems(); }, 2000);
+    // 納骨・工事を優先：p1・p2が完了したらすぐにloadMenuNauchiを呼ぶ
+    Promise.all([p1, p2]).then(function(){
+      loadMenuNauchi();
+      updateCacheBadge();
+      if (cb) cb();
+    });
+
+    // 顧客リストは後から（完了しても画面再描画はしない）
+    return p3.then(function(){
+      // バックグラウンドで全件取得（完了済み含む）
+      setTimeout(function(){ _bgFetchAllItems(); }, 2000);
+    });
   }).catch(function(e){
     console.warn('menuSearch fetch error:', e.message);
     // エラー時はIndexedDBから復元
@@ -1994,7 +1999,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.217';
+var APP_VERSION = 'v1.8.219';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -4433,15 +4438,20 @@ function exportCustomerMapJpeg(d) {
 // GitHubのjsファイルからマップデータを取得
 function loadMapDataFromScript(templeId) {
   return fetch('https://111rbubu-art.github.io/sekizaiwork/data_' + templeId + '.js?t=' + Date.now())
-    .then(function(r) { return r.text(); })
+    .then(function(r) {
+      if (!r.ok) throw new Error('GitHubからデータ取得失敗（' + r.status + '）');
+      return r.text();
+    })
     .then(function(text) {
-      // var MAP_DATA_xxx = {...} を評価
-      // 貪欲マッチで最後の } まで確実に取得
-      var match = text.match(/var MAP_DATA_\w+\s*=\s*(\{[\s\S]+\})\s*;?/);
-      if (!match) throw new Error('マップデータの解析に失敗しました');
+      // var MAP_DATA_xxx = { ... }; をFunctionで実行して返す
+      var nameMatch = text.match(/var\s+(MAP_DATA_\w+)\s*=/);
+      if (!nameMatch) throw new Error('マップデータの変数名が見つかりません');
+      var varName = nameMatch[1];
       try {
-        // JSオブジェクト形式（キー無クォート等）に対応するためnew Functionで評価
-        return (new Function('return ' + match[1]))();
+        var fn = new Function(text + '\n return ' + varName + ';');
+        var result = fn();
+        if (!result) throw new Error('変数が空です');
+        return result;
       } catch(e) {
         throw new Error('マップデータの評価に失敗しました: ' + e.message);
       }

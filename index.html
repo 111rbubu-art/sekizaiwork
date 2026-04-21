@@ -1846,34 +1846,37 @@ function _gcalIdentifier(itemId) {
   return 'sekizaiwork-nok:' + itemId;
 }
 
-// Googleログイン（OAuth2 Implicit Flow・ポップアップ）
+// Googleログイン（OAuth2 Implicit Flow）
+// COOP制限があるためポップアップではなく、ページ内でハッシュを確認する方式
 function gcalSignIn(callback) {
+  // ① ページロード時にURLハッシュにトークンが含まれていれば取得
+  if (!_gcalToken) {
+    var hash = location.hash;
+    if (hash && hash.includes('access_token')) {
+      var params = {};
+      hash.substring(1).split('&').forEach(function(p) {
+        var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1]||'');
+      });
+      if (params['access_token']) {
+        _gcalToken = params['access_token'];
+        // ハッシュをURLから除去（履歴を汚さないよう）
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    }
+  }
+  // ② トークンがあればコールバック
   if (_gcalToken) { callback(_gcalToken); return; }
-  var redirectUri = encodeURIComponent(location.origin + location.pathname);
+  // ③ なければリダイレクト認証（state に現在URLを記録）
+  var redirectUri = location.origin + location.pathname;
   var url = 'https://accounts.google.com/o/oauth2/v2/auth' +
     '?client_id=' + _GCAL_CLIENT_ID +
-    '&redirect_uri=' + redirectUri +
+    '&redirect_uri=' + encodeURIComponent(redirectUri) +
     '&response_type=token' +
     '&scope=' + encodeURIComponent(_GCAL_SCOPES) +
     '&prompt=select_account';
-  var popup = window.open(url, 'gcal_auth', 'width=500,height=600,left=200,top=100');
-  var timer = setInterval(function() {
-    try {
-      if (!popup || popup.closed) { clearInterval(timer); return; }
-      var hash = popup.location.hash;
-      if (hash && hash.includes('access_token')) {
-        clearInterval(timer);
-        popup.close();
-        var params = {};
-        hash.substring(1).split('&').forEach(function(p) {
-          var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1]);
-        });
-        _gcalToken = params['access_token'];
-        if (_gcalToken) callback(_gcalToken);
-        else showSaveToast(false, 'Google認証に失敗しました');
-      }
-    } catch(e) {}
-  }, 500);
+  // カレンダー登録を再開するためのフラグをsessionStorageに保存
+  sessionStorage.setItem('gcal_pending_item', currentItem ? currentItem['id'] : '');
+  location.href = url;
 }
 
 // イベントbodyを構築
@@ -2030,7 +2033,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.227';
+var APP_VERSION = 'v1.8.228';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -2153,6 +2156,28 @@ function startApp() {
   document.getElementById('menu-user-name').textContent = name ? 'ログイン中：' + name : '';
   document.getElementById('menu-screen').classList.remove('hidden');
   currentListMode = 'noukotsu';
+  // Googleカレンダー認証リダイレクト戻りを検知
+  if (location.hash && location.hash.includes('access_token')) {
+    var _hashParams = {};
+    location.hash.substring(1).split('&').forEach(function(p) {
+      var kv = p.split('='); _hashParams[kv[0]] = decodeURIComponent(kv[1]||'');
+    });
+    if (_hashParams['access_token']) {
+      _gcalToken = _hashParams['access_token'];
+      history.replaceState(null, '', location.pathname + location.search);
+      // 保留中の登録処理を再開（500ms後にアイテムが復元されてから）
+      var _pendingId = sessionStorage.getItem('gcal_pending_item');
+      sessionStorage.removeItem('gcal_pending_item');
+      if (_pendingId) {
+        setTimeout(function() {
+          showSaveToast(true, '✅ Google認証完了。カレンダー登録を再開します...');
+          setTimeout(function() { registerGcalEvent(); }, 800);
+        }, 1500);
+      } else {
+        showSaveToast(true, '✅ Google認証が完了しました');
+      }
+    }
+  }
   // 起動時にキャッシュ読み込み（オフライン対応）
   if (isOffline()) {
     showSaveToast(false, '📵 オフライン：キャッシュデータを使用');

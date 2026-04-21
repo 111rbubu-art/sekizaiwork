@@ -612,6 +612,7 @@ body.force-sp #panel-resizer { display: none !important; }
       <button class="fpill on" data-f="micom">未完了</button>
       <button class="fpill" data-f="follow">フォロー★</button>
       <button class="fpill" data-f="nyukin">入金待ち</button>
+      <button class="fpill" id="nok-sort-btn" onclick="toggleNokSort()" style="margin-left:auto;border-color:#1a5a9a;color:#1a5a9a">📅 納骨日順</button>
     </div>
     <div class="search-wrap">
       <div class="search-row">
@@ -2018,7 +2019,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.222';
+var APP_VERSION = 'v1.8.223';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'青山霊園',9:'久我山墓地',10:'専光寺'};
 
@@ -2046,6 +2047,7 @@ var allItems = [];
 var currentFilter = 'micom';
 var currentItem = null;
 var currentTab = 0;
+var _nokSortByDate = false; // 納骨日ソートON/OFF
 
 // ===== ログイン =====
 document.getElementById('login-btn').addEventListener('click', function() {
@@ -4839,7 +4841,11 @@ function renderCustomerList() {
     }
     return true;
   });
-  var html = '<div class="cards">' + items.map(function(d, idx) {
+  var html = '<div class="cards">' + _displayItems.map(function(d, idx) {
+    // 区切り線（完了済み開始位置）
+    var separatorHtml = (_nokSortByDate && _separator > 0 && idx === _separator)
+      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e8e8e8;border-radius:6px;font-size:11px;color:#888;text-align:center">── 完了済み ──</div>'
+      : '';
     var name = d['CusName'] || d['Title'] || '';
     var furi = d['furigana'] || '';
     var num  = d['CusNumber'] || '';
@@ -5533,8 +5539,13 @@ function loadItems() {
       '<button class="fpill" data-f="all">すべて</button>' +
       '<button class="fpill on" data-f="micom">未完了</button>' +
       '<button class="fpill" data-f="follow">フォロー★</button>' +
-      '<button class="fpill" data-f="nyukin">入金待ち</button>';
+      '<button class="fpill" data-f="nyukin">入金待ち</button>' +
+      '<button class="fpill" id="nok-sort-btn" onclick="toggleNokSort()" style="margin-left:auto;border-color:#1a5a9a;color:#1a5a9a">📅 納骨日順</button>';
   }
+  // ソート状態をリセット
+  _nokSortByDate = false;
+  var sortBtn = document.getElementById('nok-sort-btn');
+  if (sortBtn) { sortBtn.classList.remove('on'); sortBtn.style.background=''; sortBtn.style.color='#1a5a9a'; }
   // currentFilterをリセット
   currentFilter = 'micom';
   var _activePill = _fb && _fb.querySelector('.fpill[data-f="' + currentFilter + '"]');
@@ -5567,6 +5578,17 @@ function loadItems() {
 }
 
 // ===== フィールドマッピング =====
+function toggleNokSort() {
+  _nokSortByDate = !_nokSortByDate;
+  var btn = document.getElementById('nok-sort-btn');
+  if (btn) {
+    btn.classList.toggle('on', _nokSortByDate);
+    btn.style.background = _nokSortByDate ? '#1a5a9a' : '';
+    btn.style.color = _nokSortByDate ? '#fff' : '#1a5a9a';
+  }
+  renderList();
+}
+
 function G(d,k){var M={'顧客名':'_x9867__x5ba2__x540d_','お寺':'_x304a__x5bfa_','分類':'_x5206__x985e_','フリガナ':'_x30d5__x30ea__x30ac__x30ca_','電話番号':'_x96fb__x8a71__x756a__x53f7_','顧客No':'_x9867_No','状況':'situation','郵便番号':'_x90f5__x4fbf__x756a__x53f7_','住所1':'_x4f4f__x6240_1','住所2':'_x4f4f__x6240_2','宛名':'addressee','注意事項メモ':'_x6ce8__x610f__x4e8b__x9805__x30','納骨時間':'_x7d0d__x9aa8__x6642__x9593_','納骨日':'_x7d0d__x671f__xff08__x7d0d__x9a','納骨担当':'personincharge','戒切納期':'_x6212__x5207__x7d0d__x671f_','依頼日':'RequestDate','依頼情報提供者':'Informer','請求書郵送日':'DateInvoice','入金日':'PaymentDate','社内連絡':'InternalCommunication','納骨備考':'noukotu_kaisi_jyoutai','資料':'資料','フォルダー':'資料','未完':'_x524a__x9664_'};return d[M[k]!==undefined?M[k]:k];}
 
 // ===== 一覧描画 =====
@@ -5602,7 +5624,38 @@ function renderList() {
     return;
   }
 
-  var html = '<div class="cards">' + items.map(function(d, idx) {
+  // ===== 納骨日ソート =====
+  var _displayItems = items;
+  var _separator = -1; // 完了済みの開始インデックス
+  if (_nokSortByDate) {
+    var today0 = new Date(); today0.setHours(0,0,0,0);
+    var nokDateOf = function(d) {
+      var s = G(d,'納骨日') || '';
+      if (!s) return null;
+      var dt = new Date(s); dt.setHours(0,0,0,0);
+      return isNaN(dt.getTime()) ? null : dt;
+    };
+    var incomplete = items.filter(function(d){ return d['_x524a__x9664_'] !== true; });
+    var complete   = items.filter(function(d){ return d['_x524a__x9664_'] === true; });
+    // 未完了：納骨日あり→近い順、納骨日なし→末尾
+    incomplete.sort(function(a,b){
+      var da = nokDateOf(a), db = nokDateOf(b);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return da - db;
+    });
+    // 完了済み：納骨日降順（新しい順）
+    complete.sort(function(a,b){
+      var da = nokDateOf(a), db = nokDateOf(b);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return db - da;
+    });
+    _separator = incomplete.length; // 区切り位置
+    _displayItems = incomplete.concat(complete);
+  }
     var title = d['Title'] || '';
     var name = G(d,'顧客名') || '';
     var temple = G(d,'お寺') || '';
@@ -5692,7 +5745,7 @@ function renderList() {
     var displayName = name || title;
     var displayTemple = temple + (num ? '　' + num : '');
     var kakeName = d['HakaName'] ? d['HakaName'] + '家' : (d['_x304a__x5893__x306e__x540d__x7f'] ? d['_x304a__x5893__x306e__x540d__x7f'] + '家' : '');
-    return '<div class="card" data-idx="' + idx + '" data-item-id="' + (d['id']||'') + '">' +
+    return separatorHtml + '<div class="card" data-idx="' + idx + '" data-item-id="' + (d['id']||'') + '">' +
       '<div class="card-tags" style="display:flex;align-items:center">' +
       '<div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;flex:1">' +
@@ -5723,11 +5776,11 @@ function renderList() {
 
   document.getElementById('list-content').innerHTML = html;
 
-  // カードクリックイベント（フィルタ後のitemsを使う）
+  // カードクリックイベント（ソート後の_displayItemsを使う）
   document.querySelectorAll('.card').forEach(function(el) {
     el.addEventListener('click', function() {
       var idx = parseInt(this.getAttribute('data-idx'));
-      openDetail(items[idx]);
+      openDetail(_displayItems[idx]);
     });
   });
 }

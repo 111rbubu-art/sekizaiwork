@@ -4602,7 +4602,7 @@ function showKoujiDetail(d) {
     '<button class="tab on" data-i="0">基本情報</button>' +
     '<button class="tab" data-i="1">進捗・日程</button>' +
     '<button class="tab" data-i="2">手配彫刻</button>' +
-    '<button class="tab" data-i="3">ファイル</button>' +
+    '<button class="tab" data-i="3">SP添付</button>' +
     '<button class="tab" data-i="4">📁 フォルダー</button>' +
     '<button class="tab" data-i="5">その他</button>' +
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>';
@@ -4976,6 +4976,7 @@ var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_V
 // フォルダー履歴スタック（↑で戻るため）
 var _folderHistory = [];
 var _folderRootPass = null;
+var _folderCurrentPath = null;
 
 function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
   var el = document.getElementById('folder-explorer');
@@ -5026,6 +5027,7 @@ function renderFolderContents(items, currentPath, token) {
 
   if (items.length === 0) {
     el.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:20px">ファイルがありません</div>';
+    renderFolderDropZone(el, currentPath);
     return;
   }
 
@@ -5097,6 +5099,68 @@ function renderFolderContents(items, currentPath, token) {
     }
     row.appendChild(btn);
     el.appendChild(row);
+  });
+
+  renderFolderDropZone(el, currentPath);
+}
+
+function renderFolderDropZone(el, folderPath) {
+  _folderCurrentPath = folderPath;
+  var dropDiv = document.createElement('div');
+  dropDiv.style.cssText = 'border:2px dashed #b5d4f4;border-radius:10px;background:#e6f1fb;padding:14px;text-align:center;margin-top:10px;color:#1565c0;font-size:13px;cursor:pointer';
+  dropDiv.textContent = '📂 ファイルをドロップ または タップして追加';
+  dropDiv.addEventListener('dragover', function(e){ e.preventDefault(); this.style.background='#d0e8ff'; });
+  dropDiv.addEventListener('dragleave', function(){ this.style.background='#e6f1fb'; });
+  dropDiv.addEventListener('drop', function(e){
+    e.preventDefault();
+    this.style.background = '#e6f1fb';
+    var files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) uploadFilesToFolder(files, folderPath, el);
+  });
+  var fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.style.display = 'none';
+  fileInput.addEventListener('change', function(){
+    var files = Array.from(this.files);
+    if (files.length > 0) uploadFilesToFolder(files, folderPath, el);
+    this.value = '';
+  });
+  dropDiv.addEventListener('click', function(){ fileInput.click(); });
+  el.appendChild(dropDiv);
+  el.appendChild(fileInput);
+}
+
+function uploadFilesToFolder(files, folderPath, containerEl) {
+  if (!files || files.length === 0) return;
+  var progressDiv = document.createElement('div');
+  progressDiv.style.cssText = 'font-size:11px;color:#1565c0;padding:6px 4px;text-align:center';
+  progressDiv.textContent = '⬆️ アップロード中... (0/' + files.length + ')';
+  if (containerEl) containerEl.appendChild(progressDiv);
+  var done = 0;
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    return files.reduce(function(chain, file) {
+      return chain.then(function() {
+        var encodedPath = folderPath.split('/').map(encodeURIComponent).join('/');
+        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + '/' + encodeURIComponent(file.name) + ':/content';
+        return fetch(uploadUrl, {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        }).then(function(r) {
+          if (!r.ok) return r.text().then(function(t){ throw new Error(file.name + ': ' + t.substring(0,120)); });
+          done++;
+          if (progressDiv.parentNode) progressDiv.textContent = '⬆️ アップロード中... (' + done + '/' + files.length + ')';
+        });
+      });
+    }, Promise.resolve());
+  }).then(function() {
+    if (progressDiv.parentNode) progressDiv.textContent = '✅ ' + files.length + '件アップロード完了';
+    setTimeout(function() { loadFolderExplorer(folderPath, null, false); }, 1200);
+  }).catch(function(e) {
+    if (progressDiv.parentNode) progressDiv.textContent = '❌ エラー: ' + e.message;
+    showSaveToast(false, 'フォルダーアップロードエラー: ' + e.message);
   });
 }
 

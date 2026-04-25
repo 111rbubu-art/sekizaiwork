@@ -2069,7 +2069,9 @@ var allItems = [];
 var currentFilter = 'micom';
 var currentItem = null;
 var currentTab = 0;
-var _nokSortByDate = false; // 納骨日ソートON/OFF
+var _nokSortByDate = true; // 納骨日ソートON/OFF
+var _koujiSortByCategory = false; // 工事分類ソートON/OFF
+var _koujiCurrentFilter = 'micom'; // 工事現在フィルター
 
 // ===== ログイン =====
 document.getElementById('login-btn').addEventListener('click', function() {
@@ -4740,12 +4742,37 @@ function loadKoujiList() {
       '<button class="fpill" data-kf="all">すべて</button>' +
       '<button class="fpill on" data-kf="micom">未完了</button>' +
       '<button class="fpill" data-kf="follow">フォロー★</button>' +
-      '<button class="fpill" data-kf="nyukin">入金待ち</button>';
+      '<button class="fpill" data-kf="nyukin">入金待ち</button>' +
+      '<button class="fpill' + (_koujiSortByCategory ? ' on' : '') + '" id="kouji-sort-btn" onclick="toggleKoujiSort()" style="margin-left:auto;border-color:#5a7a1a;' + (_koujiSortByCategory ? 'background:#5a7a1a;color:#fff' : 'color:#5a7a1a') + '">📋 分類順</button>';
+    _koujiCurrentFilter = 'micom';
     _fb.querySelectorAll('.fpill[data-kf]').forEach(function(b) {
       b.addEventListener('click', function() {
-        _fb.querySelectorAll('.fpill[data-kf]').forEach(function(x){ x.classList.remove('on'); });
-        b.classList.add('on');
-        renderKoujiList(b.getAttribute('data-kf'));
+        var kf = b.getAttribute('data-kf');
+        var followBtn = _fb.querySelector('.fpill[data-kf="follow"]');
+        if (kf === 'follow') {
+          if (_koujiCurrentFilter === 'follow') {
+            _koujiCurrentFilter = 'follow-self';
+            _fb.querySelectorAll('.fpill[data-kf]').forEach(function(x){ x.classList.remove('on'); });
+            b.classList.add('on');
+            if (followBtn) followBtn.textContent = 'フォロー👤';
+          } else if (_koujiCurrentFilter === 'follow-self') {
+            _koujiCurrentFilter = 'micom';
+            if (followBtn) followBtn.textContent = 'フォロー★';
+            _fb.querySelectorAll('.fpill[data-kf]').forEach(function(x){ x.classList.remove('on'); });
+            var micomBtn = _fb.querySelector('.fpill[data-kf="micom"]');
+            if (micomBtn) micomBtn.classList.add('on');
+          } else {
+            _koujiCurrentFilter = 'follow';
+            _fb.querySelectorAll('.fpill[data-kf]').forEach(function(x){ x.classList.remove('on'); });
+            b.classList.add('on');
+          }
+        } else {
+          if (followBtn) followBtn.textContent = 'フォロー★';
+          _koujiCurrentFilter = kf;
+          _fb.querySelectorAll('.fpill[data-kf]').forEach(function(x){ x.classList.remove('on'); });
+          b.classList.add('on');
+        }
+        renderKoujiList(_koujiCurrentFilter);
       });
     });
   }
@@ -4783,6 +4810,7 @@ function renderKoujiList(filter) {
     var isComplete = (d['endinfo'] || '') !== '';
     if (filter === 'micom' && isComplete) return false;
     if (filter === 'follow' && (isComplete || !d['check'])) return false;
+    if (filter === 'follow-self' && (!d['InternalCommunication'] || !_loginSurname || !d['InternalCommunication'].includes(_loginSurname))) return false;
     if (filter === 'nyukin') {
       var isNyukin = (d['billing'] && !d['PaymentDate']) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);
       if (!isNyukin) return false;
@@ -4801,7 +4829,31 @@ function renderKoujiList(filter) {
     return;
   }
 
-  var html = '<div class="cards">' + items.map(function(d) {
+  // 分類順ソート
+  var _koujiDisplayItems = items;
+  var _koujiCatSeps = {}; // index -> label
+  if (_koujiSortByCategory) {
+    var _cats = [];
+    items.forEach(function(d) {
+      var c = d['category'] || '（分類なし）';
+      if (_cats.indexOf(c) < 0) _cats.push(c);
+    });
+    _cats.sort();
+    var _sorted = [];
+    _cats.forEach(function(c) {
+      var cItems = items.filter(function(d){ return (d['category']||'（分類なし）') === c; });
+      var cInc = cItems.filter(function(d){ return (d['endinfo']||'') === ''; });
+      var cCom = cItems.filter(function(d){ return (d['endinfo']||'') !== ''; });
+      _koujiCatSeps[_sorted.length] = c;
+      _sorted = _sorted.concat(cInc).concat(cCom);
+    });
+    _koujiDisplayItems = _sorted;
+  }
+
+  var html = '<div class="cards">' + _koujiDisplayItems.map(function(d, _kidx) {
+    var _catSepHtml = (_koujiSortByCategory && _koujiCatSeps[_kidx])
+      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e0ead0;border-radius:6px;font-size:11px;color:#4a6a10;text-align:center">── ' + _koujiCatSeps[_kidx] + ' ──</div>'
+      : '';
     var realIdx  = allItems.indexOf(d);
     var title    = d['Title'] || '';
     var customer = d['Customers'] || '';
@@ -4847,7 +4899,7 @@ function renderKoujiList(filter) {
     var payDate2 = (d['PaymentDate'] || '').substring(0, 10);
 
     var kakeName = d['HakaName'] ? d['HakaName'] + '家' : '';
-    return '<div class="card" data-item-id="' + (d['id']||'') + '" onclick="showKoujiDetail(allItems[' + realIdx + '])">' +
+    return _catSepHtml + '<div class="card" data-item-id="' + (d['id']||'') + '" onclick="showKoujiDetail(allItems[' + realIdx + '])">' +
       '<div class="card-tags"><div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
       '<div class="tag-group">' + catTag + naiyouTag + statusTag + '</div></div>' +
       '<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">' +
@@ -4865,6 +4917,17 @@ function renderKoujiList(filter) {
   }).join('') + '</div>';
 
   document.getElementById('list-content').innerHTML = html;
+}
+
+function toggleKoujiSort() {
+  _koujiSortByCategory = !_koujiSortByCategory;
+  var btn = document.getElementById('kouji-sort-btn');
+  if (btn) {
+    btn.classList.toggle('on', _koujiSortByCategory);
+    btn.style.background = _koujiSortByCategory ? '#5a7a1a' : '';
+    btn.style.color = _koujiSortByCategory ? '#fff' : '#5a7a1a';
+  }
+  renderKoujiList(_koujiCurrentFilter);
 }
 
 function showKoujiDetail(d) {
@@ -5230,8 +5293,7 @@ function toggleKoujiEdit(d, tabIdx) {
           (function() {
             var listEl = document.getElementById('list-content');
             var scrollTop = listEl ? listEl.scrollTop : 0;
-            var activeFilter = document.querySelector('.fpill[data-kf].on');
-            renderKoujiList(activeFilter ? activeFilter.getAttribute('data-kf') : 'micom');
+            renderKoujiList(_koujiCurrentFilter || 'micom');
             if (listEl) listEl.scrollTop = scrollTop;
             highlightActiveCard(itemId);
           })();
@@ -6737,7 +6799,7 @@ function loadItems() {
       '<button class="fpill on" data-f="micom">未完了</button>' +
       '<button class="fpill" data-f="follow">フォロー★</button>' +
       '<button class="fpill" data-f="nyukin">入金待ち</button>' +
-      '<button class="fpill" id="nok-sort-btn" onclick="toggleNokSort()" style="margin-left:auto;border-color:#1a5a9a;color:#1a5a9a">📅 納骨日順</button>';
+      '<button class="fpill' + (_nokSortByDate ? ' on' : '') + '" id="nok-sort-btn" onclick="toggleNokSort()" style="margin-left:auto;border-color:#1a5a9a;' + (_nokSortByDate ? 'background:#1a5a9a;color:#fff' : 'color:#1a5a9a') + '">📅 納骨日順</button>';
   }
   // ソート状態をリセット
   _nokSortByDate = false;
@@ -6800,6 +6862,7 @@ function renderList() {
     if (currentFilter === 'micom' && isComplete) return false;
     // フォローフィルター：未完了(false) かつ checkあり
     if (currentFilter === 'follow' && (isComplete || !d['check'])) return false;
+    if (currentFilter === 'follow-self' && (!d['InternalCommunication'] || !_loginSurname || !d['InternalCommunication'].includes(_loginSurname))) return false;
     // 入金待ち：本体または追加分で請求済・未入金
     var isNyukinMachi = (d['DateInvoice'] && !d['PaymentDate']) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);
     if (currentFilter === 'nyukin' && !isNyukinMachi) return false;
@@ -6823,7 +6886,7 @@ function renderList() {
 
   // 納骨日ソート
   var _displayItems = items;
-  var _separator = -1;
+  var _separators = {}; // index -> label
   if (_nokSortByDate) {
     var _today = new Date(); _today.setHours(0,0,0,0);
     var _nokDateOf = function(d) {
@@ -6832,34 +6895,51 @@ function renderList() {
       var dt = new Date(s); dt.setHours(0,0,0,0);
       return isNaN(dt.getTime()) ? null : dt;
     };
-    // 未来納骨日あり（未完了）→ 日付なし（未完了）→ 過去納骨日 or 完了済み
-    var _future   = items.filter(function(d){
+    var _hasTui = function(d) { return !!(d['IssueDate_tui'] || d['Estimate_tui']); };
+    // 未来日あり（未完了）→ 日付なし（未完了）→ 過去日（未完了）→ 納骨彫刻完了 → 追加分
+    var _future = items.filter(function(d){
       var dt = _nokDateOf(d);
       return dt && dt >= _today && d['_x524a__x9664_'] !== true;
     });
-    var _noDate   = items.filter(function(d){
+    var _noDate = items.filter(function(d){
       var dt = _nokDateOf(d);
       return !dt && d['_x524a__x9664_'] !== true;
     });
-    var _past     = items.filter(function(d){
+    var _pastPending = items.filter(function(d){
       var dt = _nokDateOf(d);
-      return (dt && dt < _today) || d['_x524a__x9664_'] === true;
+      return dt && dt < _today && d['_x524a__x9664_'] !== true;
+    });
+    var _doneNormal = items.filter(function(d){
+      return d['_x524a__x9664_'] === true && !_hasTui(d);
+    });
+    var _doneAdditional = items.filter(function(d){
+      return d['_x524a__x9664_'] === true && _hasTui(d);
     });
     // 未来：近い順（昇順）
     _future.sort(function(a,b){ return _nokDateOf(a) - _nokDateOf(b); });
-    // 過去/完了：新しい順（降順）
-    _past.sort(function(a,b){
+    // 過去日未完了：新しい順（降順）
+    _pastPending.sort(function(a,b){
+      var da = _nokDateOf(a), db = _nokDateOf(b);
+      return db - da;
+    });
+    // 完了：新しい順（降順）
+    var _doneDateSort = function(a,b){
       var da = _nokDateOf(a), db = _nokDateOf(b);
       if (!da && !db) return 0; if (!da) return 1; if (!db) return -1;
       return db - da;
-    });
-    _separator = _future.length + _noDate.length;
-    _displayItems = _future.concat(_noDate).concat(_past);
+    };
+    _doneNormal.sort(_doneDateSort);
+    _doneAdditional.sort(_doneDateSort);
+    var _sepNormal = _future.length + _noDate.length + _pastPending.length;
+    var _sepAdditional = _sepNormal + _doneNormal.length;
+    if (_doneNormal.length > 0) _separators[_sepNormal] = '納骨彫刻完了';
+    if (_doneAdditional.length > 0) _separators[_sepAdditional] = '追加分';
+    _displayItems = _future.concat(_noDate).concat(_pastPending).concat(_doneNormal).concat(_doneAdditional);
   }
 
   var html = '<div class="cards">' + _displayItems.map(function(d, idx) {
-    var _sepHtml = (_nokSortByDate && _separator > 0 && idx === _separator)
-      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e8e8e8;border-radius:6px;font-size:11px;color:#888;text-align:center">── 完了済み ──</div>'
+    var _sepHtml = (_nokSortByDate && _separators[idx])
+      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e8e8e8;border-radius:6px;font-size:11px;color:#888;text-align:center">── ' + _separators[idx] + ' ──</div>'
       : '';
     var title = d['Title'] || '';
     var name = G(d,'顧客名') || '';
@@ -6999,9 +7079,28 @@ document.getElementById('filter-bar').addEventListener('click', function(e) {
   if (currentListMode === 'kouji') return;
   // 納骨・戒切モードのdata-fボタンのみ処理
   if (!btn.getAttribute('data-f')) return;
-  currentFilter = btn.getAttribute('data-f');
+  var f = btn.getAttribute('data-f');
+  var followBtn = document.querySelector('.fpill[data-f="follow"]');
   document.querySelectorAll('.fpill[data-f]').forEach(function(b) { b.classList.remove('on'); });
-  btn.classList.add('on');
+  if (f === 'follow') {
+    if (currentFilter === 'follow') {
+      currentFilter = 'follow-self';
+      btn.classList.add('on');
+      if (followBtn) followBtn.textContent = 'フォロー👤';
+    } else if (currentFilter === 'follow-self') {
+      currentFilter = 'micom';
+      if (followBtn) followBtn.textContent = 'フォロー★';
+      var micomBtn = document.querySelector('.fpill[data-f="micom"]');
+      if (micomBtn) micomBtn.classList.add('on');
+    } else {
+      currentFilter = 'follow';
+      btn.classList.add('on');
+    }
+  } else {
+    if (followBtn) followBtn.textContent = 'フォロー★';
+    currentFilter = f;
+    btn.classList.add('on');
+  }
   renderList();
 });
 
@@ -7009,13 +7108,12 @@ document.getElementById('srch').addEventListener('input', function() {
   if (currentListMode === 'customer') {
     renderCustomerList();
   } else if (currentListMode === 'kouji') {
-    var activeFilter = document.querySelector('.fpill[data-kf].on');
-    renderKoujiList(activeFilter ? activeFilter.getAttribute('data-kf') : 'micom');
+    renderKoujiList(_koujiCurrentFilter || 'micom');
   } else {
     renderList();
   }
 });
-document.getElementById('srch-temple').addEventListener('change', function() { if (currentListMode === 'customer') { renderCustomerList(); } else if (currentListMode === 'kouji') { var activeFilter = document.querySelector('.fpill[data-kf].on'); renderKoujiList(activeFilter ? activeFilter.getAttribute('data-kf') : 'micom'); } else { renderList(); } });
+document.getElementById('srch-temple').addEventListener('change', function() { if (currentListMode === 'customer') { renderCustomerList(); } else if (currentListMode === 'kouji') { renderKoujiList(_koujiCurrentFilter || 'micom'); } else { renderList(); } });
 
 function buildTempleList() {
   var sel = document.getElementById('srch-temple');
@@ -7748,8 +7846,7 @@ function toggleEditMode(d, tabIdx) {
             var listEl = document.getElementById('list-content');
             var scrollTop = listEl ? listEl.scrollTop : 0;
             if (currentListMode === 'kouji') {
-              var activeFilter = document.querySelector('.fpill[data-kf].on');
-              renderKoujiList(activeFilter ? activeFilter.getAttribute('data-kf') : 'micom');
+              renderKoujiList(_koujiCurrentFilter || 'micom');
             } else if (currentListMode === 'noukotsu') {
               renderList();
             } else if (currentListMode === 'customer') {

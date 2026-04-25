@@ -1801,6 +1801,7 @@ function toggleViewMode() {
     if (ds) ds.classList.remove('hidden');
   }
   applyNkChkLayout();
+    Object.keys(_nkgCards).forEach(function(p){nkgApply(p);}); 
 }
 
 // PC用: 詳細画面を開く際に list-screen を隠さない
@@ -6664,6 +6665,9 @@ function loadSettingsFromSP(){
     SP_UI_KEYS.forEach(function(k){
       if(data[k]!==undefined) localStorage.setItem(k,JSON.stringify(data[k]));
     });
+    Object.keys(data).forEach(function(k){
+      if(/^nkg_/.test(k)) localStorage.setItem(k,JSON.stringify(data[k]));
+    });
     console.log('[SP] UI設定読込完了');
   }).catch(function(e){ console.warn('[SP] UI設定読込エラー:',e); });
 }
@@ -6674,6 +6678,9 @@ function saveSettingsToSP(){
     SP_UI_KEYS.forEach(function(k){
       var v=localStorage.getItem(k);
       if(v){try{data[k]=JSON.parse(v);}catch(e){data[k]=v;}}
+    });
+    Object.keys(localStorage).forEach(function(k){
+      if(/^nkg_/.test(k)){var v=localStorage.getItem(k);if(v){try{data[k]=JSON.parse(v);}catch(e){data[k]=v;}}}
     });
     getToken().then(function(res){
       return fetch(
@@ -7775,7 +7782,189 @@ function fld(label, val, wide, pre) {
     dispVal = val.substring(5); // MM/DD以降
   }
   return '<div class="' + cls + '"><label>' + label + '</label><div class="' + vcls + '">' + dispVal + '</div></div>';
+}// ===== 汎用カードグリッドシステム =====
+var _nkgEm={},_nkgCards={};
+function nkgModeCfg(p){
+  if(document.body.classList.contains('force-sp'))
+    return{mode:'sp',label:'スマホ',cols:4,defSpan:4,key:'nkg_'+p+'_sp_v1'};
+  var w=window.innerWidth;
+  if(w<768) return{mode:'sp',label:'スマホ',cols:4,defSpan:4,key:'nkg_'+p+'_sp_v1'};
+  if(w<1280)return{mode:'sm',label:'PC小', cols:6,defSpan:2,key:'nkg_'+p+'_sm_v1'};
+  return             {mode:'lg',label:'PC大', cols:8,defSpan:2,key:'nkg_'+p+'_lg_v1'};
 }
+function nkgSave(p){
+  var cv=document.getElementById('nkg-'+p);if(!cv)return;
+  var cfg=nkgModeCfg(p);
+  var data={order:[],spans:{},breaks:[]};
+  cv.querySelectorAll('.nk-card').forEach(function(el){
+    var idx=parseInt(el.getAttribute('data-idx'));
+    data.order.push(idx);
+    var sp=parseInt(el.getAttribute('data-span')||String(cfg.defSpan));
+    if(sp!==cfg.defSpan)data.spans[idx]=sp;
+    if(el.classList.contains('row-break'))data.breaks.push(idx);
+  });
+  localStorage.setItem(cfg.key,JSON.stringify(data));
+}
+function nkgSpan(btn,delta){
+  var card=btn.closest('.nk-card');if(!card)return;
+  var p=card.getAttribute('data-prefix');if(!p)return;
+  var cfg=nkgModeCfg(p);
+  var cur=parseInt(card.getAttribute('data-span')||String(cfg.defSpan));
+  var nv=Math.max(1,Math.min(cfg.cols,cur+delta));
+  card.setAttribute('data-span',nv);
+  _applyNkCardStyle(card,nv,card.classList.contains('row-break'));
+  var lbl=card.querySelector('.nkc-sp-val');if(lbl)lbl.textContent=nv;
+  nkgSave(p);
+}
+function nkgBreak(btn){
+  var card=btn.closest('.nk-card');if(!card)return;
+  var p=card.getAttribute('data-prefix');if(!p)return;
+  card.classList.toggle('row-break');
+  var isBreak=card.classList.contains('row-break');
+  var sp=parseInt(card.getAttribute('data-span')||String(nkgModeCfg(p).defSpan));
+  _applyNkCardStyle(card,sp,isBreak);
+  btn.classList.toggle('nkc-br-on',isBreak);
+  nkgSave(p);
+}
+function nkgToggle(p){
+  _nkgEm[p]=!_nkgEm[p];
+  var cv=document.getElementById('nkg-'+p);
+  var btn=document.getElementById('nkg-btn-'+p);
+  if(cv){
+    cv.classList.toggle('lay-em',_nkgEm[p]);
+    cv.querySelectorAll('.nk-card').forEach(function(el){el.draggable=_nkgEm[p];});
+  }
+  if(btn)btn.textContent=_nkgEm[p]?'✅ 完了':'⇅ 並替';
+  if(!_nkgEm[p])saveSettingsToSP();
+}
+function nkgReset(p){
+  var cards=_nkgCards[p];if(!cards)return;
+  var cfg=nkgModeCfg(p);
+  if(!confirm(cfg.label+'のレイアウトを初期状態に戻しますか？'))return;
+  localStorage.removeItem(cfg.key);
+  var cv=document.getElementById('nkg-'+p);
+  if(cv){
+    cards.forEach(function(c,i){
+      var el=document.getElementById('nkg-'+p+'-'+i);if(!el)return;
+      cv.appendChild(el);
+      el.setAttribute('data-span',cfg.defSpan);
+      _applyNkCardStyle(el,cfg.defSpan,false);
+      el.classList.remove('row-break');el.draggable=false;
+      var lbl=el.querySelector('.nkc-sp-val');if(lbl)lbl.textContent=cfg.defSpan;
+      var br=el.querySelector('.nkc-br');if(br)br.classList.remove('nkc-br-on');
+    });
+  }
+  _nkgEm[p]=false;
+  var btn=document.getElementById('nkg-btn-'+p);
+  if(cv)cv.classList.remove('lay-em');if(btn)btn.textContent='⇅ 並替';
+}
+function nkgApply(p){
+  var cards=_nkgCards[p];if(!cards)return;
+  var cfg=nkgModeCfg(p);
+  var cv=document.getElementById('nkg-'+p);if(!cv)return;
+  cv.style.gridTemplateColumns='repeat('+cfg.cols+',1fr)';
+  var ml=document.getElementById('nkg-mode-'+p);if(ml)ml.textContent='('+cfg.label+')';
+  var saved=null;try{saved=JSON.parse(localStorage.getItem(cfg.key));}catch(e){}
+  var savedOrder=[],savedSpans={},savedBreaks=[];
+  if(saved&&!Array.isArray(saved)){savedOrder=saved.order||[];savedSpans=saved.spans||{};savedBreaks=saved.breaks||[];}
+  else if(Array.isArray(saved)){savedOrder=saved;}
+  cards.forEach(function(c,i){
+    var el=document.getElementById('nkg-'+p+'-'+i);if(!el)return;
+    el.classList.remove('row-break');
+    var br=el.querySelector('.nkc-br');if(br)br.classList.remove('nkc-br-on');
+  });
+  if(savedOrder.length){
+    var n=cards.length;
+    var ord=savedOrder.filter(function(k){return k>=0&&k<n;});
+    cards.forEach(function(c,i){if(ord.indexOf(i)<0)ord.push(i);});
+    ord.forEach(function(k){var el=document.getElementById('nkg-'+p+'-'+k);if(el)cv.appendChild(el);});
+  } else {
+    cards.forEach(function(c,i){var el=document.getElementById('nkg-'+p+'-'+i);if(el)cv.appendChild(el);});
+  }
+  cards.forEach(function(c,i){
+    var el=document.getElementById('nkg-'+p+'-'+i);if(!el)return;
+    var sp=savedSpans[i]!==undefined?savedSpans[i]:cfg.defSpan;
+    var isBreak=savedBreaks.indexOf(i)>=0;
+    el.setAttribute('data-span',sp);
+    _applyNkCardStyle(el,sp,isBreak);
+    var lbl=el.querySelector('.nkc-sp-val');if(lbl)lbl.textContent=sp;
+    if(isBreak){el.classList.add('row-break');var br=el.querySelector('.nkc-br');if(br)br.classList.add('nkc-br-on');}
+  });
+}
+function nkgInit(p,cards){
+  _nkgCards[p]=cards;_nkgEm[p]=false;
+  if(!document.getElementById('nkg-css')){
+    var st=document.createElement('style');st.id='nkg-css';
+    st.textContent=
+      '.nkg-canvas{display:grid;gap:4px;margin-top:6px}'+
+      '.nk-card{background:#fff;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06)}'+
+      '.nk-card .fi{border:none!important;box-shadow:none!important;border-radius:0!important;margin:0!important}'+
+      '.nkc-dh{cursor:grab;background:#dce8fb;border-bottom:1px solid #b0c8f0;padding:2px 6px;font-size:9px;color:#185fa5;user-select:none;font-weight:600;display:none;align-items:center;justify-content:space-between;gap:4px}'+
+      '.nkc-dh:active{cursor:grabbing}'+
+      '.nkc-dh-drag{flex:1;overflow:hidden;white-space:nowrap}'+
+      '.nkc-ctrl{display:flex;gap:2px;align-items:center;flex-shrink:0}'+
+      '.nkc-sb{padding:0 3px;height:15px;line-height:15px;background:#185fa5;color:#fff;border:none;border-radius:2px;cursor:pointer;font-size:9px;font-family:inherit}'+
+      '.nkc-sp-val{font-size:9px;min-width:10px;text-align:center;color:#185fa5}'+
+      '.nkc-br-on{background:#c0392b!important}'+
+      '.nkg-canvas.lay-em .nkc-dh{display:flex}'+
+      '.nkg-canvas.lay-em .nk-card{outline:1.5px dashed #c0d0e8}'+
+      '.nk-card.nkc-drag-over{outline:2px solid #185fa5!important;background:#edf3ff}'+
+      '.nkc-lay-bar{display:flex;gap:6px;align-items:center;margin-bottom:4px}'+
+      '.nkc-lay-btn{padding:4px 12px;background:#185fa5;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit}'+
+      '.nkc-rst-btn{padding:4px 10px;background:#888;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit}'+
+      '.nkc-mode-lbl{font-size:10px;color:#888}';
+    document.head.appendChild(st);
+  }
+  nkgApply(p);
+  var cv=document.getElementById('nkg-'+p);if(!cv)return;
+  var _dr=null;
+  cv.addEventListener('dragstart',function(e){
+    if(e.target.tagName==='BUTTON'||e.target.closest('.nkc-ctrl')){e.preventDefault();return;}
+    _dr=e.target.closest('.nk-card');
+    if(_dr)e.dataTransfer.effectAllowed='move';
+  });
+  cv.addEventListener('dragover',function(e){
+    if(!_dr)return;e.preventDefault();
+    var t=e.target.closest('.nk-card');
+    cv.querySelectorAll('.nkc-drag-over').forEach(function(el){el.classList.remove('nkc-drag-over');});
+    if(t&&t!==_dr)t.classList.add('nkc-drag-over');
+  });
+  cv.addEventListener('dragleave',function(e){
+    if(!e.relatedTarget||!cv.contains(e.relatedTarget))
+      cv.querySelectorAll('.nkc-drag-over').forEach(function(el){el.classList.remove('nkc-drag-over');});
+  });
+  cv.addEventListener('drop',function(e){
+    e.preventDefault();
+    cv.querySelectorAll('.nkc-drag-over').forEach(function(el){el.classList.remove('nkc-drag-over');});
+    var t=e.target.closest('.nk-card');
+    if(t&&_dr&&t!==_dr){cv.insertBefore(_dr,t);nkgSave(p);}
+    _dr=null;
+  });
+  cv.addEventListener('dragend',function(){
+    cv.querySelectorAll('.nkc-drag-over').forEach(function(el){el.classList.remove('nkc-drag-over');});
+    _dr=null;
+  });
+}
+function nkgBar(p){
+  return '<div class="nkc-lay-bar">'+
+    '<button id="nkg-btn-'+p+'" class="nkc-lay-btn" onclick="nkgToggle(\''+p+'\')">⇅ 並替</button>'+
+    '<button class="nkc-rst-btn" onclick="nkgReset(\''+p+'\')">↺ リセット</button>'+
+    '<span id="nkg-mode-'+p+'" class="nkc-mode-lbl"></span></div>';
+}
+function nkgCanvas(p,cards,d,itemId){
+  var h='<div id="nkg-'+p+'" class="nkg-canvas">';
+  cards.forEach(function(c,i){
+    h+='<div id="nkg-'+p+'-'+i+'" class="nk-card" data-prefix="'+p+'" data-idx="'+i+'" data-span="2" draggable="false">'+
+      '<div class="nkc-dh"><span class="nkc-dh-drag">⠿ '+c.label+'</span>'+
+      '<span class="nkc-ctrl"><button class="nkc-sb" onclick="nkgSpan(this,-1)">◀</button>'+
+      '<span class="nkc-sp-val">2</span>'+
+      '<button class="nkc-sb" onclick="nkgSpan(this,1)">▶</button>'+
+      '<button class="nkc-sb nkc-br" onclick="nkgBreak(this)" title="この位置で改行">↵</button>'+
+      '</span></div>'+c.fld(d,itemId)+'</div>';
+  });
+  return h+'</div>';
+}
+// =============================================
 
 // ===== 彫刻進捗カード 8グリッド並替（3モード対応）=====
 var _nkChkEm = false;

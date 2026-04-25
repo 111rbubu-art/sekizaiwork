@@ -2161,6 +2161,7 @@ function selectTempleGroup(groupId, templeName) {
 function startApp() {
   document.getElementById('login-screen').classList.add('hidden');
   loadSPFieldChoices(); // SPから選択肢を動的取得
+  loadSettingsFromSP(); // UI設定をSPから読み込み（SP優先）
   var acct = msalApp.getActiveAccount();
   var name = acct ? (acct.name || acct.username) : '';
   document.getElementById('menu-user-name').textContent = name ? 'ログイン中：' + name : '';
@@ -6639,6 +6640,55 @@ function getToken() {
     });
 }
 
+// ===== UI設定 SharePoint同期 =====
+var SP_UI_PATH = '/app-settings/ui_layout.json';
+var SP_UI_KEYS = [
+  'nok_chk_sp_v1','nok_chk_sm_v1','nok_chk_lg_v1',
+  'nk_rcpt_v1','nk_rcpt_vis_v1','nk_fmap_v1'
+];
+var _spUiSaveTimer = null;
+function loadSettingsFromSP(){
+  return getToken().then(function(res){
+    return fetch(
+      'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH+':/content',
+      {headers:{'Authorization':'Bearer '+res.accessToken}}
+    );
+  }).then(function(r){
+    if(!r.ok) return null;
+    return r.json();
+  }).then(function(data){
+    if(!data) return;
+    SP_UI_KEYS.forEach(function(k){
+      if(data[k]!==undefined) localStorage.setItem(k,JSON.stringify(data[k]));
+    });
+    console.log('[SP] UI設定読込完了');
+  }).catch(function(e){ console.warn('[SP] UI設定読込エラー:',e); });
+}
+function saveSettingsToSP(){
+  if(_spUiSaveTimer) clearTimeout(_spUiSaveTimer);
+  _spUiSaveTimer=setTimeout(function(){
+    var data={};
+    SP_UI_KEYS.forEach(function(k){
+      var v=localStorage.getItem(k);
+      if(v){try{data[k]=JSON.parse(v);}catch(e){data[k]=v;}}
+    });
+    getToken().then(function(res){
+      return fetch(
+        'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH+':/content',
+        {method:'PUT',headers:{'Authorization':'Bearer '+res.accessToken,'Content-Type':'application/json'},
+         body:JSON.stringify(data)}
+      );
+    }).then(function(r){
+      if(!r.ok) console.warn('[SP] UI設定保存失敗:',r.status);
+      else console.log('[SP] UI設定保存完了');
+    }).catch(function(e){ console.warn('[SP] UI設定保存エラー:',e); });
+  }, 1500);
+}
+// 受付票ポップアップのlocalStorage変更を検知して自動保存
+window.addEventListener('storage',function(e){
+  if(['nk_rcpt_v1','nk_rcpt_vis_v1','nk_fmap_v1'].indexOf(e.key)>=0) saveSettingsToSP();
+});
+
 // ===== データ取得 =====
 
 // ===== ページネーション共通関数 =====
@@ -7759,6 +7809,7 @@ function saveNkChkOrder(){
     if(el.classList.contains('row-break'))data.breaks.push(k);
   });
   localStorage.setItem(cfg.key,JSON.stringify(data));
+  saveSettingsToSP();
 }
 function nkChkSpan(btn,delta){
   var cfg=getNkChkModeConfig();

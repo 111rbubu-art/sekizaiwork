@@ -2070,7 +2070,7 @@ var currentFilter = 'micom';
 var currentItem = null;
 var currentTab = 0;
 var _nokSortByDate = true; // 納骨日ソートON/OFF
-var _koujiSortByCategory = false; // 工事分類ソートON/OFF
+var _koujiSortByCategory = true; // 工事分類ソートON/OFF（デフォルトON）
 var _koujiCurrentFilter = 'micom'; // 工事現在フィルター
 
 // ===== ログイン =====
@@ -4833,12 +4833,19 @@ function renderKoujiList(filter) {
   var _koujiDisplayItems = items;
   var _koujiCatSeps = {}; // index -> label
   if (_koujiSortByCategory) {
+    var _catOrder = ['新規','修繕','撤去','移設','彫刻変更','花立交換','クリーニング','小工事','他工事'];
     var _cats = [];
     items.forEach(function(d) {
       var c = d['category'] || '（分類なし）';
       if (_cats.indexOf(c) < 0) _cats.push(c);
     });
-    _cats.sort();
+    _cats.sort(function(a, b) {
+      var ai = _catOrder.indexOf(a), bi = _catOrder.indexOf(b);
+      if (ai < 0) ai = _catOrder.length;
+      if (bi < 0) bi = _catOrder.length;
+      if (ai !== bi) return ai - bi;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
     var _sorted = [];
     _cats.forEach(function(c) {
       var cItems = items.filter(function(d){ return (d['category']||'（分類なし）') === c; });
@@ -5372,7 +5379,23 @@ function renderFolderContents(items, currentPath, token) {
   if (!el) return;
 
   if (items.length === 0) {
-    el.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:20px">ファイルがありません</div>';
+    el.innerHTML = '';
+    var _emptyHdr = document.createElement('div');
+    _emptyHdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0 10px;border-bottom:1px solid #eee;margin-bottom:6px';
+    var _emptyLbl = document.createElement('div');
+    _emptyLbl.style.cssText = 'font-size:11px;color:#888;flex:1';
+    _emptyLbl.textContent = '📂 ' + currentPath;
+    _emptyHdr.appendChild(_emptyLbl);
+    var _emptyMkBtn = document.createElement('button');
+    _emptyMkBtn.textContent = '📁+ フォルダー作成';
+    _emptyMkBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:#1a5a9a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
+    _emptyMkBtn.addEventListener('click', function() { createSubFolder(currentPath, token); });
+    _emptyHdr.appendChild(_emptyMkBtn);
+    el.appendChild(_emptyHdr);
+    var _emptyMsg = document.createElement('div');
+    _emptyMsg.style.cssText = 'text-align:center;color:#888;font-size:12px;padding:20px';
+    _emptyMsg.textContent = 'ファイルがありません';
+    el.appendChild(_emptyMsg);
     renderFolderDropZone(el, currentPath);
     return;
   }
@@ -5393,9 +5416,14 @@ function renderFolderContents(items, currentPath, token) {
     header.appendChild(upBtn);
   }
   var pathLabel = document.createElement('div');
-  pathLabel.style.cssText = 'font-size:11px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  pathLabel.style.cssText = 'font-size:11px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1';
   pathLabel.textContent = '📂 ' + currentPath;
   header.appendChild(pathLabel);
+  var mkdirBtn = document.createElement('button');
+  mkdirBtn.textContent = '📁+ フォルダー作成';
+  mkdirBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:#1a5a9a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
+  mkdirBtn.addEventListener('click', function() { createSubFolder(currentPath, token); });
+  header.appendChild(mkdirBtn);
   el.appendChild(header);
 
   // ===== 2. フォルダー行 =====
@@ -5444,6 +5472,29 @@ function renderFolderContents(items, currentPath, token) {
   });
 
   renderFolderDropZone(el, currentPath);
+}
+
+function createSubFolder(parentPath, token) {
+  var name = prompt('新しいフォルダー名を入力してください：');
+  if (!name || !name.trim()) return;
+  name = name.trim();
+  var newPath = parentPath + '/' + name;
+  var encoded = newPath.split('/').map(encodeURIComponent).join('/');
+  var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':';
+  getToken().then(function(resp) {
+    var t = token || resp.accessToken;
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parentPath.split('/').map(encodeURIComponent).join('/') + ':/children', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+    });
+  }).then(function(r) {
+    if (r.ok || r.status === 409) {
+      loadFolderExplorer(parentPath, null, false);
+    } else {
+      return r.json().then(function(e){ throw new Error(e.error && e.error.message || r.status); });
+    }
+  }).catch(function(e) { alert('フォルダー作成エラー: ' + e.message); });
 }
 
 function renderFolderDropZone(el, folderPath) {

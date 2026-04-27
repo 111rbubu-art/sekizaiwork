@@ -4833,7 +4833,7 @@ function renderKoujiList(filter) {
   var _koujiDisplayItems = items;
   var _koujiCatSeps = {}; // index -> label
   if (_koujiSortByCategory) {
-    var _catOrder = ['新規','修繕','撤去','移設','彫刻変更','花立交換','クリーニング','小工事','他工事'];
+    var _catOrder = ['墓新規','修繕','撤去','移設','彫刻変更','花立交換','クリーニング','小工事','他工事'];
     var _cats = [];
     items.forEach(function(d) {
       var c = d['category'] || '（分類なし）';
@@ -7361,6 +7361,56 @@ function setEdit(itemId, field, value) {
   localEdits[itemId][field] = value;
 }
 // SharePointへ編集内容をPATCH保存
+// ===== 添付ファイル → Lists フォルダー同期 =====
+function syncAttachmentsToListsFolder(d, listId, token) {
+  var folderPass = d['Folder_Pass'] || d['FolderPass'] || '';
+  if (!folderPass) return;
+  var itemId = d['id'];
+  if (!itemId) return;
+  var spRoot = 'https://shojisekizai.sharepoint.com/sites/stoneworks';
+  var listsPath = folderPass + '/Lists';
+  var encodedListsPath = listsPath.split('/').map(encodeURIComponent).join('/');
+  var spAttachUrl = spRoot + "/_api/web/lists/getById('" + listId + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+  var driveListsUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedListsPath + ':/children?$select=name';
+  fetch(spAttachUrl, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+    .then(function(r) { return r.json(); })
+    .then(function(attData) {
+      var attachments = (attData.d && attData.d.results) ? attData.d.results : [];
+      if (attachments.length === 0) return;
+      return fetch(driveListsUrl, { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) { return r.ok ? r.json() : { value: [] }; })
+        .catch(function() { return { value: [] }; })
+        .then(function(driveData) {
+          var existing = (driveData.value || []).map(function(f) { return (f.name || '').toLowerCase(); });
+          var missing = attachments.filter(function(a) { return existing.indexOf((a.FileName || '').toLowerCase()) < 0; });
+          if (missing.length === 0) return;
+          var mkdirUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + folderPass.split('/').map(encodeURIComponent).join('/') + ':/children';
+          return fetch(mkdirUrl, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Lists', folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+          }).then(function(r) {
+            if (!r.ok && r.status !== 409) throw new Error('Lists folder create failed: ' + r.status);
+            return missing.reduce(function(chain, att) {
+              return chain.then(function() {
+                var relUrl = (att.ServerRelativeUrl || '').replace(/'/g, "''");
+                var dlUrl = spRoot + "/_api/web/getFileByServerRelativeUrl('" + relUrl + "')/$value";
+                return fetch(dlUrl, { headers: { Authorization: 'Bearer ' + token } })
+                  .then(function(r) { if (!r.ok) throw new Error('DL failed: ' + r.status); return r.arrayBuffer(); })
+                  .then(function(buf) {
+                    var upUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedListsPath + '/' + encodeURIComponent(att.FileName) + ':/content';
+                    return fetch(upUrl, { method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream' }, body: buf });
+                  });
+              });
+            }, Promise.resolve());
+          }).then(function() {
+            console.log('[Sync] 添付→Lists ' + missing.length + '件コピー完了');
+          });
+        });
+    })
+    .catch(function(e) { console.warn('[Sync] 添付同期エラー:', e.message); });
+}
+
 function saveEditsToSP(d, edits, listName, callback) {
   if (!edits || Object.keys(edits).length === 0) {
     if (callback) callback(true, '変更なし');
@@ -7458,9 +7508,13 @@ function saveEditsToSP(d, edits, listName, callback) {
     .then(function(r) {
       if (r.ok) {
         if (callback) callback(true, 'SharePointに保存しました', body);
+        // バックグラウンドで添付ファイルをListsフォルダーへ同期
+        if (listName === '納骨・戒切' || listName === '工事関連') {
+          syncAttachmentsToListsFolder(d, listId, token);
+        }
       } else {
         r.json().then(function(e) {
-          if (callback) callback(false, 'エラー: ' + (e.error?.message || r.status), null);
+          if (callback) callback(false, 'エラー: ' + (e.error && e.error.message || r.status), null);
         });
       }
     })

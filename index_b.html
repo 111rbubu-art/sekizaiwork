@@ -7339,7 +7339,7 @@ function setEdit(itemId, field, value) {
 }
 // SharePointへ編集内容をPATCH保存
 // ===== 添付ファイル → Lists フォルダー同期 =====
-function syncAttachmentsToListsFolder(d, listId, token) {
+function syncAttachmentsToListsFolder(d, listId, onProgress) {
   var folderPass = d['Folder_Pass'] || d['FolderPass'] || '';
   if (!folderPass) return;
   var itemId = d['id'];
@@ -7348,25 +7348,32 @@ function syncAttachmentsToListsFolder(d, listId, token) {
   var listsPath = folderPass + '/Lists';
   var encodedListsPath = listsPath.split('/').map(encodeURIComponent).join('/');
   var driveListsUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedListsPath + ':/children?$select=name';
-  // SP REST APIにはSharePointスコープのトークンが必要
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-    account: msalApp.getActiveAccount()
-  }).then(function(spResp) {
-    var spToken = spResp.accessToken;
+  if (onProgress) onProgress('loading', '同期確認中...');
+  Promise.all([
+    getToken(),
+    msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+  ]).then(function(tokens) {
+    var token = tokens[0].accessToken;
+    var spToken = tokens[1].accessToken;
     var spAttachUrl = spRoot + "/_api/web/lists/getById('" + listId + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
     return fetch(spAttachUrl, { headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' } })
       .then(function(r) { return r.json(); })
       .then(function(attData) {
         var attachments = (attData.d && attData.d.results) ? attData.d.results : [];
-        if (attachments.length === 0) return;
+        if (attachments.length === 0) {
+          if (onProgress) onProgress('skip', '同期済み（添付なし）');
+          return;
+        }
         return fetch(driveListsUrl, { headers: { Authorization: 'Bearer ' + token } })
           .then(function(r) { return r.ok ? r.json() : { value: [] }; })
           .catch(function() { return { value: [] }; })
           .then(function(driveData) {
             var existing = (driveData.value || []).map(function(f) { return (f.name || '').toLowerCase(); });
             var missing = attachments.filter(function(a) { return existing.indexOf((a.FileName || '').toLowerCase()) < 0; });
-            if (missing.length === 0) return;
+            if (missing.length === 0) {
+              if (onProgress) onProgress('skip', '同期済み（新規なし）');
+              return;
+            }
             var mkdirUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + folderPass.split('/').map(encodeURIComponent).join('/') + ':/children';
             return fetch(mkdirUrl, {
               method: 'POST',
@@ -7374,8 +7381,10 @@ function syncAttachmentsToListsFolder(d, listId, token) {
               body: JSON.stringify({ name: 'Lists', folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
             }).then(function(r) {
               if (!r.ok && r.status !== 409) throw new Error('Lists folder create failed: ' + r.status);
+              var done = 0;
               return missing.reduce(function(chain, att) {
                 return chain.then(function() {
+                  if (onProgress) onProgress('loading', '同期中 ファイル ' + (done + 1) + '/' + missing.length);
                   var relUrl = (att.ServerRelativeUrl || '').replace(/'/g, "''");
                   var dlUrl = spRoot + "/_api/web/getFileByServerRelativeUrl('" + relUrl + "')/$value";
                   return fetch(dlUrl, { headers: { Authorization: 'Bearer ' + spToken } })
@@ -7383,15 +7392,19 @@ function syncAttachmentsToListsFolder(d, listId, token) {
                     .then(function(buf) {
                       var upUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedListsPath + '/' + encodeURIComponent(att.FileName) + ':/content';
                       return fetch(upUrl, { method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream' }, body: buf });
-                    });
+                    }).then(function() { done++; });
                 });
               }, Promise.resolve());
             }).then(function() {
               console.log('[Sync] 添付→Lists ' + missing.length + '件コピー完了');
+              if (onProgress) onProgress('done', '同期完了 ' + missing.length + '件コピー');
             });
           });
       });
-  }).catch(function(e) { console.warn('[Sync] 添付同期エラー:', e.message); });
+  }).catch(function(e) {
+    console.warn('[Sync] 添付同期エラー:', e.message);
+    if (onProgress) onProgress('error', '同期エラー: ' + e.message);
+  });
 }
 
 function saveEditsToSP(d, edits, listName, callback) {
@@ -7491,10 +7504,6 @@ function saveEditsToSP(d, edits, listName, callback) {
     .then(function(r) {
       if (r.ok) {
         if (callback) callback(true, 'SharePointに保存しました', body);
-        // バックグラウンドで添付ファイルをListsフォルダーへ同期
-        if (listName === '納骨・戒切' || listName === '工事関連') {
-          syncAttachmentsToListsFolder(d, listId, token);
-        }
       } else {
         r.json().then(function(e) {
           if (callback) callback(false, 'エラー: ' + (e.error && e.error.message || r.status), null);
@@ -7875,6 +7884,16 @@ function toggleEditMode(d, tabIdx) {
     saveEditsToStorage();
     var itemId = d['id'] || d['Title'] || '';
     var edits = localEdits[itemId] || {};
+    // 添付ファイルをListsフォルダーへ同期（フィールド変更有無に関わらず実行）
+    if ((LIST_NAME === '納骨・戒切' || LIST_NAME === '工事関連') && (d['Folder_Pass'] || d['FolderPass'])) {
+      var _syncListId = LIST_NAME === '工事関連' ? KOUJI_LIST_ID : '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+      syncAttachmentsToListsFolder(d, _syncListId, function(state, msg) {
+        if (state === 'loading') showSaveToast(null, '📎 ' + msg);
+        else if (state === 'done') showSaveToast(true, '📎 ' + msg);
+        else if (state === 'skip') showSaveToast(true, '📎 ' + msg);
+        else if (state === 'error') showSaveToast(false, msg);
+      });
+    }
     if (Object.keys(edits).length > 0) {
       // d[]を先に正しい値で更新（boolean変換含む）してから再描画
       var boolFields = ['_x524a__x9664_', 'check', 'DelRedText', 'FinDelRedText', '_x6731__x6709__x7121_'];

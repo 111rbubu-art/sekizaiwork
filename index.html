@@ -2726,18 +2726,27 @@ function submitNewKouji() {
   .then(function(data) {
     var newItemId = data && data.id;
     var siteId2 = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-    var afterCopy = function() {
+    var afterAll = function(folderMsg) {
       closeNewKoujiModal();
-      showSaveToast(true, '「' + name + '」を工事関連に登録しました');
+      showSaveToast(true, '「' + name + '」を工事関連に登録しました' + (folderMsg ? '（' + folderMsg + '）' : ''));
       _newItemCusSpId = null;
       allItems = []; loadKoujiList();
     };
-    if (_newItemCusSpId && newItemId) {
-      submitBtn.textContent = '添付コピー中...';
-      copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, afterCopy);
-    } else {
-      afterCopy();
-    }
+    var doAttachCopy = function(folderMsg) {
+      if (_newItemCusSpId && newItemId) {
+        submitBtn.textContent = '添付コピー中...';
+        copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, function() { afterAll(folderMsg); });
+      } else {
+        afterAll(folderMsg);
+      }
+    };
+    // フォルダー自動作成
+    submitBtn.textContent = 'フォルダー作成中...';
+    getToken().then(function(resp) {
+      autoCreateKoujiFolder(resp.accessToken, temple, recday, name, cusno, category, newItemId, function(err, folderName) {
+        doAttachCopy(err ? 'フォルダー作成失敗' : 'フォルダー作成済');
+      });
+    }).catch(function() { doAttachCopy(null); });
   })
   .catch(function(e) {
     submitBtn.disabled = false;
@@ -4275,8 +4284,17 @@ function cancelKoujiEdit(tabIdx) {
 // ============================================================
 
 var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
-// 工事用標準帳票類のOneDriveパス（例: /00工事資料共通）
-var STANDARD_FORMS_PATH = '/00工事資料共通';
+// 工事用標準帳票類のOneDriveパス（フォルダータブ・手動コピー用）
+var STANDARD_FORMS_PATH = '/工事用標準帳票類/00工事資料共通';
+// 工事フォルダー自動作成用設定
+var TEMPLATE_PARENT_PATH = '/工事用標準帳票類';
+var COMMON_TEMPLATE_FOLDER = '00工事資料共通';
+var KOUJI_FOLDER_BASE = '/工事受付';
+var CATEGORY_TEMPLATE_MAP = {
+  '墓新規':'墓石_新規', '修繕':'墓石_修繕', '撤去':'墓石_撤去',
+  '花立交換':'墓石_花立修理', '彫刻変更':null, 'クリーニング':'墓石_クリーニング',
+  '移設':'墓石_移設', '小工事':'小工事', '他工事':'他工事'
+};
 
 // フォルダー履歴スタック（↑で戻るため）
 var _folderHistory = [];
@@ -4480,50 +4498,117 @@ function copyStdForms() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ コピー中...'; }
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    // コピー先フォルダーのアイテムIDを取得
-    var destEnc = fp.split('/').map(encodeURIComponent).join('/');
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + destEnc,
-      { headers: { Authorization: 'Bearer ' + token } })
-      .then(function(r) {
-        if (!r.ok) throw new Error('コピー先フォルダーが見つかりません (HTTP ' + r.status + ')');
-        return r.json();
-      })
+    return _odGetItem(token, fp)
       .then(function(destData) {
-        var destId = destData.id;
-        // コピー元ファイル一覧を取得
-        var srcEnc = STANDARD_FORMS_PATH.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + srcEnc + ':/children?$select=id,name,file',
-          { headers: { Authorization: 'Bearer ' + token } })
-          .then(function(r) {
-            if (!r.ok) throw new Error('標準帳票フォルダーが見つかりません (HTTP ' + r.status + ')');
-            return r.json();
-          })
-          .then(function(data) {
-            var files = (data.value || []).filter(function(f) { return f.file; });
-            if (files.length === 0) throw new Error('コピーするファイルがありません');
-            var copies = files.map(function(f) {
-              return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.id + '/copy', {
-                method: 'POST',
-                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destId } })
-              });
-            });
-            return Promise.all(copies).then(function(responses) {
-              return { count: files.length, ok: responses.every(function(r) { return r.ok || r.status === 202; }) };
-            });
-          });
+        return _odCopyFolderContents(token, STANDARD_FORMS_PATH, destData.id);
       });
-  }).then(function(result) {
+  }).then(function() {
     if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
-    showSaveToast(result.ok, result.ok ? result.count + '件コピー完了（反映まで数秒）' : 'コピーに失敗しました');
-    if (result.ok) {
-      var fp2 = currentItem && currentItem['Folder_Pass'];
-      if (fp2) setTimeout(function() { loadFolderExplorer(fp2, currentItem['Folder_URL'], true); }, 3000);
-    }
+    showSaveToast(true, 'コピー完了（反映まで数秒）');
+    var fp2 = currentItem && currentItem['Folder_Pass'];
+    if (fp2) setTimeout(function() { loadFolderExplorer(fp2, currentItem['Folder_URL'], true); }, 3000);
   }).catch(function(e) {
     if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
     showSaveToast(false, e.message);
   });
+}
+
+// ----- OneDrive フォルダー操作ヘルパー -----
+
+// パスでアイテム情報を取得
+function _odGetItem(token, path) {
+  var enc = path.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc,
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('フォルダーが見つかりません: ' + path + ' (HTTP ' + r.status + ')');
+      return r.json();
+    });
+}
+
+// フォルダーを作成（既存の場合はその情報を返す）
+function _odEnsureFolder(token, parentPath, name) {
+  var enc = parentPath.split('/').map(encodeURIComponent).join('/');
+  var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children';
+  return fetch(url, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+  }).then(function(r) {
+    if (r.status === 409) return _odGetItem(token, parentPath + '/' + name);
+    if (!r.ok) return r.json().then(function(e) { throw new Error(e.error && e.error.message || r.status); });
+    return r.json();
+  });
+}
+
+// srcPath 内のファイル・フォルダーを destId へコピー（再帰不要：OneDriveがフォルダーごとコピー）
+function _odCopyFolderContents(token, srcPath, destId) {
+  var enc = srcPath.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=id,name,file,folder',
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('テンプレート読込失敗: ' + srcPath + ' (HTTP ' + r.status + ')');
+      return r.json();
+    })
+    .then(function(data) {
+      var items = data.value || [];
+      if (items.length === 0) return;
+      return Promise.all(items.map(function(item) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + item.id + '/copy', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destId } })
+        });
+      }));
+    });
+}
+
+// 工事フォルダー自動作成 + テンプレートコピー + Folder_Pass保存
+function autoCreateKoujiFolder(token, temple, recday, name, cusno, category, newItemId, onDone) {
+  var datePart = (recday || '').replace(/[\/-]/g, '').substring(0, 8);
+  var folderName = (datePart ? datePart + '_' : '') + name + '＜' + temple + (cusno || '') + '＞' + category;
+  var parentPath = KOUJI_FOLDER_BASE + '/' + temple;
+
+  // 1. お寺フォルダー作成（既存OK）
+  _odEnsureFolder(token, KOUJI_FOLDER_BASE, temple)
+    .catch(function() {})
+    // 2. 案件フォルダー作成
+    .then(function() { return _odEnsureFolder(token, parentPath, folderName); })
+    .then(function(folderData) {
+      var folderId  = folderData.id;
+      var folderUrl = folderData.webUrl || '';
+      var fullPath  = parentPath + '/' + folderName;
+
+      // 3. 00工事資料共通 コピー
+      var copyPromise = _odCopyFolderContents(token, TEMPLATE_PARENT_PATH + '/' + COMMON_TEMPLATE_FOLDER, folderId)
+        .catch(function(e) { console.warn('共通テンプレートコピー失敗:', e.message); });
+
+      // 4. 分類別テンプレート コピー
+      var catFolder = CATEGORY_TEMPLATE_MAP[category];
+      if (catFolder) {
+        copyPromise = copyPromise.then(function() {
+          return _odCopyFolderContents(token, TEMPLATE_PARENT_PATH + '/' + catFolder, folderId)
+            .catch(function(e) { console.warn('分類テンプレートコピー失敗:', e.message); });
+        });
+      }
+
+      // 5. SP item に Folder_Pass / Folder_URL を保存
+      copyPromise.then(function() {
+        var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+        var patchUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId +
+          '/lists/' + KOUJI_LIST_ID + '/items/' + newItemId + '/fields';
+        fetch(patchUrl, {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Folder_Pass: fullPath, Folder_URL: folderUrl })
+        }).catch(function(e) { console.warn('Folder_Pass保存失敗:', e.message); })
+          .then(function() { onDone(null, folderName); });
+      });
+    })
+    .catch(function(e) {
+      console.warn('フォルダー作成失敗:', e.message);
+      onDone(e.message, null);
+    });
 }
 
 function toggleStdForms(hdr) {

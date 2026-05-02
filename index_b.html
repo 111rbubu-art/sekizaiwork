@@ -4851,11 +4851,49 @@ function createKoujiFolder(item) {
                 if (idx >= 0) { arr[idx]['Folder_URL'] = displayUrl; arr[idx]['Folder_Pass'] = folderPath; idbSet(ckey, arr).catch(function(){}); }
               });
               showSaveToast(true, 'フォルダーを作成・登録しました');
-              redraw(d);
+              // テンプレートコピー
+              var cfg2 = getFolderCfg();
+              var category2 = d['category'] || '';
+              var catEntry = (cfg2.koujiCategoryMap || []).find(function(m){ return m.c === category2; });
+              var catFolder = catEntry ? catEntry.t : '';
+              showSaveToast(null, 'テンプレートをコピー中...');
+              _odCopyFolderContents(token, cfg2.templateRoot + '/' + cfg2.common, driveItemId)
+                .catch(function(e){ console.warn('共通テンプレートコピー失敗:', e.message); })
+                .then(function() {
+                  if (!catFolder) return;
+                  return _odCopyFolderContents(token, cfg2.templateRoot + '/' + catFolder, driveItemId)
+                    .catch(function(e){ console.warn('分類テンプレートコピー失敗:', e.message); });
+                })
+                .then(function() {
+                  showSaveToast(true, 'フォルダー作成・テンプレートコピー完了');
+                  redraw(d);
+                });
             });
         });
     });
   }).catch(function(e) { showSaveToast(false, 'フォルダー作成エラー: ' + e.message); });
+}
+
+// srcPath 内の全アイテム（ファイル・フォルダー）を destId にコピー
+function _odCopyFolderContents(token, srcPath, destId) {
+  var enc = srcPath.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=id,name,file,folder',
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('テンプレート読込失敗: ' + srcPath + ' (HTTP ' + r.status + ')');
+      return r.json();
+    })
+    .then(function(data) {
+      var items = data.value || [];
+      if (items.length === 0) return;
+      return Promise.all(items.map(function(item) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + item.id + '/copy', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destId } })
+        });
+      }));
+    });
 }
 
 // フォルダーリネーム／移動（データ保存後に自動呼び出し）

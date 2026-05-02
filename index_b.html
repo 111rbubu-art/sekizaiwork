@@ -1708,10 +1708,179 @@ function isPC() {
   return window.innerWidth >= 768;
 }
 
+// ===== フォルダー自動作成 設定 =====
+var _folderCfg = null;
+var _folderCfgFileList = [];
+
+function getFolderCfg() {
+  if (_folderCfg) return _folderCfg;
+  var s = null;
+  try { s = JSON.parse(localStorage.getItem('folder_cfg_v1')); } catch(e) {}
+  _folderCfg = s || {
+    templateRoot: '/工事用標準帳票類',
+    common: '00工事資料共通',
+    koujiReceipt: '',
+    noukotsuReceiptGeneral: '',
+    noukotsuReceiptKaiki: '',
+    koujiCategoryMap: [
+      {c:'墓新規',t:'墓石_新規'},{c:'修繕',t:'墓石_修繕'},{c:'撤去',t:'墓石_撤去'},
+      {c:'花立交換',t:'墓石_花立修理'},{c:'彫刻変更',t:''},{c:'クリーニング',t:'墓石_クリーニング'},
+      {c:'移設',t:'墓石_移設'},{c:'小工事',t:'小工事'},{c:'他工事',t:'他工事'}
+    ],
+    noukotsuCategoryMap: [
+      {c:'納骨',t:''},{c:'戒切',t:''},{c:'納骨戒切',t:''},{c:'骨出し',t:''}
+    ]
+  };
+  return _folderCfg;
+}
+
+function saveFolderCfg() {
+  var cfg = getFolderCfg();
+  var el = document.getElementById('fc-root'); if(el) cfg.templateRoot = el.value.trim();
+  el = document.getElementById('fc-common'); if(el) cfg.common = el.value.trim();
+  el = document.getElementById('fc-kouji-rcpt'); if(el) cfg.koujiReceipt = el.value;
+  el = document.getElementById('fc-nok-rcpt-gen'); if(el) cfg.noukotsuReceiptGeneral = el.value;
+  el = document.getElementById('fc-nok-rcpt-kai'); if(el) cfg.noukotsuReceiptKaiki = el.value;
+  // 工事分類マップ
+  cfg.koujiCategoryMap = [];
+  document.querySelectorAll('#fc-kouji-map tr[data-row]').forEach(function(tr) {
+    var c = tr.querySelector('.fc-c'); var t = tr.querySelector('.fc-t');
+    if(c && c.value.trim()) cfg.koujiCategoryMap.push({c:c.value.trim(), t:t?t.value.trim():''});
+  });
+  // 納骨分類マップ
+  cfg.noukotsuCategoryMap = [];
+  document.querySelectorAll('#fc-nok-map tr[data-row]').forEach(function(tr) {
+    var c = tr.querySelector('.fc-c'); var t = tr.querySelector('.fc-t');
+    if(c && c.value.trim()) cfg.noukotsuCategoryMap.push({c:c.value.trim(), t:t?t.value.trim():''});
+  });
+  localStorage.setItem('folder_cfg_v1', JSON.stringify(cfg));
+  saveSettingsToSP();
+  var btn = document.getElementById('fc-save-btn');
+  if(btn){btn.textContent='✅ 保存しました';setTimeout(function(){btn.textContent='💾 保存';},2000);}
+}
+
+function _fcAddRow(tableId, c, t) {
+  var tb = document.getElementById(tableId);
+  if(!tb) return;
+  var idx = tb.querySelectorAll('tr[data-row]').length;
+  var tr = document.createElement('tr');
+  tr.setAttribute('data-row', idx);
+  tr.innerHTML = '<td style="padding:3px 4px"><input class="fc-c" value="'+_esc(c||'')+'" style="width:80px;font-size:11px;padding:3px;border:1px solid #ddd;border-radius:4px;font-family:inherit"></td>'+
+    '<td style="padding:3px 4px"><input class="fc-t" value="'+_esc(t||'')+'" style="width:120px;font-size:11px;padding:3px;border:1px solid #ddd;border-radius:4px;font-family:inherit"></td>'+
+    '<td style="padding:3px 4px"><button onclick="this.closest(\'tr\').remove()" style="background:#fdd;border:none;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:11px">✕</button></td>';
+  tb.appendChild(tr);
+}
+
+function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+
+function _fcFileSelect(id, files, val) {
+  var sel = document.getElementById(id);
+  if(!sel) return;
+  sel.innerHTML = '<option value="">（未設定）</option>';
+  files.forEach(function(f){
+    var opt=document.createElement('option');
+    opt.value=f; opt.textContent=f;
+    if(f===val) opt.selected=true;
+    sel.appendChild(opt);
+  });
+}
+
+function renderFolderCfgSettings() {
+  var wrap = document.getElementById('folder-cfg-settings');
+  if(!wrap) return;
+  var cfg = getFolderCfg();
+  var inp = function(id,val,ph,w){return '<input id="'+id+'" value="'+_esc(val)+'" placeholder="'+_esc(ph||'')+'" style="width:'+(w||'100%')+';font-size:12px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-family:inherit;box-sizing:border-box">';};
+  var secStyle='background:#fff;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)';
+  var hdStyle='font-size:13px;font-weight:700;color:#1a2535;margin-bottom:10px';
+  var lblStyle='font-size:11px;font-weight:600;color:#555;margin-bottom:4px;margin-top:8px';
+  var fmtKouji='/工事受付/<span style="color:#185fa5">{お寺}</span>/<span style="color:#c00">{受付日}</span>_<span style="color:#185fa5">{顧客名}</span>＜<span style="color:#185fa5">{お寺}</span><span style="color:#2a7a2a">_{墓名}</span><span style="color:#2a7a2a">{顧客ID}</span>＞<span style="color:#8a4a00">{分類}</span>_<span style="color:#8a4a00">{工事内容}</span>';
+  var fmtNok='/工事受付/<span style="color:#185fa5">{お寺}</span>/<span style="color:#c00">{依頼日}</span>_<span style="color:#185fa5">{顧客名}</span>＜<span style="color:#185fa5">{お寺}</span><span style="color:#2a7a2a">_{墓名}</span><span style="color:#2a7a2a">{顧客No}</span>＞<span style="color:#8a4a00">{分類}</span>';
+  function mapTable(tableId, rows) {
+    var h='<table id="'+tableId+'" style="width:100%;border-collapse:collapse;font-size:11px">'+
+      '<thead><tr style="background:#f0f2f5"><th style="text-align:left;padding:4px 8px;color:#888;font-weight:600;border-bottom:1px solid #e8e8e8">分類</th><th style="text-align:left;padding:4px 8px;color:#888;font-weight:600;border-bottom:1px solid #e8e8e8">テンプレートフォルダ</th><th style="width:32px"></th></tr></thead><tbody>';
+    rows.forEach(function(r,i){
+      h+='<tr data-row="'+i+'" style="border-bottom:0.5px solid #f0f0f0'+(i%2?' background:#fafafa':'')+'" >'+
+        '<td style="padding:3px 4px"><input class="fc-c" value="'+_esc(r.c)+'" style="width:80px;font-size:11px;padding:3px;border:1px solid #ddd;border-radius:4px;font-family:inherit"></td>'+
+        '<td style="padding:3px 4px"><input class="fc-t" value="'+_esc(r.t)+'" style="width:120px;font-size:11px;padding:3px;border:1px solid #ddd;border-radius:4px;font-family:inherit"></td>'+
+        '<td style="padding:3px 4px"><button onclick="this.closest(\'tr\').remove()" style="background:#fdd;border:none;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:11px">✕</button></td></tr>';
+    });
+    return h+'</tbody></table>';
+  }
+  wrap.innerHTML =
+    // 共通
+    '<div style="'+secStyle+'">'+
+      '<div style="'+hdStyle+'">📁 フォルダー設定 — 共通</div>'+
+      '<div style="'+lblStyle+'">テンプレート親フォルダ（ドキュメントライブラリルートから）</div>'+
+      inp('fc-root', cfg.templateRoot, '/工事用標準帳票類')+
+      '<div style="'+lblStyle+'">共通コピーフォルダ名</div>'+
+      inp('fc-common', cfg.common, '00工事資料共通')+
+      '<button onclick="loadFolderCfgFileList()" style="margin-top:8px;padding:5px 12px;background:#f0f2f5;border:1px solid #ccc;border-radius:6px;font-size:11px;font-family:inherit;cursor:pointer">🔄 受付票ファイル一覧を取得</button>'+
+      '<div id="fc-file-status" style="font-size:10px;color:#888;margin-top:4px"></div>'+
+    '</div>'+
+    // 工事関連
+    '<div style="'+secStyle+'">'+
+      '<div style="'+hdStyle+'">📁 フォルダー設定 — 工事関連</div>'+
+      '<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:4px">フォルダー名フォーマット</div>'+
+      '<div style="background:#f5f8ff;border:0.5px solid #c0cce8;border-radius:6px;padding:8px 10px;font-size:10px;font-family:monospace;color:#1a2535;margin-bottom:10px;word-break:break-all">'+fmtKouji+'</div>'+
+      '<div style="'+lblStyle+'">受付票ファイル</div>'+
+      '<select id="fc-kouji-rcpt" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-family:inherit"><option value="">（未設定）</option></select>'+
+      '<div style="'+lblStyle+'">分類 → テンプレートフォルダ対応</div>'+
+      mapTable('fc-kouji-map', cfg.koujiCategoryMap)+
+      '<button onclick="_fcAddRow(\'fc-kouji-map\',\'\',\'\')" style="margin-top:6px;padding:4px 12px;background:#e8f4e8;border:1px solid #2a7a2a;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;color:#1a5a1a">＋ 追加</button>'+
+    '</div>'+
+    // 納骨リスト
+    '<div style="'+secStyle+'">'+
+      '<div style="'+hdStyle+'">📁 フォルダー設定 — 納骨リスト</div>'+
+      '<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:4px">フォルダー名フォーマット</div>'+
+      '<div style="background:#f5f8ff;border:0.5px solid #c0cce8;border-radius:6px;padding:8px 10px;font-size:10px;font-family:monospace;color:#1a2535;margin-bottom:10px;word-break:break-all">'+fmtNok+'</div>'+
+      '<div style="'+lblStyle+'">受付票ファイル（一般）</div>'+
+      '<select id="fc-nok-rcpt-gen" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-family:inherit"><option value="">（未設定）</option></select>'+
+      '<div style="'+lblStyle+'">受付票ファイル（戒切あり）</div>'+
+      '<select id="fc-nok-rcpt-kai" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-family:inherit"><option value="">（未設定）</option></select>'+
+      '<div style="font-size:10px;color:#888;margin-top:2px;margin-bottom:8px">※ 分類が「戒切」「納骨戒切」の場合は戒切あり受付票を使用</div>'+
+      '<div style="'+lblStyle+'">分類 → テンプレートフォルダ対応</div>'+
+      mapTable('fc-nok-map', cfg.noukotsuCategoryMap)+
+      '<button onclick="_fcAddRow(\'fc-nok-map\',\'\',\'\')" style="margin-top:6px;padding:4px 12px;background:#e8f4e8;border:1px solid #2a7a2a;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;color:#1a5a1a">＋ 追加</button>'+
+    '</div>'+
+    '<button id="fc-save-btn" onclick="saveFolderCfg()" style="width:100%;padding:10px;background:#1a2535;color:#fff;border:none;border-radius:8px;font-size:13px;font-family:inherit;cursor:pointer;margin-bottom:14px">💾 保存</button>';
+  // ファイル一覧が既にあれば反映
+  if(_folderCfgFileList.length > 0) {
+    _fcFileSelect('fc-kouji-rcpt', _folderCfgFileList, cfg.koujiReceipt);
+    _fcFileSelect('fc-nok-rcpt-gen', _folderCfgFileList, cfg.noukotsuReceiptGeneral);
+    _fcFileSelect('fc-nok-rcpt-kai', _folderCfgFileList, cfg.noukotsuReceiptKaiki);
+  }
+}
+
+function loadFolderCfgFileList() {
+  var cfg = getFolderCfg();
+  var root = cfg.templateRoot || '/工事用標準帳票類';
+  var el = document.getElementById('fc-file-status');
+  if(el) el.textContent = '取得中...';
+  getToken().then(function(resp) {
+    var encoded = root.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+encoded+':/children?$select=name,file&$orderby=name';
+    return fetch(url, {headers:{Authorization:'Bearer '+resp.accessToken}});
+  }).then(function(r){return r.json();})
+  .then(function(data){
+    var files = (data.value||[]).filter(function(f){return f.file;}).map(function(f){return f.name;});
+    _folderCfgFileList = files;
+    var cfg2 = getFolderCfg();
+    _fcFileSelect('fc-kouji-rcpt', files, cfg2.koujiReceipt);
+    _fcFileSelect('fc-nok-rcpt-gen', files, cfg2.noukotsuReceiptGeneral);
+    _fcFileSelect('fc-nok-rcpt-kai', files, cfg2.noukotsuReceiptKaiki);
+    var el2 = document.getElementById('fc-file-status');
+    if(el2) el2.textContent = files.length+'件取得しました';
+  }).catch(function(e){
+    var el2 = document.getElementById('fc-file-status');
+    if(el2) el2.textContent = '取得エラー: '+e.message;
+  });
+}
+
 // ===== 表示モード切り替え =====
 function openSettingsPage() {
   initTantoFilter();
   loadEnvSenderToSettings();
+  renderFolderCfgSettings();
   document.getElementById('settings-screen').classList.remove('hidden');
   var verEl = document.getElementById('settings-ver');
   if (verEl) verEl.textContent = APP_VERSION || '';
@@ -6786,7 +6955,8 @@ var SP_UI_PATH = '/業務アプリ/app_ui_settings.json';
 var SP_UI_KEYS = [
   'nok_chk_sp_v1','nok_chk_sm_v1','nok_chk_lg_v1',
   'nk_rcpt_v1','nk_rcpt_vis_v1','nk_fmap_v1',
-  'kj_rcpt_v2','kj_rcpt_vis_v2','kj_fmap_v1'
+  'kj_rcpt_v2','kj_rcpt_vis_v2','kj_fmap_v1',
+  'folder_cfg_v1'
 ];
 var _spUiSaveTimer = null;
 function loadSettingsFromSP(){
@@ -9836,10 +10006,9 @@ function openImageViewer(imgs, startIdx) {
   </div>
   <div style="flex:1;overflow-y:auto;padding:16px 14px">
 
-    <!-- フォルダ自動作成 -->
-    <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">
-      <div style="font-size:13px;font-weight:700;color:#1a2535;margin-bottom:10px;display:flex;align-items:center;gap:6px">📁 フォルダ自動作成（工事関連）</div>
-      <div style="font-size:11px;color:#888;margin-bottom:8px">新規登録時にSharePointドキュメントライブラリへフォルダを自動作成します。</div>
+    <!-- フォルダ自動作成（動的レンダリング） -->
+    <div id="folder-cfg-settings"></div>
+    <div style="display:none">
 
       <div style="font-size:11px;font-weight:600;color:#555;margin-bottom:4px">フォルダ名フォーマット</div>
       <div style="background:#f5f8ff;border:0.5px solid #c0cce8;border-radius:6px;padding:8px 10px;font-size:11px;font-family:monospace;color:#1a2535;margin-bottom:10px;word-break:break-all">
@@ -9871,6 +10040,7 @@ function openImageViewer(imgs, startIdx) {
       </table>
       <div style="font-size:10px;color:#aaa;margin-top:8px">※ 設定を変更する場合はコードの更新が必要です</div>
     </div>
+    </div><!-- /display:none (旧静的セクション) -->
 
     <!-- Googleカレンダー連携 -->
     <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">

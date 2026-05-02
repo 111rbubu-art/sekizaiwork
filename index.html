@@ -4044,10 +4044,15 @@ function showKoujiTab(i, d) {
 
   } else if (i === 4) {
     // フォルダータブ（工事関連）
-    var stdSec = STANDARD_FORMS_PATH
-      ? '<div class="sec" style="margin-top:8px"><span class="sec-hdr" style="background:#4a6a3a;color:#fff;cursor:pointer;user-select:none" onclick="toggleStdForms(this)">📋 工事用標準帳票類 ▼</span>' +
-        '<div id="std-forms-explorer" style="display:none;padding:4px 0"></div></div>'
-      : '';
+    var stdSec =
+      '<div class="sec" style="margin-top:8px">' +
+        '<span class="sec-hdr" style="background:#4a6a3a;color:#fff">📋 工事用標準帳票類</span>' +
+        '<div style="padding:8px 4px 6px">' +
+          '<button id="std-copy-btn" onclick="copyStdForms()" style="width:100%;padding:9px 12px;background:#2a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📋 00工事資料共通 → このフォルダーにコピー</button>' +
+        '</div>' +
+        '<span class="sec-hdr" style="background:#5a7a4a;color:#fff;cursor:pointer;user-select:none;font-size:11px" onclick="toggleStdForms(this)">📂 ファイル一覧 ▼</span>' +
+        '<div id="std-forms-explorer" style="display:none;padding:4px 0"></div>' +
+      '</div>';
     b.innerHTML =
       '<div class="sec"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
       '<div id="folder-explorer" style="padding:8px 0"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div></div>' +
@@ -4270,8 +4275,8 @@ function cancelKoujiEdit(tabIdx) {
 // ============================================================
 
 var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
-// 工事用標準帳票類のOneDriveパス（例: /sites/stoneworks/工事用標準帳票類）
-var STANDARD_FORMS_PATH = '';
+// 工事用標準帳票類のOneDriveパス（例: /00工事資料共通）
+var STANDARD_FORMS_PATH = '/00工事資料共通';
 
 // フォルダー履歴スタック（↑で戻るため）
 var _folderHistory = [];
@@ -4466,6 +4471,60 @@ function previewFolderImage(filePath) {
 }
 
 // ===== 工事用標準帳票類 =====
+
+function copyStdForms() {
+  var fp = currentItem && (currentItem['Folder_Pass'] || null);
+  if (!fp) { showSaveToast(false, '工事フォルダーパスが未登録です'); return; }
+  if (!STANDARD_FORMS_PATH) { showSaveToast(false, 'STANDARD_FORMS_PATHが未設定です'); return; }
+  var btn = document.getElementById('std-copy-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ コピー中...'; }
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    // コピー先フォルダーのアイテムIDを取得
+    var destEnc = fp.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + destEnc,
+      { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (!r.ok) throw new Error('コピー先フォルダーが見つかりません (HTTP ' + r.status + ')');
+        return r.json();
+      })
+      .then(function(destData) {
+        var destId = destData.id;
+        // コピー元ファイル一覧を取得
+        var srcEnc = STANDARD_FORMS_PATH.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + srcEnc + ':/children?$select=id,name,file',
+          { headers: { Authorization: 'Bearer ' + token } })
+          .then(function(r) {
+            if (!r.ok) throw new Error('標準帳票フォルダーが見つかりません (HTTP ' + r.status + ')');
+            return r.json();
+          })
+          .then(function(data) {
+            var files = (data.value || []).filter(function(f) { return f.file; });
+            if (files.length === 0) throw new Error('コピーするファイルがありません');
+            var copies = files.map(function(f) {
+              return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.id + '/copy', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destId } })
+              });
+            });
+            return Promise.all(copies).then(function(responses) {
+              return { count: files.length, ok: responses.every(function(r) { return r.ok || r.status === 202; }) };
+            });
+          });
+      });
+  }).then(function(result) {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
+    showSaveToast(result.ok, result.ok ? result.count + '件コピー完了（反映まで数秒）' : 'コピーに失敗しました');
+    if (result.ok) {
+      var fp2 = currentItem && currentItem['Folder_Pass'];
+      if (fp2) setTimeout(function() { loadFolderExplorer(fp2, currentItem['Folder_URL'], true); }, 3000);
+    }
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
+    showSaveToast(false, e.message);
+  });
+}
 
 function toggleStdForms(hdr) {
   var el = document.getElementById('std-forms-explorer');

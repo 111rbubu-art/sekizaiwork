@@ -1771,6 +1771,308 @@ function _fcAddRow(tableId, c, t) {
   tb.appendChild(tr);
 }
 
+// ===== AI設定 =====
+function getAICfg() {
+  var s = null;
+  try { s = JSON.parse(localStorage.getItem('ai_cfg_v1')); } catch(e) {}
+  return s || { provider:'claude', apiKey:'', model:'claude-sonnet-4-6', endpoint:'http://localhost:11434' };
+}
+function saveAICfg() {
+  var cfg = getAICfg();
+  var el;
+  el = document.getElementById('ai-provider'); if(el) cfg.provider = el.value;
+  el = document.getElementById('ai-apikey');   if(el) cfg.apiKey   = el.value.trim();
+  el = document.getElementById('ai-model');    if(el) cfg.model    = el.value.trim();
+  el = document.getElementById('ai-endpoint'); if(el) cfg.endpoint = el.value.trim();
+  localStorage.setItem('ai_cfg_v1', JSON.stringify(cfg));
+  var btn = document.getElementById('ai-save-btn');
+  if(btn){btn.textContent='✅ 保存しました';setTimeout(function(){btn.textContent='💾 保存';},2000);}
+}
+function _aiToggleEndpoint() {
+  var prov = document.getElementById('ai-provider');
+  var row  = document.getElementById('ai-endpoint-row');
+  if(prov && row) row.style.display = prov.value === 'openai' ? '' : 'none';
+}
+
+// ===== AI APIレイヤー =====
+function callAI(system, user, onChunk, onDone) {
+  var cfg = getAICfg();
+  if (cfg.provider === 'claude') callClaudeAPI(cfg, system, user, onChunk, onDone);
+  else callOpenAICompatAPI(cfg, system, user, onChunk, onDone);
+}
+
+function callClaudeAPI(cfg, system, user, onChunk, onDone) {
+  fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': cfg.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: cfg.model || 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      stream: true,
+      system: system,
+      messages: [{ role:'user', content:user }]
+    })
+  }).then(function(r) {
+    if (!r.ok) { r.text().then(function(t){ onDone(new Error('Claude API ' + r.status + ': ' + t)); }); return; }
+    var reader = r.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump() {
+      reader.read().then(function(res) {
+        if (res.done) { onDone(null); return; }
+        buf += decoder.decode(res.value, {stream:true});
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+          if (!line.startsWith('data:')) return;
+          var data = line.slice(5).trim();
+          if (data === '[DONE]') return;
+          try {
+            var obj = JSON.parse(data);
+            if (obj.type === 'content_block_delta' && obj.delta && obj.delta.text) onChunk(obj.delta.text);
+          } catch(e) {}
+        });
+        pump();
+      }).catch(function(e){ onDone(e); });
+    }
+    pump();
+  }).catch(function(e){ onDone(e); });
+}
+
+function callOpenAICompatAPI(cfg, system, user, onChunk, onDone) {
+  fetch((cfg.endpoint || 'http://localhost:11434') + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: cfg.model || 'llama3',
+      stream: true,
+      messages: [{ role:'system', content:system }, { role:'user', content:user }]
+    })
+  }).then(function(r) {
+    if (!r.ok) { r.text().then(function(t){ onDone(new Error('LLM API ' + r.status + ': ' + t)); }); return; }
+    var reader = r.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump() {
+      reader.read().then(function(res) {
+        if (res.done) { onDone(null); return; }
+        buf += decoder.decode(res.value, {stream:true});
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+          if (!line.startsWith('data:')) return;
+          var data = line.slice(5).trim();
+          if (data === '[DONE]') return;
+          try {
+            var obj = JSON.parse(data);
+            var delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+            if (delta && delta.content) onChunk(delta.content);
+          } catch(e) {}
+        });
+        pump();
+      }).catch(function(e){ onDone(e); });
+    }
+    pump();
+  }).catch(function(e){ onDone(e); });
+}
+
+// ===== 完成資料プロンプト生成 =====
+function buildKanrouPrompt(d, docType) {
+  var today = new Date().toLocaleDateString('ja-JP', {year:'numeric',month:'long',day:'numeric'});
+  var cust  = d['Customers'] || '';
+  var temple= d['Temples']   || '';
+  var cat   = d['category']  || '';
+  var cont  = d['ConstructionContents'] || '';
+  var start = d['ConstructionStartDate'] || '';
+  var end   = d['ConstructionCompletionDate'] || '';
+  var amt   = d['InvoiceAmount'] ? Number(d['InvoiceAmount']).toLocaleString() + '円' : '';
+  var place = d['place'] || '';
+  var haka  = d['HakaName'] || '';
+  var memo  = d['DetailedMemo'] || '';
+  var creator = [d['Creator']||'', d['Creator2']||''].filter(Boolean).join('・');
+  var atena = d['atena'] || cust;
+
+  var sys = 'あなたは石材業を営む会社の事務担当者です。丁寧かつ簡潔な日本語のビジネス文書を作成してください。';
+
+  if (docType === '工事完了報告書') {
+    return {
+      system: sys,
+      user: '以下の工事情報をもとに「工事完了報告書」を作成してください。\n\n' +
+        '■工事概要\n' +
+        '顧客名: ' + cust + '\n' +
+        '寺院名: ' + temple + '\n' +
+        '工事種別: ' + cat + '\n' +
+        '工事内容: ' + cont + '\n' +
+        '工事場所: ' + place + '\n' +
+        '墓石名: ' + haka + '\n' +
+        '工事開始日: ' + start + '\n' +
+        '工事完了日: ' + end + '\n' +
+        '請求金額: ' + amt + '\n\n' +
+        '書類には「工事完了報告書」という表題、工事概要、作業結果、完了確認、日付を含めてください。社内保管用の正式な報告書として作成してください。'
+    };
+  } else if (docType === '施工仕様書') {
+    return {
+      system: sys,
+      user: '以下の情報をもとに「施工仕様書」を作成してください。\n\n' +
+        '■工事情報\n' +
+        '工事種別: ' + cat + '\n' +
+        '工事内容: ' + cont + '\n' +
+        '墓石名: ' + haka + '\n' +
+        '寺院名: ' + temple + '\n' +
+        '詳細メモ: ' + memo + '\n' +
+        '担当者: ' + creator + '\n\n' +
+        '書類には「施工仕様書」という表題、使用材料・工法・施工手順・品質基準・注意事項を含めてください。施工担当者が参照する技術文書として作成してください。'
+    };
+  } else {
+    return {
+      system: sys,
+      user: '以下の情報をもとに顧客への「工事完成通知文」を作成してください。\n\n' +
+        '■工事情報\n' +
+        '宛名: ' + atena + ' 様\n' +
+        '顧客名: ' + cust + '\n' +
+        '寺院名: ' + temple + '\n' +
+        '工事内容: ' + cont + '\n' +
+        '工事完了日: ' + end + '\n\n' +
+        '書類には日付（' + today + '）、宛名、工事完成のご報告、感謝の言葉、今後のご連絡先案内を含めてください。顧客に郵送または手渡しする礼状として、丁寧な言葉遣いで作成してください。'
+    };
+  }
+}
+
+// ===== 完成資料モーダル =====
+var _kanrouItem = null;
+var _kanrouDocType = '工事完了報告書';
+var _kanrouStreaming = false;
+
+function openKanrouModal(d) {
+  _kanrouItem = d;
+  _kanrouDocType = '工事完了報告書';
+  var modal = document.getElementById('kanrou-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  _kanrouSetTab('工事完了報告書');
+  generateKanrouDoc();
+}
+function closeKanrouModal() {
+  var modal = document.getElementById('kanrou-modal');
+  if (modal) modal.style.display = 'none';
+  _kanrouStreaming = false;
+}
+function _kanrouSetTab(docType) {
+  _kanrouDocType = docType;
+  ['工事完了報告書','施工仕様書','完成通知文'].forEach(function(t) {
+    var btn = document.getElementById('kanrou-tab-' + t);
+    if (btn) {
+      btn.style.background = t === docType ? '#4a2a7a' : '#e8e0f0';
+      btn.style.color      = t === docType ? '#fff'    : '#4a2a7a';
+    }
+  });
+}
+function generateKanrouDoc() {
+  if (_kanrouStreaming) return;
+  if (!_kanrouItem) return;
+  var cfg = getAICfg();
+  if (!cfg.apiKey && cfg.provider === 'claude') {
+    document.getElementById('kanrou-text').value = '⚠️ Claude APIキーが設定されていません。\n設定画面でAPIキーを登録してください。';
+    return;
+  }
+  var docLabel = _kanrouDocType === '完成通知文' ? '完成通知文' : _kanrouDocType;
+  var prompt = buildKanrouPrompt(_kanrouItem, docLabel === '完成通知文' ? '完成通知文' : _kanrouDocType);
+  var ta = document.getElementById('kanrou-text');
+  var regenBtn = document.getElementById('kanrou-regen-btn');
+  var allBtn   = document.getElementById('kanrou-all-btn');
+  ta.value = '生成中...';
+  _kanrouStreaming = true;
+  if (regenBtn) regenBtn.disabled = true;
+  if (allBtn)   allBtn.disabled   = true;
+  var first = true;
+  callAI(prompt.system, prompt.user,
+    function(chunk) {
+      if (first) { ta.value = ''; first = false; }
+      ta.value += chunk;
+      ta.scrollTop = ta.scrollHeight;
+    },
+    function(err) {
+      _kanrouStreaming = false;
+      if (regenBtn) regenBtn.disabled = false;
+      if (allBtn)   allBtn.disabled   = false;
+      if (err) ta.value = '❌ エラー: ' + err.message;
+    }
+  );
+}
+function generateAllKanrouDocs() {
+  var types = ['工事完了報告書','施工仕様書','完成通知文'];
+  var idx = 0;
+  var ta = document.getElementById('kanrou-text');
+  var regenBtn = document.getElementById('kanrou-regen-btn');
+  var allBtn   = document.getElementById('kanrou-all-btn');
+  function next() {
+    if (idx >= types.length) {
+      _kanrouStreaming = false;
+      if (regenBtn) regenBtn.disabled = false;
+      if (allBtn)   allBtn.disabled   = false;
+      return;
+    }
+    var t = types[idx++];
+    _kanrouSetTab(t);
+    _kanrouDocType = t;
+    if (!_kanrouItem) return;
+    var docLabel = t === '完成通知文' ? '完成通知文' : t;
+    var prompt = buildKanrouPrompt(_kanrouItem, docLabel);
+    ta.value = t + ' 生成中...';
+    _kanrouStreaming = true;
+    if (regenBtn) regenBtn.disabled = true;
+    if (allBtn)   allBtn.disabled   = true;
+    var first = true;
+    callAI(prompt.system, prompt.user,
+      function(chunk) {
+        if (first) { ta.value = ''; first = false; }
+        ta.value += chunk;
+        ta.scrollTop = ta.scrollHeight;
+      },
+      function(err) {
+        if (err) { ta.value = '❌ エラー: ' + err.message; _kanrouStreaming = false; return; }
+        setTimeout(next, 500);
+      }
+    );
+  }
+  next();
+}
+function saveDocToSP() {
+  var text = document.getElementById('kanrou-text').value;
+  if (!text || !_kanrouItem) return;
+  var folderPass = _kanrouItem['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass が未設定です'); return; }
+  var docLabel = _kanrouDocType === '完成通知文' ? '顧客への完成通知文' : _kanrouDocType;
+  var filePath = folderPass + '/完成資料/' + docLabel + '.txt';
+  var enc = filePath.split('/').map(encodeURIComponent).join('/');
+  showSaveToast(null, '保存中...');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'text/plain;charset=utf-8' },
+      body: new Blob([text], { type:'text/plain;charset=utf-8' })
+    });
+  }).then(function(r) {
+    showSaveToast(r.ok, r.ok ? '☁️ ' + docLabel + ' を保存しました' : '保存失敗 (' + r.status + ')');
+  }).catch(function(e) {
+    showSaveToast(false, '保存エラー: ' + e.message);
+  });
+}
+function printKanrouDoc() {
+  var text = document.getElementById('kanrou-text').value;
+  if (!text) return;
+  var win = window.open('','_blank','width=820,height=1080');
+  win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:serif;padding:40px;white-space:pre-wrap;line-height:1.8;font-size:14px}@media print{body{padding:20mm}}</style></head><body>' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</body></html>');
+  win.document.close();
+  win.focus();
+  setTimeout(function(){ win.print(); }, 400);
+}
+
 function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
 
 function _fcFileSelect(id, files, val) {
@@ -1881,6 +2183,13 @@ function openSettingsPage() {
   initTantoFilter();
   loadEnvSenderToSettings();
   renderFolderCfgSettings();
+  // AI設定を画面に反映
+  var aiCfg = getAICfg();
+  var el;
+  el = document.getElementById('ai-provider'); if(el){ el.value = aiCfg.provider || 'claude'; _aiToggleEndpoint(); }
+  el = document.getElementById('ai-apikey');   if(el) el.value = aiCfg.apiKey   || '';
+  el = document.getElementById('ai-model');    if(el) el.value = aiCfg.model    || 'claude-sonnet-4-6';
+  el = document.getElementById('ai-endpoint'); if(el) el.value = aiCfg.endpoint || 'http://localhost:11434';
   document.getElementById('settings-screen').classList.remove('hidden');
   var verEl = document.getElementById('settings-ver');
   if (verEl) verEl.textContent = APP_VERSION || '';
@@ -5229,7 +5538,8 @@ function showKoujiTab(i, d) {
     var cusRegBtnKouji = !editMode && d['Cus_ID'] ? '<button onclick="openCustRegModal(currentItem,\'kouji\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>' : '';
     var uketsukeBtnKouji = '<button onclick="openUketsuke(currentItem,\'kouji\')" style="padding:8px 14px;background:#185fa5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🖨️ 受付票</button>' +
       '<button onclick="openEnvelopeHtmlNok(currentItem)" style="padding:8px 14px;background:#5a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">✉️ 封筒</button>' +
-      '<button onclick="registerOutlookContact(currentItem,\'kouji\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>';
+      '<button onclick="registerOutlookContact(currentItem,\'kouji\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>' +
+      '<button onclick="openKanrouModal(currentItem)" style="padding:8px 14px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📄 完成資料</button>';
     var koujiSituation = d['situation'] || '';
     b.innerHTML = editBtnHtml +
       '<div style="padding:4px 0 0">' +
@@ -10161,6 +10471,35 @@ function openImageViewer(imgs, startIdx) {
       </div>
     </div>
 
+    <!-- AI設定 -->
+    <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:10px">🤖 AI設定（完成資料生成）</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#555;min-width:80px">プロバイダー</label>
+          <select id="ai-provider" onchange="_aiToggleEndpoint()" style="font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+            <option value="claude">Claude API</option>
+            <option value="openai">ローカルLLM（OpenAI互換）</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#555;min-width:80px">APIキー</label>
+          <input id="ai-apikey" type="password" placeholder="sk-ant-..." style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#555;min-width:80px">モデル</label>
+          <input id="ai-model" placeholder="claude-sonnet-4-6" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+        </div>
+        <div id="ai-endpoint-row" style="display:none;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#555;min-width:80px">エンドポイント</label>
+          <input id="ai-endpoint" placeholder="http://localhost:11434" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+        </div>
+        <div>
+          <button id="ai-save-btn" onclick="saveAICfg()" style="padding:8px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
+        </div>
+      </div>
+    </div>
+
     <!-- デバッグ：フィールド一覧取得 -->
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">
       <div style="font-size:13px;font-weight:700;color:#c00;margin-bottom:8px">🔧 デバッグ（開発用）</div>
@@ -10597,5 +10936,43 @@ function openImageViewer(imgs, startIdx) {
   </div>
 </div>
 </div>
+
+<!-- ===== 完成資料モーダル ===== -->
+<div id="kanrou-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:900;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;width:min(760px,96vw);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.25)">
+    <!-- ヘッダー -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #eee;flex-shrink:0">
+      <span style="font-size:14px;font-weight:700;color:#1a2535">📄 完成資料 AI作成</span>
+      <button onclick="closeKanrouModal()" style="background:none;border:none;font-size:18px;cursor:pointer;color:#888;line-height:1">×</button>
+    </div>
+    <!-- タブ -->
+    <div style="display:flex;gap:6px;padding:10px 16px 0;flex-shrink:0">
+      <button id="kanrou-tab-工事完了報告書" onclick="_kanrouSetTab('工事完了報告書');generateKanrouDoc()"
+        style="padding:7px 12px;border:1.5px solid #4a2a7a;border-radius:8px 8px 0 0;cursor:pointer;font-size:12px;font-family:inherit;background:#4a2a7a;color:#fff">工事完了報告書</button>
+      <button id="kanrou-tab-施工仕様書" onclick="_kanrouSetTab('施工仕様書');generateKanrouDoc()"
+        style="padding:7px 12px;border:1.5px solid #4a2a7a;border-radius:8px 8px 0 0;cursor:pointer;font-size:12px;font-family:inherit;background:#e8e0f0;color:#4a2a7a">施工仕様書</button>
+      <button id="kanrou-tab-完成通知文" onclick="_kanrouSetTab('完成通知文');generateKanrouDoc()"
+        style="padding:7px 12px;border:1.5px solid #4a2a7a;border-radius:8px 8px 0 0;cursor:pointer;font-size:12px;font-family:inherit;background:#e8e0f0;color:#4a2a7a">完成通知文</button>
+    </div>
+    <!-- テキストエリア -->
+    <div style="flex:1;padding:0 16px;overflow:hidden;display:flex;flex-direction:column;min-height:0">
+      <textarea id="kanrou-text" style="flex:1;width:100%;box-sizing:border-box;border:1.5px solid #4a2a7a;border-top:none;border-radius:0 0 8px 8px;padding:12px;font-size:13px;font-family:inherit;line-height:1.7;resize:none;outline:none" placeholder="AIが書類を生成します..."></textarea>
+    </div>
+    <!-- フッターボタン -->
+    <div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid #eee;flex-shrink:0;flex-wrap:wrap">
+      <button id="kanrou-regen-btn" onclick="generateKanrouDoc()"
+        style="padding:8px 14px;background:#6a3a9a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">🔄 再生成</button>
+      <button id="kanrou-all-btn" onclick="generateAllKanrouDocs()"
+        style="padding:8px 14px;background:#3a6a9a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">⚡ 全書類一括</button>
+      <button onclick="printKanrouDoc()"
+        style="padding:8px 14px;background:#5a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">🖨️ 印刷</button>
+      <button onclick="saveDocToSP()"
+        style="padding:8px 14px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">☁️ 保存</button>
+      <button onclick="closeKanrouModal()"
+        style="padding:8px 14px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit;margin-left:auto">閉じる</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

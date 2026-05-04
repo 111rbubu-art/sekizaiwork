@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>撤去工事見積</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Hiragino Kaku Gothic Pro','Yu Gothic','Meiryo',sans-serif;background:#eef2f6;color:#222;font-size:13px}
@@ -242,6 +243,8 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
   <button class="btn" onclick="newDraft()"><span class="lbl-full">🆕 新規</span><span class="lbl-sp">🆕</span></button>
   <button class="btn pr" onclick="showPreview()"><span class="lbl-full">📄 見積書プレビュー</span><span class="lbl-sp">📄プレビュー</span></button>
   <button class="btn pr" onclick="printDoc()"><span class="lbl-full">🖨 印刷</span><span class="lbl-sp">🖨</span></button>
+  <button class="btn" onclick="downloadPdf()" title="PDFダウンロード"><span class="lbl-full">📑 PDF</span><span class="lbl-sp">📑</span></button>
+  <button class="btn ok" id="btn_sp_save" onclick="savePdfToSP()" style="display:none" title="SharePointに保存"><span class="lbl-full">☁️ SP保存</span><span class="lbl-sp">☁️</span></button>
 </div>
 
 <div class="tabs">
@@ -1229,6 +1232,87 @@ function printDoc(){
   }
 }
 
+/* ============ PDF出力・SharePoint保存 ============ */
+let FROM_KOUJI = null; // 工事関連画面から起動された場合のデータ
+
+function pdfFilename(){
+  const cust = $('b_cust').value || 'noname';
+  const kind = $('doc_kind').value;
+  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  return `${kind}_${cust}_${today}.pdf`;
+}
+
+function pdfOptions(filename){
+  return {
+    margin: 0,
+    filename: filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor:'#ffffff' },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+  };
+}
+
+async function ensurePreview(){
+  if(!$('est_wrap').classList.contains('show')){
+    switchTab('preview');
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+
+async function downloadPdf(){
+  if(typeof html2pdf === 'undefined'){
+    alert('PDFライブラリが読み込まれていません');
+    return;
+  }
+  await ensurePreview();
+  const filename = pdfFilename();
+  html2pdf().set(pdfOptions(filename)).from($('est_body')).save();
+}
+
+async function savePdfToSP(){
+  if(typeof html2pdf === 'undefined'){
+    alert('PDFライブラリが読み込まれていません'); return;
+  }
+  if(!FROM_KOUJI || !FROM_KOUJI.folderPass){
+    alert('SharePointの保存先（Folder_Pass）が設定されていません'); return;
+  }
+  if(!window.opener || !window.opener.uploadPdfToFolderPassFromTekkyo){
+    alert('親ウィンドウ（工事関連画面）が閉じられたため保存できません'); return;
+  }
+  await ensurePreview();
+  const filename = pdfFilename();
+  const btn = $('btn_sp_save');
+  const origText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="lbl-full">⏳ 保存中…</span><span class="lbl-sp">⏳</span>';
+  try {
+    const blob = await html2pdf().set(pdfOptions(filename)).from($('est_body')).output('blob');
+    await window.opener.uploadPdfToFolderPassFromTekkyo(blob, filename, FROM_KOUJI.folderPass);
+    alert('SharePointに保存しました:\n' + filename);
+  } catch(e){
+    alert('保存エラー: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origText;
+  }
+}
+
+function initFromKouji(){
+  try {
+    const raw = sessionStorage.getItem('tekkyoFromKouji');
+    if(!raw) return;
+    const data = JSON.parse(raw);
+    FROM_KOUJI = data;
+    if(data.cust)  $('b_cust').value  = data.cust;
+    if(data.place) $('b_place').value = data.place;
+    if(data.folderPass){
+      $('btn_sp_save').style.display = '';
+    }
+    sessionStorage.removeItem('tekkyoFromKouji');
+    recalc(); renderEstimate();
+  } catch(e){ console.warn('initFromKouji error', e); }
+}
+
 /* ============ 保存・読込 ============ */
 function saveDraft(){
   const data = {
@@ -1321,6 +1405,9 @@ window.addEventListener('DOMContentLoaded', ()=>{
   } else {
     recalc();
   }
+
+  // 工事関連画面から渡された顧客名・お寺名・Folder_Passを取り込む
+  initFromKouji();
 });
 </script>
 </body>

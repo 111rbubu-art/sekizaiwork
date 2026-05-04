@@ -336,12 +336,12 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
     <h2>■ 石塔 処分・撤去単価テーブル</h2>
     <table class="master" id="seki_tbl">
       <thead><tr>
-        <th>石種・サイズ</th><th>才数</th><th>m3換算</th><th>係数</th><th>人工数</th>
-        <th>撤去単価(円)</th><th>処分単価(円)</th><th>破砕単価(円)</th><th>運搬費(円)</th>
+        <th>石種・サイズ</th><th>才数</th><th>m3換算</th><th>係数</th><th>撤去作業人工</th>
+        <th>処分単価(円)</th><th>破砕単価(円)</th><th>運搬費(円)🔒</th>
       </tr></thead>
       <tbody></tbody>
     </table>
-    <div style="font-size:11px;color:#666;margin-top:6px">※ m3換算 = 才数×0.027（自動）／撤去単価 = 人工数×撤去人件費（自動）／処分単価 = 係数×m3×石種別ダンプ単価（自動）</div>
+    <div style="font-size:11px;color:#666;margin-top:6px">※ m3換算 = 才数×0.027（自動）／処分単価 = 係数×m3×石種別ダンプ単価（自動）<br>※ 撤去単価は基本単価マスタの「現地工事 人件費（円/人・日）」を共通で使用<br>※ 運搬費(🔒)は自動計算：ROUNDUP(m3換算×係数÷ダンプ積載容量)×積載容量×運搬費(円/m3)</div>
   </div>
 
   <div class="panel">
@@ -519,6 +519,7 @@ function renderMasterUI(){
     const tekkyo = r.nin * MASTER.basic['撤去人件費（円/人・日）'] || r.nin * MASTER.basic['現地工事 人件費（円/人・日）'];
     const dumpUnit = r.cat==='kuro' ? gaitDumpUnit('黒御影石') : gaitDumpUnit('白御影石'); // 概算表示
     const shobun = Math.ceil(r.k * (r.sai*0.3*0.3*0.3) * dumpUnit /1000)*1000;
+    const unpanAuto = sekiUnpanCalc(r);
     html += `<tr>
       <td class="lbl">${r.name}</td>
       <td><input type="number" step="any" data-key="sekitou.${i}.sai" value="${r.sai}" oninput="updateMasterField(this)"></td>
@@ -528,7 +529,7 @@ function renderMasterUI(){
       <td style="text-align:right">${tekkyo.toLocaleString()}</td>
       <td style="text-align:right">${shobun.toLocaleString()}</td>
       <td><input type="number" step="any" data-key="sekitou.${i}.hasai" value="${r.hasai}" oninput="updateMasterField(this)"></td>
-      <td><input type="number" step="any" data-key="sekitou.${i}.unpan" value="${r.unpan}" oninput="updateMasterField(this)"></td>
+      <td id="seki_unpan_${i}" style="text-align:right;background:#e8f5ec;color:#1c5f2c;font-weight:600">${unpanAuto.toLocaleString()}</td>
     </tr>`;
   });
   $('seki_tbl').querySelector('tbody').innerHTML = html;
@@ -574,7 +575,91 @@ function updateMasterField(el){
   const path = el.dataset.key.split('.');
   let obj = MASTER;
   for(let i=0;i<path.length-1;i++) obj = obj[path[i]];
-  obj[path[path.length-1]] = parseFloat(el.value)||0;
+  // 文字列フィールド（unpan.N.name）はそのまま、数値はparseFloat
+  const isText = el.type === 'text';
+  obj[path[path.length-1]] = isText ? el.value : (parseFloat(el.value)||0);
+  recalc();
+
+  // 石塔：係数・才数変更時に処分単価/m3換算/運搬費セルを即時更新
+  if(path[0]==='sekitou'){
+    const idx = parseInt(path[1]);
+    const r = MASTER.sekitou[idx];
+    const m3 = (r.sai*0.3*0.3*0.3).toFixed(3);
+    const dumpUnit = r.cat==='kuro' ? gaitDumpUnit('黒御影石') : gaitDumpUnit('白御影石');
+    const shobun = Math.ceil(r.k*(r.sai*0.3*0.3*0.3)*dumpUnit/1000)*1000;
+    const m3Cell = document.getElementById('seki_m3_'+idx);
+    const shobunCell = document.getElementById('seki_shobun_'+idx);
+    const unpanCell = document.getElementById('seki_unpan_'+idx);
+    if(m3Cell) m3Cell.textContent = m3;
+    if(shobunCell) shobunCell.textContent = shobun.toLocaleString();
+    if(unpanCell) unpanCell.textContent = sekiUnpanCalc(r).toLocaleString();
+  }
+
+  // カロート：係数・寸法変更時に処分費セルを即時更新
+  if(path[0]==='caroto'){
+    const idx = parseInt(path[1]);
+    const r = MASTER.caroto[idx];
+    const dumpU = caroDumpUnit(r.cat);
+    const shobun = Math.ceil((r.h/1000)*(r.w/1000)*(r.d/1000)*r.k*dumpU/1000)*1000;
+    const shobunCell = document.getElementById('caro_shobun_'+idx);
+    if(shobunCell) shobunCell.textContent = shobun.toLocaleString();
+  }
+
+  // 運搬費計算：自動算出セルを即時更新
+  if(path[0]==='unpan'){
+    const idx = parseInt(path[1]);
+    const r = MASTER.unpan[idx];
+    const fuelP = MASTER.basic['軽油単価（円/ℓ）']||158;
+    const fuelE = MASTER.basic['トラック燃費（km/ℓ）']||5;
+    const labor = laborDay();
+    const gas = Math.round((r.dist||0) / fuelE * fuelP);
+    const expense = (r.toll||0) + gas + (r.maint||0);
+    const dl = Math.round((r.hours||0) * labor / 8);
+    const total = expense + dl;
+    const setT = (id,v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setT('unp_gas_'+idx, gas.toLocaleString());
+    setT('unp_exp_'+idx, expense.toLocaleString());
+    setT('unp_dl_'+idx, dl.toLocaleString());
+    setT('unp_tot_'+idx, total.toLocaleString());
+  }
+
+  // 基本単価（軽油・燃費・人件費）が変わったら全運搬行を再計算表示
+  if(path[0]==='basic' && (path[1]==='軽油単価（円/ℓ）'||path[1]==='トラック燃費（km/ℓ）'||path[1]==='現地工事 人件費（円/人・日）')){
+    refreshUnpanCells();
+  }
+  // 運搬費(円/m3) または ダンプ積載容量 が変わったら石塔運搬費を一括更新
+  if(path[0]==='basic' && (path[1]==='運搬費（円/m3）'||path[1]==='3tダンプ 積載容量（m3）')){
+    refreshSekiUnpanCells();
+  }
+}
+
+function refreshUnpanCells(){
+  if(!MASTER.unpan) return;
+  const fuelP = MASTER.basic['軽油単価（円/ℓ）']||158;
+  const fuelE = MASTER.basic['トラック燃費（km/ℓ）']||5;
+  const labor = laborDay();
+  MASTER.unpan.forEach((r,i)=>{
+    const gas = Math.round((r.dist||0) / fuelE * fuelP);
+    const expense = (r.toll||0) + gas + (r.maint||0);
+    const dl = Math.round((r.hours||0) * labor / 8);
+    const total = expense + dl;
+    const setT = (id,v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setT('unp_gas_'+i, gas.toLocaleString());
+    setT('unp_exp_'+i, expense.toLocaleString());
+    setT('unp_dl_'+i, dl.toLocaleString());
+    setT('unp_tot_'+i, total.toLocaleString());
+  });
+}
+
+function addUnpanRow(){
+  if(!MASTER.unpan) MASTER.unpan = [];
+  MASTER.unpan.push({name:'', toll:0, dist:0, maint:5000, hours:0});
+  renderMasterUI();
+}
+function delUnpanRow(i){
+  if(!confirm('この行を削除しますか？')) return;
+  MASTER.unpan.splice(i,1);
+  renderMasterUI();
   recalc();
 }
 function saveMaster(){
@@ -614,6 +699,19 @@ function caroDumpUnit(cat){
 function sekiDumpUnit(cat){
   if(cat==='kuro')  return gaitDumpUnit('黒御影石');
   return 2 * caroDumpUnit('mikage'); // B86 = 2*B82
+}
+// 石塔 運搬費自動計算: ROUNDUP(m3換算×k÷ダンプ容量)×ダンプ容量×運搬費(円/m3)
+function sekiUnpanCalc(r){
+  const m3conv = r.sai * 0.3 * 0.3 * 0.3;
+  const cap = dumpCap();
+  const numTrucks = Math.ceil(m3conv * r.k / cap);
+  return numTrucks * cap * (MASTER.basic['運搬費（円/m3）'] || 15000);
+}
+function refreshSekiUnpanCells(){
+  MASTER.sekitou.forEach((r,i)=>{
+    const cell = document.getElementById('seki_unpan_'+i);
+    if(cell) cell.textContent = sekiUnpanCalc(r).toLocaleString();
+  });
 }
 // 石塔マスタ参照
 function sekiLookup(stone, size){
@@ -760,7 +858,7 @@ function recalc(){
         const dumpU = sekiDumpUnit(r.cat);
         L = Math.ceil(r.k * m3conv * dumpU / 1000) * 1000 * (it.qty||0);
         M = r.hasai * (it.qty||0);
-        if(sekiOnly) N = r.unpan * (it.qty||0);
+        if(sekiOnly) N = sekiUnpanCalc(r) * (it.qty||0);
       }
     } else if(it.spec==='納骨室'){
       if(!sekiOnly){

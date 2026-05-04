@@ -582,6 +582,18 @@ body.force-sp #panel-resizer { display: none !important; }
             <div class="menu-card-arrow">›</div>
           </button>
         </div>
+
+        <!-- 撤去工事見積 -->
+        <div class="menu-bottom-grid" style="margin-top:12px;grid-template-columns:1fr">
+          <button class="menu-card" id="menu-tekkyo" onclick="window.open('tekkyo.html','_blank')">
+            <div class="menu-card-icon">🪨</div>
+            <div class="menu-card-body">
+              <div class="menu-card-title">撤去工事見積</div>
+              <div class="menu-card-sub">現場調査・測量結果から撤去工事の見積作成</div>
+            </div>
+            <div class="menu-card-arrow">›</div>
+          </button>
+        </div>
       </div>
       <!-- お寺選択サブメニュー -->
       <div id="menu-temple" class="hidden" style="flex:1;padding:16px 14px;overflow-y:auto">
@@ -2259,6 +2271,17 @@ function loadEnvSenderToSettings() {
   if (ei) ei.value = s.info || '';
 }
 
+function openEnvelopeHtmlNok(d) {
+  var data = {
+    zip:   G(d,'郵便番号') || d['Zipcode'] || '',
+    addr1: G(d,'住所1') || d['_x4f4f__x6240_1'] || '',
+    addr2: G(d,'住所2') || d['_x4f4f__x6240_2'] || '',
+    name:  G(d,'宛名') || d['addressee'] || G(d,'顧客名') || ''
+  };
+  sessionStorage.setItem('envelopeData', JSON.stringify(data));
+  window.open('envelope.html', 'envelope_print', 'width=960,height=900,scrollbars=yes');
+}
+
 function openEnvelopePrint(d) {
   var zip   = G(d,'郵便番号') || d['Zipcode'] || d['_x90f5__x4fbf__x756a__x53f7_'] || '';
   var name  = G(d,'宛名') || d['atena'] || d['addressee'] || '';
@@ -2715,18 +2738,27 @@ function submitNewKouji() {
   .then(function(data) {
     var newItemId = data && data.id;
     var siteId2 = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-    var afterCopy = function() {
+    var afterAll = function(folderMsg) {
       closeNewKoujiModal();
-      showSaveToast(true, '「' + name + '」を工事関連に登録しました');
+      showSaveToast(true, '「' + name + '」を工事関連に登録しました' + (folderMsg ? '（' + folderMsg + '）' : ''));
       _newItemCusSpId = null;
       allItems = []; loadKoujiList();
     };
-    if (_newItemCusSpId && newItemId) {
-      submitBtn.textContent = '添付コピー中...';
-      copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, afterCopy);
-    } else {
-      afterCopy();
-    }
+    var doAttachCopy = function(folderMsg) {
+      if (_newItemCusSpId && newItemId) {
+        submitBtn.textContent = '添付コピー中...';
+        copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, function() { afterAll(folderMsg); });
+      } else {
+        afterAll(folderMsg);
+      }
+    };
+    // フォルダー自動作成
+    submitBtn.textContent = 'フォルダー作成中...';
+    getToken().then(function(resp) {
+      autoCreateKoujiFolder(resp.accessToken, temple, recday, name, cusno, category, newItemId, function(err, folderName) {
+        doAttachCopy(err ? 'フォルダー作成失敗' : 'フォルダー作成済');
+      });
+    }).catch(function() { doAttachCopy(null); });
   })
   .catch(function(e) {
     submitBtn.disabled = false;
@@ -4033,8 +4065,19 @@ function showKoujiTab(i, d) {
 
   } else if (i === 4) {
     // フォルダータブ（工事関連）
-    b.innerHTML = '<div class="sec"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
-      '<div id="folder-explorer" style="padding:8px 0"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div></div>';
+    var stdSec =
+      '<div class="sec" style="margin-top:8px">' +
+        '<span class="sec-hdr" style="background:#4a6a3a;color:#fff">📋 工事用標準帳票類</span>' +
+        '<div style="padding:8px 4px 6px">' +
+          '<button id="std-copy-btn" onclick="copyStdForms()" style="width:100%;padding:9px 12px;background:#2a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📋 00工事資料共通 → このフォルダーにコピー</button>' +
+        '</div>' +
+        '<span class="sec-hdr" style="background:#5a7a4a;color:#fff;cursor:pointer;user-select:none;font-size:11px" onclick="toggleStdForms(this)">📂 ファイル一覧 ▼</span>' +
+        '<div id="std-forms-explorer" style="display:none;padding:4px 0"></div>' +
+      '</div>';
+    b.innerHTML =
+      '<div class="sec"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
+      '<div id="folder-explorer" style="padding:8px 0"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div></div>' +
+      stdSec;
     var folderPassKouji = d['Folder_Pass'] || null;
     if (folderPassKouji) {
       var folderLinkKouji = d['Folder_URL'] || null;
@@ -4253,6 +4296,17 @@ function cancelKoujiEdit(tabIdx) {
 // ============================================================
 
 var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
+// 工事用標準帳票類のOneDriveパス（フォルダータブ・手動コピー用）
+var STANDARD_FORMS_PATH = '/工事用標準帳票類/00工事資料共通';
+// 工事フォルダー自動作成用設定
+var TEMPLATE_PARENT_PATH = '/工事用標準帳票類';
+var COMMON_TEMPLATE_FOLDER = '00工事資料共通';
+var KOUJI_FOLDER_BASE = '/工事受付';
+var CATEGORY_TEMPLATE_MAP = {
+  '墓新規':'墓石_新規', '修繕':'墓石_修繕', '撤去':'墓石_撤去',
+  '花立交換':'墓石_花立修理', '彫刻変更':null, 'クリーニング':'墓石_クリーニング',
+  '移設':'墓石_移設', '小工事':'小工事', '他工事':'他工事'
+};
 
 // フォルダー履歴スタック（↑で戻るため）
 var _folderHistory = [];
@@ -4443,6 +4497,182 @@ function previewFolderImage(filePath) {
   }).catch(function() {
     var imgEl = document.getElementById('folder-preview-img');
     if (imgEl && imgEl.nextElementSibling) imgEl.nextElementSibling.textContent = '画像の読み込みに失敗しました';
+  });
+}
+
+// ===== 工事用標準帳票類 =====
+
+function copyStdForms() {
+  var fp = currentItem && (currentItem['Folder_Pass'] || null);
+  if (!fp) { showSaveToast(false, '工事フォルダーパスが未登録です'); return; }
+  if (!STANDARD_FORMS_PATH) { showSaveToast(false, 'STANDARD_FORMS_PATHが未設定です'); return; }
+  var btn = document.getElementById('std-copy-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ コピー中...'; }
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    return _odGetItem(token, fp)
+      .then(function(destData) {
+        return _odCopyFolderContents(token, STANDARD_FORMS_PATH, destData.id);
+      });
+  }).then(function() {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
+    showSaveToast(true, 'コピー完了（反映まで数秒）');
+    var fp2 = currentItem && currentItem['Folder_Pass'];
+    if (fp2) setTimeout(function() { loadFolderExplorer(fp2, currentItem['Folder_URL'], true); }, 3000);
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 00工事資料共通 → このフォルダーにコピー'; }
+    showSaveToast(false, e.message);
+  });
+}
+
+// ----- OneDrive フォルダー操作ヘルパー -----
+
+// パスでアイテム情報を取得
+function _odGetItem(token, path) {
+  var enc = path.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc,
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('フォルダーが見つかりません: ' + path + ' (HTTP ' + r.status + ')');
+      return r.json();
+    });
+}
+
+// フォルダーを作成（既存の場合はその情報を返す）
+function _odEnsureFolder(token, parentPath, name) {
+  var enc = parentPath.split('/').map(encodeURIComponent).join('/');
+  var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children';
+  return fetch(url, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+  }).then(function(r) {
+    if (r.status === 409) return _odGetItem(token, parentPath + '/' + name);
+    if (!r.ok) return r.json().then(function(e) { throw new Error(e.error && e.error.message || r.status); });
+    return r.json();
+  });
+}
+
+// srcPath 内のファイル・フォルダーを destId へコピー（再帰不要：OneDriveがフォルダーごとコピー）
+function _odCopyFolderContents(token, srcPath, destId) {
+  var enc = srcPath.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=id,name,file,folder',
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('テンプレート読込失敗: ' + srcPath + ' (HTTP ' + r.status + ')');
+      return r.json();
+    })
+    .then(function(data) {
+      var items = data.value || [];
+      if (items.length === 0) return;
+      return Promise.all(items.map(function(item) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + item.id + '/copy', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destId } })
+        });
+      }));
+    });
+}
+
+// 工事フォルダー自動作成 + テンプレートコピー + Folder_Pass保存
+function autoCreateKoujiFolder(token, temple, recday, name, cusno, category, newItemId, onDone) {
+  var datePart = (recday || '').replace(/[\/-]/g, '').substring(0, 8);
+  var folderName = (datePart ? datePart + '_' : '') + name + '＜' + temple + (cusno || '') + '＞' + category;
+  var parentPath = KOUJI_FOLDER_BASE + '/' + temple;
+
+  // 1. お寺フォルダー作成（既存OK）
+  _odEnsureFolder(token, KOUJI_FOLDER_BASE, temple)
+    .catch(function() {})
+    // 2. 案件フォルダー作成
+    .then(function() { return _odEnsureFolder(token, parentPath, folderName); })
+    .then(function(folderData) {
+      var folderId  = folderData.id;
+      var folderUrl = folderData.webUrl || '';
+      var fullPath  = parentPath + '/' + folderName;
+
+      // 3. 00工事資料共通 コピー
+      var copyPromise = _odCopyFolderContents(token, TEMPLATE_PARENT_PATH + '/' + COMMON_TEMPLATE_FOLDER, folderId)
+        .catch(function(e) { console.warn('共通テンプレートコピー失敗:', e.message); });
+
+      // 4. 分類別テンプレート コピー
+      var catFolder = CATEGORY_TEMPLATE_MAP[category];
+      if (catFolder) {
+        copyPromise = copyPromise.then(function() {
+          return _odCopyFolderContents(token, TEMPLATE_PARENT_PATH + '/' + catFolder, folderId)
+            .catch(function(e) { console.warn('分類テンプレートコピー失敗:', e.message); });
+        });
+      }
+
+      // 5. SP item に Folder_Pass / Folder_URL を保存
+      copyPromise.then(function() {
+        var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+        var patchUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId +
+          '/lists/' + KOUJI_LIST_ID + '/items/' + newItemId + '/fields';
+        fetch(patchUrl, {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Folder_Pass: fullPath, Folder_URL: folderUrl })
+        }).catch(function(e) { console.warn('Folder_Pass保存失敗:', e.message); })
+          .then(function() { onDone(null, folderName); });
+      });
+    })
+    .catch(function(e) {
+      console.warn('フォルダー作成失敗:', e.message);
+      onDone(e.message, null);
+    });
+}
+
+function toggleStdForms(hdr) {
+  var el = document.getElementById('std-forms-explorer');
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    if (hdr) hdr.textContent = '📋 工事用標準帳票類 ▲';
+    if (!el.dataset.loaded) {
+      el.dataset.loaded = '1';
+      loadStdForms();
+    }
+  } else {
+    el.style.display = 'none';
+    if (hdr) hdr.textContent = '📋 工事用標準帳票類 ▼';
+  }
+}
+
+function loadStdForms() {
+  var el = document.getElementById('std-forms-explorer');
+  if (!el || !STANDARD_FORMS_PATH) return;
+  el.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:10px">読み込み中...</div>';
+  getToken().then(function(resp) {
+    var encoded = STANDARD_FORMS_PATH.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID +
+      '/root:' + encoded + ':/children?$select=name,file,folder,size,webUrl,@microsoft.graph.downloadUrl&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+      .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(data) {
+        var items = data.value || [];
+        var el2 = document.getElementById('std-forms-explorer');
+        if (!el2) return;
+        if (items.length === 0) {
+          el2.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:10px">ファイルがありません</div>';
+          return;
+        }
+        var html = '';
+        items.forEach(function(f) {
+          if (f.folder) return;
+          var ext = (f.name.split('.').pop() || '').toLowerCase();
+          var icon = ext === 'pdf' ? '📑' : /^(xlsx|xls)$/.test(ext) ? '📊' : /^(docx|doc)$/.test(ext) ? '📝' : '📄';
+          var href = f.webUrl || f['@microsoft.graph.downloadUrl'] || '#';
+          html += '<a href="' + href + '" target="_blank" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0f0f0;text-decoration:none;color:#1a1a1a">' +
+            '<span style="font-size:16px">' + icon + '</span>' +
+            '<div style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</div>' +
+            '<span style="font-size:11px;color:#1565c0;flex-shrink:0">開く</span></a>';
+        });
+        el2.innerHTML = html || '<div style="text-align:center;color:#888;font-size:12px;padding:10px">ファイルがありません</div>';
+      });
+  }).catch(function(e) {
+    var el2 = document.getElementById('std-forms-explorer');
+    if (el2) el2.innerHTML = '<div style="color:#c00;font-size:12px;padding:8px">読込エラー: ' + e.message + '</div>';
   });
 }
 
@@ -6188,6 +6418,35 @@ function saveEditsToSP(d, edits, listName, callback) {
   });
 }
 
+// 納骨リスト フォルダータブ パス保存
+function saveNokFolderPass() {
+  var fpEl = document.getElementById('nok-folder-pass');
+  var upEl = document.getElementById('nok-uketsuke-pass');
+  var btn  = document.getElementById('nok-pass-save-btn');
+  if (!fpEl || !currentItem) return;
+  var newFp = (fpEl.value || '').trim();
+  var newUp = upEl ? (upEl.value || '').trim() : '';
+  var edits = {};
+  if (newFp !== (currentItem['FolderPass'] || '')) edits['FolderPass'] = newFp;
+  if (newUp !== (currentItem['_x53d7__x4ed8__x8868__x30d1__x30'] || '')) edits['_x53d7__x4ed8__x8868__x30d1__x30'] = newUp;
+  if (Object.keys(edits).length === 0) { showSaveToast(true, '変更なし'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  saveEditsToSP(currentItem, edits, '納骨・戒切', function(ok, msg) {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 保存'; }
+    showSaveToast(ok, msg);
+    if (ok) {
+      Object.keys(edits).forEach(function(k) {
+        currentItem[k] = edits[k];
+        if (Array.isArray(allItems)) {
+          var idx = allItems.findIndex(function(x){ return x['id'] === currentItem['id']; });
+          if (idx >= 0) allItems[idx][k] = edits[k];
+        }
+      });
+      if (newFp) loadFolderExplorer(newFp, null, true);
+    }
+  });
+}
+
 // 保存結果トースト通知
 function showSaveToast(ok, msg) {
   var el = document.getElementById('save-toast');
@@ -6662,6 +6921,7 @@ function showTab(i, d) {
       ? '<button onclick="openCustRegModal(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>'
       : '';
     var uketsukeBtnNok = '<button onclick="openUketsukeNok(currentItem)" style="padding:8px 14px;background:#185fa5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🖨️ 受付票</button>' +
+      '<button onclick="openEnvelopeHtmlNok(currentItem)" style="padding:8px 14px;background:#5a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">✉️ 封筒</button>' +
       '<button onclick="registerOutlookContact(currentItem,\'noukotsu\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 連絡先登録</button>' +
       '<button id="gcal-reg-btn" onclick="registerGcalEvent()" style="padding:8px 14px;background:#0f9d58;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📅 カレンダー登録</button>' +
       '<button id="gcal-del-btn" onclick="deleteGcalEvent()" style="padding:8px 14px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;display:none">📅 カレンダー削除</button>';
@@ -6866,8 +7126,21 @@ function showTab(i, d) {
       '</div></div>';
     bindEditInputs(itemId);
   } else if (i === 6) {
-    // フォルダーエクスプローラー
-    b.innerHTML = '<div class="sec"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
+    // フォルダーエクスプローラー＋パス登録
+    var _nfp  = (d['FolderPass'] || '').replace(/"/g, '&quot;');
+    var _nup  = (d['_x53d7__x4ed8__x8868__x30d1__x30'] || '').replace(/"/g, '&quot;');
+    var _iSt  = 'flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;min-width:0';
+    var _lSt  = 'font-size:11px;color:#555;width:82px;flex-shrink:0';
+    b.innerHTML =
+      '<div class="sec"><span class="sec-hdr" style="background:#3a5a7a;color:#fff">🔗 パス登録</span>' +
+      '<div style="padding:10px 4px 6px">' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><label style="' + _lSt + '">フォルダーパス</label>' +
+      '<input id="nok-folder-pass" type="text" value="' + _nfp + '" placeholder="/sites/stoneworks/..." style="' + _iSt + '"></div>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><label style="' + _lSt + '">受付表パス</label>' +
+      '<input id="nok-uketsuke-pass" type="text" value="' + _nup + '" placeholder="/sites/stoneworks/..." style="' + _iSt + '"></div>' +
+      '<button id="nok-pass-save-btn" onclick="saveNokFolderPass()" style="width:100%;padding:8px;background:#1a5a9a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">💾 保存</button>' +
+      '</div></div>' +
+      '<div class="sec" style="margin-top:8px"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
       '<div id="folder-explorer" style="padding:8px 0"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div></div>';
     var folderPass = d['FolderPass'] || (d['_x8cc7__x6599_'] && d['_x8cc7__x6599_'].Url) || null;
     if (folderPass) {

@@ -151,7 +151,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 
 <div class="topbar">
   <h1>撤去工事 見積システム</h1>
-  <span class="ver">v1.5</span>
+  <span class="ver">v1.6</span>
   <button class="btn" onclick="loadDraft()">📂 読込</button>
   <button class="btn ok" onclick="saveDraft()">💾 保存</button>
   <button class="btn" onclick="newDraft()">🆕 新規</button>
@@ -432,14 +432,13 @@ const DEFAULT_MASTER = {
     '軽油単価（円/ℓ）'                    : 158,
     'トラック燃費（km/ℓ）'                : 5,
     '3tダンプ 積載容量（m3）'             : 1.2,
-    '運搬費（円/m3）'                     : 15000,
     'カニクレーン（円/日）'               : 5000,
-    '燃料代（円/日）'                     : 3000,
+    '燃料代（発電機・円/日）'             : 3000,
     'コンクリート厚（mm）'                : 200,
     '残土処分費（合計）'                  : 13600,
     '黒土購入単価（円/m3）'               : 13000,
     '黒土 膨らみ率'                       : 1.2,
-    '処分費 利益乗数'                     : 2,
+    '処分費 利益乗数（外柵、土、コンクリ）' : 2,
   },
   /* 石塔: [才数, 係数, 人工数, 破砕単価, 運搬費, 石種カテゴリ] */
   /* カテゴリ: 'shiro'(白御影/白河/大谷)系 → B86, 'kuro'(黒御影) → B90 */
@@ -739,7 +738,7 @@ function dumpCap(){return MASTER.basic['3tダンプ 積載容量（m3）']||1.2;
 // 現地工事 人件費（円/人・日）
 function laborDay(){return MASTER.basic['現地工事 人件費（円/人・日）']||25000;}
 // 利益乗数
-function profitMul(){return MASTER.basic['処分費 利益乗数']||2;}
+function profitMul(){return MASTER.basic['処分費 利益乗数（外柵、土、コンクリ）']||2;}
 // 外柵 石種別 処分費単価 (円/m3) = ダンプ1台単価 / ダンプ容量
 function gaitDumpUnit(stone){
   const r = MASTER.gaitetsu[stone];
@@ -759,21 +758,21 @@ function sekiDumpUnit(cat){
   if(cat==='kuro')  return gaitDumpUnit('黒御影石');
   return 2 * caroDumpUnit('mikage'); // B86 = 2*B82
 }
+// 処分会社別テーブル1行目の合計運搬費（円/台）
+function unpanPerTrip(){
+  if(!MASTER.unpan || MASTER.unpan.length === 0) return 0;
+  const u = MASTER.unpan[0];
+  const fuelP = MASTER.basic['軽油単価（円/ℓ）']||158;
+  const fuelE = MASTER.basic['トラック燃費（km/ℓ）']||5;
+  const gas = Math.round((u.dist||0) / fuelE * fuelP);
+  const expense = (u.toll||0) + gas + (u.maint||0);
+  const dl = Math.round((u.hours||0) * laborDay() / 8);
+  return expense + dl;
+}
 // 石塔 運搬費自動計算: ROUNDUP(m3換算÷ダンプ容量×処分会社別テーブル1行目の合計運搬費)
 function sekiUnpanCalc(r){
   const m3conv = r.sai * 0.3 * 0.3 * 0.3;
-  const cap = dumpCap();
-  let perTrip = 0;
-  if(MASTER.unpan && MASTER.unpan.length > 0){
-    const u = MASTER.unpan[0];
-    const fuelP = MASTER.basic['軽油単価（円/ℓ）']||158;
-    const fuelE = MASTER.basic['トラック燃費（km/ℓ）']||5;
-    const gas = Math.round((u.dist||0) / fuelE * fuelP);
-    const expense = (u.toll||0) + gas + (u.maint||0);
-    const dl = Math.round((u.hours||0) * laborDay() / 8);
-    perTrip = expense + dl;
-  }
-  return Math.ceil(m3conv / cap * perTrip);
+  return Math.ceil(m3conv / dumpCap() * unpanPerTrip());
 }
 function refreshSekiUnpanCells(){
   MASTER.sekitou.forEach((r,i)=>{
@@ -951,10 +950,10 @@ function recalc(){
           const labH = laborDay()/8;
           M = g.hasai_h * volK * labH * (it.qty||0);
         }
-        // N: 運搬費 = 単価運搬費(円/m3) × 外柵体積
-        N = (MASTER.basic['運搬費（円/m3）']||15000) * volK;
+        // N: 運搬費 = ROUNDUP(外柵体積÷ダンプ容量×合計運搬費)
+        N = Math.ceil(volK / dumpCap() * unpanPerTrip());
         O = (MASTER.basic['カニクレーン（円/日）']||5000) * (it.juki||0);
-        P = (MASTER.basic['燃料代（円/日）']||3000)    * (it.nen||0);
+        P = (MASTER.basic['燃料代（発電機・円/日）']||3000) * (it.nen||0);
       }
     } else if(it.spec==='基礎コンクリート'){
       if(!sekiOnly){
@@ -966,9 +965,10 @@ function recalc(){
         if(g){
           M = g.hasai_h * volL * (laborDay()/8);
         }
-        N = (MASTER.basic['運搬費（円/m3）']||15000) * volL;
+        // N: 運搬費 = ROUNDUP(コン体積÷ダンプ容量×合計運搬費)
+        N = Math.ceil(volL / dumpCap() * unpanPerTrip());
         O = (MASTER.basic['カニクレーン（円/日）']||5000) * (it.juki||0);
-        P = (MASTER.basic['燃料代（円/日）']||3000)    * (it.nen||0);
+        P = (MASTER.basic['燃料代（発電機・円/日）']||3000) * (it.nen||0);
       }
     } else if(it.spec==='整地'){
       if(!sekiOnly){
@@ -1385,9 +1385,22 @@ window.addEventListener('DOMContentLoaded', ()=>{
   if(saved){
     try { MASTER = Object.assign({}, DEFAULT_MASTER, JSON.parse(saved)); } catch(e){}
   }
-  // 旧バージョンの 撤去人件費（円/人・日）が残っていれば削除
-  if(MASTER.basic && '撤去人件費（円/人・日）' in MASTER.basic){
-    delete MASTER.basic['撤去人件費（円/人・日）'];
+  // 旧キーのマイグレーション
+  if(MASTER.basic){
+    if('撤去人件費（円/人・日）' in MASTER.basic) delete MASTER.basic['撤去人件費（円/人・日）'];
+    if('運搬費（円/m3）' in MASTER.basic) delete MASTER.basic['運搬費（円/m3）'];
+    if('燃料代（円/日）' in MASTER.basic){
+      if(!('燃料代（発電機・円/日）' in MASTER.basic)){
+        MASTER.basic['燃料代（発電機・円/日）'] = MASTER.basic['燃料代（円/日）'];
+      }
+      delete MASTER.basic['燃料代（円/日）'];
+    }
+    if('処分費 利益乗数' in MASTER.basic){
+      if(!('処分費 利益乗数（外柵、土、コンクリ）' in MASTER.basic)){
+        MASTER.basic['処分費 利益乗数（外柵、土、コンクリ）'] = MASTER.basic['処分費 利益乗数'];
+      }
+      delete MASTER.basic['処分費 利益乗数'];
+    }
   }
 
   $('b_estdate').value = todayISO();

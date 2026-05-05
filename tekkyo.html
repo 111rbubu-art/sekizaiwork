@@ -859,6 +859,12 @@ function refreshSekiUnpanCells(){
     if(cell) cell.textContent = sekiUnpanCalc(r).toLocaleString();
   });
 }
+// 体積から参考表のninを引く（計算体積以上の最小エントリ、超過時は最大エントリ）
+function volToNin(refArr, vol){
+  if(!refArr || refArr.length === 0) return 0;
+  const found = refArr.find(r => r.vol >= vol);
+  return found ? found.nin : refArr[refArr.length - 1].nin;
+}
 // 石塔マスタ参照
 function sekiLookup(stone, size){
   const key = `${stone} ${size}`;
@@ -877,13 +883,27 @@ function renderItems(){
   ITEMS.forEach((it, idx)=>{
     const stoneOpts = stoneOptionsForSpec(it.spec);
     const sizeOpts  = sizeOptionsFor(it.spec, it.stone);
+    // 人工セル：石塔・納骨室はマスタ値を読み取り専用表示、外柵・基礎コンは編集可（ID付き）
+    let ninCell;
+    if(it.spec === '石塔'){
+      const r = sekiLookup(it.stone, it.size);
+      ninCell = `<td style="text-align:right;background:#eff6ff;color:#1e40af;font-weight:600">${r ? r.nin : '—'}</td>`;
+    } else if(it.spec === '納骨室'){
+      const r = caroLookup(it.stone, it.size);
+      ninCell = `<td style="text-align:right;background:#eff6ff;color:#1e40af;font-weight:600">${r ? r.nin : '—'}</td>`;
+    } else if(needsLabor(it)){
+      const ninId = (idx === 3 || idx === 4) ? `id="row_nin_${idx}"` : '';
+      ninCell = `<td><input type="number" step="any" ${ninId} data-key="${idx}.nin" value="${it.nin}" oninput="updateItem(this)"></td>`;
+    } else {
+      ninCell = `<td style="color:#aaa;text-align:center">—</td>`;
+    }
     html += `<tr>
       <td class="ctr">${it.no}</td>
       <td style="text-align:center;font-weight:600;color:#1a2535">${it.spec}</td>
       <td><input type="number" data-key="${idx}.qty" value="${it.qty}"  oninput="updateItem(this)" min="0"></td>
       <td>${it.no >= 5 ? '<span style="color:#aaa">—</span>' : stoneOpts ? selectHtml(idx,'stone',it.stone,stoneOpts) : `<input type="text" data-key="${idx}.stone" value="${it.stone}" oninput="updateItem(this)">`}</td>
       <td>${it.no >= 5 ? '<span style="color:#aaa">—</span>' : sizeOpts  ? selectHtml(idx,'size', it.size, sizeOpts) : `<input type="text" data-key="${idx}.size"  value="${it.size}"  oninput="updateItem(this)">`}</td>
-      <td>${needsLabor(it)  ? `<input type="number" step="any" data-key="${idx}.nin"  value="${it.nin}"  oninput="updateItem(this)">` : '—'}</td>
+      ${ninCell}
       <td>${needsHeavy(it)  ? `<input type="number" step="any" data-key="${idx}.juki" value="${it.juki}" oninput="updateItem(this)">` : '—'}</td>
       <td>${needsHeavy(it)  ? `<input type="number" step="any" data-key="${idx}.nen"  value="${it.nen}"  oninput="updateItem(this)">` : '—'}</td>
       <td class="auto" id="row_K_${idx}">¥0</td>
@@ -927,6 +947,10 @@ function updateItem(el){
   const [idx, key] = el.dataset.key.split('.');
   const v = el.tagName==='INPUT' && el.type==='number' ? (parseFloat(el.value)||0) : el.value;
   ITEMS[idx][key] = v;
+  // 外柵(idx=3)・基礎コン(idx=4) の nin を手入力したらフラグを立てる
+  if(key === 'nin' && (parseInt(idx) === 3 || parseInt(idx) === 4)){
+    ITEMS[parseInt(idx)].nin_manual = true;
+  }
   if(key==='stone'){
     renderItems(); // 石種変更時は選択肢が変わるので再描画
   }
@@ -987,6 +1011,18 @@ function recalc(){
   $('r_volM').textContent = `${volM.toFixed(3)} m³`;
   $('r_kbn').textContent  = kbn;
   $('dim_info').innerHTML = `外柵体積 <b>${volK.toFixed(2)} m³</b> ／ 土間コン <b>${volL.toFixed(2)} m³</b> ／ 区分 <b>${kbn}</b>`;
+
+  // 外柵・基礎コン nin を参考表から自動入力（手入力上書き済みの場合はスキップ）
+  if(!ITEMS[3].nin_manual){
+    ITEMS[3].nin = volToNin(MASTER.gaitetsu_ref, volK);
+    const el3 = document.getElementById('row_nin_3');
+    if(el3) el3.value = ITEMS[3].nin;
+  }
+  if(!ITEMS[4].nin_manual){
+    ITEMS[4].nin = volToNin(MASTER.kiso_ref, volL);
+    const el4 = document.getElementById('row_nin_4');
+    if(el4) el4.value = ITEMS[4].nin;
+  }
 
   // 各品目の計算
   let sumK=0, sumL=0, sumM=0, sumN=0, sumO=0, sumP=0, sumQ=0;
@@ -1446,6 +1482,8 @@ function applyData(d){
     }
   }
   if(d.items) ITEMS = d.items;
+  // ドラフト読み込み時は nin_manual フラグをリセットして参考表から再自動入力
+  ITEMS.forEach(it => { it.nin_manual = false; });
   if(d.extras) EXTRAS = d.extras;
   if(d.adj_total!==undefined) $('adj_total').value = d.adj_total;
   renderItems();

@@ -883,17 +883,11 @@ function renderItems(){
   ITEMS.forEach((it, idx)=>{
     const stoneOpts = stoneOptionsForSpec(it.spec);
     const sizeOpts  = sizeOptionsFor(it.spec, it.stone);
-    // 人工セル：石塔・納骨室はマスタ値を読み取り専用表示、外柵・基礎コンは編集可（ID付き）
+    // 人工セル：石塔・納骨室・外柵・基礎コンは編集可（idx≦4にID付与で自動入力対象）
     let ninCell;
-    if(it.spec === '石塔'){
-      const r = sekiLookup(it.stone, it.size);
-      ninCell = `<td style="text-align:right;background:#eff6ff;color:#1e40af;font-weight:600">${r ? r.nin : '—'}</td>`;
-    } else if(it.spec === '納骨室'){
-      const r = caroLookup(it.stone, it.size);
-      ninCell = `<td style="text-align:right;background:#eff6ff;color:#1e40af;font-weight:600">${r ? r.nin : '—'}</td>`;
-    } else if(needsLabor(it)){
-      const ninId = (idx === 3 || idx === 4) ? `id="row_nin_${idx}"` : '';
-      ninCell = `<td><input type="number" step="any" ${ninId} data-key="${idx}.nin" value="${it.nin}" oninput="updateItem(this)"></td>`;
+    if(it.spec === '石塔' || it.spec === '納骨室' || needsLabor(it)){
+      const ninId = idx <= 4 ? `id="row_nin_${idx}"` : '';
+      ninCell = `<td><input type="number" step="any" ${ninId} data-key="${idx}.nin" value="${it.nin||0}" oninput="updateItem(this)"></td>`;
     } else {
       ninCell = `<td style="color:#aaa;text-align:center">—</td>`;
     }
@@ -947,9 +941,13 @@ function updateItem(el){
   const [idx, key] = el.dataset.key.split('.');
   const v = el.tagName==='INPUT' && el.type==='number' ? (parseFloat(el.value)||0) : el.value;
   ITEMS[idx][key] = v;
-  // 外柵(idx=3)・基礎コン(idx=4) の nin を手入力したらフラグを立てる
-  if(key === 'nin' && (parseInt(idx) === 3 || parseInt(idx) === 4)){
+  // 石塔(0,1)・納骨室(2)・外柵(3)・基礎コン(4) の nin を手入力したらフラグを立てる
+  if(key === 'nin' && parseInt(idx) <= 4){
     ITEMS[parseInt(idx)].nin_manual = true;
+  }
+  // 石塔・納骨室で石種/サイズが変わったらマスタ値が変わるため手入力フラグをリセット
+  if((key === 'stone' || key === 'size') && parseInt(idx) <= 2){
+    ITEMS[parseInt(idx)].nin_manual = false;
   }
   if(key==='stone'){
     renderItems(); // 石種変更時は選択肢が変わるので再描画
@@ -1012,7 +1010,25 @@ function recalc(){
   $('r_kbn').textContent  = kbn;
   $('dim_info').innerHTML = `外柵体積 <b>${volK.toFixed(2)} m³</b> ／ 土間コン <b>${volL.toFixed(2)} m³</b> ／ 区分 <b>${kbn}</b>`;
 
-  // 外柵・基礎コン nin を参考表から自動入力（手入力上書き済みの場合はスキップ）
+  // 石塔・納骨室・外柵・基礎コン の nin をマスタ/参考表から自動入力
+  // （手入力上書き済みの場合はスキップ）
+  [0,1].forEach(i => {
+    if(ITEMS[i].nin_manual) return;
+    const r = sekiLookup(ITEMS[i].stone, ITEMS[i].size);
+    if(r){
+      ITEMS[i].nin = r.nin;
+      const el = document.getElementById('row_nin_' + i);
+      if(el) el.value = r.nin;
+    }
+  });
+  if(!ITEMS[2].nin_manual){
+    const r = caroLookup(ITEMS[2].stone, ITEMS[2].size);
+    if(r){
+      ITEMS[2].nin = r.nin;
+      const el = document.getElementById('row_nin_2');
+      if(el) el.value = r.nin;
+    }
+  }
   if(!ITEMS[3].nin_manual){
     ITEMS[3].nin = volToNin(MASTER.gaitetsu_ref, volK);
     const el3 = document.getElementById('row_nin_3');
@@ -1033,8 +1049,8 @@ function recalc(){
     if(it.spec==='石塔'){
       const r = sekiLookup(it.stone, it.size);
       if(r){
-        // F: 撤去 = 人工 × 現地工事人件費
-        K = r.nin * laborDay() * (it.qty||0);
+        // F: 撤去 = 入力欄の人工 × 現地工事人件費 × 個数
+        K = laborDay() * (it.nin||0) * (it.qty||0);
         // G: 処分 = 係数 × m3換算 × ダンプ単価, ROUNDUP千円
         const m3conv = r.sai * 0.3 * 0.3 * 0.3;
         const dumpU = sekiDumpUnit(r.cat);
@@ -1046,7 +1062,7 @@ function recalc(){
       if(!sekiOnly){
         const r = caroLookup(it.stone, it.size);
         if(r){
-          K = r.nin * laborDay() * (it.qty||0);
+          K = laborDay() * (it.nin||0) * (it.qty||0);
           const dumpU = caroDumpUnit(r.cat);
           L = Math.ceil((r.h/1000)*(r.w/1000)*(r.d/1000)*r.k * dumpU / 1000) * 1000 * (it.qty||0);
           M = r.hasai * (it.qty||0);

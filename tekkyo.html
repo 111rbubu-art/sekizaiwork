@@ -24,6 +24,11 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 .btn.pr:hover{background:#2470b3}
 .btn.warn{background:#9a3a3a;border-color:#9a3a3a}
 .btn.ok{background:#2d7a3d;border-color:#2d7a3d}
+.mode-toggle{display:inline-flex;border:1px solid rgba(255,255,255,.3);border-radius:3px;overflow:hidden;margin-right:6px}
+.mode-btn{font-size:11px;padding:4px 10px;background:rgba(255,255,255,.05);color:#fff;cursor:pointer;border:none;border-right:1px solid rgba(255,255,255,.2)}
+.mode-btn:last-child{border-right:none}
+.mode-btn.active{background:#2d7a3d;font-weight:600}
+.mode-btn:disabled{opacity:.4;cursor:not-allowed}
 
 /* タブ */
 .tabs{display:flex;background:#2a3548;border-bottom:1px solid #1a2535;position:sticky;top:42px;z-index:99}
@@ -182,13 +187,16 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 
 <div class="topbar">
   <h1>撤去工事 見積システム</h1>
-  <span class="ver">v2.5</span>
+  <span class="ver">v2.6</span>
+  <span class="mode-toggle" id="mode_toggle" title="保存先：PC=ブラウザ内 / SP=SharePoint">
+    <button class="mode-btn" id="mode_pc_btn" onclick="setMode('pc')">💻 PC</button>
+    <button class="mode-btn active" id="mode_sp_btn" onclick="setMode('sp')">☁️ SP</button>
+  </span>
   <button class="btn" onclick="loadDraft()">📂 読込</button>
   <button class="btn ok" onclick="saveDraft()">💾 保存</button>
   <button class="btn" onclick="newDraft()">🆕 新規</button>
   <button class="btn pr" onclick="printDoc()">🖨 印刷</button>
-  <button class="btn" onclick="downloadPdf()" title="PDFダウンロード">📑 PDF</button>
-  <button class="btn ok" id="btn_sp_save" onclick="savePdfToSP()" style="display:none" title="SharePointに保存">☁️ SP保存</button>
+  <button class="btn" onclick="exportPdf()" title="PDF出力（保存先はモード切替）">📑 PDF出力</button>
 </div>
 
 <div class="tabs">
@@ -1623,18 +1631,11 @@ async function savePdfToSP(){
   await ensurePreview();
   const filename = pdfFilename();
   const blob = await html2pdf().set(pdfOptions(filename)).from($('est_body')).output('blob');
-  const btn = $('btn_sp_save');
-  const origText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '⏳ 保存中…';
   try {
     await window.opener.uploadPdfToFolderPassFromTekkyo(blob, filename, FROM_KOUJI.folderPass);
     alert('SharePointに保存しました:\n' + filename);
   } catch(e){
     alert('保存エラー: ' + (e.message || e));
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = origText;
   }
 }
 
@@ -1646,35 +1647,110 @@ function initFromKouji(){
     FROM_KOUJI = data;
     if(data.cust)  $('b_cust').value  = data.cust;
     if(data.place) $('b_place').value = data.place;
-    if(data.folderPass){
-      $('btn_sp_save').style.display = '';
-    }
     sessionStorage.removeItem('tekkyoFromKouji');
     recalc(); renderEstimate();
   } catch(e){ console.warn('initFromKouji error', e); }
 }
 
-/* ============ 保存・読込 ============ */
-function saveDraft(){
-  const data = {
+function initSaveMode(){
+  // SPが利用可能 → デフォルトSP / 不可 → PCに固定
+  const saved = localStorage.getItem('tekkyo_save_mode');
+  const spOk = isSpAvailable();
+  if(!spOk){
+    setMode('pc');
+    const spBtn = $('mode_sp_btn');
+    if(spBtn){ spBtn.disabled = true; spBtn.title = 'SP保存には工事関連画面から開く必要があります'; }
+    return;
+  }
+  setMode(saved === 'pc' ? 'pc' : 'sp');
+}
+
+/* ============ 保存・読込（PC/SPモード） ============ */
+let SAVE_MODE = 'sp'; // デフォルトSP
+
+function setMode(mode){
+  SAVE_MODE = mode;
+  const pcBtn = $('mode_pc_btn'), spBtn = $('mode_sp_btn');
+  if(pcBtn) pcBtn.classList.toggle('active', mode==='pc');
+  if(spBtn) spBtn.classList.toggle('active', mode==='sp');
+  localStorage.setItem('tekkyo_save_mode', mode);
+}
+
+function isSpAvailable(){
+  if(!FROM_KOUJI || !FROM_KOUJI.folderPass) return false;
+  if(!window.opener) return false;
+  const w = window.opener;
+  return !!(w.uploadJsonToFolderPassFromTekkyo && w.listJsonInFolderPassFromTekkyo &&
+            w.downloadJsonFromFolderPassFromTekkyo && w.uploadPdfToFolderPassFromTekkyo);
+}
+
+function buildDraftData(){
+  return {
     inputs: collectInputs(),
     items: ITEMS,
     extras: EXTRAS,
     adj_total: $('adj_total').value,
   };
-  // 履歴方式（顧客名+見積№）
+}
+
+function draftFilename(data){
+  const cust = (data.inputs.cust||'noname').replace(/[\\/:*?"<>|]/g,'_');
+  const estno = data.inputs.estno||'0';
+  return `tekkyo_${cust}_${estno}.json`;
+}
+
+async function saveDraft(){
+  const data = buildDraftData();
+  if(SAVE_MODE === 'sp'){
+    if(!isSpAvailable()){
+      alert('SP保存には工事関連画面から開く必要があります。\nPCモードに切り替えてください。'); return;
+    }
+    try {
+      const filename = draftFilename(data);
+      const payload = {...data, savedAt:new Date().toISOString()};
+      await window.opener.uploadJsonToFolderPassFromTekkyo(JSON.stringify(payload, null, 2), filename, FROM_KOUJI.folderPass);
+      alert(`SharePointに保存しました:\n${filename}`);
+    } catch(e){
+      alert('SP保存エラー: ' + (e.message || e));
+    }
+    return;
+  }
+  // PCモード（localStorage）
   const key = `${data.inputs.cust||'noname'}_${data.inputs.estno||'0'}`;
   const all = JSON.parse(localStorage.getItem('tekkyo_drafts')||'{}');
   all[key] = {...data, savedAt:new Date().toISOString()};
   localStorage.setItem('tekkyo_drafts', JSON.stringify(all));
   localStorage.setItem('tekkyo_last', JSON.stringify(data));
-  alert(`保存しました：${key}`);
+  alert(`PCに保存しました：${key}`);
 }
-function loadDraft(){
+
+async function loadDraft(){
+  if(SAVE_MODE === 'sp'){
+    if(!isSpAvailable()){
+      alert('SP読込には工事関連画面から開く必要があります。\nPCモードに切り替えてください。'); return;
+    }
+    try {
+      const list = await window.opener.listJsonInFolderPassFromTekkyo(FROM_KOUJI.folderPass);
+      const tekkyoFiles = list.filter(f => /^tekkyo_/i.test(f.name));
+      if(tekkyoFiles.length === 0){
+        alert('SharePointに保存された見積データがありません'); return;
+      }
+      const menu = tekkyoFiles.map((f,i)=>`${i+1}. ${f.name}  (${(f.modified||'').slice(0,16).replace('T',' ')})`).join('\n');
+      const choice = prompt(`読込む見積を選択（番号入力）:\n\n${menu}`);
+      const idx = parseInt(choice)-1;
+      if(!(idx>=0 && idx<tekkyoFiles.length)) return;
+      const text = await window.opener.downloadJsonFromFolderPassFromTekkyo(FROM_KOUJI.folderPass, tekkyoFiles[idx].name);
+      applyData(JSON.parse(text));
+      alert(`読込ました：${tekkyoFiles[idx].name}`);
+    } catch(e){
+      alert('SP読込エラー: ' + (e.message || e));
+    }
+    return;
+  }
+  // PCモード
   const all = JSON.parse(localStorage.getItem('tekkyo_drafts')||'{}');
   const keys = Object.keys(all);
   if(keys.length === 0){
-    // last があれば読込
     const last = localStorage.getItem('tekkyo_last');
     if(last){
       applyData(JSON.parse(last));
@@ -1684,12 +1760,22 @@ function loadDraft(){
     }
     return;
   }
-  const list = keys.map(k=>`${k}  (${all[k].savedAt?.slice(0,16).replace('T',' ')||''})`).join('\n');
   const choice = prompt(`読み込む見積を選択（番号入力）:\n\n${keys.map((k,i)=>`${i+1}. ${k}`).join('\n')}`);
   const idx = parseInt(choice)-1;
   if(idx>=0 && idx<keys.length){
     applyData(all[keys[idx]]);
   }
+}
+
+async function exportPdf(){
+  if(SAVE_MODE === 'sp'){
+    if(!isSpAvailable()){
+      alert('SP保存には工事関連画面から開く必要があります。\nPCモードに切り替えてください。'); return;
+    }
+    await savePdfToSP();
+    return;
+  }
+  await downloadPdf();
 }
 function applyData(d){
   if(d.inputs){
@@ -1775,6 +1861,8 @@ window.addEventListener('DOMContentLoaded', ()=>{
 
   // 工事関連画面から渡された顧客名・お寺名・Folder_Passを取り込む
   initFromKouji();
+  // 保存モード初期化（SP優先、不可ならPC固定）
+  initSaveMode();
 });
 </script>
 </body>

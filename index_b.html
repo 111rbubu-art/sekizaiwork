@@ -5979,6 +5979,43 @@ var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_V
 var _folderHistory = [];
 var _folderRootPass = null;
 var _folderCurrentPath = null;
+var _folderThumbMode = false;
+
+// ===== 画像クリップボードコピー =====
+function copyImgToClipboard(blobUrl, btn) {
+  if (!navigator.clipboard || !window.ClipboardItem) {
+    showSaveToast(false, 'このブラウザはクリップボードコピー非対応');
+    return;
+  }
+  var orig = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '⏳';
+  fetch(blobUrl)
+    .then(function(r){ return r.blob(); })
+    .then(function(blob){
+      if (blob.type === 'image/png') return blob;
+      return new Promise(function(resolve, reject){
+        var img = new Image();
+        img.onload = function(){
+          var c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext('2d').drawImage(img, 0, 0);
+          c.toBlob(function(png){ resolve(png); }, 'image/png');
+        };
+        img.onerror = reject;
+        img.src = blobUrl;
+      });
+    })
+    .then(function(pngBlob){
+      return navigator.clipboard.write([new ClipboardItem({'image/png': pngBlob})]);
+    })
+    .then(function(){
+      if (btn) { btn.textContent = '✅'; setTimeout(function(){ btn.textContent = orig; }, 1800); }
+    })
+    .catch(function(){
+      if (btn) btn.textContent = orig;
+      showSaveToast(false, 'クリップボードコピー失敗（HTTPS/Chrome推奨）');
+    });
+}
 
 function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
   var el = document.getElementById('folder-explorer');
@@ -5997,7 +6034,7 @@ function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
     var url;
     if (folderPass && folderPass.startsWith('/')) {
       var encoded = folderPass.split('/').map(encodeURIComponent).join('/');
-      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,file,folder,size,lastModifiedDateTime,@microsoft.graph.downloadUrl&$orderby=name';
+      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,file,folder,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
     } else {
       el.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:20px">フォルダーパスが不明です</div>';
       return;
@@ -6073,6 +6110,18 @@ function renderFolderContents(items, currentPath, token) {
   mkdirBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:#1a5a9a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
   mkdirBtn.addEventListener('click', function() { createSubFolder(currentPath, token); });
   header.appendChild(mkdirBtn);
+  // サムネ切替ボタン（画像ファイルがある場合のみ）
+  var imgFiles = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name); });
+  if (imgFiles.length > 0) {
+    var thumbBtn = document.createElement('button');
+    thumbBtn.textContent = _folderThumbMode ? '📋 リスト' : '🖼️ サムネ';
+    thumbBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:' + (_folderThumbMode ? '#5a3a7a' : '#5a7a1a') + ';color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
+    thumbBtn.addEventListener('click', function(){
+      _folderThumbMode = !_folderThumbMode;
+      renderFolderContents(items, currentPath, token);
+    });
+    header.appendChild(thumbBtn);
+  }
   el.appendChild(header);
 
   // ===== 2. フォルダー行 =====
@@ -6090,37 +6139,110 @@ function renderFolderContents(items, currentPath, token) {
     el.appendChild(div);
   });
 
-  // ===== 3. ファイル行 =====
-  files.forEach(function(f) {
-    var ext = (f.name.split('.').pop() || '').toLowerCase();
-    var icon = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext) ? '🖼️' :
-               ext === 'pdf' ? '📑' :
-               /^(xlsx|xls)$/.test(ext) ? '📊' :
-               /^(docx|doc)$/.test(ext) ? '📝' :
-               ext === 'svg' ? '🎨' : '📄';
-    var size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : Math.round(f.size/1024)+'KB';
-    var date = (f.lastModifiedDateTime||'').substring(0,10);
-    var isImg = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext);
-    var filePath = currentPath + '/' + f.name;
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer';
-    row.title = 'ダブルクリックで' + (isImg ? 'プレビュー' : '開く');
-    row.innerHTML = '<span style="font-size:18px">' + icon + '</span>' +
-      '<div style="flex:1;min-width:0;overflow:hidden">' +
-        '<div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</div>' +
-        '<div style="font-size:10px;color:#888">' + size + (date ? ' · ' + date : '') + '</div>' +
-      '</div>' +
-      '<span style="flex-shrink:0;font-size:11px;color:#aaa">' + (isImg ? '👁' : '↗') + '</span>';
-    row.addEventListener('mouseenter', function(){ this.style.background='#f0f6ff'; });
-    row.addEventListener('mouseleave', function(){ this.style.background=''; });
-    row.addEventListener('dblclick', function(){
-      if (isImg) previewFolderImage(filePath);
-      else openFolderFile(filePath);
+  // ===== 3. ファイル =====
+  if (_folderThumbMode && imgFiles.length > 0) {
+    // --- サムネグリッドモード ---
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px;padding:6px 0';
+    imgFiles.forEach(function(f) {
+      var filePath = currentPath + '/' + f.name;
+      var thumbUrl = f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium && f.thumbnails[0].medium.url;
+      var cell = document.createElement('div');
+      cell.style.cssText = 'position:relative;display:flex;flex-direction:column;gap:3px';
+      var img = document.createElement('img');
+      img.style.cssText = 'width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;cursor:pointer;border:0.5px solid #e0e0e0;background:#eee';
+      img.title = f.name + '\nダブルクリックでプレビュー';
+      if (thumbUrl) {
+        img.src = thumbUrl;
+      } else {
+        img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+      }
+      img.addEventListener('dblclick', function(){ previewFolderImage(filePath); });
+      var copyBtn = document.createElement('button');
+      copyBtn.textContent = '📋';
+      copyBtn.title = 'クリップボードにコピー';
+      copyBtn.style.cssText = 'position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4';
+      copyBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var btn = this;
+        btn.textContent = '⏳';
+        getToken().then(function(resp){
+          var enc = filePath.split('/').map(encodeURIComponent).join('/');
+          return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+            { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+        }).then(function(r){ return r.blob(); })
+        .then(function(blob){
+          var blobUrl = URL.createObjectURL(blob);
+          copyImgToClipboard(blobUrl, btn);
+        }).catch(function(){ btn.textContent = '📋'; showSaveToast(false, '取得失敗'); });
+      });
+      var lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:9px;color:#555;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      lbl.textContent = f.name;
+      cell.appendChild(img);
+      cell.appendChild(copyBtn);
+      cell.appendChild(lbl);
+      grid.appendChild(cell);
     });
-    el.appendChild(row);
-  });
+    el.appendChild(grid);
+    // 非画像ファイルはリスト表示
+    var nonImgFiles = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name); });
+    nonImgFiles.forEach(function(f) { _renderFolderFileRow(el, f, currentPath); });
+  } else {
+    // --- リストモード（従来） ---
+    files.forEach(function(f) { _renderFolderFileRow(el, f, currentPath); });
+  }
 
   renderFolderDropZone(el, currentPath);
+}
+
+function _renderFolderFileRow(el, f, currentPath) {
+  var ext = (f.name.split('.').pop() || '').toLowerCase();
+  var icon = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext) ? '🖼️' :
+             ext === 'pdf' ? '📑' :
+             /^(xlsx|xls)$/.test(ext) ? '📊' :
+             /^(docx|doc)$/.test(ext) ? '📝' :
+             ext === 'svg' ? '🎨' : '📄';
+  var size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : Math.round(f.size/1024)+'KB';
+  var date = (f.lastModifiedDateTime||'').substring(0,10);
+  var isImg = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext);
+  var filePath = currentPath + '/' + f.name;
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer';
+  row.title = 'ダブルクリックで' + (isImg ? 'プレビュー' : '開く');
+  row.innerHTML = '<span style="font-size:18px">' + icon + '</span>' +
+    '<div style="flex:1;min-width:0;overflow:hidden">' +
+      '<div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</div>' +
+      '<div style="font-size:10px;color:#888">' + size + (date ? ' · ' + date : '') + '</div>' +
+    '</div>' +
+    (isImg ? '<button class="folder-list-copy-btn" style="flex-shrink:0;padding:3px 7px;background:#3a6a9a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">📋</button>' : '') +
+    '<span style="flex-shrink:0;font-size:11px;color:#aaa;margin-left:4px">' + (isImg ? '👁' : '↗') + '</span>';
+  row.addEventListener('mouseenter', function(){ this.style.background='#f0f6ff'; });
+  row.addEventListener('mouseleave', function(){ this.style.background=''; });
+  row.addEventListener('dblclick', function(){
+    if (isImg) previewFolderImage(filePath);
+    else openFolderFile(filePath);
+  });
+  if (isImg) {
+    var copyBtn = row.querySelector('.folder-list-copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var btn = this;
+        btn.textContent = '⏳';
+        getToken().then(function(resp){
+          var enc = filePath.split('/').map(encodeURIComponent).join('/');
+          return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+            { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+        }).then(function(r){ return r.blob(); })
+        .then(function(blob){
+          var blobUrl = URL.createObjectURL(blob);
+          copyImgToClipboard(blobUrl, btn);
+        }).catch(function(){ btn.textContent = '📋'; showSaveToast(false, '取得失敗'); });
+      });
+    }
+  }
+  el.appendChild(row);
 }
 
 function createSubFolder(parentPath, token) {
@@ -7268,6 +7390,8 @@ function loadCustomerAttachments(spItemId) {
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
         'data-fi="' + fi + '" ' +
         'style="background:#e0e0e0">' +
+        '<button class="attach-copy-btn" title="クリップボードにコピー" ' +
+        'style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4">📋</button>' +
         '<button onclick="deleteAttachment(\'顧客リスト\',' + spItemId + ',\'' + fnEsc + '\',function(){loadCustomerAttachments(' + spItemId + ')})" ' +
         'style="position:absolute;top:4px;right:4px;background:rgba(139,0,0,0.8);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>' +
         '<div class="attach-label">' + label + ' ' + f.FileName + '</div>' +
@@ -7301,8 +7425,9 @@ function loadCustomerAttachments(spItemId) {
             var blobUrl = URL.createObjectURL(blob);
             imgEl.src = blobUrl;
             imgEl.style.background = '';
-            // クリックでプレビュー（blobUrl使用）
             imgEl.onclick = function() { openCustImgPreview(blobUrl); };
+            var copyBtn = imgEl.parentElement.querySelector('.attach-copy-btn');
+            if (copyBtn) copyBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
           }
         }).catch(function(){});
       });
@@ -9819,6 +9944,8 @@ function loadKoujiAttachments(itemId) {
         'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
         'data-fi="' + fi + '" style="background:#e0e0e0">' +
+        '<button class="attach-copy-btn" title="クリップボードにコピー" ' +
+        'style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4">📋</button>' +
         '<button onclick="deleteAttachment(\'工事関連\',' + itemId + ',\'' + fnEsc + '\',function(){loadKoujiAttachments(' + itemId + ')})" ' +
         'style="position:absolute;top:4px;right:4px;background:rgba(139,0,0,0.8);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>' +
         '<div class="attach-label">' + f.FileName + '</div>' +
@@ -9852,6 +9979,8 @@ function loadKoujiAttachments(itemId) {
             imgEl.src = blobUrl;
             imgEl.style.background = '';
             imgEl.onclick = function(){ openCustImgPreview(blobUrl); };
+            var copyBtn = imgEl.parentElement.querySelector('.attach-copy-btn');
+            if (copyBtn) copyBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
           }
         }).catch(function(){});
       });

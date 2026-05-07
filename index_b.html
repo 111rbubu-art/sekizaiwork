@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.236';
+var APP_VERSION = 'v1.8.237';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -5893,11 +5893,16 @@ function renderHakaSpecTab(d) {
     '<button onclick="switchHakaSpecSubtab(\'photos\')" style="' +
       (_hakaSpecSubtab==='photos' ? 'background:#5a3a00;color:#fff;' : 'background:#eee;color:#666;') +
       'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📷 写真・図面</button>' +
+    '<button onclick="switchHakaSpecSubtab(\'ai\')" style="' +
+      (_hakaSpecSubtab==='ai' ? 'background:#4a2a7a;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🤖 AI整形</button>' +
     '</div>';
 
   if (_hakaSpecSubtab === 'photos') {
     b.innerHTML = subtabHtml + renderHakaSpecPhotosShell();
     setTimeout(function(){ renderHakaSpecPhotoList(d, _hakaSpecPhotoCat); }, 30);
+  } else if (_hakaSpecSubtab === 'ai') {
+    b.innerHTML = subtabHtml + renderHakaSpecAITab(d, spec);
   } else {
     b.innerHTML = subtabHtml + renderHakaSpecBasicForm(spec, d);
   }
@@ -6270,6 +6275,208 @@ function deleteHakaSpecFile(cat, fileName) {
   }).catch(function(e) {
     showSaveToast(false, '削除エラー: ' + e.message);
   });
+}
+
+// ----- AI整形サブタブ -----
+var _hakaSpecAIType = 'customer';   // 'customer' | 'worker' | 'summary'
+var _hakaSpecAITextMap = {};        // { 'customer': '...', 'worker': '...', 'summary': '...' }
+var _hakaSpecAIGenerating = false;
+var HAKA_SPEC_AI_TYPES = {
+  customer: { label:'👤 お客様確認書', file:'お客様確認書.txt' },
+  worker:   { label:'🔨 職人指示書',  file:'職人指示書.txt' },
+  summary:  { label:'📋 簡易まとめ',  file:'簡易まとめ.txt' }
+};
+
+function renderHakaSpecAITab(d, spec) {
+  var typeBtns = Object.keys(HAKA_SPEC_AI_TYPES).map(function(k) {
+    var t = HAKA_SPEC_AI_TYPES[k];
+    var sel = k === _hakaSpecAIType;
+    return '<button onclick="switchHakaSpecAIType(\'' + k + '\')" style="' +
+      (sel ? 'background:#4a2a7a;color:#fff;border:1px solid #4a2a7a;' : 'background:#fff;color:#4a2a7a;border:1px solid #c8b8d8;') +
+      'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + t.label + '</button>';
+  }).join('');
+
+  var cfg = getAICfg();
+  var modelInfo = cfg.apiKey
+    ? '<span style="color:#666">' + (cfg.provider==='claude' ? 'Claude' : 'ローカルLLM') + ' / ' + (cfg.model || 'claude-sonnet-4-6') + '</span>'
+    : '<span style="color:#c00">⚠️ APIキー未設定</span> <button onclick="openSettingsForAI()" style="margin-left:6px;padding:2px 10px;background:#4a2a7a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">設定を開く</button>';
+
+  var disabled = _hakaSpecAIGenerating ? ' disabled style="opacity:.5;cursor:not-allowed"' : '';
+  var currentText = _hakaSpecAITextMap[_hakaSpecAIType] || '';
+
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + typeBtns + '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:#f4eef7;border-radius:8px;flex-wrap:wrap">' +
+      '<div style="display:flex;gap:6px">' +
+        '<button id="haka-spec-ai-gen-btn" onclick="generateHakaSpecAI(false)"' + disabled + ' style="padding:6px 14px;background:#4a2a7a;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">🤖 AI生成</button>' +
+        '<button onclick="generateHakaSpecAI(true)"' + disabled + ' style="padding:6px 14px;background:#666;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit">♻️ 再生成</button>' +
+      '</div>' +
+      '<div style="font-size:11px">' + modelInfo + '</div>' +
+    '</div>' +
+    '<textarea id="haka-spec-ai-text" oninput="_hakaSpecAITextMap[_hakaSpecAIType]=this.value" placeholder="「🤖 AI生成」ボタンを押すと、入力済みの仕様情報をもとに文書をストリーミング生成します。生成後はこのまま編集できます。" style="width:100%;min-height:400px;padding:14px;border:1px solid #c8b8d8;border-radius:8px;font-family:serif;font-size:13px;line-height:1.8;box-sizing:border-box;resize:vertical;background:#fff">' + _hakaSpecEsc(currentText) + '</textarea>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">' +
+      '<button onclick="saveHakaSpecAIText()" style="padding:7px 16px;background:#2a6a2a;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">💾 SharePoint保存</button>' +
+      '<button onclick="printHakaSpecAIText()" style="padding:7px 16px;background:#1a5a9a;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 印刷</button>' +
+    '</div>';
+}
+
+function switchHakaSpecAIType(type) {
+  if (!HAKA_SPEC_AI_TYPES[type]) return;
+  _hakaSpecAIType = type;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function openSettingsForAI() {
+  if (typeof openSettingsPage === 'function') {
+    openSettingsPage();
+  } else {
+    var el = document.getElementById('settings-screen');
+    if (el) el.classList.remove('hidden');
+  }
+}
+
+function buildHakaSpecPrompt(d, spec, type) {
+  var customer = d['Customers'] || d['Title'] || '';
+  var atena    = d['atena']     || customer;
+  var temple   = d['Temples']   || '';
+  var contents = d['ConstructionContents'] || '';
+  var startD   = d['ConstructionStartDate'] || '';
+  var endD     = d['ConstructionCompletionDate'] || '';
+  var hakaName = d['HakaName']  || '';
+
+  function fmtDate(s) {
+    if (!s) return '';
+    return String(s).substring(0,10).replace(/-/g,'/');
+  }
+
+  var specLines = [];
+  var cats = (spec.categories || []);
+  if (cats.length === 0 && d['category']) cats = [d['category']];
+  cats.forEach(function(cat) {
+    var data = spec[cat] || {};
+    var keys = Object.keys(data);
+    if (keys.length === 0) return;
+    specLines.push('【' + cat + '】');
+    keys.forEach(function(k) {
+      var v = data[k];
+      if (v && typeof v === 'object') {
+        var dim = Object.keys(v).map(function(kk){ return kk + '=' + v[kk]; }).filter(function(s){ return !s.endsWith('='); }).join(' × ');
+        if (dim) specLines.push('・' + k + ': ' + dim);
+      } else if (v != null && String(v).trim()) {
+        specLines.push('・' + k + ': ' + v);
+      }
+    });
+  });
+
+  var specText = specLines.join('\n') || '（仕様未入力）';
+
+  var baseInfo =
+    '顧客：' + customer + '\n' +
+    (atena && atena !== customer ? '宛名：' + atena + '\n' : '') +
+    'お寺：' + temple + '\n' +
+    (hakaName ? '墓名：' + hakaName + '\n' : '') +
+    '工事内容：' + contents + '\n' +
+    '工期：' + fmtDate(startD) + ' 〜 ' + fmtDate(endD) + '\n\n' +
+    specText;
+
+  var sys, user;
+  if (type === 'worker') {
+    sys = 'あなたは石材店の現場監督です。職人向けの実用的な施工指示書を作成してください。' +
+          '工程順に整理し、寸法・材料・特記事項を明確に記載し、各項目はチェックボックス形式（□）で書いてください。' +
+          '余分な前置きや末尾の挨拶は不要です。';
+    user = '以下の工事情報から「職人向け施工指示書」を作成してください。\n\n' + baseInfo;
+  } else if (type === 'summary') {
+    sys = 'あなたは石材店の事務員です。工事情報を簡潔にまとめてください。' +
+          '箇条書き中心で5〜10行程度。前置きや末尾の挨拶は不要です。';
+    user = '以下の工事情報から「簡易まとめ」を作成してください。\n\n' + baseInfo;
+  } else {
+    sys = 'あなたは石材店の事務員です。お客様向けの丁寧で分かりやすい工事仕様確認書を作成してください。' +
+          '専門用語は補足を添えて、敬語の文体で書いてください。最後に署名欄を設けてください。';
+    user = '以下の工事情報から「お客様向け工事仕様確認書」を作成してください。\n\n' + baseInfo;
+  }
+  return { system: sys, user: user };
+}
+
+function generateHakaSpecAI(forceRegen) {
+  if (_hakaSpecAIGenerating) return;
+  if (!currentItem) return;
+  var cfg = getAICfg();
+  if (!cfg.apiKey && cfg.provider === 'claude') {
+    showSaveToast(false, 'APIキーが未設定です。設定画面から登録してください');
+    return;
+  }
+  var d = currentItem;
+  var spec = _hakaSpecData || {};
+  var type = _hakaSpecAIType;
+  var prompt = buildHakaSpecPrompt(d, spec, type);
+
+  // クリアして開始
+  _hakaSpecAITextMap[type] = '';
+  _hakaSpecAIGenerating = true;
+  var ta = document.getElementById('haka-spec-ai-text');
+  if (ta) ta.value = '';
+  var btn = document.getElementById('haka-spec-ai-gen-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.textContent = '⏳ 生成中...'; }
+
+  callAI(prompt.system, prompt.user, function(chunk) {
+    _hakaSpecAITextMap[type] = (_hakaSpecAITextMap[type] || '') + chunk;
+    var ta2 = document.getElementById('haka-spec-ai-text');
+    if (ta2) {
+      ta2.value = _hakaSpecAITextMap[type];
+      ta2.scrollTop = ta2.scrollHeight;
+    }
+  }, function(err) {
+    _hakaSpecAIGenerating = false;
+    var btn2 = document.getElementById('haka-spec-ai-gen-btn');
+    if (btn2) { btn2.disabled = false; btn2.style.opacity = '1'; btn2.textContent = '🤖 AI生成'; }
+    if (err) {
+      showSaveToast(false, 'AI生成エラー: ' + err.message);
+    } else {
+      showSaveToast(true, '生成完了');
+    }
+  });
+}
+
+function saveHakaSpecAIText() {
+  if (!currentItem) return;
+  var d = currentItem;
+  var ta = document.getElementById('haka-spec-ai-text');
+  var text = ta ? ta.value : (_hakaSpecAITextMap[_hakaSpecAIType] || '');
+  if (!text.trim()) { showSaveToast(false, '保存する内容がありません'); return; }
+  var fileName = (HAKA_SPEC_AI_TYPES[_hakaSpecAIType] || {}).file || 'AI整形.txt';
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var subPath = folderPass + '/工事仕様/AI整形';
+  ensureHakaSpecFolder(d, 'AI整形').then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var enc = (subPath + '/' + fileName).split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'text/plain;charset=utf-8' },
+      body: new Blob([text], { type: 'text/plain;charset=utf-8' })
+    });
+  }).then(function(r) {
+    if (!r.ok) throw new Error(r.status);
+    showSaveToast(true, fileName + ' を保存しました');
+  }).catch(function(e) { showSaveToast(false, '保存エラー: ' + e.message); });
+}
+
+function printHakaSpecAIText() {
+  var ta = document.getElementById('haka-spec-ai-text');
+  var text = ta ? ta.value : (_hakaSpecAITextMap[_hakaSpecAIType] || '');
+  if (!text.trim()) { showSaveToast(false, '印刷する内容がありません'); return; }
+  var w = window.open('', '_blank', 'width=800,height=1000');
+  if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
+  var title = (HAKA_SPEC_AI_TYPES[_hakaSpecAIType] || {}).label || 'AI整形';
+  var safe = String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  w.document.write(
+    '<html><head><title>' + title + '</title>' +
+    '<style>body{font-family:"Yu Mincho","游明朝",serif;padding:40px;white-space:pre-wrap;line-height:1.9;font-size:14px;color:#222}@media print{body{padding:20px}}</style>' +
+    '</head><body>' + safe + '</body></html>'
+  );
+  w.document.close();
+  w.focus();
+  setTimeout(function(){ w.print(); }, 500);
 }
 
 function openCusFromNok(cusId) {

@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.252';
+var APP_VERSION = 'v1.8.253';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -5965,14 +5965,14 @@ function renderHakaSpecTab(d) {
       'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📷 写真・図面</button>' +
     '<button onclick="switchHakaSpecSubtab(\'ai\')" style="' +
       (_hakaSpecSubtab==='ai' ? 'background:#4a2a7a;color:#fff;' : 'background:#eee;color:#666;') +
-      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🤖 AI整形</button>' +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📑 資料作成</button>' +
     '</div>';
 
   if (_hakaSpecSubtab === 'photos') {
     b.innerHTML = subtabHtml + renderHakaSpecPhotosShell();
     setTimeout(function(){ renderHakaSpecPhotoList(d, _hakaSpecPhotoCat); }, 30);
   } else if (_hakaSpecSubtab === 'ai') {
-    b.innerHTML = subtabHtml + renderHakaSpecAITab(d, spec);
+    b.innerHTML = subtabHtml + renderHakaSpecDocsTab(d, spec);
   } else {
     b.innerHTML = subtabHtml + renderHakaSpecBasicForm(spec, d);
   }
@@ -6599,7 +6599,8 @@ function deleteHakaSpecFile(cat, fileName) {
 }
 
 
-// ----- AI整形サブタブ -----
+// ----- 資料作成サブタブ -----
+var _hakaSpecDocsView = 'ai';       // 'ai' | 'choukoku'
 var _hakaSpecAIType = 'customer';   // 'customer' | 'worker' | 'summary'
 var _hakaSpecAITextMap = {};        // { 'customer': '...', 'worker': '...', 'summary': '...' }
 var _hakaSpecAIGenerating = false;
@@ -6608,6 +6609,51 @@ var HAKA_SPEC_AI_TYPES = {
   worker:   { label:'🔨 職人指示書',  file:'職人指示書.txt' },
   summary:  { label:'📋 簡易まとめ',  file:'簡易まとめ.txt' }
 };
+
+// 彫刻確認資料 - 部位プルダウンの定番リスト
+var HAKA_CHOUKOKU_DOC_PARTS = [
+  '竿石　正面',
+  '竿石　裏面',
+  '竿石　左側面',
+  '竿石　右側面',
+  '上台',
+  '中台',
+  '下台',
+  '香炉',
+  '花立',
+  '水鉢',
+  '墓誌',
+  '塔婆建',
+  '名刺受け',
+  '霊標'
+];
+var _hakaChoukokuDocPart = '';     // 選択中の部位
+var _hakaChoukokuDocFile = '';     // 選択中のファイル名
+
+function renderHakaSpecDocsTab(d, spec) {
+  var aiSel       = _hakaSpecDocsView === 'ai';
+  var choukokuSel = _hakaSpecDocsView === 'choukoku';
+  var nav =
+    '<div style="display:flex;gap:8px;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #eee;flex-wrap:wrap">' +
+      '<button onclick="switchHakaSpecDocsView(\'ai\')" style="' +
+        (aiSel ? 'background:#4a2a7a;color:#fff;border:1px solid #4a2a7a;' : 'background:#fff;color:#4a2a7a;border:1px solid #c8b8d8;') +
+        'padding:8px 18px;border-radius:18px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🤖 AI整形</button>' +
+      '<button onclick="switchHakaSpecDocsView(\'choukoku\')" style="' +
+        (choukokuSel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c0a0;') +
+        'padding:8px 18px;border-radius:18px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📄 彫刻確認資料作成</button>' +
+    '</div>';
+  var body = aiSel ? renderHakaSpecAITab(d, spec) : renderHakaSpecChoukokuDocPanel(d, spec);
+  return nav + body;
+}
+
+function switchHakaSpecDocsView(view) {
+  if (view !== 'ai' && view !== 'choukoku') return;
+  _hakaSpecDocsView = view;
+  if (currentItem) renderHakaSpecTab(currentItem);
+  if (view === 'choukoku') {
+    setTimeout(function(){ loadHakaChoukokuDocFiles(); }, 30);
+  }
+}
 
 function renderHakaSpecAITab(d, spec) {
   var typeBtns = Object.keys(HAKA_SPEC_AI_TYPES).map(function(k) {
@@ -6819,6 +6865,156 @@ function printHakaSpecAIText() {
   w.document.close();
   w.focus();
   setTimeout(function(){ w.print(); }, 500);
+}
+
+// ----- 彫刻確認資料作成 -----
+var _hakaChoukokuDocCache = { items: [], loading: false };
+
+function renderHakaSpecChoukokuDocPanel(d, spec) {
+  if (!d || !d['Folder_Pass']) {
+    return '<div style="text-align:center;color:#c00;font-size:12px;padding:16px;background:#fff5f5;border:1px solid #fcc;border-radius:8px">Folder_Pass が登録されていません</div>';
+  }
+  var partOpts = ['<option value="">-- 部位を選択 --</option>'].concat(
+    HAKA_CHOUKOKU_DOC_PARTS.map(function(p) {
+      var sel = (p === _hakaChoukokuDocPart) ? ' selected' : '';
+      return '<option value="' + _hakaSpecEsc(p) + '"' + sel + '>' + _hakaSpecEsc(p) + '</option>';
+    })
+  ).join('');
+
+  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px">' +
+    '<div style="font-size:13px;font-weight:700;color:#5a3a00;margin-bottom:8px">📄 彫刻確認資料作成（A3縦・1枚）</div>' +
+    '<div style="font-size:11px;color:#777;margin-bottom:12px">部位を選び、彫刻資料フォルダーから「検討中」のファイルを選択して実行ボタンを押してください。</div>' +
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<label style="font-size:12px;color:#333">部位<br>' +
+        '<select id="haka-choukoku-doc-part" onchange="_hakaChoukokuDocPart=this.value" style="width:260px;padding:6px 8px;font-size:13px;font-family:inherit;border:1px solid #c8b8a0;border-radius:6px;background:#fff">' + partOpts + '</select>' +
+      '</label>' +
+      '<label style="font-size:12px;color:#333">ファイル（彫刻資料 / 検討中のみ）<br>' +
+        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px">読み込み中...</div>' +
+      '</label>' +
+      '<div style="display:flex;gap:8px;margin-top:6px">' +
+        '<button onclick="executeChoukokuDoc()" style="padding:8px 18px;background:#5a3a00;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 実行（A3縦印刷）</button>' +
+        '<button onclick="loadHakaChoukokuDocFiles()" style="padding:8px 14px;background:#fff;color:#5a3a00;border:1px solid #5a3a00;border-radius:16px;cursor:pointer;font-size:12px;font-family:inherit">🔄 ファイル一覧を更新</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function loadHakaChoukokuDocFiles() {
+  var el = document.getElementById('haka-choukoku-doc-files');
+  if (!el) return;
+  if (!currentItem) { el.innerHTML = '<div style="color:#888">顧客が選択されていません</div>'; return; }
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { el.innerHTML = '<div style="color:#c00">Folder_Pass がありません</div>'; return; }
+
+  el.innerHTML = '<div style="color:#888">読み込み中...</div>';
+  var subPath = folderPass + '/工事仕様/彫刻資料';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var enc = subPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc +
+              ':/children?$select=name,file,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (r.status === 404) return { value: [] };
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      });
+  }).then(function(data) {
+    var items = (data.value || []).filter(function(i){ return i.file; });
+    // 検討中のみフィルタ
+    var tentative = items.filter(function(f){
+      return _hakaSpecGetFileStatus('彫刻資料', f.name) === 'tentative';
+    });
+    _hakaChoukokuDocCache.items = tentative;
+    if (tentative.length === 0) {
+      el.innerHTML = '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>';
+      return;
+    }
+    var rows = tentative.map(function(f) {
+      var checked = (f.name === _hakaChoukokuDocFile) ? ' checked' : '';
+      var thumbHtml = '';
+      if (f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
+        thumbHtml = '<img src="' + f.thumbnails[0].small.url + '" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0">';
+      } else {
+        thumbHtml = '<span style="font-size:24px;width:48px;text-align:center">📄</span>';
+      }
+      return '<label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f0e8d8;cursor:pointer">' +
+        '<input type="radio" name="haka-choukoku-doc-file" value="' + _hakaSpecEsc(f.name) + '" onchange="_hakaChoukokuDocFile=this.value"' + checked + '>' +
+        thumbHtml +
+        '<span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _hakaSpecEsc(f.name) + '">' + _hakaSpecEsc(f.name) + '</span>' +
+        '</label>';
+    }).join('');
+    el.innerHTML = rows;
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00">エラー: ' + (e && e.message || e) + '</div>';
+  });
+}
+
+function executeChoukokuDoc() {
+  var part = _hakaChoukokuDocPart || '';
+  var fname = _hakaChoukokuDocFile || '';
+  if (!part) { showSaveToast(false, '部位を選択してください'); return; }
+  if (!fname) { showSaveToast(false, 'ファイルを選択してください'); return; }
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var fpath = folderPass + '/工事仕様/彫刻資料/' + fname;
+
+  // SharePointから画像をbase64取得して印刷ウィンドウに埋め込む
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+      .then(function(r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.blob();
+      });
+  }).then(function(blob) {
+    return new Promise(function(resolve, reject) {
+      var fr = new FileReader();
+      fr.onload  = function(){ resolve(fr.result); };
+      fr.onerror = function(){ reject(new Error('image read error')); };
+      fr.readAsDataURL(blob);
+    });
+  }).then(function(dataUrl) {
+    openChoukokuDocWindow(part, fname, dataUrl);
+  }).catch(function(e) {
+    showSaveToast(false, '画像取得エラー: ' + (e && e.message || e));
+  });
+}
+
+function openChoukokuDocWindow(part, fname, imageDataUrl) {
+  var w = window.open('', '_blank', 'width=900,height=1200');
+  if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
+  var safePart  = _hakaSpecEsc(part);
+  var safeFname = _hakaSpecEsc(fname);
+  var html =
+    '<!doctype html><html><head><meta charset="utf-8"><title>彫刻確認資料 - ' + safePart + '</title>' +
+    '<style>' +
+      '@page { size: A3 portrait; margin: 12mm; }' +
+      'html,body { margin:0; padding:0; }' +
+      'body { font-family: "Yu Mincho","游明朝","Yu Gothic","游ゴシック",serif; color:#222; -webkit-print-color-adjust:exact; print-color-adjust:exact; }' +
+      '.page { width: calc(297mm - 24mm); height: calc(420mm - 24mm); padding:0; box-sizing:border-box; display:flex; flex-direction:column; }' +
+      '.head { text-align:center; padding:14mm 0 10mm; border-bottom:2px solid #333; }' +
+      '.head .part { font-size:48pt; font-weight:700; letter-spacing:0.2em; }' +
+      '.body { flex:1; display:flex; align-items:center; justify-content:center; padding:18mm 0; }' +
+      '.body img { max-width:100%; max-height:100%; object-fit:contain; }' +
+      '.foot { border-top:1px solid #999; padding:8mm 0 0; font-size:10pt; color:#666; display:flex; justify-content:space-between; }' +
+      '@media print { body{ background:#fff; } .page{ width:auto; height:auto; } }' +
+    '</style></head><body>' +
+    '<div class="page">' +
+      '<div class="head"><div class="part">' + safePart + '</div></div>' +
+      '<div class="body"><img src="' + imageDataUrl + '" alt="' + safeFname + '"></div>' +
+      '<div class="foot"><span>ファイル: ' + safeFname + '</span><span>確認サイン：　　　　　　　　　</span></div>' +
+    '</div>' +
+    '<script>window.addEventListener("load", function(){ setTimeout(function(){ window.print(); }, 300); });<\/script>' +
+    '</body></html>';
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
 }
 
 function openCusFromNok(cusId) {

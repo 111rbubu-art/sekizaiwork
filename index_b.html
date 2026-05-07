@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.238';
+var APP_VERSION = 'v1.8.239';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -5933,12 +5933,50 @@ function _hakaSpecActiveCats(spec, d) {
 
 function _hakaSpecIsEmpty(catData) {
   if (!catData || typeof catData !== 'object') return true;
-  return !Object.keys(catData).some(function(k) {
+  return !Object.keys(catData).filter(function(k){ return k !== '_status'; }).some(function(k) {
     var v = catData[k];
     if (v == null || v === '') return false;
     if (typeof v === 'object') return Object.keys(v).some(function(kk){ return v[kk] != null && v[kk] !== ''; });
     return true;
   });
+}
+
+// ----- 確定/検討中/未定 ステータス -----
+var HAKA_SPEC_STATUS_ORDER = ['undecided','tentative','confirmed'];
+var HAKA_SPEC_STATUSES = {
+  undecided: { label:'未定',   icon:'⚪', btnBg:'#fff',   btnColor:'#888',    btnBorder:'#ccc',    fieldBg:'transparent', accent:'transparent' },
+  tentative: { label:'検討中', icon:'⏳', btnBg:'#fff8e0', btnColor:'#a07000', btnBorder:'#d8b850', fieldBg:'#fffbe8',     accent:'#d8b850'      },
+  confirmed: { label:'確定',   icon:'✅', btnBg:'#e7f5e7', btnColor:'#2a6a2a', btnBorder:'#7ab07a', fieldBg:'#f5fbf5',     accent:'#7ab07a'      }
+};
+
+function _hakaSpecGetStatus(catData, key) {
+  if (!catData || !catData._status) return 'undecided';
+  return catData._status[key] || 'undecided';
+}
+
+function _hakaSpecRenderStatusBtn(catJs, key, status) {
+  var s = HAKA_SPEC_STATUSES[status] || HAKA_SPEC_STATUSES.undecided;
+  return '<button type="button" onclick="cycleHakaSpecStatus(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\')" ' +
+    'style="background:' + s.btnBg + ';color:' + s.btnColor + ';border:1px solid ' + s.btnBorder + ';' +
+    'border-radius:12px;padding:3px 10px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap;flex-shrink:0;line-height:1.3" ' +
+    'title="クリックで状態切替（未定→検討中→確定）">' + s.icon + ' ' + s.label + '</button>';
+}
+
+function cycleHakaSpecStatus(cat, key) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData[cat]) _hakaSpecData[cat] = {};
+  if (!_hakaSpecData[cat]._status) _hakaSpecData[cat]._status = {};
+  var current = _hakaSpecData[cat]._status[key] || 'undecided';
+  var idx = HAKA_SPEC_STATUS_ORDER.indexOf(current);
+  var next = HAKA_SPEC_STATUS_ORDER[(idx + 1) % HAKA_SPEC_STATUS_ORDER.length];
+  if (next === 'undecided') {
+    delete _hakaSpecData[cat]._status[key];
+    if (Object.keys(_hakaSpecData[cat]._status).length === 0) delete _hakaSpecData[cat]._status;
+  } else {
+    _hakaSpecData[cat]._status[key] = next;
+  }
+  _hakaSpecDirty = true;
+  if (currentItem) renderHakaSpecTab(currentItem);
 }
 
 function renderHakaSpecBasicForm(spec, d) {
@@ -5987,34 +6025,65 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
   var lblStyle = 'display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px';
   var catJs = _hakaSpecJsStr(cat);
 
+  function fldWrap(status, body) {
+    var s = HAKA_SPEC_STATUSES[status] || HAKA_SPEC_STATUSES.undecided;
+    var bg = s.fieldBg !== 'transparent' ? 'background:' + s.fieldBg + ';' : '';
+    var border = s.accent !== 'transparent' ? 'border-left:3px solid ' + s.accent + ';padding-left:8px;' : '';
+    return '<div style="margin-bottom:10px;' + bg + border + 'border-radius:6px;padding-top:6px;padding-bottom:6px;padding-right:6px">' + body + '</div>';
+  }
+
   var fieldsHtml = fields.map(function(f) {
     var key = f.k;
     var label = f.label || key;
     var val = catData[key];
+    var status = _hakaSpecGetStatus(catData, key);
+    var statusBtn = _hakaSpecRenderStatusBtn(catJs, key, status);
+    var keyJs = _hakaSpecJsStr(key);
+
     if (f.t === 'select') {
       var optHtml = '<option value=""></option>' + (f.opts||[]).map(function(o){
         return '<option' + (o===val?' selected':'') + '>' + o + '</option>';
       }).join('');
-      return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
-             '<select onchange="updateHakaSpecField(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\',this.value)" style="' + inpStyle + '">' + optHtml + '</select></div>';
+      return fldWrap(status,
+        '<label style="' + lblStyle + '">' + label + '</label>' +
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          '<select onchange="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" style="' + inpStyle + ';flex:1">' + optHtml + '</select>' +
+          statusBtn +
+        '</div>'
+      );
     }
     if (f.t === 'textarea') {
-      return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
-             '<textarea oninput="updateHakaSpecField(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\',this.value)" rows="' + (f.rows||3) + '" style="' + inpStyle + ';resize:vertical">' +
-             _hakaSpecEsc(val) + '</textarea></div>';
+      return fldWrap(status,
+        '<label style="' + lblStyle + '">' + label + '</label>' +
+        '<div style="display:flex;gap:6px;align-items:flex-start">' +
+          '<textarea oninput="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" rows="' + (f.rows||3) + '" style="' + inpStyle + ';flex:1;resize:vertical">' +
+          _hakaSpecEsc(val) + '</textarea>' +
+          statusBtn +
+        '</div>'
+      );
     }
     if (f.t === 'dim') {
       var dim = (val && typeof val === 'object') ? val : {};
-      return '<label style="' + lblStyle + '">' + label + '</label>' +
-             '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">' +
-               _renderHakaDimInput(catJs, key, '幅',   dim['幅']) +
-               _renderHakaDimInput(catJs, key, '奥行', dim['奥行']) +
-               _renderHakaDimInput(catJs, key, '高さ', dim['高さ']) +
-             '</div>';
+      return fldWrap(status,
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
+          '<label style="font-size:11px;color:#666;font-weight:600">' + label + '</label>' +
+          statusBtn +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">' +
+          _renderHakaDimInput(catJs, key, '幅',   dim['幅']) +
+          _renderHakaDimInput(catJs, key, '奥行', dim['奥行']) +
+          _renderHakaDimInput(catJs, key, '高さ', dim['高さ']) +
+        '</div>'
+      );
     }
     // text
-    return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
-           '<input type="text" value="' + _hakaSpecEsc(val) + '" oninput="updateHakaSpecField(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\',this.value)" style="' + inpStyle + '"></div>';
+    return fldWrap(status,
+      '<label style="' + lblStyle + '">' + label + '</label>' +
+      '<div style="display:flex;gap:6px;align-items:center">' +
+        '<input type="text" value="' + _hakaSpecEsc(val) + '" oninput="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" style="' + inpStyle + ';flex:1">' +
+        statusBtn +
+      '</div>'
+    );
   }).join('');
 
   var emptyBadge = (!isPrimary && _hakaSpecIsEmpty(catData))
@@ -6368,23 +6437,40 @@ function buildHakaSpecPrompt(d, spec, type) {
   var specLines = [];
   var cats = (spec.categories || []);
   if (cats.length === 0 && d['category']) cats = [d['category']];
+  var hasTentative = false, hasUndecided = false;
   cats.forEach(function(cat) {
     var data = spec[cat] || {};
-    var keys = Object.keys(data);
-    if (keys.length === 0) return;
+    var keys = Object.keys(data).filter(function(k){ return k !== '_status'; });
+    if (keys.length === 0 && !(data._status && Object.keys(data._status).length > 0)) return;
     specLines.push('【' + cat + '】');
-    keys.forEach(function(k) {
+    // フィールド定義順に並べる（未入力でもステータスが付いていれば表示）
+    var defKeys = (HAKA_SPEC_CATEGORY_FIELDS[cat] || []).map(function(f){ return f.k; });
+    var orderedKeys = defKeys.length > 0 ? defKeys : keys;
+    orderedKeys.forEach(function(k) {
       var v = data[k];
+      var status = (data._status && data._status[k]) || 'undecided';
+      var hasValue = false;
+      var valStr = '';
       if (v && typeof v === 'object') {
         var dim = Object.keys(v).map(function(kk){ return kk + '=' + v[kk]; }).filter(function(s){ return !s.endsWith('='); }).join(' × ');
-        if (dim) specLines.push('・' + k + ': ' + dim);
+        if (dim) { hasValue = true; valStr = dim; }
       } else if (v != null && String(v).trim()) {
-        specLines.push('・' + k + ': ' + v);
+        hasValue = true; valStr = String(v);
       }
+      var mark = '';
+      if (status === 'tentative')      { mark = '【検討中】'; hasTentative = true; }
+      else if (status === 'confirmed') { mark = '【確定】'; }
+      else if (status === 'undecided' && !hasValue) { mark = '【未定】'; hasUndecided = true; }
+      if (!hasValue && status === 'undecided') return;  // 未入力かつ未定はスキップ
+      specLines.push('・' + k + ': ' + (hasValue ? valStr : '') + (mark ? ' ' + mark : ''));
     });
   });
 
   var specText = specLines.join('\n') || '（仕様未入力）';
+  var statusNote = '';
+  if (hasTentative || hasUndecided) {
+    statusNote = '\n\n※ 表記ルール：「【検討中】」は商談中で未確定の項目です。「【未定】」は未決定の項目です。出力では、検討中項目は値の後に「（検討中）」と注記し、未定項目は「未定」と表記してください。';
+  }
 
   var baseInfo =
     '顧客：' + customer + '\n' +
@@ -6393,7 +6479,7 @@ function buildHakaSpecPrompt(d, spec, type) {
     (hakaName ? '墓名：' + hakaName + '\n' : '') +
     '工事内容：' + contents + '\n' +
     '工期：' + fmtDate(startD) + ' 〜 ' + fmtDate(endD) + '\n\n' +
-    specText;
+    specText + statusNote;
 
   var sys, user;
   if (type === 'worker') {
@@ -6407,7 +6493,8 @@ function buildHakaSpecPrompt(d, spec, type) {
     user = '以下の工事情報から「簡易まとめ」を作成してください。\n\n' + baseInfo;
   } else {
     sys = 'あなたは石材店の事務員です。お客様向けの丁寧で分かりやすい工事仕様確認書を作成してください。' +
-          '専門用語は補足を添えて、敬語の文体で書いてください。最後に署名欄を設けてください。';
+          '専門用語は補足を添えて、敬語の文体で書いてください。最後に署名欄を設けてください。' +
+          '検討中の項目には「（検討中）」と注記し、文末に「※印は検討中につき決定後に変更となる場合がございます」と添えてください。';
     user = '以下の工事情報から「お客様向け工事仕様確認書」を作成してください。\n\n' + baseInfo;
   }
   return { system: sys, user: user };

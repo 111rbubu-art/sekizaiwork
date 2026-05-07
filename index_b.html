@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.234';
+var APP_VERSION = 'v1.8.235';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -5706,13 +5706,12 @@ function showKoujiTab(i, d) {
     nkgInit('kj1d', KOUJI_T1D_CARDS);
 
   } else if (i === 2) {
-    // 工事仕様タブ（HakaSpec JSON）
-    b.innerHTML = editBtnHtml +
-      '<div class="sec"><span class="sec-hdr" style="background:#5a3a00;color:#fff">🪦 工事仕様</span>' +
-      '<div id="haka-spec-body" style="padding:8px 0;color:#888;font-size:13px;text-align:center">' +
-      '仕様入力フォームは次のステップで実装します（HakaSpec 列に JSON で保存）' +
-      '</div>' +
-      '</div>';
+    // 工事仕様タブ（HakaSpec JSON + 写真・図面）
+    _hakaSpecData = loadHakaSpec(d);
+    _hakaSpecDirty = false;
+    if (!_hakaSpecSubtab) _hakaSpecSubtab = 'basic';
+    if (!_hakaSpecPhotoCat) _hakaSpecPhotoCat = '現場写真';
+    renderHakaSpecTab(d);
 
   } else if (i === 3) {
     b.innerHTML = editBtnHtml +
@@ -5783,6 +5782,350 @@ function showKoujiTab(i, d) {
       '</div></div>';
     } catch(e) { b.innerHTML = '<div style="padding:16px;color:#c00">表示エラー: ' + e.message + '</div>'; console.error('i===5 error:', e); }
   }
+}
+
+// ============================================================
+// ===== 工事仕様タブ（HakaSpec JSON + 写真・図面） =====
+// ============================================================
+var _hakaSpecData = null;
+var _hakaSpecDirty = false;
+var _hakaSpecSubtab = 'basic';      // 'basic' or 'photos'
+var _hakaSpecPhotoCat = '現場写真';
+var HAKA_SPEC_PHOTO_CATS = ['現場写真','図面','参考画像','完成イメージ'];
+
+function loadHakaSpec(d) {
+  var raw = (d && d['HakaSpec']) || '';
+  if (!raw || typeof raw !== 'string') return {};
+  try { return JSON.parse(raw) || {}; }
+  catch(e) { console.warn('HakaSpec parse error:', e); return {}; }
+}
+
+function saveHakaSpec(d, spec) {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var itemId = d && d['id'];
+  if (!itemId) return Promise.reject(new Error('itemId なし'));
+  var json = JSON.stringify(spec || {});
+  return getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+                 '/lists/' + KOUJI_LIST_ID + '/items/' + itemId + '/fields',
+      { method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + resp.accessToken,
+                   'Content-Type': 'application/json' },
+        body: JSON.stringify({ HakaSpec: json }) });
+  }).then(function(r) {
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t.substring(0,200)); });
+    d['HakaSpec'] = json;
+    return r.json().catch(function(){ return {}; });
+  });
+}
+
+function renderHakaSpecTab(d) {
+  var b = document.getElementById('det-body');
+  if (!b) return;
+  var spec = _hakaSpecData || {};
+  var dirtyMark = _hakaSpecDirty ? ' <span style="font-size:10px;color:#c00">●未保存</span>' : '';
+
+  var subtabHtml =
+    '<div style="display:flex;gap:6px;margin-bottom:12px;border-bottom:1px solid #ddd">' +
+    '<button onclick="switchHakaSpecSubtab(\'basic\')" style="' +
+      (_hakaSpecSubtab==='basic' ? 'background:#5a3a00;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📋 基本情報' + dirtyMark + '</button>' +
+    '<button onclick="switchHakaSpecSubtab(\'photos\')" style="' +
+      (_hakaSpecSubtab==='photos' ? 'background:#5a3a00;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📷 写真・図面</button>' +
+    '</div>';
+
+  if (_hakaSpecSubtab === 'photos') {
+    b.innerHTML = subtabHtml + renderHakaSpecPhotosShell();
+    setTimeout(function(){ renderHakaSpecPhotoList(d, _hakaSpecPhotoCat); }, 30);
+  } else {
+    b.innerHTML = subtabHtml + renderHakaSpecBasicForm(spec);
+  }
+}
+
+function switchHakaSpecSubtab(name) {
+  _hakaSpecSubtab = name;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function renderHakaSpecBasicForm(spec) {
+  var inpStyle = 'width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;font-size:13px;box-sizing:border-box';
+  var lblStyle = 'display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px';
+  function esc(v) { return (v == null ? '' : String(v)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+  function fldInput(label, key, val) {
+    return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
+           '<input type="text" value="' + esc(val) + '" oninput="updateHakaSpecField(\'' + key + '\',this.value)" style="' + inpStyle + '"></div>';
+  }
+  function fldSelect(label, key, val, opts) {
+    var optHtml = '<option value=""></option>' + opts.map(function(o){
+      return '<option' + (o===val?' selected':'') + '>' + o + '</option>';
+    }).join('');
+    return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
+           '<select onchange="updateHakaSpecField(\'' + key + '\',this.value)" style="' + inpStyle + '">' + optHtml + '</select></div>';
+  }
+  function fldTextarea(label, key, val, rows) {
+    return '<div style="margin-bottom:10px"><label style="' + lblStyle + '">' + label + '</label>' +
+           '<textarea oninput="updateHakaSpecField(\'' + key + '\',this.value)" rows="' + (rows||3) + '" style="' + inpStyle + ';resize:vertical">' +
+           esc(val) + '</textarea></div>';
+  }
+  function fldDim(key, val) {
+    return '<div><label style="' + lblStyle + '">' + key + ' (cm)</label>' +
+           '<input type="text" value="' + esc(val) + '" oninput="updateHakaSpecDim(\'' + key + '\',this.value)" style="' + inpStyle + '"></div>';
+  }
+
+  var dim = spec['寸法'] || {};
+  return '' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">' +
+      '<button onclick="saveHakaSpecCurrent()" style="padding:7px 16px;background:#2a6a2a;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">💾 保存</button>' +
+      '<button onclick="reloadHakaSpecCurrent()" style="padding:7px 16px;background:#666;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">♻️ リセット</button>' +
+    '</div>' +
+    '<div class="sec"><span class="sec-hdr" style="background:#5a3a00;color:#fff">🪦 お墓基本仕様</span>' +
+    '<div style="padding:10px 6px">' +
+      fldSelect('石碑種別', '石碑種別', spec['石碑種別'], ['和型','洋型','デザイン墓','五輪塔','宝篋印塔','その他']) +
+      fldInput('石材（種類・産地）', '石材', spec['石材']) +
+      '<label style="' + lblStyle + '">寸法</label>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">' +
+        fldDim('幅', dim['幅']) + fldDim('奥行', dim['奥行']) + fldDim('高さ', dim['高さ']) +
+      '</div>' +
+      fldInput('彫刻文字（家名・戒名等）', '彫刻文字', spec['彫刻文字']) +
+      fldInput('紋章', '紋章', spec['紋章']) +
+      fldTextarea('付属品（花立て・香炉・水桶など）', '付属品', spec['付属品'], 2) +
+      fldInput('外柵', '外柵', spec['外柵']) +
+      fldInput('基礎工事', '基礎工事', spec['基礎工事']) +
+      fldTextarea('備考', '備考', spec['備考'], 3) +
+    '</div></div>';
+}
+
+function updateHakaSpecField(key, val) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  _hakaSpecData[key] = val;
+  _hakaSpecDirty = true;
+}
+
+function updateHakaSpecDim(key, val) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData['寸法']) _hakaSpecData['寸法'] = {};
+  _hakaSpecData['寸法'][key] = val;
+  _hakaSpecDirty = true;
+}
+
+function saveHakaSpecCurrent() {
+  if (!currentItem) return;
+  var d = currentItem;
+  var spec = _hakaSpecData || {};
+  saveHakaSpec(d, spec).then(function() {
+    _hakaSpecDirty = false;
+    showSaveToast(true, '工事仕様を保存しました');
+    renderHakaSpecTab(d);
+  }).catch(function(e) {
+    showSaveToast(false, '保存失敗: ' + e.message);
+  });
+}
+
+function reloadHakaSpecCurrent() {
+  if (!currentItem) return;
+  if (_hakaSpecDirty && !confirm('編集中の内容を破棄してリセットしますか？')) return;
+  _hakaSpecData = loadHakaSpec(currentItem);
+  _hakaSpecDirty = false;
+  renderHakaSpecTab(currentItem);
+}
+
+// ----- 写真・図面サブタブ -----
+function renderHakaSpecPhotosShell() {
+  var catBtns = HAKA_SPEC_PHOTO_CATS.map(function(c) {
+    var sel = c === _hakaSpecPhotoCat;
+    return '<button onclick="switchHakaSpecPhotoCat(\'' + c + '\')" style="' +
+      (sel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c8a8;') +
+      'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + c + '</button>';
+  }).join('');
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + catBtns + '</div>' +
+    '<div id="haka-spec-photo-area"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div>';
+}
+
+function switchHakaSpecPhotoCat(cat) {
+  _hakaSpecPhotoCat = cat;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function ensureHakaSpecFolder(d, cat) {
+  var base = (d && d['Folder_Pass']) || '';
+  if (!base) return Promise.reject(new Error('Folder_Pass がありません'));
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    function mkFolder(parentPath, name) {
+      var enc = parentPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children',
+        { method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) })
+        .then(function(r) {
+          if (r.ok || r.status === 409) return;
+          return r.text().then(function(t){ throw new Error(t.substring(0,200)); });
+        });
+    }
+    return mkFolder(base, '工事仕様').then(function() {
+      if (!cat) return;
+      return mkFolder(base + '/工事仕様', cat);
+    });
+  });
+}
+
+function renderHakaSpecPhotoList(d, cat) {
+  var el = document.getElementById('haka-spec-photo-area');
+  if (!el) return;
+  var folderPass = (d && d['Folder_Pass']) || '';
+  if (!folderPass) {
+    el.innerHTML = '<div style="text-align:center;color:#c00;font-size:12px;padding:16px">Folder_Pass が登録されていません。基本情報タブからフォルダーを作成してください。</div>';
+    return;
+  }
+  var subPath = folderPass + '/工事仕様/' + cat;
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var encoded = subPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded +
+              ':/children?$select=name,file,folder,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (r.status === 404) {
+          return ensureHakaSpecFolder(d, cat).then(function(){ return { value: [] }; });
+        }
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      });
+  }).then(function(data) {
+    renderHakaSpecPhotoFiles(d, cat, data.value || []);
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00;font-size:12px;padding:8px">エラー: ' + e.message + '</div>';
+  });
+}
+
+function renderHakaSpecPhotoFiles(d, cat, items) {
+  var el = document.getElementById('haka-spec-photo-area');
+  if (!el) return;
+  var subPath = (d['Folder_Pass'] || '') + '/工事仕様/' + cat;
+  var files = items.filter(function(i){ return i.file; });
+
+  function jsStr(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+  var dropZone =
+    '<div ondragover="event.preventDefault();this.style.background=\'#d0e8ff\'" ondragleave="this.style.background=\'#e6f1fb\'" ' +
+      'ondrop="handleHakaSpecDrop(event,\'' + jsStr(cat) + '\')" ' +
+      'onclick="document.getElementById(\'haka-spec-file-input\').click()" ' +
+      'style="border:2px dashed #b5d4f4;border-radius:10px;background:#e6f1fb;padding:14px;text-align:center;color:#1565c0;font-size:13px;cursor:pointer;margin-bottom:10px">' +
+      '📷 撮影 / 📎 ファイルをドロップ または タップして追加（' + cat + '）' +
+    '</div>' +
+    '<input type="file" id="haka-spec-file-input" multiple accept="image/*,application/pdf" capture="environment" ' +
+      'onchange="handleHakaSpecFileInput(this,\'' + jsStr(cat) + '\')" style="display:none">';
+
+  if (files.length === 0) {
+    el.innerHTML = dropZone +
+      '<div style="text-align:center;color:#888;font-size:12px;padding:20px">「' + cat + '」のファイルはまだありません</div>';
+    return;
+  }
+
+  var thumbFiles   = files.filter(function(f){ return f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium; });
+  var noThumbFiles = files.filter(function(f){ return !(f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium); });
+
+  var grid = '';
+  if (thumbFiles.length > 0) {
+    grid = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;padding:6px 0">';
+    thumbFiles.forEach(function(f) {
+      var fpath = subPath + '/' + f.name;
+      grid += '<div style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa">' +
+        '<img src="' + f.thumbnails[0].medium.url + '" style="width:100%;height:140px;object-fit:cover;cursor:pointer;display:block" ' +
+          'onclick="openFolderFile(\'' + jsStr(fpath) + '\')">' +
+        '<div style="font-size:10px;padding:4px 6px;background:#fff;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + f.name + '">' + f.name + '</div>' +
+        '<button onclick="deleteHakaSpecFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+          'style="position:absolute;top:4px;right:4px;background:rgba(200,40,40,0.9);color:#fff;border:none;border-radius:50%;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:24px;padding:0">×</button>' +
+        '</div>';
+    });
+    grid += '</div>';
+  }
+
+  var listHtml = '';
+  if (noThumbFiles.length > 0) {
+    listHtml = '<div style="margin-top:10px">';
+    noThumbFiles.forEach(function(f) {
+      var fpath = subPath + '/' + f.name;
+      listHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #eee">' +
+        '<span style="font-size:18px">📄</span>' +
+        '<a href="javascript:void(0)" onclick="openFolderFile(\'' + jsStr(fpath) + '\')" style="flex:1;color:#1565c0;text-decoration:none;font-size:13px">' + f.name + '</a>' +
+        '<button onclick="deleteHakaSpecFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" style="background:#c00;color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;font-family:inherit">削除</button>' +
+        '</div>';
+    });
+    listHtml += '</div>';
+  }
+
+  el.innerHTML = dropZone + grid + listHtml;
+}
+
+function handleHakaSpecDrop(e, cat) {
+  e.preventDefault();
+  var files = Array.prototype.slice.call(e.dataTransfer.files);
+  if (files.length === 0) return;
+  uploadHakaSpecFiles(files, cat);
+}
+
+function handleHakaSpecFileInput(input, cat) {
+  var files = Array.prototype.slice.call(input.files);
+  if (files.length === 0) return;
+  uploadHakaSpecFiles(files, cat);
+  input.value = '';
+}
+
+function uploadHakaSpecFiles(files, cat) {
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var targetPath = folderPass + '/工事仕様/' + cat;
+
+  ensureHakaSpecFolder(d, cat).then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    return files.reduce(function(chain, file) {
+      return chain.then(function() {
+        var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(file.name) + ':/content';
+        return fetch(uploadUrl, {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        }).then(function(r) {
+          if (!r.ok) return r.text().then(function(t){ throw new Error(file.name + ': ' + t.substring(0,120)); });
+        });
+      });
+    }, Promise.resolve());
+  }).then(function() {
+    showSaveToast(true, files.length + '件アップロード完了');
+    setTimeout(function(){ renderHakaSpecPhotoList(d, cat); }, 800);
+  }).catch(function(e) {
+    showSaveToast(false, 'アップロードエラー: ' + e.message);
+  });
+}
+
+function deleteHakaSpecFile(cat, fileName) {
+  if (!confirm('「' + fileName + '」を削除しますか？')) return;
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) return;
+  var fpath = folderPass + '/工事仕様/' + cat + '/' + fileName;
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) throw new Error(r.status);
+    showSaveToast(true, '削除しました');
+    setTimeout(function(){ renderHakaSpecPhotoList(d, cat); }, 500);
+  }).catch(function(e) {
+    showSaveToast(false, '削除エラー: ' + e.message);
+  });
 }
 
 function openCusFromNok(cusId) {

@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.260';
+var APP_VERSION = 'v1.8.261';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -7380,6 +7380,8 @@ var _folderHistory = [];
 var _folderRootPass = null;
 var _folderCurrentPath = null;
 var _folderThumbMode = false;
+var _folderClipboard = null;  // { mode:'copy'|'cut', item:{id,name,path} }
+var _folderMenuEl = null;
 
 // ===== 画像クリップボードコピー =====
 function copyImgToClipboard(blobUrl, btn) {
@@ -7466,6 +7468,7 @@ function renderFolderContents(items, currentPath, token) {
 
   if (items.length === 0) {
     el.innerHTML = '';
+    _renderFolderPasteBar(el, currentPath);
     var _emptyHdr = document.createElement('div');
     _emptyHdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0 10px;border-bottom:1px solid #eee;margin-bottom:6px';
     var _emptyLbl = document.createElement('div');
@@ -7491,6 +7494,7 @@ function renderFolderContents(items, currentPath, token) {
 
   // ===== 1. まずelをクリアしてパスヘッダーを設定 =====
   el.innerHTML = '';
+  _renderFolderPasteBar(el, currentPath);
   var canGoUp = _folderHistory && _folderHistory.length > 0;
   var header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0 10px;border-bottom:1px solid #eee;margin-bottom:6px';
@@ -7644,6 +7648,15 @@ function _renderFolderFileRow(el, f, currentPath) {
       });
     }
   }
+  var menuBtn = document.createElement('button');
+  menuBtn.textContent = '⋯';
+  menuBtn.title = 'コピー・移動・名前変更・削除';
+  menuBtn.style.cssText = 'flex-shrink:0;padding:3px 9px;background:none;border:1px solid #ddd;border-radius:4px;font-size:15px;cursor:pointer;font-family:inherit;color:#555;line-height:1;margin-left:2px';
+  menuBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    _showFolderItemMenu(e, f, currentPath);
+  });
+  row.appendChild(menuBtn);
   el.appendChild(row);
 }
 
@@ -7741,6 +7754,172 @@ function openFolderFile(filePath) {
     if (webUrl) window.open(webUrl, '_blank');
     else showSaveToast(false, 'URLが取得できませんでした');
   }).catch(function(e) { showSaveToast(false, 'エラー: ' + e.message); });
+}
+
+// ===== フォルダーブラウザー コピー・移動・名前変更・削除 =====
+
+function _hideFolderMenu() {
+  if (_folderMenuEl) { _folderMenuEl.remove(); _folderMenuEl = null; }
+}
+
+function _showFolderItemMenu(e, item, currentPath) {
+  _hideFolderMenu();
+  var menu = document.createElement('div');
+  menu.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #ccc;border-radius:7px;box-shadow:0 4px 18px rgba(0,0,0,.20);min-width:148px;overflow:hidden;font-size:13px;font-family:inherit';
+  var rect = e.currentTarget.getBoundingClientRect();
+  var left = Math.min(rect.right - 148, window.innerWidth - 160);
+  var top = rect.bottom + 4;
+  if (top + 170 > window.innerHeight) top = rect.top - 170;
+  menu.style.left = Math.max(4, left) + 'px';
+  menu.style.top = top + 'px';
+  var menuItems = [
+    ['📋', 'コピー', function(){ _folderSetClipboard('copy', item, currentPath); }],
+    ['✂️', '切り取り', function(){ _folderSetClipboard('cut', item, currentPath); }],
+    null,
+    ['✏️', '名前変更', function(){ _hideFolderMenu(); _folderRenameItem(item, currentPath); }],
+    ['🗑️', '削除', function(){ _hideFolderMenu(); _folderDeleteItem(item, currentPath); }]
+  ];
+  menuItems.forEach(function(mi) {
+    if (!mi) {
+      var hr = document.createElement('div');
+      hr.style.cssText = 'border-top:1px solid #eee;margin:3px 0';
+      menu.appendChild(hr);
+    } else {
+      var btn = document.createElement('div');
+      btn.style.cssText = 'display:flex;align-items:center;gap:9px;padding:9px 16px;cursor:pointer;white-space:nowrap';
+      btn.innerHTML = '<span>' + mi[0] + '</span><span>' + mi[1] + '</span>';
+      btn.addEventListener('mouseenter', function(){ this.style.background='#f0f4ff'; });
+      btn.addEventListener('mouseleave', function(){ this.style.background=''; });
+      btn.addEventListener('click', function(ev){ ev.stopPropagation(); mi[2](); });
+      menu.appendChild(btn);
+    }
+  });
+  document.body.appendChild(menu);
+  _folderMenuEl = menu;
+  setTimeout(function() {
+    document.addEventListener('click', function _closeMenu(){ _hideFolderMenu(); document.removeEventListener('click', _closeMenu); });
+  }, 0);
+}
+
+function _folderSetClipboard(mode, item, currentPath) {
+  _folderClipboard = { mode: mode, item: { id: item.id, name: item.name, path: currentPath + '/' + item.name } };
+  _hideFolderMenu();
+  showSaveToast(true, (mode === 'copy' ? '📋 コピー' : '✂️ 切り取り') + '：' + item.name);
+  loadFolderExplorer(currentPath, null, false);
+}
+
+function _renderFolderPasteBar(el, destPath) {
+  if (!_folderClipboard) return;
+  var cb = _folderClipboard;
+  var bar = document.createElement('div');
+  bar.style.cssText = 'background:#fffae0;border:1px solid #e0c000;border-radius:6px;padding:5px 10px;margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px';
+  var label = document.createElement('span');
+  label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7a6000';
+  label.textContent = (cb.mode === 'copy' ? '📋 コピー元：' : '✂️ 切り取り元：') + cb.item.name;
+  bar.appendChild(label);
+  var pasteBtn = document.createElement('button');
+  pasteBtn.textContent = '📌 貼り付け';
+  pasteBtn.style.cssText = 'flex-shrink:0;padding:4px 12px;background:#1a6a1a;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-family:inherit;font-weight:600';
+  pasteBtn.addEventListener('click', function() { _folderPaste(destPath); });
+  bar.appendChild(pasteBtn);
+  var clearBtn = document.createElement('button');
+  clearBtn.textContent = '✕';
+  clearBtn.title = 'キャンセル';
+  clearBtn.style.cssText = 'flex-shrink:0;padding:4px 8px;background:#fff;border:1px solid #ccc;border-radius:5px;font-size:12px;cursor:pointer;font-family:inherit';
+  clearBtn.addEventListener('click', function() { _folderClipboard = null; loadFolderExplorer(destPath, null, false); });
+  bar.appendChild(clearBtn);
+  el.appendChild(bar);
+}
+
+function _folderPaste(destPath) {
+  if (!_folderClipboard) return;
+  var cb = _folderClipboard;
+  var srcItem = cb.item;
+  showSaveToast(null, (cb.mode === 'copy' ? 'コピー' : '移動') + '中...');
+  if (cb.mode === 'copy') {
+    getToken().then(function(resp) {
+      var token = resp.accessToken;
+      var encodedDest = destPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedDest, {
+        headers: { Authorization: 'Bearer ' + token }
+      }).then(function(r) {
+        if (!r.ok) throw new Error('コピー先フォルダー取得失敗 (' + r.status + ')');
+        return r.json();
+      }).then(function(destFolder) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + srcItem.id + '/copy', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destFolder.id } })
+        });
+      });
+    }).then(function(r) {
+      if (r.ok || r.status === 202) {
+        showSaveToast(true, 'コピーしました');
+        setTimeout(function() { loadFolderExplorer(destPath, null, false); }, 1800);
+      } else {
+        return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+      }
+    }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); });
+  } else {
+    var encodedSrc = srcItem.path.split('/').map(encodeURIComponent).join('/');
+    getToken().then(function(resp) {
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedSrc + ':', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parentReference: { path: '/drives/' + DRIVE_ID + '/root:' + destPath.split('/').map(encodeURIComponent).join('/') }
+        })
+      });
+    }).then(function(r) {
+      if (r.ok) {
+        _folderClipboard = null;
+        showSaveToast(true, '移動しました');
+        loadFolderExplorer(destPath, null, false);
+      } else {
+        return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+      }
+    }).catch(function(e) { showSaveToast(false, '移動エラー: ' + e.message); });
+  }
+}
+
+function _folderRenameItem(item, currentPath) {
+  var dot = item.name.lastIndexOf('.');
+  var ext = dot > 0 ? item.name.substring(dot) : '';
+  var base = ext ? item.name.substring(0, dot) : item.name;
+  var newBase = prompt('新しいファイル名（拡張子除く）：', base);
+  if (newBase === null || !newBase.trim()) return;
+  newBase = newBase.trim();
+  var newName = ext ? newBase + ext : newBase;
+  if (newName === item.name) return;
+  var encodedPath = (currentPath + '/' + item.name).split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + ':', {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+    showSaveToast(true, '名前を変更しました');
+    loadFolderExplorer(currentPath, null, false);
+  }).catch(function(e) { showSaveToast(false, '名前変更エラー: ' + e.message); });
+}
+
+function _folderDeleteItem(item, currentPath) {
+  if (!confirm('「' + item.name + '」を削除しますか？\nこの操作は元に戻せません。')) return;
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + item.id, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (r.ok || r.status === 204) {
+      showSaveToast(true, '削除しました');
+      loadFolderExplorer(currentPath, null, false);
+    } else {
+      return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+    }
+  }).catch(function(e) { showSaveToast(false, '削除エラー: ' + e.message); });
 }
 
 // ===== 画像ビューア共通ズーム（ピンチ・ダブルタップ・ホイール） =====

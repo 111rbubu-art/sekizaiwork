@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.233';
+var APP_VERSION = 'v1.8.262';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -5591,10 +5591,11 @@ function showKoujiDetail(d) {
   tabs.innerHTML =
     '<button class="tab on" data-i="0">基本情報</button>' +
     '<button class="tab" data-i="1">進捗・日程</button>' +
-    '<button class="tab" data-i="2">手配彫刻</button>' +
-    '<button class="tab" data-i="3">SP添付</button>' +
-    '<button class="tab" data-i="4">📁 フォルダー</button>' +
-    '<button class="tab" data-i="5">その他</button>' +
+    '<button class="tab" data-i="2">工事仕様</button>' +
+    '<button class="tab" data-i="3">手配彫刻</button>' +
+    '<button class="tab" data-i="4">SP添付</button>' +
+    '<button class="tab" data-i="5">📁 フォルダー</button>' +
+    '<button class="tab" data-i="6">その他</button>' +
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>';
   showKoujiTab(0, d);
   // バックグラウンドで全フィールド補完（KoujiLogJson等）
@@ -5705,6 +5706,14 @@ function showKoujiTab(i, d) {
     nkgInit('kj1d', KOUJI_T1D_CARDS);
 
   } else if (i === 2) {
+    // 工事仕様タブ（HakaSpec JSON + 写真・図面）
+    _hakaSpecData = loadHakaSpec(d);
+    _hakaSpecDirty = false;
+    if (!_hakaSpecSubtab) _hakaSpecSubtab = 'basic';
+    if (!_hakaSpecPhotoCat) _hakaSpecPhotoCat = '現場写真';
+    renderHakaSpecTab(d);
+
+  } else if (i === 3) {
     b.innerHTML = editBtnHtml +
       '<div class="sec"><span class="sec-hdr bg3">石材制作業者①</span>' +
       nkgBar('kj2a') + nkgCanvas('kj2a', KOUJI_T2A_CARDS, d, itemId) +
@@ -5723,7 +5732,7 @@ function showKoujiTab(i, d) {
     nkgInit('kj2b', KOUJI_T2B_CARDS);
     nkgInit('kj2c', KOUJI_T2C_CARDS);
     nkgInit('kj2d', KOUJI_T2D_CARDS);
-  } else if (i === 3) {
+  } else if (i === 4) {
     // ファイルタブ（工事関連）
     var hasAttach = d['Attachments'] === true;
     b.innerHTML =
@@ -5738,7 +5747,7 @@ function showKoujiTab(i, d) {
       '</div>';
     if (hasAttach) loadKoujiAttachments(itemId);
 
-  } else if (i === 4) {
+  } else if (i === 5) {
     // フォルダータブ（工事関連）
     b.innerHTML = '<div class="sec"><span class="sec-hdr" style="background:#2a4a7a;color:#fff">📁 フォルダー</span>' +
       '<div id="folder-explorer" style="padding:8px 0"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div></div>';
@@ -5750,7 +5759,7 @@ function showKoujiTab(i, d) {
       document.getElementById('folder-explorer').innerHTML =
         '<div style="text-align:center;color:#888;font-size:12px;padding:20px">フォルダーパスが登録されていません</div>';
     }
-  } else if (i === 5) {
+  } else if (i === 6) {
     // その他タブ
     try {
     // その他タブは閲覧のみ（編集不可）
@@ -5773,6 +5782,1397 @@ function showKoujiTab(i, d) {
       '</div></div>';
     } catch(e) { b.innerHTML = '<div style="padding:16px;color:#c00">表示エラー: ' + e.message + '</div>'; console.error('i===5 error:', e); }
   }
+}
+
+// ============================================================
+// ===== 工事仕様タブ（HakaSpec JSON + 写真・図面） =====
+// ============================================================
+var _hakaSpecData = null;
+var _hakaSpecDirty = false;
+var _hakaSpecSubtab = 'basic';      // 'basic' or 'photos'
+var _hakaSpecPhotoCat = '現場写真';
+var HAKA_SPEC_PHOTO_CATS = ['現場写真','図面','彫刻資料','参考画像','完成イメージ'];
+
+// 分類ごとの項目定義
+// t: 'text' | 'textarea' | 'select' | 'dim'
+// group: フィールドではなくセクション見出し（field rendering をスキップ）
+var HAKA_SPEC_CATEGORY_FIELDS = {
+  '墓新規': [
+    // 敷地・設置寸法
+    { group:'📐 敷地・設置寸法' },
+    { subgroup:'敷地' },
+    { k:'敷地_間口',     t:'text',   label:'間口',     w:'narrow' },
+    { k:'敷地_奥行',     t:'text',   label:'奥行',     w:'narrow' },
+    { subgroup:'設置' },
+    { k:'設置_間口',     t:'text',   label:'間口',     w:'narrow' },
+    { k:'設置_奥行',     t:'text',   label:'奥行',     w:'narrow' },
+    { k:'設置_土留高さ', t:'text',   label:'土留高さ', w:'narrow' },
+
+    // 石塔
+    { group:'🏛️ 石塔', nowrap:true },
+    { subgroup:'基本' },
+    { k:'石塔_型',       t:'select', opts:['和型','洋型','デザイン墓','五輪塔','宝篋印塔','その他'], label:'型' },
+    { k:'石塔_和型サイズ', t:'select', opts:['7寸','8寸','9寸','尺','8寸パッカ','9寸パッカ'], label:'和型サイズ' },
+    { k:'石塔_石材',     t:'text',   label:'石材',     w:'wide' },
+    { k:'石塔_花立水鉢', t:'select', opts:['切り出し水鉢','3分割高級','他'], label:'花立水鉢' },
+    { k:'石塔_香炉型',   t:'select', opts:['三つ穴','経机','宮型','他'], label:'香炉型' },
+    { subgroup:'オプション' },
+    { k:'石塔_地震パット',   t:'select', opts:['有','無'], label:'地震パット', w:'narrow' },
+    { k:'石塔_コーティング', t:'select', opts:['有','無'], label:'コーティング', w:'narrow' },
+
+    // 彫刻
+    { group:'✏️ 彫刻' },
+    { subgroup:'正面文字' },
+    { k:'彫刻_正面_書体', t:'select', opts:['楷書','行書','隷書','その他備考欄参照'], label:'書体' },
+    { k:'彫刻_正面_内容', t:'select', opts:['○○家之墓','○○','○○家','南無阿弥陀仏','南妙法蓮華経','倶会一処','先祖代々之墓','その他備考欄参照'], label:'内容' },
+    { k:'彫刻_正面_彫刻方法', t:'select', opts:['通常サライ有','通常サライ無','スジ彫'], label:'彫刻方法' },
+
+    { subgroup:'上台' },
+    { k:'彫刻_上台_種類', t:'select', opts:['なし','家紋','家名','家紋2つ','家名2つ','家紋3つ','家名3つ'], label:'種類' },
+    { k:'彫刻_上台_仕様', t:'select', opts:['通常','浮き彫り'], label:'彫仕様' },
+
+    { subgroup:'花立' },
+    { k:'彫刻_花立_種類', t:'select', opts:['なし','家紋','家名','家紋左右違','家名左右違'], label:'種類' },
+    { k:'彫刻_花立_仕様', t:'select', opts:['通常','浮き彫り'], label:'彫仕様' },
+
+    { subgroup:'水鉢' },
+    { k:'彫刻_水鉢_種類', t:'select', opts:['なし','家紋','家名','家紋2つ','家名2つ','家紋3つ','家名3つ'], label:'種類' },
+    { k:'彫刻_水鉢_仕様', t:'select', opts:['通常','浮き彫り'], label:'彫仕様' },
+
+    { subgroup:'香炉' },
+    { k:'彫刻_香炉',     t:'select', opts:['なし','右','左','正面（香立）'], label:'名前彫刻' },
+
+    { subgroup:'戒名' },
+    { k:'戒名_人数',     t:'text',   label:'人数',     w:'narrow' },
+    { k:'戒名_彫刻場所', t:'select', opts:['墓誌','竿石右','竿石左'], label:'彫刻場所' },
+
+    { subgroup:'施主' },
+    { k:'施主名_場所',   t:'select', opts:['右','裏','左'], label:'彫刻場所' },
+
+    // 墓誌
+    { group:'📜 墓誌', nowrap:true },
+    { k:'墓誌_有無', t:'select', opts:['有','無'], label:'有無', w:'narrow' },
+    { k:'墓誌_石種', t:'text',   label:'石種', w:'wide' },
+
+    // 土留
+    { group:'🧱 土留', nowrap:true },
+    { subgroup:'基本' },
+    { k:'土留_石種',         t:'text',   label:'石種', w:'wide' },
+    { k:'土留_羽目',         t:'select', opts:['有','無'], label:'羽目', w:'narrow' },
+    { k:'土留_部材基準寸法', t:'select', opts:['4寸','5寸'], label:'部材 基準寸法', w:'narrow+' },
+    { k:'土留_石塔土留間',   t:'select', opts:['砂利','石張'], label:'石塔・土留間 仕上' },
+    { subgroup:'塔婆建' },
+    { k:'土留_塔婆建',       t:'select', opts:['石','ステンパイプ'], label:'塔婆建' },
+    { k:'土留_金具大きさ',   t:'text',   label:'金具の大きさ', w:'narrow' },
+    { subgroup:'オプション' },
+    { k:'土留_コーティング', t:'select', opts:['有','無'], label:'コーティング', w:'narrow' },
+    { k:'土留_固定金具',     t:'select', opts:['有','無'], label:'固定金具', w:'narrow' },
+
+    // 納骨室
+    { group:'🏺 納骨室' },
+    { k:'納骨室_材質',   t:'select', opts:['御影石','白河','コンクリート','その他'], label:'材質' },
+    { k:'納骨室_大きさ', t:'select', opts:['1段','2段'], label:'段数', w:'narrow' },
+
+    // 備考
+    { group:'📝 備考' },
+    { k:'備考', t:'textarea', rows:3, label:'備考' }
+  ],
+  '修繕': [
+    { k:'修理箇所', t:'text' },
+    { k:'使用部材', t:'text' },
+    { k:'工法',     t:'textarea', rows:2 },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '撤去': [
+    { k:'撤去対象', t:'text' },
+    { k:'処分方法', t:'select', opts:['市指定処分場','産業廃棄物処分','客先持ち帰り','寺院処分','その他'] },
+    { k:'跡地処理', t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '花立交換': [
+    { k:'既存花立', t:'text', label:'既存花立（サイズ・状態）' },
+    { k:'新花立仕様', t:'text', label:'新花立仕様（材質・サイズ）' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '彫刻変更': [
+    { k:'彫刻文字', t:'textarea', rows:2 },
+    { k:'紋章',     t:'text' },
+    { k:'書体',     t:'select', opts:['楷書','行書','草書','隷書','篆書','その他'] },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  'クリーニング': [
+    { k:'清掃箇所', t:'text' },
+    { k:'使用薬剤', t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '移設': [
+    { k:'移設元',   t:'text' },
+    { k:'移設先',   t:'text' },
+    { k:'運搬方法', t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '小工事': [
+    { k:'工事内容', t:'textarea', rows:2 },
+    { k:'使用材料', t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ],
+  '他工事': [
+    { k:'工事内容', t:'textarea', rows:2 },
+    { k:'使用材料', t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
+  ]
+};
+
+function loadHakaSpec(d) {
+  var raw = (d && d['HakaSpec']) || '';
+  if (!raw || typeof raw !== 'string') return {};
+  try { return JSON.parse(raw) || {}; }
+  catch(e) { console.warn('HakaSpec parse error:', e); return {}; }
+}
+
+function saveHakaSpec(d, spec) {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var itemId = d && d['id'];
+  if (!itemId) return Promise.reject(new Error('itemId なし'));
+  var json = JSON.stringify(spec || {});
+  return getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
+                 '/lists/' + KOUJI_LIST_ID + '/items/' + itemId + '/fields',
+      { method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + resp.accessToken,
+                   'Content-Type': 'application/json' },
+        body: JSON.stringify({ HakaSpec: json }) });
+  }).then(function(r) {
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t.substring(0,200)); });
+    d['HakaSpec'] = json;
+    return r.json().catch(function(){ return {}; });
+  });
+}
+
+function renderHakaSpecTab(d) {
+  var b = document.getElementById('det-body');
+  if (!b) return;
+  var spec = _hakaSpecData || {};
+
+  var saveBtnStyle = 'padding:7px 18px;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:600;' +
+    (_hakaSpecDirty
+      ? 'background:#2a6a2a;color:#fff;border:2px solid #d00;box-shadow:0 0 0 2px rgba(200,0,0,0.18);'
+      : 'background:#2a6a2a;color:#fff;border:2px solid transparent;');
+  var saveBtnLabel = '💾 保存' + (_hakaSpecDirty
+    ? ' <span style="font-size:10px;background:#d00;color:#fff;border-radius:5px;padding:1px 6px;margin-left:4px;font-weight:700;letter-spacing:.03em">●未保存</span>'
+    : '');
+
+  var subtabHtml =
+    '<div style="position:sticky;top:0;z-index:10;background:#fff;display:flex;gap:6px;margin-bottom:12px;border-bottom:2px solid #ddd;align-items:stretch;padding-top:2px">' +
+    '<button onclick="switchHakaSpecSubtab(\'basic\')" style="' +
+      (_hakaSpecSubtab==='basic' ? 'background:#5a3a00;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📋 基本情報</button>' +
+    '<button onclick="switchHakaSpecSubtab(\'photos\')" style="' +
+      (_hakaSpecSubtab==='photos' ? 'background:#5a3a00;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📷 写真・図面</button>' +
+    '<button onclick="switchHakaSpecSubtab(\'ai\')" style="' +
+      (_hakaSpecSubtab==='ai' ? 'background:#4a2a7a;color:#fff;' : 'background:#eee;color:#666;') +
+      'padding:8px 16px;border:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📑 資料作成</button>' +
+    '<div style="flex:1"></div>' +
+    '<button id="haka-spec-save-btn" onclick="saveHakaSpecCurrent()" style="' + saveBtnStyle + '">' + saveBtnLabel + '</button>' +
+    '</div>';
+
+  if (_hakaSpecSubtab === 'photos') {
+    b.innerHTML = subtabHtml + renderHakaSpecPhotosShell();
+    setTimeout(function(){ renderHakaSpecPhotoList(d, _hakaSpecPhotoCat); }, 30);
+  } else if (_hakaSpecSubtab === 'ai') {
+    b.innerHTML = subtabHtml + renderHakaSpecDocsTab(d, spec);
+  } else {
+    b.innerHTML = subtabHtml + renderHakaSpecBasicForm(spec, d);
+  }
+}
+
+function switchHakaSpecSubtab(name) {
+  _hakaSpecSubtab = name;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function _hakaSpecEsc(v) { return (v == null ? '' : String(v)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function _hakaSpecJsStr(v) { return String(v == null ? '' : v).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+function _hakaSpecActiveCats(spec, d) {
+  var currentCat = (d && d['category']) || '';
+  var cats = (spec.categories && spec.categories.length > 0) ? spec.categories.slice() : [];
+  // 主分類（d.category）が定義済みなら必ず先頭に配置
+  // 既に含まれていても先頭に移動 → 分類を戻した時の順序復元に対応
+  if (currentCat && HAKA_SPEC_CATEGORY_FIELDS[currentCat]) {
+    cats = cats.filter(function(c) { return c !== currentCat; });
+    cats.unshift(currentCat);
+  }
+  if (cats.length === 0) {
+    cats = currentCat ? [currentCat] : ['他工事'];
+  }
+  return cats;
+}
+
+function _hakaSpecIsEmpty(catData) {
+  if (!catData || typeof catData !== 'object') return true;
+  return !Object.keys(catData).filter(function(k){ return k !== '_status'; }).some(function(k) {
+    var v = catData[k];
+    if (v == null || v === '') return false;
+    if (typeof v === 'object') return Object.keys(v).some(function(kk){ return v[kk] != null && v[kk] !== ''; });
+    return true;
+  });
+}
+
+// ----- 確定/検討中/未定 ステータス -----
+var HAKA_SPEC_STATUS_ORDER = ['undecided','tentative','confirmed'];
+var HAKA_SPEC_STATUSES = {
+  undecided: { label:'未定', icon:'⚪', btnBg:'#fff',   btnColor:'#888',    btnBorder:'#ccc',    fieldBg:'transparent', accent:'transparent' },
+  tentative: { label:'検討', icon:'⏳', btnBg:'#fff8e0', btnColor:'#a07000', btnBorder:'#d8b850', fieldBg:'#fffbe8',     accent:'#d8b850'      },
+  confirmed: { label:'確定', icon:'✅', btnBg:'#e7f5e7', btnColor:'#2a6a2a', btnBorder:'#7ab07a', fieldBg:'#f5fbf5',     accent:'#7ab07a'      }
+};
+
+function _hakaSpecGetStatus(catData, key) {
+  if (!catData || !catData._status) return 'undecided';
+  return catData._status[key] || 'undecided';
+}
+
+function _hakaSpecRenderStatusBtn(catJs, key, status) {
+  var s = HAKA_SPEC_STATUSES[status] || HAKA_SPEC_STATUSES.undecided;
+  return '<button type="button" onclick="cycleHakaSpecStatus(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\')" ' +
+    'style="background:' + s.btnBg + ';color:' + s.btnColor + ';border:1px solid ' + s.btnBorder + ';' +
+    'border-radius:5px;padding:3px 1px;cursor:pointer;font-size:10px;font-family:inherit;line-height:1.15;' +
+    'writing-mode:vertical-rl;text-orientation:upright;letter-spacing:2px;' +
+    'flex-shrink:0;font-weight:700;width:18px;display:flex;align-items:center;justify-content:center" ' +
+    'title="クリックで状態切替（' + s.icon + ' ' + s.label + ' → 次へ）">' + s.label + '</button>';
+}
+
+function cycleHakaSpecStatus(cat, key) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData[cat]) _hakaSpecData[cat] = {};
+  if (!_hakaSpecData[cat]._status) _hakaSpecData[cat]._status = {};
+  var current = _hakaSpecData[cat]._status[key] || 'undecided';
+  var idx = HAKA_SPEC_STATUS_ORDER.indexOf(current);
+  var next = HAKA_SPEC_STATUS_ORDER[(idx + 1) % HAKA_SPEC_STATUS_ORDER.length];
+  if (next === 'undecided') {
+    delete _hakaSpecData[cat]._status[key];
+    if (Object.keys(_hakaSpecData[cat]._status).length === 0) delete _hakaSpecData[cat]._status;
+  } else {
+    _hakaSpecData[cat]._status[key] = next;
+  }
+  _hakaSpecDirty = true;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+// ----- ファイル単位ステータス（写真・図面タブ） -----
+function _hakaSpecGetFileStatus(cat, fileName) {
+  if (!_hakaSpecData || !_hakaSpecData.fileStatus) return 'undecided';
+  if (!_hakaSpecData.fileStatus[cat]) return 'undecided';
+  return _hakaSpecData.fileStatus[cat][fileName] || 'undecided';
+}
+
+function cycleHakaSpecFileStatus(cat, fileName) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData.fileStatus) _hakaSpecData.fileStatus = {};
+  if (!_hakaSpecData.fileStatus[cat]) _hakaSpecData.fileStatus[cat] = {};
+  var current = _hakaSpecData.fileStatus[cat][fileName] || 'undecided';
+  var idx = HAKA_SPEC_STATUS_ORDER.indexOf(current);
+  var next = HAKA_SPEC_STATUS_ORDER[(idx + 1) % HAKA_SPEC_STATUS_ORDER.length];
+  if (next === 'undecided') {
+    delete _hakaSpecData.fileStatus[cat][fileName];
+    if (Object.keys(_hakaSpecData.fileStatus[cat]).length === 0) delete _hakaSpecData.fileStatus[cat];
+    if (Object.keys(_hakaSpecData.fileStatus).length === 0) delete _hakaSpecData.fileStatus;
+  } else {
+    _hakaSpecData.fileStatus[cat][fileName] = next;
+  }
+  _hakaSpecDirty = true;
+  _refreshHakaSpecSaveBtn();
+  if (currentItem) renderHakaSpecPhotoList(currentItem, _hakaSpecPhotoCat);
+}
+
+function _refreshHakaSpecSaveBtn() {
+  var btn = document.getElementById('haka-spec-save-btn');
+  if (!btn) return;
+  if (_hakaSpecDirty) {
+    btn.style.border = '2px solid #d00';
+    btn.style.boxShadow = '0 0 0 2px rgba(200,0,0,0.18)';
+    btn.innerHTML = '💾 保存 <span style="font-size:10px;background:#d00;color:#fff;border-radius:5px;padding:1px 6px;margin-left:4px;font-weight:700;letter-spacing:.03em">●未保存</span>';
+  } else {
+    btn.style.border = '2px solid transparent';
+    btn.style.boxShadow = '';
+    btn.innerHTML = '💾 保存';
+  }
+}
+
+function toggleHakaSpecGroupExcluded(cat, groupLabel, checked) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData._groupExcluded) _hakaSpecData._groupExcluded = {};
+  var key = cat + '::' + groupLabel;
+  if (checked) _hakaSpecData._groupExcluded[key] = true;
+  else delete _hakaSpecData._groupExcluded[key];
+  if (Object.keys(_hakaSpecData._groupExcluded).length === 0) delete _hakaSpecData._groupExcluded;
+  _hakaSpecDirty = true;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function renderHakaSpecBasicForm(spec, d) {
+  var activeCats = _hakaSpecActiveCats(spec, d);
+  // spec.categories を表示順に同期（保存される JSON とAIプロンプトの整合性確保）
+  spec.categories = activeCats.slice();
+  if (_hakaSpecData) _hakaSpecData.categories = activeCats.slice();
+  var primaryCat = activeCats[0];
+
+  var blocksHtml = activeCats.map(function(cat) {
+    return renderHakaSpecCategoryBlock(cat, spec[cat] || {}, cat === primaryCat);
+  }).join('');
+
+  // 追加可能な分類リスト（既にアクティブでないもの）
+  var addable = Object.keys(HAKA_SPEC_CATEGORY_FIELDS).filter(function(c) {
+    return activeCats.indexOf(c) === -1;
+  });
+  var addBtn = '';
+  if (addable.length > 0) {
+    var optHtml = '<option value="">-- 分類を選択 --</option>' +
+      addable.map(function(c){ return '<option value="' + c + '">' + c + '</option>'; }).join('');
+    addBtn =
+      '<div style="margin-top:14px;padding:10px;background:#f6f1e8;border:1px dashed #c8b890;border-radius:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span style="font-size:12px;color:#5a3a00;font-weight:600">＋ 分類項目を追加：</span>' +
+        '<select id="haka-spec-add-cat" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;font-size:12px">' + optHtml + '</select>' +
+        '<button onclick="addHakaSpecCategory(document.getElementById(\'haka-spec-add-cat\').value)" style="padding:5px 14px;background:#5a3a00;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit">追加</button>' +
+        '<span style="font-size:10px;color:#888;margin-left:auto">※ 撤去後の墓新規など複数分類の工事に対応</span>' +
+      '</div>';
+  }
+
+  return '' +
+    blocksHtml + addBtn;
+}
+
+function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
+  var fields = HAKA_SPEC_CATEGORY_FIELDS[cat];
+  if (!fields) {
+    return '<div class="sec"><span class="sec-hdr" style="background:#999;color:#fff">' + cat + '（定義なし）</span>' +
+           '<div style="padding:10px;color:#888;font-size:12px">この分類の項目定義がありません。</div></div>';
+  }
+  var inpStyle = 'width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:5px;font-family:inherit;font-size:12px;box-sizing:border-box';
+  var lblStyle = 'display:block;font-size:10.5px;color:#666;font-weight:600;margin-bottom:2px;line-height:1.3';
+  var catJs = _hakaSpecJsStr(cat);
+
+  function fldWrap(status, body) {
+    var s = HAKA_SPEC_STATUSES[status] || HAKA_SPEC_STATUSES.undecided;
+    var bg = s.fieldBg !== 'transparent' ? 'background:' + s.fieldBg + ';' : '';
+    var border = s.accent !== 'transparent' ? 'border-left:3px solid ' + s.accent + ';' : 'border-left:3px solid transparent;';
+    return '<div style="' + bg + border + 'border-radius:4px;padding:4px 6px 4px 8px;height:100%;box-sizing:border-box">' + body + '</div>';
+  }
+
+  function renderField(f) {
+    var key = f.k;
+    var label = f.label || key;
+    var val = catData[key];
+    var status = _hakaSpecGetStatus(catData, key);
+    var statusBtn = (key === '備考') ? '' : _hakaSpecRenderStatusBtn(catJs, key, status);
+    var keyJs = _hakaSpecJsStr(key);
+    var isConfirmed = (status === 'confirmed');
+    var dis = (isConfirmed && key !== '備考') ? ' disabled' : '';
+    var disStyle = (isConfirmed && key !== '備考') ? ';background:#f0f0f0;color:#222;cursor:not-allowed' : '';
+
+    if (f.t === 'select') {
+      var optHtml = '<option value=""></option>' + (f.opts||[]).map(function(o){
+        return '<option' + (o===val?' selected':'') + '>' + o + '</option>';
+      }).join('');
+      return fldWrap(status,
+        '<label style="' + lblStyle + '">' + label + '</label>' +
+        '<div style="display:flex;gap:4px;align-items:stretch">' +
+          '<select' + dis + ' onchange="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" style="' + inpStyle + ';flex:1;min-width:0' + disStyle + '">' + optHtml + '</select>' +
+          statusBtn +
+        '</div>'
+      );
+    }
+    if (f.t === 'textarea') {
+      return fldWrap(status,
+        '<label style="' + lblStyle + '">' + label + '</label>' +
+        '<div style="display:flex;gap:4px;align-items:stretch">' +
+          '<textarea' + dis + ' oninput="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" rows="' + (f.rows||3) + '" style="' + inpStyle + ';flex:1;min-width:0;resize:vertical' + disStyle + '">' +
+          _hakaSpecEsc(val) + '</textarea>' +
+          statusBtn +
+        '</div>'
+      );
+    }
+    if (f.t === 'dim') {
+      var dim = (val && typeof val === 'object') ? val : {};
+      return fldWrap(status,
+        '<label style="font-size:10.5px;color:#666;font-weight:600;display:block;margin-bottom:3px">' + label + '</label>' +
+        '<div style="display:flex;gap:4px;align-items:stretch">' +
+          '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">' +
+            _renderHakaDimInput(catJs, key, '幅',   dim['幅'],   isConfirmed) +
+            _renderHakaDimInput(catJs, key, '奥行', dim['奥行'], isConfirmed) +
+            _renderHakaDimInput(catJs, key, '高さ', dim['高さ'], isConfirmed) +
+          '</div>' +
+          statusBtn +
+        '</div>'
+      );
+    }
+    // text
+    return fldWrap(status,
+      '<label style="' + lblStyle + '">' + label + '</label>' +
+      '<div style="display:flex;gap:4px;align-items:stretch">' +
+        '<input type="text"' + dis + ' value="' + _hakaSpecEsc(val) + '" oninput="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" style="' + inpStyle + ';flex:1;min-width:0' + disStyle + '">' +
+        statusBtn +
+      '</div>'
+    );
+  }
+
+  // --- フィールドをグループ/サブグループ行に前処理 ---
+  var sections = [];
+  var curGroup = null;
+  var curRow = null;
+
+  fields.forEach(function(f) {
+    if (f.group) {
+      curGroup = { label: f.group, rows: [], nowrap: !!f.nowrap };
+      sections.push({ type: 'group', data: curGroup });
+      curRow = null;
+      return;
+    }
+    if (f.subgroup) {
+      curRow = { label: f.subgroup, items: [] };
+      if (curGroup) curGroup.rows.push(curRow);
+      else sections.push({ type: 'row', data: curRow });
+      return;
+    }
+    // 通常フィールド: curRow がなければ作成（nullラベル行）
+    if (!curRow) {
+      if (curGroup) {
+        curRow = { label: null, items: [] };
+        curGroup.rows.push(curRow);
+      } else {
+        sections.push({ type: 'item', f: f });
+        return;
+      }
+    }
+    curRow.items.push(f);
+  });
+
+  // サブグループブロック: [小ラベルチップ] + [items（横並び）] を1単位として外側flex-wrap
+  function renderSubgroupBlock(label, items, nowrap) {
+    if (items.length === 0) return '';
+    // textarea/dim を含む場合は全幅扱い（block 自体が 100% 幅を取る）
+    var hasWide = items.some(function(f){ return f.t === 'textarea' || f.t === 'dim'; });
+    var blockFlex = hasWide ? 'flex:1 1 100%;' : 'flex:0 1 auto;';
+    var html = '<div style="display:flex;align-items:stretch;gap:5px;' + blockFlex + 'min-width:0;padding:1px 0">';
+    if (label !== null) {
+      html += '<span style="background:#fdf7ed;border-left:2px solid #c8a878;padding:5px 7px;' +
+              'font-size:11px;font-weight:600;color:#7a5a30;border-radius:0 4px 4px 0;' +
+              'flex-shrink:0;display:flex;align-items:center;' +
+              'word-break:keep-all;line-height:1.3">' + label + '</span>';
+    }
+    html += '<div style="display:flex;' + (nowrap ? 'flex-wrap:nowrap' : 'flex-wrap:wrap') + ';gap:4px 5px;min-width:0;flex:1 1 auto">';
+    items.forEach(function(f) {
+      var isFullWidth = (f.t === 'textarea' || f.t === 'dim');
+      var widthStyle;
+      if (isFullWidth) {
+        widthStyle = 'flex:1 1 100%;';
+      } else if (f.w === 'narrow+') {
+        widthStyle = 'min-width:96px;flex:0 1 108px;max-width:156px;';
+      } else if (f.w === 'narrow') {
+        widthStyle = 'min-width:80px;flex:0 1 90px;max-width:130px;';
+      } else if (f.w === 'wide') {
+        widthStyle = 'min-width:200px;flex:2 1 280px;';
+      } else {
+        widthStyle = 'min-width:150px;flex:1 1 150px;';
+      }
+      html += '<div style="' + widthStyle + '">';
+      html += renderField(f);
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  // 1グループ分の本体: 内部の subgroup ブロックを flex-wrap で横並びに配置
+  function renderGroupBody(rows, nowrap) {
+    var blocks = rows.map(function(row) { return renderSubgroupBlock(row.label, row.items, nowrap); }).join('');
+    return '<div style="display:flex;flex-wrap:wrap;gap:5px 8px;padding:5px 4px;align-items:flex-start">' + blocks + '</div>';
+  }
+
+  var bodyHtml = '';
+  var hasGroups = sections.some(function(s){ return s.type === 'group' || s.type === 'row'; });
+
+  if (!hasGroups) {
+    // グループなしのシンプル分類（修繕・撤去など）: フレックスラップ
+    bodyHtml += '<div style="display:flex;flex-wrap:wrap;gap:5px 6px;padding:4px 2px">';
+    sections.forEach(function(s) {
+      if (s.type === 'item') {
+        var isWide = (s.f.t === 'textarea' || s.f.t === 'dim');
+        bodyHtml += '<div style="' + (isWide ? 'flex:1 1 100%;' : 'min-width:150px;flex:1 1 150px;') + '">';
+        bodyHtml += renderField(s.f);
+        bodyHtml += '</div>';
+      }
+    });
+    bodyHtml += '</div>';
+  } else {
+    sections.forEach(function(s) {
+      if (s.type === 'group') {
+        var gLabel = s.data.label;
+        var gKey = cat + '::' + gLabel;
+        var gExcl = !!((_hakaSpecData || {})._groupExcluded && _hakaSpecData._groupExcluded[gKey]);
+        var isBikou = (gLabel.indexOf('備考') !== -1);
+        var excBox = isBikou ? '' :
+          '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:10px;font-size:11px;color:' + (gExcl ? '#c43030' : '#999') + '">' +
+          '<input type="checkbox"' + (gExcl ? ' checked' : '') + ' onchange="toggleHakaSpecGroupExcluded(\'' + _hakaSpecJsStr(cat) + '\',\'' + _hakaSpecJsStr(gLabel) + '\',this.checked)">' +
+          '対象外</label>';
+        bodyHtml += '<div style="margin:8px 0 0;display:flex;align-items:center">' +
+          '<span style="display:inline-block;padding:5px 12px;background:' + (gExcl ? '#aaa' : '#7a5a30') + ';color:#fff;border-radius:5px;font-size:12.5px;font-weight:700;letter-spacing:.04em;box-shadow:0 1px 2px rgba(0,0,0,0.08)">' + gLabel + '</span>' +
+          excBox + '</div>';
+        if (gExcl) {
+          bodyHtml += '<div style="padding:4px 12px 6px;color:#aaa;font-size:11px;font-style:italic">（対象外）</div>';
+        } else {
+          bodyHtml += renderGroupBody(s.data.rows, s.data.nowrap);
+        }
+      } else if (s.type === 'row') {
+        bodyHtml += '<div style="display:flex;flex-wrap:wrap;gap:5px 8px;padding:5px 4px;align-items:flex-start">' + renderSubgroupBlock(s.data.label, s.data.items) + '</div>';
+      } else {
+        var isWide = (s.f.t === 'textarea' || s.f.t === 'dim');
+        bodyHtml += '<div style="' + (isWide ? 'width:100%;' : 'min-width:150px;max-width:300px;') + 'margin-bottom:3px">';
+        bodyHtml += renderField(s.f);
+        bodyHtml += '</div>';
+      }
+    });
+  }
+
+  var emptyBadge = (!isPrimary && _hakaSpecIsEmpty(catData))
+    ? '<span style="font-size:10px;background:rgba(255,255,255,0.22);color:#fff;padding:2px 8px;border-radius:8px;font-weight:400;letter-spacing:.05em">未入力</span>'
+    : '';
+  var removeBtn = isPrimary
+    ? '<span style="font-size:10px;color:#fff;opacity:.7;margin-left:auto">主分類</span>'
+    : '<button onclick="removeHakaSpecCategory(\'' + catJs + '\')" style="margin-left:auto;background:rgba(255,255,255,0.25);color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:12px;padding:2px 10px;cursor:pointer;font-size:11px;font-family:inherit">× 削除</button>';
+
+  return '<div class="sec">' +
+    '<span class="sec-hdr" style="background:#5a3a00;color:#fff;display:flex;align-items:center;gap:8px">' +
+      '<span>🪦 ' + cat + '</span>' + emptyBadge + removeBtn +
+    '</span>' +
+    '<div style="padding:8px 6px">' + bodyHtml + '</div>' +
+    '</div>';
+}
+
+function _renderHakaDimInput(catJs, key, dimKey, val, isDisabled) {
+  var inpStyle = 'width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:5px;font-family:inherit;font-size:12px;box-sizing:border-box';
+  var lblStyle = 'display:block;font-size:10.5px;color:#666;font-weight:600;margin-bottom:2px';
+  var dis = isDisabled ? ' disabled' : '';
+  var disStyle = isDisabled ? ';background:#f0f0f0;color:#222;cursor:not-allowed' : '';
+  return '<div><label style="' + lblStyle + '">' + dimKey + ' (cm)</label>' +
+         '<input type="text"' + dis + ' value="' + _hakaSpecEsc(val) + '" oninput="updateHakaSpecDim(\'' + catJs + '\',\'' + _hakaSpecJsStr(key) + '\',\'' + dimKey + '\',this.value)" style="' + inpStyle + disStyle + '"></div>';
+}
+
+function updateHakaSpecField(cat, key, val) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData[cat]) _hakaSpecData[cat] = {};
+  _hakaSpecData[cat][key] = val;
+  _hakaSpecDirty = true;
+  // 家紋系: 上台/花立/水鉢の種類で「家紋」が選ばれたら彫仕様を浮き彫りに強制
+  var rerender = false;
+  var m = key.match(/^彫刻_(上台|花立|水鉢)_種類$/);
+  if (m && val && val.indexOf('家紋') === 0) {
+    var siyoKey = '彫刻_' + m[1] + '_仕様';
+    if (_hakaSpecData[cat][siyoKey] !== '浮き彫り') {
+      _hakaSpecData[cat][siyoKey] = '浮き彫り';
+      rerender = true;
+    }
+  }
+  if (rerender && currentItem) renderHakaSpecTab(currentItem);
+}
+
+function updateHakaSpecDim(cat, key, dimKey, val) {
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData[cat]) _hakaSpecData[cat] = {};
+  if (!_hakaSpecData[cat][key] || typeof _hakaSpecData[cat][key] !== 'object') _hakaSpecData[cat][key] = {};
+  _hakaSpecData[cat][key][dimKey] = val;
+  _hakaSpecDirty = true;
+}
+
+function addHakaSpecCategory(cat) {
+  if (!cat || !HAKA_SPEC_CATEGORY_FIELDS[cat]) { showSaveToast(false, '分類を選択してください'); return; }
+  if (!_hakaSpecData) _hakaSpecData = {};
+  if (!_hakaSpecData.categories) _hakaSpecData.categories = [];
+  if (_hakaSpecData.categories.indexOf(cat) !== -1) return;
+  _hakaSpecData.categories.push(cat);
+  if (!_hakaSpecData[cat]) _hakaSpecData[cat] = {};
+  _hakaSpecDirty = true;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function removeHakaSpecCategory(cat) {
+  if (!_hakaSpecData || !_hakaSpecData.categories) return;
+  var primary = currentItem && currentItem['category'];
+  if (cat === primary) { showSaveToast(false, '主分類は削除できません'); return; }
+  if (!confirm('「' + cat + '」の項目セットを削除しますか？\n（入力した内容も削除されます）')) return;
+  _hakaSpecData.categories = _hakaSpecData.categories.filter(function(c){ return c !== cat; });
+  delete _hakaSpecData[cat];
+  _hakaSpecDirty = true;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function saveHakaSpecCurrent() {
+  if (!currentItem) return;
+  var d = currentItem;
+  var spec = _hakaSpecData || {};
+  saveHakaSpec(d, spec).then(function() {
+    _hakaSpecDirty = false;
+    showSaveToast(true, '工事仕様を保存しました');
+    renderHakaSpecTab(d);
+  }).catch(function(e) {
+    showSaveToast(false, '保存失敗: ' + e.message);
+  });
+}
+
+function reloadHakaSpecCurrent() {
+  if (!currentItem) return;
+  if (_hakaSpecDirty && !confirm('編集中の内容を破棄してリセットしますか？')) return;
+  _hakaSpecData = loadHakaSpec(currentItem);
+  _hakaSpecDirty = false;
+  renderHakaSpecTab(currentItem);
+}
+
+// ----- 写真・図面サブタブ -----
+function renderHakaSpecPhotosShell() {
+  var catBtns = HAKA_SPEC_PHOTO_CATS.map(function(c) {
+    var sel = c === _hakaSpecPhotoCat;
+    return '<button onclick="switchHakaSpecPhotoCat(\'' + c + '\')" style="' +
+      (sel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c8a8;') +
+      'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + c + '</button>';
+  }).join('');
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + catBtns + '</div>' +
+    '<div id="haka-spec-photo-area"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div>';
+}
+
+function switchHakaSpecPhotoCat(cat) {
+  _hakaSpecPhotoCat = cat;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function ensureHakaSpecFolder(d, cat) {
+  var base = (d && d['Folder_Pass']) || '';
+  if (!base) return Promise.reject(new Error('Folder_Pass がありません'));
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    function mkFolder(parentPath, name) {
+      var enc = parentPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children',
+        { method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) })
+        .then(function(r) {
+          if (r.ok || r.status === 409) return;
+          return r.text().then(function(t){ throw new Error(t.substring(0,200)); });
+        });
+    }
+    return mkFolder(base, '工事仕様').then(function() {
+      if (!cat) return;
+      return mkFolder(base + '/工事仕様', cat);
+    });
+  });
+}
+
+function renderHakaSpecPhotoList(d, cat) {
+  var el = document.getElementById('haka-spec-photo-area');
+  if (!el) return;
+  var folderPass = (d && d['Folder_Pass']) || '';
+  if (!folderPass) {
+    el.innerHTML = '<div style="text-align:center;color:#c00;font-size:12px;padding:16px">Folder_Pass が登録されていません。基本情報タブからフォルダーを作成してください。</div>';
+    return;
+  }
+  var subPath = folderPass + '/工事仕様/' + cat;
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var encoded = subPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded +
+              ':/children?$select=name,file,folder,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (r.status === 404) {
+          return ensureHakaSpecFolder(d, cat).then(function(){ return { value: [] }; });
+        }
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      });
+  }).then(function(data) {
+    renderHakaSpecPhotoFiles(d, cat, data.value || []);
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00;font-size:12px;padding:8px">エラー: ' + e.message + '</div>';
+  });
+}
+
+function renderHakaSpecPhotoFiles(d, cat, items) {
+  var el = document.getElementById('haka-spec-photo-area');
+  if (!el) return;
+  var subPath = (d['Folder_Pass'] || '') + '/工事仕様/' + cat;
+  var files = items.filter(function(i){ return i.file; });
+
+  function jsStr(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+  var dropZone =
+    '<div ondragover="event.preventDefault();this.style.background=\'#d0e8ff\'" ondragleave="this.style.background=\'#e6f1fb\'" ' +
+      'ondrop="handleHakaSpecDrop(event,\'' + jsStr(cat) + '\')" ' +
+      'onclick="document.getElementById(\'haka-spec-file-input\').click()" ' +
+      'style="border:2px dashed #b5d4f4;border-radius:10px;background:#e6f1fb;padding:14px;text-align:center;color:#1565c0;font-size:13px;cursor:pointer;margin-bottom:10px">' +
+      '📷 撮影 / 📎 ファイルをドロップ または タップして追加（' + cat + '）' +
+    '</div>' +
+    '<input type="file" id="haka-spec-file-input" multiple accept="image/*,application/pdf" capture="environment" ' +
+      'onchange="handleHakaSpecFileInput(this,\'' + jsStr(cat) + '\')" style="display:none">';
+
+  if (files.length === 0) {
+    el.innerHTML = dropZone +
+      '<div style="text-align:center;color:#888;font-size:12px;padding:20px">「' + cat + '」のファイルはまだありません</div>';
+    return;
+  }
+
+  var thumbFiles   = files.filter(function(f){ return f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium; });
+  var noThumbFiles = files.filter(function(f){ return !(f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium); });
+
+  function fileStatusBadge(fname) {
+    var st = _hakaSpecGetFileStatus(cat, fname);
+    var s  = HAKA_SPEC_STATUSES[st] || HAKA_SPEC_STATUSES.undecided;
+    return '<button type="button" onclick="event.stopPropagation();cycleHakaSpecFileStatus(\'' + jsStr(cat) + '\',\'' + jsStr(fname) + '\')" ' +
+      'style="background:' + s.btnBg + ';color:' + s.btnColor + ';border:1px solid ' + s.btnBorder + ';' +
+      'border-radius:10px;padding:2px 8px;cursor:pointer;font-size:10px;font-family:inherit;font-weight:700;' +
+      'flex-shrink:0" title="クリックでステータス切替（' + s.icon + ' ' + s.label + ' → 次へ）">' +
+      s.icon + ' ' + s.label + '</button>';
+  }
+
+  var grid = '';
+  if (thumbFiles.length > 0) {
+    grid = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;padding:6px 0">';
+    thumbFiles.forEach(function(f) {
+      var fpath = subPath + '/' + f.name;
+      var st = _hakaSpecGetFileStatus(cat, f.name);
+      var s  = HAKA_SPEC_STATUSES[st] || HAKA_SPEC_STATUSES.undecided;
+      var badgeOverlay =
+        '<button type="button" onclick="event.stopPropagation();cycleHakaSpecFileStatus(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+        'style="position:absolute;top:4px;left:4px;background:' + s.btnBg + ';color:' + s.btnColor + ';' +
+        'border:1px solid ' + s.btnBorder + ';border-radius:10px;padding:2px 8px;cursor:pointer;' +
+        'font-size:10px;font-family:inherit;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,0.2)" ' +
+        'title="クリックでステータス切替">' + s.icon + ' ' + s.label + '</button>';
+      grid += '<div style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa">' +
+        '<img src="' + f.thumbnails[0].medium.url + '" style="width:100%;height:140px;object-fit:cover;cursor:pointer;display:block" ' +
+          'onclick="openFolderFile(\'' + jsStr(fpath) + '\')">' +
+        badgeOverlay +
+        '<div style="font-size:10px;padding:4px 6px;background:#fff;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + f.name + '">' + f.name + '</div>' +
+        '<button onclick="deleteHakaSpecFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+          'style="position:absolute;top:4px;right:4px;background:rgba(200,40,40,0.9);color:#fff;border:none;border-radius:50%;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:24px;padding:0">×</button>' +
+        '</div>';
+    });
+    grid += '</div>';
+  }
+
+  var listHtml = '';
+  if (noThumbFiles.length > 0) {
+    listHtml = '<div style="margin-top:10px">';
+    noThumbFiles.forEach(function(f) {
+      var fpath = subPath + '/' + f.name;
+      listHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #eee">' +
+        '<span style="font-size:18px">📄</span>' +
+        '<a href="javascript:void(0)" onclick="openFolderFile(\'' + jsStr(fpath) + '\')" style="flex:1;color:#1565c0;text-decoration:none;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</a>' +
+        fileStatusBadge(f.name) +
+        '<button onclick="deleteHakaSpecFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" style="background:#c00;color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;font-family:inherit">削除</button>' +
+        '</div>';
+    });
+    listHtml += '</div>';
+  }
+
+  el.innerHTML = dropZone + grid + listHtml;
+}
+
+function handleHakaSpecDrop(e, cat) {
+  e.preventDefault();
+  var files = Array.prototype.slice.call(e.dataTransfer.files);
+  if (files.length === 0) return;
+  uploadHakaSpecFiles(files, cat);
+}
+
+function handleHakaSpecFileInput(input, cat) {
+  var files = Array.prototype.slice.call(input.files);
+  if (files.length === 0) return;
+  uploadHakaSpecFiles(files, cat);
+  input.value = '';
+}
+
+function uploadHakaSpecFiles(files, cat) {
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var targetPath = folderPass + '/工事仕様/' + cat;
+
+  ensureHakaSpecFolder(d, cat).then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    return files.reduce(function(chain, file) {
+      return chain.then(function() {
+        var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(file.name) + ':/content';
+        return fetch(uploadUrl, {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        }).then(function(r) {
+          if (!r.ok) return r.text().then(function(t){ throw new Error(file.name + ': ' + t.substring(0,120)); });
+        });
+      });
+    }, Promise.resolve());
+  }).then(function() {
+    showSaveToast(true, files.length + '件アップロード完了');
+    setTimeout(function(){ renderHakaSpecPhotoList(d, cat); }, 800);
+  }).catch(function(e) {
+    showSaveToast(false, 'アップロードエラー: ' + e.message);
+  });
+}
+
+function deleteHakaSpecFile(cat, fileName) {
+  if (!confirm('「' + fileName + '」を削除しますか？')) return;
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) return;
+  var fpath = folderPass + '/工事仕様/' + cat + '/' + fileName;
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) throw new Error(r.status);
+    showSaveToast(true, '削除しました');
+    setTimeout(function(){ renderHakaSpecPhotoList(d, cat); }, 500);
+  }).catch(function(e) {
+    showSaveToast(false, '削除エラー: ' + e.message);
+  });
+}
+
+
+// ----- 資料作成サブタブ -----
+var _hakaSpecDocsView = 'ai';       // 'ai' | 'choukoku'
+var _hakaSpecAIType = 'customer';   // 'customer' | 'worker' | 'summary'
+var _hakaSpecAITextMap = {};        // { 'customer': '...', 'worker': '...', 'summary': '...' }
+var _hakaSpecAIGenerating = false;
+var HAKA_SPEC_AI_TYPES = {
+  customer: { label:'👤 お客様確認書', file:'お客様確認書.txt' },
+  worker:   { label:'🔨 職人指示書',  file:'職人指示書.txt' },
+  summary:  { label:'📋 簡易まとめ',  file:'簡易まとめ.txt' }
+};
+
+// 彫刻確認資料 - 部位プルダウンの定番リスト
+var HAKA_CHOUKOKU_DOC_PARTS = [
+  '竿石　正面',
+  '竿石　裏面',
+  '竿石　左側面',
+  '竿石　右側面',
+  '上台',
+  '中台',
+  '下台',
+  '香炉',
+  '花立',
+  '水鉢',
+  '墓誌',
+  '塔婆建',
+  '名刺受け',
+  '霊標'
+];
+var _hakaChoukokuDocPart = '';     // 選択中の部位
+var _hakaChoukokuDocFile = '';     // 選択中のファイル名
+
+function renderHakaSpecDocsTab(d, spec) {
+  var aiSel       = _hakaSpecDocsView === 'ai';
+  var choukokuSel = _hakaSpecDocsView === 'choukoku';
+  var nav =
+    '<div style="display:flex;gap:8px;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #eee;flex-wrap:wrap">' +
+      '<button onclick="switchHakaSpecDocsView(\'ai\')" style="' +
+        (aiSel ? 'background:#4a2a7a;color:#fff;border:1px solid #4a2a7a;' : 'background:#fff;color:#4a2a7a;border:1px solid #c8b8d8;') +
+        'padding:8px 18px;border-radius:18px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🤖 AI整形</button>' +
+      '<button onclick="switchHakaSpecDocsView(\'choukoku\')" style="' +
+        (choukokuSel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c0a0;') +
+        'padding:8px 18px;border-radius:18px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">📄 彫刻確認資料作成</button>' +
+    '</div>';
+  var body = aiSel ? renderHakaSpecAITab(d, spec) : renderHakaSpecChoukokuDocPanel(d, spec);
+  return nav + body;
+}
+
+function switchHakaSpecDocsView(view) {
+  if (view !== 'ai' && view !== 'choukoku') return;
+  _hakaSpecDocsView = view;
+  if (currentItem) renderHakaSpecTab(currentItem);
+  if (view === 'choukoku') {
+    setTimeout(function(){ loadHakaChoukokuDocFiles(); }, 30);
+  }
+}
+
+function renderHakaSpecAITab(d, spec) {
+  var typeBtns = Object.keys(HAKA_SPEC_AI_TYPES).map(function(k) {
+    var t = HAKA_SPEC_AI_TYPES[k];
+    var sel = k === _hakaSpecAIType;
+    return '<button onclick="switchHakaSpecAIType(\'' + k + '\')" style="' +
+      (sel ? 'background:#4a2a7a;color:#fff;border:1px solid #4a2a7a;' : 'background:#fff;color:#4a2a7a;border:1px solid #c8b8d8;') +
+      'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + t.label + '</button>';
+  }).join('');
+
+  var cfg = getAICfg();
+  var modelInfo = cfg.apiKey
+    ? '<span style="color:#666">' + (cfg.provider==='claude' ? 'Claude' : 'ローカルLLM') + ' / ' + (cfg.model || 'claude-sonnet-4-6') + '</span>'
+    : '<span style="color:#c00">⚠️ APIキー未設定</span> <button onclick="openSettingsForAI()" style="margin-left:6px;padding:2px 10px;background:#4a2a7a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">設定を開く</button>';
+
+  var disabled = _hakaSpecAIGenerating ? ' disabled style="opacity:.5;cursor:not-allowed"' : '';
+  var currentText = _hakaSpecAITextMap[_hakaSpecAIType] || '';
+
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + typeBtns + '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:#f4eef7;border-radius:8px;flex-wrap:wrap">' +
+      '<div style="display:flex;gap:6px">' +
+        '<button id="haka-spec-ai-gen-btn" onclick="generateHakaSpecAI(false)"' + disabled + ' style="padding:6px 14px;background:#4a2a7a;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">🤖 AI生成</button>' +
+        '<button onclick="generateHakaSpecAI(true)"' + disabled + ' style="padding:6px 14px;background:#666;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit">♻️ 再生成</button>' +
+      '</div>' +
+      '<div style="font-size:11px">' + modelInfo + '</div>' +
+    '</div>' +
+    '<textarea id="haka-spec-ai-text" oninput="_hakaSpecAITextMap[_hakaSpecAIType]=this.value" placeholder="「🤖 AI生成」ボタンを押すと、入力済みの仕様情報をもとに文書をストリーミング生成します。生成後はこのまま編集できます。" style="width:100%;min-height:400px;padding:14px;border:1px solid #c8b8d8;border-radius:8px;font-family:serif;font-size:13px;line-height:1.8;box-sizing:border-box;resize:vertical;background:#fff">' + _hakaSpecEsc(currentText) + '</textarea>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">' +
+      '<button onclick="saveHakaSpecAIText()" style="padding:7px 16px;background:#2a6a2a;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">💾 SharePoint保存</button>' +
+      '<button onclick="printHakaSpecAIText()" style="padding:7px 16px;background:#1a5a9a;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 印刷</button>' +
+    '</div>';
+}
+
+function switchHakaSpecAIType(type) {
+  if (!HAKA_SPEC_AI_TYPES[type]) return;
+  _hakaSpecAIType = type;
+  if (currentItem) renderHakaSpecTab(currentItem);
+}
+
+function openSettingsForAI() {
+  if (typeof openSettingsPage === 'function') {
+    openSettingsPage();
+  } else {
+    var el = document.getElementById('settings-screen');
+    if (el) el.classList.remove('hidden');
+  }
+}
+
+function buildHakaSpecPrompt(d, spec, type) {
+  var customer = d['Customers'] || d['Title'] || '';
+  var atena    = d['atena']     || customer;
+  var temple   = d['Temples']   || '';
+  var contents = d['ConstructionContents'] || '';
+  var startD   = d['ConstructionStartDate'] || '';
+  var endD     = d['ConstructionCompletionDate'] || '';
+  var hakaName = d['HakaName']  || '';
+
+  function fmtDate(s) {
+    if (!s) return '';
+    return String(s).substring(0,10).replace(/-/g,'/');
+  }
+
+  var specLines = [];
+  var cats = (spec.categories || []);
+  if (cats.length === 0 && d['category']) cats = [d['category']];
+  var hasTentative = false, hasUndecided = false;
+  cats.forEach(function(cat) {
+    var data = spec[cat] || {};
+    var keys = Object.keys(data).filter(function(k){ return k !== '_status'; });
+    if (keys.length === 0 && !(data._status && Object.keys(data._status).length > 0)) return;
+    specLines.push('【' + cat + '】');
+    // フィールド定義順に並べる（グループ見出しエントリは除外、未入力でもステータスが付いていれば表示）
+    var defKeys = (HAKA_SPEC_CATEGORY_FIELDS[cat] || [])
+      .filter(function(f){ return f.k; })
+      .map(function(f){ return f.k; });
+    var orderedKeys = defKeys.length > 0 ? defKeys : keys;
+    orderedKeys.forEach(function(k) {
+      var v = data[k];
+      var status = (data._status && data._status[k]) || 'undecided';
+      var hasValue = false;
+      var valStr = '';
+      if (v && typeof v === 'object') {
+        var dim = Object.keys(v).map(function(kk){ return kk + '=' + v[kk]; }).filter(function(s){ return !s.endsWith('='); }).join(' × ');
+        if (dim) { hasValue = true; valStr = dim; }
+      } else if (v != null && String(v).trim()) {
+        hasValue = true; valStr = String(v);
+      }
+      var mark = '';
+      if (status === 'tentative')      { mark = '【検討中】'; hasTentative = true; }
+      else if (status === 'confirmed') { mark = '【確定】'; }
+      else if (status === 'undecided' && !hasValue) { mark = '【未定】'; hasUndecided = true; }
+      if (!hasValue && status === 'undecided') return;  // 未入力かつ未定はスキップ
+      specLines.push('・' + k + ': ' + (hasValue ? valStr : '') + (mark ? ' ' + mark : ''));
+    });
+  });
+
+  var specText = specLines.join('\n') || '（仕様未入力）';
+  var statusNote = '';
+  if (hasTentative || hasUndecided) {
+    statusNote = '\n\n※ 表記ルール：「【検討中】」は商談中で未確定の項目です。「【未定】」は未決定の項目です。出力では、検討中項目は値の後に「（検討中）」と注記し、未定項目は「未定」と表記してください。';
+  }
+
+  var baseInfo =
+    '顧客：' + customer + '\n' +
+    (atena && atena !== customer ? '宛名：' + atena + '\n' : '') +
+    'お寺：' + temple + '\n' +
+    (hakaName ? '墓名：' + hakaName + '\n' : '') +
+    '工事内容：' + contents + '\n' +
+    '工期：' + fmtDate(startD) + ' 〜 ' + fmtDate(endD) + '\n\n' +
+    specText + statusNote;
+
+  var sys, user;
+  if (type === 'worker') {
+    sys = 'あなたは石材店の現場監督です。職人向けの実用的な施工指示書を作成してください。' +
+          '工程順に整理し、寸法・材料・特記事項を明確に記載し、各項目はチェックボックス形式（□）で書いてください。' +
+          '余分な前置きや末尾の挨拶は不要です。';
+    user = '以下の工事情報から「職人向け施工指示書」を作成してください。\n\n' + baseInfo;
+  } else if (type === 'summary') {
+    sys = 'あなたは石材店の事務員です。工事情報を簡潔にまとめてください。' +
+          '箇条書き中心で5〜10行程度。前置きや末尾の挨拶は不要です。';
+    user = '以下の工事情報から「簡易まとめ」を作成してください。\n\n' + baseInfo;
+  } else {
+    sys = 'あなたは石材店の事務員です。お客様向けの丁寧で分かりやすい工事仕様確認書を作成してください。' +
+          '専門用語は補足を添えて、敬語の文体で書いてください。最後に署名欄を設けてください。' +
+          '検討中の項目には「（検討中）」と注記し、文末に「※印は検討中につき決定後に変更となる場合がございます」と添えてください。';
+    user = '以下の工事情報から「お客様向け工事仕様確認書」を作成してください。\n\n' + baseInfo;
+  }
+  return { system: sys, user: user };
+}
+
+function generateHakaSpecAI(forceRegen) {
+  if (_hakaSpecAIGenerating) return;
+  if (!currentItem) return;
+  var cfg = getAICfg();
+  if (!cfg.apiKey && cfg.provider === 'claude') {
+    showSaveToast(false, 'APIキーが未設定です。設定画面から登録してください');
+    return;
+  }
+  var d = currentItem;
+  var spec = _hakaSpecData || {};
+  var type = _hakaSpecAIType;
+  var prompt = buildHakaSpecPrompt(d, spec, type);
+
+  // クリアして開始
+  _hakaSpecAITextMap[type] = '';
+  _hakaSpecAIGenerating = true;
+  var ta = document.getElementById('haka-spec-ai-text');
+  if (ta) ta.value = '';
+  var btn = document.getElementById('haka-spec-ai-gen-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.textContent = '⏳ 生成中...'; }
+
+  callAI(prompt.system, prompt.user, function(chunk) {
+    _hakaSpecAITextMap[type] = (_hakaSpecAITextMap[type] || '') + chunk;
+    var ta2 = document.getElementById('haka-spec-ai-text');
+    if (ta2) {
+      ta2.value = _hakaSpecAITextMap[type];
+      ta2.scrollTop = ta2.scrollHeight;
+    }
+  }, function(err) {
+    _hakaSpecAIGenerating = false;
+    var btn2 = document.getElementById('haka-spec-ai-gen-btn');
+    if (btn2) { btn2.disabled = false; btn2.style.opacity = '1'; btn2.textContent = '🤖 AI生成'; }
+    if (err) {
+      showSaveToast(false, 'AI生成エラー: ' + err.message);
+    } else {
+      showSaveToast(true, '生成完了');
+    }
+  });
+}
+
+function saveHakaSpecAIText() {
+  if (!currentItem) return;
+  var d = currentItem;
+  var ta = document.getElementById('haka-spec-ai-text');
+  var text = ta ? ta.value : (_hakaSpecAITextMap[_hakaSpecAIType] || '');
+  if (!text.trim()) { showSaveToast(false, '保存する内容がありません'); return; }
+  var fileName = (HAKA_SPEC_AI_TYPES[_hakaSpecAIType] || {}).file || 'AI整形.txt';
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var subPath = folderPass + '/工事仕様/AI整形';
+  ensureHakaSpecFolder(d, 'AI整形').then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var enc = (subPath + '/' + fileName).split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'text/plain;charset=utf-8' },
+      body: new Blob([text], { type: 'text/plain;charset=utf-8' })
+    });
+  }).then(function(r) {
+    if (!r.ok) throw new Error(r.status);
+    showSaveToast(true, fileName + ' を保存しました');
+  }).catch(function(e) { showSaveToast(false, '保存エラー: ' + e.message); });
+}
+
+function printHakaSpecAIText() {
+  var ta = document.getElementById('haka-spec-ai-text');
+  var text = ta ? ta.value : (_hakaSpecAITextMap[_hakaSpecAIType] || '');
+  if (!text.trim()) { showSaveToast(false, '印刷する内容がありません'); return; }
+  var w = window.open('', '_blank', 'width=800,height=1000');
+  if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
+  var title = (HAKA_SPEC_AI_TYPES[_hakaSpecAIType] || {}).label || 'AI整形';
+  var safe = String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  w.document.write(
+    '<html><head><title>' + title + '</title>' +
+    '<style>body{font-family:"Yu Mincho","游明朝",serif;padding:40px;white-space:pre-wrap;line-height:1.9;font-size:14px;color:#222}@media print{body{padding:20px}}</style>' +
+    '</head><body>' + safe + '</body></html>'
+  );
+  w.document.close();
+  w.focus();
+  setTimeout(function(){ w.print(); }, 500);
+}
+
+// ----- 彫刻確認資料作成 -----
+var _hakaChoukokuDocCache = { items: [], loading: false };
+
+function renderHakaSpecChoukokuDocPanel(d, spec) {
+  if (!d || !d['Folder_Pass']) {
+    return '<div style="text-align:center;color:#c00;font-size:12px;padding:16px;background:#fff5f5;border:1px solid #fcc;border-radius:8px">Folder_Pass が登録されていません</div>';
+  }
+  var partOpts = ['<option value="">-- 部位を選択 --</option>'].concat(
+    HAKA_CHOUKOKU_DOC_PARTS.map(function(p) {
+      var sel = (p === _hakaChoukokuDocPart) ? ' selected' : '';
+      return '<option value="' + _hakaSpecEsc(p) + '"' + sel + '>' + _hakaSpecEsc(p) + '</option>';
+    })
+  ).join('');
+
+  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px">' +
+    '<div style="font-size:13px;font-weight:700;color:#5a3a00;margin-bottom:8px">📄 彫刻確認資料作成（A3縦・1枚）</div>' +
+    '<div style="font-size:11px;color:#777;margin-bottom:12px">部位を選び、彫刻資料フォルダーから「検討中」のファイルを選択して実行ボタンを押してください。</div>' +
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<label style="font-size:12px;color:#333">部位<br>' +
+        '<select id="haka-choukoku-doc-part" onchange="_hakaChoukokuDocPart=this.value" style="width:260px;padding:6px 8px;font-size:13px;font-family:inherit;border:1px solid #c8b8a0;border-radius:6px;background:#fff">' + partOpts + '</select>' +
+      '</label>' +
+      '<label style="font-size:12px;color:#333">ファイル（彫刻資料 / 検討中のみ）<br>' +
+        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px">読み込み中...</div>' +
+      '</label>' +
+      '<div style="display:flex;gap:8px;margin-top:6px">' +
+        '<button onclick="executeChoukokuDoc()" style="padding:8px 18px;background:#5a3a00;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 実行（A3縦印刷）</button>' +
+        '<button onclick="loadHakaChoukokuDocFiles()" style="padding:8px 14px;background:#fff;color:#5a3a00;border:1px solid #5a3a00;border-radius:16px;cursor:pointer;font-size:12px;font-family:inherit">🔄 ファイル一覧を更新</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function loadHakaChoukokuDocFiles() {
+  var el = document.getElementById('haka-choukoku-doc-files');
+  if (!el) return;
+  if (!currentItem) { el.innerHTML = '<div style="color:#888">顧客が選択されていません</div>'; return; }
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { el.innerHTML = '<div style="color:#c00">Folder_Pass がありません</div>'; return; }
+
+  el.innerHTML = '<div style="color:#888">読み込み中...</div>';
+  var subPath = folderPass + '/工事仕様/彫刻資料';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var enc = subPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc +
+              ':/children?$select=name,file,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) {
+        if (r.status === 404) return { value: [] };
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      });
+  }).then(function(data) {
+    var items = (data.value || []).filter(function(i){ return i.file; });
+    // 検討中のみフィルタ
+    var tentative = items.filter(function(f){
+      return _hakaSpecGetFileStatus('彫刻資料', f.name) === 'tentative';
+    });
+    _hakaChoukokuDocCache.items = tentative;
+    if (tentative.length === 0) {
+      el.innerHTML = '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>';
+      return;
+    }
+    var rows = tentative.map(function(f) {
+      var checked = (f.name === _hakaChoukokuDocFile) ? ' checked' : '';
+      var thumbHtml = '';
+      if (f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
+        thumbHtml = '<img src="' + f.thumbnails[0].small.url + '" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0">';
+      } else {
+        thumbHtml = '<span style="font-size:24px;width:48px;text-align:center">📄</span>';
+      }
+      return '<label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f0e8d8;cursor:pointer">' +
+        '<input type="radio" name="haka-choukoku-doc-file" value="' + _hakaSpecEsc(f.name) + '" onchange="_hakaChoukokuDocFile=this.value"' + checked + '>' +
+        thumbHtml +
+        '<span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _hakaSpecEsc(f.name) + '">' + _hakaSpecEsc(f.name) + '</span>' +
+        '</label>';
+    }).join('');
+    el.innerHTML = rows;
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00">エラー: ' + (e && e.message || e) + '</div>';
+  });
+}
+
+function executeChoukokuDoc() {
+  var part = _hakaChoukokuDocPart || '';
+  var fname = _hakaChoukokuDocFile || '';
+  if (!part) { showSaveToast(false, '部位を選択してください'); return; }
+  if (!fname) { showSaveToast(false, 'ファイルを選択してください'); return; }
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var fpath = folderPass + '/工事仕様/彫刻資料/' + fname;
+
+  // SharePointから画像をbase64取得して印刷ウィンドウに埋め込む
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+      .then(function(r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.blob();
+      });
+  }).then(function(blob) {
+    return new Promise(function(resolve, reject) {
+      var fr = new FileReader();
+      fr.onload  = function(){ resolve(fr.result); };
+      fr.onerror = function(){ reject(new Error('image read error')); };
+      fr.readAsDataURL(blob);
+    });
+  }).then(function(dataUrl) {
+    openChoukokuDocWindow(part, fname, dataUrl);
+  }).catch(function(e) {
+    showSaveToast(false, '画像取得エラー: ' + (e && e.message || e));
+  });
+}
+
+function openChoukokuDocWindow(part, fname, imageDataUrl) {
+  var w = window.open('', '_blank', 'width=1200,height=900');
+  if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
+  var safePart  = (part || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  var safeFname = (fname || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  var html =
+'<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>彫刻確認資料 - ' + safePart + '</title>' +
+'<style>' +
+'@page { size: A3 portrait; margin: 0; }' +
+'*{box-sizing:border-box;margin:0;padding:0}' +
+'html,body{height:100%;}' +
+'body{font-family:"Yu Mincho","游明朝","Yu Gothic",serif;background:#cfd4dc;color:#222;}' +
+'.tb{position:fixed;top:0;left:0;right:0;height:48px;background:#1a2535;color:#fff;display:flex;align-items:center;gap:8px;padding:0 14px;z-index:200;box-shadow:0 2px 8px rgba(0,0,0,0.3)}' +
+'.tb .ttl{font-size:14px;font-weight:600;margin-right:8px}' +
+'.tb .sep{width:1px;height:22px;background:rgba(255,255,255,0.2)}' +
+'.tb button{background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.28);padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-family:inherit}' +
+'.tb button:hover{background:rgba(255,255,255,0.2)}' +
+'.tb .pr{background:#1a5a9a;border-color:#1a5a9a}' +
+'.tb .pr:hover{background:#2670b8}' +
+'.tb .danger{background:#7a1a1a;border-color:#7a1a1a}' +
+'.ws{padding:64px 280px 40px 24px;display:flex;justify-content:center;min-height:100vh}' +
+'.page{width:297mm;height:420mm;background:#fff;position:relative;box-shadow:0 4px 20px rgba(0,0,0,0.35);zoom:0.55}' +
+'.elem{position:absolute;cursor:move;user-select:none}' +
+'.elem.sel{outline:2px dashed #1a5a9a;outline-offset:3px}' +
+'.elem .hdl{position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;background:#1a5a9a;border:2px solid #fff;border-radius:50%;cursor:nwse-resize;display:none}' +
+'.elem.sel .hdl{display:block}' +
+'.elem-image img{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none}' +
+'.elem-text{padding:4px 8px;white-space:pre-wrap;line-height:1.3;background:transparent;outline:none}' +
+'.elem-text[contenteditable="true"]{cursor:text;background:rgba(255,250,200,0.4)}' +
+'.elem-outline{border:2.5px solid #333;background:transparent}' +
+'.elem-outline .lbl{position:absolute;top:-22px;left:0;font-size:10pt;color:#666;background:#fff;padding:1px 6px;border:1px solid #ccc;border-radius:3px;pointer-events:none}' +
+'.panel{position:fixed;top:60px;right:14px;width:248px;background:#fff;border-radius:8px;padding:14px;box-shadow:0 2px 12px rgba(0,0,0,0.2);font-size:12px;z-index:150}' +
+'.panel h4{font-size:13px;font-weight:600;color:#1a2535;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #eee}' +
+'.panel .row{display:flex;align-items:center;gap:6px;margin-bottom:7px}' +
+'.panel .row label{width:54px;color:#666;font-size:11px}' +
+'.panel .row input,.panel .row select,.panel .row textarea{flex:1;font-size:11px;padding:4px 6px;border:1px solid #ccc;border-radius:3px;font-family:inherit}' +
+'.panel .row textarea{resize:vertical;min-height:50px}' +
+'.panel .empty{color:#888;font-size:11px;text-align:center;padding:14px 0}' +
+'.panel button{font-family:inherit}' +
+'.panel .delbtn{width:100%;padding:6px;background:#c43030;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-top:8px}' +
+'@media print{body{background:#fff}.tb,.panel{display:none!important}.ws{padding:0}.page{box-shadow:none;zoom:1;width:297mm;height:420mm}.elem.sel{outline:none}.elem .hdl{display:none}}' +
+'</style></head><body>' +
+'<div class="tb">' +
+  '<span class="ttl">📄 彫刻確認資料 - ' + safePart + '</span>' +
+  '<div class="sep"></div>' +
+  '<button onclick="addText()">＋テキスト追加</button>' +
+  '<button onclick="addOutline()">＋石塔枠</button>' +
+  '<div class="sep"></div>' +
+  '<button class="danger" id="btnDel" onclick="deleteSelected()" disabled style="opacity:.5">🗑️ 選択削除</button>' +
+  '<div style="flex:1"></div>' +
+  '<button class="pr" onclick="window.print()">🖨️ 印刷</button>' +
+'</div>' +
+'<div class="ws">' +
+  '<div class="page" id="page">' +
+    '<div class="elem elem-text" data-type="text" data-fontsize="48" data-bold="1" style="left:30mm;top:14mm;width:237mm;height:30mm;font-size:48pt;font-weight:700;text-align:center;letter-spacing:.2em;border-bottom:2px solid #333;display:flex;align-items:center;justify-content:center">' + safePart +
+      '<div class="hdl"></div>' +
+    '</div>' +
+    '<div class="elem elem-image" data-type="image" style="left:48mm;top:80mm;width:200mm;height:240mm">' +
+      '<img src="' + imageDataUrl + '" alt="' + safeFname + '">' +
+      '<div class="hdl"></div>' +
+    '</div>' +
+    '<div class="elem elem-text" data-type="text" data-fontsize="11" style="left:30mm;top:380mm;width:237mm;height:18mm;font-size:11pt;color:#555;border-top:1px solid #999;padding-top:6mm;display:flex;justify-content:space-between">' +
+      '<span>ファイル: ' + safeFname + '</span><span>確認サイン：　　　　　　　　　</span>' +
+      '<div class="hdl"></div>' +
+    '</div>' +
+  '</div>' +
+'</div>' +
+'<div class="panel" id="panel"><h4 id="ph">プロパティ</h4><div id="pb"><div class="empty">要素をクリックして選択してください</div></div></div>' +
+'<script>' +
+'(function(){' +
+'var page=document.getElementById("page");' +
+'var panel=document.getElementById("pb"),phead=document.getElementById("ph");' +
+'var btnDel=document.getElementById("btnDel");' +
+'var sel=null;var nextId=10;' +
+'var PAGE_W=297,PAGE_H=420;' /* mm */ +
+'function pxPerMm(){return page.getBoundingClientRect().width/PAGE_W;}' +
+'function clamp(v,a,b){return Math.max(a,Math.min(b,v));}' +
+'function setSel(e){if(sel){sel.classList.remove("sel");if(sel.dataset.type==="text")sel.contentEditable="false";}sel=e;if(sel){sel.classList.add("sel");}refreshPanel();btnDel.disabled=!sel;btnDel.style.opacity=sel?1:.5;}' +
+'function getMm(el,k){return parseFloat(el.style[k])||0;}' +
+'function setMm(el,k,v){el.style[k]=v+"mm";}' +
+'function clampInPage(el){var x=getMm(el,"left"),y=getMm(el,"top"),w=getMm(el,"width"),h=getMm(el,"height");setMm(el,"left",clamp(x,0,PAGE_W-w));setMm(el,"top",clamp(y,0,PAGE_H-h));}' +
+'function setupDrag(el){' +
+  'el.addEventListener("mousedown",function(e){' +
+    'if(e.target.classList.contains("hdl"))return;' +
+    'if(el.dataset.type==="text"&&el.contentEditable==="true")return;' +
+    'e.preventDefault();setSel(el);' +
+    'var sx=e.clientX,sy=e.clientY,ox=getMm(el,"left"),oy=getMm(el,"top"),scale=pxPerMm();' +
+    'function mv(ev){var dx=(ev.clientX-sx)/scale,dy=(ev.clientY-sy)/scale;var nx=clamp(ox+dx,0,PAGE_W-getMm(el,"width"));var ny=clamp(oy+dy,0,PAGE_H-getMm(el,"height"));setMm(el,"left",nx);setMm(el,"top",ny);refreshPanel();}' +
+    'function up(){document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);}' +
+    'document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);' +
+  '});' +
+  'var hdl=el.querySelector(".hdl");if(hdl){hdl.addEventListener("mousedown",function(e){' +
+    'e.preventDefault();e.stopPropagation();setSel(el);' +
+    'var sx=e.clientX,sy=e.clientY,ow=getMm(el,"width"),oh=getMm(el,"height"),x=getMm(el,"left"),y=getMm(el,"top"),scale=pxPerMm();' +
+    'function mv(ev){var dw=(ev.clientX-sx)/scale,dh=(ev.clientY-sy)/scale;var nw=clamp(ow+dw,10,PAGE_W-x);var nh=clamp(oh+dh,10,PAGE_H-y);setMm(el,"width",nw);setMm(el,"height",nh);refreshPanel();}' +
+    'function up(){document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);}' +
+    'document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);' +
+  '});}' +
+  'if(el.dataset.type==="text"){el.addEventListener("dblclick",function(e){e.stopPropagation();el.contentEditable="true";el.focus();});el.addEventListener("blur",function(){el.contentEditable="false";});}' +
+'}' +
+'function refreshPanel(){if(!sel){phead.textContent="プロパティ";panel.innerHTML="<div class=\\"empty\\">要素をクリックして選択してください</div>";return;}' +
+  'var t=sel.dataset.type;phead.textContent=t==="image"?"画像":(t==="text"?"テキスト":"石塔枠");' +
+  'var x=getMm(sel,"left").toFixed(1),y=getMm(sel,"top").toFixed(1),w=getMm(sel,"width").toFixed(1),h=getMm(sel,"height").toFixed(1);' +
+  'var html="";' +
+  'html+=\'<div class="row"><label>X(mm)</label><input type="number" step="1" id="px" value="\'+x+\'"></div>\';' +
+  'html+=\'<div class="row"><label>Y(mm)</label><input type="number" step="1" id="py" value="\'+y+\'"></div>\';' +
+  'html+=\'<div class="row"><label>幅(mm)</label><input type="number" step="1" id="pw" value="\'+w+\'"></div>\';' +
+  'html+=\'<div class="row"><label>高(mm)</label><input type="number" step="1" id="ph2" value="\'+h+\'"></div>\';' +
+  'if(t==="text"){' +
+    'var fs=sel.dataset.fontsize||"14";var bold=sel.dataset.bold==="1";' +
+    'html+=\'<div class="row"><label>文字</label><textarea id="ptx">\'+sel.textContent.replace(/</g,"&lt;")+\'</textarea></div>\';' +
+    'html+=\'<div class="row"><label>サイズ</label><input type="number" min="6" max="120" id="pfs" value="\'+fs+\'"></div>\';' +
+    'html+=\'<div class="row"><label>太字</label><input type="checkbox" id="pbd"\'+(bold?\' checked\':\'\')+\'></div>\';' +
+  '}' +
+  'if(t==="outline"){var lbl=sel.dataset.label||"";html+=\'<div class="row"><label>ラベル</label><input type="text" id="plb" value="\'+lbl.replace(/"/g,\'&quot;\')+\'"></div>\';}' +
+  'html+=\'<button class="delbtn" onclick="deleteSelected()">🗑️ 削除</button>\';' +
+  'panel.innerHTML=html;' +
+  'document.getElementById("px").addEventListener("input",function(){setMm(sel,"left",clamp(parseFloat(this.value)||0,0,PAGE_W-getMm(sel,"width")));});' +
+  'document.getElementById("py").addEventListener("input",function(){setMm(sel,"top",clamp(parseFloat(this.value)||0,0,PAGE_H-getMm(sel,"height")));});' +
+  'document.getElementById("pw").addEventListener("input",function(){setMm(sel,"width",clamp(parseFloat(this.value)||10,10,PAGE_W-getMm(sel,"left")));});' +
+  'document.getElementById("ph2").addEventListener("input",function(){setMm(sel,"height",clamp(parseFloat(this.value)||10,10,PAGE_H-getMm(sel,"top")));});' +
+  'if(t==="text"){' +
+    'document.getElementById("ptx").addEventListener("input",function(){var hdl=sel.querySelector(".hdl");sel.textContent=this.value;if(hdl)sel.appendChild(hdl);});' +
+    'document.getElementById("pfs").addEventListener("input",function(){var v=parseFloat(this.value)||14;sel.dataset.fontsize=v;sel.style.fontSize=v+"pt";});' +
+    'document.getElementById("pbd").addEventListener("change",function(){sel.dataset.bold=this.checked?"1":"0";sel.style.fontWeight=this.checked?"700":"400";});' +
+  '}' +
+  'if(t==="outline"){document.getElementById("plb").addEventListener("input",function(){sel.dataset.label=this.value;var l=sel.querySelector(".lbl");if(l)l.textContent=this.value||"石塔枠";});}' +
+'}' +
+'window.addText=function(){var el=document.createElement("div");el.className="elem elem-text";el.dataset.type="text";el.dataset.fontsize="14";el.style.cssText="left:80mm;top:200mm;width:140mm;height:20mm;font-size:14pt";el.textContent="テキストを入力";el.id="elem-"+(nextId++);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);page.appendChild(el);setupDrag(el);setSel(el);};' +
+'window.addOutline=function(){var el=document.createElement("div");el.className="elem elem-outline";el.dataset.type="outline";el.dataset.label="石塔枠（縦長 1:2.5想定）";el.style.cssText="left:90mm;top:150mm;width:80mm;height:200mm";el.id="elem-"+(nextId++);var lbl=document.createElement("div");lbl.className="lbl";lbl.textContent=el.dataset.label;el.appendChild(lbl);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);page.appendChild(el);setupDrag(el);setSel(el);};' +
+'window.deleteSelected=function(){if(!sel)return;sel.remove();sel=null;refreshPanel();btnDel.disabled=true;btnDel.style.opacity=.5;};' +
+'document.querySelectorAll(".elem").forEach(setupDrag);' +
+'page.addEventListener("mousedown",function(e){if(e.target===page){setSel(null);}});' +
+'document.addEventListener("keydown",function(e){if(e.key==="Delete"&&sel&&!(sel.contentEditable==="true"&&document.activeElement===sel)){window.deleteSelected();}});' +
+'})();' +
+'<\/script>' +
+'</body></html>';
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
 }
 
 function openCusFromNok(cusId) {
@@ -5979,6 +7379,45 @@ var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_V
 var _folderHistory = [];
 var _folderRootPass = null;
 var _folderCurrentPath = null;
+var _folderThumbMode = false;
+var _folderClipboard = null;  // { mode:'copy'|'cut', item:{id,name,path} }
+var _folderMenuEl = null;
+
+// ===== 画像クリップボードコピー =====
+function copyImgToClipboard(blobUrl, btn) {
+  if (!navigator.clipboard || !window.ClipboardItem) {
+    showSaveToast(false, 'このブラウザはクリップボードコピー非対応');
+    return;
+  }
+  var orig = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '⏳';
+  fetch(blobUrl)
+    .then(function(r){ return r.blob(); })
+    .then(function(blob){
+      if (blob.type === 'image/png') return blob;
+      return new Promise(function(resolve, reject){
+        var img = new Image();
+        img.onload = function(){
+          var c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext('2d').drawImage(img, 0, 0);
+          c.toBlob(function(png){ resolve(png); }, 'image/png');
+        };
+        img.onerror = reject;
+        img.src = blobUrl;
+      });
+    })
+    .then(function(pngBlob){
+      return navigator.clipboard.write([new ClipboardItem({'image/png': pngBlob})]);
+    })
+    .then(function(){
+      if (btn) { btn.textContent = '✅'; setTimeout(function(){ btn.textContent = orig; }, 1800); }
+    })
+    .catch(function(){
+      if (btn) btn.textContent = orig;
+      showSaveToast(false, 'クリップボードコピー失敗（HTTPS/Chrome推奨）');
+    });
+}
 
 function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
   var el = document.getElementById('folder-explorer');
@@ -5997,7 +7436,7 @@ function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
     var url;
     if (folderPass && folderPass.startsWith('/')) {
       var encoded = folderPass.split('/').map(encodeURIComponent).join('/');
-      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,file,folder,size,lastModifiedDateTime,@microsoft.graph.downloadUrl&$orderby=name';
+      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,file,folder,size,id,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
     } else {
       el.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:20px">フォルダーパスが不明です</div>';
       return;
@@ -6029,6 +7468,7 @@ function renderFolderContents(items, currentPath, token) {
 
   if (items.length === 0) {
     el.innerHTML = '';
+    _renderFolderPasteBar(el, currentPath);
     var _emptyHdr = document.createElement('div');
     _emptyHdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0 10px;border-bottom:1px solid #eee;margin-bottom:6px';
     var _emptyLbl = document.createElement('div');
@@ -6054,6 +7494,7 @@ function renderFolderContents(items, currentPath, token) {
 
   // ===== 1. まずelをクリアしてパスヘッダーを設定 =====
   el.innerHTML = '';
+  _renderFolderPasteBar(el, currentPath);
   var canGoUp = _folderHistory && _folderHistory.length > 0;
   var header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0 10px;border-bottom:1px solid #eee;margin-bottom:6px';
@@ -6073,6 +7514,18 @@ function renderFolderContents(items, currentPath, token) {
   mkdirBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:#1a5a9a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
   mkdirBtn.addEventListener('click', function() { createSubFolder(currentPath, token); });
   header.appendChild(mkdirBtn);
+  // サムネ切替ボタン（サムネが存在するファイルがある場合のみ）
+  var thumbFiles = files.filter(function(f){ return f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium; });
+  if (thumbFiles.length > 0) {
+    var thumbBtn = document.createElement('button');
+    thumbBtn.textContent = _folderThumbMode ? '📋 リスト' : '🖼️ サムネ';
+    thumbBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:' + (_folderThumbMode ? '#5a3a7a' : '#5a7a1a') + ';color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
+    thumbBtn.addEventListener('click', function(){
+      _folderThumbMode = !_folderThumbMode;
+      renderFolderContents(items, currentPath, token);
+    });
+    header.appendChild(thumbBtn);
+  }
   el.appendChild(header);
 
   // ===== 2. フォルダー行 =====
@@ -6090,37 +7543,121 @@ function renderFolderContents(items, currentPath, token) {
     el.appendChild(div);
   });
 
-  // ===== 3. ファイル行 =====
-  files.forEach(function(f) {
-    var ext = (f.name.split('.').pop() || '').toLowerCase();
-    var icon = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext) ? '🖼️' :
-               ext === 'pdf' ? '📑' :
-               /^(xlsx|xls)$/.test(ext) ? '📊' :
-               /^(docx|doc)$/.test(ext) ? '📝' :
-               ext === 'svg' ? '🎨' : '📄';
-    var size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : Math.round(f.size/1024)+'KB';
-    var date = (f.lastModifiedDateTime||'').substring(0,10);
-    var isImg = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext);
-    var filePath = currentPath + '/' + f.name;
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer';
-    row.title = 'ダブルクリックで' + (isImg ? 'プレビュー' : '開く');
-    row.innerHTML = '<span style="font-size:18px">' + icon + '</span>' +
-      '<div style="flex:1;min-width:0;overflow:hidden">' +
-        '<div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</div>' +
-        '<div style="font-size:10px;color:#888">' + size + (date ? ' · ' + date : '') + '</div>' +
-      '</div>' +
-      '<span style="flex-shrink:0;font-size:11px;color:#aaa">' + (isImg ? '👁' : '↗') + '</span>';
-    row.addEventListener('mouseenter', function(){ this.style.background='#f0f6ff'; });
-    row.addEventListener('mouseleave', function(){ this.style.background=''; });
-    row.addEventListener('dblclick', function(){
-      if (isImg) previewFolderImage(filePath);
-      else openFolderFile(filePath);
+  // ===== 3. ファイル =====
+  if (_folderThumbMode && thumbFiles.length > 0) {
+    // --- サムネグリッドモード ---
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;padding:6px 0';
+    thumbFiles.forEach(function(f) {
+      var filePath = currentPath + '/' + f.name;
+      var thumbUrl = f.thumbnails[0].medium.url;
+      var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
+      var cell = document.createElement('div');
+      cell.style.cssText = 'position:relative;display:flex;flex-direction:column;gap:3px';
+      var img = document.createElement('img');
+      img.style.cssText = 'width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;cursor:pointer;border:0.5px solid #e0e0e0;background:#eee';
+      img.title = f.name + (isImg ? '\nダブルクリックでプレビュー' : '\nダブルクリックで開く');
+      img.src = thumbUrl;
+      img.addEventListener('dblclick', function(){
+        if (isImg) previewFolderImage(filePath);
+        else openFolderFile(filePath);
+      });
+      if (isImg) {
+        var copyBtn = document.createElement('button');
+        copyBtn.textContent = '📋';
+        copyBtn.title = 'クリップボードにコピー';
+        copyBtn.style.cssText = 'position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4';
+        copyBtn.addEventListener('click', function(e){
+          e.stopPropagation();
+          var btn = this;
+          btn.textContent = '⏳';
+          getToken().then(function(resp){
+            var enc = filePath.split('/').map(encodeURIComponent).join('/');
+            return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+              { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+          }).then(function(r){ return r.blob(); })
+          .then(function(blob){
+            var blobUrl = URL.createObjectURL(blob);
+            copyImgToClipboard(blobUrl, btn);
+          }).catch(function(){ btn.textContent = '📋'; showSaveToast(false, '取得失敗'); });
+        });
+        cell.appendChild(copyBtn);
+      }
+      var lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:9px;color:#555;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      lbl.textContent = f.name;
+      cell.appendChild(img);
+      cell.appendChild(lbl);
+      grid.appendChild(cell);
     });
-    el.appendChild(row);
-  });
+    el.appendChild(grid);
+    // サムネなしファイルはリスト表示
+    var noThumbFiles = files.filter(function(f){ return !(f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium); });
+    noThumbFiles.forEach(function(f) { _renderFolderFileRow(el, f, currentPath); });
+  } else {
+    // --- リストモード（従来） ---
+    files.forEach(function(f) { _renderFolderFileRow(el, f, currentPath); });
+  }
 
   renderFolderDropZone(el, currentPath);
+}
+
+function _renderFolderFileRow(el, f, currentPath) {
+  var ext = (f.name.split('.').pop() || '').toLowerCase();
+  var icon = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext) ? '🖼️' :
+             ext === 'pdf' ? '📑' :
+             /^(xlsx|xls)$/.test(ext) ? '📊' :
+             /^(docx|doc)$/.test(ext) ? '📝' :
+             ext === 'svg' ? '🎨' : '📄';
+  var size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : Math.round(f.size/1024)+'KB';
+  var date = (f.lastModifiedDateTime||'').substring(0,10);
+  var isImg = /^(jpg|jpeg|png|gif|webp|bmp)$/.test(ext);
+  var filePath = currentPath + '/' + f.name;
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer';
+  row.title = 'ダブルクリックで' + (isImg ? 'プレビュー' : '開く');
+  row.innerHTML = '<span style="font-size:18px">' + icon + '</span>' +
+    '<div style="flex:1;min-width:0;overflow:hidden">' +
+      '<div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.name + '</div>' +
+      '<div style="font-size:10px;color:#888">' + size + (date ? ' · ' + date : '') + '</div>' +
+    '</div>' +
+    (isImg ? '<button class="folder-list-copy-btn" style="flex-shrink:0;padding:3px 7px;background:#3a6a9a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">📋</button>' : '') +
+    '<span style="flex-shrink:0;font-size:11px;color:#aaa;margin-left:4px">' + (isImg ? '👁' : '↗') + '</span>';
+  row.addEventListener('mouseenter', function(){ this.style.background='#f0f6ff'; });
+  row.addEventListener('mouseleave', function(){ this.style.background=''; });
+  row.addEventListener('dblclick', function(){
+    if (isImg) previewFolderImage(filePath);
+    else openFolderFile(filePath);
+  });
+  if (isImg) {
+    var copyBtn = row.querySelector('.folder-list-copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var btn = this;
+        btn.textContent = '⏳';
+        getToken().then(function(resp){
+          var enc = filePath.split('/').map(encodeURIComponent).join('/');
+          return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+            { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+        }).then(function(r){ return r.blob(); })
+        .then(function(blob){
+          var blobUrl = URL.createObjectURL(blob);
+          copyImgToClipboard(blobUrl, btn);
+        }).catch(function(){ btn.textContent = '📋'; showSaveToast(false, '取得失敗'); });
+      });
+    }
+  }
+  var menuBtn = document.createElement('button');
+  menuBtn.textContent = '⋯';
+  menuBtn.title = 'コピー・移動・名前変更・削除';
+  menuBtn.style.cssText = 'flex-shrink:0;padding:3px 9px;background:none;border:1px solid #ddd;border-radius:4px;font-size:15px;cursor:pointer;font-family:inherit;color:#555;line-height:1;margin-left:2px';
+  menuBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    _showFolderItemMenu(e, f, currentPath);
+  });
+  row.appendChild(menuBtn);
+  el.appendChild(row);
 }
 
 function createSubFolder(parentPath, token) {
@@ -6217,6 +7754,179 @@ function openFolderFile(filePath) {
     if (webUrl) window.open(webUrl, '_blank');
     else showSaveToast(false, 'URLが取得できませんでした');
   }).catch(function(e) { showSaveToast(false, 'エラー: ' + e.message); });
+}
+
+// ===== フォルダーブラウザー コピー・移動・名前変更・削除 =====
+
+function _hideFolderMenu() {
+  if (_folderMenuEl) { _folderMenuEl.remove(); _folderMenuEl = null; }
+}
+
+function _showFolderItemMenu(e, item, currentPath) {
+  _hideFolderMenu();
+  var menu = document.createElement('div');
+  menu.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #ccc;border-radius:7px;box-shadow:0 4px 18px rgba(0,0,0,.20);min-width:148px;overflow:hidden;font-size:13px;font-family:inherit';
+  var rect = e.currentTarget.getBoundingClientRect();
+  var left = Math.min(rect.right - 148, window.innerWidth - 160);
+  var top = rect.bottom + 4;
+  if (top + 170 > window.innerHeight) top = rect.top - 170;
+  menu.style.left = Math.max(4, left) + 'px';
+  menu.style.top = top + 'px';
+  var menuItems = [
+    ['📋', 'コピー', function(){ _folderSetClipboard('copy', item, currentPath); }],
+    ['✂️', '切り取り', function(){ _folderSetClipboard('cut', item, currentPath); }],
+    null,
+    ['✏️', '名前変更', function(){ _hideFolderMenu(); _folderRenameItem(item, currentPath); }],
+    ['🗑️', '削除', function(){ _hideFolderMenu(); _folderDeleteItem(item, currentPath); }]
+  ];
+  menuItems.forEach(function(mi) {
+    if (!mi) {
+      var hr = document.createElement('div');
+      hr.style.cssText = 'border-top:1px solid #eee;margin:3px 0';
+      menu.appendChild(hr);
+    } else {
+      var btn = document.createElement('div');
+      btn.style.cssText = 'display:flex;align-items:center;gap:9px;padding:9px 16px;cursor:pointer;white-space:nowrap';
+      btn.innerHTML = '<span>' + mi[0] + '</span><span>' + mi[1] + '</span>';
+      btn.addEventListener('mouseenter', function(){ this.style.background='#f0f4ff'; });
+      btn.addEventListener('mouseleave', function(){ this.style.background=''; });
+      btn.addEventListener('click', function(ev){ ev.stopPropagation(); mi[2](); });
+      menu.appendChild(btn);
+    }
+  });
+  document.body.appendChild(menu);
+  _folderMenuEl = menu;
+  setTimeout(function() {
+    document.addEventListener('click', function _closeMenu(){ _hideFolderMenu(); document.removeEventListener('click', _closeMenu); });
+  }, 0);
+}
+
+function _folderSetClipboard(mode, item, currentPath) {
+  _folderClipboard = { mode: mode, item: { id: item.id, name: item.name, path: currentPath + '/' + item.name } };
+  _hideFolderMenu();
+  showSaveToast(true, (mode === 'copy' ? '📋 コピー' : '✂️ 切り取り') + '：' + item.name);
+  loadFolderExplorer(currentPath, null, false);
+}
+
+function _renderFolderPasteBar(el, destPath) {
+  if (!_folderClipboard) return;
+  var cb = _folderClipboard;
+  var bar = document.createElement('div');
+  bar.style.cssText = 'background:#fffae0;border:1px solid #e0c000;border-radius:6px;padding:5px 10px;margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px';
+  var label = document.createElement('span');
+  label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7a6000';
+  label.textContent = (cb.mode === 'copy' ? '📋 コピー元：' : '✂️ 切り取り元：') + cb.item.name;
+  bar.appendChild(label);
+  var pasteBtn = document.createElement('button');
+  pasteBtn.textContent = '📌 貼り付け';
+  pasteBtn.style.cssText = 'flex-shrink:0;padding:4px 12px;background:#1a6a1a;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-family:inherit;font-weight:600';
+  pasteBtn.addEventListener('click', function() { _folderPaste(destPath); });
+  bar.appendChild(pasteBtn);
+  var clearBtn = document.createElement('button');
+  clearBtn.textContent = '✕';
+  clearBtn.title = 'キャンセル';
+  clearBtn.style.cssText = 'flex-shrink:0;padding:4px 8px;background:#fff;border:1px solid #ccc;border-radius:5px;font-size:12px;cursor:pointer;font-family:inherit';
+  clearBtn.addEventListener('click', function() { _folderClipboard = null; loadFolderExplorer(destPath, null, false); });
+  bar.appendChild(clearBtn);
+  el.appendChild(bar);
+}
+
+function _folderPaste(destPath) {
+  if (!_folderClipboard) return;
+  var cb = _folderClipboard;
+  var srcItem = cb.item;
+  showSaveToast(null, (cb.mode === 'copy' ? 'コピー' : '移動') + '中...');
+  if (cb.mode === 'copy') {
+    getToken().then(function(resp) {
+      var token = resp.accessToken;
+      var encodedDest = destPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedDest, {
+        headers: { Authorization: 'Bearer ' + token }
+      }).then(function(r) {
+        if (!r.ok) throw new Error('コピー先フォルダー取得失敗 (' + r.status + ')');
+        return r.json();
+      }).then(function(destFolder) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + srcItem.id + '/copy', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destFolder.id } })
+        });
+      });
+    }).then(function(r) {
+      if (r.ok || r.status === 202) {
+        showSaveToast(true, 'コピーしました');
+        setTimeout(function() { loadFolderExplorer(destPath, null, false); }, 1800);
+      } else {
+        return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+      }
+    }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); });
+  } else {
+    // Move: fetch dest folder ID → PATCH source item with new parentReference (same pattern as copy)
+    getToken().then(function(resp) {
+      var token = resp.accessToken;
+      var encodedDest = destPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedDest, {
+        headers: { Authorization: 'Bearer ' + token }
+      }).then(function(r) {
+        if (!r.ok) throw new Error('移動先フォルダー取得失敗 (' + r.status + ')');
+        return r.json();
+      }).then(function(destFolder) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + srcItem.id, {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, id: destFolder.id } })
+        });
+      });
+    }).then(function(r) {
+      if (r.ok) {
+        _folderClipboard = null;
+        showSaveToast(true, '移動しました');
+        loadFolderExplorer(destPath, null, false);
+      } else {
+        return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+      }
+    }).catch(function(e) { showSaveToast(false, '移動エラー: ' + e.message); });
+  }
+}
+
+function _folderRenameItem(item, currentPath) {
+  var dot = item.name.lastIndexOf('.');
+  var ext = dot > 0 ? item.name.substring(dot) : '';
+  var base = ext ? item.name.substring(0, dot) : item.name;
+  var newBase = prompt('新しいファイル名（拡張子除く）：', base);
+  if (newBase === null || !newBase.trim()) return;
+  newBase = newBase.trim();
+  var newName = ext ? newBase + ext : newBase;
+  if (newName === item.name) return;
+  var encodedPath = (currentPath + '/' + item.name).split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + ':', {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+    showSaveToast(true, '名前を変更しました');
+    loadFolderExplorer(currentPath, null, false);
+  }).catch(function(e) { showSaveToast(false, '名前変更エラー: ' + e.message); });
+}
+
+function _folderDeleteItem(item, currentPath) {
+  if (!confirm('「' + item.name + '」を削除しますか？\nこの操作は元に戻せません。')) return;
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + item.id, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (r.ok || r.status === 204) {
+      showSaveToast(true, '削除しました');
+      loadFolderExplorer(currentPath, null, false);
+    } else {
+      return r.json().then(function(e){ throw new Error(e.error ? e.error.message : r.status); });
+    }
+  }).catch(function(e) { showSaveToast(false, '削除エラー: ' + e.message); });
 }
 
 // ===== 画像ビューア共通ズーム（ピンチ・ダブルタップ・ホイール） =====
@@ -7268,6 +8978,8 @@ function loadCustomerAttachments(spItemId) {
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
         'data-fi="' + fi + '" ' +
         'style="background:#e0e0e0">' +
+        '<button class="attach-copy-btn" title="クリップボードにコピー" ' +
+        'style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4">📋</button>' +
         '<button onclick="deleteAttachment(\'顧客リスト\',' + spItemId + ',\'' + fnEsc + '\',function(){loadCustomerAttachments(' + spItemId + ')})" ' +
         'style="position:absolute;top:4px;right:4px;background:rgba(139,0,0,0.8);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>' +
         '<div class="attach-label">' + label + ' ' + f.FileName + '</div>' +
@@ -7301,8 +9013,9 @@ function loadCustomerAttachments(spItemId) {
             var blobUrl = URL.createObjectURL(blob);
             imgEl.src = blobUrl;
             imgEl.style.background = '';
-            // クリックでプレビュー（blobUrl使用）
             imgEl.onclick = function() { openCustImgPreview(blobUrl); };
+            var copyBtn = imgEl.parentElement.querySelector('.attach-copy-btn');
+            if (copyBtn) copyBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
           }
         }).catch(function(){});
       });
@@ -9819,6 +11532,8 @@ function loadKoujiAttachments(itemId) {
         'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
         'data-fi="' + fi + '" style="background:#e0e0e0">' +
+        '<button class="attach-copy-btn" title="クリップボードにコピー" ' +
+        'style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:4px;padding:2px 5px;font-size:11px;cursor:pointer;line-height:1.4">📋</button>' +
         '<button onclick="deleteAttachment(\'工事関連\',' + itemId + ',\'' + fnEsc + '\',function(){loadKoujiAttachments(' + itemId + ')})" ' +
         'style="position:absolute;top:4px;right:4px;background:rgba(139,0,0,0.8);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>' +
         '<div class="attach-label">' + f.FileName + '</div>' +
@@ -9852,6 +11567,8 @@ function loadKoujiAttachments(itemId) {
             imgEl.src = blobUrl;
             imgEl.style.background = '';
             imgEl.onclick = function(){ openCustImgPreview(blobUrl); };
+            var copyBtn = imgEl.parentElement.querySelector('.attach-copy-btn');
+            if (copyBtn) copyBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
           }
         }).catch(function(){});
       });

@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.274';
+var APP_VERSION = 'v1.8.275';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -7032,6 +7032,31 @@ function _saveChoukokuDocFromPopup(data, name) {
   });
 }
 
+function _saveChoukokuPdfFromPopup(blob, name) {
+  return new Promise(function(resolve, reject) {
+    if (!currentItem || !currentItem['Folder_Pass']) {
+      reject(new Error('Folder_Pass がありません')); return;
+    }
+    var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
+    var fpath = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料/' + safe + '.pdf';
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    getToken().then(function(resp) {
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+        method: 'PUT',
+        headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/pdf' },
+        body: blob
+      });
+    }).then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      showSaveToast(true, 'PDF保存: ' + safe + '.pdf');
+      resolve();
+    }).catch(function(e) {
+      showSaveToast(false, 'PDF保存エラー: ' + (e && e.message || e));
+      reject(e);
+    });
+  });
+}
+
 // SharePointから保存済み彫刻確認資料を一覧表示・選択して開く
 function _openSavedChoukokuDoc() {
   if (!currentItem || !currentItem['Folder_Pass']) { alert('Folder_Pass がありません'); return; }
@@ -7144,7 +7169,7 @@ function executeChoukokuDoc() {
 
   if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
 
-  // 選択された全ファイルを並列取得
+  // 選択された全ファイルを並列取得（個別失敗時もnullで継続）
   getToken().then(function(resp) {
     var token = resp.accessToken;
     return Promise.all(fnames.map(function(fname) {
@@ -7154,18 +7179,23 @@ function executeChoukokuDoc() {
       return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
         .then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
         .then(function(blob) {
-          return new Promise(function(resolve, reject) {
+          return new Promise(function(resolve) {
             var fr = new FileReader();
             fr.onload  = function(){ resolve(fr.result); };
-            fr.onerror = function(){ reject(new Error('image read error')); };
+            fr.onerror = function(){ resolve(null); };
             fr.readAsDataURL(blob);
           });
-        });
+        })
+        .catch(function() { return null; });
     }));
-  }).then(function(dataUrls) {
-    openChoukokuDocWindow(tpl, fnames, dataUrls);
+  }).then(function(results) {
+    var dataUrls = [], goodFnames = [];
+    results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodFnames.push(fnames[i]); } });
+    openChoukokuDocWindow(tpl, goodFnames, dataUrls);
   }).catch(function(e) {
+    // トークン取得失敗でもポップアップを起動（ファイルなし）
     showSaveToast(false, '画像取得エラー: ' + (e && e.message || e));
+    openChoukokuDocWindow(tpl, [], []);
   });
 }
 
@@ -7299,7 +7329,8 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls) {
   '<button class="tpl" onclick="savetoSharePoint()">☁️ SharePoint保存</button>' +
   '<div style="flex:1"></div>' +
   '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V で画像貼り付け可</span>' +
-  '<button class="pr" onclick="window.print()" title="印刷ダイアログから「PDFとして保存」を選択できます">🖨️ 印刷 / PDF</button>' +
+  '<button onclick="window.print()">🖨️ 印刷</button>' +
+  '<button class="pr" onclick="savePdfToSP()">☁️ PDF → SP保存</button>' +
 '</div>' +
 '<div class="ws"><div class="page" id="page">' +
   _buildChoukokuTemplateElems(tpl, orientation, fnameLine) +
@@ -7428,6 +7459,31 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls) {
   'var data={version:1,name:name,orientation:currentOrientation,elements:elements};' +
   'if(!window.opener||!window.opener._saveChoukokuDocFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
   'window.opener._saveChoukokuDocFromPopup(data,name).then(function(){alert("SharePointに保存しました\\n"+name+".json");}).catch(function(e){alert("保存失敗: "+(e&&e.message||e));});' +
+'};' +
+'window.savePdfToSP=function(){' +
+  'var name=prompt("ファイル名（.pdf不要）","彫刻確認資料");' +
+  'if(!name||!name.trim())return;name=name.trim();' +
+  'var toast=document.createElement("div");' +
+  'toast.style.cssText="position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#1a2535;color:#fff;padding:12px 24px;border-radius:8px;z-index:9999;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.4)";' +
+  'toast.textContent="PDF生成中...";document.body.appendChild(toast);' +
+  'function loadSc(url,cb){if(document.querySelector("script[src=\'"+url+"\']")){cb();return;}var s=document.createElement("script");s.src=url;s.onload=cb;s.onerror=function(){toast.remove();alert("ライブラリ読込失敗:\\n"+url);};document.head.appendChild(s);}' +
+  'loadSc("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",function(){' +
+    'loadSc("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",function(){' +
+      'html2canvas(page,{scale:2,useCORS:true,allowTaint:true,backgroundColor:"#ffffff"}).then(function(canvas){' +
+        'var JPDF=window.jspdf&&window.jspdf.jsPDF;' +
+        'if(!JPDF){toast.remove();alert("jsPDF読込失敗");return;}' +
+        'var pdf=new JPDF({orientation:currentOrientation==="landscape"?"l":"p",unit:"mm",format:"a3"});' +
+        'pdf.addImage(canvas.toDataURL("image/png"),"PNG",0,0,PAGE_W,PAGE_H);' +
+        'var blob=pdf.output("blob");' +
+        'toast.textContent="SharePointに保存中...";' +
+        'if(!window.opener||!window.opener._saveChoukokuPdfFromPopup){toast.remove();alert("親ウィンドウとの接続が切れています");return;}' +
+        'window.opener._saveChoukokuPdfFromPopup(blob,name).then(function(){' +
+          'toast.remove();' +
+          'var ok=document.createElement("div");ok.style.cssText="position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#2a7a2a;color:#fff;padding:12px 24px;border-radius:8px;z-index:9999;font-size:13px";ok.textContent="PDFを保存しました！";document.body.appendChild(ok);setTimeout(function(){ok.remove();},2500);' +
+        '}).catch(function(e){toast.remove();alert("保存エラー: "+(e&&e.message||e));});' +
+      '}).catch(function(e){toast.remove();alert("キャプチャエラー: "+(e&&e.message||e));});' +
+    '});' +
+  '});' +
 '};' +
 'window.addText=function(){var el=document.createElement("div");el.className="elem elem-text";el.dataset.type="text";el.dataset.fontsize="14";el.style.cssText="left:80mm;top:200mm;width:140mm;height:20mm;font-size:14pt";el.textContent="テキストを入力";el.id="elem-"+(nextId++);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);page.appendChild(el);setupDrag(el);setSel(el);};' +
 'window.addOutline=function(){var el=document.createElement("div");el.className="elem elem-outline";el.dataset.type="outline";el.dataset.label="石塔枠（縦長 1:2.5想定）";el.style.cssText="left:90mm;top:150mm;width:80mm;height:200mm";el.id="elem-"+(nextId++);var lbl=document.createElement("div");lbl.className="lbl";lbl.textContent=el.dataset.label;el.appendChild(lbl);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);page.appendChild(el);setupDrag(el);setSel(el);};' +

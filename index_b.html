@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.275';
+var APP_VERSION = 'v1.8.276';
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -6699,13 +6699,38 @@ var HAKA_SPEC_AI_TYPES = {
   summary:  { label:'📋 簡易まとめ',  file:'簡易まとめ.txt' }
 };
 
-var _hakaChoukokuTemplate = null;  // 選択中のテンプレート
+var _hakaChoukokuTemplate = null;  // 選択中のテンプレート（JSON全体）
 var _hakaChoukokuDocFiles = [];    // 選択中のファイル名（複数可）
-function getChoukokuTemplates() {
-  try { return JSON.parse(localStorage.getItem('choukoku_tpl_v1')) || []; } catch(e) { return []; }
+var _choukokuTplList = [];         // SP上のテンプレート名キャッシュ（ファイル名拡張子なし）
+var CHOUKOKU_TPL_FOLDER = 'ドキュメント/業務アプリ/帳票類テンプレート';
+
+function loadChoukokuTemplates() {
+  var enc = CHOUKOKU_TPL_FOLDER.split('/').map(encodeURIComponent).join('/');
+  return getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file&$orderby=name', {
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    }).then(function(r) {
+      if (r.status === 404) return { value: [] };
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+  }).then(function(data) {
+    _choukokuTplList = (data.value || [])
+      .filter(function(f) { return f.file && /\.json$/i.test(f.name); })
+      .map(function(f) { return f.name.replace(/\.json$/i, ''); });
+    _updateChoukokuTplDropdown();
+  }).catch(function(e) { console.warn('テンプレート一覧取得エラー', e); });
 }
-function saveChoukokuTemplates(arr) {
-  localStorage.setItem('choukoku_tpl_v1', JSON.stringify(arr));
+
+function _updateChoukokuTplDropdown() {
+  var selEl = document.getElementById('haka-choukoku-tpl-sel');
+  if (!selEl) return;
+  selEl.innerHTML = ['<option value="">-- 新規（テンプレートなし）--</option>'].concat(
+    _choukokuTplList.map(function(name, i) {
+      var s = (_hakaChoukokuTemplate && _hakaChoukokuTemplate.name === name) ? ' selected' : '';
+      return '<option value="' + i + '"' + s + '>' + _hakaSpecEsc(name) + '</option>';
+    })
+  ).join('');
 }
 
 function renderHakaSpecDocsTab(d, spec) {
@@ -6731,7 +6756,7 @@ function switchHakaSpecDocsView(view) {
   _hakaSpecDocsView = view;
   if (currentItem) renderHakaSpecTab(currentItem);
   if (view === 'choukoku') {
-    setTimeout(function(){ loadHakaChoukokuDocFiles(); }, 30);
+    setTimeout(function(){ loadHakaChoukokuDocFiles(); loadChoukokuTemplates(); }, 30);
   }
 }
 
@@ -6954,11 +6979,10 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
   if (!d || !d['Folder_Pass']) {
     return '<div style="text-align:center;color:#c00;font-size:12px;padding:16px;background:#fff5f5;border:1px solid #fcc;border-radius:8px">Folder_Pass が登録されていません</div>';
   }
-  var tpls = getChoukokuTemplates();
   var tplOpts = ['<option value="">-- 新規（テンプレートなし）--</option>'].concat(
-    tpls.map(function(t, i) {
-      var sel = (_hakaChoukokuTemplate && _hakaChoukokuTemplate.name === t.name) ? ' selected' : '';
-      return '<option value="' + i + '"' + sel + '>' + _hakaSpecEsc(t.name) + '</option>';
+    _choukokuTplList.map(function(name, i) {
+      var sel = (_hakaChoukokuTemplate && _hakaChoukokuTemplate.name === name) ? ' selected' : '';
+      return '<option value="' + i + '"' + sel + '>' + _hakaSpecEsc(name) + '</option>';
     })
   ).join('');
 
@@ -6986,24 +7010,39 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
 
 function _onChoukokuTplChange(sel) {
   var idx = parseInt(sel.value, 10);
-  var tpls = getChoukokuTemplates();
-  _hakaChoukokuTemplate = (!isNaN(idx) && tpls[idx]) ? tpls[idx] : null;
+  if (isNaN(idx) || idx < 0 || !_choukokuTplList[idx]) { _hakaChoukokuTemplate = null; return; }
+  var name = _choukokuTplList[idx];
+  var enc = (CHOUKOKU_TPL_FOLDER + '/' + name + '.json').split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+  }).then(function(tpl) {
+    _hakaChoukokuTemplate = tpl;
+  }).catch(function(e) {
+    showSaveToast(false, 'テンプレート読込エラー: ' + (e && e.message || e));
+    _hakaChoukokuTemplate = null;
+  });
 }
 
 function _deleteChoukokuTemplate() {
   if (!_hakaChoukokuTemplate) { showSaveToast(false, 'テンプレートが選択されていません'); return; }
-  if (!confirm('テンプレート「' + _hakaChoukokuTemplate.name + '」を削除しますか？')) return;
-  var tpls = getChoukokuTemplates().filter(function(t) { return t.name !== _hakaChoukokuTemplate.name; });
-  saveChoukokuTemplates(tpls);
-  _hakaChoukokuTemplate = null;
-  var selEl = document.getElementById('haka-choukoku-tpl-sel');
-  if (selEl) {
-    var tpls2 = getChoukokuTemplates();
-    selEl.innerHTML = ['<option value="">-- 新規（テンプレートなし）--</option>'].concat(
-      tpls2.map(function(t, i) { return '<option value="' + i + '">' + _hakaSpecEsc(t.name) + '</option>'; })
-    ).join('');
-  }
-  showSaveToast(true, 'テンプレートを削除しました');
+  if (!confirm('テンプレート「' + _hakaChoukokuTemplate.name + '」を削除しますか？\n\n' + CHOUKOKU_TPL_FOLDER + ' から削除されます。')) return;
+  var safe = String(_hakaChoukokuTemplate.name).replace(/[\\\/:\*\?"<>\|]/g, '_');
+  var enc = (CHOUKOKU_TPL_FOLDER + '/' + safe + '.json').split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 404) throw new Error(r.status);
+    _hakaChoukokuTemplate = null;
+    showSaveToast(true, 'テンプレートを削除しました');
+    loadChoukokuTemplates();
+  }).catch(function(e) {
+    showSaveToast(false, 'テンプレート削除エラー: ' + (e && e.message || e));
+  });
 }
 
 // ポップアップから呼び出される SharePoint 保存
@@ -7027,6 +7066,28 @@ function _saveChoukokuDocFromPopup(data, name) {
       resolve();
     }).catch(function(e) {
       showSaveToast(false, '保存エラー: ' + (e && e.message || e));
+      reject(e);
+    });
+  });
+}
+
+function _saveChoukokuTplFromPopup(data, name) {
+  return new Promise(function(resolve, reject) {
+    var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
+    var enc = (CHOUKOKU_TPL_FOLDER + '/' + safe + '.json').split('/').map(encodeURIComponent).join('/');
+    getToken().then(function(resp) {
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+        method: 'PUT',
+        headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    }).then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      showSaveToast(true, 'テンプレート保存: ' + safe);
+      loadChoukokuTemplates();
+      resolve();
+    }).catch(function(e) {
+      showSaveToast(false, 'テンプレート保存エラー: ' + (e && e.message || e));
       reject(e);
     });
   });
@@ -7437,12 +7498,11 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls) {
     'if(t==="image"){var img=el.querySelector("img");item.src=img?img.src:"";if(!item.src)return;}' +
     'elements.push(item);' +
   '});' +
-  'var tpls=[];try{tpls=JSON.parse(localStorage.getItem("choukoku_tpl_v1"))||[];}catch(e){}' +
-  'var idx=-1;for(var i=0;i<tpls.length;i++){if(tpls[i].name===name){idx=i;break;}}' +
   'var newTpl={name:name,orientation:currentOrientation,elements:elements};' +
-  'if(idx>=0)tpls[idx]=newTpl;else tpls.push(newTpl);' +
-  'try{localStorage.setItem("choukoku_tpl_v1",JSON.stringify(tpls));alert("テンプレート「"+name+"」を保存しました");}' +
-  'catch(e){alert("保存失敗: localStorageの容量制限を超えた可能性があります。\\n画像を含むテンプレートはサイズが大きくなります。\\n\\n"+(e&&e.message||e));}' +
+  'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
+  'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
+  '.then(function(){alert("テンプレート「"+name+"」をSharePointに保存しました");})' +
+  '.catch(function(e){alert("保存失敗: "+(e&&e.message||e));});' +
 '};' +
 'window.savetoSharePoint=function(){' +
   'var name=prompt("保存ファイル名（拡張子.json不要）",(_tplData&&_tplData.name)||"彫刻資料");' +

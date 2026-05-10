@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.287';
+var APP_VERSION = 'v1.8.288';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -7242,17 +7242,42 @@ function _toggleChoukokuDocFile(cb) {
 }
 
 function _showChoukokuBoxAssign(boxDefs, fnames, dataUrls, callback) {
+  // 自動割り当て: ファイル名にボックス名が含まれるものを優先 → 残りは順番に詰める
+  var autoIdx = boxDefs.map(function(){ return -1; });
+  var used = {};
+  boxDefs.forEach(function(b, i) {
+    var bn = (b.boxName || '').toLowerCase();
+    if (!bn) return;
+    for (var j = 0; j < fnames.length; j++) {
+      if (used[j]) continue;
+      var base = fnames[j].toLowerCase().replace(/\.[^.]+$/, '');
+      if (base.indexOf(bn) >= 0 || bn.indexOf(base) >= 0) {
+        autoIdx[i] = j; used[j] = true; break;
+      }
+    }
+  });
+  var nextFree = 0;
+  boxDefs.forEach(function(b, i) {
+    if (autoIdx[i] >= 0) return;
+    while (nextFree < fnames.length && used[nextFree]) nextFree++;
+    if (nextFree < fnames.length) { autoIdx[i] = nextFree; used[nextFree] = true; nextFree++; }
+  });
+
   // Build modal overlay in parent window
   var ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center';
   var box = document.createElement('div');
   box.style.cssText = 'background:#fff;border-radius:10px;padding:24px;min-width:380px;max-width:560px;box-shadow:0 6px 32px rgba(0,0,0,.35);font-family:inherit;font-size:13px';
   var title = document.createElement('div');
-  title.style.cssText = 'font-size:15px;font-weight:700;color:#1a2535;margin-bottom:14px';
+  title.style.cssText = 'font-size:15px;font-weight:700;color:#1a2535;margin-bottom:6px';
   title.textContent = '画像ボックスへ割り当て';
   box.appendChild(title);
+  var hint = document.createElement('div');
+  hint.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px';
+  hint.textContent = 'ファイル名から自動推定済み。必要に応じて変更してください。';
+  box.appendChild(hint);
   var selects = {};
-  boxDefs.forEach(function(elem) {
+  boxDefs.forEach(function(elem, i) {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:10px';
     var lbl = document.createElement('label');
@@ -7270,6 +7295,7 @@ function _showChoukokuBoxAssign(boxDefs, fnames, dataUrls, callback) {
       opt.textContent = fn;
       sel.appendChild(opt);
     });
+    if (autoIdx[i] >= 0) sel.value = String(autoIdx[i]);
     row.appendChild(lbl);
     row.appendChild(sel);
     box.appendChild(row);
@@ -7511,7 +7537,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   '<button class="tpl" onclick="savetoSharePoint()">☁️ SharePoint保存</button>' +
   '<button id="btnTplMode" class="tplmod" onclick="toggleTplMode()">🔧 テンプレートモード</button>' +
   '<div style="flex:1"></div>' +
-  '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V で画像貼り付け可</span>' +
+  '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V で画像貼付（枠選択中はその枠に差替）</span>' +
   '<button onclick="window.print()">🖨️ 印刷</button>' +
   '<button class="pr" onclick="savePdfToSP()">☁️ PDF → SP保存</button>' +
 '</div>' +
@@ -7602,7 +7628,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
     'html+=\'<div class="row"><label>太字</label><input type="checkbox" id="pbd"\'+(bold?\' checked\':\'\')+\'></div>\';' +
   '}' +
   'if(t==="outline"){var lbl=sel.dataset.label||"";html+=\'<div class="row"><label>ラベル</label><input type="text" id="plb" value="\'+lbl.replace(/"/g,\'&quot;\')+\'"></div>\';}' +
-  'if(t==="image"){html+=\'<button class="cropbtn" onclick="openCropModal()">✂️ トリミング</button>\';}' +
+  'if(t==="image"){html+=\'<button class="cropbtn" onclick="openCropModal()">✂️ トリミング</button>\';html+=\'<button class="cropbtn" style="background:#1a5a9a;margin-top:4px" onclick="changeSelectedImage()">🔄 画像変更</button>\';}' +
   'if(tplMode){' +
     'html+=\'<hr style="margin:8px 0;border:none;border-top:1px solid #eee">\';' +
     'html+=\'<div style="font-size:10px;font-weight:700;color:#c47a1a;margin-bottom:4px">🔧 テンプレート設定</div>\';' +
@@ -7936,12 +7962,43 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '})();' +
 'page.addEventListener("mousedown",function(e){if(e.target===page){setSel(null);}});' +
 'document.addEventListener("keydown",function(e){if(e.key==="Delete"&&sel&&!(sel.contentEditable==="true"&&document.activeElement===sel)){window.deleteSelected();}});' +
+'window.changeSelectedImage=function(){' +
+  'if(!sel||sel.dataset.type!=="image")return;' +
+  'var inp=document.createElement("input");inp.type="file";inp.accept="image/*";' +
+  'inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;' +
+    'var fr=new FileReader();fr.onload=function(){' +
+      'var im=sel.querySelector("img");if(im){im.src=fr.result;sel.classList.remove("no-img");}' +
+    '};fr.readAsDataURL(f);};' +
+  'inp.click();' +
+'};' +
+'function _replaceSelImageSrc(src){var im=sel.querySelector("img");if(im){im.src=src;sel.classList.remove("no-img");}}' +
 'document.addEventListener("paste",function(e){' +
   'var cd=e.clipboardData;if(!cd)return;' +
   // 編集中のテキスト要素にペーストする場合は通常のテキスト貼り付けを許可
   'var ae=document.activeElement;' +
   'var editingText=ae&&ae.contentEditable==="true"&&ae.classList&&ae.classList.contains("elem-text");' +
   'if(editingText)return;' +
+  // 画像枠が選択中: その枠に画像を差し替え（テキストは無視）
+  'var selIsImage=sel&&sel.dataset.type==="image";' +
+  'if(selIsImage){' +
+    'var items2=cd.items||[];var doneR=false;' +
+    'for(var k=0;k<items2.length;k++){' +
+      'if(items2[k].kind==="file"&&items2[k].type.indexOf("image/")===0){' +
+        'var f2=items2[k].getAsFile();if(!f2)continue;' +
+        '(function(file){var fr=new FileReader();fr.onload=function(){_replaceSelImageSrc(fr.result);};fr.readAsDataURL(file);})(f2);' +
+        'doneR=true;break;' +
+      '}' +
+    '}' +
+    'if(!doneR){' +
+      'var hd=cd.getData("text/html")||"";' +
+      'if(hd){var t2=document.createElement("div");t2.innerHTML=hd;var im2=t2.querySelectorAll("img");' +
+        'for(var m=0;m<im2.length;m++){var s2=im2[m].src||im2[m].getAttribute("src")||"";' +
+          'if(s2&&(s2.indexOf("data:")===0||s2.indexOf("blob:")===0||s2.indexOf("http")===0)){_replaceSelImageSrc(s2);doneR=true;break;}' +
+        '}}' +
+    '}' +
+    'if(doneR){e.preventDefault();return;}' +
+    'e.preventDefault();return;' +  // 画像枠選択中はテキスト貼付で新規要素を作らない
+  '}' +
   // PowerPoint等のテキスト+画像フォールバックを考慮し、まずテキストを優先
   'var plainText=cd.getData("text/plain")||"";' +
   'if(plainText.trim().length>0){addTextEl(plainText);e.preventDefault();return;}' +

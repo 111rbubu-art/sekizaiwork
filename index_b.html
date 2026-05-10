@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.289';
+var APP_VERSION = 'v1.8.290';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -7033,6 +7033,26 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
   '</div>';
 }
 
+// ネットワークエラー（ERR_CONNECTION_RESET など）に対する指数バックオフ付き fetch
+function _fetchRetry(url, opts, maxTries) {
+  maxTries = maxTries || 3;
+  return new Promise(function(resolve, reject) {
+    var n = 0;
+    function tryOnce() {
+      n++;
+      fetch(url, opts).then(function(r) {
+        if (r.ok || r.status === 404 || r.status === 401 || r.status === 403) { resolve(r); return; }
+        if (n >= maxTries) { resolve(r); return; }
+        setTimeout(tryOnce, 600 * Math.pow(2, n - 1));
+      }).catch(function(e) {
+        if (n >= maxTries) { reject(e); return; }
+        setTimeout(tryOnce, 600 * Math.pow(2, n - 1));
+      });
+    }
+    tryOnce();
+  });
+}
+
 // 彫刻確認資料 - 名前付きボックス取得
 function _choukokuGetBoxes() {
   var tpl = _hakaChoukokuTemplate;
@@ -7191,10 +7211,10 @@ function _onChoukokuTplChange(sel) {
   var name = _choukokuTplList[idx];
   var enc = (CHOUKOKU_TPL_FOLDER + '/' + name + '.json').split('/').map(encodeURIComponent).join('/');
   getToken().then(function(resp) {
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content?nocache=' + Date.now(), {
+    return _fetchRetry('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content?nocache=' + Date.now(), {
       headers: { Authorization: 'Bearer ' + resp.accessToken },
       cache: 'no-store'
-    }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+    }, 4).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
     _choukokuBoxAssign = {};
@@ -7516,7 +7536,7 @@ function executeChoukokuDoc() {
       var fpath = folderPass + '/工事仕様/彫刻資料/' + fname;
       var enc = fpath.split('/').map(encodeURIComponent).join('/');
       var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content';
-      return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      return _fetchRetry(url, { headers: { Authorization: 'Bearer ' + token } }, 4)
         .then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
         .then(function(blob) {
           return new Promise(function(resolve) {

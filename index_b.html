@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.288';
+var APP_VERSION = 'v1.8.289';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -6714,7 +6714,8 @@ var HAKA_SPEC_AI_TYPES = {
 };
 
 var _hakaChoukokuTemplate = null;  // 選択中のテンプレート（JSON全体）
-var _hakaChoukokuDocFiles = [];    // 選択中のファイル名（複数可）
+var _hakaChoukokuDocFiles = [];    // 選択中のファイル名（複数可）— 旧仕様用、互換維持
+var _choukokuBoxAssign    = {};    // ボックス割当 { boxName: fname }
 var _choukokuTplList = [];         // SP上のテンプレート名キャッシュ（ファイル名拡張子なし）
 var CHOUKOKU_TPL_FOLDER = '/業務アプリ/帳票類テンプレート';
 var CHOUKOKU_BIND_FIELDS = [
@@ -7011,7 +7012,7 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
 
   return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px">' +
     '<div style="font-size:13px;font-weight:700;color:#5a3a00;margin-bottom:8px">📄 彫刻確認資料作成</div>' +
-    '<div style="font-size:11px;color:#777;margin-bottom:12px">テンプレートとファイル（複数選択可）はどちらも省略可。テンプレートなしで実行すると白紙で立ち上がります。編集画面で縦横切替・テンプレート保存ができます。</div>' +
+    '<div style="font-size:11px;color:#777;margin-bottom:12px">テンプレートを選ぶと検討中ファイルから自動でボックスへ割り当てます。下のファイルをドラッグして枠に変更可、× で割当解除。テンプレート無しなら全ファイル自動配置で起動します。</div>' +
     '<div style="display:flex;flex-direction:column;gap:10px">' +
       '<div style="font-size:12px;color:#333">テンプレート' +
         '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">' +
@@ -7019,9 +7020,10 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
           '<button onclick="_deleteChoukokuTemplate()" title="選択中のテンプレートを削除" style="padding:6px 10px;background:#fff;color:#c00;border:1px solid #e0a0a0;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🗑️</button>' +
         '</div>' +
       '</div>' +
-      '<label style="font-size:12px;color:#333">ファイル（彫刻資料 / 検討中のみ）<br>' +
-        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px">読み込み中...</div>' +
-      '</label>' +
+      '<div id="haka-choukoku-box-area" style="display:none;background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px"></div>' +
+      '<div style="font-size:12px;color:#333">ファイル一覧（彫刻資料 / 検討中のみ・ドラッグで割当）' +
+        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px;margin-top:4px">読み込み中...</div>' +
+      '</div>' +
       '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">' +
         '<button onclick="executeChoukokuDoc()" style="padding:8px 18px;background:#5a3a00;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 実行</button>' +
         '<button onclick="_openSavedChoukokuDoc()" style="padding:8px 14px;background:#fff;color:#1a5a9a;border:1px solid #1a5a9a;border-radius:16px;cursor:pointer;font-size:12px;font-family:inherit">📂 保存済みを開く</button>' +
@@ -7030,6 +7032,158 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
     '</div>' +
   '</div>';
 }
+
+// 彫刻確認資料 - 名前付きボックス取得
+function _choukokuGetBoxes() {
+  var tpl = _hakaChoukokuTemplate;
+  if (!tpl || !tpl.elements) return [];
+  return tpl.elements.filter(function(e){ return e.type === 'image' && e.boxName; });
+}
+
+function _choukokuFindFile(fname) {
+  var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
+  for (var i = 0; i < files.length; i++) if (files[i].name === fname) return files[i];
+  return null;
+}
+
+// 自動割当: ファイル名キーワード一致 → 残りは順番
+function _choukokuAutoAssign() {
+  var boxes = _choukokuGetBoxes();
+  var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
+  // 既存割当をクリーンアップ（テンプレ変更等で無効化された割当を除去）
+  var validBox = {}; boxes.forEach(function(b){ validBox[b.boxName] = true; });
+  var validFn  = {}; files.forEach(function(f){ validFn[f.name] = true; });
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){
+    if (!validBox[bn] || !validFn[_choukokuBoxAssign[bn]]) delete _choukokuBoxAssign[bn];
+  });
+  var used = {};
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){ used[_choukokuBoxAssign[bn]] = true; });
+  // Pass 1: キーワード一致
+  boxes.forEach(function(b){
+    if (_choukokuBoxAssign[b.boxName]) return;
+    var bn = (b.boxName || '').toLowerCase();
+    if (!bn) return;
+    for (var j = 0; j < files.length; j++) {
+      if (used[files[j].name]) continue;
+      var base = files[j].name.toLowerCase().replace(/\.[^.]+$/, '');
+      if (base.indexOf(bn) >= 0 || bn.indexOf(base) >= 0) {
+        _choukokuBoxAssign[b.boxName] = files[j].name;
+        used[files[j].name] = true;
+        break;
+      }
+    }
+  });
+  // Pass 2: 順番フォールバック
+  boxes.forEach(function(b){
+    if (_choukokuBoxAssign[b.boxName]) return;
+    for (var j = 0; j < files.length; j++) {
+      if (!used[files[j].name]) {
+        _choukokuBoxAssign[b.boxName] = files[j].name;
+        used[files[j].name] = true;
+        break;
+      }
+    }
+  });
+}
+
+// ボックス割当エリア + ファイル一覧の再描画
+function _choukokuRender() {
+  var boxArea = document.getElementById('haka-choukoku-box-area');
+  if (boxArea) {
+    var boxes = _choukokuGetBoxes();
+    if (boxes.length === 0) {
+      boxArea.style.display = 'none';
+      boxArea.innerHTML = '';
+    } else {
+      boxArea.style.display = 'block';
+      var rows = boxes.map(function(b){
+        var fname = _choukokuBoxAssign[b.boxName] || '';
+        var f = fname ? _choukokuFindFile(fname) : null;
+        var thumb = '';
+        if (f && f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
+          thumb = '<img src="' + f.thumbnails[0].small.url + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:36px;height:36px;object-fit:cover;border-radius:3px;flex-shrink:0">';
+        } else if (f) {
+          thumb = '<span style="font-size:20px;width:36px;text-align:center;flex-shrink:0">📄</span>';
+        }
+        var slotInner = fname
+          ? thumb + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" title="' + _hakaSpecEsc(fname) + '">' + _hakaSpecEsc(fname) + '</span>'
+            + '<button data-act="unassign" style="background:#c43030;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:12px;line-height:22px;padding:0;flex-shrink:0">×</button>'
+          : '<span style="color:#bbb;font-size:11px;flex:1">（ドラッグで割当）</span>';
+        return '<div data-boxname="' + _hakaSpecEsc(b.boxName) + '" style="display:flex;align-items:center;gap:6px;padding:6px;background:#fff;border:1px dashed #c8b8a0;border-radius:4px;margin-bottom:4px" '
+          + 'ondragover="event.preventDefault();this.style.background=\'#fffae0\'" '
+          + 'ondragleave="this.style.background=\'#fff\'" '
+          + 'ondrop="_choukokuOnDropBox(event,this)">'
+          + '<span style="background:#1a5a9a;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;flex-shrink:0;white-space:nowrap">' + _hakaSpecEsc(b.boxName) + '</span>'
+          + slotInner + '</div>';
+      }).join('');
+      boxArea.innerHTML = '<div style="font-size:11px;font-weight:600;color:#5a3a00;margin-bottom:6px">📷 ボックス割当（自動推定・ドラッグで変更可）</div>' + rows;
+      // delegated click for unassign × buttons
+      boxArea.querySelectorAll('button[data-act="unassign"]').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var row = btn.closest('[data-boxname]');
+          if (row) _choukokuUnassignBox(row.dataset.boxname);
+        });
+      });
+    }
+  }
+
+  var fileEl = document.getElementById('haka-choukoku-doc-files');
+  if (!fileEl) return;
+  var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
+  if (files.length === 0) {
+    fileEl.innerHTML = '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>';
+    return;
+  }
+  var assignedFnames = {};
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){ assignedFnames[_choukokuBoxAssign[bn]] = true; });
+  var rows = files.map(function(f){
+    var assigned = !!assignedFnames[f.name];
+    var thumbHtml = '';
+    if (f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
+      thumbHtml = '<img src="' + f.thumbnails[0].small.url + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0">';
+    } else {
+      thumbHtml = '<span style="font-size:24px;width:48px;text-align:center;flex-shrink:0">📄</span>';
+    }
+    var bg = assigned ? '#e8f0ff' : '#fff';
+    var badge = assigned ? '<span style="background:#1a5a9a;color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;flex-shrink:0">割当済</span>' : '';
+    return '<div data-fname="' + _hakaSpecEsc(f.name) + '" draggable="true" ondragstart="_choukokuOnDragStartFile(event,this)" '
+      + 'style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f0e8d8;cursor:grab;background:' + bg + '">'
+      + thumbHtml
+      + '<span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _hakaSpecEsc(f.name) + '">' + _hakaSpecEsc(f.name) + '</span>'
+      + badge
+      + '</div>';
+  }).join('');
+  fileEl.innerHTML = rows;
+}
+
+window._choukokuOnDragStartFile = function(ev, el) {
+  if (!ev.dataTransfer) return;
+  var fname = el && el.dataset && el.dataset.fname;
+  if (!fname) return;
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.dataTransfer.setData('text/plain', fname);
+};
+
+window._choukokuOnDropBox = function(ev, rowEl) {
+  ev.preventDefault();
+  if (rowEl) rowEl.style.background = '#fff';
+  var fname = ev.dataTransfer && ev.dataTransfer.getData('text/plain');
+  var boxName = rowEl && rowEl.dataset && rowEl.dataset.boxname;
+  if (!fname || !boxName) return;
+  if (!_choukokuFindFile(fname)) return;
+  // 別ボックスからの移動は元を解除
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){
+    if (_choukokuBoxAssign[bn] === fname) delete _choukokuBoxAssign[bn];
+  });
+  _choukokuBoxAssign[boxName] = fname;
+  _choukokuRender();
+};
+
+window._choukokuUnassignBox = function(boxName) {
+  if (!boxName) return;
+  delete _choukokuBoxAssign[boxName];
+  _choukokuRender();
+};
 
 function _onChoukokuTplChange(sel) {
   var idx = parseInt(sel.value, 10);
@@ -7043,9 +7197,14 @@ function _onChoukokuTplChange(sel) {
     }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
+    _choukokuBoxAssign = {};
+    _choukokuAutoAssign();
+    _choukokuRender();
   }).catch(function(e) {
     showSaveToast(false, 'テンプレート読込エラー: ' + (e && e.message || e));
     _hakaChoukokuTemplate = null;
+    _choukokuBoxAssign = {};
+    _choukokuRender();
   });
 }
 
@@ -7205,30 +7364,12 @@ function loadHakaChoukokuDocFiles() {
       });
   }).then(function(data) {
     var items = (data.value || []).filter(function(i){ return i.file; });
-    // 検討中のみフィルタ
     var tentative = items.filter(function(f){
       return _hakaSpecGetFileStatus('彫刻資料', f.name) === 'tentative';
     });
     _hakaChoukokuDocCache.items = tentative;
-    if (tentative.length === 0) {
-      el.innerHTML = '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>';
-      return;
-    }
-    var rows = tentative.map(function(f) {
-      var checked = (_hakaChoukokuDocFiles.indexOf(f.name) >= 0) ? ' checked' : '';
-      var thumbHtml = '';
-      if (f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
-        thumbHtml = '<img src="' + f.thumbnails[0].small.url + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0">';
-      } else {
-        thumbHtml = '<span style="font-size:24px;width:48px;text-align:center">📄</span>';
-      }
-      return '<label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f0e8d8;cursor:pointer">' +
-        '<input type="checkbox" name="haka-choukoku-doc-file" value="' + _hakaSpecEsc(f.name) + '" onchange="_toggleChoukokuDocFile(this)"' + checked + '>' +
-        thumbHtml +
-        '<span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _hakaSpecEsc(f.name) + '">' + _hakaSpecEsc(f.name) + '</span>' +
-        '</label>';
-    }).join('');
-    el.innerHTML = rows;
+    _choukokuAutoAssign();
+    _choukokuRender();
   }).catch(function(e) {
     el.innerHTML = '<div style="color:#c00">エラー: ' + (e && e.message || e) + '</div>';
   });
@@ -7346,20 +7487,29 @@ function _showChoukokuBoxAssign(boxDefs, fnames, dataUrls, callback) {
 
 function executeChoukokuDoc() {
   var tpl = _hakaChoukokuTemplate;  // null = 新規
-  var fnames = (_hakaChoukokuDocFiles || []).slice();
   if (!currentItem) return;
   var d = currentItem;
   var folderPass = d['Folder_Pass'] || '';
+  var boxes = _choukokuGetBoxes();
 
-  // ファイル未選択 → テンプレートのみで起動
+  // 取得対象ファイル：ボックスありなら割当済みのみ、なければファイル一覧全て
+  var fnames;
+  if (boxes.length > 0) {
+    fnames = [];
+    boxes.forEach(function(b){
+      var fn = _choukokuBoxAssign[b.boxName];
+      if (fn && fnames.indexOf(fn) < 0) fnames.push(fn);
+    });
+  } else {
+    fnames = ((_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || []).map(function(f){ return f.name; });
+  }
+
   if (fnames.length === 0) {
     openChoukokuDocWindow(tpl, [], [], null, currentItem);
     return;
   }
-
   if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
 
-  // 選択された全ファイルを並列取得（個別失敗時もnullで継続）
   getToken().then(function(resp) {
     var token = resp.accessToken;
     return Promise.all(fnames.map(function(fname) {
@@ -7381,16 +7531,21 @@ function executeChoukokuDoc() {
   }).then(function(results) {
     var dataUrls = [], goodFnames = [];
     results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodFnames.push(fnames[i]); } });
-    var boxes = tpl && tpl.elements ? tpl.elements.filter(function(e){return e.type==='image'&&e.boxName;}) : [];
-    if(boxes.length > 0 && dataUrls.length > 0) {
-      _showChoukokuBoxAssign(boxes, goodFnames, dataUrls, function(assignments, leftFnames, leftUrls) {
-        openChoukokuDocWindow(tpl, leftFnames, leftUrls, assignments, currentItem);
+
+    if (boxes.length > 0) {
+      var assignments = [];
+      boxes.forEach(function(b){
+        var fn = _choukokuBoxAssign[b.boxName];
+        if (!fn) return;
+        var idx = goodFnames.indexOf(fn);
+        if (idx < 0) return;
+        assignments.push({ boxName: b.boxName, fname: fn, dataUrl: dataUrls[idx] });
       });
+      openChoukokuDocWindow(tpl, [], [], assignments, currentItem);
     } else {
       openChoukokuDocWindow(tpl, goodFnames, dataUrls, null, currentItem);
     }
   }).catch(function(e) {
-    // トークン取得失敗でもポップアップを起動（ファイルなし）
     showSaveToast(false, '画像取得エラー: ' + (e && e.message || e));
     openChoukokuDocWindow(tpl, [], [], null, currentItem);
   });

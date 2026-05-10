@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.290';
+var APP_VERSION = 'v1.8.291';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -6716,6 +6716,9 @@ var HAKA_SPEC_AI_TYPES = {
 var _hakaChoukokuTemplate = null;  // 選択中のテンプレート（JSON全体）
 var _hakaChoukokuDocFiles = [];    // 選択中のファイル名（複数可）— 旧仕様用、互換維持
 var _choukokuBoxAssign    = {};    // ボックス割当 { boxName: fname }
+var _choukokuDocMode      = 'new'; // 'new' | 'edit'
+var _choukokuSubPath      = '工事仕様/彫刻資料'; // Folder_Pass からの相対パス
+var _choukokuSavedList    = [];    // 保存済資料リスト（modeが editのとき）
 var _choukokuTplList = [];         // SP上のテンプレート名キャッシュ（ファイル名拡張子なし）
 var CHOUKOKU_TPL_FOLDER = '/業務アプリ/帳票類テンプレート';
 var CHOUKOKU_BIND_FIELDS = [
@@ -7010,9 +7013,12 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
     })
   ).join('');
 
-  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px">' +
-    '<div style="font-size:13px;font-weight:700;color:#5a3a00;margin-bottom:8px">📄 彫刻確認資料作成</div>' +
-    '<div style="font-size:11px;color:#777;margin-bottom:12px">テンプレートを選ぶと検討中ファイルから自動でボックスへ割り当てます。下のファイルをドラッグして枠に変更可、× で割当解除。テンプレート無しなら全ファイル自動配置で起動します。</div>' +
+  var modeNew  = _choukokuDocMode === 'new';
+  var tabBase  = 'flex:1;padding:10px 14px;border:none;border-radius:0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:600;transition:all 0.15s';
+  var tabOn    = 'background:#5a3a00;color:#fff';
+  var tabOff   = 'background:#f0e6d4;color:#7a5a2a';
+
+  var newModeBody =
     '<div style="display:flex;flex-direction:column;gap:10px">' +
       '<div style="font-size:12px;color:#333">テンプレート' +
         '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">' +
@@ -7020,18 +7026,49 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
           '<button onclick="_deleteChoukokuTemplate()" title="選択中のテンプレートを削除" style="padding:6px 10px;background:#fff;color:#c00;border:1px solid #e0a0a0;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🗑️</button>' +
         '</div>' +
       '</div>' +
-      '<div id="haka-choukoku-box-area" style="display:none;background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px"></div>' +
-      '<div style="font-size:12px;color:#333">ファイル一覧（彫刻資料 / 検討中のみ・ドラッグで割当）' +
-        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px;margin-top:4px">読み込み中...</div>' +
+      '<div id="haka-choukoku-box-area" style="display:none;background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:10px"></div>' +
+      '<div style="font-size:12px;color:#333">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">' +
+          '<span>ファイル一覧</span>' +
+          '<span id="haka-choukoku-folder-label" style="font-size:11px;color:#888;font-family:monospace">' + _hakaSpecEsc(_choukokuSubPath) + '</span>' +
+          '<button onclick="_choukokuShowFolderPicker()" style="padding:3px 9px;background:#fff;color:#5a3a00;border:1px solid #c8b8a0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">📁 別フォルダ</button>' +
+          '<button onclick="loadHakaChoukokuDocFiles()" style="padding:3px 9px;background:#fff;color:#5a3a00;border:1px solid #c8b8a0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">🔄 更新</button>' +
+        '</div>' +
+        '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">' +
-        '<button onclick="executeChoukokuDoc()" style="padding:8px 18px;background:#5a3a00;color:#fff;border:none;border-radius:16px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:500">🖨️ 実行</button>' +
-        '<button onclick="_openSavedChoukokuDoc()" style="padding:8px 14px;background:#fff;color:#1a5a9a;border:1px solid #1a5a9a;border-radius:16px;cursor:pointer;font-size:12px;font-family:inherit">📂 保存済みを開く</button>' +
-        '<button onclick="loadHakaChoukokuDocFiles()" style="padding:8px 14px;background:#fff;color:#5a3a00;border:1px solid #5a3a00;border-radius:16px;cursor:pointer;font-size:12px;font-family:inherit">🔄 ファイル一覧を更新</button>' +
+        '<button id="choukoku-exec-btn" onclick="executeChoukokuDoc()" style="padding:10px 22px;background:#5a3a00;color:#fff;border:none;border-radius:18px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:600">🖨️ 実行</button>' +
       '</div>' +
+    '</div>';
+
+  var editModeBody =
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<div style="font-size:11px;color:#777">保存済みの彫刻確認資料を選んで編集します。</div>' +
+      '<div id="haka-choukoku-saved-list" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px;max-height:380px;overflow-y:auto">読み込み中...</div>' +
+      '<div><button onclick="_choukokuLoadSaved()" style="padding:6px 14px;background:#fff;color:#5a3a00;border:1px solid #5a3a00;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit">🔄 一覧を更新</button></div>' +
+    '</div>';
+
+  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px">' +
+    '<div style="font-size:13px;font-weight:700;color:#5a3a00;margin-bottom:10px">📄 彫刻確認資料作成</div>' +
+    '<div style="display:flex;border-radius:8px;overflow:hidden;margin-bottom:14px;box-shadow:inset 0 0 0 1px #c8b8a0">' +
+      '<button onclick="_setChoukokuMode(\'new\')" style="' + tabBase + ';' + (modeNew ? tabOn : tabOff) + '">🆕 新規作成（テンプレートから）</button>' +
+      '<button onclick="_setChoukokuMode(\'edit\')" style="' + tabBase + ';' + (modeNew ? tabOff : tabOn) + '">📂 保存済みを編集</button>' +
     '</div>' +
+    (modeNew ? newModeBody : editModeBody) +
   '</div>';
 }
+
+window._setChoukokuMode = function(mode) {
+  if (mode !== 'new' && mode !== 'edit') return;
+  if (_choukokuDocMode === mode) return;
+  _choukokuDocMode = mode;
+  if (currentItem) renderHakaSpecTab(currentItem);
+  if (mode === 'new') {
+    setTimeout(function(){ loadHakaChoukokuDocFiles(); loadChoukokuTemplates(); }, 30);
+  } else {
+    setTimeout(function(){ _choukokuLoadSaved(); }, 30);
+  }
+};
 
 // ネットワークエラー（ERR_CONNECTION_RESET など）に対する指数バックオフ付き fetch
 function _fetchRetry(url, opts, maxTries) {
@@ -7133,7 +7170,7 @@ function _choukokuRender() {
           + 'ondragover="event.preventDefault();this.style.background=\'#fffae0\'" '
           + 'ondragleave="this.style.background=\'#fff\'" '
           + 'ondrop="_choukokuOnDropBox(event,this)">'
-          + '<span style="background:#1a5a9a;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;flex-shrink:0;white-space:nowrap">' + _hakaSpecEsc(b.boxName) + '</span>'
+          + '<span style="background:#1a5a9a;color:#fff;padding:6px 12px;border-radius:6px;font-size:14px;font-weight:700;flex-shrink:0;white-space:nowrap;letter-spacing:0.05em;min-width:74px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.15)">' + _hakaSpecEsc(b.boxName) + '</span>'
           + slotInner + '</div>';
       }).join('');
       boxArea.innerHTML = '<div style="font-size:11px;font-weight:600;color:#5a3a00;margin-bottom:6px">📷 ボックス割当（自動推定・ドラッグで変更可）</div>' + rows;
@@ -7324,42 +7361,160 @@ function _saveChoukokuPdfFromPopup(blob, name) {
 }
 
 // SharePointから保存済み彫刻確認資料を一覧表示・選択して開く
-function _openSavedChoukokuDoc() {
-  if (!currentItem || !currentItem['Folder_Pass']) { alert('Folder_Pass がありません'); return; }
+function _choukokuLoadSaved() {
+  var el = document.getElementById('haka-choukoku-saved-list');
+  if (!el) return;
+  if (!currentItem || !currentItem['Folder_Pass']) { el.innerHTML = '<div style="color:#c00">Folder_Pass がありません</div>'; return; }
   var folder = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料';
   var enc = folder.split('/').map(encodeURIComponent).join('/');
-  var token;
+  el.innerHTML = '<div style="color:#888">読み込み中...</div>';
   getToken().then(function(resp) {
-    token = resp.accessToken;
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file', {
-      headers: { Authorization: 'Bearer ' + token }
-    });
+    return _fetchRetry('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,lastModifiedDateTime&$orderby=lastModifiedDateTime desc', {
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    }, 3);
   }).then(function(r) {
     if (r.status === 404) return { value: [] };
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }).then(function(data) {
     var jsons = (data.value || []).filter(function(f) { return f.file && /\.json$/i.test(f.name); });
-    if (jsons.length === 0) { alert('保存済み資料がありません'); return null; }
-    var msg = '保存済み資料一覧:\n\n' + jsons.map(function(f, i) {
-      return (i + 1) + '. ' + f.name.replace(/\.json$/i, '');
-    }).join('\n') + '\n\n番号を入力してください（キャンセルで中止）';
-    var pick = prompt(msg);
-    if (!pick) return null;
-    var idx = parseInt(pick, 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= jsons.length) return null;
-    var fpath = folder + '/' + jsons[idx].name;
-    var fenc = fpath.split('/').map(encodeURIComponent).join('/');
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + fenc + ':/content', {
-      headers: { Authorization: 'Bearer ' + token }
-    }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
-  }).then(function(saved) {
-    if (!saved) return;
+    _choukokuSavedList = jsons;
+    if (jsons.length === 0) {
+      el.innerHTML = '<div style="color:#888;padding:8px">保存済み資料がありません。新規作成タブから作成してください。</div>';
+      return;
+    }
+    var rows = jsons.map(function(f) {
+      var nameNoExt = f.name.replace(/\.json$/i, '');
+      var date = (f.lastModifiedDateTime || '').substring(0, 10);
+      return '<div data-fname="' + _hakaSpecEsc(f.name) + '" style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f0e8d8;background:#fff">' +
+        '<span style="font-size:18px">📄</span>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:600;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _hakaSpecEsc(nameNoExt) + '</div>' +
+          '<div style="font-size:10px;color:#888">' + date + '</div>' +
+        '</div>' +
+        '<button data-act="edit" style="padding:5px 12px;background:#1a5a9a;color:#fff;border:none;border-radius:14px;cursor:pointer;font-size:11px;font-family:inherit">編集</button>' +
+        '<button data-act="del" style="padding:5px 10px;background:#fff;color:#c00;border:1px solid #e0a0a0;border-radius:14px;cursor:pointer;font-size:11px;font-family:inherit">削除</button>' +
+        '</div>';
+    }).join('');
+    el.innerHTML = rows;
+    el.querySelectorAll('button[data-act]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var row = btn.closest('[data-fname]');
+        if (!row) return;
+        var fname = row.dataset.fname;
+        if (btn.dataset.act === 'edit') _choukokuOpenSaved(fname);
+        else if (btn.dataset.act === 'del') _choukokuDeleteSaved(fname);
+      });
+    });
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00">エラー: ' + _hakaSpecEsc(e && e.message || String(e)) + '</div>';
+  });
+}
+
+function _choukokuOpenSaved(fname) {
+  if (!currentItem || !currentItem['Folder_Pass'] || !fname) return;
+  var fpath = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料/' + fname;
+  var fenc = fpath.split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return _fetchRetry('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + fenc + ':/content?nocache=' + Date.now(), {
+      headers: { Authorization: 'Bearer ' + resp.accessToken }, cache: 'no-store'
+    }, 4);
+  }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(function(saved) {
     openChoukokuDocWindow(saved, [], [], null, currentItem);
   }).catch(function(e) {
     showSaveToast(false, '読み込みエラー: ' + (e && e.message || e));
   });
 }
+
+function _choukokuDeleteSaved(fname) {
+  if (!fname || !currentItem || !currentItem['Folder_Pass']) return;
+  if (!confirm('「' + fname.replace(/\.json$/i, '') + '」を削除しますか？')) return;
+  var fpath = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料/' + fname;
+  var fenc = fpath.split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + fenc, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 404) throw new Error(r.status);
+    showSaveToast(true, '削除しました');
+    _choukokuLoadSaved();
+  }).catch(function(e) { showSaveToast(false, '削除エラー: ' + (e && e.message || e)); });
+}
+
+// 旧API互換（呼ばれた場合は edit モードに切り替え）
+function _openSavedChoukokuDoc() {
+  _setChoukokuMode('edit');
+}
+
+// フォルダピッカー
+function _choukokuShowFolderPicker() {
+  if (!currentItem || !currentItem['Folder_Pass']) { alert('Folder_Pass がありません'); return; }
+  var rootPath = currentItem['Folder_Pass'];
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:10px;padding:20px;width:520px;max-height:80vh;display:flex;flex-direction:column;font-family:inherit;font-size:13px;box-shadow:0 6px 32px rgba(0,0,0,.35)';
+  box.innerHTML =
+    '<div style="font-size:15px;font-weight:700;color:#1a2535;margin-bottom:8px">📁 ファイルフォルダの選択</div>' +
+    '<div id="cf-bc" style="font-size:11px;color:#5a3a00;margin-bottom:8px;font-family:monospace;word-break:break-all"></div>' +
+    '<div id="cf-list" style="flex:1;overflow-y:auto;border:1px solid #ddd;border-radius:6px;padding:6px;min-height:240px;max-height:50vh"></div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">' +
+      '<button id="cf-cancel" style="padding:8px 16px;background:#888;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px">キャンセル</button>' +
+      '<button id="cf-use" style="padding:8px 22px;background:#1a5a9a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600">このフォルダを使用</button>' +
+    '</div>';
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  var current = _choukokuSubPath || '';
+  var bc = box.querySelector('#cf-bc');
+  var lst = box.querySelector('#cf-list');
+
+  function loadDir(rel) {
+    current = rel;
+    bc.textContent = rootPath + (rel ? '/' + rel : '');
+    lst.innerHTML = '<div style="color:#888;padding:8px">読み込み中...</div>';
+    var full = rootPath + (rel ? '/' + rel : '');
+    var enc = full.split('/').map(encodeURIComponent).join('/');
+    getToken().then(function(resp) {
+      return _fetchRetry('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,folder&$orderby=name', {
+        headers: { Authorization: 'Bearer ' + resp.accessToken }
+      }, 3);
+    }).then(function(r) { if (r.status === 404) return {value:[]}; if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(data) {
+      var folders = (data.value || []).filter(function(f){ return f.folder; });
+      var html = '';
+      if (rel) {
+        var parent = rel.split('/').slice(0, -1).join('/');
+        html += '<div data-rel="' + _hakaSpecEsc(parent) + '" class="cf-row" style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f0f0f0;color:#555">⬆️ <span>..（上へ）</span></div>';
+      }
+      if (folders.length === 0 && !rel) html += '<div style="color:#888;padding:8px">サブフォルダはありません</div>';
+      folders.forEach(function(f) {
+        var sub = (rel ? rel + '/' : '') + f.name;
+        html += '<div data-rel="' + _hakaSpecEsc(sub) + '" class="cf-row" style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f0f0f0">📁 <span>' + _hakaSpecEsc(f.name) + '</span></div>';
+      });
+      lst.innerHTML = html;
+      lst.querySelectorAll('.cf-row').forEach(function(row) {
+        row.addEventListener('click', function(){ loadDir(row.dataset.rel); });
+        row.addEventListener('mouseover', function(){ row.style.background = '#f0f0f0'; });
+        row.addEventListener('mouseout',  function(){ row.style.background = ''; });
+      });
+    }).catch(function(e) { lst.innerHTML = '<div style="color:#c00">エラー: ' + _hakaSpecEsc(e && e.message || String(e)) + '</div>'; });
+  }
+
+  loadDir(current);
+  box.querySelector('#cf-cancel').onclick = function(){ document.body.removeChild(ov); };
+  box.querySelector('#cf-use').onclick = function(){
+    _choukokuSubPath = current || '工事仕様/彫刻資料';
+    document.body.removeChild(ov);
+    var lbl = document.getElementById('haka-choukoku-folder-label');
+    if (lbl) lbl.textContent = _choukokuSubPath;
+    loadHakaChoukokuDocFiles();
+  };
+}
+window._choukokuShowFolderPicker = _choukokuShowFolderPicker;
 
 function loadHakaChoukokuDocFiles() {
   var el = document.getElementById('haka-choukoku-doc-files');
@@ -7368,9 +7523,11 @@ function loadHakaChoukokuDocFiles() {
   var d = currentItem;
   var folderPass = d['Folder_Pass'] || '';
   if (!folderPass) { el.innerHTML = '<div style="color:#c00">Folder_Pass がありません</div>'; return; }
+  var lbl = document.getElementById('haka-choukoku-folder-label');
+  if (lbl) lbl.textContent = _choukokuSubPath;
 
   el.innerHTML = '<div style="color:#888">読み込み中...</div>';
-  var subPath = folderPass + '/工事仕様/彫刻資料';
+  var subPath = folderPass + '/' + (_choukokuSubPath || '工事仕様/彫刻資料');
   getToken().then(function(resp) {
     var token = resp.accessToken;
     var enc = subPath.split('/').map(encodeURIComponent).join('/');
@@ -7384,10 +7541,19 @@ function loadHakaChoukokuDocFiles() {
       });
   }).then(function(data) {
     var items = (data.value || []).filter(function(i){ return i.file; });
-    var tentative = items.filter(function(f){
-      return _hakaSpecGetFileStatus('彫刻資料', f.name) === 'tentative';
-    });
-    _hakaChoukokuDocCache.items = tentative;
+    // 既定フォルダ（彫刻資料）の場合は「検討中」のみ。別フォルダなら全画像
+    var isDefault = (_choukokuSubPath === '工事仕様/彫刻資料');
+    var filtered;
+    if (isDefault) {
+      filtered = items.filter(function(f){
+        return _hakaSpecGetFileStatus('彫刻資料', f.name) === 'tentative';
+      });
+    } else {
+      filtered = items.filter(function(f){
+        return /\.(jpe?g|png|gif|webp|bmp|svg|tiff?|heic)$/i.test(f.name);
+      });
+    }
+    _hakaChoukokuDocCache.items = filtered;
     _choukokuAutoAssign();
     _choukokuRender();
   }).catch(function(e) {
@@ -7508,6 +7674,16 @@ function _showChoukokuBoxAssign(boxDefs, fnames, dataUrls, callback) {
 function executeChoukokuDoc() {
   var tpl = _hakaChoukokuTemplate;  // null = 新規
   if (!currentItem) return;
+  var btn = document.getElementById('choukoku-exec-btn');
+  if (btn && btn.disabled) return;  // 連打防止
+  function setBusy(busy) {
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.style.opacity = busy ? '0.55' : '';
+    btn.style.cursor  = busy ? 'wait' : '';
+    btn.textContent   = busy ? '⏳ 実行中…画像取得中、しばらくお待ちください' : '🖨️ 実行';
+  }
+  setBusy(true);
   var d = currentItem;
   var folderPass = d['Folder_Pass'] || '';
   var boxes = _choukokuGetBoxes();
@@ -7525,15 +7701,19 @@ function executeChoukokuDoc() {
   }
 
   if (fnames.length === 0) {
+    setBusy(false);
     openChoukokuDocWindow(tpl, [], [], null, currentItem);
     return;
   }
-  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  if (!folderPass) { setBusy(false); showSaveToast(false, 'Folder_Pass がありません'); return; }
+
+  // 画像取得元のフォルダ（割当用ファイル一覧と同じ場所）
+  var fileFolder = folderPass + '/' + (_choukokuSubPath || '工事仕様/彫刻資料');
 
   getToken().then(function(resp) {
     var token = resp.accessToken;
     return Promise.all(fnames.map(function(fname) {
-      var fpath = folderPass + '/工事仕様/彫刻資料/' + fname;
+      var fpath = fileFolder + '/' + fname;
       var enc = fpath.split('/').map(encodeURIComponent).join('/');
       var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content';
       return _fetchRetry(url, { headers: { Authorization: 'Bearer ' + token } }, 4)
@@ -7552,6 +7732,7 @@ function executeChoukokuDoc() {
     var dataUrls = [], goodFnames = [];
     results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodFnames.push(fnames[i]); } });
 
+    setBusy(false);
     if (boxes.length > 0) {
       var assignments = [];
       boxes.forEach(function(b){
@@ -7566,6 +7747,7 @@ function executeChoukokuDoc() {
       openChoukokuDocWindow(tpl, goodFnames, dataUrls, null, currentItem);
     }
   }).catch(function(e) {
+    setBusy(false);
     showSaveToast(false, '画像取得エラー: ' + (e && e.message || e));
     openChoukokuDocWindow(tpl, [], [], null, currentItem);
   });

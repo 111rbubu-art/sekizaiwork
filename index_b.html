@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.295';
+var APP_VERSION = 'v1.8.296';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -8097,7 +8097,9 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   '<input type="file" id="fileInput" accept="image/*" multiple style="display:none" onchange="addImagesFromInput(this)">' +
   '<div class="sep"></div>' +
   '<button id="btnOrientation" onclick="switchOrientation()">' + orientLabel + '</button>' +
-  '<button class="tpl" onclick="saveAsTemplate()">💾 テンプレート保存</button>' +
+  '<button class="tpl" onclick="overwriteTemplate()" title="同じ名前で上書き保存">💾 上書き保存</button>' +
+  '<button class="tpl" onclick="saveAsTemplate()" title="新しい名前を付けて保存">📝 名前を付けて保存</button>' +
+  '<button class="tpl" onclick="saveTemplateCopy()" title="現在のテンプレを別名でコピー保存">📋 コピーを保存</button>' +
   '<button class="tpl" onclick="savetoSharePoint()">☁️ SharePoint保存</button>' +
   '<button id="btnTplMode" class="tplmod" onclick="toggleTplMode()">🔧 テンプレートモード</button>' +
   '<div style="flex:1"></div>' +
@@ -8239,44 +8241,75 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   'btn.textContent=tplMode?"✅ テンプレートモード":"🔧 テンプレートモード";' +
   'refreshPanel();' +
 '};' +
-'window.saveAsTemplate=function(){' +
-  'var name=prompt("テンプレート名を入力してください",(_tplData&&_tplData.name)||"");' +
-  'if(!name||!name.trim())return;name=name.trim();' +
-  'var elements=[];var comps=[];' +
-  'document.querySelectorAll(".elem").forEach(function(el){' +
-    'var t=el.dataset.type;' +
-    'var item={type:t,x:getMm(el,"left"),y:getMm(el,"top"),w:getMm(el,"width"),h:getMm(el,"height")};' +
-    'if(t==="text"){item.text=el.textContent;item.fontSize=parseFloat(el.dataset.fontsize)||14;item.bold=el.dataset.bold==="1";item.align=el.style.textAlign||"";if(el.dataset.bindfield)item.bindField=el.dataset.bindfield;}' +
-    'if(t==="outline"){item.label=el.dataset.label||"";}' +
-    'if(t==="image"){' +
-      'var boxName=el.dataset.boxname||"";' +
-      'if(boxName){item.boxName=boxName;item.src="";elements.push(item);return;}' +
-      'var img=el.querySelector("img");if(!img||!img.src)return;' +
+'window._gatherTplPayload=function(){' +
+  'return new Promise(function(resolveAll){' +
+    'var elements=[];var comps=[];' +
+    'document.querySelectorAll(".elem").forEach(function(el){' +
+      'var t=el.dataset.type;' +
+      'var item={type:t,x:getMm(el,"left"),y:getMm(el,"top"),w:getMm(el,"width"),h:getMm(el,"height")};' +
+      'if(t==="text"){item.text=el.textContent;item.fontSize=parseFloat(el.dataset.fontsize)||14;item.bold=el.dataset.bold==="1";item.align=el.style.textAlign||"";if(el.dataset.bindfield)item.bindField=el.dataset.bindfield;}' +
+      'if(t==="outline"){item.label=el.dataset.label||"";}' +
+      'if(t==="image"){' +
+        'var boxName=el.dataset.boxname||"";' +
+        'if(boxName){item.boxName=boxName;item.src="";elements.push(item);return;}' +
+        'var img=el.querySelector("img");if(!img||!img.src)return;' +
+        'elements.push(item);' +
+        'comps.push((function(itm,src){return new Promise(function(res){' +
+          'var ti=new Image();' +
+          'ti.onload=function(){' +
+            'var maxD=1500;' +
+            'var sc=Math.min(1,maxD/Math.max(ti.naturalWidth||1,ti.naturalHeight||1));' +
+            'var cw=Math.round(ti.naturalWidth*sc),ch=Math.round(ti.naturalHeight*sc);' +
+            'var cv=document.createElement("canvas");cv.width=cw;cv.height=ch;' +
+            'cv.getContext("2d").drawImage(ti,0,0,cw,ch);' +
+            'itm.src=cv.toDataURL("image/jpeg",0.78);res();' +
+          '};' +
+          'ti.onerror=function(){itm.src=src;res();};' +
+          'ti.src=src;' +
+        '});})(item,img.src));' +
+        'return;' +
+      '}' +
       'elements.push(item);' +
-      'comps.push((function(itm,src){return new Promise(function(res){' +
-        'var ti=new Image();' +
-        'ti.onload=function(){' +
-          'var maxD=1500;' +
-          'var sc=Math.min(1,maxD/Math.max(ti.naturalWidth||1,ti.naturalHeight||1));' +
-          'var cw=Math.round(ti.naturalWidth*sc),ch=Math.round(ti.naturalHeight*sc);' +
-          'var cv=document.createElement("canvas");cv.width=cw;cv.height=ch;' +
-          'cv.getContext("2d").drawImage(ti,0,0,cw,ch);' +
-          'itm.src=cv.toDataURL("image/jpeg",0.78);res();' +
-        '};' +
-        'ti.onerror=function(){itm.src=src;res();};' +
-        'ti.src=src;' +
-      '});})(item,img.src));' +
-      'return;' +
-    '}' +
-    'elements.push(item);' +
+    '});' +
+    'Promise.all(comps).then(function(){' +
+      'resolveAll({orientation:currentOrientation,elements:elements});' +
+    '});' +
   '});' +
-  'Promise.all(comps).then(function(){' +
-    'var newTpl={name:name,orientation:currentOrientation,elements:elements};' +
+'};' +
+'window._saveTemplateWithName=function(name){' +
+  'if(!name||!name.trim()){alert("テンプレート名を入力してください");return;}' +
+  'name=name.trim();' +
+  '_gatherTplPayload().then(function(payload){' +
+    'var newTpl={name:name,orientation:payload.orientation,elements:payload.elements};' +
     'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
     'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
-    '.then(function(){alert("テンプレート「"+name+"」をSharePointに保存しました");})' +
+    '.then(function(){' +
+      '_tplData=newTpl;' +
+      'alert("テンプレート「"+name+"」をSharePointに保存しました");' +
+    '})' +
     '.catch(function(e){alert("保存失敗: "+(e&&e.message||e));});' +
   '});' +
+'};' +
+'window.overwriteTemplate=function(){' +
+  'var name=(_tplData&&_tplData.name)||"";' +
+  'if(!name){window.saveAsTemplate();return;}' +
+  'if(!confirm("テンプレート「"+name+"」を上書き保存しますか？"))return;' +
+  '_saveTemplateWithName(name);' +
+'};' +
+'window.saveAsTemplate=function(){' +
+  'var def=(_tplData&&_tplData.name)||"";' +
+  'var name=prompt("テンプレート名を入力してください",def);' +
+  'if(!name||!name.trim())return;' +
+  '_saveTemplateWithName(name.trim());' +
+'};' +
+'window.saveTemplateCopy=function(){' +
+  'var base=(_tplData&&_tplData.name)||"無題";' +
+  'var def=base+" - コピー";' +
+  'var name=prompt("コピー先のテンプレート名を入力してください",def);' +
+  'if(!name||!name.trim())return;' +
+  'name=name.trim();' +
+  'if(name===base){if(!confirm("元のテンプレートと同名です。上書きしますか？"))return;}' +
+  '_saveTemplateWithName(name);' +
 '};' +
 'window.savetoSharePoint=function(){' +
   'var name=prompt("保存ファイル名（拡張子.json不要）",(_tplData&&_tplData.name)||"彫刻資料");' +

@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.293';
+var APP_VERSION = 'v1.8.294';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -5792,6 +5792,8 @@ var HAKA_SPEC_PHOTO_CATS = ['現場写真','図面','彫刻資料','参考画像
 
 // 新メニュー: Tab 4「資料作成」のビュー切替（null = カード一覧）
 var _koujiDocsView = null;           // null | 'ai' | 'choukoku'
+// 新メニュー: 資料作成カード一覧から呼び出した時に彫刻パネルへ自動セットするテンプレ名
+var _koujiDocsPendingTpl = null;
 // 新メニュー: Tab 5「データ」のサブタブ
 var _koujiDataSubtab = 'photos';     // 'photos' | 'sp' | 'folder'
 
@@ -6035,12 +6037,40 @@ function renderKoujiDocsTab(d) {
     b.innerHTML = _renderKoujiDocsBackBar('📄 彫刻確認資料作成') + renderHakaSpecChoukokuDocPanel(d, spec);
     setTimeout(function(){
       if (typeof loadHakaChoukokuDocFiles === 'function') loadHakaChoukokuDocFiles();
-      if (typeof loadChoukokuTemplates === 'function')   loadChoukokuTemplates();
+      if (typeof loadChoukokuTemplates === 'function') {
+        var p = loadChoukokuTemplates();
+        if (p && typeof p.then === 'function') {
+          p.then(function(){ _koujiDocsApplyPendingTpl(); });
+        } else {
+          setTimeout(_koujiDocsApplyPendingTpl, 200);
+        }
+      }
     }, 30);
     return;
   }
   // カード一覧（landing）
   b.innerHTML = _renderKoujiDocsCardGrid(d);
+  // テンプレ一覧未取得なら非同期取得して再描画
+  if ((!_choukokuTplList || _choukokuTplList.length === 0) && typeof loadChoukokuTemplates === 'function') {
+    loadChoukokuTemplates().then(function(){
+      if (_koujiDocsView === null && currentItem) {
+        var area = document.getElementById('kouji-docs-tpl-area');
+        if (area) area.innerHTML = _renderKoujiDocsTplListInner();
+      }
+    });
+  }
+}
+
+function _koujiDocsApplyPendingTpl() {
+  if (!_koujiDocsPendingTpl) return;
+  var name = _koujiDocsPendingTpl;
+  _koujiDocsPendingTpl = null;
+  var idx = _choukokuTplList.indexOf(name);
+  if (idx < 0) return;
+  var selEl = document.getElementById('haka-choukoku-tpl-sel');
+  if (!selEl) return;
+  selEl.value = String(idx);
+  if (typeof _onChoukokuTplChange === 'function') _onChoukokuTplChange(selEl);
 }
 
 function _renderKoujiDocsBackBar(title) {
@@ -6096,7 +6126,45 @@ function _renderKoujiDocsCardGrid(d) {
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">' +
       aiCard + choukokuCard + tekkyoCard + chouhyouCard +
     '</div>' +
+    '<div id="kouji-docs-tpl-area" style="margin-top:18px">' + _renderKoujiDocsTplListInner() + '</div>' +
   '</div>';
+}
+
+function _renderKoujiDocsTplListInner() {
+  var hdr = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' +
+              '<span style="font-size:13px;font-weight:700;color:#5a3a00">📋 彫刻確認資料テンプレート</span>' +
+              '<span style="font-size:11px;color:#888">クリック=作成 ／ ✏️=テンプレート編集</span>' +
+            '</div>';
+  if (!_choukokuTplList || _choukokuTplList.length === 0) {
+    return '<div style="padding:14px;background:#f8f4ec;border:1px dashed #d8c8a8;border-radius:10px">' + hdr +
+      '<div style="text-align:center;color:#888;font-size:12px;padding:6px 0">テンプレートはまだ登録されていません</div>' +
+      '</div>';
+  }
+  var chips = _choukokuTplList.map(function(name) {
+    var nameEsc = _hakaSpecEsc(name);
+    var jsName  = _hakaSpecJsStr(name);
+    return '<div style="display:inline-flex;align-items:stretch;background:#fff;border:1px solid #d8c0a0;border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(90,58,0,.06)">' +
+      '<button onclick="useKoujiDocsTemplate(\'' + jsName + '\')" title="このテンプレートで彫刻確認資料を作成" ' +
+        'style="padding:7px 14px;background:transparent;color:#5a3a00;border:none;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500" ' +
+        'onmouseover="this.style.background=\'#fff5e6\'" onmouseout="this.style.background=\'transparent\'">📄 ' + nameEsc + '</button>' +
+      '<button onclick="editKoujiDocsTemplate(\'' + jsName + '\')" title="このテンプレートを編集（読込→上書き保存）" ' +
+        'style="padding:7px 11px;background:transparent;color:#888;border:none;border-left:1px solid #e6dcc0;cursor:pointer;font-size:12px;font-family:inherit" ' +
+        'onmouseover="this.style.background=\'#f0e6d4\';this.style.color=\'#5a3a00\'" onmouseout="this.style.background=\'transparent\';this.style.color=\'#888\'">✏️</button>' +
+      '</div>';
+  }).join(' ');
+  return '<div style="padding:14px;background:#f8f4ec;border:1px solid #e0c890;border-radius:10px">' + hdr +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px">' + chips + '</div>' +
+    '</div>';
+}
+
+function useKoujiDocsTemplate(name) {
+  _koujiDocsPendingTpl = name;
+  switchKoujiDocsView('choukoku');
+}
+
+function editKoujiDocsTemplate(name) {
+  _koujiDocsPendingTpl = name;
+  switchKoujiDocsView('choukoku');
 }
 
 function switchKoujiDocsView(view) {

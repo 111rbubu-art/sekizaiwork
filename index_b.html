@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.307';
+var APP_VERSION = 'v1.8.308';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -6130,14 +6130,53 @@ function _renderKoujiDocsCardGrid(d) {
   '</div>';
 }
 
+// 並び順は SharePoint の各テンプレフォルダ直下 _order.json に保存（端末横断で共有）
+var _tplOrderCache = { choukoku: null, kansei: null };
+function _tplOrderFolder(sectionKey) {
+  return sectionKey === 'kansei' ? KANSEI_TPL_FOLDER : CHOUKOKU_TPL_FOLDER;
+}
+function loadTplOrderFile(sectionKey) {
+  var folder = _tplOrderFolder(sectionKey);
+  var enc = (folder + '/_order.json').split('/').map(encodeURIComponent).join('/');
+  return getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content?nocache=' + Date.now(), {
+      headers: { Authorization: 'Bearer ' + resp.accessToken },
+      cache: 'no-store'
+    });
+  }).then(function(r) {
+    if (r.status === 404) return {};
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(function(data) {
+    _tplOrderCache[sectionKey] = data || {};
+  }).catch(function(e) {
+    console.warn('順序ファイル読込エラー(' + sectionKey + ')', e);
+    _tplOrderCache[sectionKey] = {};
+  });
+}
 function _getTplOrder(sectionKey, groupKey) {
-  try {
-    var json = localStorage.getItem('tpl_order_v1:' + sectionKey + ':' + groupKey);
-    return json ? JSON.parse(json) : null;
-  } catch(e) { return null; }
+  var c = _tplOrderCache[sectionKey];
+  if (!c) return null;
+  var o = c[groupKey];
+  return (o && o.length) ? o : null;
 }
 function _saveTplOrder(sectionKey, groupKey, order) {
-  try { localStorage.setItem('tpl_order_v1:' + sectionKey + ':' + groupKey, JSON.stringify(order)); } catch(e) {}
+  if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
+  _tplOrderCache[sectionKey][groupKey] = order;
+  var folder = _tplOrderFolder(sectionKey);
+  var enc = (folder + '/_order.json').split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(_tplOrderCache[sectionKey])
+    });
+  }).then(function(r) {
+    if (!r.ok) throw new Error(r.status);
+    showSaveToast(true, '並び順を保存しました');
+  }).catch(function(e) {
+    showSaveToast(false, '並び順保存エラー: ' + (e && e.message || e));
+  });
 }
 function _sortByTplOrder(items, sectionKey, groupKey) {
   var order = _getTplOrder(sectionKey, groupKey);
@@ -6176,9 +6215,12 @@ function _tplDrop(ev, targetName, sectionKey, groupKey) {
     if (src < 0 || tgt < 0) return;
     groupItems.splice(src, 1);
     groupItems.splice(tgt, 0, d.n);
-    _saveTplOrder(sectionKey, groupKey, groupItems);
+    // キャッシュ即時更新→再描画→SP保存（保存は非同期）
+    if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
+    _tplOrderCache[sectionKey][groupKey] = groupItems;
     var area = document.getElementById('kouji-docs-tpl-area');
     if (area) area.innerHTML = _renderKoujiDocsTplListInner();
+    _saveTplOrder(sectionKey, groupKey, groupItems);
   } catch(e) {}
 }
 
@@ -7067,7 +7109,7 @@ var CHOUKOKU_BIND_FIELDS = [
 
 function loadChoukokuTemplates() {
   var enc = CHOUKOKU_TPL_FOLDER.split('/').map(encodeURIComponent).join('/');
-  return getToken().then(function(resp) {
+  var p1 = getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file&$orderby=name', {
       headers: { Authorization: 'Bearer ' + resp.accessToken }
     }).then(function(r) {
@@ -7077,15 +7119,16 @@ function loadChoukokuTemplates() {
     });
   }).then(function(data) {
     _choukokuTplList = (data.value || [])
-      .filter(function(f) { return f.file && /\.json$/i.test(f.name); })
+      .filter(function(f) { return f.file && /\.json$/i.test(f.name) && f.name !== '_order.json'; })
       .map(function(f) { return f.name.replace(/\.json$/i, ''); });
     _updateChoukokuTplDropdown();
   }).catch(function(e) { console.warn('テンプレート一覧取得エラー', e); });
+  return Promise.all([p1, loadTplOrderFile('choukoku')]);
 }
 
 function loadKanseiTemplates() {
   var enc = KANSEI_TPL_FOLDER.split('/').map(encodeURIComponent).join('/');
-  return getToken().then(function(resp) {
+  var p1 = getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file&$orderby=name', {
       headers: { Authorization: 'Bearer ' + resp.accessToken }
     }).then(function(r) {
@@ -7095,9 +7138,10 @@ function loadKanseiTemplates() {
     });
   }).then(function(data) {
     _kanseiTplList = (data.value || [])
-      .filter(function(f) { return f.file && /\.json$/i.test(f.name); })
+      .filter(function(f) { return f.file && /\.json$/i.test(f.name) && f.name !== '_order.json'; })
       .map(function(f) { return f.name.replace(/\.json$/i, ''); });
   }).catch(function(e) { console.warn('完成資料テンプレート一覧取得エラー', e); });
+  return Promise.all([p1, loadTplOrderFile('kansei')]);
 }
 
 function _updateChoukokuTplDropdown() {
@@ -7441,10 +7485,22 @@ function _fetchRetry(url, opts, maxTries) {
   });
 }
 
-// 彫刻確認資料 - 名前付きボックス取得
+// 彫刻確認資料 - 名前付きボックス取得（複数ページ対応）
 function _choukokuGetBoxes() {
   var tpl = _hakaChoukokuTemplate;
-  if (!tpl || !tpl.elements) return [];
+  if (!tpl) return [];
+  // 新形式: tpl.pages[*].elements
+  if (Array.isArray(tpl.pages) && tpl.pages.length) {
+    var all = [];
+    tpl.pages.forEach(function(pg) {
+      (pg.elements || []).forEach(function(e) {
+        if (e.type === 'image' && e.boxName) all.push(e);
+      });
+    });
+    return all;
+  }
+  // 旧形式: tpl.elements
+  if (!tpl.elements) return [];
   return tpl.elements.filter(function(e){ return e.type === 'image' && e.boxName; });
 }
 

@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.300';
+var APP_VERSION = 'v1.8.301';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -7522,6 +7522,30 @@ function _saveChoukokuDocFromPopup(data, name) {
   });
 }
 
+function _deleteChoukokuTplFromPopup(name) {
+  return new Promise(function(resolve, reject) {
+    var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
+    var enc = (CHOUKOKU_TPL_FOLDER + '/' + safe + '.json').split('/').map(encodeURIComponent).join('/');
+    getToken().then(function(resp) {
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer ' + resp.accessToken }
+      });
+    }).then(function(r) {
+      if (!r.ok && r.status !== 404) throw new Error(r.status);
+      showSaveToast(true, 'テンプレート削除: ' + safe);
+      if (_hakaChoukokuTemplate && _hakaChoukokuTemplate.name === name) {
+        _hakaChoukokuTemplate = null;
+      }
+      loadChoukokuTemplates();
+      resolve();
+    }).catch(function(e) {
+      showSaveToast(false, 'テンプレート削除エラー: ' + (e && e.message || e));
+      reject(e);
+    });
+  });
+}
+
 function _saveChoukokuTplFromPopup(data, name) {
   return new Promise(function(resolve, reject) {
     var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
@@ -8098,6 +8122,13 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '.no-img img{opacity:0}.elem-image:not(.no-img) .img-ph{display:none}' +
 '.boxlabel{position:absolute;top:-20px;left:0;font-size:8pt;background:#1a5a9a;color:#fff;padding:2px 6px;border-radius:2px 2px 0 0;pointer-events:none;white-space:nowrap}' +
 '.tb .tplmod{background:#5a3a1a;border-color:#5a3a1a}.tb .tplmod.on{background:#c47a1a;border-color:#c47a1a}' +
+'.tb .ddwrap{position:relative;display:inline-block}' +
+'.tb .ddmenu{position:absolute;top:100%;left:0;margin-top:2px;background:#fff;color:#222;border:1px solid #888;border-radius:6px;display:none;z-index:1000;min-width:200px;box-shadow:0 6px 18px rgba(0,0,0,0.35);overflow:hidden}' +
+'.tb .ddmenu.on{display:block}' +
+'.tb .ddmenu .it{padding:9px 14px;cursor:pointer;font-size:12px;font-family:inherit;border-bottom:1px solid #eee}' +
+'.tb .ddmenu .it:last-child{border-bottom:none}' +
+'.tb .ddmenu .it:hover{background:#f0f4ff}' +
+'.tb .tpldel{background:#a02020;border-color:#a02020}' +
 '</style></head><body>' +
 '<div class="tb">' +
   '<span class="ttl">📄 彫刻確認資料' + (tplName ? ' - ' + tplName : '') + '</span>' +
@@ -8108,10 +8139,16 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   '<input type="file" id="fileInput" accept="image/*" multiple style="display:none" onchange="addImagesFromInput(this)">' +
   '<div class="sep"></div>' +
   '<button id="btnOrientation" onclick="switchOrientation()">' + orientLabel + '</button>' +
-  '<button class="tpl" onclick="overwriteTemplate()" title="同じ名前で上書き保存">💾 上書き保存</button>' +
-  '<button class="tpl" onclick="saveAsTemplate()" title="新しい名前を付けて保存">📝 名前を付けて保存</button>' +
-  '<button class="tpl" onclick="saveTemplateCopy()" title="現在のテンプレを別名でコピー保存">📋 コピーを保存</button>' +
-  '<button class="tpl" onclick="savetoSharePoint()">☁️ SharePoint保存</button>' +
+  '<div class="ddwrap">' +
+    '<button class="tpl" onclick="toggleTplSaveMenu(event)" title="テンプレートを保存">💾 テンプレート保存 ▾</button>' +
+    '<div class="ddmenu" id="tplSaveMenu">' +
+      '<div class="it" onclick="overwriteTemplate();closeTplSaveMenu()">💾 上書き保存</div>' +
+      '<div class="it" onclick="saveAsTemplate();closeTplSaveMenu()">📝 名前を付けて保存</div>' +
+      '<div class="it" onclick="saveTemplateCopy();closeTplSaveMenu()">📋 コピーを保存</div>' +
+    '</div>' +
+  '</div>' +
+  '<button class="tpl tpldel" onclick="deleteCurrentTemplate()" title="このテンプレートを削除">🗑️ テンプレ削除</button>' +
+  '<button class="tpl" onclick="savetoSharePoint()" title="この案件の彫刻資料（仕様書）として保存">☁️ 仕様を保存</button>' +
   '<button id="btnTplMode" class="tplmod" onclick="toggleTplMode()">🔧 テンプレートモード</button>' +
   '<div style="flex:1"></div>' +
   '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V／ファイルドラッグで画像追加（枠の上なら差替）</span>' +
@@ -8398,6 +8435,30 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   'name=name.trim();' +
   'if(name===base){if(!confirm("元のテンプレートと同名です。上書きしますか？"))return;}' +
   '_saveTemplateWithName(name);' +
+'};' +
+'window.toggleTplSaveMenu=function(e){' +
+  'if(e){e.stopPropagation();}' +
+  'var m=document.getElementById("tplSaveMenu");if(!m)return;' +
+  'm.classList.toggle("on");' +
+'};' +
+'window.closeTplSaveMenu=function(){' +
+  'var m=document.getElementById("tplSaveMenu");if(m)m.classList.remove("on");' +
+'};' +
+'document.addEventListener("click",function(e){' +
+  'var m=document.getElementById("tplSaveMenu");if(!m||!m.classList.contains("on"))return;' +
+  'var w=m.parentNode;if(w&&!w.contains(e.target))m.classList.remove("on");' +
+'});' +
+'window.deleteCurrentTemplate=function(){' +
+  'var name=(_tplData&&_tplData.name)||"";' +
+  'if(!name){alert("削除対象のテンプレートがありません。\\n先に上書き保存または名前を付けて保存してください。");return;}' +
+  'if(!confirm("テンプレート「"+name+"」を削除しますか？\\nSharePointから完全に削除されます。"))return;' +
+  'if(!window.opener||!window.opener._deleteChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。");return;}' +
+  'window.opener._deleteChoukokuTplFromPopup(name)' +
+  '.then(function(){' +
+    '_tplData={name:"",orientation:_tplData?_tplData.orientation:"portrait",elements:_tplData?_tplData.elements:[]};' +
+    'alert("テンプレート「"+name+"」を削除しました");' +
+  '})' +
+  '.catch(function(e){alert("削除失敗: "+(e&&e.message||e));});' +
 '};' +
 'window.savetoSharePoint=function(){' +
   'var name=prompt("保存ファイル名（拡張子.json不要）",(_tplData&&_tplData.name)||"彫刻資料");' +

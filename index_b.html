@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.298';
+var APP_VERSION = 'v1.8.299';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -8203,7 +8203,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
     'html+=\'<div class="row"><label>文字</label><textarea id="ptx">\'+sel.textContent.replace(/</g,"&lt;")+\'</textarea></div>\';' +
     'html+=\'<div class="row"><label>サイズ</label><input type="number" min="6" max="120" id="pfs" value="\'+fs+\'"></div>\';' +
     'html+=\'<div class="row"><label>太字</label><input type="checkbox" id="pbd"\'+(bold?\' checked\':\'\')+\'></div>\';' +
-    'html+=\'<div style="margin:6px 0 4px;font-size:10px;color:#666">部分書式（要素をWクリックで編集モード→範囲選択して適用）</div>\';' +
+    'html+=\'<div style="margin:6px 0 4px;font-size:10px;color:#666">書式：範囲未選択ならボックス全体に適用 ／ Wクリック→範囲選択で部分適用</div>\';' +
     'html+=\'<div style="display:flex;gap:4px;flex-wrap:wrap">\'+' +
       '\'<button class="fmtbtn" data-fmt="mark" title="マーカー(背景色)" style="flex:1;padding:6px;background:#fff7a0;color:#5a4a00;border:1px solid #d8c060;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;font-weight:600">🖍️ マーカー</button>\'+' +
       '\'<button class="fmtbtn" data-fmt="underline" title="下線" style="flex:1;padding:6px;background:#fff;color:#222;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;font-weight:600;text-decoration:underline">U 下線</button>\'+' +
@@ -8234,31 +8234,51 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
     'document.getElementById("ptx").addEventListener("input",function(){var hdl=sel.querySelector(".hdl");sel.textContent=this.value;if(hdl)sel.appendChild(hdl);});' +
     'document.getElementById("pfs").addEventListener("input",function(){var v=parseFloat(this.value)||14;sel.dataset.fontsize=v;sel.style.fontSize=v+"pt";});' +
     'document.getElementById("pbd").addEventListener("change",function(){sel.dataset.bold=this.checked?"1":"0";sel.style.fontWeight=this.checked?"700":"400";});' +
-    // 部分書式ボタン: mousedown で focus 奪取を防ぎ、選択範囲を保持したまま execCommand を実行
+    // 部分書式ボタン: 範囲選択があればその範囲に、なければ要素全体に適用
     'Array.prototype.forEach.call(panel.querySelectorAll(".fmtbtn"),function(btn){' +
       'btn.addEventListener("mousedown",function(e){' +
         'e.preventDefault();' +
         'if(!sel||sel.dataset.type!=="text")return;' +
-        // contenteditable=true でないと execCommand が効かないので一時的に有効化（既に true ならそのまま）
-        'var wasEditable=sel.contentEditable==="true";' +
-        'if(!wasEditable){sel.contentEditable="true";}' +
-        // 選択範囲が要素内にあることを確認
+        'var hdlEl=sel.querySelector(".hdl");' +
+        'if(sel.contentEditable!=="true"){sel.contentEditable="true";}' +
         'var ssel=window.getSelection();' +
-        'var rangeOK=false;' +
-        'if(ssel&&ssel.rangeCount>0){' +
-          'var r=ssel.getRangeAt(0);' +
-          'if(sel.contains(r.commonAncestorContainer)&&!r.collapsed)rangeOK=true;' +
-        '}' +
-        'if(!rangeOK){' +
-          'alert("要素をダブルクリックして編集モードにし、書式を適用する範囲をドラッグ選択してください。");' +
-          'if(!wasEditable)sel.contentEditable="false";' +
-          'return;' +
+        'var hasSel=false;' +
+        'if(ssel&&ssel.rangeCount>0){var r=ssel.getRangeAt(0);if(sel.contains(r.commonAncestorContainer)&&!r.collapsed)hasSel=true;}' +
+        // 選択がない場合は .hdl を除いた要素内容を全選択
+        'if(!hasSel){' +
+          'var range=document.createRange();' +
+          'if(hdlEl){range.setStart(sel,0);range.setEndBefore(hdlEl);}else{range.selectNodeContents(sel);}' +
+          'if(ssel){ssel.removeAllRanges();ssel.addRange(range);}' +
         '}' +
         'var fmt=btn.dataset.fmt;' +
         'try{' +
-          'if(fmt==="mark"){document.execCommand("hiliteColor",false,"#fff066");}' +
+          'if(fmt==="mark"){' +
+            'document.execCommand("styleWithCSS",false,true);' +
+            'document.execCommand("hiliteColor",false,"#fff066");' +
+          '}' +
           'else if(fmt==="underline"){document.execCommand("underline",false,null);}' +
-          'else if(fmt==="clear"){document.execCommand("removeFormat",false,null);document.execCommand("hiliteColor",false,"transparent");}' +
+          'else if(fmt==="clear"){' +
+            'document.execCommand("removeFormat",false,null);' +
+            // 残った背景色 span を unwrap / 残った <u> を unwrap
+            'Array.prototype.forEach.call(sel.querySelectorAll("span"),function(sp){' +
+              'var bg=sp.style.backgroundColor||"";' +
+              'var td=sp.style.textDecoration||"";' +
+              'if(bg&&bg!=="transparent"&&bg.indexOf("rgba(0, 0, 0, 0)")<0)sp.style.backgroundColor="";' +
+              'if(/underline/i.test(td))sp.style.textDecoration="";' +
+              'if(!sp.getAttribute("style")||!sp.style.cssText.replace(/;/g,"").trim()){' +
+                'while(sp.firstChild)sp.parentNode.insertBefore(sp.firstChild,sp);' +
+                'sp.parentNode.removeChild(sp);' +
+              '}' +
+            '});' +
+            'Array.prototype.forEach.call(sel.querySelectorAll("u"),function(u){' +
+              'while(u.firstChild)u.parentNode.insertBefore(u.firstChild,u);' +
+              'u.parentNode.removeChild(u);' +
+            '});' +
+            // 隣接する同種テキストノードをマージ
+            'sel.normalize();' +
+            // .hdl が消えていた場合は復活
+            'if(hdlEl&&!sel.contains(hdlEl)){sel.appendChild(hdlEl);}' +
+          '}' +
         '}catch(_){}' +
       '});' +
     '});' +

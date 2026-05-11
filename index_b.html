@@ -2531,7 +2531,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.306';
+var APP_VERSION = 'v1.8.307';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -6130,10 +6130,62 @@ function _renderKoujiDocsCardGrid(d) {
   '</div>';
 }
 
-function _renderTplSection(titleLabel, tplList, useFn, editFn, themeColor, bgColor, borderColor, hoverBg) {
+function _getTplOrder(sectionKey, groupKey) {
+  try {
+    var json = localStorage.getItem('tpl_order_v1:' + sectionKey + ':' + groupKey);
+    return json ? JSON.parse(json) : null;
+  } catch(e) { return null; }
+}
+function _saveTplOrder(sectionKey, groupKey, order) {
+  try { localStorage.setItem('tpl_order_v1:' + sectionKey + ':' + groupKey, JSON.stringify(order)); } catch(e) {}
+}
+function _sortByTplOrder(items, sectionKey, groupKey) {
+  var order = _getTplOrder(sectionKey, groupKey);
+  if (!order) return items;
+  var indexMap = {};
+  order.forEach(function(n, i) { indexMap[n] = i; });
+  return items.slice().sort(function(a, b) {
+    var ia = (a in indexMap) ? indexMap[a] : Infinity;
+    var ib = (b in indexMap) ? indexMap[b] : Infinity;
+    if (ia !== ib) return ia - ib;
+    return a.localeCompare(b);
+  });
+}
+function _tplDragStart(ev, name, sectionKey, groupKey) {
+  ev.dataTransfer.setData('text/plain', JSON.stringify({n:name, s:sectionKey, g:groupKey}));
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.currentTarget.style.opacity = '0.4';
+}
+function _tplDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _tplDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.style.boxShadow = '0 0 0 2px #4a9eff';
+}
+function _tplDragLeave(ev) { ev.currentTarget.style.boxShadow = ''; }
+function _tplDrop(ev, targetName, sectionKey, groupKey) {
+  ev.preventDefault();
+  ev.currentTarget.style.boxShadow = '';
+  try {
+    var d = JSON.parse(ev.dataTransfer.getData('text/plain'));
+    if (d.s !== sectionKey || d.g !== groupKey || d.n === targetName) return;
+    var list = sectionKey === 'kansei' ? _kanseiTplList : _choukokuTplList;
+    var groupItems = list.filter(function(n) { return _parseTplName(n).group === groupKey; });
+    groupItems = _sortByTplOrder(groupItems, sectionKey, groupKey);
+    var src = groupItems.indexOf(d.n), tgt = groupItems.indexOf(targetName);
+    if (src < 0 || tgt < 0) return;
+    groupItems.splice(src, 1);
+    groupItems.splice(tgt, 0, d.n);
+    _saveTplOrder(sectionKey, groupKey, groupItems);
+    var area = document.getElementById('kouji-docs-tpl-area');
+    if (area) area.innerHTML = _renderKoujiDocsTplListInner();
+  } catch(e) {}
+}
+
+function _renderTplSection(titleLabel, tplList, useFn, editFn, themeColor, bgColor, borderColor, hoverBg, sectionKey) {
   var hdr = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' +
     '<span style="font-size:13px;font-weight:700;color:' + themeColor + '">' + titleLabel + '</span>' +
-    '<span style="font-size:11px;color:#888">クリック=このテンプレで資料作成 ／ ✏️=テンプレートを直接編集</span>' +
+    '<span style="font-size:11px;color:#888">クリック=このテンプレで資料作成 ／ ✏️=編集 ／ ⠿=ドラッグで並び替え</span>' +
   '</div>';
   var emptyHtml = '<div style="padding:14px;background:' + bgColor + ';border:1px dashed ' + borderColor + ';border-radius:10px;margin-bottom:12px">' + hdr +
     '<div style="text-align:center;color:#888;font-size:12px;padding:6px 0">テンプレートはまだ登録されていません<br><span style="font-size:11px;color:#aaa">エディタで「🧩 テンプレート▾ → 名前を付けて保存」で追加できます</span></div>' +
@@ -6150,12 +6202,20 @@ function _renderTplSection(titleLabel, tplList, useFn, editFn, themeColor, bgCol
     }
   });
 
-  function makeChip(name, displayName) {
+  function makeChip(name, displayName, groupKey) {
     var dispEsc = _hakaSpecEsc(displayName);
     var jsName  = _hakaSpecJsStr(name);
-    return '<div style="display:inline-flex;align-items:stretch;background:#fff;border:1px solid ' + borderColor + ';border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.06)">' +
+    var jsGrp   = _hakaSpecJsStr(groupKey || '');
+    return '<div draggable="true" ' +
+      'ondragstart="_tplDragStart(event,\'' + jsName + '\',\'' + sectionKey + '\',\'' + jsGrp + '\')" ' +
+      'ondragend="_tplDragEnd(event)" ' +
+      'ondragover="_tplDragOver(event)" ' +
+      'ondragleave="_tplDragLeave(event)" ' +
+      'ondrop="_tplDrop(event,\'' + jsName + '\',\'' + sectionKey + '\',\'' + jsGrp + '\')" ' +
+      'style="display:inline-flex;align-items:stretch;background:#fff;border:1px solid ' + borderColor + ';border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.06);cursor:grab;transition:box-shadow .15s">' +
+      '<span style="padding:7px 4px 7px 10px;color:#bbb;font-size:11px;cursor:grab;user-select:none" title="ドラッグで並び替え">⠿</span>' +
       '<button onclick="' + useFn + '(\'' + jsName + '\')" title="このテンプレートで資料を作成" ' +
-        'style="padding:7px 14px;background:transparent;color:' + themeColor + ';border:none;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500" ' +
+        'style="padding:7px 12px 7px 4px;background:transparent;color:' + themeColor + ';border:none;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500" ' +
         'onmouseover="this.style.background=\'' + hoverBg + '\'" onmouseout="this.style.background=\'transparent\'">📄 ' + dispEsc + '</button>' +
       '<button onclick="' + editFn + '(\'' + jsName + '\')" title="このテンプレートを編集" ' +
         'style="padding:7px 11px;background:transparent;color:#888;border:none;border-left:1px solid ' + borderColor + ';cursor:pointer;font-size:12px;font-family:inherit" ' +
@@ -6165,15 +6225,17 @@ function _renderTplSection(titleLabel, tplList, useFn, editFn, themeColor, bgCol
 
   var html = '<div style="padding:14px;background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;margin-bottom:12px">' + hdr;
   if (ungrouped.length > 0) {
+    var sortedUn = _sortByTplOrder(ungrouped, sectionKey, '');
     html += '<div style="display:flex;flex-wrap:wrap;gap:8px' + (groupOrder.length > 0 ? ';margin-bottom:10px' : '') + '">';
-    ungrouped.forEach(function(name) { html += makeChip(name, name); });
+    sortedUn.forEach(function(name) { html += makeChip(name, name, ''); });
     html += '</div>';
   }
   groupOrder.forEach(function(grp) {
+    var sortedGrp = _sortByTplOrder(groups[grp], sectionKey, grp);
     html += '<div style="margin-top:8px">' +
       '<div style="font-size:11px;font-weight:600;color:' + themeColor + ';opacity:.75;margin-bottom:5px;padding-left:2px">▸ ' + _hakaSpecEsc(grp) + '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:8px">';
-    groups[grp].forEach(function(name) { html += makeChip(name, _parseTplName(name).display); });
+    sortedGrp.forEach(function(name) { html += makeChip(name, _parseTplName(name).display, grp); });
     html += '</div></div>';
   });
   html += '</div>';
@@ -6181,12 +6243,12 @@ function _renderTplSection(titleLabel, tplList, useFn, editFn, themeColor, bgCol
 }
 
 function _renderKoujiDocsTplListInner() {
-  return _renderTplSection('📋 彫刻確認資料テンプレート', _choukokuTplList,
+  return _renderTplSection('📋 墓石新規テンプレート', _choukokuTplList,
     'useKoujiDocsTemplate', 'editKoujiDocsTemplate',
-    '#5a3a00', '#f8f4ec', '#e0c890', '#fff5e6') +
+    '#5a3a00', '#f8f4ec', '#e0c890', '#fff5e6', 'choukoku') +
   _renderTplSection('📋 完成資料テンプレート', _kanseiTplList,
     'useKanseiTemplate', 'editKanseiTemplate',
-    '#1a5a8a', '#eef4fa', '#b0cce0', '#e6f0fa');
+    '#1a5a8a', '#eef4fa', '#b0cce0', '#e6f0fa', 'kansei');
 }
 
 function useKoujiDocsTemplate(name) {

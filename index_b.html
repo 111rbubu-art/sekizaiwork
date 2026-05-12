@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.319';
+var APP_VERSION = 'v1.8.320';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 function _thumbRetry(img) {
@@ -7215,10 +7215,37 @@ var HAKA_SPEC_AI_TYPES = {
 
 var _hakaChoukokuTemplate = null;  // 選択中のテンプレート（JSON全体）
 var _hakaChoukokuDocFiles = [];    // 選択中のファイル名（複数可）— 旧仕様用、互換維持
-var _choukokuBoxAssign    = {};    // ボックス割当 { boxName: fname }
+var _choukokuBoxAssign    = {};    // ボックス割当 { boxName: {fname, subPath} }
+var _choukokuPinnedFiles  = [];    // ピン留め: フォルダ切替後も保持される選択済ファイル [{name, _subPath, thumbnails, ...}]
 var _choukokuDocMode      = 'new'; // 'new' | 'edit'
 var _choukokuSubPath      = '工事仕様/彫刻資料'; // Folder_Pass からの相対パス
 var _choukokuSavedList    = [];    // 保存済資料リスト（modeが editのとき）
+
+// 割当値を正規化して読み出す（旧仕様の文字列値とオブジェクト値の両対応）
+function _choukokuGetAssign(boxName) {
+  var a = _choukokuBoxAssign[boxName];
+  if (!a) return null;
+  if (typeof a === 'string') return { fname: a, subPath: _choukokuSubPath };
+  return a;
+}
+function _choukokuSetAssign(boxName, fname, subPath) {
+  _choukokuBoxAssign[boxName] = { fname: fname, subPath: subPath || _choukokuSubPath };
+}
+function _choukokuAssignFname(boxName) {
+  var a = _choukokuGetAssign(boxName);
+  return a ? a.fname : '';
+}
+function _choukokuPinFile(fileItem) {
+  if (!fileItem || !fileItem.name) return;
+  var subPath = fileItem._subPath || _choukokuSubPath;
+  for (var i = 0; i < _choukokuPinnedFiles.length; i++) {
+    if (_choukokuPinnedFiles[i].name === fileItem.name && _choukokuPinnedFiles[i]._subPath === subPath) return;
+  }
+  var copy = {};
+  for (var k in fileItem) if (fileItem.hasOwnProperty(k)) copy[k] = fileItem[k];
+  copy._subPath = subPath;
+  _choukokuPinnedFiles.push(copy);
+}
 var _choukokuTplList = [];         // SP上のテンプレート名キャッシュ（ファイル名拡張子なし）
 var CHOUKOKU_TPL_FOLDER = '/業務アプリ/帳票類テンプレート';
 function _parseTplName(filename) {
@@ -7536,12 +7563,18 @@ function renderHakaSpecChoukokuDocPanel(d, spec) {
       '</div>' +
       '<div id="haka-choukoku-box-area" style="display:none;background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:10px"></div>' +
       '<div style="font-size:12px;color:#333">' +
-        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">' +
-          '<span>ファイル一覧</span>' +
-          '<span id="haka-choukoku-folder-label" style="font-size:11px;color:#888;font-family:monospace">' + _hakaSpecEsc(_choukokuSubPath) + '</span>' +
-          '<button onclick="_choukokuShowFolderPicker()" style="padding:3px 9px;background:#fff;color:#5a3a00;border:1px solid #c8b8a0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">📁 別フォルダ</button>' +
-          '<button onclick="loadHakaChoukokuDocFiles()" style="padding:3px 9px;background:#fff;color:#5a3a00;border:1px solid #c8b8a0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">🔄 更新</button>' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">' +
+          HAKA_SPEC_PHOTO_CATS.map(function(cat) {
+            var sub = '工事仕様/' + cat;
+            var sel = _choukokuSubPath === sub;
+            return '<button onclick="_choukokuSwitchSubPath(\'' + cat + '\')" style="' +
+              (sel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c8a8;') +
+              'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + cat + '</button>';
+          }).join('') +
+          '<button onclick="_choukokuShowFolderPicker()" title="任意のサブフォルダを選択" style="padding:6px 12px;background:#fff;color:#888;border:1px dashed #c8b8a0;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit">📁 他</button>' +
+          '<button onclick="loadHakaChoukokuDocFiles()" style="margin-left:auto;padding:5px 10px;background:#fff;color:#5a3a00;border:1px solid #c8b8a0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">🔄 更新</button>' +
         '</div>' +
+        '<div style="font-size:10px;color:#999;margin-bottom:4px;font-family:monospace" id="haka-choukoku-folder-label">' + _hakaSpecEsc(_choukokuSubPath) + '</div>' +
         '<div id="haka-choukoku-doc-files" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:120px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">' +
@@ -7617,9 +7650,17 @@ function _choukokuGetBoxes() {
   return tpl.elements.filter(function(e){ return e.type === 'image' && e.boxName; });
 }
 
-function _choukokuFindFile(fname) {
+function _choukokuFindFile(fname, subPath) {
   var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
-  for (var i = 0; i < files.length; i++) if (files[i].name === fname) return files[i];
+  for (var i = 0; i < files.length; i++) {
+    if (files[i].name !== fname) continue;
+    var sp = files[i]._subPath || _choukokuSubPath;
+    if (!subPath || sp === subPath) return files[i];
+  }
+  for (var j = 0; j < _choukokuPinnedFiles.length; j++) {
+    if (_choukokuPinnedFiles[j].name !== fname) continue;
+    if (!subPath || _choukokuPinnedFiles[j]._subPath === subPath) return _choukokuPinnedFiles[j];
+  }
   return null;
 }
 
@@ -7627,36 +7668,46 @@ function _choukokuFindFile(fname) {
 function _choukokuAutoAssign() {
   var boxes = _choukokuGetBoxes();
   var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
-  // 既存割当をクリーンアップ（テンプレ変更等で無効化された割当を除去）
+  // 既存割当をクリーンアップ（テンプレ変更でボックスが消えた場合のみ除去。ピン留めがある限り保持）
   var validBox = {}; boxes.forEach(function(b){ validBox[b.boxName] = true; });
-  var validFn  = {}; files.forEach(function(f){ validFn[f.name] = true; });
+  var validKey = {};
+  files.forEach(function(f){ validKey[(f._subPath || _choukokuSubPath) + '/' + f.name] = true; });
+  _choukokuPinnedFiles.forEach(function(f){ validKey[f._subPath + '/' + f.name] = true; });
   Object.keys(_choukokuBoxAssign).forEach(function(bn){
-    if (!validBox[bn] || !validFn[_choukokuBoxAssign[bn]]) delete _choukokuBoxAssign[bn];
+    var a = _choukokuGetAssign(bn);
+    if (!validBox[bn] || !a || !validKey[a.subPath + '/' + a.fname]) delete _choukokuBoxAssign[bn];
   });
-  var used = {};
-  Object.keys(_choukokuBoxAssign).forEach(function(bn){ used[_choukokuBoxAssign[bn]] = true; });
-  // Pass 1: キーワード一致
+  var usedKey = {};
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){
+    var a = _choukokuGetAssign(bn);
+    if (a) usedKey[a.subPath + '/' + a.fname] = true;
+  });
+  // Pass 1: キーワード一致（現在のフォルダのみ）
   boxes.forEach(function(b){
     if (_choukokuBoxAssign[b.boxName]) return;
     var bn = (b.boxName || '').toLowerCase();
     if (!bn) return;
     for (var j = 0; j < files.length; j++) {
-      if (used[files[j].name]) continue;
+      var key = (files[j]._subPath || _choukokuSubPath) + '/' + files[j].name;
+      if (usedKey[key]) continue;
       var base = files[j].name.toLowerCase().replace(/\.[^.]+$/, '');
       if (base.indexOf(bn) >= 0 || bn.indexOf(base) >= 0) {
-        _choukokuBoxAssign[b.boxName] = files[j].name;
-        used[files[j].name] = true;
+        _choukokuSetAssign(b.boxName, files[j].name, files[j]._subPath || _choukokuSubPath);
+        _choukokuPinFile(files[j]);
+        usedKey[key] = true;
         break;
       }
     }
   });
-  // Pass 2: 順番フォールバック
+  // Pass 2: 順番フォールバック（現在のフォルダのみ）
   boxes.forEach(function(b){
     if (_choukokuBoxAssign[b.boxName]) return;
     for (var j = 0; j < files.length; j++) {
-      if (!used[files[j].name]) {
-        _choukokuBoxAssign[b.boxName] = files[j].name;
-        used[files[j].name] = true;
+      var key = (files[j]._subPath || _choukokuSubPath) + '/' + files[j].name;
+      if (!usedKey[key]) {
+        _choukokuSetAssign(b.boxName, files[j].name, files[j]._subPath || _choukokuSubPath);
+        _choukokuPinFile(files[j]);
+        usedKey[key] = true;
         break;
       }
     }
@@ -7674,16 +7725,21 @@ function _choukokuRender() {
     } else {
       boxArea.style.display = 'block';
       var rows = boxes.map(function(b){
-        var fname = _choukokuBoxAssign[b.boxName] || '';
-        var f = fname ? _choukokuFindFile(fname) : null;
+        var a = _choukokuGetAssign(b.boxName);
+        var fname = a ? a.fname : '';
+        var asubPath = a ? a.subPath : '';
+        var f = fname ? _choukokuFindFile(fname, asubPath) : null;
         var thumb = '';
         if (f && f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
           thumb = '<img src="' + f.thumbnails[0].small.url + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:36px;height:36px;object-fit:cover;border-radius:3px;flex-shrink:0">';
         } else if (f) {
           thumb = '<span style="font-size:20px;width:36px;text-align:center;flex-shrink:0">📄</span>';
         }
+        var folderHint = (asubPath && asubPath !== _choukokuSubPath)
+          ? '<span style="font-size:10px;color:#888;display:block">📁 ' + _hakaSpecEsc(asubPath.split('/').pop()) + '</span>'
+          : '';
         var slotInner = fname
-          ? thumb + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" title="' + _hakaSpecEsc(fname) + '">' + _hakaSpecEsc(fname) + '</span>'
+          ? thumb + '<span style="flex:1;overflow:hidden;font-size:12px;display:flex;flex-direction:column;gap:1px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _hakaSpecEsc(fname) + '">' + _hakaSpecEsc(fname) + '</span>' + folderHint + '</span>'
             + '<button data-act="unassign" style="background:#c43030;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:12px;line-height:22px;padding:0;flex-shrink:0">×</button>'
           : '<span style="color:#bbb;font-size:11px;flex:1">（ドラッグで割当）</span>';
         return '<div data-boxname="' + _hakaSpecEsc(b.boxName) + '" style="display:flex;align-items:center;gap:6px;padding:6px;background:#fff;border:1px dashed #c8b8a0;border-radius:4px;margin-bottom:4px" '
@@ -7708,13 +7764,20 @@ function _choukokuRender() {
   if (!fileEl) return;
   var files = (_hakaChoukokuDocCache && _hakaChoukokuDocCache.items) || [];
   if (files.length === 0) {
-    fileEl.innerHTML = '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>';
+    var isDefault = (_choukokuSubPath === '工事仕様/彫刻資料');
+    fileEl.innerHTML = isDefault
+      ? '<div style="color:#888;padding:8px">「彫刻資料」フォルダーに <b>検討中</b> ステータスのファイルがありません。<br>写真・図面タブで対象ファイルのステータスを「検討」に切り替えてください。</div>'
+      : '<div style="color:#888;padding:8px">このフォルダーに画像ファイルがありません。</div>';
     return;
   }
-  var assignedFnames = {};
-  Object.keys(_choukokuBoxAssign).forEach(function(bn){ assignedFnames[_choukokuBoxAssign[bn]] = true; });
+  var assignedKey = {};
+  Object.keys(_choukokuBoxAssign).forEach(function(bn){
+    var a = _choukokuGetAssign(bn);
+    if (a) assignedKey[a.subPath + '/' + a.fname] = true;
+  });
   var rows = files.map(function(f){
-    var assigned = !!assignedFnames[f.name];
+    var fkey = (f._subPath || _choukokuSubPath) + '/' + f.name;
+    var assigned = !!assignedKey[fkey];
     var thumbHtml = '';
     if (f.thumbnails && f.thumbnails[0] && f.thumbnails[0].small) {
       thumbHtml = '<img src="' + f.thumbnails[0].small.url + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0">';
@@ -7747,12 +7810,16 @@ window._choukokuOnDropBox = function(ev, rowEl) {
   var fname = ev.dataTransfer && ev.dataTransfer.getData('text/plain');
   var boxName = rowEl && rowEl.dataset && rowEl.dataset.boxname;
   if (!fname || !boxName) return;
-  if (!_choukokuFindFile(fname)) return;
-  // 別ボックスからの移動は元を解除
+  var fileItem = _choukokuFindFile(fname, _choukokuSubPath);
+  if (!fileItem) return;
+  var subPath = fileItem._subPath || _choukokuSubPath;
+  // 別ボックスからの移動は元を解除（同じ subPath+fname の組合せのみ）
   Object.keys(_choukokuBoxAssign).forEach(function(bn){
-    if (_choukokuBoxAssign[bn] === fname) delete _choukokuBoxAssign[bn];
+    var a = _choukokuGetAssign(bn);
+    if (a && a.fname === fname && a.subPath === subPath) delete _choukokuBoxAssign[bn];
   });
-  _choukokuBoxAssign[boxName] = fname;
+  _choukokuSetAssign(boxName, fname, subPath);
+  _choukokuPinFile(fileItem);
   _choukokuRender();
 };
 
@@ -8064,6 +8131,19 @@ function _choukokuShowFolderPicker() {
 }
 window._choukokuShowFolderPicker = _choukokuShowFolderPicker;
 
+function _choukokuSwitchSubPath(cat) {
+  _choukokuSubPath = '工事仕様/' + cat;
+  if (!currentItem) return;
+  if (_koujiDocsView === 'choukoku' && typeof renderKoujiDocsTab === 'function') {
+    renderKoujiDocsTab(currentItem);
+  } else if (typeof renderHakaSpecTab === 'function') {
+    renderHakaSpecTab(currentItem);
+  } else {
+    loadHakaChoukokuDocFiles();
+  }
+}
+window._choukokuSwitchSubPath = _choukokuSwitchSubPath;
+
 function loadHakaChoukokuDocFiles() {
   var el = document.getElementById('haka-choukoku-doc-files');
   if (!el) return;
@@ -8088,9 +8168,10 @@ function loadHakaChoukokuDocFiles() {
         return r.json();
       });
   }).then(function(data) {
+    var loadedSubPath = _choukokuSubPath;
     var items = (data.value || []).filter(function(i){ return i.file; });
     // 既定フォルダ（彫刻資料）の場合は「検討中」のみ。別フォルダなら全画像
-    var isDefault = (_choukokuSubPath === '工事仕様/彫刻資料');
+    var isDefault = (loadedSubPath === '工事仕様/彫刻資料');
     var filtered;
     if (isDefault) {
       filtered = items.filter(function(f){
@@ -8101,6 +8182,8 @@ function loadHakaChoukokuDocFiles() {
         return /\.(jpe?g|png|gif|webp|bmp|svg|tiff?|heic)$/i.test(f.name);
       });
     }
+    // 各ファイルに subPath を付与（フォルダ切替後も識別可能に）
+    filtered.forEach(function(f){ f._subPath = loadedSubPath; });
     _hakaChoukokuDocCache.items = filtered;
     _choukokuAutoAssign();
     _choukokuRender();
@@ -8237,28 +8320,28 @@ function executeChoukokuDoc() {
   var boxes = _choukokuGetBoxes();
 
   // 取得対象ファイル：ボックスに割当済みのものだけ（ボックスなしなら画像なしで開く）
-  var fnames = [];
+  // 各エントリ: { fname, subPath } — フォルダ別に取得できるよう経路情報も保持
+  var fileEntries = [];
   if (boxes.length > 0) {
     boxes.forEach(function(b){
-      var fn = _choukokuBoxAssign[b.boxName];
-      if (fn && fnames.indexOf(fn) < 0) fnames.push(fn);
+      var a = _choukokuGetAssign(b.boxName);
+      if (!a) return;
+      var dup = fileEntries.some(function(x){ return x.fname === a.fname && x.subPath === a.subPath; });
+      if (!dup) fileEntries.push({ fname: a.fname, subPath: a.subPath });
     });
   }
 
-  if (fnames.length === 0) {
+  if (fileEntries.length === 0) {
     setBusy(false);
     openChoukokuDocWindow(tpl, [], [], null, currentItem);
     return;
   }
   if (!folderPass) { setBusy(false); showSaveToast(false, 'Folder_Pass がありません'); return; }
 
-  // 画像取得元のフォルダ（割当用ファイル一覧と同じ場所）
-  var fileFolder = folderPass + '/' + (_choukokuSubPath || '工事仕様/彫刻資料');
-
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    return Promise.all(fnames.map(function(fname) {
-      var fpath = fileFolder + '/' + fname;
+    return Promise.all(fileEntries.map(function(item) {
+      var fpath = folderPass + '/' + (item.subPath || '工事仕様/彫刻資料') + '/' + item.fname;
       var enc = fpath.split('/').map(encodeURIComponent).join('/');
       var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content';
       return _fetchRetry(url, { headers: { Authorization: 'Bearer ' + token } }, 4)
@@ -8274,21 +8357,25 @@ function executeChoukokuDoc() {
         .catch(function() { return null; });
     }));
   }).then(function(results) {
-    var dataUrls = [], goodFnames = [];
-    results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodFnames.push(fnames[i]); } });
+    var dataUrls = [], goodEntries = [];
+    results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodEntries.push(fileEntries[i]); } });
 
     setBusy(false);
     if (boxes.length > 0) {
       var assignments = [];
       boxes.forEach(function(b){
-        var fn = _choukokuBoxAssign[b.boxName];
-        if (!fn) return;
-        var idx = goodFnames.indexOf(fn);
+        var a = _choukokuGetAssign(b.boxName);
+        if (!a) return;
+        var idx = -1;
+        for (var k = 0; k < goodEntries.length; k++) {
+          if (goodEntries[k].fname === a.fname && goodEntries[k].subPath === a.subPath) { idx = k; break; }
+        }
         if (idx < 0) return;
-        assignments.push({ boxName: b.boxName, fname: fn, dataUrl: dataUrls[idx] });
+        assignments.push({ boxName: b.boxName, fname: a.fname, dataUrl: dataUrls[idx] });
       });
       openChoukokuDocWindow(tpl, [], [], assignments, currentItem);
     } else {
+      var goodFnames = goodEntries.map(function(e){ return e.fname; });
       openChoukokuDocWindow(tpl, goodFnames, dataUrls, null, currentItem);
     }
   }).catch(function(e) {

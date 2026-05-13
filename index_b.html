@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.329';
+var APP_VERSION = 'v1.8.330';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -2583,6 +2583,21 @@ var msalConfig = {
   },
   cache: { cacheLocation: 'localStorage' }
 };
+// GoogleカレンダーOAuth2トークンをMSAL初期化より前に取得・保存
+// MSALのhandleRedirectPromise()がURLハッシュを消去するため、先に読み取る必要あり
+(function() {
+  var h = window.location.hash;
+  if (h && h.indexOf('access_token') !== -1) {
+    var params = {};
+    h.substring(1).split('&').forEach(function(p) {
+      var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1] || '');
+    });
+    if (params['access_token']) {
+      _gcalToken = params['access_token'];
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }
+})();
 var msalApp = new msal.PublicClientApplication(msalConfig);
 var SCOPES = ['https://graph.microsoft.com/Sites.Read.All', 'https://graph.microsoft.com/Sites.ReadWrite.All', 'https://graph.microsoft.com/Files.ReadWrite.All', 'https://graph.microsoft.com/Contacts.ReadWrite'];
 
@@ -2693,16 +2708,10 @@ function startApp() {
   document.getElementById('menu-screen').classList.remove('hidden');
   currentListMode = 'noukotsu';
   // Googleカレンダー認証リダイレクト戻りを検知
-  if (location.hash && location.hash.includes('access_token')) {
-    var _hashParams = {};
-    location.hash.substring(1).split('&').forEach(function(p) {
-      var kv = p.split('='); _hashParams[kv[0]] = decodeURIComponent(kv[1]||'');
-    });
-    if (_hashParams['access_token']) {
-      _gcalToken = _hashParams['access_token'];
-      history.replaceState(null, '', location.pathname + location.search);
-      // 保存した作業状態を復元
-      try {
+  // （_gcalTokenはMSAL初期化前に取得済み。location.hashはMSALが既に消去している）
+  if (_gcalToken && sessionStorage.getItem('gcal_state')) {
+    // 保存した作業状態を復元
+    try {
         var _savedState = JSON.parse(sessionStorage.getItem('gcal_state') || 'null');
         sessionStorage.removeItem('gcal_state');
         if (_savedState && _savedState.item) {
@@ -2732,7 +2741,6 @@ function startApp() {
       } catch(e) {
         showSaveToast(true, '✅ Google認証が完了しました');
       }
-    }
   }
   // 起動時にキャッシュ読み込み（オフライン対応）
   if (isOffline()) {

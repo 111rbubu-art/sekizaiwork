@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.326';
+var APP_VERSION = 'v1.8.327';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9383,20 +9383,37 @@ pagesHtml +
 'function _replaceSelImageSrc(src){var im=sel.querySelector("img");if(im){im.src=src;sel.classList.remove("no-img");}}' +
 'document.addEventListener("paste",function(e){' +
   'var cd=e.clipboardData;if(!cd)return;' +
-  // 編集中のテキスト要素にペーストする場合は通常のテキスト貼り付けを許可
   'var ae=document.activeElement;' +
   'var editingText=ae&&ae.contentEditable==="true"&&ae.classList&&ae.classList.contains("elem-text");' +
-  'if(editingText){e.preventDefault();var pt=cd.getData("text/plain")||"";if(pt)document.execCommand("insertText",false,pt);return;}' +
-  // 画像枠が選択中: その枠に画像を差し替え（テキストは無視）
+  // テキストボックス編集中
+  'if(editingText){' +
+    'var pt=cd.getData("text/plain")||"";' +
+    'if(pt){' +
+      'e.preventDefault();' +
+      // Selection API（execCommandより確実）
+      'var wsel=window.getSelection();' +
+      'if(wsel&&wsel.rangeCount>0){var rng=wsel.getRangeAt(0);rng.deleteContents();rng.insertNode(document.createTextNode(pt));rng.collapse(false);}' +
+      'else{try{document.execCommand("insertText",false,pt);}catch(ex){ae.textContent+=pt;}}' +
+      'return;' +
+    '}' +
+    // テキストなし（画像コピーなど）→ フォーカスを外してキャンバスに追加
+    'ae.blur();setSel(null);' +
+  '}' +
+  // 画像/テキスト取得ヘルパー: cd.items と cd.files の両方を確認
+  'function _collectImgFiles(clipData){' +
+    'var list=[];' +
+    'var its=clipData.items||[];' +
+    'for(var i=0;i<its.length;i++){if(its[i].kind==="file"&&its[i].type.indexOf("image/")===0){var f=its[i].getAsFile();if(f)list.push(f);}}' +
+    'if(list.length===0){var fls=clipData.files||[];for(var j=0;j<fls.length;j++){if(fls[j].type.indexOf("image/")===0)list.push(fls[j]);}}' +
+    'return list;' +
+  '}' +
+  // 画像枠が選択中: その枠に画像を差し替え
   'var selIsImage=sel&&sel.dataset.type==="image";' +
   'if(selIsImage){' +
-    'var items2=cd.items||[];var doneR=false;' +
-    'for(var k=0;k<items2.length;k++){' +
-      'if(items2[k].kind==="file"&&items2[k].type.indexOf("image/")===0){' +
-        'var f2=items2[k].getAsFile();if(!f2)continue;' +
-        '(function(file){var fr=new FileReader();fr.onload=function(){_replaceSelImageSrc(fr.result);};fr.readAsDataURL(file);})(f2);' +
-        'doneR=true;break;' +
-      '}' +
+    'var imgFiles2=_collectImgFiles(cd);var doneR=false;' +
+    'if(imgFiles2.length>0){' +
+      '(function(file){var fr=new FileReader();fr.onload=function(){_replaceSelImageSrc(fr.result);};fr.readAsDataURL(file);})(imgFiles2[0]);' +
+      'doneR=true;' +
     '}' +
     'if(!doneR){' +
       'var hd=cd.getData("text/html")||"";' +
@@ -9405,19 +9422,15 @@ pagesHtml +
           'if(s2&&(s2.indexOf("data:")===0||s2.indexOf("blob:")===0||s2.indexOf("http")===0)){_replaceSelImageSrc(s2);doneR=true;break;}' +
         '}}' +
     '}' +
-    'if(doneR){e.preventDefault();return;}' +
-    'e.preventDefault();return;' +  // 画像枠選択中はテキスト貼付で新規要素を作らない
+    'e.preventDefault();return;' +
   '}' +
-  // 画像ファイルを最優先（PowerPointはtext/plainも含むが画像を優先）
-  'var items=cd.items||[];var handled=false;' +
-  'for(var i=0;i<items.length;i++){' +
-    'if(items[i].kind==="file"&&items[i].type.indexOf("image/")===0){' +
-      'var f=items[i].getAsFile();if(!f)continue;' +
-      'handled=true;' +
-      '(function(file){var fr=new FileReader();fr.onload=function(){addImageEl(fr.result);};fr.readAsDataURL(file);})(f);' +
-    '}' +
+  // 画像ファイルを最優先（cd.items / cd.files 両方確認）
+  'var imgFiles=_collectImgFiles(cd);var handled=false;' +
+  'if(imgFiles.length>0){' +
+    'handled=true;' +
+    'imgFiles.forEach(function(file){var fr=new FileReader();fr.onload=function(){addImageEl(fr.result);};fr.readAsDataURL(file);});' +
   '}' +
-  // 画像がない場合のみテキストまたはHTML内画像を探す
+  // 画像がない場合: HTML内img → テキスト
   'if(!handled){' +
     'var htmlData=cd.getData("text/html")||"";' +
     'if(htmlData){' +

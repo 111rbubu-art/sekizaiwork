@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.341';
+var APP_VERSION = 'v1.8.342';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7312,7 +7312,11 @@ var NOUKOTSU_BIND_FIELDS = [
   {key:'_x5f6b__x523b__x5834__x6240_',label:'彫刻予定場所'},
   {key:['_x77f3__x5854__x5f6b__x523b__x4f','OData__x77f3__x5854__x5f6b__x523b__x4f'],label:'石塔彫刻位置'},
   {key:'_x4f55__x884c__x76ee_',label:'石塔○行目',prefix:'石塔',suffix:'行目'},
-  {key:['_x5893__x8a8c__x3007__x884c__x76','OData__x5893__x8a8c__x3007__x884c__x76'],label:'墓誌○行目',prefix:'墓誌',suffix:'行目'}];
+  {key:['_x5893__x8a8c__x3007__x884c__x76','OData__x5893__x8a8c__x3007__x884c__x76'],label:'墓誌○行目',prefix:'墓誌',suffix:'行目'},
+  {key:'RequestDetails',label:'依頼明細',jsonResolve:'requestList'},
+  {key:'RequestDetails',label:'合計金額',jsonResolve:'requestTotal'},
+  {key:'RequestDetails',label:'依頼項目数',jsonResolve:'requestCount'},
+  {key:'RequestDetails',label:'依頼メモ',jsonResolve:'requestMemo'}];
 
 function loadChoukokuTemplates() {
   var enc = CHOUKOKU_TPL_FOLDER.split('/').map(encodeURIComponent).join('/');
@@ -9440,7 +9444,7 @@ pagesHtml +
   '}' +
   // {{ラベル}} または {{ラベル|敬称}} を SP 値へ置換（対象リストのラベルマップで解決）
   'var _bindFields=_getBindFields();' +
-  'var _labelMap={};_bindFields.forEach(function(f){_labelMap[f.label]={key:f.key,prefix:f.prefix||"",suffix:f.suffix||""};});' +
+  'var _labelMap={};_bindFields.forEach(function(f){_labelMap[f.label]={key:f.key,prefix:f.prefix||"",suffix:f.suffix||"",jsonResolve:f.jsonResolve||""};});' +
   'function _applyHonor(v,fmt){' +
     'v=String(v);' +
     'if(fmt==="last様"){var p=v.split(/[\\s\\u3000]+/).filter(function(x){return x;});return(p[0]||v)+" 様";}' +
@@ -9452,22 +9456,58 @@ pagesHtml +
     'for(var i=0;i<ks.length;i++){var v=_spData[ks[i]];if(v!=null&&v!=="")return v;}' +
     'return null;' +
   '}' +
+  // JSON ベースのカスタムリゾルバ（依頼明細などの計算項目）
+  'function _resolveJson(name,raw){' +
+    'if(!raw)return null;var data;' +
+    'try{data=(typeof raw==="string")?JSON.parse(raw):raw;}catch(e){return null;}' +
+    'if(!data||typeof data!=="object")return null;' +
+    'var items=Array.isArray(data.items)?data.items:[];' +
+    'if(name==="requestTotal"){' +
+      'var t=items.reduce(function(s,it){return s+(parseInt(it.amount,10)||0);},0);' +
+      'return "¥"+t.toLocaleString();' +
+    '}' +
+    'if(name==="requestCount"){return String(items.length);}' +
+    'if(name==="requestMemo"){return data.memo||"";}' +
+    'if(name==="requestList"){' +
+      'return items.map(function(it){' +
+        'var nm=(it.name||"").trim();' +
+        'var am=parseInt(it.amount,10)||0;' +
+        'var mm=(it.memo||"").trim();' +
+        'var line=nm+" ¥"+am.toLocaleString();' +
+        'if(mm)line+="（"+mm+"）";' +
+        'return line;' +
+      '}).join("\\n");' +
+    '}' +
+    'return null;' +
+  '}' +
   'document.querySelectorAll(".elem-text").forEach(function(el){' +
     'var clone=el.cloneNode(true);var h=clone.querySelector(".hdl");if(h)h.remove();' +
     'var orig=clone.textContent;' +
     'if(orig.indexOf("{{")<0)return;' +
+    'var hasMultiline=false;' +
     'var nv=orig.replace(/\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}/g,function(m,lbl,fmt){' +
       'lbl=lbl.trim();' +
       'var info=_labelMap[lbl];' +
       'if(!info)return m;' +
       'var raw=_resolveSp(info.key);' +
       'if(raw==null)return m;' +
-      'var v=String(raw);' +
-      'if(info.prefix)v=info.prefix+v;' +
-      'if(info.suffix)v=v+info.suffix;' +
+      'var v;' +
+      'if(info.jsonResolve){' +
+        'var jv=_resolveJson(info.jsonResolve,raw);' +
+        'if(jv==null)return m;' +
+        'v=String(jv);' +
+        'if(v.indexOf("\\n")>=0)hasMultiline=true;' +
+      '}else{' +
+        'v=String(raw);' +
+        'if(info.prefix)v=info.prefix+v;' +
+        'if(info.suffix)v=v+info.suffix;' +
+      '}' +
       'return _applyHonor(v,fmt?fmt.trim():"");' +
     '});' +
-    'if(nv!==orig)_setBoundText(el,nv);' +
+    'if(nv!==orig){' +
+      'if(hasMultiline)el.style.whiteSpace="pre-line";' +
+      '_setBoundText(el,nv);' +
+    '}' +
   '});' +
   '(_boxAssignments||[]).forEach(function(a){' +
     'if(!a.dataUrl||!a.boxName)return;' +
@@ -13640,6 +13680,153 @@ function initNkChkCards(d){
 }
 // =============================================
 
+// ===== 💰 依頼明細（RequestDetails JSON）=====
+var _reqDetails = null;
+var _reqDetailsPresets = ['彫刻', '納骨作業', '朱取', 'クリーニング', '花立交換', '値引き', 'その他'];
+
+function loadRequestDetails(d) {
+  _reqDetails = { items: [], memo: '' };
+  try {
+    var raw = d && d['RequestDetails'];
+    if (raw && typeof raw === 'string') {
+      var p = JSON.parse(raw);
+      if (Array.isArray(p.items)) _reqDetails.items = p.items;
+      if (typeof p.memo === 'string') _reqDetails.memo = p.memo;
+    }
+  } catch(e) { console.warn('依頼明細JSON parse err', e); }
+}
+
+function refreshRequestDetailsUI() {
+  var el = document.getElementById('req-details-area');
+  if (!el || !_reqDetails) return;
+  var rowsHtml = '';
+  for (var i = 0; i < _reqDetails.items.length; i++) {
+    rowsHtml += _buildReqRow(_reqDetails.items[i], i);
+  }
+  var total = _reqDetails.items.reduce(function(s, it) { return s + (parseInt(it.amount, 10) || 0); }, 0);
+  el.innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+      '<thead><tr style="background:#f5e8d0">' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;text-align:left">項目名</th>' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;width:110px;text-align:left">金額</th>' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;text-align:left">メモ</th>' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;width:36px"></th>' +
+      '</tr></thead>' +
+      '<tbody>' + rowsHtml + '</tbody>' +
+    '</table>' +
+    '<div style="margin-top:6px"><button onclick="addReqRow()" style="padding:5px 14px;background:#5a7a3a;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;font-family:inherit">＋ 行追加</button></div>' +
+    '<div style="margin-top:10px"><label style="font-size:11px;color:#555;display:block;margin-bottom:3px">全体メモ:</label>' +
+      '<textarea id="req-memo" rows="2" oninput="_reqDetails.memo=this.value" style="width:100%;font-size:12px;padding:4px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box">' + _esc(_reqDetails.memo || '') + '</textarea></div>' +
+    '<div style="margin-top:10px;padding:10px;background:#f0e8d4;border-radius:4px;display:flex;justify-content:space-between;align-items:center">' +
+      '<span style="font-size:13px;font-weight:600;color:#555">合計:</span>' +
+      '<span id="req-total-val" style="font-size:18px;font-weight:700;color:#7a4a00">¥' + total.toLocaleString() + '</span>' +
+    '</div>' +
+    '<div style="margin-top:8px;text-align:right">' +
+      '<button onclick="saveRequestDetails()" id="req-save-btn" style="padding:7px 22px;background:#1a5a9a;color:#fff;border:none;border-radius:4px;font-size:13px;cursor:pointer;font-family:inherit;font-weight:500">💾 保存</button>' +
+    '</div>';
+}
+
+function _buildReqRow(item, idx) {
+  item = item || {};
+  var name = item.name || '';
+  var amount = parseInt(item.amount, 10) || 0;
+  var memo = item.memo || '';
+  var inPreset = _reqDetailsPresets.indexOf(name) >= 0;
+  var rowBg = amount < 0 ? 'background:#ffe8e0' : '';
+  var presetOpts = '<option value="">（選択...）</option>';
+  _reqDetailsPresets.forEach(function(p) {
+    presetOpts += '<option value="' + _esc(p) + '"' + (p === name ? ' selected' : '') + '>' + _esc(p) + '</option>';
+  });
+  presetOpts += '<option value="__custom__"' + (!inPreset && name ? ' selected' : '') + '>(自由入力)</option>';
+  var customDisplay = (!inPreset && name) ? '' : 'display:none';
+  return '<tr data-idx="' + idx + '" style="' + rowBg + '">' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top">' +
+      '<select onchange="onReqNamePreset(' + idx + ', this.value)" style="width:100%;font-size:11px;padding:3px;font-family:inherit;border:1px solid #ccc;border-radius:3px">' + presetOpts + '</select>' +
+      '<input type="text" id="req-name-' + idx + '" value="' + _esc(!inPreset && name ? name : '') + '" oninput="onReqNameCustom(' + idx + ', this.value)" placeholder="自由入力" style="width:100%;font-size:11px;padding:3px;margin-top:3px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box;' + customDisplay + '">' +
+    '</td>' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="number" value="' + amount + '" oninput="onReqAmount(' + idx + ', this.value)" style="width:100%;font-size:12px;padding:3px;text-align:right;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="text" value="' + _esc(memo) + '" oninput="onReqMemo(' + idx + ', this.value)" style="width:100%;font-size:11px;padding:3px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;text-align:center;vertical-align:top"><button onclick="deleteReqRow(' + idx + ')" style="background:#c00;color:#fff;border:none;border-radius:3px;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:1">×</button></td>' +
+    '</tr>';
+}
+
+function addReqRow() {
+  if (!_reqDetails) return;
+  _reqDetails.items.push({name: '', amount: 0, memo: ''});
+  refreshRequestDetailsUI();
+}
+function deleteReqRow(idx) {
+  if (!_reqDetails) return;
+  _reqDetails.items.splice(idx, 1);
+  refreshRequestDetailsUI();
+}
+function onReqNamePreset(idx, val) {
+  if (!_reqDetails || !_reqDetails.items[idx]) return;
+  if (val === '__custom__') {
+    _reqDetails.items[idx].name = '';
+    refreshRequestDetailsUI();
+    setTimeout(function(){ var el=document.getElementById('req-name-'+idx); if(el)el.focus(); }, 0);
+  } else if (val === '') {
+    _reqDetails.items[idx].name = '';
+    refreshRequestDetailsUI();
+  } else {
+    _reqDetails.items[idx].name = val;
+    refreshRequestDetailsUI();
+  }
+}
+function onReqNameCustom(idx, val) {
+  if (_reqDetails && _reqDetails.items[idx]) _reqDetails.items[idx].name = val;
+}
+function onReqAmount(idx, val) {
+  if (!_reqDetails || !_reqDetails.items[idx]) return;
+  _reqDetails.items[idx].amount = parseInt(val, 10) || 0;
+  var tr = document.querySelector('#req-details-area tr[data-idx="' + idx + '"]');
+  if (tr) tr.style.background = _reqDetails.items[idx].amount < 0 ? '#ffe8e0' : '';
+  var total = _reqDetails.items.reduce(function(s, it) { return s + (parseInt(it.amount, 10) || 0); }, 0);
+  var totalEl = document.getElementById('req-total-val');
+  if (totalEl) totalEl.textContent = '¥' + total.toLocaleString();
+}
+function onReqMemo(idx, val) {
+  if (_reqDetails && _reqDetails.items[idx]) _reqDetails.items[idx].memo = val;
+}
+
+function saveRequestDetails() {
+  if (!currentItem || !_reqDetails) return;
+  var cleaned = {
+    items: _reqDetails.items.filter(function(it) {
+      var n = (it.name || '').trim();
+      var a = parseInt(it.amount, 10) || 0;
+      return n || a !== 0;
+    }).map(function(it) {
+      return { name: (it.name||'').trim(), amount: parseInt(it.amount,10)||0, memo: (it.memo||'').trim() };
+    }),
+    memo: (_reqDetails.memo || '').trim()
+  };
+  var btn = document.getElementById('req-save-btn');
+  if (btn) { btn.textContent = '⏳ 保存中...'; btn.disabled = true; }
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var itemId = currentItem['id'];
+  var payload = { 'RequestDetails': JSON.stringify(cleaned) };
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/fields', {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.text().then(function(t) { throw new Error(r.status + ': ' + t.substring(0,200)); });
+    currentItem['RequestDetails'] = JSON.stringify(cleaned);
+    _reqDetails = cleaned;
+    showSaveToast(true, '💰 依頼明細を保存しました');
+  }).catch(function(e) {
+    showSaveToast(false, '保存エラー: ' + (e && e.message || e));
+  }).then(function() {
+    if (btn) { btn.textContent = '💾 保存'; btn.disabled = false; }
+  });
+}
+// ===========================================
+
 function showTab(i, d) {
   var b = document.getElementById('det-body');
   var nokOk = d['_x524a__x9664_'] === true;
@@ -13704,6 +13891,9 @@ function showTab(i, d) {
     nkgInit('t0a',NK_T0A_CARDS);
   } else if (i === 1) {
     b.innerHTML = editBtnHtml +
+      '<div class="sec"><span class="sec-hdr" style="background:#7a4a00;color:#fff">💰 依頼明細（金額管理）</span>' +
+        '<div id="req-details-area"></div>' +
+      '</div>' +
       '<div class="sec"><span class="sec-hdr bg3">依頼内容</span>' +
       nkgBar('t1r') +
       nkgCanvas('t1r',NK_T1R_CARDS,d,itemId) +
@@ -13720,6 +13910,9 @@ function showTab(i, d) {
     nkgInit('t1r',NK_T1R_CARDS);
     nkgInit('t1n',NK_T1N_CARDS);
     nkgInit('t1c',NK_T1C_CARDS);
+    // 💰 依頼明細を初期化・描画
+    loadRequestDetails(d);
+    refreshRequestDetailsUI();
   } else if (i === 2) {
     b.innerHTML = editBtnHtml +
       '<div class="sec"><span class="sec-hdr bg4">基本</span>' +

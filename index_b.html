@@ -1790,9 +1790,76 @@ function saveAICfg() {
   if(btn){btn.textContent='✅ 保存しました';setTimeout(function(){btn.textContent='💾 保存';},2000);}
 }
 function _aiToggleEndpoint() {
-  var prov = document.getElementById('ai-provider');
-  var row  = document.getElementById('ai-endpoint-row');
-  if(prov && row) row.style.display = prov.value === 'openai' ? '' : 'none';
+  var prov    = document.getElementById('ai-provider');
+  var epRow   = document.getElementById('ai-endpoint-row');
+  var keyRow  = document.getElementById('ai-apikey-row');
+  var modelEl = document.getElementById('ai-model');
+  var isLocal = prov && prov.value === 'openai';
+  if(epRow)  epRow.style.display  = isLocal ? 'flex' : 'none';
+  if(keyRow) keyRow.style.display = isLocal ? 'none' : 'flex';
+  if(modelEl && !modelEl.value) modelEl.placeholder = isLocal ? 'llama3.1' : 'claude-sonnet-4-6';
+}
+function testAIConnection() {
+  var btn    = document.getElementById('ai-test-btn');
+  var result = document.getElementById('ai-test-result');
+  var prov   = document.getElementById('ai-provider');
+  var isLocal = prov && prov.value === 'openai';
+  var endpoint = (document.getElementById('ai-endpoint') || {}).value || 'http://localhost:11434';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ テスト中…'; }
+  if (result) { result.style.display=''; result.style.color='#888'; result.textContent = '接続確認中…'; }
+  if (isLocal) {
+    // Ollamaの /api/tags または OpenAI互換 /v1/models でモデル一覧取得
+    fetch(endpoint + '/api/tags', { method:'GET', headers:{'Content-Type':'application/json'} })
+      .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+      .then(function(j) {
+        var models = (j.models || []).map(function(m){ return m.name || m.id || m; }).join(', ');
+        if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ Ollama 接続成功\nモデル: ' + (models || '(一覧なし)'); }
+      })
+      .catch(function() {
+        // fallback: OpenAI互換 /v1/models
+        fetch(endpoint + '/v1/models', { method:'GET', headers:{'Content-Type':'application/json'} })
+          .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+          .then(function(j) {
+            var models = ((j.data||[]).map(function(m){ return m.id || m; })).join(', ');
+            if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ LLM 接続成功\nモデル: ' + (models || '(一覧なし)'); }
+          })
+          .catch(function(err) {
+            if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + '\nOllamaが起動しているか確認してください。'; }
+          });
+      })
+      .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
+  } else {
+    // Claude API: 最小限の呼び出し
+    var apiKey = (document.getElementById('ai-apikey') || {}).value || '';
+    var model  = (document.getElementById('ai-model')  || {}).value || 'claude-haiku-4-5-20251001';
+    if (!apiKey) {
+      if (result) { result.style.color='#c00'; result.textContent = '❌ APIキーが未入力です'; }
+      if (btn) { btn.disabled=false; btn.textContent='🔌 接続テスト'; }
+      return;
+    }
+    fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({ model: model, max_tokens: 10, messages: [{ role:'user', content:'hi' }] })
+    })
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res) {
+      if (res.ok) {
+        if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ Claude API 接続成功\nモデル: ' + (res.j.model || model); }
+      } else {
+        if (result) { result.style.color='#c00'; result.textContent = '❌ API エラー ' + (res.j.error && res.j.error.message ? res.j.error.message : JSON.stringify(res.j)); }
+      }
+    })
+    .catch(function(err) {
+      if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err); }
+    })
+    .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
+  }
 }
 
 // ===== AI APIレイヤー =====
@@ -2187,10 +2254,12 @@ function openSettingsPage() {
   // AI設定を画面に反映
   var aiCfg = getAICfg();
   var el;
-  el = document.getElementById('ai-provider'); if(el){ el.value = aiCfg.provider || 'claude'; _aiToggleEndpoint(); }
+  el = document.getElementById('ai-provider'); if(el){ el.value = aiCfg.provider || 'claude'; }
   el = document.getElementById('ai-apikey');   if(el) el.value = aiCfg.apiKey   || '';
-  el = document.getElementById('ai-model');    if(el) el.value = aiCfg.model    || 'claude-sonnet-4-6';
+  el = document.getElementById('ai-model');    if(el) el.value = aiCfg.model    || '';
   el = document.getElementById('ai-endpoint'); if(el) el.value = aiCfg.endpoint || 'http://localhost:11434';
+  _aiToggleEndpoint();
+  el = document.getElementById('ai-test-result'); if(el) el.style.display = 'none';
   document.getElementById('settings-screen').classList.remove('hidden');
   var verEl = document.getElementById('settings-ver');
   if (verEl) verEl.textContent = APP_VERSION || '';
@@ -2540,7 +2609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.344';
+var APP_VERSION = 'v1.8.345';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -15195,7 +15264,7 @@ function openImageViewer(imgs, startIdx) {
 
     <!-- AI設定 -->
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
-      <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:10px">🤖 AI設定（完成資料生成）</div>
+      <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:10px">🤖 AI設定</div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <label style="font-size:12px;color:#555;min-width:80px">プロバイダー</label>
@@ -15204,7 +15273,7 @@ function openImageViewer(imgs, startIdx) {
             <option value="openai">ローカルLLM（OpenAI互換）</option>
           </select>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="ai-apikey-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <label style="font-size:12px;color:#555;min-width:80px">APIキー</label>
           <input id="ai-apikey" type="password" placeholder="sk-ant-..." style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
         </div>
@@ -15216,9 +15285,11 @@ function openImageViewer(imgs, startIdx) {
           <label style="font-size:12px;color:#555;min-width:80px">エンドポイント</label>
           <input id="ai-endpoint" placeholder="http://localhost:11434" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
         </div>
-        <div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button id="ai-save-btn" onclick="saveAICfg()" style="padding:8px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
+          <button id="ai-test-btn" onclick="testAIConnection()" style="padding:8px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔌 接続テスト</button>
         </div>
+        <pre id="ai-test-result" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin:0;white-space:pre-wrap;word-break:break-all"></pre>
       </div>
     </div>
 

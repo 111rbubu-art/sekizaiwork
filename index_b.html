@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.336';
+var APP_VERSION = 'v1.8.337';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7327,6 +7327,8 @@ function loadChoukokuTemplates() {
       .filter(function(f) { return f.file && /\.json$/i.test(f.name) && f.name !== '_order.json'; })
       .map(function(f) { return f.name.replace(/\.json$/i, ''); });
     _updateChoukokuTplDropdown();
+    // v1.8.337: 旧形式テンプレを新形式へ一括移行（localStorage で1回限り）
+    setTimeout(function(){ try{ migrateAllChoukokuTemplates(); }catch(e){ console.warn('migrate err',e); } }, 1000);
   }).catch(function(e) { console.warn('テンプレート一覧取得エラー', e); });
   return Promise.all([p1, loadTplOrderFile('choukoku')]);
 }
@@ -7974,6 +7976,67 @@ function _deleteChoukokuTplFromPopup(name) {
   });
 }
 
+// 旧形式テンプレ (bindField/bindFormat) を新形式 ({{label|fmt}}) に一括変換
+function migrateAllChoukokuTemplates() {
+  if (localStorage.getItem('tpl_migrated_v2') === '1') return Promise.resolve(0);
+  if (!_choukokuTplList || _choukokuTplList.length === 0) return Promise.resolve(0);
+  var lblMap = {};
+  CHOUKOKU_BIND_FIELDS.concat(NOUKOTSU_BIND_FIELDS).forEach(function(f){ if(!lblMap[f.key]) lblMap[f.key] = f.label; });
+
+  function migrateOne(tplName) {
+    var enc = (CHOUKOKU_TPL_FOLDER + '/' + tplName + '.json').split('/').map(encodeURIComponent).join('/');
+    return getToken().then(function(resp) {
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content?nocache=' + Date.now(), {
+        headers: { Authorization: 'Bearer ' + resp.accessToken }, cache: 'no-store'
+      });
+    }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(tpl) {
+      var changed = false;
+      var hasNoukotsuField = false, hasKoujiField = false;
+      function convertElems(elements) {
+        (elements || []).forEach(function(item) {
+          if (item.type !== 'text') return;
+          if (item.bindField) {
+            var origKey = item.bindField;
+            var label = lblMap[origKey] || origKey;
+            var fmt = item.bindFormat === 'last+sama' ? 'last様' : (item.bindFormat === 'sama' ? 'full様' : '');
+            item.text = fmt ? '{{' + label + '|' + fmt + '}}' : '{{' + label + '}}';
+            delete item.html;
+            delete item.bindField;
+            delete item.bindFormat;
+            changed = true;
+            if (NOUKOTSU_BIND_FIELDS.some(function(f){return f.key===origKey;})) hasNoukotsuField = true;
+            else if (CHOUKOKU_BIND_FIELDS.some(function(f){return f.key===origKey;})) hasKoujiField = true;
+          }
+        });
+      }
+      if (tpl.pages) tpl.pages.forEach(function(p){ convertElems(p.elements); });
+      else if (tpl.elements) convertElems(tpl.elements);
+      // _meta.targetList を推測（既にあれば尊重）
+      if (!tpl._meta) tpl._meta = {};
+      if (!tpl._meta.targetList) {
+        tpl._meta.targetList = hasNoukotsuField ? 'noukotsu' : 'kouji';
+        changed = true;
+      }
+      if (!changed) return false;
+      return getToken().then(function(resp) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+          method: 'PUT',
+          headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify(tpl)
+        });
+      }).then(function(r) { return r.ok; });
+    }).catch(function(e) { console.warn('テンプレ移行スキップ:', tplName, e); return false; });
+  }
+
+  return Promise.all(_choukokuTplList.map(migrateOne)).then(function(results) {
+    var n = results.filter(function(r){return r;}).length;
+    if (n > 0) showSaveToast(true, 'テンプレ更新: ' + n + '件 (旧形式→新形式)');
+    localStorage.setItem('tpl_migrated_v2', '1');
+    return n;
+  });
+}
+
 function _saveChoukokuTplFromPopup(data, name) {
   return new Promise(function(resolve, reject) {
     var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
@@ -8488,13 +8551,21 @@ function _buildChoukokuTemplateElems(tpl, orientation, fnameLine) {
       var fs = item.fontSize || 14;
       style += 'font-size:' + fs + 'pt;font-weight:' + (item.bold ? '700' : '400') + ';';
       if (item.align) style += 'text-align:' + item.align + ';';
-      var bindAttr = item.bindField ? ' data-bindfield="' + esc(item.bindField) + '"' : '';
-      var fmtAttr  = item.bindFormat ? ' data-bindformat="' + esc(item.bindFormat) + '"' : '';
-      // item.html があれば inline 書式を保持してレンダリング、なければ従来通り textContent 扱い
-      var bodyHtml = (item.html != null && item.html !== '')
-        ? String(item.html)
-        : esc(item.text || '');
-      return '<div class="elem elem-text" data-type="text"' + bindAttr + fmtAttr + ' data-fontsize="' + fs + '" data-bold="' + (item.bold ? '1' : '0') + '" style="' + style + '">' + bodyHtml + '<div class="hdl"></div></div>';
+      // 旧形式 (bindField) を {{label|fmt}} へ自動変換
+      var _itemText = item.text || '';
+      var _itemHtml = item.html;
+      if (item.bindField) {
+        var _lblMap = {};
+        CHOUKOKU_BIND_FIELDS.concat(NOUKOTSU_BIND_FIELDS).forEach(function(f){ if(!_lblMap[f.key]) _lblMap[f.key] = f.label; });
+        var _lbl = _lblMap[item.bindField] || item.bindField;
+        var _fmtVal = item.bindFormat === 'last+sama' ? 'last様' : (item.bindFormat === 'sama' ? 'full様' : '');
+        _itemText = _fmtVal ? '{{' + _lbl + '|' + _fmtVal + '}}' : '{{' + _lbl + '}}';
+        _itemHtml = null;
+      }
+      var bodyHtml = (_itemHtml != null && _itemHtml !== '')
+        ? String(_itemHtml)
+        : esc(_itemText);
+      return '<div class="elem elem-text" data-type="text" data-fontsize="' + fs + '" data-bold="' + (item.bold ? '1' : '0') + '" style="' + style + '">' + bodyHtml + '<div class="hdl"></div></div>';
     } else if (item.type === 'outline') {
       var lbl = item.label || '枠';
       return '<div class="elem elem-outline" data-type="outline" data-label="' + esc(lbl) + '" style="' + style + '"><div class="lbl">' + esc(lbl) + '</div><div class="hdl"></div></div>';
@@ -8655,6 +8726,13 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   '<button id="btnOrientation" onclick="switchOrientation()">' + orientLabel + '</button>' +
   '<div class="ddwrap">' +
     '<button class="tpl" id="btnTplMenu" onclick="toggleTplMenu(event)" title="テンプレートのモード切替・保存・削除">🧩 テンプレート ▾</button>' +
+    '<span id="tplTargetWrap" style="display:none;margin-left:8px;align-items:center;gap:4px">' +
+      '<span style="font-size:11px;color:#aac">対象:</span>' +
+      '<select id="tplTargetList" onchange="_changeTargetList(this.value)" style="padding:4px 8px;background:#fff;color:#333;border:1px solid #aaa;border-radius:4px;font-size:11px;font-family:inherit">' +
+        '<option value="kouji">🏗️ 工事関連</option>' +
+        '<option value="noukotsu">📿 納骨リスト</option>' +
+      '</select>' +
+    '</span>' +
     '<div class="ddmenu" id="tplMenu">' +
       '<div class="it" id="tplMenuMode" onclick="toggleTplMode();closeTplMenu()">🔧 テンプレートモード</div>' +
       '<div class="it" style="background:#f7f7f7;color:#888;font-size:10px;padding:4px 14px;cursor:default" onmousedown="event.preventDefault()">― 保存 ―</div>' +
@@ -8681,8 +8759,11 @@ pagesHtml +
 '<script>(function(){' +
 'var _tplData=' + tplJson + ';' +
 'var tplMode=false;' +
-'var SP_BIND_FIELDS=' + JSON.stringify(currentListMode === 'noukotsu' ? NOUKOTSU_BIND_FIELDS : CHOUKOKU_BIND_FIELDS) + ';' +
-'var SP_LIST_LABEL=' + JSON.stringify(currentListMode === 'noukotsu' ? '📿 納骨リスト' : '🏗️ 工事関連') + ';' +
+'var NOK_FIELDS=' + JSON.stringify(NOUKOTSU_BIND_FIELDS) + ';' +
+'var KOU_FIELDS=' + JSON.stringify(CHOUKOKU_BIND_FIELDS) + ';' +
+'var _currentTargetList=(_tplData&&_tplData._meta&&_tplData._meta.targetList)||' + JSON.stringify(currentListMode === 'noukotsu' ? 'noukotsu' : 'kouji') + ';' +
+'function _getBindFields(){return _currentTargetList==="noukotsu"?NOK_FIELDS:KOU_FIELDS;}' +
+'function _getTargetLabel(){return _currentTargetList==="noukotsu"?"📿 納骨リスト":"🏗️ 工事関連";}' +
 'var _spData=' + JSON.stringify(spData) + ';' +
 'var _boxAssignments=' + JSON.stringify(boxAssignments) + ';' +
 'var currentOrientation="' + orientation + '";' +
@@ -8790,17 +8871,16 @@ pagesHtml +
   'if(t==="image"){html+=\'<button class="cropbtn" onclick="openCropModal()">✂️ トリミング</button>\';html+=\'<button class="cropbtn" style="background:#1a5a9a;margin-top:4px" onclick="changeSelectedImage()">🔄 画像変更</button>\';}' +
   'if(tplMode){' +
     'html+=\'<hr style="margin:8px 0;border:none;border-top:1px solid #eee">\';' +
-    'html+=\'<div style="font-size:10px;font-weight:700;color:#c47a1a;margin-bottom:4px">🔧 テンプレート設定 <span style="background:#fff3d4;border:1px solid #d8b870;border-radius:3px;padding:1px 6px;color:#7a4a00">\'+SP_LIST_LABEL+\'</span></div>\';' +
+    'html+=\'<div style="font-size:10px;font-weight:700;color:#c47a1a;margin-bottom:4px">🔧 テンプレート設定 <span style="background:#fff3d4;border:1px solid #d8b870;border-radius:3px;padding:1px 6px;color:#7a4a00">\'+_getTargetLabel()+\'</span></div>\';' +
     'if(t==="image"){var bn=sel.dataset.boxname||"";html+=\'<div class="row"><label>ボックス名</label><input type="text" id="pbn" placeholder="例: 正面写真" value="\'+bn.replace(/"/g,"&quot;")+\'"></div>\';}' +
-    'if(t==="text"){var bf=sel.dataset.bindfield||"";' +
-      'var opts=\'<option value="">(紐づけなし)</option>\'+SP_BIND_FIELDS.map(function(f){return\'<option value="\'+f.key+\'"\'+(bf===f.key?\' selected\':\'\')+\'>\'+f.label+\'</option>\';}).join("");' +
-      'html+=\'<div class="row"><label>SP項目</label><select id="pbf">\'+opts+\'</select></div>\';' +
-      'var bfm=sel.dataset.bindformat||"";' +
-      'var fmtOpts=[\'<option value="">そのまま</option>\',\'<option value="last+sama"\'+(bfm==="last+sama"?\' selected\':\'\')+\'>苗字＋様</option>\',\'<option value="sama"\'+(bfm==="sama"?\' selected\':\'\')+\'>フルネーム＋様</option>\'].join("");' +
-      'html+=\'<div class="row" style="\'+(bf?\'\':\'opacity:0.5;\')+\'"><label>表示形式</label><select id="pbfm"\'+(bf?\'\':\' disabled\')+\'>\'+fmtOpts+\'</select></div>\';' +
-      'var insOpts=\'<option value="">＋テキストに挿入...</option>\'+SP_BIND_FIELDS.map(function(f){return\'<option value="\'+f.label+\'">\'+f.label+\'</option>\';}).join("");' +
-      'html+=\'<div class="row"><label>項目を挿入</label><select id="pbins">\'+insOpts+\'</select></div>\';' +
-      'html+=\'<div style="font-size:10px;color:#888;margin:-4px 0 4px;line-height:1.4">→ {{項目名}} がカーソル位置に挿入され、使用時にSPの値へ置換されます</div>\';' +
+    'if(t==="text"){' +
+      'var _bfs=_getBindFields();' +
+      'var insOpts=\'<option value="">（項目を選択...）</option>\'+_bfs.map(function(f){return\'<option value="\'+f.label+\'">\'+f.label+\'</option>\';}).join("");' +
+      'html+=\'<div style="font-size:10px;color:#888;margin:2px 0 4px;line-height:1.3">対象: \'+_getTargetLabel()+\'</div>\';' +
+      'html+=\'<div class="row"><label>項目</label><select id="pbins">\'+insOpts+\'</select></div>\';' +
+      'html+=\'<div class="row"><label>敬称</label><select id="pbinsfmt"><option value="">なし</option><option value="last様">苗字＋様</option><option value="full様">フルネーム＋様</option></select></div>\';' +
+      'html+=\'<button class="cropbtn" style="background:#1a5a9a;margin-top:4px;width:100%" onclick="_insertPlaceholder()">＋ カーソル位置に挿入</button>\';' +
+      'html+=\'<div style="font-size:10px;color:#888;margin:6px 0 0;line-height:1.4">→ {{項目名}} または {{項目名|敬称}} が挿入され、使用時にSP値へ置換</div>\';' +
     '}' +
   '}' +
   'html+=\'<button class="delbtn" onclick="deleteSelected()">🗑️ 削除</button>\';' +
@@ -8876,26 +8956,23 @@ pagesHtml +
       'var ph=sel.querySelector(".img-ph");if(ph)ph.innerHTML="📷<br>"+this.value;' +
       'var bl=sel.querySelector(".boxlabel");if(bl)bl.textContent=this.value;' +
     '});}' +
-    'if(t==="text"&&document.getElementById("pbf")){document.getElementById("pbf").addEventListener("change",function(){' +
-      'sel.dataset.bindfield=this.value;' +
-      'var fmtEl=document.getElementById("pbfm");' +
-      'if(fmtEl){fmtEl.disabled=!this.value;fmtEl.parentNode.style.opacity=this.value?"":"0.5";if(!this.value){fmtEl.value="";delete sel.dataset.bindformat;}}' +
-    '});}' +
-    'if(t==="text"&&document.getElementById("pbfm")){document.getElementById("pbfm").addEventListener("change",function(){' +
-      'if(this.value){sel.dataset.bindformat=this.value;}else{delete sel.dataset.bindformat;}' +
-    '});}' +
-    'if(t==="text"&&document.getElementById("pbins")){document.getElementById("pbins").addEventListener("change",function(){' +
-      'var lbl=this.value;this.value="";if(!lbl)return;' +
-      'var ph="{{"+lbl+"}}";' +
-      'var ptxEl=document.getElementById("ptx");if(!ptxEl)return;' +
-      'var pos=ptxEl.selectionStart||0;var pe=ptxEl.selectionEnd||pos;' +
-      'var v=ptxEl.value;var nv=v.slice(0,pos)+ph+v.slice(pe);' +
-      'ptxEl.value=nv;ptxEl.focus();' +
-      'try{ptxEl.setSelectionRange(pos+ph.length,pos+ph.length);}catch(ex){}' +
-      'var hdl=sel.querySelector(".hdl");sel.textContent=nv;if(hdl)sel.appendChild(hdl);' +
-    '});}' +
   '}' +
 '}' +
+'window._insertPlaceholder=function(){' +
+  'if(!sel||sel.dataset.type!=="text"){alert("テキスト要素を選択してください");return;}' +
+  'var pbinsEl=document.getElementById("pbins");if(!pbinsEl)return;' +
+  'var lbl=pbinsEl.value;if(!lbl){alert("項目を選択してください");return;}' +
+  'var fmtEl=document.getElementById("pbinsfmt");' +
+  'var fmt=(fmtEl&&fmtEl.value)?fmtEl.value:"";' +
+  'var ph=fmt?"{{"+lbl+"|"+fmt+"}}":"{{"+lbl+"}}";' +
+  'var ptxEl=document.getElementById("ptx");if(!ptxEl)return;' +
+  'var pos=ptxEl.selectionStart||0;var pe=ptxEl.selectionEnd||pos;' +
+  'var v=ptxEl.value;var nv=v.slice(0,pos)+ph+v.slice(pe);' +
+  'ptxEl.value=nv;ptxEl.focus();' +
+  'try{ptxEl.setSelectionRange(pos+ph.length,pos+ph.length);}catch(ex){}' +
+  'var hdl=sel.querySelector(".hdl");sel.textContent=nv;if(hdl)sel.appendChild(hdl);' +
+  'pbinsEl.value="";' +
+'};' +
 'window.switchOrientation=function(){' +
   'currentOrientation=currentOrientation==="portrait"?"landscape":"portrait";' +
   'PAGE_W=currentOrientation==="landscape"?420:297;' +
@@ -8914,8 +8991,13 @@ pagesHtml +
   'if(btnTm)btnTm.style.background=tplMode?"#c47a1a":"";' +
   'var btnImg=document.getElementById("btnAddImage");' +
   'if(btnImg)btnImg.textContent=tplMode?"＋画像枠":"＋画像";' +
+  'var tw=document.getElementById("tplTargetWrap");' +
+  'if(tw)tw.style.display=tplMode?"inline-flex":"none";' +
+  'var tls=document.getElementById("tplTargetList");' +
+  'if(tls)tls.value=_currentTargetList;' +
   'refreshPanel();' +
 '};' +
+'window._changeTargetList=function(v){_currentTargetList=v;refreshPanel();};' +
 'window.toggleTplMenu=function(e){' +
   'if(e)e.stopPropagation();' +
   'var m=document.getElementById("tplMenu");if(m)m.classList.toggle("on");' +
@@ -8949,8 +9031,6 @@ pagesHtml +
       'var plain=document.createElement("div");plain.textContent=el.textContent;' +
       'if(inner&&inner!==plain.innerHTML){item.html=inner;}' +
       'item.fontSize=parseFloat(el.dataset.fontsize)||14;item.bold=el.dataset.bold==="1";item.align=el.style.textAlign||"";' +
-      'if(el.dataset.bindfield)item.bindField=el.dataset.bindfield;' +
-      'if(el.dataset.bindformat)item.bindFormat=el.dataset.bindformat;' +
     '}' +
     'if(t==="outline"){item.label=el.dataset.label||"";}' +
     'if(t==="line"){item.orient=el.dataset.orient||"h";item.thickness=parseFloat(el.dataset.thickness)||2;item.color=el.dataset.color||"#000";item.arrow=el.dataset.arrow||"none";}' +
@@ -8983,7 +9063,7 @@ pagesHtml +
   'if(!name||!name.trim()){alert("テンプレート名を入力してください");return;}' +
   'name=name.trim();' +
   '_gatherTplPayload().then(function(payload){' +
-    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages};' +
+    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList}};' +
     'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
     'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
     '.then(function(){' +
@@ -9006,7 +9086,7 @@ pagesHtml +
   'name=name.trim();' +
   'if(name===oldName){_saveTemplateWithName(name);return;}' +
   '_gatherTplPayload().then(function(payload){' +
-    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages};' +
+    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList}};' +
     'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
     'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
     '.then(function(){' +
@@ -9349,22 +9429,24 @@ pagesHtml +
       'for(var i=1;i<textNodes.length;i++){textNodes[i].nodeValue="";}' +
     '}' +
   '}' +
-  'document.querySelectorAll(".elem-text[data-bindfield]").forEach(function(el){' +
-    'var f=el.dataset.bindfield;if(!f||_spData[f]==null||_spData[f]==="")return;' +
-    'var fmt=el.dataset.bindformat||"";' +
-    '_setBoundText(el,fmtVal(_spData[f],fmt));' +
-  '});' +
-  // インライン {{項目名}} 置換
-  'var _labelMap={};SP_BIND_FIELDS.forEach(function(f){_labelMap[f.label]=f.key;});' +
+  // {{ラベル}} または {{ラベル|敬称}} を SP 値へ置換（対象リストのラベルマップで解決）
+  'var _bindFields=_getBindFields();' +
+  'var _labelMap={};_bindFields.forEach(function(f){_labelMap[f.label]=f.key;});' +
+  'function _applyHonor(v,fmt){' +
+    'v=String(v);' +
+    'if(fmt==="last様"){var p=v.split(/[\\s\\u3000]+/).filter(function(x){return x;});return(p[0]||v)+" 様";}' +
+    'if(fmt==="full様"){return v+" 様";}' +
+    'return v;' +
+  '}' +
   'document.querySelectorAll(".elem-text").forEach(function(el){' +
-    'if(el.dataset.bindfield)return;' +
     'var clone=el.cloneNode(true);var h=clone.querySelector(".hdl");if(h)h.remove();' +
     'var orig=clone.textContent;' +
     'if(orig.indexOf("{{")<0)return;' +
-    'var nv=orig.replace(/\\{\\{([^}]+)\\}\\}/g,function(m,lbl){' +
-      'var k=_labelMap[lbl.trim()];' +
-      'if(k&&_spData[k]!=null&&_spData[k]!=="")return String(_spData[k]);' +
-      'return m;' +
+    'var nv=orig.replace(/\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}/g,function(m,lbl,fmt){' +
+      'lbl=lbl.trim();' +
+      'var k=_labelMap[lbl];' +
+      'if(!k||_spData[k]==null||_spData[k]==="")return m;' +
+      'return _applyHonor(_spData[k],fmt?fmt.trim():"");' +
     '});' +
     'if(nv!==orig)_setBoundText(el,nv);' +
   '});' +
@@ -9619,8 +9701,6 @@ pagesHtml +
     'var ds=c.dataset;' +
     'if(ds.fontsize){el.dataset.fontsize=ds.fontsize;el.style.fontSize=ds.fontsize+"pt";}' +
     'if(ds.bold){el.dataset.bold=ds.bold;el.style.fontWeight=ds.bold==="1"?"700":"400";}' +
-    'if(ds.bindfield)el.dataset.bindfield=ds.bindfield;' +
-    'if(ds.bindformat)el.dataset.bindformat=ds.bindformat;' +
     'if(ds.align||c.style.match(/text-align/))el.style.textAlign=ds.align||"";' +
     'el.innerHTML=c.innerHTML;' +
   '}else if(t==="outline"){' +

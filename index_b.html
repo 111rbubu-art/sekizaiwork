@@ -2540,7 +2540,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.342';
+var APP_VERSION = 'v1.8.343';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7315,8 +7315,7 @@ var NOUKOTSU_BIND_FIELDS = [
   {key:['_x5893__x8a8c__x3007__x884c__x76','OData__x5893__x8a8c__x3007__x884c__x76'],label:'墓誌○行目',prefix:'墓誌',suffix:'行目'},
   {key:'RequestDetails',label:'依頼明細',jsonResolve:'requestList'},
   {key:'RequestDetails',label:'合計金額',jsonResolve:'requestTotal'},
-  {key:'RequestDetails',label:'依頼項目数',jsonResolve:'requestCount'},
-  {key:'RequestDetails',label:'依頼メモ',jsonResolve:'requestMemo'}];
+  {key:'RequestDetails',label:'依頼項目数',jsonResolve:'requestCount'}];
 
 function loadChoukokuTemplates() {
   var enc = CHOUKOKU_TPL_FOLDER.split('/').map(encodeURIComponent).join('/');
@@ -9467,14 +9466,17 @@ pagesHtml +
       'return "¥"+t.toLocaleString();' +
     '}' +
     'if(name==="requestCount"){return String(items.length);}' +
-    'if(name==="requestMemo"){return data.memo||"";}' +
     'if(name==="requestList"){' +
       'return items.map(function(it){' +
         'var nm=(it.name||"").trim();' +
         'var am=parseInt(it.amount,10)||0;' +
         'var mm=(it.memo||"").trim();' +
         'var line=nm+" ¥"+am.toLocaleString();' +
-        'if(mm)line+="（"+mm+"）";' +
+        'if(mm){' +
+          // memoが複数行のとき各行を全角スペース字下げで追加
+          'var mlines=mm.split(/\\r?\\n/).filter(function(s){return s.trim();}).map(function(s){return "　"+s.trim();}).join("\\n");' +
+          'line+="\\n"+mlines;' +
+        '}' +
         'return line;' +
       '}).join("\\n");' +
     '}' +
@@ -13685,15 +13687,23 @@ var _reqDetails = null;
 var _reqDetailsPresets = ['彫刻', '納骨作業', '朱取', 'クリーニング', '花立交換', '値引き', 'その他'];
 
 function loadRequestDetails(d) {
-  _reqDetails = { items: [], memo: '' };
+  _reqDetails = { items: [] };
   try {
     var raw = d && d['RequestDetails'];
     if (raw && typeof raw === 'string') {
       var p = JSON.parse(raw);
       if (Array.isArray(p.items)) _reqDetails.items = p.items;
-      if (typeof p.memo === 'string') _reqDetails.memo = p.memo;
     }
   } catch(e) { console.warn('依頼明細JSON parse err', e); }
+  // 彫刻 / 戒名等の名前にマッチする行は memo をデフォルト展開
+  _reqDetails.items.forEach(function(it){
+    it._memoOpen = _isMultilineName(it.name) || !!(it.memo && it.memo.trim());
+  });
+}
+
+function _isMultilineName(name) {
+  if (!name) return false;
+  return name.indexOf('彫刻') >= 0 || name.indexOf('戒名') >= 0;
 }
 
 function refreshRequestDetailsUI() {
@@ -13708,15 +13718,12 @@ function refreshRequestDetailsUI() {
     '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
       '<thead><tr style="background:#f5e8d0">' +
         '<th style="padding:5px;border:1px solid #d8c0a0;text-align:left">項目名</th>' +
-        '<th style="padding:5px;border:1px solid #d8c0a0;width:110px;text-align:left">金額</th>' +
-        '<th style="padding:5px;border:1px solid #d8c0a0;text-align:left">メモ</th>' +
-        '<th style="padding:5px;border:1px solid #d8c0a0;width:36px"></th>' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;width:130px;text-align:left">金額</th>' +
+        '<th style="padding:5px;border:1px solid #d8c0a0;width:72px"></th>' +
       '</tr></thead>' +
       '<tbody>' + rowsHtml + '</tbody>' +
     '</table>' +
     '<div style="margin-top:6px"><button onclick="addReqRow()" style="padding:5px 14px;background:#5a7a3a;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;font-family:inherit">＋ 行追加</button></div>' +
-    '<div style="margin-top:10px"><label style="font-size:11px;color:#555;display:block;margin-bottom:3px">全体メモ:</label>' +
-      '<textarea id="req-memo" rows="2" oninput="_reqDetails.memo=this.value" style="width:100%;font-size:12px;padding:4px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box">' + _esc(_reqDetails.memo || '') + '</textarea></div>' +
     '<div style="margin-top:10px;padding:10px;background:#f0e8d4;border-radius:4px;display:flex;justify-content:space-between;align-items:center">' +
       '<span style="font-size:13px;font-weight:600;color:#555">合計:</span>' +
       '<span id="req-total-val" style="font-size:18px;font-weight:700;color:#7a4a00">¥' + total.toLocaleString() + '</span>' +
@@ -13731,6 +13738,7 @@ function _buildReqRow(item, idx) {
   var name = item.name || '';
   var amount = parseInt(item.amount, 10) || 0;
   var memo = item.memo || '';
+  var memoOpen = !!item._memoOpen;
   var inPreset = _reqDetailsPresets.indexOf(name) >= 0;
   var rowBg = amount < 0 ? 'background:#ffe8e0' : '';
   var presetOpts = '<option value="">（選択...）</option>';
@@ -13739,20 +13747,37 @@ function _buildReqRow(item, idx) {
   });
   presetOpts += '<option value="__custom__"' + (!inPreset && name ? ' selected' : '') + '>(自由入力)</option>';
   var customDisplay = (!inPreset && name) ? '' : 'display:none';
-  return '<tr data-idx="' + idx + '" style="' + rowBg + '">' +
+  var hasMemoText = !!(memo && memo.trim());
+  var memoBtnStyle = (memoOpen || hasMemoText) ? 'background:#c47a1a;color:#fff' : 'background:#fff;color:#5a4a00';
+  var memoBtnLabel = memoOpen ? '▲メモ' : '▼メモ';
+  // 彫刻系は textarea（複数行）、それ以外は input
+  var isMulti = _isMultilineName(name);
+  var memoField = isMulti
+    ? '<textarea oninput="onReqMemo(' + idx + ', this.value)" placeholder="戒名等を1行ずつ入力" rows="3" style="width:100%;font-size:12px;padding:4px;border:1px solid #d8c0a0;border-radius:3px;font-family:inherit;box-sizing:border-box;resize:vertical">' + _esc(memo) + '</textarea>'
+    : '<input type="text" value="' + _esc(memo) + '" oninput="onReqMemo(' + idx + ', this.value)" placeholder="メモ" style="width:100%;font-size:11px;padding:4px;border:1px solid #d8c0a0;border-radius:3px;font-family:inherit;box-sizing:border-box">';
+  var html = '<tr data-idx="' + idx + '" style="' + rowBg + '">' +
     '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top">' +
       '<select onchange="onReqNamePreset(' + idx + ', this.value)" style="width:100%;font-size:11px;padding:3px;font-family:inherit;border:1px solid #ccc;border-radius:3px">' + presetOpts + '</select>' +
       '<input type="text" id="req-name-' + idx + '" value="' + _esc(!inPreset && name ? name : '') + '" oninput="onReqNameCustom(' + idx + ', this.value)" placeholder="自由入力" style="width:100%;font-size:11px;padding:3px;margin-top:3px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box;' + customDisplay + '">' +
     '</td>' +
     '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="number" value="' + amount + '" oninput="onReqAmount(' + idx + ', this.value)" style="width:100%;font-size:12px;padding:3px;text-align:right;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
-    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="text" value="' + _esc(memo) + '" oninput="onReqMemo(' + idx + ', this.value)" style="width:100%;font-size:11px;padding:3px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
-    '<td style="padding:3px;border:1px solid #d8c0a0;text-align:center;vertical-align:top"><button onclick="deleteReqRow(' + idx + ')" style="background:#c00;color:#fff;border:none;border-radius:3px;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:1">×</button></td>' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;text-align:center;vertical-align:top;white-space:nowrap">' +
+      '<button onclick="toggleReqMemo(' + idx + ')" style="' + memoBtnStyle + ';border:1px solid #d8b870;border-radius:3px;width:38px;height:22px;cursor:pointer;font-size:10px;line-height:1;padding:0;margin-right:2px;font-family:inherit">' + memoBtnLabel + '</button>' +
+      '<button onclick="deleteReqRow(' + idx + ')" style="background:#c00;color:#fff;border:none;border-radius:3px;width:22px;height:22px;cursor:pointer;font-size:13px;line-height:1">×</button>' +
+    '</td>' +
     '</tr>';
+  if (memoOpen) {
+    html += '<tr><td colspan="3" style="padding:4px 6px;border:1px solid #d8c0a0;background:#fdf8ee">' +
+      '<div style="font-size:10px;color:#7a4a00;margin-bottom:3px">📝 詳細・メモ' + (isMulti ? '（複数行可）' : '') + '</div>' +
+      memoField +
+      '</td></tr>';
+  }
+  return html;
 }
 
 function addReqRow() {
   if (!_reqDetails) return;
-  _reqDetails.items.push({name: '', amount: 0, memo: ''});
+  _reqDetails.items.push({name: '', amount: 0, memo: '', _memoOpen: false});
   refreshRequestDetailsUI();
 }
 function deleteReqRow(idx) {
@@ -13760,17 +13785,25 @@ function deleteReqRow(idx) {
   _reqDetails.items.splice(idx, 1);
   refreshRequestDetailsUI();
 }
+function toggleReqMemo(idx) {
+  if (!_reqDetails || !_reqDetails.items[idx]) return;
+  _reqDetails.items[idx]._memoOpen = !_reqDetails.items[idx]._memoOpen;
+  refreshRequestDetailsUI();
+}
 function onReqNamePreset(idx, val) {
   if (!_reqDetails || !_reqDetails.items[idx]) return;
+  var it = _reqDetails.items[idx];
   if (val === '__custom__') {
-    _reqDetails.items[idx].name = '';
+    it.name = '';
     refreshRequestDetailsUI();
     setTimeout(function(){ var el=document.getElementById('req-name-'+idx); if(el)el.focus(); }, 0);
   } else if (val === '') {
-    _reqDetails.items[idx].name = '';
+    it.name = '';
     refreshRequestDetailsUI();
   } else {
-    _reqDetails.items[idx].name = val;
+    it.name = val;
+    // 彫刻/戒名選択時はメモを自動展開
+    if (_isMultilineName(val)) it._memoOpen = true;
     refreshRequestDetailsUI();
   }
 }
@@ -13798,9 +13831,11 @@ function saveRequestDetails() {
       var a = parseInt(it.amount, 10) || 0;
       return n || a !== 0;
     }).map(function(it) {
-      return { name: (it.name||'').trim(), amount: parseInt(it.amount,10)||0, memo: (it.memo||'').trim() };
-    }),
-    memo: (_reqDetails.memo || '').trim()
+      var obj = { name: (it.name||'').trim(), amount: parseInt(it.amount,10)||0 };
+      var mm = (it.memo||'').trim();
+      if (mm) obj.memo = mm;
+      return obj;
+    })
   };
   var btn = document.getElementById('req-save-btn');
   if (btn) { btn.textContent = '⏳ 保存中...'; btn.disabled = true; }

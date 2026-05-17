@@ -6424,14 +6424,22 @@ function useKoujiDocsTemplate(name) {
     }, 4).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
-    var boxes = _choukokuGetBoxes();
-    if (boxes.length === 0) {
+    var folderPass = currentItem['Folder_Pass'] || '';
+    if (!folderPass) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
-    } else {
-      _w.close();
-      _koujiDocsPendingTpl = name;
-      switchKoujiDocsView('choukoku');
+      return;
     }
+    // Folder_Pass 直下のファイル一覧を事前取得（ピッカー用）
+    _fetchFolderFilesForPicker(folderPass).then(function(files) {
+      openChoukokuDocWindow(tpl, [], [], null, currentItem, _w, {
+        rootPath: folderPass,
+        currentSubPath: '',
+        files: files,
+        shortcuts: HAKA_SPEC_PHOTO_CATS.map(function(c){ return '工事仕様/' + c; })
+      });
+    }).catch(function() {
+      openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
+    });
   }).catch(function(e) { _w.close(); showSaveToast(false, 'テンプレート読込エラー: ' + (e && e.message || e)); });
 }
 
@@ -6622,68 +6630,22 @@ function useNokDocsTemplate(name) {
     }, 4).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
-    // collect image boxes from template (multi-page aware)
-    var boxes = [];
-    if (Array.isArray(tpl.pages) && tpl.pages.length) {
-      tpl.pages.forEach(function(pg) {
-        (pg.elements || []).forEach(function(e) { if (e.type === 'image' && e.boxName) boxes.push(e); });
-      });
-    } else {
-      (tpl.elements || []).forEach(function(e) { if (e.type === 'image' && e.boxName) boxes.push(e); });
-    }
-    if (!boxes.length) {
-      openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
-      return;
-    }
     var folderPass = currentItem['Folder_Pass'] || '';
     if (!folderPass) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
       return;
     }
-    // Folder_Pass 直下のファイル一覧を取得 → モード別 fetch → 割当モーダル
-    function loadAndShow() {
-      var mode = _getImgLoadMode();
-      getToken().then(function(resp2) {
-        var token = resp2.accessToken;
-        var encPath = folderPass.split('/').map(encodeURIComponent).join('/');
-        var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encPath +
-                  ':/children?$select=name,file,size,id,thumbnails&$expand=thumbnails&$top=200&$orderby=name';
-        return _fetchRetry(url, { headers: { Authorization: 'Bearer ' + token } }, 4)
-          .then(function(r) { if (r.status === 404) return { value: [] }; if (!r.ok) throw new Error(r.status); return r.json(); })
-          .then(function(data) {
-            var allFiles = (data.value || []).filter(function(i) { return i.file; });
-            var files;
-            if (mode === 'full') {
-              files = allFiles.filter(function(f) { return _isImageExt(f.name); });
-            } else {
-              // サムネモード: サムネが存在するファイルのみ
-              files = allFiles.filter(function(f) {
-                return f.thumbnails && f.thumbnails[0] && f.thumbnails[0].large && f.thumbnails[0].large.url;
-              });
-            }
-            if (!files.length) {
-              openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
-              return;
-            }
-            return Promise.all(files.map(function(f) {
-              return _loadFileAsDataUrl(f, DRIVE_ID, token, mode);
-            })).then(function(results) {
-              var fnames = [], dataUrls = [];
-              results.forEach(function(r, i) { if (r !== null) { fnames.push(files[i].name); dataUrls.push(r); } });
-              if (!fnames.length) {
-                openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
-                return;
-              }
-              _showChoukokuBoxAssign(boxes, fnames, dataUrls, function(assignments, leftFnames, leftUrls) {
-                openChoukokuDocWindow(tpl, leftFnames, leftUrls, assignments.length ? assignments : null, currentItem, _w);
-              }, loadAndShow);
-            });
-          });
-      }).catch(function() {
-        openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
+    // Folder_Pass 直下のファイル一覧を事前取得（ピッカー用）
+    _fetchFolderFilesForPicker(folderPass).then(function(files) {
+      openChoukokuDocWindow(tpl, [], [], null, currentItem, _w, {
+        rootPath: folderPass,
+        currentSubPath: '',
+        files: files,
+        shortcuts: HAKA_SPEC_PHOTO_CATS.map(function(c){ return '工事仕様/' + c; })
       });
-    }
-    loadAndShow();
+    }).catch(function() {
+      openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
+    });
   }).catch(function(e) { _w.close(); showSaveToast(false, 'テンプレート読込エラー: ' + (e && e.message || e)); });
 }
 
@@ -7430,6 +7392,43 @@ function _loadFileAsDataUrl(file, driveId, token, mode) {
   var contentUrl = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + file.id + '/content';
   return _blobUrlToDataUrl(contentUrl, 'Bearer ' + token);
 }
+
+// doc window 画像ピッカー用: フォルダ内のファイル一覧を取得（軽量・サムネ/downloadUrl 含む）
+function _fetchFolderFilesForPicker(folderPath) {
+  if (!folderPath) return Promise.resolve([]);
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var enc = folderPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc +
+              ':/children?$select=name,file,size,id,thumbnails,@microsoft.graph.downloadUrl&$expand=thumbnails&$top=300&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) { if (r.status === 404) return { value: [] }; if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(data) {
+        return (data.value || []).filter(function(i) { return i.file; }).map(function(f) {
+          var t0 = (f.thumbnails && f.thumbnails[0]) || {};
+          return {
+            name:        f.name,
+            id:          f.id,
+            ext:         (f.name.match(/\.[^.]+$/) || [''])[0].toLowerCase(),
+            thumbLarge:  (t0.large  && t0.large.url)  || null,
+            thumbMedium: (t0.medium && t0.medium.url) || null,
+            thumbSmall:  (t0.small  && t0.small.url)  || null,
+            downloadUrl: f['@microsoft.graph.downloadUrl'] || null
+          };
+        });
+      });
+  });
+}
+
+// doc window から呼ぶコールバック: サブフォルダ切替時に親で取得して返す
+window._docPickerFetch = function(subPath, callback) {
+  var folderPass = currentItem && currentItem['Folder_Pass'];
+  if (!folderPass) { callback({ files: [], path: '' }); return; }
+  var fullPath = subPath ? (folderPass + '/' + subPath) : folderPass;
+  _fetchFolderFilesForPicker(fullPath).then(function(files) {
+    callback({ files: files, path: fullPath, subPath: subPath || '' });
+  }).catch(function() { callback({ files: [], path: fullPath, subPath: subPath || '' }); });
+};
 
 // 割当値を正規化して読み出す（旧仕様の文字列値とオブジェクト値の両対応）
 function _choukokuGetAssign(boxName) {
@@ -9214,7 +9213,7 @@ function _openDocWindow() {
   return w;
 }
 
-function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spData, _win) {
+function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spData, _win, folderFiles) {
   var w = _win || _openDocWindow();
   if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
   // 後方互換：旧シグネチャ (part文字列, fnames, dataUrls) を受け入れる
@@ -9315,6 +9314,32 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '.tb .ddmenu .it:last-child{border-bottom:none}' +
 '.tb .ddmenu .it:hover{background:#f0f4ff}' +
 '.tb .tpldel{background:#a02020;border-color:#a02020}' +
+/* SP画像ピッカー */
+'.spk-ov{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:none;align-items:center;justify-content:center}' +
+'.spk-ov.on{display:flex}' +
+'.spk-bx{background:#fff;border-radius:10px;width:min(880px,92vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.5);font-family:inherit;color:#222}' +
+'.spk-hd{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #eee;gap:8px}' +
+'.spk-hd .ttl2{font-size:15px;font-weight:700;color:#1a2535;flex:1}' +
+'.spk-hd .cls{background:none;border:none;cursor:pointer;font-size:22px;color:#888;padding:0 4px;line-height:1}' +
+'.spk-tb{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid #eee;background:#f7f8fa;flex-wrap:wrap}' +
+'.spk-tb .mb{padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;border:1px solid #ccc;background:#fff;color:#666}' +
+'.spk-tb .mb.on{background:#1a5a9a;color:#fff;border-color:#1a5a9a;font-weight:700}' +
+'.spk-tb .fb{padding:5px 10px;border-radius:14px;cursor:pointer;font-size:11px;font-family:inherit;border:1px solid #c8b8a0;background:#fff;color:#5a3a00}' +
+'.spk-tb .fb.on{background:#5a3a00;color:#fff;border-color:#5a3a00}' +
+'.spk-bd{padding:12px;overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;background:#fafbfc}' +
+'.spk-bd .lf{display:flex;flex-direction:column;align-items:center;padding:8px;background:#fff;border:2px solid #e0e4e8;border-radius:6px;cursor:pointer;transition:all .1s;text-align:center}' +
+'.spk-bd .lf:hover{border-color:#1a5a9a;background:#f0f6ff;transform:translateY(-1px)}' +
+'.spk-bd .lf .tn{width:100%;aspect-ratio:1;background:#f0f0f0;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:6px}' +
+'.spk-bd .lf .tn img{width:100%;height:100%;object-fit:cover}' +
+'.spk-bd .lf .tn .ic{font-size:36px;color:#aaa}' +
+'.spk-bd .lf .nm{font-size:10px;color:#333;word-break:break-all;line-height:1.3;max-height:2.6em;overflow:hidden}' +
+'.spk-bd .empty{grid-column:1/-1;text-align:center;color:#888;padding:40px 0;font-size:13px}' +
+'.spk-bd .loading{grid-column:1/-1;text-align:center;color:#888;padding:40px 0;font-size:13px}' +
+'.spk-ft{padding:8px 14px;border-top:1px solid #eee;font-size:11px;color:#888;text-align:right}' +
+'.spk-target{font-size:12px;color:#1a5a9a;font-weight:600;margin-right:8px}' +
+/* 空の image box にホバーで操作ヒント */
+'.elem-image.no-img{cursor:pointer}' +
+'.elem-image.no-img:hover{outline:2px dashed #1a7a3a;outline-offset:3px;background:#f0fff0}' +
 '</style></head><body>' +
 '<div class="tb">' +
   '<span class="ttl">📄 資料制作' + (tplName ? ' - ' + tplName : '') + '</span>' +
@@ -9360,6 +9385,27 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '</div>' +
 pagesHtml +
 '<div class="panel" id="panel"><h4 id="ph">プロパティ</h4><div id="pb"><div class="empty">要素をクリックして選択してください</div></div></div>' +
+/* SP画像ピッカーオーバーレイ */
+'<div class="spk-ov" id="spkOv">' +
+  '<div class="spk-bx">' +
+    '<div class="spk-hd">' +
+      '<span class="ttl2">📷 SP画像を選択</span>' +
+      '<span class="spk-target" id="spkTarget"></span>' +
+      '<button class="cls" onclick="_pickerClose()">×</button>' +
+    '</div>' +
+    '<div class="spk-tb">' +
+      '<span style="font-size:11px;color:#666;font-weight:600">取得:</span>' +
+      '<button class="mb" id="spkModeThumb" onclick="_pickerSwitchMode(\'thumb\')">🖼 サムネ</button>' +
+      '<button class="mb" id="spkModeFull"  onclick="_pickerSwitchMode(\'full\')">📄 画像</button>' +
+      '<span style="margin-left:12px;font-size:11px;color:#666;font-weight:600">📁</span>' +
+      '<button class="fb" id="spkFolderRoot" onclick="_pickerSwitchFolder(\'\')">ルート</button>' +
+      '<span id="spkFolderShortcuts"></span>' +
+      '<button class="fb" style="margin-left:auto" onclick="_pickerReload()">🔄</button>' +
+    '</div>' +
+    '<div class="spk-bd" id="spkBd"></div>' +
+    '<div class="spk-ft">クリックで選択 / ESCで閉じる</div>' +
+  '</div>' +
+'</div>' +
 '<script>(function(){' +
 'var _tplData=' + tplJson + ';' +
 'var tplMode=' + ((!spData || Object.keys(spData).length === 0) ? 'true' : 'false') + ';' +
@@ -9370,6 +9416,11 @@ pagesHtml +
 'function _getTargetLabel(){return _currentTargetList==="noukotsu"?"📿 納骨リスト":"🏗️ 工事関連";}' +
 'var _spData=' + JSON.stringify(spData) + ';' +
 'var _boxAssignments=' + JSON.stringify(boxAssignments) + ';' +
+'var _folderFiles=' + JSON.stringify(folderFiles && folderFiles.files || []) + ';' +
+'var _folderRootPath=' + JSON.stringify(folderFiles && folderFiles.rootPath || '') + ';' +
+'var _folderCurPath=' + JSON.stringify(folderFiles && folderFiles.currentSubPath || '') + ';' +
+'var _folderShortcuts=' + JSON.stringify(folderFiles && folderFiles.shortcuts || []) + ';' +
+'var _pickerEnabled=' + ((folderFiles && folderFiles.rootPath) ? 'true' : 'false') + ';' +
 'var currentOrientation="' + orientation + '";' +
 'var currentPageSize="' + pageSize + '";' +
 'var PAGE_W=' + PAGE_W + ',PAGE_H=' + PAGE_H + ';' +
@@ -9473,7 +9524,11 @@ pagesHtml +
     'var aOpts=[["none","なし"],["end","→ 終点に矢印"],["start","← 始点に矢印"],["both","↔ 両端に矢印"]].map(function(o){return\'<option value="\'+o[0]+\'"\'+(arrow===o[0]?\' selected\':\'\')+\'>\'+o[1]+\'</option>\';}).join("");' +
     'html+=\'<div class="row"><label>矢印</label><select id="pla">\'+aOpts+\'</select></div>\';' +
   '}' +
-  'if(t==="image"){html+=\'<button class="cropbtn" onclick="openCropModal()">✂️ トリミング</button>\';html+=\'<button class="cropbtn" style="background:#1a5a9a;margin-top:4px" onclick="changeSelectedImage()">🔄 画像変更</button>\';}' +
+  'if(t==="image"){' +
+    'if(_pickerEnabled&&!tplMode){html+=\'<button class="cropbtn" style="background:#1a7a3a" onclick="_pickerOpen()">📷 SPから選択</button>\';}' +
+    'html+=\'<button class="cropbtn" onclick="openCropModal()">✂️ トリミング</button>\';' +
+    'html+=\'<button class="cropbtn" style="background:#1a5a9a;margin-top:4px" onclick="changeSelectedImage()">🔄 画像変更（ローカル）</button>\';' +
+  '}' +
   'if(tplMode){' +
     'html+=\'<hr style="margin:8px 0;border:none;border-top:1px solid #eee">\';' +
     'html+=\'<div style="font-size:10px;font-weight:700;color:#c47a1a;margin-bottom:4px">🔧 テンプレート設定 <span style="background:#fff3d4;border:1px solid #d8b870;border-radius:3px;padding:1px 6px;color:#7a4a00">\'+_getTargetLabel()+\'</span></div>\';' +
@@ -10213,6 +10268,97 @@ pagesHtml +
   'inp.click();' +
 '};' +
 'function _replaceSelImageSrc(src){var im=sel.querySelector("img");if(im){im.src=src;sel.classList.remove("no-img");}}' +
+/* === SP画像ピッカー === */
+'var _pickerTarget=null;' +
+'function _pickerGetMode(){var v=localStorage.getItem("imgLoadMode_v1");return v==="full"?"full":"thumb";}' +
+'function _pickerSetMode(m){localStorage.setItem("imgLoadMode_v1",m==="full"?"full":"thumb");_pickerUpdateModeBtns();_pickerRender();}' +
+'function _pickerUpdateModeBtns(){var m=_pickerGetMode();var b1=document.getElementById("spkModeThumb"),b2=document.getElementById("spkModeFull");if(b1)b1.className="mb"+(m==="thumb"?" on":"");if(b2)b2.className="mb"+(m==="full"?" on":"");}' +
+'function _pickerIsImage(name){return /\\.(jpe?g|png|gif|webp|bmp)$/i.test(name);}' +
+'window._pickerOpen=function(targetEl){' +
+  'if(tplMode)return;' +
+  'if(!_pickerEnabled){alert("画像フォルダが利用できません");return;}' +
+  'var t=targetEl||sel;' +
+  'if(!t||t.dataset.type!=="image"){alert("画像ボックスを選択してください");return;}' +
+  '_pickerTarget=t;' +
+  'var bn=t.dataset.boxname||"";var spt=document.getElementById("spkTarget");if(spt)spt.textContent=bn?("→ 「"+bn+"」"):"→ 任意の画像枠";' +
+  '_pickerInitShortcuts();' +
+  '_pickerUpdateModeBtns();' +
+  '_pickerUpdateFolderBtns();' +
+  '_pickerRender();' +
+  'document.getElementById("spkOv").classList.add("on");' +
+'};' +
+'window._pickerClose=function(){document.getElementById("spkOv").classList.remove("on");_pickerTarget=null;};' +
+'function _pickerInitShortcuts(){' +
+  'var wrap=document.getElementById("spkFolderShortcuts");if(!wrap)return;' +
+  'if(wrap.dataset.init==="1")return;' +
+  'var html="";' +
+  '(_folderShortcuts||[]).forEach(function(s){' +
+    'html+=\'<button class="fb" onclick="_pickerSwitchFolder(\\\'\'+s.replace(/\\\\/g,"\\\\\\\\").replace(/\'/g,"\\\\\'")+\'\\\')">\'+s.replace(/.*\\//,"")+\'</button>\';' +
+  '});' +
+  'wrap.innerHTML=html;wrap.dataset.init="1";' +
+'}' +
+'function _pickerUpdateFolderBtns(){' +
+  'var root=document.getElementById("spkFolderRoot");if(root)root.className="fb"+(_folderCurPath===""?" on":"");' +
+  'var wrap=document.getElementById("spkFolderShortcuts");if(!wrap)return;' +
+  'Array.prototype.forEach.call(wrap.querySelectorAll("button"),function(b){' +
+    'var t=b.textContent;' +
+    'var match=(_folderCurPath||"").replace(/.*\\//,"")===t;' +
+    'b.className="fb"+(match?" on":"");' +
+  '});' +
+'}' +
+'window._pickerSwitchFolder=function(subPath){' +
+  'var bd=document.getElementById("spkBd");if(bd)bd.innerHTML=\'<div class="loading">読み込み中…</div>\';' +
+  'if(window.opener&&window.opener._docPickerFetch){' +
+    'window.opener._docPickerFetch(subPath,function(res){' +
+      '_folderFiles=res.files||[];_folderCurPath=res.subPath||"";' +
+      '_pickerUpdateFolderBtns();_pickerRender();' +
+    '});' +
+  '}else{if(bd)bd.innerHTML=\'<div class="empty">親ウィンドウへアクセスできません</div>\';}' +
+'};' +
+'window._pickerReload=function(){_pickerSwitchFolder(_folderCurPath||"");};' +
+'window._pickerSwitchMode=function(m){_pickerSetMode(m);};' +
+'function _pickerRender(){' +
+  'var bd=document.getElementById("spkBd");if(!bd)return;' +
+  'var mode=_pickerGetMode();' +
+  'var files=(_folderFiles||[]).slice();' +
+  'if(mode==="full"){files=files.filter(function(f){return _pickerIsImage(f.name);});}' +
+  'if(!files.length){bd.innerHTML=\'<div class="empty">ファイルがありません</div>\';return;}' +
+  'var html="";' +
+  'files.forEach(function(f,i){' +
+    'var tn=mode==="thumb"?(f.thumbLarge||f.thumbMedium||f.thumbSmall):(f.thumbMedium||f.thumbSmall||f.thumbLarge);' +
+    'var thumbHtml=tn?\'<img src="\'+tn+\'" alt="" loading="lazy">\':\'<div class="ic">📄</div>\';' +
+    'html+=\'<div class="lf" data-idx="\'+i+\'" onclick="_pickerPick(\'+i+\')"><div class="tn">\'+thumbHtml+\'</div><div class="nm">\'+f.name.replace(/</g,"&lt;")+\'</div></div>\';' +
+  '});' +
+  'bd.innerHTML=html;' +
+'}' +
+'window._pickerPick=function(idx){' +
+  'var mode=_pickerGetMode();' +
+  'var files=(_folderFiles||[]).slice();' +
+  'if(mode==="full"){files=files.filter(function(f){return _pickerIsImage(f.name);});}' +
+  'var f=files[idx];if(!f||!_pickerTarget)return;' +
+  'var srcUrl=mode==="thumb"?(f.thumbLarge||f.thumbMedium):f.downloadUrl;' +
+  'if(!srcUrl){alert("画像URLが取得できません（"+(mode==="thumb"?"サムネ未生成":"ダウンロードURL欠落")+"）");return;}' +
+  'var bd=document.getElementById("spkBd");if(bd)bd.innerHTML=\'<div class="loading">画像取得中…</div>\';' +
+  'fetch(srcUrl).then(function(r){return r.ok?r.blob():null;}).then(function(blob){' +
+    'if(!blob){alert("画像の取得に失敗しました");_pickerRender();return;}' +
+    'var fr=new FileReader();' +
+    'fr.onload=function(){' +
+      'var im=_pickerTarget.querySelector("img");' +
+      'if(im){im.src=fr.result;_pickerTarget.classList.remove("no-img");}' +
+      '_pickerClose();' +
+    '};' +
+    'fr.readAsDataURL(blob);' +
+  '}).catch(function(){alert("画像の取得に失敗しました");_pickerRender();});' +
+'};' +
+/* 空の画像ボックスをクリックでピッカーを開く */
+'document.addEventListener("click",function(e){' +
+  'if(tplMode||!_pickerEnabled)return;' +
+  'var el=e.target;while(el&&el!==document.body){if(el.classList&&el.classList.contains("elem-image")&&el.classList.contains("no-img")){' +
+    'e.preventDefault();e.stopPropagation();setSel(el);_pickerOpen(el);return;' +
+  '}el=el.parentElement;}' +
+'},true);' +
+/* ESCで閉じる */
+'document.addEventListener("keydown",function(e){if(e.key==="Escape"){var ov=document.getElementById("spkOv");if(ov&&ov.classList.contains("on")){e.preventDefault();_pickerClose();}}});' +
 'function _asyncClipboardPaste(){' +
   'var svgSel=sel&&sel.dataset.type==="image";' +
   'navigator.clipboard.read().then(function(items){' +

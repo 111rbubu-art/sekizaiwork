@@ -2609,7 +2609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.360';
+var APP_VERSION = 'v1.8.362';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -6424,7 +6424,7 @@ function useKoujiDocsTemplate(name) {
     }, 4).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
-    var folderPass = currentItem['Folder_Pass'] || '';
+    var folderPass = _getItemFolderPath(currentItem);
     if (!folderPass) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
       return;
@@ -6630,7 +6630,7 @@ function useNokDocsTemplate(name) {
     }, 4).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); });
   }).then(function(tpl) {
     _hakaChoukokuTemplate = tpl;
-    var folderPass = currentItem['Folder_Pass'] || '';
+    var folderPass = _getItemFolderPath(currentItem);
     if (!folderPass) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w);
       return;
@@ -7420,14 +7420,49 @@ function _fetchFolderFilesForPicker(folderPath) {
   });
 }
 
+// アイテムのフォルダパスを解決（工事関連=Folder_Pass、納骨=Folder_Pass or 資料URL）
+function _getItemFolderPath(item) {
+  if (!item) return '';
+  var fp = item['Folder_Pass'] || item['FolderPass'];
+  if (fp && typeof fp === 'string' && fp.charAt(0) === '/') return fp;
+  // 納骨の 資料 URLフィールド (_x8cc7__x6599_) からパスを抽出
+  var urlField = item['_x8cc7__x6599_'];
+  if (urlField) {
+    var url = (typeof urlField === 'object') ? urlField.Url : urlField;
+    if (url && typeof url === 'string') {
+      var m = url.match(/sharepoint\.com\/sites\/[^/]+\/(?:Shared%20Documents|Shared Documents|共有ドキュメント|%E5%85%B1%E6%9C%89%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88)(\/.+?)\/?$/);
+      if (m && m[1]) {
+        try { return decodeURIComponent(m[1]); } catch(e) { return m[1]; }
+      }
+    }
+  }
+  return '';
+}
+
 // doc window から呼ぶコールバック: サブフォルダ切替時に親で取得して返す
 window._docPickerFetch = function(subPath, callback) {
-  var folderPass = currentItem && currentItem['Folder_Pass'];
-  if (!folderPass) { callback({ files: [], path: '' }); return; }
+  var folderPass = _getItemFolderPath(currentItem);
+  if (!folderPass) { callback({ files: [], path: '', subPath: subPath || '' }); return; }
   var fullPath = subPath ? (folderPass + '/' + subPath) : folderPass;
   _fetchFolderFilesForPicker(fullPath).then(function(files) {
     callback({ files: files, path: fullPath, subPath: subPath || '' });
   }).catch(function() { callback({ files: [], path: fullPath, subPath: subPath || '' }); });
+};
+
+// doc window から呼ぶ画像取得（CORS対策: 親ウィンドウ経由で Graph API から取得）
+// fileId 必須。mode='thumb' なら Graph API のサムネ content endpoint、'full' なら本体
+window._docPickerLoadImage = function(fileId, mode, callback) {
+  if (!fileId) { callback(null); return; }
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var url;
+    if (mode === 'thumb') {
+      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/thumbnails/0/large/content';
+    } else {
+      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/content';
+    }
+    return _blobUrlToDataUrl(url, 'Bearer ' + token);
+  }).then(function(dataUrl) { callback(dataUrl); }).catch(function() { callback(null); });
 };
 
 // 割当値を正規化して読み出す（旧仕様の文字列値とオブジェクト値の両対応）
@@ -10336,19 +10371,15 @@ pagesHtml +
   'var files=(_folderFiles||[]).slice();' +
   'if(mode==="full"){files=files.filter(function(f){return _pickerIsImage(f.name);});}' +
   'var f=files[idx];if(!f||!_pickerTarget)return;' +
-  'var srcUrl=mode==="thumb"?(f.thumbLarge||f.thumbMedium):f.downloadUrl;' +
-  'if(!srcUrl){alert("画像URLが取得できません（"+(mode==="thumb"?"サムネ未生成":"ダウンロードURL欠落")+"）");return;}' +
+  'if(!f.id){alert("ファイルIDが取得できません");return;}' +
   'var bd=document.getElementById("spkBd");if(bd)bd.innerHTML=\'<div class="loading">画像取得中…</div>\';' +
-  'fetch(srcUrl).then(function(r){return r.ok?r.blob():null;}).then(function(blob){' +
-    'if(!blob){alert("画像の取得に失敗しました");_pickerRender();return;}' +
-    'var fr=new FileReader();' +
-    'fr.onload=function(){' +
-      'var im=_pickerTarget.querySelector("img");' +
-      'if(im){im.src=fr.result;_pickerTarget.classList.remove("no-img");}' +
-      '_pickerClose();' +
-    '};' +
-    'fr.readAsDataURL(blob);' +
-  '}).catch(function(){alert("画像の取得に失敗しました");_pickerRender();});' +
+  'if(!window.opener||!window.opener._docPickerLoadImage){alert("親ウィンドウへアクセスできません");_pickerRender();return;}' +
+  'window.opener._docPickerLoadImage(f.id,mode,function(dataUrl){' +
+    'if(!dataUrl){alert("画像の取得に失敗しました（モード: "+(mode==="thumb"?"サムネ":"フル")+"）");_pickerRender();return;}' +
+    'var im=_pickerTarget.querySelector("img");' +
+    'if(im){im.src=dataUrl;_pickerTarget.classList.remove("no-img");}' +
+    '_pickerClose();' +
+  '});' +
 '};' +
 /* 空の画像ボックスをクリックでピッカーを開く */
 'document.addEventListener("click",function(e){' +

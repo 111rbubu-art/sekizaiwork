@@ -2609,7 +2609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.364';
+var APP_VERSION = 'v1.8.365';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7458,50 +7458,56 @@ window._docPickerFetch = function(subPath, callback) {
 };
 
 // doc window から呼ぶ画像取得（CORS対策: 親ウィンドウ経由）
-// 複数の方式でフォールバック: Graph thumbnails/content → /content + リサイズ → 直接URL
+// 複数の方式でフォールバック。blob.type が image/* でない場合は失敗扱い
 window._docPickerLoadImage = function(fileId, mode, callback) {
   if (!fileId) { callback(null); return; }
-  function tryGraphThumb(token) {
+  function fetchAsImageDataUrl(url, authHeader) {
+    var opts = authHeader ? { headers: { Authorization: authHeader } } : {};
+    return fetch(url, opts).then(function(r) {
+      if (!r.ok) return null;
+      return r.blob();
+    }).then(function(blob) {
+      if (!blob || blob.size === 0) return null;
+      // image/ で始まる MIME のみ採用（リダイレクトでHTMLが返るケースを弾く）
+      if (blob.type && blob.type.indexOf('image/') !== 0) return null;
+      return new Promise(function(res) {
+        var fr = new FileReader();
+        fr.onload  = function() { res(fr.result); };
+        fr.onerror = function() { res(null); };
+        fr.readAsDataURL(blob);
+      });
+    }).catch(function() { return null; });
+  }
+  function tryThumbContent(token) {
     var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/thumbnails/0/large/content';
-    return _blobUrlToDataUrl(url, 'Bearer ' + token);
+    return fetchAsImageDataUrl(url, 'Bearer ' + token);
   }
-  function tryGraphContent(token) {
+  function tryThumbMeta(token) {
+    // メタデータからサムネURLを取得 → 直接 fetch（pre-signed なので auth 不要）
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/thumbnails/0/large';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(meta) {
+        if (!meta || !meta.url) return null;
+        return fetchAsImageDataUrl(meta.url, null);
+      }).catch(function() { return null; });
+  }
+  function tryFullContent(token) {
     var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/content';
-    return _blobUrlToDataUrl(url, 'Bearer ' + token);
-  }
-  function resizeDataUrl(srcDataUrl, maxSize) {
-    return new Promise(function(resolve) {
-      var img = new Image();
-      img.onload = function() {
-        var w = img.naturalWidth, h = img.naturalHeight;
-        var s = Math.min(1, maxSize / Math.max(w, h));
-        var cw = Math.round(w * s), ch = Math.round(h * s);
-        var c = document.createElement('canvas');
-        c.width = cw; c.height = ch;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
-        ctx.drawImage(img, 0, 0, cw, ch);
-        try { resolve(c.toDataURL('image/jpeg', 0.82)); }
-        catch(e) { resolve(srcDataUrl); }
-      };
-      img.onerror = function() { resolve(srcDataUrl); };
-      img.src = srcDataUrl;
-    });
+    return fetchAsImageDataUrl(url, 'Bearer ' + token);
   }
   getToken().then(function(resp) {
     var token = resp.accessToken;
     if (mode === 'thumb') {
-      // 1) Graph thumbnails/content → 失敗時 2) /content をダウンロード→リサイズ
-      return tryGraphThumb(token).then(function(d) {
-        if (d) return d;
-        return tryGraphContent(token).then(function(full) {
-          if (!full) return null;
-          return resizeDataUrl(full, 1024);
-        });
-      });
+      // 1) Graph thumbnails/content → 2) thumbnails/meta URL
+      return tryThumbContent(token).then(function(d) { return d || tryThumbMeta(token); });
     }
-    return tryGraphContent(token);
-  }).then(function(dataUrl) { callback(dataUrl); }).catch(function() { callback(null); });
+    // full: 1) /content（画像のみ採用） → 2) サムネ系へフォールバック（PPT等の非画像）
+    return tryFullContent(token).then(function(d) {
+      if (d) return d;
+      return tryThumbContent(token).then(function(d2) { return d2 || tryThumbMeta(token); });
+    });
+  }).then(callback).catch(function() { callback(null); });
 };
 
 // 割当値を正規化して読み出す（旧仕様の文字列値とオブジェクト値の両対応）
@@ -9457,7 +9463,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
     '</div>' +
   '</div>' +
   '<div style="flex:1"></div>' +
-  '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V／ファイルドラッグで画像追加（枠の上なら差替）</span>' +
+  '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V／ドラッグで画像追加 / Alt+クリックで重なり選択切替</span>' +
   '<button onclick="window.print()">🖨️ 印刷</button>' +
 '</div>' +
 pagesHtml +
@@ -10451,15 +10457,34 @@ pagesHtml +
   'var bd=document.getElementById("spkBd");if(bd)bd.innerHTML=\'<div class="loading">画像取得中…</div>\';' +
   'if(!window.opener||!window.opener._docPickerLoadImage){alert("親ウィンドウへアクセスできません");_pickerRender();return;}' +
   'window.opener._docPickerLoadImage(f.id,mode,function(dataUrl){' +
-    'if(!dataUrl){alert("画像の取得に失敗しました（モード: "+(mode==="thumb"?"サムネ":"フル")+"）");_pickerRender();return;}' +
+    'if(!dataUrl||dataUrl.indexOf("data:image/")!==0){' +
+      'alert("画像の取得に失敗しました\\nファイル: "+f.name+"\\nモード: "+(mode==="thumb"?"サムネ":"フル")+"\\n（サムネ未生成 / 非対応形式 / ネットワーク不良の可能性）");' +
+      '_pickerRender();return;' +
+    '}' +
     'var im=_pickerTarget.querySelector("img");' +
     'if(im){im.src=dataUrl;_pickerTarget.classList.remove("no-img");}' +
     '_pickerClose();' +
   '});' +
 '};' +
+/* Alt+クリックで重なる要素を循環選択（枠×画像枠の重なり対策） */
+'document.addEventListener("mousedown",function(e){' +
+  'if(!e.altKey)return;' +
+  'var pts=document.elementsFromPoint(e.clientX,e.clientY);' +
+  'var elems=[];var seen={};' +
+  'for(var i=0;i<pts.length;i++){' +
+    'var n=pts[i];while(n&&!(n.classList&&n.classList.contains("elem")))n=n.parentElement;' +
+    'if(n&&!seen[n.id||""+i]){seen[n.id||""+i]=1;elems.push(n);}' +
+  '}' +
+  'if(elems.length<2)return;' +
+  'e.preventDefault();e.stopPropagation();' +
+  'var curIdx=elems.indexOf(sel);' +
+  'var nextEl=elems[(curIdx+1)%elems.length];' +
+  'setSel(nextEl);' +
+'},true);' +
 /* 空の画像ボックスをクリックでピッカーを開く */
 'document.addEventListener("click",function(e){' +
   'if(tplMode||!_pickerEnabled)return;' +
+  'if(e.altKey)return;' +
   'var el=e.target;while(el&&el!==document.body){if(el.classList&&el.classList.contains("elem-image")&&el.classList.contains("no-img")){' +
     'e.preventDefault();e.stopPropagation();setSel(el);_pickerOpen(el);return;' +
   '}el=el.parentElement;}' +
@@ -10467,6 +10492,7 @@ pagesHtml +
 /* 既に画像が入っているボックスをダブルクリックでピッカーを開く（変更用） */
 'document.addEventListener("dblclick",function(e){' +
   'if(tplMode||!_pickerEnabled)return;' +
+  'if(e.altKey)return;' +
   'var el=e.target;while(el&&el!==document.body){if(el.classList&&el.classList.contains("elem-image")){' +
     'e.preventDefault();e.stopPropagation();setSel(el);_pickerOpen(el);return;' +
   '}el=el.parentElement;}' +

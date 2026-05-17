@@ -2609,7 +2609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.362';
+var APP_VERSION = 'v1.8.363';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -6430,11 +6430,12 @@ function useKoujiDocsTemplate(name) {
       return;
     }
     // Folder_Pass 直下のファイル一覧を事前取得（ピッカー用）
-    _fetchFolderFilesForPicker(folderPass).then(function(files) {
+    _fetchFolderFilesForPicker(folderPass).then(function(result) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w, {
         rootPath: folderPass,
         currentSubPath: '',
-        files: files,
+        files: result.files,
+        folders: result.folders,
         shortcuts: HAKA_SPEC_PHOTO_CATS.map(function(c){ return '工事仕様/' + c; })
       });
     }).catch(function() {
@@ -6636,11 +6637,12 @@ function useNokDocsTemplate(name) {
       return;
     }
     // Folder_Pass 直下のファイル一覧を事前取得（ピッカー用）
-    _fetchFolderFilesForPicker(folderPass).then(function(files) {
+    _fetchFolderFilesForPicker(folderPass).then(function(result) {
       openChoukokuDocWindow(tpl, [], [], null, currentItem, _w, {
         rootPath: folderPass,
         currentSubPath: '',
-        files: files,
+        files: result.files,
+        folders: result.folders,
         shortcuts: HAKA_SPEC_PHOTO_CATS.map(function(c){ return '工事仕様/' + c; })
       });
     }).catch(function() {
@@ -7395,16 +7397,20 @@ function _loadFileAsDataUrl(file, driveId, token, mode) {
 
 // doc window 画像ピッカー用: フォルダ内のファイル一覧を取得（軽量・サムネ/downloadUrl 含む）
 function _fetchFolderFilesForPicker(folderPath) {
-  if (!folderPath) return Promise.resolve([]);
+  if (!folderPath) return Promise.resolve({ files: [], folders: [] });
   return getToken().then(function(resp) {
     var token = resp.accessToken;
     var enc = folderPath.split('/').map(encodeURIComponent).join('/');
     var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc +
-              ':/children?$select=name,file,size,id,thumbnails,@microsoft.graph.downloadUrl&$expand=thumbnails&$top=300&$orderby=name';
+              ':/children?$select=name,file,folder,size,id,thumbnails,@microsoft.graph.downloadUrl&$expand=thumbnails&$top=500&$orderby=name';
     return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
       .then(function(r) { if (r.status === 404) return { value: [] }; if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(function(data) {
-        return (data.value || []).filter(function(i) { return i.file; }).map(function(f) {
+        var items = data.value || [];
+        var folders = items.filter(function(i){ return i.folder; }).map(function(f){
+          return { name: f.name, id: f.id, childCount: (f.folder && f.folder.childCount) || 0 };
+        });
+        var files = items.filter(function(i){ return i.file; }).map(function(f) {
           var t0 = (f.thumbnails && f.thumbnails[0]) || {};
           return {
             name:        f.name,
@@ -7416,6 +7422,7 @@ function _fetchFolderFilesForPicker(folderPath) {
             downloadUrl: f['@microsoft.graph.downloadUrl'] || null
           };
         });
+        return { files: files, folders: folders };
       });
   });
 }
@@ -7440,28 +7447,60 @@ function _getItemFolderPath(item) {
 }
 
 // doc window から呼ぶコールバック: サブフォルダ切替時に親で取得して返す
+// subPath は相対パス（ルートからの）。空文字でルート
 window._docPickerFetch = function(subPath, callback) {
   var folderPass = _getItemFolderPath(currentItem);
-  if (!folderPass) { callback({ files: [], path: '', subPath: subPath || '' }); return; }
+  if (!folderPass) { callback({ files: [], folders: [], path: '', subPath: subPath || '' }); return; }
   var fullPath = subPath ? (folderPass + '/' + subPath) : folderPass;
-  _fetchFolderFilesForPicker(fullPath).then(function(files) {
-    callback({ files: files, path: fullPath, subPath: subPath || '' });
-  }).catch(function() { callback({ files: [], path: fullPath, subPath: subPath || '' }); });
+  _fetchFolderFilesForPicker(fullPath).then(function(result) {
+    callback({ files: result.files, folders: result.folders, path: fullPath, subPath: subPath || '' });
+  }).catch(function() { callback({ files: [], folders: [], path: fullPath, subPath: subPath || '' }); });
 };
 
-// doc window から呼ぶ画像取得（CORS対策: 親ウィンドウ経由で Graph API から取得）
-// fileId 必須。mode='thumb' なら Graph API のサムネ content endpoint、'full' なら本体
+// doc window から呼ぶ画像取得（CORS対策: 親ウィンドウ経由）
+// 複数の方式でフォールバック: Graph thumbnails/content → /content + リサイズ → 直接URL
 window._docPickerLoadImage = function(fileId, mode, callback) {
   if (!fileId) { callback(null); return; }
+  function tryGraphThumb(token) {
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/thumbnails/0/large/content';
+    return _blobUrlToDataUrl(url, 'Bearer ' + token);
+  }
+  function tryGraphContent(token) {
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/content';
+    return _blobUrlToDataUrl(url, 'Bearer ' + token);
+  }
+  function resizeDataUrl(srcDataUrl, maxSize) {
+    return new Promise(function(resolve) {
+      var img = new Image();
+      img.onload = function() {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var s = Math.min(1, maxSize / Math.max(w, h));
+        var cw = Math.round(w * s), ch = Math.round(h * s);
+        var c = document.createElement('canvas');
+        c.width = cw; c.height = ch;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        try { resolve(c.toDataURL('image/jpeg', 0.82)); }
+        catch(e) { resolve(srcDataUrl); }
+      };
+      img.onerror = function() { resolve(srcDataUrl); };
+      img.src = srcDataUrl;
+    });
+  }
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    var url;
     if (mode === 'thumb') {
-      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/thumbnails/0/large/content';
-    } else {
-      url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileId + '/content';
+      // 1) Graph thumbnails/content → 失敗時 2) /content をダウンロード→リサイズ
+      return tryGraphThumb(token).then(function(d) {
+        if (d) return d;
+        return tryGraphContent(token).then(function(full) {
+          if (!full) return null;
+          return resizeDataUrl(full, 1024);
+        });
+      });
     }
-    return _blobUrlToDataUrl(url, 'Bearer ' + token);
+    return tryGraphContent(token);
   }).then(function(dataUrl) { callback(dataUrl); }).catch(function() { callback(null); });
 };
 
@@ -9364,6 +9403,9 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '.spk-bd{padding:12px;overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;background:#fafbfc}' +
 '.spk-bd .lf{display:flex;flex-direction:column;align-items:center;padding:8px;background:#fff;border:2px solid #e0e4e8;border-radius:6px;cursor:pointer;transition:all .1s;text-align:center}' +
 '.spk-bd .lf:hover{border-color:#1a5a9a;background:#f0f6ff;transform:translateY(-1px)}' +
+'.spk-bd .lf.folder{background:#fff8e6;border-color:#e8c98a}' +
+'.spk-bd .lf.folder:hover{background:#fff0c4;border-color:#c89860}' +
+'.spk-bd .lf.up{background:#e8f0f7;border-color:#a0b8d0}' +
 '.spk-bd .lf .tn{width:100%;aspect-ratio:1;background:#f0f0f0;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:6px}' +
 '.spk-bd .lf .tn img{width:100%;height:100%;object-fit:cover}' +
 '.spk-bd .lf .tn .ic{font-size:36px;color:#aaa}' +
@@ -9437,8 +9479,9 @@ pagesHtml +
       '<span id="spkFolderShortcuts"></span>' +
       '<button class="fb" style="margin-left:auto" onclick="_pickerReload()">🔄</button>' +
     '</div>' +
+    '<div id="spkBreadcrumb" style="padding:6px 14px;background:#fafbfc;border-bottom:1px solid #eee;font-size:11px;color:#555;font-family:monospace">📁 (ルート)</div>' +
     '<div class="spk-bd" id="spkBd"></div>' +
-    '<div class="spk-ft">クリックで選択 / ESCで閉じる</div>' +
+    '<div class="spk-ft">クリックで選択 / フォルダクリックで移動 / ESCで閉じる</div>' +
   '</div>' +
 '</div>' +
 '<script>(function(){' +
@@ -9452,6 +9495,7 @@ pagesHtml +
 'var _spData=' + JSON.stringify(spData) + ';' +
 'var _boxAssignments=' + JSON.stringify(boxAssignments) + ';' +
 'var _folderFiles=' + JSON.stringify(folderFiles && folderFiles.files || []) + ';' +
+'var _folderSubfolders=' + JSON.stringify(folderFiles && folderFiles.folders || []) + ';' +
 'var _folderRootPath=' + JSON.stringify(folderFiles && folderFiles.rootPath || '') + ';' +
 'var _folderCurPath=' + JSON.stringify(folderFiles && folderFiles.currentSubPath || '') + ';' +
 'var _folderShortcuts=' + JSON.stringify(folderFiles && folderFiles.shortcuts || []) + ';' +
@@ -10319,6 +10363,7 @@ pagesHtml +
   '_pickerInitShortcuts();' +
   '_pickerUpdateModeBtns();' +
   '_pickerUpdateFolderBtns();' +
+  '_pickerUpdateBreadcrumb();' +
   '_pickerRender();' +
   'document.getElementById("spkOv").classList.add("on");' +
 '};' +
@@ -10345,20 +10390,48 @@ pagesHtml +
   'var bd=document.getElementById("spkBd");if(bd)bd.innerHTML=\'<div class="loading">読み込み中…</div>\';' +
   'if(window.opener&&window.opener._docPickerFetch){' +
     'window.opener._docPickerFetch(subPath,function(res){' +
-      '_folderFiles=res.files||[];_folderCurPath=res.subPath||"";' +
-      '_pickerUpdateFolderBtns();_pickerRender();' +
+      '_folderFiles=res.files||[];_folderSubfolders=res.folders||[];_folderCurPath=res.subPath||"";' +
+      '_pickerUpdateFolderBtns();_pickerUpdateBreadcrumb();_pickerRender();' +
     '});' +
   '}else{if(bd)bd.innerHTML=\'<div class="empty">親ウィンドウへアクセスできません</div>\';}' +
 '};' +
+'window._pickerGoUp=function(){' +
+  'var cur=_folderCurPath||"";' +
+  'if(!cur)return;' +
+  'var parent=cur.indexOf("/")>=0?cur.substring(0,cur.lastIndexOf("/")):"";' +
+  '_pickerSwitchFolder(parent);' +
+'};' +
+'window._pickerEnterFolder=function(name){' +
+  'var cur=_folderCurPath||"";' +
+  'var next=cur?(cur+"/"+name):name;' +
+  '_pickerSwitchFolder(next);' +
+'};' +
 'window._pickerReload=function(){_pickerSwitchFolder(_folderCurPath||"");};' +
 'window._pickerSwitchMode=function(m){_pickerSetMode(m);};' +
+'function _pickerUpdateBreadcrumb(){' +
+  'var bc=document.getElementById("spkBreadcrumb");if(!bc)return;' +
+  'var cur=_folderCurPath||"";' +
+  'if(!cur){bc.textContent="📁 (ルート)";return;}' +
+  'bc.textContent="📁 "+cur;' +
+'}' +
 'function _pickerRender(){' +
   'var bd=document.getElementById("spkBd");if(!bd)return;' +
   'var mode=_pickerGetMode();' +
   'var files=(_folderFiles||[]).slice();' +
   'if(mode==="full"){files=files.filter(function(f){return _pickerIsImage(f.name);});}' +
-  'if(!files.length){bd.innerHTML=\'<div class="empty">ファイルがありません</div>\';return;}' +
+  'var folders=(_folderSubfolders||[]).slice();' +
   'var html="";' +
+  // 親フォルダへのボタン
+  'if(_folderCurPath){' +
+    'html+=\'<div class="lf folder up" onclick="_pickerGoUp()"><div class="tn"><div class="ic">⬆️</div></div><div class="nm">（親フォルダへ）</div></div>\';' +
+  '}' +
+  // サブフォルダ
+  'folders.forEach(function(fd){' +
+    'var nm=fd.name.replace(/</g,"&lt;").replace(/"/g,"&quot;");' +
+    'html+=\'<div class="lf folder" onclick="_pickerEnterFolder(\\\'\'+fd.name.replace(/\\\\/g,"\\\\\\\\").replace(/\'/g,"\\\\\'")+\'\\\')"><div class="tn"><div class="ic">📁</div></div><div class="nm">\'+nm+\'</div></div>\';' +
+  '});' +
+  // ファイル
+  'if(!files.length&&!folders.length){bd.innerHTML=\'<div class="empty">ファイル・フォルダがありません</div>\';return;}' +
   'files.forEach(function(f,i){' +
     'var tn=mode==="thumb"?(f.thumbLarge||f.thumbMedium||f.thumbSmall):(f.thumbMedium||f.thumbSmall||f.thumbLarge);' +
     'var thumbHtml=tn?\'<img src="\'+tn+\'" alt="" loading="lazy">\':\'<div class="ic">📄</div>\';' +

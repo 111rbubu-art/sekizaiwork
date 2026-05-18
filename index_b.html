@@ -2035,6 +2035,90 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone) {
   }).catch(function(e){ onDone(e); });
 }
 
+// ===== AIチャット（仮・履歴メモリのみ） =====
+var _aiChatHistory = []; // [{role:'user'|'assistant', content:string}]
+function openAIChat() {
+  var modal = document.getElementById('ai-chat-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  var input = document.getElementById('ai-chat-input');
+  if (input) setTimeout(function(){ input.focus(); }, 50);
+}
+function closeAIChat() {
+  var modal = document.getElementById('ai-chat-modal');
+  if (modal) modal.classList.add('hidden');
+}
+function clearAIChat() {
+  _aiChatHistory = [];
+  var area = document.getElementById('ai-chat-messages');
+  if (area) area.innerHTML = '';
+}
+function _aiChatAppendMessage(role, content) {
+  var area = document.getElementById('ai-chat-messages');
+  if (!area) return null;
+  var div = document.createElement('div');
+  var isUser = role === 'user';
+  div.style.cssText = 'max-width:85%;padding:9px 13px;border-radius:12px;white-space:pre-wrap;word-break:break-word;line-height:1.55;font-size:14px;' +
+    (isUser
+      ? 'align-self:flex-end;background:#4a2a7a;color:#fff;border-bottom-right-radius:4px'
+      : 'align-self:flex-start;background:#fff;border:1px solid #e0e0e0;color:#222;border-bottom-left-radius:4px');
+  div.textContent = content;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+  return div;
+}
+function sendAIChatMessage() {
+  var input = document.getElementById('ai-chat-input');
+  var btn   = document.getElementById('ai-chat-send-btn');
+  if (!input) return;
+  var msg = (input.value || '').trim();
+  if (!msg) return;
+  input.value = '';
+  _aiChatAppendMessage('user', msg);
+  _aiChatHistory.push({ role:'user', content: msg });
+  var aiDiv = _aiChatAppendMessage('assistant', '⏳ 考え中…');
+  if (btn) { btn.disabled = true; btn.textContent = '送信中…'; }
+  // 直近の会話履歴を連結（多ターン文脈の簡易実装）
+  var ctx = _aiChatHistory.slice(0, -1).map(function(h){
+    return (h.role === 'user' ? '【ユーザー】' : '【アシスタント】') + '\n' + h.content;
+  }).join('\n\n');
+  var userPrompt = ctx ? (ctx + '\n\n【ユーザー】\n' + msg) : msg;
+  var systemPrompt = 'あなたは石材店スタッフを補助する日本語AIアシスタントです。簡潔・丁寧に回答してください。';
+  var full = '';
+  var firstChunk = true;
+  callAI(systemPrompt, userPrompt,
+    function onChunk(text) {
+      if (firstChunk) { aiDiv.textContent = ''; firstChunk = false; }
+      full += text;
+      aiDiv.textContent = full;
+      var area = document.getElementById('ai-chat-messages');
+      if (area) area.scrollTop = area.scrollHeight;
+    },
+    function onDone(err) {
+      if (btn) { btn.disabled = false; btn.textContent = '送信'; }
+      if (err) {
+        aiDiv.textContent = '❌ エラー: ' + (err.message || err);
+        aiDiv.style.background = '#fee';
+        aiDiv.style.borderColor = '#fcc';
+        aiDiv.style.color = '#c00';
+        _aiChatHistory.pop(); // ユーザーメッセージを履歴から除外（失敗ぶんは再送可能）
+      } else {
+        _aiChatHistory.push({ role:'assistant', content: full });
+      }
+      if (input) input.focus();
+    }
+  );
+}
+// Enter送信 / Shift+Enter改行
+document.addEventListener('keydown', function(e){
+  if (!e || !e.target) return;
+  if (e.target.id !== 'ai-chat-input') return;
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    sendAIChatMessage();
+  }
+});
+
 // ===== 完成資料プロンプト生成 =====
 function buildKanrouPrompt(d, docType) {
   var today = new Date().toLocaleDateString('ja-JP', {year:'numeric',month:'long',day:'numeric'});
@@ -2695,7 +2779,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.386';
+var APP_VERSION = 'v1.8.387';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16483,6 +16567,7 @@ function openImageViewer(imgs, startIdx) {
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button id="ai-save-btn" onclick="saveAICfg()" style="padding:8px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
           <button id="ai-test-btn" onclick="testAIConnection()" style="padding:8px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔌 接続テスト</button>
+          <button id="ai-chat-btn" onclick="openAIChat()" style="padding:8px 18px;background:#7a4aaa;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💬 AIチャット</button>
         </div>
         <pre id="ai-test-result" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin:0;white-space:pre-wrap;word-break:break-all"></pre>
       </div>
@@ -16511,6 +16596,24 @@ function openImageViewer(imgs, startIdx) {
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- ===== AIチャットモーダル（仮・履歴はメモリのみ） ===== -->
+<div id="ai-chat-modal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:2000;display:flex;align-items:center;justify-content:center;padding:14px">
+  <div style="background:#fff;width:100%;max-width:640px;height:88vh;max-height:780px;border-radius:14px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
+    <div style="padding:12px 16px;background:#4a2a7a;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <span style="font-weight:600;font-size:14px">💬 AIチャット <span style="opacity:.7;font-size:11px;font-weight:400">（仮・閉じると履歴消去）</span></span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button onclick="clearAIChat()" title="履歴クリア" style="background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">🗑️ クリア</button>
+        <button onclick="closeAIChat()" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:0;width:30px;line-height:1">×</button>
+      </div>
+    </div>
+    <div id="ai-chat-messages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;background:#f5f5f5"></div>
+    <div style="padding:10px;border-top:1px solid #ddd;display:flex;gap:8px;background:#fff;flex-shrink:0">
+      <textarea id="ai-chat-input" rows="2" placeholder="メッセージを入力（Enter送信 / Shift+Enter改行）" style="flex:1;padding:8px 10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:14px;resize:none;line-height:1.4"></textarea>
+      <button id="ai-chat-send-btn" onclick="sendAIChatMessage()" style="padding:0 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-family:inherit;font-size:14px">送信</button>
+    </div>
   </div>
 </div>
 

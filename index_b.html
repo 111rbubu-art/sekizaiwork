@@ -2695,7 +2695,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.384';
+var APP_VERSION = 'v1.8.385';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7462,6 +7462,33 @@ function _blobUrlToDataUrl(url, authHeader) {
       });
     }).catch(function() { return null; });
 }
+// dataURL を 必要に応じて圧縮（1800px以下 / JPEG quality 0.85 / PNGも全部JPEG化）
+function _compressDataUrlIfLarge(dataUrl, maxD, quality, threshold) {
+  return new Promise(function(resolve) {
+    if (!dataUrl) return resolve(null);
+    var thr = threshold || 600000;
+    var md  = maxD || 1800;
+    var q   = quality || 0.85;
+    var isPng = dataUrl.indexOf('data:image/png') === 0;
+    if (!isPng && dataUrl.length < thr) return resolve(dataUrl);
+    var ti = new Image();
+    ti.onload = function() {
+      var w = ti.naturalWidth || 1, h = ti.naturalHeight || 1;
+      if (!isPng && Math.max(w,h) <= md && dataUrl.length < thr) return resolve(dataUrl);
+      var sc = Math.min(1, md / Math.max(w, h));
+      var cw = Math.round(w * sc), ch = Math.round(h * sc);
+      var cv = document.createElement('canvas');
+      cv.width = cw; cv.height = ch;
+      var ctx = cv.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cw, ch);
+      ctx.drawImage(ti, 0, 0, cw, ch);
+      try { resolve(cv.toDataURL('image/jpeg', q)); } catch(e) { resolve(dataUrl); }
+    };
+    ti.onerror = function() { resolve(dataUrl); };
+    ti.src = dataUrl;
+  });
+}
+
 // ファイル(driveItem)→dataURL（mode='thumb' なら large サムネ、'full' なら本体）
 function _loadFileAsDataUrl(file, driveId, token, mode) {
   if (mode === 'thumb') {
@@ -9283,6 +9310,9 @@ function executeChoukokuDoc() {
         })
         .catch(function() { return null; });
     }));
+  }).then(function(results) {
+    // 取得した dataURL を必要に応じて圧縮（PDF/SP保存時の肥大化を抑止）
+    return Promise.all(results.map(function(r){ return r ? _compressDataUrlIfLarge(r) : Promise.resolve(null); }));
   }).then(function(results) {
     var dataUrls = [], goodEntries = [];
     results.forEach(function(r, i) { if (r !== null) { dataUrls.push(r); goodEntries.push(fileEntries[i]); } });

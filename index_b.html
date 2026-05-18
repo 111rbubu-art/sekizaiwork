@@ -2609,7 +2609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.376';
+var APP_VERSION = 'v1.8.377';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8543,24 +8543,50 @@ function _deleteChoukokuTemplate() {
   });
 }
 
+// サブフォルダを必要に応じて作成（存在すればスキップ、conflict=409も OK扱い）
+function _ensureSubfolder(parentPath, name, token) {
+  var fullPath = parentPath + '/' + name;
+  var enc = fullPath.split('/').map(encodeURIComponent).join('/');
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) {
+    if (r.ok) return;
+    var parentEnc = parentPath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parentEnc + ':/children', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+    }).then(function(r2) {
+      if (!r2.ok && r2.status !== 409) throw new Error('フォルダ作成失敗: ' + r2.status);
+    });
+  });
+}
+
 // ポップアップから呼び出される SharePoint 保存
 function _saveChoukokuDocFromPopup(data, name) {
   return new Promise(function(resolve, reject) {
-    if (!currentItem || !currentItem['Folder_Pass']) {
+    var rootFolder = _getItemFolderPath(currentItem);
+    if (!rootFolder) {
       reject(new Error('Folder_Pass がありません')); return;
     }
     var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
-    var fpath = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料/' + safe + '.json';
+    var fpath = rootFolder + '/工事仕様/作成資料/' + safe + '.json';
     var enc = fpath.split('/').map(encodeURIComponent).join('/');
     getToken().then(function(resp) {
-      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
-        method: 'PUT',
-        headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+      var token = resp.accessToken;
+      // 親フォルダ（工事仕様/作成資料）が無ければ作る
+      return _ensureSubfolder(rootFolder, '工事仕様', token).then(function() {
+        return _ensureSubfolder(rootFolder + '/工事仕様', '作成資料', token);
+      }).then(function() {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+          method: 'PUT',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
       });
     }).then(function(r) {
       if (!r.ok) throw new Error(r.status);
-      showSaveToast(true, 'SharePointに保存: ' + safe + '.json');
+      showSaveToast(true, 'SharePointに保存: 作成資料/' + safe + '.json');
       resolve();
     }).catch(function(e) {
       showSaveToast(false, '保存エラー: ' + (e && e.message || e));
@@ -8575,7 +8601,7 @@ function _checkChoukokuDocExists(name) {
     var folderPass = _getItemFolderPath(currentItem);
     if (!folderPass) { resolve(false); return; }
     var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
-    var fpath = folderPass + '/工事仕様/彫刻資料/' + safe + '.json';
+    var fpath = folderPass + '/工事仕様/作成資料/' + safe + '.json';
     var enc = fpath.split('/').map(encodeURIComponent).join('/');
     getToken().then(function(resp) {
       return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
@@ -8728,7 +8754,7 @@ function _choukokuLoadSaved() {
   var el = document.getElementById('haka-choukoku-saved-list');
   if (!el) return;
   if (!currentItem || !currentItem['Folder_Pass']) { el.innerHTML = '<div style="color:#c00">Folder_Pass がありません</div>'; return; }
-  var folder = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料';
+  var folder = currentItem['Folder_Pass'] + '/工事仕様/作成資料';
   var enc = folder.split('/').map(encodeURIComponent).join('/');
   el.innerHTML = '<div style="color:#888">読み込み中...</div>';
   getToken().then(function(resp) {
@@ -8778,7 +8804,7 @@ function _choukokuOpenSaved(fname) {
   if (!currentItem || !fname) return;
   var rootFolder = _getItemFolderPath(currentItem);
   if (!rootFolder) { showSaveToast(false, 'Folder_Pass がありません'); return; }
-  var fpath = rootFolder + '/工事仕様/彫刻資料/' + fname;
+  var fpath = rootFolder + '/工事仕様/作成資料/' + fname;
   var fenc = fpath.split('/').map(encodeURIComponent).join('/');
   var _w = _openDocWindow();
   if (!_w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
@@ -8809,7 +8835,7 @@ function _choukokuOpenSaved(fname) {
 function _choukokuDeleteSaved(fname) {
   if (!fname || !currentItem || !currentItem['Folder_Pass']) return;
   if (!confirm('「' + fname.replace(/\.json$/i, '') + '」を削除しますか？')) return;
-  var fpath = currentItem['Folder_Pass'] + '/工事仕様/彫刻資料/' + fname;
+  var fpath = currentItem['Folder_Pass'] + '/工事仕様/作成資料/' + fname;
   var fenc = fpath.split('/').map(encodeURIComponent).join('/');
   getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + fenc, {

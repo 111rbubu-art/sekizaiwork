@@ -1794,26 +1794,62 @@ function _aiToggleEndpoint() {
   var epRow   = document.getElementById('ai-endpoint-row');
   var keyRow  = document.getElementById('ai-apikey-row');
   var modelEl = document.getElementById('ai-model');
-  var isLocal = prov && prov.value === 'openai';
-  if(epRow)  epRow.style.display  = isLocal ? 'flex' : 'none';
-  if(keyRow) keyRow.style.display = isLocal ? 'none' : 'flex';
-  if(modelEl && !modelEl.value) modelEl.placeholder = isLocal ? 'llama3.1' : 'claude-sonnet-4-6';
+  var keyLabel = document.getElementById('ai-apikey-label');
+  var keyInput = document.getElementById('ai-apikey');
+  var v = prov ? prov.value : 'claude';
+  var isOllama  = v === 'openai';
+  var isAnyLLM  = v === 'anythingllm';
+  var isClaude  = v === 'claude';
+  if(epRow)  epRow.style.display  = (isOllama || isAnyLLM) ? 'flex' : 'none';
+  if(keyRow) keyRow.style.display = (isClaude || isAnyLLM) ? 'flex' : 'none';
+  if(modelEl && !modelEl.value) {
+    modelEl.placeholder = isOllama ? 'llama3.1'
+                       : isAnyLLM ? 'workspace-slug または モデル名'
+                       : 'claude-sonnet-4-6';
+  }
+  if(keyLabel) keyLabel.textContent = isAnyLLM ? 'APIキー' : 'APIキー';
+  if(keyInput) keyInput.placeholder = isAnyLLM ? 'AnythingLLM の API Key' : 'sk-ant-...';
+  var epInput = document.getElementById('ai-endpoint');
+  if(epInput && !epInput.value) {
+    epInput.placeholder = isAnyLLM ? 'http://192.168.x.x:3001' : 'http://localhost:11434';
+  }
 }
 function testAIConnection() {
   var btn    = document.getElementById('ai-test-btn');
   var result = document.getElementById('ai-test-result');
   var prov   = document.getElementById('ai-provider');
-  var isLocal = prov && prov.value === 'openai';
+  var provVal = prov ? prov.value : 'claude';
+  var isLocal = provVal === 'openai';
+  var isAnyLLM = provVal === 'anythingllm';
   var endpoint = (document.getElementById('ai-endpoint') || {}).value || 'http://localhost:11434';
+  endpoint = endpoint.replace(/\/+$/, ''); // trailing slash除去
   if (btn) { btn.disabled = true; btn.textContent = '⏳ テスト中…'; }
   if (result) { result.style.display=''; result.style.color='#888'; result.textContent = '接続確認中…'; }
-  if (isLocal) {
-    function _fillModelList(names) {
-      var dl = document.getElementById('ai-model-list');
-      if (dl) { dl.innerHTML = ''; names.forEach(function(n){ var o=document.createElement('option'); o.value=n; dl.appendChild(o); }); }
-      var modelEl = document.getElementById('ai-model');
-      if (modelEl && !modelEl.value && names.length > 0) { modelEl.value = names[0]; }
+  function _fillModelList(names) {
+    var dl = document.getElementById('ai-model-list');
+    if (dl) { dl.innerHTML = ''; names.forEach(function(n){ var o=document.createElement('option'); o.value=n; dl.appendChild(o); }); }
+    var modelEl = document.getElementById('ai-model');
+    if (modelEl && !modelEl.value && names.length > 0) { modelEl.value = names[0]; }
+  }
+  if (isAnyLLM) {
+    var key = (document.getElementById('ai-apikey') || {}).value || '';
+    if (!key) {
+      if (result) { result.style.color='#c00'; result.textContent = '❌ AnythingLLM の APIキーが未入力です。\nAnythingLLMの「Settings → API Keys」で発行してください。'; }
+      if (btn) { btn.disabled=false; btn.textContent='🔌 接続テスト'; }
+      return;
     }
+    fetch(endpoint + '/api/v1/openai/models', { method:'GET', headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + key} })
+      .then(function(r){ return r.ok ? r.json() : r.text().then(function(t){ return Promise.reject('HTTP ' + r.status + ' ' + t); }); })
+      .then(function(j) {
+        var names = (j.data||[]).map(function(m){ return m.id || m; });
+        _fillModelList(names);
+        if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ AnythingLLM 接続成功\nモデル/ワークスペース: ' + (names.join(', ') || '(一覧なし)') + '\n↑ モデル名フィールドに補完候補を追加しました'; }
+      })
+      .catch(function(err) {
+        if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + '\n\n【確認事項】\n1. エンドポイントは LLM側PC のIP？ (例: http://192.168.x.x:3001)\n2. AnythingLLMの「Settings → API Keys」でキー発行済み？\n3. AnythingLLMが LAN からアクセス可能な設定？\n4. HTTPS→HTTPのMixed Contentでブロックされてないか？'; }
+      })
+      .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
+  } else if (isLocal) {
     // Ollamaの /api/tags または OpenAI互換 /v1/models でモデル一覧取得
     fetch(endpoint + '/api/tags', { method:'GET', headers:{'Content-Type':'application/json'} })
       .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
@@ -1874,7 +1910,49 @@ function testAIConnection() {
 function callAI(system, user, onChunk, onDone) {
   var cfg = getAICfg();
   if (cfg.provider === 'claude') callClaudeAPI(cfg, system, user, onChunk, onDone);
+  else if (cfg.provider === 'anythingllm') callAnythingLLMAPI(cfg, system, user, onChunk, onDone);
   else callOpenAICompatAPI(cfg, system, user, onChunk, onDone);
+}
+
+function callAnythingLLMAPI(cfg, system, user, onChunk, onDone) {
+  var endpoint = (cfg.endpoint || 'http://localhost:3001').replace(/\/+$/, '');
+  fetch(endpoint + '/api/v1/openai/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + (cfg.apiKey || '')
+    },
+    body: JSON.stringify({
+      model: cfg.model || '',
+      stream: true,
+      messages: [{ role:'system', content:system }, { role:'user', content:user }]
+    })
+  }).then(function(r) {
+    if (!r.ok) { r.text().then(function(t){ onDone(new Error('AnythingLLM API ' + r.status + ': ' + t)); }); return; }
+    var reader = r.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump() {
+      reader.read().then(function(res) {
+        if (res.done) { onDone(null); return; }
+        buf += decoder.decode(res.value, {stream:true});
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+          if (!line.startsWith('data:')) return;
+          var data = line.slice(5).trim();
+          if (data === '[DONE]') return;
+          try {
+            var obj = JSON.parse(data);
+            var delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+            if (delta && delta.content) onChunk(delta.content);
+          } catch(e) {}
+        });
+        pump();
+      }).catch(function(e){ onDone(e); });
+    }
+    pump();
+  }).catch(function(e){ onDone(e); });
 }
 
 function callClaudeAPI(cfg, system, user, onChunk, onDone) {
@@ -2617,7 +2695,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.380';
+var APP_VERSION = 'v1.8.381';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16313,7 +16391,8 @@ function openImageViewer(imgs, startIdx) {
           <label style="font-size:12px;color:#555;min-width:80px">プロバイダー</label>
           <select id="ai-provider" onchange="_aiToggleEndpoint()" style="font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
             <option value="claude">Claude API</option>
-            <option value="openai">ローカルLLM（OpenAI互換）</option>
+            <option value="openai">ローカルLLM（Ollama直接）</option>
+            <option value="anythingllm">AnythingLLM</option>
           </select>
         </div>
         <div id="ai-apikey-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -16331,9 +16410,11 @@ function openImageViewer(imgs, startIdx) {
             <input id="ai-endpoint" placeholder="http://localhost:11434" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
           </div>
           <div style="background:#fff8e1;border:1px solid #f5c842;border-radius:6px;padding:7px 10px;font-size:11px;color:#7a5a00;line-height:1.6">
-            ⚠️ <b>CORS設定が必要です。</b>Ollamaを以下のオプションで起動してください:<br>
-            Windows: <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">set OLLAMA_ORIGINS=* &amp;&amp; ollama serve</code><br>
-            Mac/Linux: <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">OLLAMA_ORIGINS=* ollama serve</code>
+            ⚠️ <b>注意事項:</b><br>
+            ・別PCの場合は <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">http://IPアドレス:ポート</code> を指定（localhost不可）<br>
+            ・<b>Ollama直接:</b> <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">OLLAMA_HOST=0.0.0.0:11434 OLLAMA_ORIGINS=* ollama serve</code><br>
+            ・<b>AnythingLLM:</b> Settings → API Keys でキー発行＋LAN許可<br>
+            ・SharePoint(HTTPS)からHTTPアクセスはMixed Contentでブロックされる場合あり
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">

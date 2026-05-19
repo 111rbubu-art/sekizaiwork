@@ -1918,15 +1918,22 @@ function testAIConnection() {
 }
 
 // ===== AI APIレイヤー =====
-function callAI(system, user, onChunk, onDone) {
+function callAI(system, user, onChunk, onDone, images) {
   var cfg = getAICfg();
-  if (cfg.provider === 'claude') callClaudeAPI(cfg, system, user, onChunk, onDone);
-  else if (cfg.provider === 'anythingllm') callAnythingLLMAPI(cfg, system, user, onChunk, onDone);
-  else callOpenAICompatAPI(cfg, system, user, onChunk, onDone);
+  if (cfg.provider === 'claude') callClaudeAPI(cfg, system, user, onChunk, onDone, images);
+  else if (cfg.provider === 'anythingllm') callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images);
+  else callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images);
 }
 
-function callAnythingLLMAPI(cfg, system, user, onChunk, onDone) {
+function callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images) {
   var endpoint = (cfg.endpoint || 'http://localhost:3001').replace(/\/+$/, '');
+  var userContent = user;
+  if (images && images.length > 0) {
+    userContent = images.map(function(img) {
+      return { type: 'image_url', image_url: { url: img } };
+    });
+    if (user) userContent.push({ type: 'text', text: user });
+  }
   fetch(endpoint + '/api/v1/openai/chat/completions', {
     method: 'POST',
     headers: {
@@ -1936,7 +1943,7 @@ function callAnythingLLMAPI(cfg, system, user, onChunk, onDone) {
     body: JSON.stringify({
       model: cfg.model || '',
       stream: true,
-      messages: [{ role:'system', content:system }, { role:'user', content:user }]
+      messages: [{ role:'system', content:system }, { role:'user', content:userContent }]
     })
   }).then(function(r) {
     if (!r.ok) { r.text().then(function(t){ onDone(new Error('AnythingLLM API ' + r.status + ': ' + t)); }); return; }
@@ -1966,7 +1973,15 @@ function callAnythingLLMAPI(cfg, system, user, onChunk, onDone) {
   }).catch(function(e){ onDone(e); });
 }
 
-function callClaudeAPI(cfg, system, user, onChunk, onDone) {
+function callClaudeAPI(cfg, system, user, onChunk, onDone, images) {
+  var userContent = user;
+  if (images && images.length > 0) {
+    userContent = images.map(function(img) {
+      var mt = img.indexOf('data:image/png') === 0 ? 'image/png' : 'image/jpeg';
+      return { type:'image', source:{ type:'base64', media_type:mt, data:img.split(',')[1] } };
+    });
+    if (user) userContent.push({ type:'text', text:user });
+  }
   fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -1980,7 +1995,7 @@ function callClaudeAPI(cfg, system, user, onChunk, onDone) {
       max_tokens: 2000,
       stream: true,
       system: system,
-      messages: [{ role:'user', content:user }]
+      messages: [{ role:'user', content:userContent }]
     })
   }).then(function(r) {
     if (!r.ok) { r.text().then(function(t){ onDone(new Error('Claude API ' + r.status + ': ' + t)); }); return; }
@@ -2009,14 +2024,21 @@ function callClaudeAPI(cfg, system, user, onChunk, onDone) {
   }).catch(function(e){ onDone(e); });
 }
 
-function callOpenAICompatAPI(cfg, system, user, onChunk, onDone) {
+function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
+  var userContent = user;
+  if (images && images.length > 0) {
+    userContent = images.map(function(img) {
+      return { type: 'image_url', image_url: { url: img } };
+    });
+    if (user) userContent.push({ type: 'text', text: user });
+  }
   fetch((cfg.endpoint || 'http://localhost:11434') + '/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: cfg.model || 'llama3',
       stream: true,
-      messages: [{ role:'system', content:system }, { role:'user', content:user }]
+      messages: [{ role:'system', content:system }, { role:'user', content:userContent }]
     })
   }).then(function(r) {
     if (!r.ok) { r.text().then(function(t){ onDone(new Error('LLM API ' + r.status + ': ' + t)); }); return; }
@@ -2058,7 +2080,7 @@ function openAIChat() {
   _aiChatWin = w;
   var html =
 '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">' +
-'<title>AIチャット - 仮</title>' +
+'<title>AIチャット</title>' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
 '<style>' +
 '*{box-sizing:border-box}' +
@@ -2070,50 +2092,112 @@ function openAIChat() {
 '.hd-btn{background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:11px;padding:5px 10px;border-radius:6px;cursor:pointer;font-family:inherit}' +
 '.hd-btn:hover{background:rgba(255,255,255,0.25)}' +
 '.msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px}' +
-'.msg{max-width:88%;padding:9px 13px;white-space:pre-wrap;word-break:break-word;line-height:1.55;font-size:14px}' +
+'.msg{max-width:88%;padding:9px 13px;white-space:pre-wrap;word-break:break-word;line-height:1.55;font-size:14px;border-radius:12px}' +
 '.mu{align-self:flex-end;background:#4a2a7a;color:#fff;border-radius:12px 12px 4px 12px}' +
 '.ma{align-self:flex-start;background:#fff;border:1px solid #e0e0e0;color:#222;border-radius:12px 12px 12px 4px}' +
 '.me{background:#fee !important;border-color:#fcc !important;color:#c00 !important}' +
-'.ft{padding:10px;border-top:1px solid #ddd;display:flex;gap:8px;background:#fff;flex-shrink:0}' +
+'.msg-imgs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}' +
+'.msg-imgs img{max-width:160px;max-height:120px;object-fit:contain;border-radius:6px;cursor:pointer}' +
+'.ft{padding:8px 10px;border-top:1px solid #ddd;background:#fff;flex-shrink:0;display:flex;flex-direction:column;gap:6px}' +
+'#img-strip{display:none;flex-wrap:wrap;gap:6px}' +
+'.img-thumb-wrap{position:relative;display:inline-block}' +
+'.img-thumb-wrap img{width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid #ddd}' +
+'.img-thumb-del{position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:#c00;color:#fff;border:none;cursor:pointer;font-size:10px;padding:0;line-height:16px;text-align:center;font-family:inherit}' +
+'.ft-row{display:flex;gap:6px}' +
+'#img-btn{padding:0 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:16px;flex-shrink:0;color:#555}' +
+'#img-btn:hover{background:#e0e0e0}' +
 '#inp{flex:1;padding:8px 10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:14px;resize:none;line-height:1.4;outline:none}' +
 '#inp:focus{border-color:#4a2a7a}' +
-'#snd{padding:0 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-family:inherit;font-size:14px;min-width:80px}' +
+'#snd{padding:0 16px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-family:inherit;font-size:14px;min-width:72px}' +
 '#snd:disabled{background:#aaa;cursor:wait}' +
 '.empty{color:#888;text-align:center;padding:40px 20px;font-size:13px;line-height:1.7}' +
 '</style></head><body>' +
-'<div class="hd"><div class="hd-t">💬 AIチャット<small>（仮・閉じると履歴消去）</small></div>' +
+'<div class="hd"><div class="hd-t">💬 AIチャット<small>（閉じると履歴消去）</small></div>' +
 '<button class="hd-btn" onclick="_clear()">🗑️ クリア</button></div>' +
-'<div class="msgs" id="msgs"><div class="empty">石材店業務のアシスタントです。<br>質問を入力してください。</div></div>' +
-'<div class="ft"><textarea id="inp" rows="2" placeholder="メッセージを入力（Enter送信 / Shift+Enter改行）"></textarea>' +
-'<button id="snd" onclick="_send()">送信</button></div>' +
+'<div class="msgs" id="msgs"><div class="empty">石材店業務のアシスタントです。<br>質問や画像を送信してください。</div></div>' +
+'<div class="ft">' +
+'<div id="img-strip"></div>' +
+'<div class="ft-row">' +
+'<button id="img-btn" title="画像を添付" onclick="document.getElementById(\'img-file\').click()">📎</button>' +
+'<input type="file" id="img-file" accept="image/*" multiple style="display:none">' +
+'<textarea id="inp" rows="2" placeholder="メッセージを入力（Enter送信 / Shift+Enter改行）&#10;画像はクリップボードからCtrl+Vで貼り付け可"></textarea>' +
+'<button id="snd" onclick="_send()">送信</button>' +
+'</div></div>' +
 '<script>' +
-'var _hist=[];' +
+'var _hist=[];var _pendingImgs=[];' +
 'function _stripThink(s){return s.replace(/<think>[\\s\\S]*?<\\/think>/gi,"").replace(/<think>[\\s\\S]*/i,"").replace(/^\\s+/,"");}' +
 'function _empty(){var m=document.getElementById("msgs");if(m&&m.children.length===1&&m.children[0].className==="empty")m.innerHTML="";}' +
-'function _append(role,content){' +
+'function _append(role,content,imgs){' +
   '_empty();' +
   'var d=document.createElement("div");' +
   'd.className="msg "+(role==="user"?"mu":"ma");' +
-  'd.textContent=content;' +
+  'if(imgs&&imgs.length){var iw=document.createElement("div");iw.className="msg-imgs";imgs.forEach(function(src){var im=document.createElement("img");im.src=src;im.onclick=function(){window.open(src,"_blank");};iw.appendChild(im);});d.appendChild(iw);}' +
+  'if(content){d.appendChild(document.createTextNode(content));}' +
   'var m=document.getElementById("msgs");m.appendChild(d);m.scrollTop=m.scrollHeight;' +
   'return d;' +
 '}' +
-'function _clear(){_hist=[];document.getElementById("msgs").innerHTML=\'<div class="empty">石材店業務のアシスタントです。<br>質問を入力してください。</div>\';}' +
+'function _resizeImg(file,cb){' +
+  'var r=new FileReader();' +
+  'r.onload=function(e){' +
+    'var img=new Image();' +
+    'img.onload=function(){' +
+      'var MAX=1024,w=img.width,h=img.height,sc=Math.min(1,MAX/Math.max(w,h));' +
+      'var cv=document.createElement("canvas");cv.width=Math.round(w*sc);cv.height=Math.round(h*sc);' +
+      'cv.getContext("2d").drawImage(img,0,0,cv.width,cv.height);' +
+      'cb(cv.toDataURL("image/jpeg",0.85));' +
+    '};' +
+    'img.src=e.target.result;' +
+  '};' +
+  'r.readAsDataURL(file);' +
+'}' +
+'function _renderStrip(){' +
+  'var s=document.getElementById("img-strip");if(!s)return;' +
+  's.innerHTML="";' +
+  'if(!_pendingImgs.length){s.style.display="none";return;}' +
+  's.style.display="flex";' +
+  '_pendingImgs.forEach(function(src,i){' +
+    'var w=document.createElement("div");w.className="img-thumb-wrap";' +
+    'var im=document.createElement("img");im.src=src;' +
+    'var btn=document.createElement("button");btn.className="img-thumb-del";btn.textContent="×";' +
+    'btn.onclick=function(){_pendingImgs.splice(i,1);_renderStrip();};' +
+    'w.appendChild(im);w.appendChild(btn);s.appendChild(w);' +
+  '});' +
+'}' +
+'document.getElementById("img-file").addEventListener("change",function(e){' +
+  'Array.from(e.target.files).forEach(function(f){_resizeImg(f,function(d){_pendingImgs.push(d);_renderStrip();});});' +
+  'e.target.value="";' +
+'});' +
+'document.addEventListener("paste",function(e){' +
+  'var items=e.clipboardData&&e.clipboardData.items;if(!items)return;' +
+  'Array.from(items).forEach(function(item){' +
+    'if(item.type.indexOf("image")===0){' +
+      'e.preventDefault();' +
+      '_resizeImg(item.getAsFile(),function(d){_pendingImgs.push(d);_renderStrip();});' +
+    '}' +
+  '});' +
+'});' +
+'function _clear(){_hist=[];_pendingImgs=[];_renderStrip();document.getElementById("msgs").innerHTML=\'<div class="empty">石材店業務のアシスタントです。<br>質問や画像を送信してください。</div>\';}' +
 'function _send(){' +
   'var inp=document.getElementById("inp"),snd=document.getElementById("snd");' +
-  'var msg=(inp.value||"").trim();if(!msg)return;' +
-  'if(!window.opener||!window.opener.callAI){_append("user",msg);var e=_append("ai","❌ 親ウィンドウとの接続が切れています。\\nアプリのタブを開いた状態でチャットを使ってください。");e.classList.add("me");return;}' +
-  'inp.value="";_append("user",msg);_hist.push({role:"user",content:msg});' +
+  'var msg=(inp.value||"").trim();' +
+  'var imgs=_pendingImgs.slice();' +
+  'if(!msg&&!imgs.length)return;' +
+  'if(!window.opener||!window.opener.callAI){_append("user",msg,imgs);var e=_append("ai","❌ 親ウィンドウとの接続が切れています。\\nアプリのタブを開いた状態でチャットを使ってください。");e.classList.add("me");return;}' +
+  'inp.value="";_pendingImgs=[];_renderStrip();' +
+  '_append("user",msg,imgs);' +
+  'var histEntry=msg+(imgs.length?"\\n[画像 "+imgs.length+"枚]":"");' +
+  '_hist.push({role:"user",content:histEntry});' +
   'var aiDiv=_append("ai","⏳ 考え中…");' +
   'snd.disabled=true;snd.textContent="送信中…";' +
   'var ctx=_hist.slice(0,-1).map(function(h){return (h.role==="user"?"【ユーザー】":"【アシスタント】")+"\\n"+h.content;}).join("\\n\\n");' +
-  'var userPrompt=ctx?(ctx+"\\n\\n【ユーザー】\\n"+msg):msg;' +
+  'var userPrompt=ctx?(ctx+"\\n\\n【ユーザー】\\n"+histEntry):msg;' +
   'var sys="あなたは石材店スタッフを補助する日本語AIアシスタントです。簡潔・丁寧に回答してください。";' +
   'var full="",firstChunk=true;' +
   'try{' +
     'window.opener.callAI(sys,userPrompt,' +
       'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;var disp=_stripThink(full);aiDiv.textContent=disp||"⏳ 考え中…";var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
-      'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);aiDiv.textContent=clean;_hist.push({role:"assistant",content:clean});}inp.focus();}' +
+      'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);aiDiv.textContent=clean;_hist.push({role:"assistant",content:clean});}inp.focus();},' +
+      'imgs' +
     ');' +
   '}catch(ex){snd.disabled=false;snd.textContent="送信";aiDiv.textContent="❌ 呼び出しエラー: "+(ex.message||ex);aiDiv.classList.add("me");_hist.pop();}' +
 '}' +
@@ -2785,7 +2869,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.391';
+var APP_VERSION = 'v1.8.392';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -1795,6 +1795,8 @@ function saveAICfg() {
   el = document.getElementById('ai-model');    if(el) cfg.model    = el.value.trim();
   el = document.getElementById('ai-endpoint'); if(el) cfg.endpoint = el.value.trim();
   localStorage.setItem('ai_cfg_v1', JSON.stringify(cfg));
+  // provider/model/endpoint のみ SharePoint に共有保存（APIキーは端末ローカルのみ）
+  if (typeof saveSettingsToSP === 'function') saveSettingsToSP();
   var btn = document.getElementById('ai-save-btn');
   if(btn){btn.textContent='✅ 保存しました';setTimeout(function(){btn.textContent='💾 保存';},2000);}
 }
@@ -2086,6 +2088,7 @@ function openAIChat() {
 '<button id="snd" onclick="_send()">送信</button></div>' +
 '<script>' +
 'var _hist=[];' +
+'function _stripThink(s){return s.replace(/<think>[\\s\\S]*?<\\/think>/gi,"").replace(/<think>[\\s\\S]*/i,"").replace(/^\\s+/,"");}' +
 'function _empty(){var m=document.getElementById("msgs");if(m&&m.children.length===1&&m.children[0].className==="empty")m.innerHTML="";}' +
 'function _append(role,content){' +
   '_empty();' +
@@ -2109,8 +2112,8 @@ function openAIChat() {
   'var full="",firstChunk=true;' +
   'try{' +
     'window.opener.callAI(sys,userPrompt,' +
-      'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;aiDiv.textContent=full;var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
-      'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{_hist.push({role:"assistant",content:full});}inp.focus();}' +
+      'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;var disp=_stripThink(full);aiDiv.textContent=disp||"⏳ 考え中…";var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
+      'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);aiDiv.textContent=clean;_hist.push({role:"assistant",content:clean});}inp.focus();}' +
     ');' +
   '}catch(ex){snd.disabled=false;snd.textContent="送信";aiDiv.textContent="❌ 呼び出しエラー: "+(ex.message||ex);aiDiv.classList.add("me");_hist.pop();}' +
 '}' +
@@ -2782,7 +2785,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.389';
+var APP_VERSION = 'v1.8.391';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -13079,6 +13082,19 @@ function loadSettingsFromSP(){
     Object.keys(data).forEach(function(k){
       if(/^nkg_/.test(k)) localStorage.setItem(k,JSON.stringify(data[k]));
     });
+    // AI設定はSP共有(provider/model/endpoint)とローカル(apiKey)をマージ
+    if(data['ai_cfg_shared_v1']){
+      var shared = data['ai_cfg_shared_v1'] || {};
+      var local = {};
+      try { local = JSON.parse(localStorage.getItem('ai_cfg_v1') || '{}') || {}; } catch(e){}
+      var merged = {
+        provider: shared.provider || local.provider || 'claude',
+        model:    shared.model    || local.model    || '',
+        endpoint: shared.endpoint || local.endpoint || '',
+        apiKey:   local.apiKey    || ''
+      };
+      localStorage.setItem('ai_cfg_v1', JSON.stringify(merged));
+    }
     console.log('[SP] UI設定読込完了');
   }).catch(function(e){ console.warn('[SP] UI設定読込エラー:',e); });
 }
@@ -13093,6 +13109,18 @@ function saveSettingsToSP(){
     Object.keys(localStorage).forEach(function(k){
       if(/^nkg_/.test(k)){var v=localStorage.getItem(k);if(v){try{data[k]=JSON.parse(v);}catch(e){data[k]=v;}}}
     });
+    // AI設定: APIキーを除いて共有保存
+    try {
+      var aiRaw = localStorage.getItem('ai_cfg_v1');
+      if(aiRaw){
+        var aiCfg = JSON.parse(aiRaw) || {};
+        data['ai_cfg_shared_v1'] = {
+          provider: aiCfg.provider || 'claude',
+          model:    aiCfg.model    || '',
+          endpoint: aiCfg.endpoint || ''
+        };
+      }
+    } catch(e){}
     getToken().then(function(res){
       return fetch(
         'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH+':/content',
@@ -16536,6 +16564,11 @@ function openImageViewer(imgs, startIdx) {
     <!-- AI設定 -->
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:10px">🤖 AI設定</div>
+      <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
+        ℹ️ <b>保存先について:</b><br>
+        ・<b>プロバイダー / モデル / エンドポイント</b> → SharePoint共有（全社員に自動配布）<br>
+        ・<b>APIキー</b> → この端末のブラウザにのみ保存（共有されません。各PCで個別に入力してください）
+      </div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <label style="font-size:12px;color:#555;min-width:80px">プロバイダー</label>
@@ -16546,7 +16579,7 @@ function openImageViewer(imgs, startIdx) {
           </select>
         </div>
         <div id="ai-apikey-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <label style="font-size:12px;color:#555;min-width:80px">APIキー</label>
+          <label style="font-size:12px;color:#555;min-width:80px">APIキー <span style="font-size:10px;color:#888;font-weight:normal">(端末のみ)</span></label>
           <input id="ai-apikey" type="password" placeholder="sk-ant-..." style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">

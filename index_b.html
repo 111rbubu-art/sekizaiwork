@@ -2062,6 +2062,80 @@ function cleanupNonPriceDocsFromWorkspace() {
     .then(function() { if (btn) btn.disabled = false; });
 }
 
+// ===== ワークスペース System Prompt 設定 =====
+var _RECOMMENDED_PROMPT = [
+  'あなたは庄司石材店スタッフを補助する日本語AIアシスタントです。',
+  '',
+  '【重要】商品・価格・仕入先などについて回答する際は、参照したドキュメントに記載されている「sekizaiwork編集:」のURLを必ず回答に含めてください。',
+  'URLは Markdown 形式 [商品名を編集](URL) の形で記載してください。',
+  '',
+  '簡潔・丁寧に回答してください。'
+].join('\n');
+
+function editAnyLLMPrompt() {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'anythingllm') {
+    showSaveToast(false, 'AnythingLLMが選択されていません');
+    return;
+  }
+  var endpoint = (cfg.endpoint || '').replace(/\/+$/, '');
+  var slug     = (cfg.model    || '').trim();
+  var apiKey   = (cfg.apiKey   || '').trim();
+  if (!endpoint || !slug || !apiKey) {
+    showSaveToast(false, 'AnythingLLM設定が不完全です');
+    return;
+  }
+  var headers = { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + apiKey };
+
+  fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug), { headers: headers })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var ws = data.workspace && (Array.isArray(data.workspace) ? data.workspace[0] : data.workspace);
+      var current = (ws && ws.openAiPrompt) || '';
+      _openPromptDialog(current, function(newPrompt) {
+        fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update', {
+          method: 'POST', headers: headers,
+          body: JSON.stringify({ openAiPrompt: newPrompt })
+        }).then(function(res) {
+          if (res.ok) showSaveToast(true, 'System Promptを更新しました');
+          else res.text().then(function(t) { showSaveToast(false, '更新失敗: ' + res.status + ' ' + t); });
+        }).catch(function(e) { showSaveToast(false, '更新失敗: ' + e.message); });
+      });
+    })
+    .catch(function(e) { showSaveToast(false, '取得失敗: ' + e.message); });
+}
+
+function _openPromptDialog(current, onSave) {
+  var bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:18px;max-width:600px;width:100%;max-height:90vh;display:flex;flex-direction:column;gap:10px;font-family:inherit';
+  box.innerHTML =
+    '<div style="font-size:14px;font-weight:700;color:#4a2a7a">📝 AnythingLLM System Prompt 編集</div>' +
+    '<div style="font-size:11px;color:#666">ワークスペースの動作プロンプト。「価格URLを必ず回答に含める」指示を追加すると、AIが編集リンクを返してくれます。</div>' +
+    '<textarea id="_prompt-ta" style="width:100%;height:240px;font-family:inherit;font-size:12px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;resize:vertical"></textarea>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' +
+      '<button id="_prompt-cancel" style="padding:7px 14px;background:#ccc;color:#333;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">キャンセル</button>' +
+      '<button id="_prompt-rec" style="padding:7px 14px;background:#1a5a7a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">推奨プロンプトに置換</button>' +
+      '<button id="_prompt-append" style="padding:7px 14px;background:#7a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">URL指示を追記</button>' +
+      '<button id="_prompt-save" style="padding:7px 14px;background:#2a7a4a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">💾 保存</button>' +
+    '</div>';
+  bg.appendChild(box);
+  document.body.appendChild(bg);
+  var ta = box.querySelector('#_prompt-ta');
+  ta.value = current;
+  box.querySelector('#_prompt-cancel').onclick = function() { document.body.removeChild(bg); };
+  box.querySelector('#_prompt-rec').onclick = function() { ta.value = _RECOMMENDED_PROMPT; };
+  box.querySelector('#_prompt-append').onclick = function() {
+    var add = '\n\n【重要】商品・価格について回答する際は、参照したドキュメントに記載されている「sekizaiwork編集:」のURLを必ず回答に含めてください。URLは Markdown 形式 [商品名を編集](URL) の形で記載してください。';
+    if (ta.value.indexOf('sekizaiwork編集') === -1) ta.value = ta.value + add;
+  };
+  box.querySelector('#_prompt-save').onclick = function() {
+    document.body.removeChild(bg);
+    onSave(ta.value);
+  };
+}
+
 function testAIConnection() {
   var btn    = document.getElementById('ai-test-btn');
   var result = document.getElementById('ai-test-result');
@@ -3106,7 +3180,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.394';
+var APP_VERSION = 'v1.8.395';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16941,6 +17015,7 @@ function openImageViewer(imgs, startIdx) {
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="price-sync-btn" onclick="syncAllPricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
         <button id="price-cleanup-btn" onclick="cleanupNonPriceDocsFromWorkspace()" style="padding:9px 18px;background:#7a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🧹 旧CSV等をWSから外す</button>
+        <button id="ai-prompt-btn" onclick="editAnyLLMPrompt()" style="padding:9px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📝 AIプロンプト編集</button>
         <label style="font-size:12px;color:#555;display:flex;align-items:center;gap:4px">
           <input type="checkbox" id="price-sync-pin" checked> 📌 同期後にPIN留め
         </label>

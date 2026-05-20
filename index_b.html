@@ -1863,6 +1863,17 @@ function _buildPriceDocText(item) {
   return lines.join('\n');
 }
 
+// 価格表ドキュメント識別: title=sekizai-price-N or _N.txt(旧), path=raw-_N-... or raw-sekizai-price-N-...
+function _isPriceDocFile(title, name) {
+  title = String(title || '');
+  name  = String(name  || '');
+  if (title.indexOf('sekizai-price-') === 0) return true;
+  if (/^_\d+\.txt$/.test(title)) return true; // 旧バグ形式
+  if (/^raw-_\d+-[a-f0-9-]+\.json$/.test(name)) return true;
+  if (/^raw-sekizai-price-\d+-[a-f0-9-]+\.json$/.test(name)) return true;
+  return false;
+}
+
 function _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey) {
   var headers = { 'Authorization': 'Bearer ' + apiKey };
   return fetch(endpoint + '/api/v1/documents', { headers: headers })
@@ -1874,7 +1885,7 @@ function _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey) {
         if (Array.isArray(node.items)) {
           var nextPrefix = (prefix === null) ? '' : (prefix ? prefix + '/' + node.name : node.name);
           node.items.forEach(function(child) { walk(child, nextPrefix); });
-        } else if ((node.title || '').indexOf('価格表_') === 0 && node.name) {
+        } else if (_isPriceDocFile(node.title, node.name)) {
           names.push(prefix ? prefix + '/' + node.name : node.name);
         }
       }
@@ -1905,7 +1916,7 @@ function syncAllPricesToAI() {
     showSaveToast(false, 'AnythingLLM設定（エンドポイント/モデル/APIキー）が不完全です');
     return;
   }
-  if (!confirm('価格表をAnythingLLMに同期します。\n\n既存の「価格表_*」ドキュメントは一旦削除して再登録します。\n続行しますか？')) return;
+  if (!confirm('価格表をAnythingLLMに同期します。\n\n既存の価格表ドキュメント（新形式 sekizai-price-* と旧形式 _N.txt）を削除して再登録します。\n続行しますか？')) return;
 
   var btn = document.getElementById('price-sync-btn');
   var pg  = document.getElementById('price-sync-progress');
@@ -1933,7 +1944,7 @@ function syncAllPricesToAI() {
         setPg('📤 アップロード ' + (i+1) + '/' + items.length + ': ' + (item.Title || '(無題)'));
         var body = JSON.stringify({
           textContent: _buildPriceDocText(item),
-          metadata: { title: '価格表_' + item.id, description: 'sekizaiwork価格表 id=' + item.id }
+          metadata: { title: 'sekizai-price-' + item.id, description: 'sekizaiwork価格表 id=' + item.id }
         });
         return fetch(endpoint + '/api/v1/document/raw-text', { method:'POST', headers: headers, body: body })
           .then(function(r) {
@@ -2023,13 +2034,14 @@ function cleanupNonPriceDocsFromWorkspace() {
       var ws = data.workspace && (Array.isArray(data.workspace) ? data.workspace[0] : data.workspace);
       var docs = (ws && ws.documents) || [];
       if (!docs.length) { if (pg) pg.textContent = 'ワークスペースにドキュメントがありません'; return; }
-      // metadataから title を取り出して 価格表_ 以外をピックアップ
+      // metadataから title を取り出して 価格表系（新旧）以外をピックアップ
       var nonPrice = [];
       docs.forEach(function(d) {
         var meta = d.metadata;
         if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch(e) { meta = {}; } }
         var title = (meta && meta.title) || d.filename || d.docpath || '';
-        if (String(title).indexOf('価格表_') !== 0) {
+        var name  = d.filename || (d.docpath || '').split('/').pop() || '';
+        if (!_isPriceDocFile(title, name)) {
           nonPrice.push({ path: d.docpath, title: title });
         }
       });
@@ -3180,7 +3192,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.395';
+var APP_VERSION = 'v1.8.396';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -2250,24 +2250,30 @@ function callAI(system, user, onChunk, onDone, images) {
 
 function callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images) {
   var endpoint = (cfg.endpoint || 'http://localhost:3001').replace(/\/+$/, '');
-  var userContent = user;
+  var slug = (cfg.model || '').trim();
+  if (!slug) { onDone(new Error('ワークスペースslug (モデル欄) が未設定です')); return; }
+
+  // Workspaceチャット（RAG有効、workspaceのSystem Promptが効く）
+  var body = {
+    message: user || '',
+    mode: 'chat',
+    sessionId: 'sekizaiwork-' + Date.now()
+  };
   if (images && images.length > 0) {
-    userContent = images.map(function(img) {
-      return { type: 'image_url', image_url: { url: img } };
+    body.attachments = images.map(function(img, i) {
+      var isPng = img.indexOf('data:image/png') === 0;
+      var mime = isPng ? 'image/png' : 'image/jpeg';
+      return { name: 'image-' + (i+1) + (isPng ? '.png' : '.jpg'), mime: mime, contentString: img };
     });
-    if (user) userContent.push({ type: 'text', text: user });
   }
-  fetch(endpoint + '/api/v1/openai/chat/completions', {
+
+  fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/stream-chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ' + (cfg.apiKey || '')
     },
-    body: JSON.stringify({
-      model: cfg.model || '',
-      stream: true,
-      messages: [{ role:'system', content:system }, { role:'user', content:userContent }]
-    })
+    body: JSON.stringify(body)
   }).then(function(r) {
     if (!r.ok) { r.text().then(function(t){ onDone(new Error('AnythingLLM API ' + r.status + ': ' + t)); }); return; }
     var reader = r.body.getReader();
@@ -2280,13 +2286,16 @@ function callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images) {
         var lines = buf.split('\n');
         buf = lines.pop();
         lines.forEach(function(line) {
+          line = line.trim();
+          if (!line) return;
           if (!line.startsWith('data:')) return;
           var data = line.slice(5).trim();
-          if (data === '[DONE]') return;
+          if (!data || data === '[DONE]') return;
           try {
             var obj = JSON.parse(data);
-            var delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
-            if (delta && delta.content) onChunk(delta.content);
+            // AnythingLLM stream chunk: {type, textResponse, sources, close, error}
+            if (obj.error) { onDone(new Error(String(obj.error))); return; }
+            if (obj.textResponse) onChunk(obj.textResponse);
           } catch(e) {}
         });
         pump();
@@ -3192,7 +3201,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.397';
+var APP_VERSION = 'v1.8.398';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

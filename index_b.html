@@ -1964,8 +1964,28 @@ function syncAllPricesToAI() {
       return r;
     });
   }).then(function(r) {
-    var msg = '✅ 完了: ' + r.locations.length + '/' + r.total + '件を同期しました';
-    if (r.failed.length) msg += '（失敗 ' + r.failed.length + '件: id=' + r.failed.join(',') + '）';
+    // 4. 各ドキュメントをPIN留め（参照確実化）
+    var doPin = document.getElementById('price-sync-pin');
+    if (doPin && !doPin.checked) { r.pinned = 0; r.pinFailed = 0; return r; }
+    r.pinned = 0; r.pinFailed = 0;
+    var pp = Promise.resolve();
+    r.locations.forEach(function(loc, i) {
+      pp = pp.then(function() {
+        setPg('📌 PIN留め中 ' + (i+1) + '/' + r.locations.length);
+        return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-pin', {
+          method:'POST', headers: headers,
+          body: JSON.stringify({ docPath: loc, pinStatus: true })
+        }).then(function(res) {
+          if (res.ok) r.pinned++; else r.pinFailed++;
+        }).catch(function() { r.pinFailed++; });
+      });
+    });
+    return pp.then(function() { return r; });
+  }).then(function(r) {
+    var msg = '✅ 完了: ' + r.locations.length + '/' + r.total + '件を同期';
+    if (r.pinned)    msg += ' / PIN留め ' + r.pinned + '件';
+    if (r.failed.length)    msg += '（アップ失敗 ' + r.failed.length + '件: id=' + r.failed.join(',') + '）';
+    if (r.pinFailed)        msg += '（PIN失敗 ' + r.pinFailed + '件）';
     setPg(msg);
     showSaveToast(true, '価格表 ' + r.locations.length + '件を同期しました');
   }).catch(function(e) {
@@ -1975,6 +1995,71 @@ function syncAllPricesToAI() {
   }).finally(function() {
     if (btn) btn.disabled = false;
   });
+}
+
+// ===== ワークスペースから旧CSV等を外す =====
+function cleanupNonPriceDocsFromWorkspace() {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'anythingllm') {
+    showSaveToast(false, 'AnythingLLMが選択されていません');
+    return;
+  }
+  var endpoint = (cfg.endpoint || '').replace(/\/+$/, '');
+  var slug     = (cfg.model    || '').trim();
+  var apiKey   = (cfg.apiKey   || '').trim();
+  if (!endpoint || !slug || !apiKey) {
+    showSaveToast(false, 'AnythingLLM設定が不完全です');
+    return;
+  }
+  var headers = { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + apiKey };
+  var btn = document.getElementById('price-cleanup-btn');
+  var pg  = document.getElementById('price-sync-progress');
+  if (btn) btn.disabled = true;
+  if (pg) { pg.style.display = 'block'; pg.textContent = '🔍 ワークスペース内のドキュメントを確認中...'; }
+
+  fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug), { headers: headers })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var ws = data.workspace && (Array.isArray(data.workspace) ? data.workspace[0] : data.workspace);
+      var docs = (ws && ws.documents) || [];
+      if (!docs.length) { if (pg) pg.textContent = 'ワークスペースにドキュメントがありません'; return; }
+      // metadataから title を取り出して 価格表_ 以外をピックアップ
+      var nonPrice = [];
+      docs.forEach(function(d) {
+        var meta = d.metadata;
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch(e) { meta = {}; } }
+        var title = (meta && meta.title) || d.filename || d.docpath || '';
+        if (String(title).indexOf('価格表_') !== 0) {
+          nonPrice.push({ path: d.docpath, title: title });
+        }
+      });
+      if (!nonPrice.length) {
+        if (pg) pg.textContent = '✅ 削除対象なし（すべて価格表データです）';
+        showSaveToast(true, '掃除対象なし');
+        return;
+      }
+      var list = nonPrice.slice(0, 20).map(function(d) { return '  ・' + d.title; }).join('\n');
+      if (nonPrice.length > 20) list += '\n  ・...他 ' + (nonPrice.length - 20) + ' 件';
+      if (!confirm('ワークスペース「' + slug + '」から以下 ' + nonPrice.length + ' 件のドキュメントを外します。\nドキュメント自体はAnythingLLMに残ります（再追加可能）。\n\n' + list + '\n\n実行しますか？')) {
+        if (pg) pg.textContent = 'キャンセルしました';
+        return;
+      }
+      if (pg) pg.textContent = '🗑️ ' + nonPrice.length + ' 件をワークスペースから外し中...';
+      return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-embeddings', {
+        method:'POST', headers: headers,
+        body: JSON.stringify({ adds: [], deletes: nonPrice.map(function(d) { return d.path; }) })
+      }).then(function(res) {
+        if (!res.ok) return res.text().then(function(t) { throw new Error('削除失敗: ' + res.status + ' ' + t); });
+        if (pg) pg.textContent = '✅ ' + nonPrice.length + ' 件をワークスペースから外しました';
+        showSaveToast(true, nonPrice.length + '件をワークスペースから外しました');
+      });
+    })
+    .catch(function(e) {
+      console.error(e);
+      if (pg) pg.textContent = '❌ エラー: ' + e.message;
+      showSaveToast(false, 'エラー: ' + e.message);
+    })
+    .then(function() { if (btn) btn.disabled = false; });
 }
 
 function testAIConnection() {
@@ -3021,7 +3106,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.393';
+var APP_VERSION = 'v1.8.394';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16855,6 +16940,10 @@ function openImageViewer(imgs, startIdx) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="price-sync-btn" onclick="syncAllPricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
+        <button id="price-cleanup-btn" onclick="cleanupNonPriceDocsFromWorkspace()" style="padding:9px 18px;background:#7a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🧹 旧CSV等をWSから外す</button>
+        <label style="font-size:12px;color:#555;display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="price-sync-pin" checked> 📌 同期後にPIN留め
+        </label>
       </div>
       <div id="price-sync-progress" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
     </div>

@@ -1846,10 +1846,10 @@ function _yen(n) {
   return isNaN(num) ? String(n) : num.toLocaleString('ja-JP') + '円';
 }
 
-function _buildPriceItemSection(item) {
+function _buildPriceItemFullDoc(item) {
   var editUrl = location.origin + location.pathname + '?view=priceList&id=' + item.id;
   var lines = [];
-  lines.push('## ID:' + item.id + ' ' + (item.Title || '(無題)'));
+  lines.push('商品名: ' + (item.Title || '(無題)'));
   if (item.choice)                 lines.push('カテゴリ: ' + item.choice);
   if (item.cost != null)           lines.push('販売価格(税抜): ' + _yen(item.cost));
   if (item.supplier)               lines.push('仕入先①: ' + item.supplier);
@@ -1862,11 +1862,6 @@ function _buildPriceItemSection(item) {
   if (item.note0)                  lines.push('備考(仕入外注用): ' + item.note0);
   lines.push('sekizaiwork編集: ' + editUrl);
   return lines.join('\n');
-}
-
-function _buildAllPriceText(items) {
-  var sections = items.map(_buildPriceItemSection);
-  return '# 庄司石材店 価格表\n\n' + sections.join('\n\n---\n\n') + '\n';
 }
 
 // 価格表ドキュメント識別:
@@ -1927,7 +1922,7 @@ function syncAllPricesToAI() {
     showSaveToast(false, 'AnythingLLM設定（エンドポイント/モデル/APIキー）が不完全です');
     return;
   }
-  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を1ファイル（sekizai-price-list.txt）にまとめて登録します。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
+  if (!confirm('価格表をAnythingLLMに同期します。\n\n各アイテムを1ドキュメントとしてアップロードします（118件 → 118ドキュメント）。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('price-sync-btn');
   var pg  = document.getElementById('price-sync-progress');
@@ -1946,39 +1941,50 @@ function syncAllPricesToAI() {
       return items;
     });
   }).then(function(items) {
-    // 2. 全件を1ファイルとしてアップロード
-    var text = _buildAllPriceText(items);
-    setPg('📤 アップロード中... (' + items.length + '件を1ファイルに統合、約' + Math.round(text.length/1024) + 'KB)');
-    var body = JSON.stringify({
-      textContent: text,
-      metadata: {
-        title: 'sekizai-price-list',
-        description: 'sekizaiwork 価格表（全' + items.length + '件 / id順）'
-      }
-    });
-    return fetch(endpoint + '/api/v1/document/raw-text', { method:'POST', headers: headers, body: body })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { throw new Error('アップロード失敗: ' + r.status + ' ' + t); });
-        return r.json();
-      })
-      .then(function(data) {
-        var loc = data.documents && data.documents[0] && data.documents[0].location;
-        if (!loc) throw new Error('アップロード結果に location が含まれていません');
-        return { location: loc, total: items.length };
+    // 2. 1件ずつアップロード（逐次）
+    var locations = [];
+    var failed = [];
+    var p = Promise.resolve();
+    items.forEach(function(item, i) {
+      p = p.then(function() {
+        setPg('📤 アップロード ' + (i+1) + '/' + items.length + ': ' + (item.Title || '(無題)'));
+        var body = JSON.stringify({
+          textContent: _buildPriceItemFullDoc(item),
+          metadata: { title: 'sekizai-price-' + item.id, description: 'sekizaiwork価格表 id=' + item.id }
+        });
+        return fetch(endpoint + '/api/v1/document/raw-text', { method:'POST', headers: headers, body: body })
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
+          .then(function(data) {
+            var loc = data.documents && data.documents[0] && data.documents[0].location;
+            if (loc) locations.push(loc);
+            else failed.push(item.id);
+          })
+          .catch(function(e) {
+            console.error('アップロード失敗 id=' + item.id, e);
+            failed.push(item.id);
+          });
       });
+    });
+    return p.then(function() { return { locations: locations, failed: failed, total: items.length }; });
   }).then(function(r) {
-    // 3. ワークスペースに埋め込み
-    setPg('🔗 ワークスペース「' + slug + '」に埋め込み中...');
+    // 3. ワークスペースに一括埋め込み
+    if (!r.locations.length) throw new Error('アップロード成功件数が0件');
+    setPg('🔗 ワークスペース「' + slug + '」に埋め込み中... (' + r.locations.length + '件)');
     return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-embeddings', {
       method:'POST', headers: headers,
-      body: JSON.stringify({ adds: [r.location], deletes: [] })
+      body: JSON.stringify({ adds: r.locations, deletes: [] })
     }).then(function(res) {
       if (!res.ok) return res.text().then(function(t) { throw new Error('埋め込み失敗: ' + res.status + ' ' + t); });
       return r;
     });
   }).then(function(r) {
-    setPg('✅ 完了: ' + r.total + '件を 1ファイルにまとめてAnythingLLMに同期しました');
-    showSaveToast(true, '価格表 ' + r.total + '件を同期しました');
+    var msg = '✅ 完了: ' + r.locations.length + '/' + r.total + '件を同期';
+    if (r.failed.length) msg += '（失敗 ' + r.failed.length + '件: id=' + r.failed.join(',') + '）';
+    setPg(msg);
+    showSaveToast(true, '価格表 ' + r.locations.length + '件を同期しました');
   }).catch(function(e) {
     console.error(e);
     setPg('❌ エラー: ' + e.message);
@@ -3189,7 +3195,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.403';
+var APP_VERSION = 'v1.8.404';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -17017,8 +17023,8 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💴 価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>価格表（List7）</b>を <b>1ファイル（sekizai-price-list.txt）</b>に統合して AnythingLLM のワークスペースに登録します。<br>
-        ・同期するたびに既存ファイルを削除して上書きします（旧 1件1ファイル方式の残骸も自動削除）<br>
+        ℹ️ SharePointの<b>価格表（List7）</b>の各アイテムを 1ドキュメントとして AnythingLLM ワークスペースに登録します（118件 → 118ドキュメント）。<br>
+        ・同期するたびに既存の価格表ドキュメントは削除されて再登録されます（重複なし）<br>
         ・<b>事前に上のAI設定で「AnythingLLM」を選択し、エンドポイント・モデル(ワークスペースslug)・APIキーを入力＆保存してください。</b>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">

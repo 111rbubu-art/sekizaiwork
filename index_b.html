@@ -511,10 +511,11 @@ body.force-sp #panel-resizer { display: none !important; }
         <span style="font-size:10px;color:rgba(255,255,255,0.45);font-family:monospace" id="menu-ver-badge"></span>
       </span>
     </div>
-    <!-- AIチャット・価格表（小ボタン） -->
-    <div style="display:flex;justify-content:flex-end;gap:6px;padding:4px 12px 6px">
+    <!-- AIチャット・価格表・石材価格表（小ボタン） -->
+    <div style="display:flex;justify-content:flex-end;gap:6px;padding:4px 12px 6px;flex-wrap:wrap">
       <button id="menu-ai-chat" onclick="openAIChat()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:#fff;cursor:pointer;font-family:inherit">💬 AIチャット</button>
       <button id="menu-price" onclick="openPriceScreen()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:#fff;cursor:pointer;font-family:inherit">💴 価格表</button>
+      <button id="menu-stone-price" onclick="openStonePriceScreen()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:#fff;cursor:pointer;font-family:inherit">💎 石材価格表</button>
     </div>
       <!-- メインメニュー -->
       <div id="menu-main" style="flex:1;padding:16px 14px;display:flex;flex-direction:column;gap:12px">
@@ -2268,6 +2269,444 @@ function _syncPriceToAIQuiet() {
   });
 }
 
+// ===== 石材価格表 → AnythingLLM 同期 =====
+var STONE_PRICE_LIST_ID = '06967ce2-a26f-469b-9760-b8aa9af6ee60';
+
+function _fetchStonePriceListItems() {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return getToken().then(function(resp) {
+    return fetchAllPages(
+      'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + STONE_PRICE_LIST_ID + '/items?$expand=fields&$top=500',
+      resp.accessToken
+    );
+  });
+}
+
+function downloadStonePriceCsv() {
+  var btn = document.getElementById('stone-price-dl-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 取得中…'; }
+  _fetchStonePriceListItems().then(function(items) {
+    var csv = _buildStonePriceCsv(items);
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'sekizai-stone-price-list.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    showSaveToast(true, items.length + '件のCSVをダウンロードしました');
+  }).catch(function(e) {
+    console.error(e);
+    showSaveToast(false, 'CSV取得失敗: ' + e.message);
+  }).then(function() {
+    if (btn) { btn.disabled = false; btn.textContent = '📥 CSVダウンロード'; }
+  });
+}
+
+function _buildStonePriceCsv(items) {
+  var headers = ['ID','石材名','産地','国','色','単価','係数','仕入先①','仕入価格①','加工費込①','仕入先②','仕入価格②','加工費込②','見積日','特徴','備考','sekizaiwork編集URL'];
+  var rows = [headers.map(_csvField).join(',')];
+  items.forEach(function(item) {
+    var editUrl = location.origin + location.pathname + '?view=stonePriceList&id=' + item.id;
+    rows.push([
+      item.id,
+      item.Title || '',
+      item.made || '',
+      item.country || '',
+      item.color || '',
+      item.cost != null ? item.cost : '',
+      item.name != null ? item.name : '',
+      item.Supplier1 || '',
+      item.price1 != null ? item.price1 : '',
+      item.MachiningCostsIncluded1 ? '込' : '',
+      item.Supplier2 || '',
+      item.price2 != null ? item.price2 : '',
+      item.MachiningCostsIncluded2 ? '込' : '',
+      item.EstimateDay ? String(item.EstimateDay).slice(0, 10) : '',
+      item.Features || '',
+      item.comment || '',
+      editUrl
+    ].map(_csvField).join(','));
+  });
+  return rows.join('\n') + '\n';
+}
+
+// 石材価格表ドキュメント識別
+function _isStonePriceDocFile(title, name) {
+  title = String(title || '');
+  name  = String(name  || '');
+  if (title.indexOf('sekizai-stone-price-list') === 0) return true;
+  if (/^raw-sekizai-stone-price-list-[a-f0-9-]+\.json$/.test(name)) return true;
+  return false;
+}
+
+function _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey) {
+  var headers = { 'Authorization': 'Bearer ' + apiKey };
+  return fetch(endpoint + '/api/v1/documents', { headers: headers })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var names = [];
+      function walk(node, prefix) {
+        if (!node) return;
+        if (Array.isArray(node.items)) {
+          var nextPrefix = (prefix === null) ? '' : (prefix ? prefix + '/' + node.name : node.name);
+          node.items.forEach(function(child) { walk(child, nextPrefix); });
+        } else if (_isStonePriceDocFile(node.title, node.name)) {
+          names.push(prefix ? prefix + '/' + node.name : node.name);
+        }
+      }
+      walk(data.localFiles, null);
+      if (!names.length) return { deleted: 0 };
+      return fetch(endpoint + '/api/v1/system/remove-documents', {
+        method: 'DELETE',
+        headers: { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + apiKey },
+        body: JSON.stringify({ names: names })
+      }).then(function() { return { deleted: names.length }; });
+    })
+    .catch(function(e) {
+      console.warn('旧石材価格表ドキュメント削除スキップ:', e);
+      return { deleted: 0 };
+    });
+}
+
+function syncAllStonePricesToAI() {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'anythingllm') {
+    showSaveToast(false, 'AnythingLLMが選択されていません');
+    return;
+  }
+  var endpoint = (cfg.endpoint || '').replace(/\/+$/, '');
+  var slug     = (cfg.model    || '').trim();
+  var apiKey   = (cfg.apiKey   || '').trim();
+  if (!endpoint || !slug || !apiKey) {
+    showSaveToast(false, 'AnythingLLM設定が不完全です');
+    return;
+  }
+  if (!confirm('石材価格表をAnythingLLMに同期します。\n\nsekizai-stone-price-list.csv として全件まとめてアップロード。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
+
+  var btn = document.getElementById('stone-price-sync-btn');
+  var pg  = document.getElementById('stone-price-sync-progress');
+  if (btn) btn.disabled = true;
+  if (pg)  { pg.style.display = 'block'; pg.textContent = '⏳ 準備中...'; }
+  function setPg(msg) { if (pg) pg.textContent = msg; }
+
+  var headers = { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + apiKey };
+
+  setPg('📥 SharePointから石材価格表を取得中...');
+  _fetchStonePriceListItems().then(function(items) {
+    setPg('📥 取得完了: ' + items.length + '件 → 旧データを削除中...');
+    return _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey).then(function(res) {
+      setPg('🗑️ 旧データ削除: ' + (res.deleted || 0) + '件 → アップロード');
+      return items;
+    });
+  }).then(function(items) {
+    var csv = _buildStonePriceCsv(items);
+    setPg('📤 CSV作成 (' + items.length + '行, 約' + Math.round(csv.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var fd = new FormData();
+    fd.append('file', blob, 'sekizai-stone-price-list.csv');
+    return fetch(endpoint + '/api/v1/document/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+      body: fd
+    }).then(function(r) {
+      if (!r.ok) return r.text().then(function(t) { throw new Error('アップロード失敗: ' + r.status + ' ' + t); });
+      return r.json();
+    }).then(function(data) {
+      var loc = data.documents && data.documents[0] && data.documents[0].location;
+      if (!loc) throw new Error('アップロード結果に location が含まれていません');
+      return { location: loc, total: items.length };
+    });
+  }).then(function(r) {
+    setPg('🔗 ワークスペース「' + slug + '」に埋め込み中...');
+    return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-embeddings', {
+      method:'POST', headers: headers,
+      body: JSON.stringify({ adds: [r.location], deletes: [] })
+    }).then(function(res) {
+      if (!res.ok) return res.text().then(function(t) { throw new Error('埋め込み失敗: ' + res.status + ' ' + t); });
+      return r;
+    });
+  }).then(function(r) {
+    setPg('✅ 完了: ' + r.total + '件を石材価格表として同期しました');
+    showSaveToast(true, '石材価格表 ' + r.total + '件を同期しました');
+  }).catch(function(e) {
+    console.error(e);
+    setPg('❌ エラー: ' + e.message);
+    showSaveToast(false, '同期失敗: ' + e.message);
+  }).finally(function() {
+    if (btn) btn.disabled = false;
+  });
+}
+
+// ===== 石材価格表画面 =====
+var _stonePriceItems = [];
+
+function openStonePriceFromLink(id) {
+  if (!id) return;
+  if (_stonePriceItems.length > 0) {
+    for (var i = 0; i < _stonePriceItems.length; i++) {
+      if (String(_stonePriceItems[i].id) === String(id)) { openStonePriceItemEdit(_stonePriceItems[i]); return; }
+    }
+  }
+  var ov = document.createElement('div');
+  ov.id = '_spfl_loading';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:1099;display:flex;align-items:center;justify-content:center';
+  ov.innerHTML = '<div style="background:#fff;padding:20px 30px;border-radius:10px;font-size:14px;font-family:sans-serif">⏳ 読み込み中...</div>';
+  document.body.appendChild(ov);
+  _fetchStonePriceListItems().then(function(items) {
+    _stonePriceItems = items;
+    var target = null;
+    for (var i = 0; i < items.length; i++) {
+      if (String(items[i].id) === String(id)) { target = items[i]; break; }
+    }
+    document.body.removeChild(ov);
+    if (target) openStonePriceItemEdit(target);
+    else showSaveToast(false, 'ID:' + id + ' の石材が見つかりませんでした');
+  }).catch(function(e) {
+    document.body.removeChild(ov);
+    showSaveToast(false, '読み込み失敗: ' + e.message);
+  });
+}
+
+function openStonePriceScreen() {
+  document.getElementById('stone-price-list-screen').classList.remove('hidden');
+  document.getElementById('stone-price-search').value = '';
+  loadStonePriceList();
+}
+
+function closeStonePriceScreen() {
+  document.getElementById('stone-price-list-screen').classList.add('hidden');
+}
+
+function loadStonePriceList() {
+  var el = document.getElementById('stone-price-list-container');
+  el.innerHTML = '<div style="text-align:center;padding:30px;color:#888">⏳ 読み込み中...</div>';
+  _fetchStonePriceListItems().then(function(items) {
+    _stonePriceItems = items;
+    renderStonePriceList(_stonePriceItems);
+    var scr = document.getElementById('stone-price-list-screen');
+    var _tid = scr.dataset.pendingId || '';
+    if (_tid) delete scr.dataset.pendingId;
+    if (!_tid) {
+      var p = new URLSearchParams(location.search);
+      if (p.get('view') === 'stonePriceList') _tid = p.get('id') || '';
+    }
+    if (_tid) {
+      var target = null;
+      for (var i = 0; i < _stonePriceItems.length; i++) {
+        if (String(_stonePriceItems[i].id) === String(_tid)) { target = _stonePriceItems[i]; break; }
+      }
+      if (target) openStonePriceItemEdit(target);
+    }
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00;padding:16px">読み込みエラー: ' + _esc(e.message) + '</div>';
+  });
+}
+
+function filterStonePriceList() {
+  var q = (document.getElementById('stone-price-search').value || '').toLowerCase();
+  if (!q) { renderStonePriceList(_stonePriceItems); return; }
+  renderStonePriceList(_stonePriceItems.filter(function(it) {
+    return ((it.Title || '') + (it.made || '') + (it.color || '') + (it.country || '') + (it.comment || '')).toLowerCase().indexOf(q) !== -1;
+  }));
+}
+
+function renderStonePriceList(items) {
+  var el = document.getElementById('stone-price-list-container');
+  if (!items || !items.length) {
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:#888">データがありません</div>';
+    return;
+  }
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07)">';
+  html += '<thead><tr style="background:#1a2535;color:#fff">';
+  html += '<th style="padding:9px 12px;text-align:left;font-weight:500">石材名</th>';
+  html += '<th style="padding:9px 12px;text-align:left;font-weight:500;white-space:nowrap">産地</th>';
+  html += '<th style="padding:9px 12px;text-align:left;font-weight:500;white-space:nowrap">色</th>';
+  html += '<th style="padding:9px 12px;text-align:right;font-weight:500;white-space:nowrap">単価</th>';
+  html += '</tr></thead><tbody>';
+  items.forEach(function(it, i) {
+    var bg = i % 2 === 0 ? '#fff' : '#f9f9f9';
+    var cost = (it.cost !== '' && it.cost != null) ? Number(it.cost).toLocaleString('ja-JP', {maximumFractionDigits: 4}) : '';
+    html += '<tr style="background:' + bg + ';border-bottom:0.5px solid #f0f0f0;cursor:pointer" onclick="_openStonePriceById(\'' + _esc(String(it.id)) + '\')">';
+    html += '<td style="padding:9px 12px">' + _esc(it.Title) + '</td>';
+    html += '<td style="padding:9px 12px;color:#555;font-size:12px">' + _esc(it.made) + '</td>';
+    html += '<td style="padding:9px 12px;color:#555;font-size:12px">' + _esc(it.color) + '</td>';
+    html += '<td style="padding:9px 12px;text-align:right;color:#1a5a1a;font-weight:500;white-space:nowrap">' + cost + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function _openStonePriceById(id) {
+  for (var i = 0; i < _stonePriceItems.length; i++) {
+    if (String(_stonePriceItems[i].id) === String(id)) { openStonePriceItemEdit(_stonePriceItems[i]); return; }
+  }
+  openStonePriceItemEdit(null);
+}
+
+var _editingStonePriceItem = null;
+
+var STONE_FIELDS = [
+  { key: 'Title',                   label: '石材名',          type: 'text',     required: true },
+  { key: 'made',                    label: '産地',            type: 'text' },
+  { key: 'country',                 label: '国（国産/外国産）', type: 'text' },
+  { key: 'color',                   label: '色系統',          type: 'text' },
+  { key: 'cost',                    label: '単価',            type: 'number', step: '0.0001' },
+  { key: 'name',                    label: '係数/規格',       type: 'number', step: '0.0001' },
+  { key: 'Supplier1',               label: '仕入先①',        type: 'text' },
+  { key: 'price1',                  label: '仕入価格①',      type: 'number' },
+  { key: 'MachiningCostsIncluded1', label: '加工費込①',      type: 'checkbox' },
+  { key: 'Supplier2',               label: '仕入先②',        type: 'text' },
+  { key: 'price2',                  label: '仕入価格②',      type: 'number' },
+  { key: 'MachiningCostsIncluded2', label: '加工費込②',      type: 'checkbox' },
+  { key: 'EstimateDay',             label: '見積日',          type: 'date' },
+  { key: 'Features',                label: '特徴',            type: 'textarea' },
+  { key: 'comment',                 label: '備考',            type: 'textarea' }
+];
+
+function openStonePriceItemEdit(item) {
+  _editingStonePriceItem = item;
+  var isNew = !item;
+  document.getElementById('stone-price-edit-title').textContent = isNew ? '＋ 新規追加' : '✏️ 編集: ' + (item.Title || '');
+  var html = '';
+  STONE_FIELDS.forEach(function(f) {
+    var val = item ? (item[f.key] != null ? item[f.key] : '') : '';
+    html += '<div style="margin-bottom:12px">';
+    if (f.type === 'checkbox') {
+      var checked = (val === true || val === 'true') ? 'checked' : '';
+      html += '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#333;cursor:pointer">';
+      html += '<input id="spef-' + f.key + '" type="checkbox" ' + checked + ' style="width:16px;height:16px"> ' + f.label;
+      html += '</label>';
+    } else {
+      html += '<label style="display:block;font-size:11px;color:#888;margin-bottom:3px">' + f.label + (f.required ? ' <span style="color:#c00">*</span>' : '') + '</label>';
+      if (f.type === 'textarea') {
+        html += '<textarea id="spef-' + f.key + '" rows="3" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical">' + _esc(String(val)) + '</textarea>';
+      } else if (f.type === 'date') {
+        var dval = val ? String(val).slice(0, 10) : '';
+        html += '<input id="spef-' + f.key + '" type="date" value="' + _esc(dval) + '" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">';
+      } else {
+        var stepAttr = f.step ? ' step="' + f.step + '"' : '';
+        html += '<input id="spef-' + f.key + '" type="' + f.type + '"' + stepAttr + ' value="' + _esc(String(val)) + '" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">';
+      }
+    }
+    html += '</div>';
+  });
+  document.getElementById('stone-price-edit-fields').innerHTML = html;
+  var delBtn = document.getElementById('stone-price-edit-delete');
+  if (delBtn) delBtn.style.display = isNew ? 'none' : '';
+  document.getElementById('stone-price-edit-dialog').style.display = 'flex';
+}
+
+function closeStonePriceDialog() {
+  document.getElementById('stone-price-edit-dialog').style.display = 'none';
+  _editingStonePriceItem = null;
+}
+
+function saveStonePriceItem() {
+  var SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var body = {};
+  STONE_FIELDS.forEach(function(f) {
+    var el = document.getElementById('spef-' + f.key);
+    if (!el) return;
+    if (f.type === 'checkbox') {
+      body[f.key] = el.checked;
+    } else if (f.type === 'number') {
+      var v = el.value;
+      body[f.key] = (v === '' || v == null) ? null : Number(v);
+    } else if (f.type === 'date') {
+      var dv = el.value;
+      body[f.key] = dv ? dv : null;
+    } else {
+      body[f.key] = el.value;
+    }
+  });
+  if (!body.Title) { alert('石材名は必須です'); return; }
+  var isNew = !_editingStonePriceItem;
+  var saveBtn = document.getElementById('stone-price-edit-save');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ 保存中...'; }
+  var url = 'https://graph.microsoft.com/v1.0/sites/' + SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items';
+  if (!isNew) url += '/' + _editingStonePriceItem.id;
+  getToken().then(function(resp) {
+    return fetch(url, {
+      method: isNew ? 'POST' : 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: body })
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
+    return r.json();
+  }).then(function() {
+    showSaveToast(true, isNew ? '✅ 追加しました' : '✅ 更新しました');
+    closeStonePriceDialog();
+    if (!document.getElementById('stone-price-list-screen').classList.contains('hidden')) loadStonePriceList();
+    _syncStonePriceToAIQuiet();
+  }).catch(function(e) {
+    showSaveToast(false, '保存失敗: ' + e.message);
+  }).finally(function() {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存'; }
+  });
+}
+
+function deleteStonePriceItem() {
+  if (!_editingStonePriceItem) return;
+  if (!confirm('「' + (_editingStonePriceItem.Title || '') + '」を削除しますか？')) return;
+  var SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var delBtn = document.getElementById('stone-price-edit-delete');
+  if (delBtn) { delBtn.disabled = true; delBtn.textContent = '⏳...'; }
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items/' + _editingStonePriceItem.id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
+    showSaveToast(true, '✅ 削除しました');
+    closeStonePriceDialog();
+    if (!document.getElementById('stone-price-list-screen').classList.contains('hidden')) loadStonePriceList();
+    _syncStonePriceToAIQuiet();
+  }).catch(function(e) {
+    showSaveToast(false, '削除失敗: ' + e.message);
+    if (delBtn) { delBtn.disabled = false; delBtn.textContent = '🗑️ 削除'; }
+  });
+}
+
+function _syncStonePriceToAIQuiet() {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'anythingllm') return;
+  var endpoint = (cfg.endpoint || '').replace(/\/+$/, '');
+  var slug     = (cfg.model    || '').trim();
+  var apiKey   = (cfg.apiKey   || '').trim();
+  if (!endpoint || !slug || !apiKey) return;
+  _fetchStonePriceListItems().then(function(items) {
+    return _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
+  }).then(function(items) {
+    var csv = _buildStonePriceCsv(items);
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var fd = new FormData();
+    fd.append('file', blob, 'sekizai-stone-price-list.csv');
+    return fetch(endpoint + '/api/v1/document/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+      body: fd
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      var loc = data.documents && data.documents[0] && data.documents[0].location;
+      if (!loc) return;
+      return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+        body: JSON.stringify({ adds: [loc], deletes: [] })
+      });
+    });
+  }).then(function() {
+    showSaveToast(true, '🔄 石材AI同期完了');
+  }).catch(function(e) {
+    console.warn('バックグラウンド石材AI同期失敗:', e.message);
+  });
+}
+
 // ===== ワークスペースから旧CSV等を外す =====
 function cleanupNonPriceDocsFromWorkspace() {
   var cfg = getAICfg();
@@ -2743,8 +3182,13 @@ function openAIChat() {
         'try{' +
           'var u=new URL(this.href);' +
           'var op=window.opener;' +
-          'if(u.searchParams.get("view")==="priceList"&&op&&op.openPriceFromLink){' +
+          'var v=u.searchParams.get("view");' +
+          'if(v==="priceList"&&op&&op.openPriceFromLink){' +
             'op.openPriceFromLink(u.searchParams.get("id")||"");' +
+            'op.focus();return;' +
+          '}' +
+          'if(v==="stonePriceList"&&op&&op.openStonePriceFromLink){' +
+            'op.openStonePriceFromLink(u.searchParams.get("id")||"");' +
             'op.focus();return;' +
           '}' +
         '}catch(_){}' +
@@ -3500,7 +3944,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.414';
+var APP_VERSION = 'v1.8.415';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -3717,12 +4161,12 @@ function startApp() {
   if (fpillsBar) fpillsBar.style.display = '';
   if (templeSelect) templeSelect.style.display = '';
   checkMapParam();
-  // 価格表画面への直接リンク対応
+  // 価格表・石材価格表 画面への直接リンク対応
   (function() {
     var p = new URLSearchParams(location.search);
-    if (p.get('view') === 'priceList') {
-      openPriceScreen();
-    }
+    var v = p.get('view');
+    if (v === 'priceList') openPriceScreen();
+    else if (v === 'stonePriceList') openStonePriceScreen();
   })();
 }
 
@@ -17350,6 +17794,21 @@ function openImageViewer(imgs, startIdx) {
       <div id="price-sync-progress" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
     </div>
 
+    <!-- 石材価格表 → AnythingLLM 同期 -->
+    <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💎 石材価格表 → AnythingLLM 同期</div>
+      <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
+        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>sekizai-stone-price-list.csv</b> として AnythingLLM ワークスペースに登録します。<br>
+        ・行単位でチャンク化され、ベクトル検索しやすくなります<br>
+        ・同期するたびに既存の石材価格表ドキュメントは削除されて再登録されます
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button id="stone-price-sync-btn" onclick="syncAllStonePricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
+        <button id="stone-price-dl-btn" onclick="downloadStonePriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 CSVダウンロード</button>
+      </div>
+      <div id="stone-price-sync-progress" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
+    </div>
+
     <!-- デバッグ：フィールド一覧取得 -->
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">
       <div style="font-size:13px;font-weight:700;color:#c00;margin-bottom:8px">🔧 デバッグ（開発用）</div>
@@ -17850,6 +18309,36 @@ function openImageViewer(imgs, startIdx) {
       <button id="price-edit-save" onclick="savePriceItem()" style="padding:8px 18px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
       <button id="price-edit-delete" onclick="deletePriceItem()" style="padding:8px 18px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🗑️ 削除</button>
       <button onclick="closePriceDialog()" style="padding:8px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;margin-left:auto">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 石材価格表画面 ===== -->
+<div id="stone-price-list-screen" class="hidden" style="position:fixed;inset:0;background:#f0f2f5;z-index:1000;display:flex;flex-direction:column">
+  <div style="background:#1a2535;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0">
+    <button onclick="closeStonePriceScreen()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:0;line-height:1">←</button>
+    <span style="font-size:15px;font-weight:500;flex:1">💎 石材価格表</span>
+    <button onclick="openStonePriceItemEdit(null)" style="font-size:12px;padding:5px 12px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit">＋ 新規</button>
+  </div>
+  <div style="padding:10px 14px;background:#fff;border-bottom:1px solid #e8e8e8;flex-shrink:0">
+    <input id="stone-price-search" type="text" oninput="filterStonePriceList()" placeholder="🔍 石材名・産地・色で検索..."
+      style="width:100%;box-sizing:border-box;padding:9px 14px;border:1px solid #ddd;border-radius:10px;font-size:14px;font-family:inherit;outline:none">
+  </div>
+  <div id="stone-price-list-container" style="flex:1;overflow-y:auto;padding:14px"></div>
+</div>
+
+<!-- 石材価格表 編集ダイアログ -->
+<div id="stone-price-edit-dialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1100;align-items:flex-start;justify-content:center;overflow-y:auto;padding:16px 8px">
+  <div style="background:#fff;max-width:520px;width:100%;margin:0 auto;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column">
+    <div style="background:#1a2535;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <span id="stone-price-edit-title" style="font-size:13px;font-weight:500">✏️ 編集</span>
+      <button onclick="closeStonePriceDialog()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div id="stone-price-edit-fields" style="padding:16px;overflow-y:auto;max-height:70vh"></div>
+    <div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid #eee;flex-shrink:0;flex-wrap:wrap">
+      <button id="stone-price-edit-save" onclick="saveStonePriceItem()" style="padding:8px 18px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
+      <button id="stone-price-edit-delete" onclick="deleteStonePriceItem()" style="padding:8px 18px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🗑️ 削除</button>
+      <button onclick="closeStonePriceDialog()" style="padding:8px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;margin-left:auto">閉じる</button>
     </div>
   </div>
 </div>

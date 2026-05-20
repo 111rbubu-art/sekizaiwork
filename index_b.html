@@ -594,6 +594,15 @@ body.force-sp #panel-resizer { display: none !important; }
           </div>
           <div class="menu-card-arrow">›</div>
         </button>
+        <!-- 価格表 -->
+        <button class="menu-card" id="menu-price" onclick="openPriceScreen()">
+          <div class="menu-card-icon">💴</div>
+          <div class="menu-card-body">
+            <div class="menu-card-title">価格表</div>
+            <div class="menu-card-sub">商品価格の閲覧・編集・AI同期</div>
+          </div>
+          <div class="menu-card-arrow">›</div>
+        </button>
       </div>
       <!-- お寺選択サブメニュー -->
       <div id="menu-temple" class="hidden" style="flex:1;padding:16px 14px;overflow-y:auto">
@@ -2021,6 +2030,223 @@ function syncAllPricesToAI() {
   });
 }
 
+// ===== 価格表画面 =====
+var _priceItems = [];
+
+function openPriceScreen() {
+  document.getElementById('price-list-screen').classList.remove('hidden');
+  document.getElementById('price-search').value = '';
+  loadPriceList();
+}
+
+function closePriceScreen() {
+  document.getElementById('price-list-screen').classList.add('hidden');
+}
+
+function loadPriceList() {
+  var el = document.getElementById('price-list-container');
+  el.innerHTML = '<div style="text-align:center;padding:30px;color:#888">⏳ 読み込み中...</div>';
+  _fetchPriceListItems().then(function(items) {
+    _priceItems = items;
+    renderPriceList(_priceItems);
+    // URLパラメーターで特定アイテムを開く
+    var p = new URLSearchParams(location.search);
+    if (p.get('view') === 'priceList') {
+      var id = p.get('id');
+      if (id) {
+        var target = null;
+        for (var i = 0; i < _priceItems.length; i++) {
+          if (String(_priceItems[i].id) === String(id)) { target = _priceItems[i]; break; }
+        }
+        if (target) openPriceItemEdit(target);
+      }
+    }
+  }).catch(function(e) {
+    el.innerHTML = '<div style="color:#c00;padding:16px">読み込みエラー: ' + _esc(e.message) + '</div>';
+  });
+}
+
+function filterPriceList() {
+  var q = (document.getElementById('price-search').value || '').toLowerCase();
+  if (!q) { renderPriceList(_priceItems); return; }
+  renderPriceList(_priceItems.filter(function(it) {
+    return ((it.Title || '') + (it.choice || '') + (it.note || '')).toLowerCase().indexOf(q) !== -1;
+  }));
+}
+
+function renderPriceList(items) {
+  var el = document.getElementById('price-list-container');
+  if (!items || !items.length) {
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:#888">データがありません</div>';
+    return;
+  }
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07)">';
+  html += '<thead><tr style="background:#1a2535;color:#fff">';
+  html += '<th style="padding:9px 12px;text-align:left;font-weight:500">商品名</th>';
+  html += '<th style="padding:9px 12px;text-align:left;font-weight:500;white-space:nowrap">カテゴリ</th>';
+  html += '<th style="padding:9px 12px;text-align:right;font-weight:500;white-space:nowrap">販売価格(税抜)</th>';
+  html += '</tr></thead><tbody>';
+  items.forEach(function(it, i) {
+    var bg = i % 2 === 0 ? '#fff' : '#f9f9f9';
+    var price = (it.cost !== '' && it.cost != null) ? Number(it.cost).toLocaleString('ja-JP') + '円' : '';
+    html += '<tr style="background:' + bg + ';border-bottom:0.5px solid #f0f0f0;cursor:pointer" onclick="_openPriceById(\'' + _esc(String(it.id)) + '\')">';
+    html += '<td style="padding:9px 12px">' + _esc(it.Title) + '</td>';
+    html += '<td style="padding:9px 12px;color:#555;font-size:12px">' + _esc(it.choice) + '</td>';
+    html += '<td style="padding:9px 12px;text-align:right;color:#1a5a1a;font-weight:500;white-space:nowrap">' + price + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function _openPriceById(id) {
+  for (var i = 0; i < _priceItems.length; i++) {
+    if (String(_priceItems[i].id) === String(id)) { openPriceItemEdit(_priceItems[i]); return; }
+  }
+  openPriceItemEdit(null);
+}
+
+var _editingPriceItem = null;
+
+function openPriceItemEdit(item) {
+  _editingPriceItem = item;
+  var isNew = !item;
+  document.getElementById('price-edit-title').textContent = isNew ? '＋ 新規追加' : '✏️ 編集: ' + (item.Title || '');
+  var FIELDS = [
+    { key: 'Title',         label: '商品名',           type: 'text',     required: true },
+    { key: 'choice',        label: 'カテゴリ（選択①）',  type: 'text'  },
+    { key: 'cost',          label: '販売価格（税抜）',   type: 'number' },
+    { key: 'supplier',      label: '仕入先①',           type: 'text'  },
+    { key: 'PurchasePrice', label: '仕入価格①',         type: 'number' },
+    { key: 'supplier2',     label: '仕入先②',           type: 'text'  },
+    { key: 'PurchasePrice2',label: '仕入価格②',         type: 'number' },
+    { key: 'choice_x2461_', label: '選択②',             type: 'text'  },
+    { key: 'choice3',       label: '選択③',             type: 'text'  },
+    { key: 'note',          label: '備考',               type: 'textarea' },
+    { key: 'note0',         label: '備考（仕入外注用）', type: 'textarea' }
+  ];
+  var html = '';
+  FIELDS.forEach(function(f) {
+    var val = item ? (item[f.key] != null ? item[f.key] : '') : '';
+    html += '<div style="margin-bottom:12px">';
+    html += '<label style="display:block;font-size:11px;color:#888;margin-bottom:3px">' + f.label + (f.required ? ' <span style="color:#c00">*</span>' : '') + '</label>';
+    if (f.type === 'textarea') {
+      html += '<textarea id="pef-' + f.key + '" rows="3" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical">' + _esc(String(val)) + '</textarea>';
+    } else {
+      html += '<input id="pef-' + f.key + '" type="' + f.type + '" value="' + _esc(String(val)) + '" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">';
+    }
+    html += '</div>';
+  });
+  document.getElementById('price-edit-fields').innerHTML = html;
+  var delBtn = document.getElementById('price-edit-delete');
+  if (delBtn) delBtn.style.display = isNew ? 'none' : '';
+  document.getElementById('price-edit-dialog').style.display = 'flex';
+}
+
+function closePriceDialog() {
+  document.getElementById('price-edit-dialog').style.display = 'none';
+  _editingPriceItem = null;
+}
+
+function savePriceItem() {
+  var SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var NUM_FIELDS = ['cost', 'PurchasePrice', 'PurchasePrice2'];
+  var ALL_FIELDS = ['Title','choice','cost','supplier','PurchasePrice','supplier2','PurchasePrice2','choice_x2461_','choice3','note','note0'];
+  var body = {};
+  ALL_FIELDS.forEach(function(k) {
+    var el = document.getElementById('pef-' + k);
+    if (!el) return;
+    var v = el.value;
+    if (NUM_FIELDS.indexOf(k) !== -1) {
+      body[k] = (v === '' || v == null) ? null : Number(v);
+    } else {
+      body[k] = v;
+    }
+  });
+  if (!body.Title) { alert('商品名は必須です'); return; }
+  var isNew = !_editingPriceItem;
+  var saveBtn = document.getElementById('price-edit-save');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ 保存中...'; }
+  var url = 'https://graph.microsoft.com/v1.0/sites/' + SP_SITE + '/lists/' + PRICE_LIST_ID + '/items';
+  if (!isNew) url += '/' + _editingPriceItem.id;
+  getToken().then(function(resp) {
+    return fetch(url, {
+      method: isNew ? 'POST' : 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: body })
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
+    return r.json();
+  }).then(function() {
+    showSaveToast(true, isNew ? '✅ 追加しました' : '✅ 更新しました');
+    closePriceDialog();
+    loadPriceList();
+    _syncPriceToAIQuiet();
+  }).catch(function(e) {
+    showSaveToast(false, '保存失敗: ' + e.message);
+  }).finally(function() {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存'; }
+  });
+}
+
+function deletePriceItem() {
+  if (!_editingPriceItem) return;
+  if (!confirm('「' + (_editingPriceItem.Title || '') + '」を削除しますか？')) return;
+  var SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var delBtn = document.getElementById('price-edit-delete');
+  if (delBtn) { delBtn.disabled = true; delBtn.textContent = '⏳...'; }
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + SP_SITE + '/lists/' + PRICE_LIST_ID + '/items/' + _editingPriceItem.id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken }
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
+    showSaveToast(true, '✅ 削除しました');
+    closePriceDialog();
+    loadPriceList();
+    _syncPriceToAIQuiet();
+  }).catch(function(e) {
+    showSaveToast(false, '削除失敗: ' + e.message);
+    if (delBtn) { delBtn.disabled = false; delBtn.textContent = '🗑️ 削除'; }
+  });
+}
+
+function _syncPriceToAIQuiet() {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'anythingllm') return;
+  var endpoint = (cfg.endpoint || '').replace(/\/+$/, '');
+  var slug     = (cfg.model    || '').trim();
+  var apiKey   = (cfg.apiKey   || '').trim();
+  if (!endpoint || !slug || !apiKey) return;
+  _fetchPriceListItems().then(function(items) {
+    return _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
+  }).then(function(items) {
+    var csv = _buildPriceCsv(items);
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var fd = new FormData();
+    fd.append('file', blob, 'sekizai-price-list.csv');
+    return fetch(endpoint + '/api/v1/document/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+      body: fd
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      var loc = data.documents && data.documents[0] && data.documents[0].location;
+      if (!loc) return;
+      return fetch(endpoint + '/api/v1/workspace/' + encodeURIComponent(slug) + '/update-embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+        body: JSON.stringify({ adds: [loc], deletes: [] })
+      });
+    });
+  }).then(function() {
+    showSaveToast(true, '🔄 AI同期完了');
+  }).catch(function(e) {
+    console.warn('バックグラウンドAI同期失敗:', e.message);
+  });
+}
+
 // ===== ワークスペースから旧CSV等を外す =====
 function cleanupNonPriceDocsFromWorkspace() {
   var cfg = getAICfg();
@@ -3243,7 +3469,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.407';
+var APP_VERSION = 'v1.8.408';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -3459,6 +3685,13 @@ function startApp() {
   if (fpillsBar) fpillsBar.style.display = '';
   if (templeSelect) templeSelect.style.display = '';
   checkMapParam();
+  // 価格表画面への直接リンク対応
+  (function() {
+    var p = new URLSearchParams(location.search);
+    if (p.get('view') === 'priceList') {
+      openPriceScreen();
+    }
+  })();
 }
 
 // お寺名からマップのtempleIdを取得
@@ -17555,6 +17788,36 @@ function openImageViewer(imgs, startIdx) {
         style="padding:8px 14px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">☁️ 保存</button>
       <button onclick="closeKanrouModal()"
         style="padding:8px 14px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit;margin-left:auto">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 価格表画面 ===== -->
+<div id="price-list-screen" class="hidden" style="position:fixed;inset:0;background:#f0f2f5;z-index:1000;display:flex;flex-direction:column">
+  <div style="background:#1a2535;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0">
+    <button onclick="closePriceScreen()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:0;line-height:1">←</button>
+    <span style="font-size:15px;font-weight:500;flex:1">💴 価格表</span>
+    <button onclick="openPriceItemEdit(null)" style="font-size:12px;padding:5px 12px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit">＋ 新規</button>
+  </div>
+  <div style="padding:10px 14px;background:#fff;border-bottom:1px solid #e8e8e8;flex-shrink:0">
+    <input id="price-search" type="text" oninput="filterPriceList()" placeholder="🔍 商品名・カテゴリで検索..."
+      style="width:100%;box-sizing:border-box;padding:9px 14px;border:1px solid #ddd;border-radius:10px;font-size:14px;font-family:inherit;outline:none">
+  </div>
+  <div id="price-list-container" style="flex:1;overflow-y:auto;padding:14px"></div>
+</div>
+
+<!-- 価格表 編集ダイアログ -->
+<div id="price-edit-dialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1100;align-items:flex-start;justify-content:center;overflow-y:auto;padding:16px 8px">
+  <div style="background:#fff;max-width:520px;width:100%;margin:0 auto;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column">
+    <div style="background:#1a2535;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <span id="price-edit-title" style="font-size:13px;font-weight:500">✏️ 編集</span>
+      <button onclick="closePriceDialog()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div id="price-edit-fields" style="padding:16px;overflow-y:auto;max-height:70vh"></div>
+    <div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid #eee;flex-shrink:0;flex-wrap:wrap">
+      <button id="price-edit-save" onclick="savePriceItem()" style="padding:8px 18px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
+      <button id="price-edit-delete" onclick="deletePriceItem()" style="padding:8px 18px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🗑️ 削除</button>
+      <button onclick="closePriceDialog()" style="padding:8px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;margin-left:auto">閉じる</button>
     </div>
   </div>
 </div>

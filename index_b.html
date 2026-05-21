@@ -1898,22 +1898,22 @@ function downloadPriceCsv() {
   var btn = document.getElementById('price-dl-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 取得中…'; }
   _fetchPriceListItems().then(function(items) {
-    var txt = _buildPriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildPriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'sekizai-price-list.txt';
+    a.download = 'sekizai-price-list.html';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    showSaveToast(true, items.length + '件のTXTをダウンロードしました');
+    showSaveToast(true, items.length + '件のHTMLをダウンロードしました');
   }).catch(function(e) {
     console.error(e);
-    showSaveToast(false, 'TXT取得失敗: ' + e.message);
+    showSaveToast(false, 'HTML取得失敗:' + e.message);
   }).then(function() {
-    if (btn) { btn.disabled = false; btn.textContent = '📥 TXTダウンロード'; }
+    if (btn) { btn.disabled = false; btn.textContent = '📥 HTMLダウンロード'; }
   });
 }
 
@@ -1950,35 +1950,41 @@ function _buildPriceCsv(items) {
   return rows.join('\n') + '\n';
 }
 
-// 1行で完結する日本語ナラティブ文章を生成（AnythingLLM等のRAGでチャンク化されても文脈が保たれる）
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 1商品 = 1 <article> の HTML を生成（AnythingLLM の HTML パーサーがタグ境界でチャンク化）
 function _buildPriceNarrative(items) {
-  var lines = [];
+  var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>価格表</title></head><body><h1>価格表</h1>\n'];
   items.forEach(function(it) {
     var editUrl = location.origin + location.pathname + '?view=priceList&id=' + it.id;
-    var head = '商品「' + (it.Title || '名称未設定') + '」（ID:' + it.id;
-    if (it.choice) head += '、カテゴリ「' + it.choice + '」';
-    if (it.choice_x2461_) head += '、選択②「' + it.choice_x2461_ + '」';
-    if (it.choice3) head += '、選択③「' + it.choice3 + '」';
-    head += '）';
-    var parts = [head];
-    if (it.cost != null && it.cost !== '') parts.push('の販売価格（税抜）は' + Number(it.cost).toLocaleString('ja-JP') + '円です');
-    else parts.push('の販売価格は未設定です');
+    parts.push('<article id="item-' + it.id + '">\n<h2>' + _escHtml(it.Title || '名称未設定') + '</h2>\n<dl>\n');
+    parts.push('<dt>ID</dt><dd>' + it.id + '</dd>\n');
+    if (it.choice) parts.push('<dt>カテゴリ</dt><dd>' + _escHtml(it.choice) + '</dd>\n');
+    if (it.choice_x2461_) parts.push('<dt>選択②</dt><dd>' + _escHtml(it.choice_x2461_) + '</dd>\n');
+    if (it.choice3) parts.push('<dt>選択③</dt><dd>' + _escHtml(it.choice3) + '</dd>\n');
+    if (it.cost != null && it.cost !== '')
+      parts.push('<dt>販売価格（税抜）</dt><dd>' + Number(it.cost).toLocaleString('ja-JP') + '円</dd>\n');
+    else
+      parts.push('<dt>販売価格（税抜）</dt><dd>未設定</dd>\n');
     if (it.supplier || (it.PurchasePrice != null && it.PurchasePrice !== '')) {
-      var s = '。仕入先①「' + (it.supplier || '未設定') + '」';
-      if (it.PurchasePrice != null && it.PurchasePrice !== '') s += '（仕入価格' + Number(it.PurchasePrice).toLocaleString('ja-JP') + '円）';
-      parts.push(s);
+      var s1 = _escHtml(it.supplier || '未設定');
+      if (it.PurchasePrice != null && it.PurchasePrice !== '') s1 += '（仕入価格 ' + Number(it.PurchasePrice).toLocaleString('ja-JP') + '円）';
+      parts.push('<dt>仕入先①</dt><dd>' + s1 + '</dd>\n');
     }
     if (it.supplier2 || (it.PurchasePrice2 != null && it.PurchasePrice2 !== '')) {
-      var s2 = '。仕入先②「' + (it.supplier2 || '未設定') + '」';
-      if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') s2 += '（仕入価格' + Number(it.PurchasePrice2).toLocaleString('ja-JP') + '円）';
-      parts.push(s2);
+      var s2 = _escHtml(it.supplier2 || '未設定');
+      if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') s2 += '（仕入価格 ' + Number(it.PurchasePrice2).toLocaleString('ja-JP') + '円）';
+      parts.push('<dt>仕入先②</dt><dd>' + s2 + '</dd>\n');
     }
-    if (it.note) parts.push('。備考: ' + String(it.note).replace(/\r?\n/g, ' '));
-    if (it.note0) parts.push('。備考（仕入外注用）: ' + String(it.note0).replace(/\r?\n/g, ' '));
-    parts.push('。編集URL: ' + editUrl);
-    lines.push(parts.join(''));
+    if (it.note) parts.push('<dt>備考</dt><dd>' + _escHtml(String(it.note).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    if (it.note0) parts.push('<dt>備考（仕入外注用）</dt><dd>' + _escHtml(String(it.note0).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    parts.push('<dt>編集URL</dt><dd><a href="' + editUrl + '">編集</a></dd>\n');
+    parts.push('</dl>\n</article>\n');
   });
-  return lines.join('\n') + '\n';
+  parts.push('</body></html>');
+  return parts.join('');
 }
 
 // 価格表ドキュメント識別:
@@ -2040,7 +2046,7 @@ function syncAllPricesToAI() {
     showSaveToast(false, 'AnythingLLM設定（エンドポイント/モデル/APIキー）が不完全です');
     return;
   }
-  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を1つのテキストファイル（sekizai-price-list.txt）にまとめてアップロードします。\n各行は「商品「○○」のXXは○○円です。…編集URL: …」形式の自然文章となり、CSVよりAIが商品を正確に識別できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
+  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を1つのHTMLファイル（sekizai-price-list.html）にまとめてアップロードします。\n1商品 = 1 <article> のHTML形式で、AIが商品を正確に識別できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('price-sync-btn');
   var pg  = document.getElementById('price-sync-progress');
@@ -2059,13 +2065,12 @@ function syncAllPricesToAI() {
       return items;
     });
   }).then(function(items) {
-    // 2. 全件を1つのナラティブTXTとしてアップロード（multipart/form-data）
-    var txt = _buildPriceNarrative(items);
-    setPg('📤 ナラティブTXT作成 (' + items.length + '行, 約' + Math.round(txt.length/1024) + 'KB) → アップロード中...');
-    // BOM付き UTF-8 にする
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    // 2. 全件を1つのHTMLとしてアップロード（multipart/form-data）
+    var html = _buildPriceNarrative(items);
+    setPg('📤 HTML作成 (' + items.length + '件, 約' + Math.round(html.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.txt');
+    fd.append('file', blob, 'sekizai-price-list.html');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey }, // Content-Typeは自動設定
@@ -2327,10 +2332,10 @@ function _syncPriceToAIQuiet() {
   _fetchPriceListItems().then(function(items) {
     return _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var txt = _buildPriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildPriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.txt');
+    fd.append('file', blob, 'sekizai-price-list.html');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2368,22 +2373,22 @@ function downloadStonePriceCsv() {
   var btn = document.getElementById('stone-price-dl-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 取得中…'; }
   _fetchStonePriceListItems().then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildStonePriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'sekizai-stone-price-list.txt';
+    a.download = 'sekizai-stone-price-list.html';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    showSaveToast(true, items.length + '件のTXTをダウンロードしました');
+    showSaveToast(true, items.length + '件のHTMLをダウンロードしました');
   }).catch(function(e) {
     console.error(e);
-    showSaveToast(false, 'TXT取得失敗: ' + e.message);
+    showSaveToast(false, 'HTML取得失敗:' + e.message);
   }).then(function() {
-    if (btn) { btn.disabled = false; btn.textContent = '📥 TXTダウンロード'; }
+    if (btn) { btn.disabled = false; btn.textContent = '📥 HTMLダウンロード'; }
   });
 }
 
@@ -2415,38 +2420,39 @@ function _buildStonePriceCsv(items) {
   return rows.join('\n') + '\n';
 }
 
-// 1行で完結する日本語ナラティブ文章を生成（石材価格表用）
+// 1石材 = 1 <article> の HTML を生成（石材価格表用）
 function _buildStonePriceNarrative(items) {
-  var lines = [];
+  var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>石材価格表</title></head><body><h1>石材価格表</h1>\n'];
   items.forEach(function(it) {
     var editUrl = location.origin + location.pathname + '?view=stonePriceList&id=' + it.id;
-    var head = '石材「' + (it.Title || '名称未設定') + '」（ID:' + it.id;
-    if (it.made) head += '、産地「' + it.made + '」';
-    if (it.country) head += '、国「' + it.country + '」';
-    if (it.color) head += '、色「' + it.color + '」';
-    head += '）';
-    var parts = [head];
-    if (it.cost != null && it.cost !== '') parts.push('の単価は' + it.cost + '円');
-    else parts.push('の単価は未設定');
-    if (it.name != null && it.name !== '') parts.push('、係数/規格は' + it.name);
-    parts.push('です');
+    parts.push('<article id="stone-' + it.id + '">\n<h2>' + _escHtml(it.Title || '名称未設定') + '</h2>\n<dl>\n');
+    parts.push('<dt>ID</dt><dd>' + it.id + '</dd>\n');
+    if (it.made) parts.push('<dt>産地</dt><dd>' + _escHtml(it.made) + '</dd>\n');
+    if (it.country) parts.push('<dt>国</dt><dd>' + _escHtml(it.country) + '</dd>\n');
+    if (it.color) parts.push('<dt>色</dt><dd>' + _escHtml(it.color) + '</dd>\n');
+    if (it.cost != null && it.cost !== '')
+      parts.push('<dt>単価</dt><dd>' + it.cost + '円</dd>\n');
+    else
+      parts.push('<dt>単価</dt><dd>未設定</dd>\n');
+    if (it.name != null && it.name !== '') parts.push('<dt>係数/規格</dt><dd>' + _escHtml(String(it.name)) + '</dd>\n');
     if (it.Supplier1 || (it.price1 != null && it.price1 !== '')) {
-      var s = '。仕入先①「' + (it.Supplier1 || '未設定') + '」';
-      if (it.price1 != null && it.price1 !== '') s += '（仕入価格' + Number(it.price1).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded1 ? '・加工費込' : '') + '）';
-      parts.push(s);
+      var s1 = _escHtml(it.Supplier1 || '未設定');
+      if (it.price1 != null && it.price1 !== '') s1 += '（仕入価格 ' + Number(it.price1).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded1 ? '・加工費込' : '') + '）';
+      parts.push('<dt>仕入先①</dt><dd>' + s1 + '</dd>\n');
     }
     if (it.Supplier2 || (it.price2 != null && it.price2 !== '')) {
-      var s2 = '。仕入先②「' + (it.Supplier2 || '未設定') + '」';
-      if (it.price2 != null && it.price2 !== '') s2 += '（仕入価格' + Number(it.price2).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded2 ? '・加工費込' : '') + '）';
-      parts.push(s2);
+      var s2 = _escHtml(it.Supplier2 || '未設定');
+      if (it.price2 != null && it.price2 !== '') s2 += '（仕入価格 ' + Number(it.price2).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded2 ? '・加工費込' : '') + '）';
+      parts.push('<dt>仕入先②</dt><dd>' + s2 + '</dd>\n');
     }
-    if (it.EstimateDay) parts.push('。見積日: ' + String(it.EstimateDay).slice(0, 10));
-    if (it.Features) parts.push('。特徴: ' + String(it.Features).replace(/\r?\n/g, ' '));
-    if (it.comment) parts.push('。備考: ' + String(it.comment).replace(/\r?\n/g, ' '));
-    parts.push('。編集URL: ' + editUrl);
-    lines.push(parts.join(''));
+    if (it.EstimateDay) parts.push('<dt>見積日</dt><dd>' + String(it.EstimateDay).slice(0, 10) + '</dd>\n');
+    if (it.Features) parts.push('<dt>特徴</dt><dd>' + _escHtml(String(it.Features).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    if (it.comment) parts.push('<dt>備考</dt><dd>' + _escHtml(String(it.comment).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    parts.push('<dt>編集URL</dt><dd><a href="' + editUrl + '">編集</a></dd>\n');
+    parts.push('</dl>\n</article>\n');
   });
-  return lines.join('\n') + '\n';
+  parts.push('</body></html>');
+  return parts.join('');
 }
 
 // 石材価格表ドキュメント識別
@@ -2500,7 +2506,7 @@ function syncAllStonePricesToAI() {
     showSaveToast(false, 'AnythingLLM設定が不完全です');
     return;
   }
-  if (!confirm('石材価格表をAnythingLLMに同期します。\n\nsekizai-stone-price-list.txt（ナラティブ形式）として全件まとめてアップロード。\n各行は「石材「○○」（産地「○○」、色「○○」）の単価は○○円です…」形式の自然文章で、AIが正確に石材を識別できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
+  if (!confirm('石材価格表をAnythingLLMに同期します。\n\n石材価格表全件を1つのHTMLファイル（sekizai-stone-price-list.html）にまとめてアップロードします。\n1石材 = 1 <article> のHTML形式で、AIが正確に石材を識別できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('stone-price-sync-btn');
   var pg  = document.getElementById('stone-price-sync-progress');
@@ -2518,11 +2524,11 @@ function syncAllStonePricesToAI() {
       return items;
     });
   }).then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    setPg('📤 ナラティブTXT作成 (' + items.length + '行, 約' + Math.round(txt.length/1024) + 'KB) → アップロード中...');
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildStonePriceNarrative(items);
+    setPg('📤 HTML作成 (' + items.length + '件, 約' + Math.round(html.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.txt');
+    fd.append('file', blob, 'sekizai-stone-price-list.html');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2799,10 +2805,10 @@ function _syncStonePriceToAIQuiet() {
   _fetchStonePriceListItems().then(function(items) {
     return _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildStonePriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.txt');
+    fd.append('file', blob, 'sekizai-stone-price-list.html');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -4060,7 +4066,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.423';
+var APP_VERSION = 'v1.8.424';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18146,14 +18152,14 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💴 価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>価格表（List7）</b>を <b>1つのナラティブ形式テキスト（sekizai-price-list.txt）</b>に変換して AnythingLLM ワークスペースに登録します。<br>
-        ・各行が1商品を完結した日本語文章（「商品「○○」のXXは○○円です…」）として表現するため、CSV形式より検索精度が向上します<br>
+        ℹ️ SharePointの<b>価格表（List7）</b>を <b>1つのHTMLファイル（sekizai-price-list.html）</b>に変換して AnythingLLM ワークスペースに登録します。<br>
+        ・1商品 = 1 &lt;article&gt; の HTML 形式で、タグ境界でチャンク化されるため CSV・TXT より検索精度が向上します<br>
         ・同期するたびに既存の価格表ドキュメントは削除されて再登録されます（重複なし）<br>
         ・<b>事前に上のAI設定で「AnythingLLM」を選択し、エンドポイント・モデル(ワークスペースslug)・APIキーを入力＆保存してください。</b>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="price-sync-btn" onclick="syncAllPricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
-        <button id="price-dl-btn" onclick="downloadPriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 TXTダウンロード</button>
+        <button id="price-dl-btn" onclick="downloadPriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 HTMLダウンロード</button>
         <button id="price-cleanup-btn" onclick="cleanupNonPriceDocsFromWorkspace()" style="padding:9px 18px;background:#7a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🧹 旧データをWSから外す</button>
         <button id="ai-prompt-btn" onclick="editAnyLLMPrompt()" style="padding:9px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📝 AIプロンプト編集</button>
       </div>
@@ -18164,13 +18170,13 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💎 石材価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>ナラティブ形式テキスト（sekizai-stone-price-list.txt）</b>として AnythingLLM ワークスペースに登録します。<br>
+        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>1つのHTMLファイル（sekizai-stone-price-list.html）</b>として AnythingLLM ワークスペースに登録します。<br>
         ・各行が1石材を完結した日本語文章（「石材「○○」（産地「○○」）の単価は○○円です…」）として表現し、CSV形式より検索精度が向上します<br>
         ・同期するたびに既存の石材価格表ドキュメントは削除されて再登録されます
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="stone-price-sync-btn" onclick="syncAllStonePricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
-        <button id="stone-price-dl-btn" onclick="downloadStonePriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 TXTダウンロード</button>
+        <button id="stone-price-dl-btn" onclick="downloadStonePriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 HTMLダウンロード</button>
       </div>
       <div id="stone-price-sync-progress" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
     </div>

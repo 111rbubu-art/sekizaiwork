@@ -1954,7 +1954,27 @@ function _escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// 1商品 = 1 <article> の HTML を生成（AnythingLLM の HTML パーサーがタグ境界でチャンク化）
+// Agent Tool 用: 価格表を JSON 配列として生成
+function _buildPriceJson(items) {
+  var data = items.map(function(it) {
+    var obj = { id: it.id, Title: it.Title || '' };
+    if (it.choice)         obj.choice         = it.choice;
+    if (it.choice_x2461_)  obj.choice_x2461_  = it.choice_x2461_;
+    if (it.choice3)        obj.choice3        = it.choice3;
+    obj.cost = (it.cost != null && it.cost !== '') ? it.cost : null;
+    if (it.supplier)       obj.supplier       = it.supplier;
+    if (it.PurchasePrice != null && it.PurchasePrice !== '') obj.PurchasePrice = it.PurchasePrice;
+    if (it.supplier2)      obj.supplier2      = it.supplier2;
+    if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') obj.PurchasePrice2 = it.PurchasePrice2;
+    if (it.note)  obj.note  = String(it.note).replace(/\r?\n/g, ' ');
+    if (it.note0) obj.note0 = String(it.note0).replace(/\r?\n/g, ' ');
+    obj.editUrl = location.origin + location.pathname + '?view=priceList&id=' + it.id;
+    return obj;
+  });
+  return JSON.stringify(data);
+}
+
+// 1商品 = 1 <article> の HTML を生成（ダウンロード用・閲覧用）
 function _buildPriceNarrative(items) {
   var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>価格表</title></head><body><h1>価格表</h1>\n'];
   items.forEach(function(it) {
@@ -1996,6 +2016,7 @@ function _isPriceDocFile(title, name) {
   title = String(title || '');
   name  = String(name  || '');
   if (title.indexOf('sekizai-price-list') === 0) return true;
+  if (title.indexOf('sekizai-price-data') === 0) return true;
   if (title.indexOf('sekizai-price-') === 0) return true;
   if (/^_\d+\.txt$/.test(title)) return true;
   if (/^raw-sekizai-price-list-[a-f0-9-]+\.json$/.test(name)) return true;
@@ -2046,7 +2067,7 @@ function syncAllPricesToAI() {
     showSaveToast(false, 'AnythingLLM設定（エンドポイント/モデル/APIキー）が不完全です');
     return;
   }
-  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を1つのHTMLファイル（sekizai-price-list.html）にまとめてアップロードします。\n1商品 = 1 <article> のHTML形式で、AIが商品を正確に識別できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
+  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を sekizai-price-data.json としてアップロードします。\nAnythingLLM の Agent Tool（sekizai-price-search）がこのJSONを直接検索するため、ベクトル検索より正確に商品を特定できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('price-sync-btn');
   var pg  = document.getElementById('price-sync-progress');
@@ -2065,12 +2086,12 @@ function syncAllPricesToAI() {
       return items;
     });
   }).then(function(items) {
-    // 2. 全件を1つのHTMLとしてアップロード（multipart/form-data）
-    var html = _buildPriceNarrative(items);
-    setPg('📤 HTML作成 (' + items.length + '件, 約' + Math.round(html.length/1024) + 'KB) → アップロード中...');
-    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    // 2. 全件を JSON としてアップロード（Agent Tool が読み取る）
+    var json = _buildPriceJson(items);
+    setPg('📤 JSONデータ作成 (' + items.length + '件, 約' + Math.round(json.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.html');
+    fd.append('file', blob, 'sekizai-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey }, // Content-Typeは自動設定
@@ -2332,10 +2353,10 @@ function _syncPriceToAIQuiet() {
   _fetchPriceListItems().then(function(items) {
     return _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var html = _buildPriceNarrative(items);
-    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    var json = _buildPriceJson(items);
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.html');
+    fd.append('file', blob, 'sekizai-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2420,7 +2441,31 @@ function _buildStonePriceCsv(items) {
   return rows.join('\n') + '\n';
 }
 
-// 1石材 = 1 <article> の HTML を生成（石材価格表用）
+// Agent Tool 用: 石材価格表を JSON 配列として生成
+function _buildStonePriceJson(items) {
+  var data = items.map(function(it) {
+    var obj = { id: it.id, Title: it.Title || '' };
+    if (it.made)    obj.made    = it.made;
+    if (it.country) obj.country = it.country;
+    if (it.color)   obj.color   = it.color;
+    obj.cost = (it.cost != null && it.cost !== '') ? it.cost : null;
+    if (it.name != null && it.name !== '') obj.name = it.name;
+    if (it.Supplier1) obj.Supplier1 = it.Supplier1;
+    if (it.price1 != null && it.price1 !== '') obj.price1 = it.price1;
+    if (it.MachiningCostsIncluded1) obj.MachiningCostsIncluded1 = true;
+    if (it.Supplier2) obj.Supplier2 = it.Supplier2;
+    if (it.price2 != null && it.price2 !== '') obj.price2 = it.price2;
+    if (it.MachiningCostsIncluded2) obj.MachiningCostsIncluded2 = true;
+    if (it.EstimateDay) obj.EstimateDay = it.EstimateDay;
+    if (it.Features) obj.Features = String(it.Features).replace(/\r?\n/g, ' ');
+    if (it.comment)  obj.comment  = String(it.comment).replace(/\r?\n/g, ' ');
+    obj.editUrl = location.origin + location.pathname + '?view=stonePriceList&id=' + it.id;
+    return obj;
+  });
+  return JSON.stringify(data);
+}
+
+// 1石材 = 1 <article> の HTML を生成（ダウンロード用・閲覧用）
 function _buildStonePriceNarrative(items) {
   var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>石材価格表</title></head><body><h1>石材価格表</h1>\n'];
   items.forEach(function(it) {
@@ -2460,6 +2505,7 @@ function _isStonePriceDocFile(title, name) {
   title = String(title || '');
   name  = String(name  || '');
   if (title.indexOf('sekizai-stone-price-list') === 0) return true;
+  if (title.indexOf('sekizai-stone-price-data') === 0) return true;
   if (/^raw-sekizai-stone-price-list-[a-f0-9-]+\.json$/.test(name)) return true;
   return false;
 }
@@ -2506,7 +2552,7 @@ function syncAllStonePricesToAI() {
     showSaveToast(false, 'AnythingLLM設定が不完全です');
     return;
   }
-  if (!confirm('石材価格表をAnythingLLMに同期します。\n\n石材価格表全件を1つのHTMLファイル（sekizai-stone-price-list.html）にまとめてアップロードします。\n1石材 = 1 <article> のHTML形式で、AIが正確に石材を識別できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
+  if (!confirm('石材価格表をAnythingLLMに同期します。\n\n石材価格表全件を sekizai-stone-price-data.json としてアップロードします。\nAnythingLLM の Agent Tool（sekizai-stone-price-search）がこのJSONを直接検索するため、ベクトル検索より正確に石材を特定できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('stone-price-sync-btn');
   var pg  = document.getElementById('stone-price-sync-progress');
@@ -2524,11 +2570,11 @@ function syncAllStonePricesToAI() {
       return items;
     });
   }).then(function(items) {
-    var html = _buildStonePriceNarrative(items);
-    setPg('📤 HTML作成 (' + items.length + '件, 約' + Math.round(html.length/1024) + 'KB) → アップロード中...');
-    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    var json = _buildStonePriceJson(items);
+    setPg('📤 JSONデータ作成 (' + items.length + '件, 約' + Math.round(json.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.html');
+    fd.append('file', blob, 'sekizai-stone-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2805,10 +2851,10 @@ function _syncStonePriceToAIQuiet() {
   _fetchStonePriceListItems().then(function(items) {
     return _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var html = _buildStonePriceNarrative(items);
-    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    var json = _buildStonePriceJson(items);
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.html');
+    fd.append('file', blob, 'sekizai-stone-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -4066,7 +4112,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.424';
+var APP_VERSION = 'v1.8.425';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18152,8 +18198,8 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💴 価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>価格表（List7）</b>を <b>1つのHTMLファイル（sekizai-price-list.html）</b>に変換して AnythingLLM ワークスペースに登録します。<br>
-        ・1商品 = 1 &lt;article&gt; の HTML 形式で、タグ境界でチャンク化されるため CSV・TXT より検索精度が向上します<br>
+        ℹ️ SharePointの<b>価格表（List7）</b>を <b>sekizai-price-data.json</b> として AnythingLLM に登録します。<br>
+        ・AnythingLLM の <b>Agent Tool（sekizai-price-search）</b>がJSONを直接キーワード検索するため、ベクトル検索より正確に商品を特定できます<br>
         ・同期するたびに既存の価格表ドキュメントは削除されて再登録されます（重複なし）<br>
         ・<b>事前に上のAI設定で「AnythingLLM」を選択し、エンドポイント・モデル(ワークスペースslug)・APIキーを入力＆保存してください。</b>
       </div>
@@ -18170,7 +18216,7 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💎 石材価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>1つのHTMLファイル（sekizai-stone-price-list.html）</b>として AnythingLLM ワークスペースに登録します。<br>
+        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>sekizai-stone-price-data.json</b> として AnythingLLM に登録します。Agent Tool（sekizai-stone-price-search）がJSONを直接キーワード検索します。<br>
         ・各行が1石材を完結した日本語文章（「石材「○○」（産地「○○」）の単価は○○円です…」）として表現し、CSV形式より検索精度が向上します<br>
         ・同期するたびに既存の石材価格表ドキュメントは削除されて再登録されます
       </div>

@@ -3,7 +3,8 @@
 const fs   = require('fs');
 const path = require('path');
 
-const CUSTOM_DOCS = path.join(__dirname, '..', '..', '..', 'custom-documents');
+const STORAGE_DIR = process.env.STORAGE_DIR || path.join(__dirname, '..', '..', '..');
+const CUSTOM_DOCS = path.join(STORAGE_DIR, 'custom-documents');
 const DATA_PREFIX  = 'sekizai-stone-price-data';
 
 function loadStoneData() {
@@ -55,55 +56,36 @@ function formatStone(it) {
   return lines.join('\n');
 }
 
-module.exports = {
-  name: 'sekizai-stone-price-search',
-  setup(aibitat) {
-    aibitat.function({
-      super: aibitat,
-      name: this.name,
-      description: '石材価格表を検索します。石材名・産地・国・色・仕入先で検索でき、単価・仕入価格・編集URLを返します。石材の価格・仕入先に関する質問には必ずこのツールを使ってください。',
-      parameters: {
-        $schema: 'http://json-schema.org/draft-07/schema#',
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: '検索する石材名・産地・国・色・仕入先名'
-          }
-        },
-        required: ['query']
-      },
-      handler: async function ({ query }) {
-        try {
-          const items = loadStoneData();
-          if (!items) {
-            return 'エラー: 石材価格データが見つかりません。アプリの「🔄 AI同期」ボタンを押してデータを更新してください。';
-          }
-
-          const q = query.toLowerCase();
-          const hits = items.filter(it =>
-            String(it.Title    || '').toLowerCase().includes(q) ||
-            String(it.made     || '').toLowerCase().includes(q) ||
-            String(it.country  || '').toLowerCase().includes(q) ||
-            String(it.color    || '').toLowerCase().includes(q) ||
-            String(it.Supplier1|| '').toLowerCase().includes(q) ||
-            String(it.Supplier2|| '').toLowerCase().includes(q) ||
-            String(it.comment  || '').toLowerCase().includes(q)
-          );
-
-          if (!hits.length) {
-            return '「' + query + '」に該当する石材が見つかりませんでした。別のキーワードでお試しください。';
-          }
-
-          const MAX = 10;
-          let result = hits.length + '件見つかりました:\n\n';
-          result += hits.slice(0, MAX).map(formatStone).join('\n\n');
-          if (hits.length > MAX) result += '\n\n（他 ' + (hits.length - MAX) + '件）';
-          return result;
-        } catch (e) {
-          return 'エラー: ' + e.message;
-        }
+module.exports.runtime = {
+  handler: async function({ query }) {
+    try {
+      const items = loadStoneData();
+      if (!items) {
+        return 'エラー: 石材価格データが見つかりません。アプリの「🔄 AI同期」ボタンを押してデータを更新してください。';
       }
-    });
+
+      const q = String(query || '').toLowerCase();
+      const hits = items.filter(it =>
+        String(it.Title     || '').toLowerCase().includes(q) ||
+        String(it.made      || '').toLowerCase().includes(q) ||
+        String(it.country   || '').toLowerCase().includes(q) ||
+        String(it.color     || '').toLowerCase().includes(q) ||
+        String(it.Supplier1 || '').toLowerCase().includes(q) ||
+        String(it.Supplier2 || '').toLowerCase().includes(q) ||
+        String(it.comment   || '').toLowerCase().includes(q)
+      );
+
+      if (!hits.length) {
+        return '「' + query + '」に該当する石材が見つかりませんでした。別のキーワードでお試しください。';
+      }
+
+      const MAX = 10;
+      let result = hits.length + '件見つかりました:\n\n';
+      result += hits.slice(0, MAX).map(formatStone).join('\n\n');
+      if (hits.length > MAX) result += '\n\n（他 ' + (hits.length - MAX) + '件）';
+      return result;
+    } catch (e) {
+      return 'エラー: ' + e.message;
+    }
   }
 };

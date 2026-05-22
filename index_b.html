@@ -4239,7 +4239,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.440';
+var APP_VERSION = 'v1.8.441';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -5319,39 +5319,96 @@ function toWareki(dateStr) {
 // ===== 顧客リスト登録モーダル：添付ファイル読み込み =====
 function loadCrmAttachments(mode, d) {
   var el = document.getElementById('crm-attach-list');
+  var felEl = document.getElementById('crm-folder-list');
   if (!el) return;
   el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">読み込み中...</div>';
+  if (felEl) felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">読み込み中...</div>';
+
   var listTitle = mode === 'kouji' ? '工事関連' : '納骨・戒切';
   var itemId = d['id'];
-  if (!itemId) { el.textContent = '添付なし'; return; }
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-    account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    var token = resp.accessToken;
-    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('" + listTitle + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
-    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
-  }).then(function(r){ return r.json(); })
-  .then(function(d2) {
-    var files = (d2.d && d2.d.results) ? d2.d.results : [];
+
+  // --- SP添付ファイルを読み込み ---
+  if (!itemId) {
+    el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付なし</div>';
+  } else {
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var token = resp.accessToken;
+      var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('" + listTitle + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+      return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+    }).then(function(r){ return r.json(); })
+    .then(function(d2) {
+      var files = (d2.d && d2.d.results) ? d2.d.results : [];
+      if (files.length === 0) {
+        el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付ファイルなし</div>';
+        return;
+      }
+      var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+      var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+      var imgHtml = '';
+      if (imgs.length > 0) {
+        imgHtml = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-bottom:8px">' +
+          imgs.map(function(f) {
+            var fname = f.FileName || '';
+            var relUrl = f.ServerRelativeUrl || '';
+            var imgUrl = 'https://shojisekizai.sharepoint.com' + relUrl;
+            return '<div style="position:relative">' +
+              '<label style="cursor:pointer;display:block">' +
+                '<img src="' + imgUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px">' +
+                '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f8f8f8;border-radius:0 0 4px 4px">' +
+                  '<input type="checkbox" class="crm-attach-chk" data-type="sp" data-url="' + relUrl + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#1a5a1a">' +
+                  '<span style="font-size:9px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + fname + '</span>' +
+                '</div>' +
+              '</label>' +
+            '</div>';
+          }).join('') + '</div>';
+      }
+      var otherHtml = others.map(function(f) {
+        var fname = f.FileName || '';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:0.5px solid #eee">' +
+          '<input type="checkbox" class="crm-attach-chk" data-type="sp" data-url="' + (f.ServerRelativeUrl||'') + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#1a5a1a">' +
+          '<span style="font-size:13px">📄</span>' +
+          '<span style="font-size:12px;color:#185fa5;flex:1">' + fname + '</span>' +
+        '</div>';
+      }).join('');
+      el.innerHTML = imgHtml + otherHtml;
+    })
+    .catch(function(e) { el.innerHTML = '<div style="color:#c00;font-size:11px">読込エラー: ' + e.message + '</div>'; });
+  }
+
+  // --- OneDriveフォルダー内のファイルを読み込み ---
+  if (!felEl) return;
+  var folderPath = mode === 'kouji' ? (d['Folder_Pass'] || '') : (d['FolderPass'] || '');
+  if (!folderPath) {
+    felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">フォルダーが登録されていません</div>';
+    return;
+  }
+  getToken().then(function(resp) {
+    var encoded = folderPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,id,file&$orderby=name&$top=200';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.json(); })
+  .then(function(data) {
+    var files = (data.value || []).filter(function(f) { return f.file; });
     if (files.length === 0) {
-      el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付ファイルなし</div>';
+      felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">フォルダー内にファイルなし</div>';
       return;
     }
-    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
-    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.name||''); });
+    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.name||''); });
     var imgHtml = '';
     if (imgs.length > 0) {
       imgHtml = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-bottom:8px">' +
         imgs.map(function(f) {
-          var fname = f.FileName || '';
-          var relUrl = f.ServerRelativeUrl || '';
-          var imgUrl = 'https://shojisekizai.sharepoint.com' + relUrl;
+          var fname = f.name || '';
+          var thumbUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.id + '/thumbnails/0/small/content';
           return '<div style="position:relative">' +
             '<label style="cursor:pointer;display:block">' +
-              '<img src="' + imgUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px">' +
-              '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f8f8f8;border-radius:0 0 4px 4px">' +
-                '<input type="checkbox" class="crm-attach-chk" data-url="' + relUrl + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#1a5a1a">' +
+              '<img src="' + thumbUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px" onerror="this.style.display=\'none\'">' +
+              '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f0f8f0;border-radius:0 0 4px 4px">' +
+                '<input type="checkbox" class="crm-folder-chk" data-type="drive" data-item-id="' + f.id + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#005a4a">' +
                 '<span style="font-size:9px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + fname + '</span>' +
               '</div>' +
             '</label>' +
@@ -5359,16 +5416,26 @@ function loadCrmAttachments(mode, d) {
         }).join('') + '</div>';
     }
     var otherHtml = others.map(function(f) {
-      var fname = f.FileName || '';
+      var fname = f.name || '';
       return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:0.5px solid #eee">' +
-        '<input type="checkbox" class="crm-attach-chk" data-url="' + (f.ServerRelativeUrl||'') + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#1a5a1a">' +
+        '<input type="checkbox" class="crm-folder-chk" data-type="drive" data-item-id="' + f.id + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#005a4a">' +
         '<span style="font-size:13px">📄</span>' +
         '<span style="font-size:12px;color:#185fa5;flex:1">' + fname + '</span>' +
       '</div>';
     }).join('');
-    el.innerHTML = imgHtml + otherHtml;
+    felEl.innerHTML = imgHtml + otherHtml;
   })
-  .catch(function(e) { el.innerHTML = '<div style="color:#c00;font-size:11px">読込エラー: ' + e.message + '</div>'; });
+  .catch(function(e) { felEl.innerHTML = '<div style="color:#c00;font-size:11px">フォルダー読込エラー: ' + e.message + '</div>'; });
+}
+function crmSelectAllAttach() {
+  var cks = document.querySelectorAll('#crm-attach-list .crm-attach-chk');
+  var all = Array.from(cks).every(function(c){return c.checked;});
+  cks.forEach(function(c){c.checked = !all;});
+}
+function crmSelectAllFolder() {
+  var cks = document.querySelectorAll('#crm-folder-list .crm-folder-chk');
+  var all = Array.from(cks).every(function(c){return c.checked;});
+  cks.forEach(function(c){c.checked = !all;});
 }
 
 
@@ -5757,11 +5824,16 @@ function submitCustReg() {
   var btn = document.querySelector('#cust-reg-modal button[onclick="submitCustReg()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 登録中...'; }
 
-  // 選択された添付ファイルを収集
+  // 選択された添付ファイルを収集（SP添付 + フォルダーファイル）
   var selectedAttach = [];
   document.querySelectorAll('#crm-attach-list .crm-attach-chk').forEach(function(chk) {
     if (chk.checked) {
-      selectedAttach.push({ url: chk.getAttribute('data-url'), name: chk.getAttribute('data-name') });
+      selectedAttach.push({ type: 'sp', url: chk.getAttribute('data-url'), name: chk.getAttribute('data-name') });
+    }
+  });
+  document.querySelectorAll('#crm-folder-list .crm-folder-chk').forEach(function(chk) {
+    if (chk.checked) {
+      selectedAttach.push({ type: 'drive', itemId: chk.getAttribute('data-item-id'), name: chk.getAttribute('data-name') });
     }
   });
 
@@ -18237,50 +18309,55 @@ function handleDropNok(event, itemId) {
 // ===== 顧客リスト登録モーダル：添付ファイルコピー =====
 function copyCrmAttachments(cusId, selectedFiles, callback) {
   if (!selectedFiles || selectedFiles.length === 0) { callback(); return; }
-  msalApp.acquireTokenSilent({
+  var spTokenP = msalApp.acquireTokenSilent({
     scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
     account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    var token = resp.accessToken;
-    return getToken().then(function(resp2) {
-      var graphToken = resp2.accessToken;
-      var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-      var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
-      var done = 0; var errors = 0;
-      function copyNext(idx) {
-        if (idx >= selectedFiles.length) {
-          showSaveToast(errors === 0, errors === 0 ? done + '件コピーしました' : done + '件成功、' + errors + '件失敗');
-          callback();
-          return;
-        }
-        var f = selectedFiles[idx];
-        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
-          f.url.replace(/'/g, "''") + "')/$value";
-        fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-          .then(function(r) { return r.arrayBuffer(); })
-          .then(function(buf) {
-            var bytes = new Uint8Array(buf);
-            var binary = '';
-            bytes.forEach(function(b) { binary += String.fromCharCode(b); });
-            var b64 = btoa(binary);
-            return fetch(
-              'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/attachments',
-              {
-                method: 'POST',
-                headers: { Authorization: 'Bearer ' + graphToken, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: f.name, contentBytes: b64 })
-              }
-            );
-          })
-          .then(function(r) {
-            if (r.ok || r.status === 201) done++;
-            else errors++;
-            copyNext(idx + 1);
-          })
-          .catch(function() { errors++; copyNext(idx + 1); });
+  });
+  Promise.all([spTokenP, getToken()]).then(function(results) {
+    var spToken = results[0].accessToken;
+    var graphToken = results[1].accessToken;
+    var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+    var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+    var done = 0; var errors = 0;
+    function copyNext(idx) {
+      if (idx >= selectedFiles.length) {
+        showSaveToast(errors === 0, errors === 0 ? done + '件コピーしました' : done + '件成功、' + errors + '件失敗');
+        callback();
+        return;
       }
-      copyNext(0);
-    });
+      var f = selectedFiles[idx];
+      var fetchBuf;
+      if (f.type === 'drive') {
+        var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.itemId + '/content';
+        fetchBuf = fetch(driveUrl, { headers: { Authorization: 'Bearer ' + graphToken } }).then(function(r) { return r.arrayBuffer(); });
+      } else {
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+          (f.url||'').replace(/'/g, "''") + "')/$value";
+        fetchBuf = fetch(binUrl, { headers: { Authorization: 'Bearer ' + spToken } }).then(function(r) { return r.arrayBuffer(); });
+      }
+      fetchBuf
+        .then(function(buf) {
+          var bytes = new Uint8Array(buf);
+          var binary = '';
+          bytes.forEach(function(b) { binary += String.fromCharCode(b); });
+          var b64 = btoa(binary);
+          return fetch(
+            'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/attachments',
+            {
+              method: 'POST',
+              headers: { Authorization: 'Bearer ' + graphToken, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: f.name, contentBytes: b64 })
+            }
+          );
+        })
+        .then(function(r) {
+          if (r.ok || r.status === 201) done++;
+          else errors++;
+          copyNext(idx + 1);
+        })
+        .catch(function() { errors++; copyNext(idx + 1); });
+    }
+    copyNext(0);
   }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); callback(); });
 }
 
@@ -19579,14 +19656,21 @@ function openImageViewer(imgs, startIdx) {
 
     <!-- 添付ファイルをコピー -->
     <div style="margin-bottom:10px">
-      <div style="background:#8a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px">
-        <span style="font-size:11px;font-weight:500;color:#fff">添付ファイルをコピー</span>
+      <div style="background:#8a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;font-weight:500;color:#fff">📎 添付ファイルをコピー</span>
+        <button onclick="crmSelectAllAttach()" style="font-size:10px;padding:2px 8px;background:#a06000;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">全選択</button>
       </div>
-      <div style="font-size:11px;color:#c07000;background:#fff8e6;border:0.5px solid #f0c000;border-radius:5px;padding:6px 10px;margin-bottom:6px">
-        ⚠️ 添付ファイルのコピー機能は後日登録予定です。現在はファイルの確認のみ可能です。
-      </div>
-      <div style="font-size:11px;color:#888;margin-bottom:6px;font-style:italic">工事リストに保存されている添付ファイルから選んでコピーします</div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-style:italic">工事/納骨リストの添付ファイルから選択してコピー</div>
       <div id="crm-attach-list" style="color:#aaa;font-size:12px;padding:8px;text-align:center">（添付ファイルを読み込み中...）</div>
+    </div>
+    <!-- フォルダー内のファイルをコピー -->
+    <div style="margin-bottom:10px">
+      <div style="background:#005a4a;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;font-weight:500;color:#fff">🗂 フォルダー内のファイルをコピー</span>
+        <button onclick="crmSelectAllFolder()" style="font-size:10px;padding:2px 8px;background:#006a56;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">全選択</button>
+      </div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-style:italic">OneDriveフォルダー内のファイルから選択してコピー</div>
+      <div id="crm-folder-list" style="color:#aaa;font-size:12px;padding:8px;text-align:center">（フォルダーファイルを読み込み中...）</div>
     </div>
 
   </div>

@@ -4239,7 +4239,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.430';
+var APP_VERSION = 'v1.8.431';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8133,6 +8133,7 @@ function renderKoujiDataTab(d) {
 
   if (_koujiDataSubtab === 'sp') {
     var hasAttach = d['Attachments'] === true;
+    var cusId = String(d['Cus_ID'] || '').trim();
     b.innerHTML = subtabHtml +
       '<div class="sec"><span class="sec-hdr bg3">添付ファイル</span>' +
       (hasAttach
@@ -8145,8 +8146,10 @@ function renderKoujiDataTab(d) {
         '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteKoujiFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
       '</div>' +
       '<input type="file" id="kouji-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadKoujiAttachments(\'' + itemId + '\',this)">' +
-      '</div>';
+      '</div>' +
+      (cusId ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-kouji-' + cusId + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
     if (hasAttach) loadKoujiAttachments(itemId);
+    if (cusId) loadLinkedCusAttachments(cusId, 'cus-linked-attach-kouji-' + cusId);
     return;
   }
 
@@ -8208,6 +8211,7 @@ function renderNokDataTab(d) {
 
   // SP添付（default）
   var hasAttach = d['Attachments'] === true;
+  var cusIdNok = String(d['Cus_ID'] || '').trim();
   b.innerHTML = subtabHtml +
     '<div class="sec"><span class="sec-hdr bg1">添付ファイル</span>' +
     (hasAttach
@@ -8220,8 +8224,10 @@ function renderNokDataTab(d) {
       '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteNokFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
     '</div>' +
     '<input type="file" id="nok-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadNokAttachments(\'' + itemId + '\',this)">' +
-    '</div>';
+    '</div>' +
+    (cusIdNok ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-nok-' + cusIdNok + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
   if (hasAttach) loadAttachments(itemId);
+  if (cusIdNok) loadLinkedCusAttachments(cusIdNok, 'cus-linked-attach-nok-' + cusIdNok);
   setTimeout(function() {
     var area = document.getElementById('det-body');
     if (!area) return;
@@ -14649,6 +14655,78 @@ function loadCustomerAttachments(spItemId) {
             var fileBtn = imgEl.parentElement.querySelector('.attach-file-btn');
             if (fileBtn) fileBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
           }
+        }).catch(function(){});
+      });
+    }).catch(function(){});
+  })
+  .catch(function(e) {
+    if (area) area.innerHTML = '<div class="err-banner">エラー: ' + e.message + '</div>';
+  });
+}
+
+// 納骨・工事から顧客リストの添付ファイルを読み取り専用で表示
+function loadLinkedCusAttachments(cusId, areaId) {
+  var area = document.getElementById(areaId);
+  if (!area) return;
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items(" + cusId + ")/AttachmentFiles";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    var files = (d && d.d && d.d.results) || [];
+    if (files.length === 0) {
+      area.innerHTML = '<div class="attach-empty">添付ファイルなし</div>';
+      return;
+    }
+    var imgs   = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
+    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
+    var html = '<div class="attach-grid">';
+    imgs.forEach(function(f, fi) {
+      var isMap = f.FileName.toLowerCase().includes('map');
+      var label = isMap ? '🗺️ 地図' : '📷 写真';
+      html += '<div class="attach-item" style="position:relative">' +
+        '<img class="attach-thumb cus-linked-img-lazy" ' +
+        'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+        'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
+        'data-fi="' + fi + '" style="background:#e0e0e0">' +
+        '<button class="attach-thumb-btn cb-btn cb-thumb cb-icon-only" data-tip="🖼 サムネを画像コピー" style="position:absolute;top:4px;left:4px">🖼</button>' +
+        '<button class="attach-file-btn cb-btn cb-file cb-icon-only" data-tip="📷 原寸を画像コピー" style="position:absolute;top:4px;left:34px">📷</button>' +
+        '<div class="attach-label">' + label + ' ' + f.FileName + '</div>' +
+        '</div>';
+    });
+    others.forEach(function(f) {
+      html += '<div class="attach-item" style="display:flex;flex-direction:column;gap:4px">' +
+        '<a href="https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl + '" target="_blank" class="attach-file-link">📎 ' + f.FileName + '</a>' +
+        '</div>';
+    });
+    html += '</div>';
+    area.innerHTML = html;
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var t2 = resp.accessToken;
+      area.querySelectorAll('.cus-linked-img-lazy').forEach(function(imgEl) {
+        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+                     relPath.replace(/'/g, "''") + "')/$value";
+        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
+        .then(function(r){ return r.ok ? r.blob() : null; })
+        .then(function(blob) {
+          if (!blob) return;
+          var blobUrl = URL.createObjectURL(blob);
+          imgEl.src = blobUrl;
+          imgEl.style.background = '';
+          imgEl.onclick = function(){ openCustImgPreview(blobUrl); };
+          var thumbBtn = imgEl.parentElement.querySelector('.attach-thumb-btn');
+          if (thumbBtn) thumbBtn.onclick = function(e){ e.stopPropagation(); _copyImgResizedToClipboard(blobUrl, this, 600); };
+          var fileBtn = imgEl.parentElement.querySelector('.attach-file-btn');
+          if (fileBtn) fileBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
         }).catch(function(){});
       });
     }).catch(function(){});

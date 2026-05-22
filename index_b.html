@@ -4239,7 +4239,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.431';
+var APP_VERSION = 'v1.8.432';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8146,6 +8146,9 @@ function renderKoujiDataTab(d) {
         '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteKoujiFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
       '</div>' +
       '<input type="file" id="kouji-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadKoujiAttachments(\'' + itemId + '\',this)">' +
+      '<div style="margin-top:8px;text-align:right">' +
+        '<button type="button" onclick="openFileMgrPanel(currentItem,\'kouji\')" style="background:#2a4a7a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit">🗂 ファイル整理</button>' +
+      '</div>' +
       '</div>' +
       (cusId ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-kouji-' + cusId + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
     if (hasAttach) loadKoujiAttachments(itemId);
@@ -8224,6 +8227,9 @@ function renderNokDataTab(d) {
       '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteNokFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
     '</div>' +
     '<input type="file" id="nok-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadNokAttachments(\'' + itemId + '\',this)">' +
+    '<div style="margin-top:8px;text-align:right">' +
+      '<button type="button" onclick="openFileMgrPanel(currentItem,\'noukotsu\')" style="background:#2a4a7a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit">🗂 ファイル整理</button>' +
+    '</div>' +
     '</div>' +
     (cusIdNok ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-nok-' + cusIdNok + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
   if (hasAttach) loadAttachments(itemId);
@@ -14734,6 +14740,388 @@ function loadLinkedCusAttachments(cusId, areaId) {
   .catch(function(e) {
     if (area) area.innerHTML = '<div class="err-banner">エラー: ' + e.message + '</div>';
   });
+}
+
+// ===== ファイル整理フローティングパネル =====
+var _fmgr = {
+  open: false, x: null, y: null,
+  panelDragX: 0, panelDragY: 0, panelDragging: false,
+  panelLoc: '',      // 'cus_sp' | 'cur_sp' | 'folder'
+  panelFiles: [],    // パネル側ファイル一覧
+  mainFiles: [],     // メイン側ファイル一覧
+  item: null,
+  listMode: '',      // 'noukotsu' | 'kouji'
+  fileDragData: null,
+  fileDragSide: ''   // 'panel' | 'main'
+};
+
+function openFileMgrPanel(item, listMode) {
+  _fmgr.item = item;
+  _fmgr.listMode = listMode;
+  _fmgr.open = true;
+  if (_fmgr.x === null) {
+    _fmgr.x = Math.max(20, window.innerWidth - 420);
+    _fmgr.y = 80;
+  }
+  var cusId = String(item['Cus_ID'] || '').trim();
+  var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+  if (!_fmgr.panelLoc || _fmgr.panelLoc === 'cur_sp') {
+    _fmgr.panelLoc = cusId ? 'cus_sp' : (folderPass ? 'folder' : 'cur_sp');
+  }
+  _fmgrBuildPanel();
+  _fmgrLoadPanelFiles();
+  _fmgrLoadMainFiles();
+}
+
+function closeFileMgrPanel() {
+  _fmgr.open = false;
+  var p = document.getElementById('fmgr-panel');
+  if (p) p.remove();
+}
+
+function _fmgrBuildPanel() {
+  var existing = document.getElementById('fmgr-panel');
+  if (existing) existing.remove();
+  var item = _fmgr.item;
+  var cusId = String(item['Cus_ID'] || '').trim();
+  var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+  var curLabel = _fmgr.listMode === 'noukotsu' ? 'この納骨SP' : 'この工事SP';
+  var locOpts = '';
+  if (cusId) locOpts += '<option value="cus_sp">👤 顧客SP添付</option>';
+  if (folderPass) locOpts += '<option value="folder">📁 フォルダー</option>';
+  locOpts += '<option value="cur_sp">' + curLabel + '添付</option>';
+
+  var panel = document.createElement('div');
+  panel.id = 'fmgr-panel';
+  panel.style.cssText = 'position:fixed;top:' + _fmgr.y + 'px;left:' + _fmgr.x + 'px;width:370px;max-height:82vh;background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:9990;display:flex;flex-direction:column;font-family:inherit;border:2px solid #1a3a6a;overflow:hidden;resize:both;min-width:280px;min-height:260px';
+
+  var btnS = 'flex:1;padding:5px 2px;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;font-weight:500';
+  panel.innerHTML =
+    // タイトルバー（ドラッグ用）
+    '<div id="fmgr-tb" style="background:#1a3a6a;color:#fff;padding:7px 10px;cursor:move;display:flex;align-items:center;gap:6px;user-select:none;flex-shrink:0">' +
+      '<span style="flex:1;font-size:13px;font-weight:600">🗂 ファイル整理</span>' +
+      '<button onclick="closeFileMgrPanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button>' +
+    '</div>' +
+    // 転送ボタン（中段）
+    '<div style="padding:6px 8px;background:#f0f4fa;border-bottom:1px solid #c8d8f0;flex-shrink:0">' +
+      '<div style="display:flex;gap:4px;margin-bottom:4px">' +
+        '<button onclick="_fmgrExec(\'panel_to_main\',\'copy\')" style="' + btnS + ';background:#1a7a3a;color:#fff">↓ メインへコピー</button>' +
+        '<button onclick="_fmgrExec(\'panel_to_main\',\'move\')" style="' + btnS + ';background:#1a5a9a;color:#fff">↓ メインへ移動</button>' +
+        '<button onclick="_fmgrExec(\'main_to_panel\',\'copy\')" style="' + btnS + ';background:#7a5a1a;color:#fff">↑ パネルへコピー</button>' +
+        '<button onclick="_fmgrExec(\'main_to_panel\',\'move\')" style="' + btnS + ';background:#7a1a1a;color:#fff">↑ パネルへ移動</button>' +
+      '</div>' +
+    '</div>' +
+    // パネル側
+    '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:80px">' +
+      '<div style="background:#e8f0fb;padding:4px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #c8d8f0">' +
+        '<span style="font-size:11px;color:#1a3a6a;font-weight:600">パネル側</span>' +
+        '<select id="fmgr-loc" onchange="_fmgrSwitchLoc(this.value)" style="flex:1;font-size:11px;padding:3px 4px;border:1px solid #aac;border-radius:3px;font-family:inherit">' + locOpts + '</select>' +
+        '<button onclick="_fmgrLoadPanelFiles()" style="background:#1a3a6a;color:#fff;border:none;border-radius:3px;padding:3px 6px;cursor:pointer;font-size:10px">🔄</button>' +
+        '<label style="font-size:10px;color:#666"><input type="checkbox" id="fmgr-p-all" onchange="_fmgrSelAll(\'panel\',this.checked)"> 全</label>' +
+      '</div>' +
+      '<div id="fmgr-panel-list" style="flex:1;overflow-y:auto;padding:4px"' +
+        ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #1a7a3a\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'panel\')">' +
+        '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>' +
+      '</div>' +
+    '</div>' +
+    // 区切り
+    '<div style="background:#ddd;height:3px;flex-shrink:0;cursor:row-resize"></div>' +
+    // メイン側
+    '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:80px">' +
+      '<div style="background:#fbe8e8;padding:4px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #f0c8c8">' +
+        '<span style="font-size:11px;color:#6a1a1a;font-weight:600">メイン側</span>' +
+        '<span id="fmgr-main-label" style="flex:1;font-size:11px;color:#666"></span>' +
+        '<button onclick="_fmgrLoadMainFiles()" style="background:#6a1a1a;color:#fff;border:none;border-radius:3px;padding:3px 6px;cursor:pointer;font-size:10px">🔄</button>' +
+        '<label style="font-size:10px;color:#666"><input type="checkbox" id="fmgr-m-all" onchange="_fmgrSelAll(\'main\',this.checked)"> 全</label>' +
+      '</div>' +
+      '<div id="fmgr-main-list" style="flex:1;overflow-y:auto;padding:4px"' +
+        ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #7a1a1a\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'main\')">' +
+        '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(panel);
+  var sel = document.getElementById('fmgr-loc');
+  if (sel) sel.value = _fmgr.panelLoc;
+
+  // タイトルバードラッグ（マウス）
+  var tb = document.getElementById('fmgr-tb');
+  if (tb) {
+    tb.addEventListener('mousedown', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      _fmgr.panelDragging = true;
+      var rect = document.getElementById('fmgr-panel').getBoundingClientRect();
+      _fmgr.panelDragX = e.clientX - rect.left;
+      _fmgr.panelDragY = e.clientY - rect.top;
+      document.addEventListener('mousemove', _fmgrPanelMove);
+      document.addEventListener('mouseup', _fmgrPanelUp);
+      e.preventDefault();
+    });
+    tb.addEventListener('touchstart', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      var t = e.touches[0];
+      var rect = document.getElementById('fmgr-panel').getBoundingClientRect();
+      _fmgr.panelDragX = t.clientX - rect.left;
+      _fmgr.panelDragY = t.clientY - rect.top;
+      document.addEventListener('touchmove', _fmgrPanelTouch, { passive: false });
+      document.addEventListener('touchend', _fmgrPanelTouchEnd);
+      e.preventDefault();
+    }, { passive: false });
+  }
+}
+
+function _fmgrPanelMove(e) {
+  if (!_fmgr.panelDragging) return;
+  var p = document.getElementById('fmgr-panel'); if (!p) return;
+  var x = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - _fmgr.panelDragX));
+  var y = Math.max(0, Math.min(window.innerHeight - 50, e.clientY - _fmgr.panelDragY));
+  p.style.left = x + 'px'; p.style.top = y + 'px';
+  _fmgr.x = x; _fmgr.y = y;
+}
+function _fmgrPanelUp() {
+  _fmgr.panelDragging = false;
+  document.removeEventListener('mousemove', _fmgrPanelMove);
+  document.removeEventListener('mouseup', _fmgrPanelUp);
+}
+function _fmgrPanelTouch(e) {
+  var t = e.touches[0];
+  var p = document.getElementById('fmgr-panel'); if (!p) return;
+  var x = Math.max(0, Math.min(window.innerWidth - 100, t.clientX - _fmgr.panelDragX));
+  var y = Math.max(0, Math.min(window.innerHeight - 50, t.clientY - _fmgr.panelDragY));
+  p.style.left = x + 'px'; p.style.top = y + 'px';
+  e.preventDefault();
+}
+function _fmgrPanelTouchEnd() {
+  document.removeEventListener('touchmove', _fmgrPanelTouch);
+  document.removeEventListener('touchend', _fmgrPanelTouchEnd);
+}
+
+function _fmgrSwitchLoc(loc) {
+  _fmgr.panelLoc = loc;
+  _fmgrLoadPanelFiles();
+}
+
+function _fmgrSelAll(side, checked) {
+  var sel = side === 'panel' ? '#fmgr-panel-list .fmgr-chk' : '#fmgr-main-list .fmgr-chk';
+  document.querySelectorAll(sel).forEach(function(cb) { cb.checked = checked; });
+}
+
+function _fmgrFetchSPFiles(listEncoded, itemId) {
+  return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+    .then(function(r) {
+      var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + listEncoded + ')/items(' + itemId + ')/AttachmentFiles';
+      return fetch(url, { headers: { Authorization: 'Bearer ' + r.accessToken, Accept: 'application/json;odata=verbose' } });
+    }).then(function(r) { return r.json(); })
+    .then(function(d) { return (d && d.d && d.d.results) || []; });
+}
+
+function _fmgrRenderFileList(elId, files, side) {
+  var el = document.getElementById(elId);
+  if (!el) return;
+  if (!files || !files.length) { el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">ファイルなし</div>'; return; }
+  var html = '';
+  files.forEach(function(f, i) {
+    var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
+    var icon = isImg ? '📷' : (f.name.toLowerCase().endsWith('.pdf') ? '📄' : '📎');
+    var fj = encodeURIComponent(JSON.stringify(f));
+    html += '<div class="fmgr-row" draggable="true" data-fi="' + i + '" data-side="' + side + '"' +
+      ' ondragstart="_fmgrDragStart(event,\'' + side + '\',' + i + ')"' +
+      ' style="display:flex;align-items:center;gap:5px;padding:4px 3px;border-bottom:1px solid #f0f0f0;cursor:grab;border-radius:3px"' +
+      ' onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
+      '<input type="checkbox" class="fmgr-chk" data-fi="' + i + '">' +
+      '<span>' + icon + '</span>' +
+      '<span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + f.name + '">' + f.name + '</span>' +
+      '<span style="font-size:10px;color:#ccc">⠿</span>' +
+    '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function _fmgrLoadPanelFiles() {
+  var el = document.getElementById('fmgr-panel-list');
+  if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>';
+  var item = _fmgr.item;
+  var loc = _fmgr.panelLoc;
+
+  if (loc === 'cus_sp') {
+    var cusId = String(item['Cus_ID'] || '').trim();
+    _fmgrFetchSPFiles("'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", cusId)
+      .then(function(files) {
+        _fmgr.panelFiles = files.map(function(f) {
+          return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId:cusId };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+
+  } else if (loc === 'cur_sp') {
+    var isNok = _fmgr.listMode === 'noukotsu';
+    var lEnc = isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'";
+    var lTitle = isNok ? '納骨・戒切' : '工事関連';
+    var iid = item['id'] || '';
+    _fmgrFetchSPFiles(lEnc, iid)
+      .then(function(files) {
+        _fmgr.panelFiles = files.map(function(f) {
+          return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+
+  } else if (loc === 'folder') {
+    var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+    if (!folderPass) { if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">フォルダーパス未登録</div>'; return; }
+    msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(resp) {
+        var enc = folderPass.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,id&$orderby=name',
+          { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+      }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        var items = ((d && d.value) || []).filter(function(f) { return f.file; });
+        _fmgr.panelFiles = items.map(function(f) {
+          return { type:'folder', name:f.name, folderPath:folderPass, graphId:f.id };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+  }
+}
+
+function _fmgrLoadMainFiles() {
+  var el = document.getElementById('fmgr-main-list');
+  if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>';
+  var item = _fmgr.item;
+  var isNok = _fmgr.listMode === 'noukotsu';
+  var lEnc = isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'";
+  var lTitle = isNok ? '納骨・戒切' : '工事関連';
+  var iid = item['id'] || '';
+  var lbl = document.getElementById('fmgr-main-label');
+  if (lbl) lbl.textContent = lTitle;
+  _fmgrFetchSPFiles(lEnc, iid)
+    .then(function(files) {
+      _fmgr.mainFiles = files.map(function(f) {
+        return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
+      });
+      _fmgrRenderFileList('fmgr-main-list', _fmgr.mainFiles, 'main');
+    }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+}
+
+function _fmgrGetSelected(side) {
+  var files = side === 'panel' ? _fmgr.panelFiles : _fmgr.mainFiles;
+  var selected = [];
+  var cbs = document.querySelectorAll('#fmgr-' + side + '-list .fmgr-chk');
+  cbs.forEach(function(cb) { if (cb.checked) { var f = files[parseInt(cb.getAttribute('data-fi'))]; if (f) selected.push(f); } });
+  return selected;
+}
+
+function _fmgrExec(direction, op) {
+  var files = direction === 'panel_to_main' ? _fmgrGetSelected('panel') : _fmgrGetSelected('main');
+  if (!files.length) { showSaveToast(false, 'ファイルを選択してください'); return; }
+  var dst = direction === 'panel_to_main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
+  if (!dst) { showSaveToast(false, '転送先の情報が取得できません'); return; }
+  if (!confirm(files.length + '件を' + (op === 'copy' ? 'コピー' : '移動') + 'します:\n' + files.map(function(f){return '  ' + f.name;}).join('\n') + '\n\n続行しますか？')) return;
+  _fmgrDoChain(files, dst, op, 0, 0);
+}
+
+function _fmgrMainDstInfo() {
+  var item = _fmgr.item;
+  var isNok = _fmgr.listMode === 'noukotsu';
+  return { type:'sp', listTitle: isNok ? '納骨・戒切' : '工事関連', listEnc: isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: item['id'] || '' };
+}
+
+function _fmgrPanelDstInfo() {
+  var item = _fmgr.item;
+  var loc = _fmgr.panelLoc;
+  if (loc === 'cus_sp') return { type:'sp', listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId: String(item['Cus_ID'] || '').trim() };
+  if (loc === 'cur_sp') return _fmgrMainDstInfo();
+  if (loc === 'folder') return { type:'folder', folderPath: item['Folder_Pass'] || item['FolderPass'] || '' };
+  return null;
+}
+
+function _fmgrDoChain(files, dst, op, idx, ok) {
+  if (idx >= files.length) {
+    showSaveToast(true, ok + '件' + (op === 'copy' ? 'コピー' : '移動') + '完了');
+    _fmgrLoadPanelFiles(); _fmgrLoadMainFiles();
+    return;
+  }
+  var f = files[idx];
+  showSaveToast(null, (op === 'copy' ? 'コピー' : '移動') + '中 ' + (idx+1) + '/' + files.length + ': ' + f.name);
+  _fmgrFetchBin(f).then(function(blob) {
+    return _fmgrUpload(blob, f.name, dst);
+  }).then(function() {
+    if (op === 'move') return _fmgrDelete(f);
+  }).then(function() {
+    _fmgrDoChain(files, dst, op, idx + 1, ok + 1);
+  }).catch(function(e) {
+    showSaveToast(false, f.name + ' 失敗: ' + (e && e.message || e));
+  });
+}
+
+function _fmgrFetchBin(fileInfo) {
+  if (fileInfo.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" + fileInfo.serverRelativeUrl.replace(/'/g,"''") + "')/$value";
+        return fetch(url, { headers: { Authorization: 'Bearer ' + r.accessToken } });
+      }).then(function(r) { return r.ok ? r.blob() : Promise.reject(new Error('DL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.Read'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileInfo.graphId + '/content', { headers: { Authorization: 'Bearer ' + r.accessToken } });
+      }).then(function(r) { return r.ok ? r.blob() : Promise.reject(new Error('DL失敗 ' + r.status)); });
+  }
+}
+
+function _fmgrUpload(blob, fileName, dst) {
+  if (dst.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + dst.listEnc + ')/items(' + dst.itemId + ')/AttachmentFiles/add(FileName=\'' + encodeURIComponent(fileName) + '\')';
+        return fetch(url, { method:'POST', headers:{ Authorization:'Bearer ' + r.accessToken, Accept:'application/json;odata=verbose' }, body:blob });
+      }).then(function(r) { return r.ok ? r : Promise.reject(new Error('UL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var enc = dst.folderPath.split('/').map(encodeURIComponent).join('/');
+        var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(fileName) + ':/content';
+        return fetch(url, { method:'PUT', headers:{ Authorization:'Bearer ' + r.accessToken, 'Content-Type': blob.type || 'application/octet-stream' }, body:blob });
+      }).then(function(r) { return r.ok ? r : Promise.reject(new Error('UL失敗 ' + r.status)); });
+  }
+}
+
+function _fmgrDelete(fileInfo) {
+  if (fileInfo.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + fileInfo.listEnc + ')/items(' + fileInfo.itemId + ')/AttachmentFiles/getByFileName(\'' + encodeURIComponent(fileInfo.name) + '\')';
+        return fetch(url, { method:'DELETE', headers:{ Authorization:'Bearer ' + r.accessToken, Accept:'application/json;odata=verbose', 'X-HTTP-Method':'DELETE', 'IF-MATCH':'*' } });
+      }).then(function(r) { return (r.ok || r.status===204) ? r : Promise.reject(new Error('DEL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileInfo.graphId, { method:'DELETE', headers:{ Authorization:'Bearer ' + r.accessToken } });
+      }).then(function(r) { return (r.ok || r.status===204) ? r : Promise.reject(new Error('DEL失敗 ' + r.status)); });
+  }
+}
+
+// ドラッグ＆ドロップ
+function _fmgrDragStart(event, side, fi) {
+  var f = side === 'panel' ? _fmgr.panelFiles[fi] : _fmgr.mainFiles[fi];
+  _fmgr.fileDragData = f;
+  _fmgr.fileDragSide = side;
+  event.dataTransfer.setData('text/plain', JSON.stringify(f));
+  event.dataTransfer.effectAllowed = 'copyMove';
+}
+
+function _fmgrDropOn(event, target) {
+  event.preventDefault();
+  var listEl = event.currentTarget; if (listEl) listEl.style.outline = '';
+  var f = _fmgr.fileDragData;
+  if (!f || _fmgr.fileDragSide === target) return;
+  var dst = target === 'main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
+  if (!dst) return;
+  var op = event.shiftKey ? 'move' : 'copy';
+  var label = op === 'copy' ? 'コピー' : '移動';
+  if (!confirm('「' + f.name + '」を' + (target === 'main' ? 'メイン側' : 'パネル側') + 'へ' + label + 'しますか？\n\n(Shiftキーで移動)')) return;
+  _fmgrDoChain([f], dst, op, 0, 0);
 }
 
 function handleBackBtn() {

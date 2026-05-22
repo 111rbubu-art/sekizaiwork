@@ -4239,7 +4239,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.441';
+var APP_VERSION = 'v1.8.442';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18309,15 +18309,14 @@ function handleDropNok(event, itemId) {
 // ===== 顧客リスト登録モーダル：添付ファイルコピー =====
 function copyCrmAttachments(cusId, selectedFiles, callback) {
   if (!selectedFiles || selectedFiles.length === 0) { callback(); return; }
-  var spTokenP = msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+  var hasDrive = selectedFiles.some(function(f) { return f.type === 'drive'; });
+  var spP = msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
     account: msalApp.getActiveAccount()
   });
-  Promise.all([spTokenP, getToken()]).then(function(results) {
+  Promise.all([spP, hasDrive ? getToken() : Promise.resolve(null)]).then(function(results) {
     var spToken = results[0].accessToken;
-    var graphToken = results[1].accessToken;
-    var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-    var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+    var graphToken = results[1] ? results[1].accessToken : null;
     var done = 0; var errors = 0;
     function copyNext(idx) {
       if (idx >= selectedFiles.length) {
@@ -18326,6 +18325,7 @@ function copyCrmAttachments(cusId, selectedFiles, callback) {
         return;
       }
       var f = selectedFiles[idx];
+      var fname = f.name;
       var fetchBuf;
       if (f.type === 'drive') {
         var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.itemId + '/content';
@@ -18337,25 +18337,20 @@ function copyCrmAttachments(cusId, selectedFiles, callback) {
       }
       fetchBuf
         .then(function(buf) {
-          var bytes = new Uint8Array(buf);
-          var binary = '';
-          bytes.forEach(function(b) { binary += String.fromCharCode(b); });
-          var b64 = btoa(binary);
-          return fetch(
-            'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/attachments',
-            {
-              method: 'POST',
-              headers: { Authorization: 'Bearer ' + graphToken, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: f.name, contentBytes: b64 })
-            }
-          );
+          var uploadUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')" +
+            "/items(" + cusId + ")/AttachmentFiles/add(FileName='" + encodeURIComponent(fname) + "')";
+          return fetch(uploadUrl, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' },
+            body: buf
+          });
         })
         .then(function(r) {
           if (r.ok || r.status === 201) done++;
-          else errors++;
+          else { console.warn('添付アップロード失敗:', fname, r.status); errors++; }
           copyNext(idx + 1);
         })
-        .catch(function() { errors++; copyNext(idx + 1); });
+        .catch(function(e) { console.warn('添付コピーエラー:', fname, e.message); errors++; copyNext(idx + 1); });
     }
     copyNext(0);
   }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); callback(); });

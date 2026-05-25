@@ -104,7 +104,7 @@ body{font-family:'Hiragino Sans','Meiryo',sans-serif;background:#f0f2f5;color:#1
 .det-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 14px 90px;background:#f0f2f5;min-height:0}
 
 /* 詳細セクション */
-.sec{margin-bottom:16px}
+.sec{margin-bottom:14px;padding:10px 14px 12px;background:#fff;border-radius:8px;border:1px solid #e3e3e3;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
 .sec-hdr{display:inline-block;font-size:11px;font-weight:500;color:#fff;padding:4px 12px;border-radius:5px;margin-bottom:10px}
 .bg1{background:#1a2535}.bg2{background:#c0392b}.bg3{background:#1565c0}.bg4{background:#0f6e56}.bg5{background:#8a5c00}
 .fgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
@@ -1830,20 +1830,49 @@ function _fcAddRow(tableId, c, t) {
 }
 
 // ===== AI設定 =====
+function _getProviderApiKey(provider) {
+  return localStorage.getItem('ai_apikey_' + provider) || '';
+}
+function _setProviderApiKey(provider, key) {
+  if (key) localStorage.setItem('ai_apikey_' + provider, key);
+  else localStorage.removeItem('ai_apikey_' + provider);
+}
+function _getProviderEndpoint(provider) {
+  return localStorage.getItem('ai_endpoint_' + provider) || '';
+}
+function _setProviderEndpoint(provider, ep) {
+  if (ep) localStorage.setItem('ai_endpoint_' + provider, ep);
+  else localStorage.removeItem('ai_endpoint_' + provider);
+}
 function getAICfg() {
   var s = null;
   try { s = JSON.parse(localStorage.getItem('ai_cfg_v1')); } catch(e) {}
-  return s || { provider:'claude', apiKey:'', model:'claude-sonnet-4-6', endpoint:'http://localhost:11434' };
+  if (!s) s = { provider:'claude', model:'claude-sonnet-4-6' };
+  // APIキーはプロバイダーごとの個別ストレージから取得（旧形式の apiKey をフォールバックに使い移行）
+  var key = _getProviderApiKey(s.provider);
+  if (!key && s.apiKey) { _setProviderApiKey(s.provider, s.apiKey); key = s.apiKey; }
+  s.apiKey = key;
+  // エンドポイントもプロバイダーごとの個別ストレージから取得（旧形式の endpoint をフォールバックに移行）
+  var ep = _getProviderEndpoint(s.provider);
+  if (!ep && s.endpoint) { _setProviderEndpoint(s.provider, s.endpoint); ep = s.endpoint; }
+  s.endpoint = ep || 'http://localhost:11434';
+  return s;
 }
 function saveAICfg() {
   var cfg = getAICfg();
   var el;
   el = document.getElementById('ai-provider'); if(el) cfg.provider = el.value;
-  el = document.getElementById('ai-apikey');   if(el) cfg.apiKey   = el.value.trim();
   el = document.getElementById('ai-model');    if(el) cfg.model    = el.value.trim();
-  el = document.getElementById('ai-endpoint'); if(el) cfg.endpoint = el.value.trim();
+  // エンドポイントはプロバイダー専用キーで保存
+  el = document.getElementById('ai-endpoint');
+  if(el) _setProviderEndpoint(cfg.provider, el.value.trim());
+  // APIキーはプロバイダー専用キーで保存
+  el = document.getElementById('ai-apikey');
+  if(el) _setProviderApiKey(cfg.provider, el.value.trim());
+  delete cfg.apiKey;    // 共有保存しないよう除去
+  delete cfg.endpoint;  // 共有保存しないよう除去
   localStorage.setItem('ai_cfg_v1', JSON.stringify(cfg));
-  // provider/model/endpoint のみ SharePoint に共有保存（APIキーは端末ローカルのみ）
+  // provider/model のみ SharePoint に共有保存（APIキー・エンドポイントは端末ローカルのみ）
   if (typeof saveSettingsToSP === 'function') saveSettingsToSP();
   var btn = document.getElementById('ai-save-btn');
   if(btn){btn.textContent='✅ 保存しました';setTimeout(function(){btn.textContent='💾 保存';},2000);}
@@ -1852,6 +1881,7 @@ function _aiToggleEndpoint() {
   var prov    = document.getElementById('ai-provider');
   var epRow   = document.getElementById('ai-endpoint-row');
   var keyRow  = document.getElementById('ai-apikey-row');
+  var modelRow = document.getElementById('ai-model-row');
   var modelEl = document.getElementById('ai-model');
   var keyLabel = document.getElementById('ai-apikey-label');
   var keyInput = document.getElementById('ai-apikey');
@@ -1859,19 +1889,37 @@ function _aiToggleEndpoint() {
   var isOllama  = v === 'openai';
   var isAnyLLM  = v === 'anythingllm';
   var isClaude  = v === 'claude';
-  if(epRow)  epRow.style.display  = (isOllama || isAnyLLM) ? 'flex' : 'none';
-  if(keyRow) keyRow.style.display = (isClaude || isAnyLLM) ? 'flex' : 'none';
+  var isDify    = v === 'dify';
+  if(epRow)   epRow.style.display   = (isOllama || isAnyLLM || isDify) ? 'flex' : 'none';
+  if(keyRow)  keyRow.style.display  = (isClaude || isAnyLLM || isDify) ? 'flex' : 'none';
+  if(modelRow) modelRow.style.display = isDify ? 'none' : 'flex';
   if(modelEl && !modelEl.value) {
     modelEl.placeholder = isOllama ? 'llama3.1'
                        : isAnyLLM ? 'workspace-slug または モデル名'
                        : 'claude-sonnet-4-6';
   }
-  if(keyLabel) keyLabel.textContent = isAnyLLM ? 'APIキー' : 'APIキー';
-  if(keyInput) keyInput.placeholder = isAnyLLM ? 'AnythingLLM の API Key' : 'sk-ant-...';
-  var epInput = document.getElementById('ai-endpoint');
-  if(epInput && !epInput.value) {
-    epInput.placeholder = isAnyLLM ? 'http://192.168.x.x:3001' : 'http://localhost:11434';
+  if(keyInput) {
+    keyInput.placeholder = isDify    ? 'app-xxxxxxxxxxxxxxxxxxxx'
+                         : isAnyLLM  ? 'AnythingLLM の API Key'
+                         : 'sk-ant-...';
+    // プロバイダー切り替え時にそのプロバイダーのAPIキーをロード
+    keyInput.value = _getProviderApiKey(v);
   }
+  var epInput = document.getElementById('ai-endpoint');
+  if(epInput) {
+    epInput.placeholder = isDify    ? 'http://192.168.x.x:80'
+                        : isAnyLLM  ? 'http://192.168.x.x:3001'
+                        : 'http://localhost:11434';
+    // プロバイダー切り替え時にそのプロバイダーのエンドポイントをロード
+    epInput.value = _getProviderEndpoint(v);
+  }
+  // Dify用注意書き表示切替
+  var noteOllama = document.getElementById('ep-note-ollama');
+  var noteAnyLLM = document.getElementById('ep-note-anyllm');
+  var noteDify   = document.getElementById('ep-note-dify');
+  if(noteOllama) noteOllama.style.display = isOllama ? '' : 'none';
+  if(noteAnyLLM) noteAnyLLM.style.display = isAnyLLM ? '' : 'none';
+  if(noteDify)   noteDify.style.display   = isDify   ? '' : 'none';
 }
 
 // ===== 価格表 → AnythingLLM 同期 =====
@@ -1898,22 +1946,22 @@ function downloadPriceCsv() {
   var btn = document.getElementById('price-dl-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 取得中…'; }
   _fetchPriceListItems().then(function(items) {
-    var txt = _buildPriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildPriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'sekizai-price-list.txt';
+    a.download = 'sekizai-price-list.html';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    showSaveToast(true, items.length + '件のTXTをダウンロードしました');
+    showSaveToast(true, items.length + '件のHTMLをダウンロードしました');
   }).catch(function(e) {
     console.error(e);
-    showSaveToast(false, 'TXT取得失敗: ' + e.message);
+    showSaveToast(false, 'HTML取得失敗:' + e.message);
   }).then(function() {
-    if (btn) { btn.disabled = false; btn.textContent = '📥 TXTダウンロード'; }
+    if (btn) { btn.disabled = false; btn.textContent = '📥 HTMLダウンロード'; }
   });
 }
 
@@ -1950,35 +1998,61 @@ function _buildPriceCsv(items) {
   return rows.join('\n') + '\n';
 }
 
-// 1行で完結する日本語ナラティブ文章を生成（AnythingLLM等のRAGでチャンク化されても文脈が保たれる）
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Agent Tool 用: 価格表を JSON 配列として生成
+function _buildPriceJson(items) {
+  var data = items.map(function(it) {
+    var obj = { id: it.id, Title: it.Title || '' };
+    if (it.choice)         obj.choice         = it.choice;
+    if (it.choice_x2461_)  obj.choice_x2461_  = it.choice_x2461_;
+    if (it.choice3)        obj.choice3        = it.choice3;
+    obj.cost = (it.cost != null && it.cost !== '') ? it.cost : null;
+    if (it.supplier)       obj.supplier       = it.supplier;
+    if (it.PurchasePrice != null && it.PurchasePrice !== '') obj.PurchasePrice = it.PurchasePrice;
+    if (it.supplier2)      obj.supplier2      = it.supplier2;
+    if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') obj.PurchasePrice2 = it.PurchasePrice2;
+    if (it.note)  obj.note  = String(it.note).replace(/\r?\n/g, ' ');
+    if (it.note0) obj.note0 = String(it.note0).replace(/\r?\n/g, ' ');
+    obj.editUrl = location.origin + location.pathname + '?view=priceList&id=' + it.id;
+    return obj;
+  });
+  return JSON.stringify(data);
+}
+
+// 1商品 = 1 <article> の HTML を生成（ダウンロード用・閲覧用）
 function _buildPriceNarrative(items) {
-  var lines = [];
+  var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>価格表</title></head><body><h1>価格表</h1>\n'];
   items.forEach(function(it) {
     var editUrl = location.origin + location.pathname + '?view=priceList&id=' + it.id;
-    var head = '商品「' + (it.Title || '名称未設定') + '」（ID:' + it.id;
-    if (it.choice) head += '、カテゴリ「' + it.choice + '」';
-    if (it.choice_x2461_) head += '、選択②「' + it.choice_x2461_ + '」';
-    if (it.choice3) head += '、選択③「' + it.choice3 + '」';
-    head += '）';
-    var parts = [head];
-    if (it.cost != null && it.cost !== '') parts.push('の販売価格（税抜）は' + Number(it.cost).toLocaleString('ja-JP') + '円です');
-    else parts.push('の販売価格は未設定です');
+    parts.push('<article id="item-' + it.id + '">\n<h2>' + _escHtml(it.Title || '名称未設定') + '</h2>\n<dl>\n');
+    parts.push('<dt>ID</dt><dd>' + it.id + '</dd>\n');
+    if (it.choice) parts.push('<dt>カテゴリ</dt><dd>' + _escHtml(it.choice) + '</dd>\n');
+    if (it.choice_x2461_) parts.push('<dt>選択②</dt><dd>' + _escHtml(it.choice_x2461_) + '</dd>\n');
+    if (it.choice3) parts.push('<dt>選択③</dt><dd>' + _escHtml(it.choice3) + '</dd>\n');
+    if (it.cost != null && it.cost !== '')
+      parts.push('<dt>販売価格（税抜）</dt><dd>' + Number(it.cost).toLocaleString('ja-JP') + '円</dd>\n');
+    else
+      parts.push('<dt>販売価格（税抜）</dt><dd>未設定</dd>\n');
     if (it.supplier || (it.PurchasePrice != null && it.PurchasePrice !== '')) {
-      var s = '。仕入先①「' + (it.supplier || '未設定') + '」';
-      if (it.PurchasePrice != null && it.PurchasePrice !== '') s += '（仕入価格' + Number(it.PurchasePrice).toLocaleString('ja-JP') + '円）';
-      parts.push(s);
+      var s1 = _escHtml(it.supplier || '未設定');
+      if (it.PurchasePrice != null && it.PurchasePrice !== '') s1 += '（仕入価格 ' + Number(it.PurchasePrice).toLocaleString('ja-JP') + '円）';
+      parts.push('<dt>仕入先①</dt><dd>' + s1 + '</dd>\n');
     }
     if (it.supplier2 || (it.PurchasePrice2 != null && it.PurchasePrice2 !== '')) {
-      var s2 = '。仕入先②「' + (it.supplier2 || '未設定') + '」';
-      if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') s2 += '（仕入価格' + Number(it.PurchasePrice2).toLocaleString('ja-JP') + '円）';
-      parts.push(s2);
+      var s2 = _escHtml(it.supplier2 || '未設定');
+      if (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') s2 += '（仕入価格 ' + Number(it.PurchasePrice2).toLocaleString('ja-JP') + '円）';
+      parts.push('<dt>仕入先②</dt><dd>' + s2 + '</dd>\n');
     }
-    if (it.note) parts.push('。備考: ' + String(it.note).replace(/\r?\n/g, ' '));
-    if (it.note0) parts.push('。備考（仕入外注用）: ' + String(it.note0).replace(/\r?\n/g, ' '));
-    parts.push('。編集URL: ' + editUrl);
-    lines.push(parts.join(''));
+    if (it.note) parts.push('<dt>備考</dt><dd>' + _escHtml(String(it.note).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    if (it.note0) parts.push('<dt>備考（仕入外注用）</dt><dd>' + _escHtml(String(it.note0).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    parts.push('<dt>編集URL</dt><dd><a href="' + editUrl + '">編集</a></dd>\n');
+    parts.push('</dl>\n</article>\n');
   });
-  return lines.join('\n') + '\n';
+  parts.push('</body></html>');
+  return parts.join('');
 }
 
 // 価格表ドキュメント識別:
@@ -1990,6 +2064,7 @@ function _isPriceDocFile(title, name) {
   title = String(title || '');
   name  = String(name  || '');
   if (title.indexOf('sekizai-price-list') === 0) return true;
+  if (title.indexOf('sekizai-price-data') === 0) return true;
   if (title.indexOf('sekizai-price-') === 0) return true;
   if (/^_\d+\.txt$/.test(title)) return true;
   if (/^raw-sekizai-price-list-[a-f0-9-]+\.json$/.test(name)) return true;
@@ -2040,7 +2115,7 @@ function syncAllPricesToAI() {
     showSaveToast(false, 'AnythingLLM設定（エンドポイント/モデル/APIキー）が不完全です');
     return;
   }
-  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を1つのテキストファイル（sekizai-price-list.txt）にまとめてアップロードします。\n各行は「商品「○○」のXXは○○円です。…編集URL: …」形式の自然文章となり、CSVよりAIが商品を正確に識別できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
+  if (!confirm('価格表をAnythingLLMに同期します。\n\n価格表全件を sekizai-price-data.json としてアップロードします。\nAnythingLLM の Agent Tool（sekizai-price-search）がこのJSONを直接検索するため、ベクトル検索より正確に商品を特定できます。\n既存の価格表ドキュメント（旧形式含む）は削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('price-sync-btn');
   var pg  = document.getElementById('price-sync-progress');
@@ -2059,13 +2134,12 @@ function syncAllPricesToAI() {
       return items;
     });
   }).then(function(items) {
-    // 2. 全件を1つのナラティブTXTとしてアップロード（multipart/form-data）
-    var txt = _buildPriceNarrative(items);
-    setPg('📤 ナラティブTXT作成 (' + items.length + '行, 約' + Math.round(txt.length/1024) + 'KB) → アップロード中...');
-    // BOM付き UTF-8 にする
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    // 2. 全件を JSON としてアップロード（Agent Tool が読み取る）
+    var json = _buildPriceJson(items);
+    setPg('📤 JSONデータ作成 (' + items.length + '件, 約' + Math.round(json.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.txt');
+    fd.append('file', blob, 'sekizai-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey }, // Content-Typeは自動設定
@@ -2327,10 +2401,10 @@ function _syncPriceToAIQuiet() {
   _fetchPriceListItems().then(function(items) {
     return _deleteOldPriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var txt = _buildPriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var json = _buildPriceJson(items);
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-price-list.txt');
+    fd.append('file', blob, 'sekizai-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2368,22 +2442,22 @@ function downloadStonePriceCsv() {
   var btn = document.getElementById('stone-price-dl-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 取得中…'; }
   _fetchStonePriceListItems().then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var html = _buildStonePriceNarrative(items);
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'sekizai-stone-price-list.txt';
+    a.download = 'sekizai-stone-price-list.html';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    showSaveToast(true, items.length + '件のTXTをダウンロードしました');
+    showSaveToast(true, items.length + '件のHTMLをダウンロードしました');
   }).catch(function(e) {
     console.error(e);
-    showSaveToast(false, 'TXT取得失敗: ' + e.message);
+    showSaveToast(false, 'HTML取得失敗:' + e.message);
   }).then(function() {
-    if (btn) { btn.disabled = false; btn.textContent = '📥 TXTダウンロード'; }
+    if (btn) { btn.disabled = false; btn.textContent = '📥 HTMLダウンロード'; }
   });
 }
 
@@ -2415,38 +2489,63 @@ function _buildStonePriceCsv(items) {
   return rows.join('\n') + '\n';
 }
 
-// 1行で完結する日本語ナラティブ文章を生成（石材価格表用）
+// Agent Tool 用: 石材価格表を JSON 配列として生成
+function _buildStonePriceJson(items) {
+  var data = items.map(function(it) {
+    var obj = { id: it.id, Title: it.Title || '' };
+    if (it.made)    obj.made    = it.made;
+    if (it.country) obj.country = it.country;
+    if (it.color)   obj.color   = it.color;
+    obj.cost = (it.cost != null && it.cost !== '') ? it.cost : null;
+    if (it.name != null && it.name !== '') obj.name = it.name;
+    if (it.Supplier1) obj.Supplier1 = it.Supplier1;
+    if (it.price1 != null && it.price1 !== '') obj.price1 = it.price1;
+    if (it.MachiningCostsIncluded1) obj.MachiningCostsIncluded1 = true;
+    if (it.Supplier2) obj.Supplier2 = it.Supplier2;
+    if (it.price2 != null && it.price2 !== '') obj.price2 = it.price2;
+    if (it.MachiningCostsIncluded2) obj.MachiningCostsIncluded2 = true;
+    if (it.EstimateDay) obj.EstimateDay = it.EstimateDay;
+    if (it.Features) obj.Features = String(it.Features).replace(/\r?\n/g, ' ');
+    if (it.comment)  obj.comment  = String(it.comment).replace(/\r?\n/g, ' ');
+    obj.editUrl = location.origin + location.pathname + '?view=stonePriceList&id=' + it.id;
+    return obj;
+  });
+  return JSON.stringify(data);
+}
+
+// 1石材 = 1 <article> の HTML を生成（ダウンロード用・閲覧用）
 function _buildStonePriceNarrative(items) {
-  var lines = [];
+  var parts = ['<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>石材価格表</title></head><body><h1>石材価格表</h1>\n'];
   items.forEach(function(it) {
     var editUrl = location.origin + location.pathname + '?view=stonePriceList&id=' + it.id;
-    var head = '石材「' + (it.Title || '名称未設定') + '」（ID:' + it.id;
-    if (it.made) head += '、産地「' + it.made + '」';
-    if (it.country) head += '、国「' + it.country + '」';
-    if (it.color) head += '、色「' + it.color + '」';
-    head += '）';
-    var parts = [head];
-    if (it.cost != null && it.cost !== '') parts.push('の単価は' + it.cost + '円');
-    else parts.push('の単価は未設定');
-    if (it.name != null && it.name !== '') parts.push('、係数/規格は' + it.name);
-    parts.push('です');
+    parts.push('<article id="stone-' + it.id + '">\n<h2>' + _escHtml(it.Title || '名称未設定') + '</h2>\n<dl>\n');
+    parts.push('<dt>ID</dt><dd>' + it.id + '</dd>\n');
+    if (it.made) parts.push('<dt>産地</dt><dd>' + _escHtml(it.made) + '</dd>\n');
+    if (it.country) parts.push('<dt>国</dt><dd>' + _escHtml(it.country) + '</dd>\n');
+    if (it.color) parts.push('<dt>色</dt><dd>' + _escHtml(it.color) + '</dd>\n');
+    if (it.cost != null && it.cost !== '')
+      parts.push('<dt>単価</dt><dd>' + it.cost + '円</dd>\n');
+    else
+      parts.push('<dt>単価</dt><dd>未設定</dd>\n');
+    if (it.name != null && it.name !== '') parts.push('<dt>係数/規格</dt><dd>' + _escHtml(String(it.name)) + '</dd>\n');
     if (it.Supplier1 || (it.price1 != null && it.price1 !== '')) {
-      var s = '。仕入先①「' + (it.Supplier1 || '未設定') + '」';
-      if (it.price1 != null && it.price1 !== '') s += '（仕入価格' + Number(it.price1).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded1 ? '・加工費込' : '') + '）';
-      parts.push(s);
+      var s1 = _escHtml(it.Supplier1 || '未設定');
+      if (it.price1 != null && it.price1 !== '') s1 += '（仕入価格 ' + Number(it.price1).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded1 ? '・加工費込' : '') + '）';
+      parts.push('<dt>仕入先①</dt><dd>' + s1 + '</dd>\n');
     }
     if (it.Supplier2 || (it.price2 != null && it.price2 !== '')) {
-      var s2 = '。仕入先②「' + (it.Supplier2 || '未設定') + '」';
-      if (it.price2 != null && it.price2 !== '') s2 += '（仕入価格' + Number(it.price2).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded2 ? '・加工費込' : '') + '）';
-      parts.push(s2);
+      var s2 = _escHtml(it.Supplier2 || '未設定');
+      if (it.price2 != null && it.price2 !== '') s2 += '（仕入価格 ' + Number(it.price2).toLocaleString('ja-JP') + '円' + (it.MachiningCostsIncluded2 ? '・加工費込' : '') + '）';
+      parts.push('<dt>仕入先②</dt><dd>' + s2 + '</dd>\n');
     }
-    if (it.EstimateDay) parts.push('。見積日: ' + String(it.EstimateDay).slice(0, 10));
-    if (it.Features) parts.push('。特徴: ' + String(it.Features).replace(/\r?\n/g, ' '));
-    if (it.comment) parts.push('。備考: ' + String(it.comment).replace(/\r?\n/g, ' '));
-    parts.push('。編集URL: ' + editUrl);
-    lines.push(parts.join(''));
+    if (it.EstimateDay) parts.push('<dt>見積日</dt><dd>' + String(it.EstimateDay).slice(0, 10) + '</dd>\n');
+    if (it.Features) parts.push('<dt>特徴</dt><dd>' + _escHtml(String(it.Features).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    if (it.comment) parts.push('<dt>備考</dt><dd>' + _escHtml(String(it.comment).replace(/\r?\n/g, ' ')) + '</dd>\n');
+    parts.push('<dt>編集URL</dt><dd><a href="' + editUrl + '">編集</a></dd>\n');
+    parts.push('</dl>\n</article>\n');
   });
-  return lines.join('\n') + '\n';
+  parts.push('</body></html>');
+  return parts.join('');
 }
 
 // 石材価格表ドキュメント識別
@@ -2454,6 +2553,7 @@ function _isStonePriceDocFile(title, name) {
   title = String(title || '');
   name  = String(name  || '');
   if (title.indexOf('sekizai-stone-price-list') === 0) return true;
+  if (title.indexOf('sekizai-stone-price-data') === 0) return true;
   if (/^raw-sekizai-stone-price-list-[a-f0-9-]+\.json$/.test(name)) return true;
   return false;
 }
@@ -2500,7 +2600,7 @@ function syncAllStonePricesToAI() {
     showSaveToast(false, 'AnythingLLM設定が不完全です');
     return;
   }
-  if (!confirm('石材価格表をAnythingLLMに同期します。\n\nsekizai-stone-price-list.txt（ナラティブ形式）として全件まとめてアップロード。\n各行は「石材「○○」（産地「○○」、色「○○」）の単価は○○円です…」形式の自然文章で、AIが正確に石材を識別できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
+  if (!confirm('石材価格表をAnythingLLMに同期します。\n\n石材価格表全件を sekizai-stone-price-data.json としてアップロードします。\nAnythingLLM の Agent Tool（sekizai-stone-price-search）がこのJSONを直接検索するため、ベクトル検索より正確に石材を特定できます。\n既存の石材価格表ドキュメントは削除されます。\n続行しますか？')) return;
 
   var btn = document.getElementById('stone-price-sync-btn');
   var pg  = document.getElementById('stone-price-sync-progress');
@@ -2518,11 +2618,11 @@ function syncAllStonePricesToAI() {
       return items;
     });
   }).then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    setPg('📤 ナラティブTXT作成 (' + items.length + '行, 約' + Math.round(txt.length/1024) + 'KB) → アップロード中...');
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var json = _buildStonePriceJson(items);
+    setPg('📤 JSONデータ作成 (' + items.length + '件, 約' + Math.round(json.length/1024) + 'KB) → アップロード中...');
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.txt');
+    fd.append('file', blob, 'sekizai-stone-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2799,10 +2899,10 @@ function _syncStonePriceToAIQuiet() {
   _fetchStonePriceListItems().then(function(items) {
     return _deleteOldStonePriceDocsFromAnyLLM(endpoint, apiKey).then(function() { return items; });
   }).then(function(items) {
-    var txt = _buildStonePriceNarrative(items);
-    var blob = new Blob(['﻿' + txt], { type: 'text/plain;charset=utf-8' });
+    var json = _buildStonePriceJson(items);
+    var blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
     var fd = new FormData();
-    fd.append('file', blob, 'sekizai-stone-price-list.txt');
+    fd.append('file', blob, 'sekizai-stone-price-data.json');
     return fetch(endpoint + '/api/v1/document/upload', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey },
@@ -2970,6 +3070,7 @@ function testAIConnection() {
   var provVal = prov ? prov.value : 'claude';
   var isLocal = provVal === 'openai';
   var isAnyLLM = provVal === 'anythingllm';
+  var isDify   = provVal === 'dify';
   var endpoint = (document.getElementById('ai-endpoint') || {}).value || 'http://localhost:11434';
   endpoint = endpoint.replace(/\/+$/, ''); // trailing slash除去
   if (btn) { btn.disabled = true; btn.textContent = '⏳ テスト中…'; }
@@ -2996,6 +3097,23 @@ function testAIConnection() {
       })
       .catch(function(err) {
         if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + '\n\n【確認事項】\n1. エンドポイントは LLM側PC のIP？ (例: http://192.168.x.x:3001)\n2. AnythingLLMの「Settings → API Keys」でキー発行済み？\n3. AnythingLLMが LAN からアクセス可能な設定？\n4. HTTPS→HTTPのMixed Contentでブロックされてないか？'; }
+      })
+      .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
+  } else if (isDify) {
+    var key = (document.getElementById('ai-apikey') || {}).value || '';
+    if (!key) {
+      if (result) { result.style.color='#c00'; result.textContent = '❌ Dify の APIキーが未入力です。\nDify の「スタジオ → アプリ → APIアクセス」でキーを発行してください。'; }
+      if (btn) { btn.disabled=false; btn.textContent='🔌 接続テスト'; }
+      return;
+    }
+    fetch(endpoint + '/v1/parameters', { method:'GET', headers:{ 'Authorization':'Bearer ' + key } })
+      .then(function(r){ return r.ok ? r.json() : r.text().then(function(t){ return Promise.reject('HTTP ' + r.status + ' ' + t); }); })
+      .then(function(j) {
+        var appName = (j.introduction || j.name || '（名称不明）');
+        if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ Dify 接続成功\nアプリ: ' + appName + '\n※ モデルはDifyアプリ側で設定します（このアプリのモデル欄は不要です）'; }
+      })
+      .catch(function(err) {
+        if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + '\n\n【確認事項】\n1. エンドポイントはDifyサーバーのIP:ポート？ (例: http://192.168.x.x:80)\n2. APIキーは正しい？（Dify スタジオ → APIアクセス）\n3. DifyがLANからアクセス可能？\n4. HTTPS→HTTPのMixed Contentでブロックされてないか？'; }
       })
       .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
   } else if (isLocal) {
@@ -3060,6 +3178,7 @@ function callAI(system, user, onChunk, onDone, images) {
   var cfg = getAICfg();
   if (cfg.provider === 'claude') callClaudeAPI(cfg, system, user, onChunk, onDone, images);
   else if (cfg.provider === 'anythingllm') callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images);
+  else if (cfg.provider === 'dify') callDifyAPI(cfg, system, user, onChunk, onDone, images);
   else callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images);
 }
 
@@ -3119,6 +3238,66 @@ function callAnythingLLMAPI(cfg, system, user, onChunk, onDone, images) {
               onChunk(tr.content);
             }
             // 文字列textResponseはcumulative全文のためスキップ（onChunkでは加算しない）
+          } catch(e) {}
+        });
+        pump();
+      }).catch(function(e){ onDone(e); });
+    }
+    pump();
+  }).catch(function(e){ onDone(e); });
+}
+
+function callDifyAPI(cfg, system, user, onChunk, onDone, images) {
+  var endpoint = (cfg.endpoint || 'http://localhost:80').replace(/\/+$/, '');
+  var apiKey = cfg.apiKey || '';
+  if (!apiKey) { onDone(new Error('Dify の APIキーが未設定です（設定画面で入力してください）')); return; }
+
+  // Difyはシステムプロンプトをアプリ側で設定するため、
+  // system文字列がある場合はユーザーメッセージに前置して文脈を渡す
+  var query = (system && user) ? '[指示]\n' + system + '\n\n[質問]\n' + user
+            : (user || '');
+
+  var body = {
+    inputs: {},
+    query: query,
+    response_mode: 'streaming',
+    conversation_id: '',
+    user: 'sekizaiwork-' + (Date.now() % 1000000)
+  };
+
+  if (images && images.length > 0) {
+    body.files = images.map(function(img) {
+      return { type: 'image', transfer_method: 'remote_url', url: img };
+    });
+  }
+
+  fetch(endpoint + '/v1/chat-messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+    body: JSON.stringify(body)
+  }).then(function(r) {
+    if (!r.ok) { r.text().then(function(t){ onDone(new Error('Dify API ' + r.status + ': ' + t)); }); return; }
+    var reader = r.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump() {
+      reader.read().then(function(res) {
+        if (res.done) { onDone(null); return; }
+        buf += decoder.decode(res.value, { stream: true });
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+          line = line.trim();
+          if (!line || !line.startsWith('data:')) return;
+          var data = line.slice(5).trim();
+          if (!data) return;
+          try {
+            var obj = JSON.parse(data);
+            if (obj.event === 'message' && obj.answer) {
+              onChunk(obj.answer);
+            } else if (obj.event === 'error') {
+              onDone(new Error(obj.message || 'Dify エラー'));
+            }
           } catch(e) {}
         });
         pump();
@@ -4060,7 +4239,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.421';
+var APP_VERSION = 'v1.8.455';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -4513,9 +4692,11 @@ function openEnvelopePrint(d) {
 // ===== 新規作成（納骨・戒切）=====
 function openNewItemModal() {
   // フォームリセット
-  ['ni-name','ni-furi','ni-tel','ni-cusno','ni-cusid','ni-informer','ni-memo','ni-zip','ni-addressee','ni-addr1','ni-addr2','ni-sculptor','ni-ms-contrib'].forEach(function(id){
+  ['ni-name','ni-furi','ni-tel','ni-cusno','ni-cusid','ni-informer','ni-memo','ni-zip','ni-addressee','ni-addr1','ni-addr2','ni-sculptor','ni-ms-contrib',
+   'ni-haka','ni-sesyu','ni-sekitou-seki','ni-bosi-seki','ni-futa','ni-meji','ni-noukotumemo'].forEach(function(id){
     var el = document.getElementById(id); if(el) el.value = '';
   });
+  ['ni-haka-sec','ni-cus-attach-sec'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
   ['ni-temple','ni-bunrui','ni-nok-state','ni-got-ms'].forEach(function(id){
     var el = document.getElementById(id); if(el) el.value = '';
   });
@@ -4641,6 +4822,13 @@ function submitNewItem() {
   var sculptor = document.getElementById('ni-sculptor').value.trim();
   var gotMs    = document.getElementById('ni-got-ms').value;
   var msContrib= document.getElementById('ni-ms-contrib').value.trim();
+  var haka     = (document.getElementById('ni-haka')         || {value:''}).value.trim();
+  var sesyu    = (document.getElementById('ni-sesyu')        || {value:''}).value.trim();
+  var sekSeki  = (document.getElementById('ni-sekitou-seki') || {value:''}).value.trim();
+  var bosSeki  = (document.getElementById('ni-bosi-seki')    || {value:''}).value.trim();
+  var futaVal  = (document.getElementById('ni-futa')         || {value:''}).value.trim();
+  var mejiVal  = (document.getElementById('ni-meji')         || {value:''}).value.trim();
+  var nokMemo  = (document.getElementById('ni-noukotumemo')  || {value:''}).value.trim();
 
   // バリデーション
   var errEl = document.getElementById('ni-error');
@@ -4677,6 +4865,13 @@ function submitNewItem() {
   if (sculptor) fields['SculptureName'] = sculptor;
   if (gotMs)    fields['GotManuscript'] = gotMs ? gotMs.replace(/-/g,'/') : ''; // YYYY/MM/DD
   if (msContrib)fields['ManuscriptContributor'] = msContrib;
+  if (haka)     fields['_x304a__x5893__x306e__x540d__x7f'] = haka;
+  if (sesyu)    fields['_x5f6b__x523b__x8005__x540d_'] = sesyu;
+  if (sekSeki)  fields['_x77f3__x7a2e_'] = sekSeki;
+  if (bosSeki)  fields['_x5893__x8a8c__x77f3__x7a2e_'] = bosSeki;
+  if (futaVal)  fields['hakacover'] = futaVal;
+  if (mejiVal)  fields['joint'] = mejiVal;
+  if (nokMemo)  fields['Noukotumemo'] = nokMemo;
 
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
@@ -4707,10 +4902,8 @@ function submitNewItem() {
       allItems = []; loadItems();
     };
     var doCopy = function(cb) {
-      if (_newItemCusSpId) {
-        submitBtn.textContent = '添付コピー中...';
-        copyCustomerAttachments(_newItemCusSpId, siteId2, listId2, newItemId, cb);
-      } else { cb(); }
+      submitBtn.textContent = '添付コピー中...';
+      _copyCusAttachSelected('ni-cus-attach-area', siteId2, listId2, newItemId, cb);
     };
     if (niFileStore.length > 0 && newItemId) {
       submitBtn.textContent = 'ファイル添付中...';
@@ -4779,6 +4972,30 @@ function openNewJobModal(d) {
     // 依頼日を今日にセット
     var today = new Date().toISOString().split('T')[0];
     setVal('ni-req-date', today);
+
+    // 墓石情報（顧客リストから引き継ぎ）
+    var hakaName   = d['HakaName'] || '';
+    var sesyu      = d['sesyu_name'] || '';
+    var sekitouSek = d['sekitou_sekisyu'] || '';
+    var bosiSek    = d['bosi_sekisyu'] || '';
+    var futa       = d['noukotu_futa'] || '';
+    var meji       = d['noukotu_meji'] || '';
+    var noukMemo   = d['noukotu_bikou'] || '';
+    var choukoku   = d['choukoku'] || '';
+    if (hakaName || sesyu || sekitouSek || bosiSek || futa || meji || noukMemo || choukoku) {
+      setVal('ni-haka', hakaName);
+      setVal('ni-sesyu', sesyu);
+      setVal('ni-sekitou-seki', sekitouSek);
+      setVal('ni-bosi-seki', bosiSek);
+      setVal('ni-futa', futa);
+      setVal('ni-meji', meji);
+      setVal('ni-noukotumemo', noukMemo);
+      if (choukoku) setVal('ni-memo', '顧客情報より：彫刻情報\n' + choukoku);
+      var hakaSec = document.getElementById('ni-haka-sec');
+      if (hakaSec) hakaSec.style.display = '';
+    }
+    // 顧客SP添付チェックボックス
+    if (cusId) _loadCusAttachForModal(cusId, 'ni-cus-attach-area', 'ni-cus-attach-sec');
   }, 100);
 }
 
@@ -4794,12 +5011,13 @@ function openNewModal() {
 // ===== 工事関連 新規登録モーダル =====
 function openNewKoujiModal(d) {
   // フォームリセット
-  ['nk-name','nk-furi','nk-tel','nk-cusno','nk-cusid','nk-zip','nk-addr1','nk-addr2','nk-contents','nk-nauchi','nk-todo'].forEach(function(id){
+  ['nk-name','nk-furi','nk-tel','nk-cusno','nk-cusid','nk-zip','nk-addr1','nk-addr2','nk-contents','nk-nauchi','nk-todo','nk-haka','nk-sesyu'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
   ['nk-temple','nk-category'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.selectedIndex = 0;
   });
+  ['nk-haka-sec','nk-cus-attach-sec'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
   var today = new Date().toISOString().split('T')[0];
   var recEl = document.getElementById('nk-recday'); if (recEl) recEl.value = today;
   document.getElementById('nk-error').style.display = 'none';
@@ -4826,6 +5044,23 @@ function openNewKoujiModal(d) {
           if (tEl.options[j].value===templeVal){ tEl.selectedIndex=j; break; }
         }
       }
+      // 墓石情報（顧客リストから引き継ぎ）
+      var hakaNameK  = d['HakaName'] || '';
+      var sesyuK     = d['sesyu_name'] || '';
+      var choukokuK  = d['choukoku'] || '';
+      var cusIdK     = d['id'] ? String(d['id']) : '';
+      if (hakaNameK || sesyuK || choukokuK) {
+        setVal('nk-haka', hakaNameK);
+        setVal('nk-sesyu', sesyuK);
+        if (choukokuK) {
+          var naucEl = document.getElementById('nk-nauchi');
+          if (naucEl) naucEl.value = (naucEl.value ? naucEl.value + '\n' : '') + '顧客情報より：彫刻情報\n' + choukokuK;
+        }
+        var hakaSec = document.getElementById('nk-haka-sec');
+        if (hakaSec) hakaSec.style.display = '';
+      }
+      // 顧客SP添付チェックボックス
+      if (cusIdK) _loadCusAttachForModal(cusIdK, 'nk-cus-attach-area', 'nk-cus-attach-sec');
     }, 100);
   }
   document.getElementById('new-kouji-modal').style.display = 'flex';
@@ -4850,6 +5085,8 @@ function submitNewKouji() {
   var contents = document.getElementById('nk-contents').value.trim();
   var nauchi   = document.getElementById('nk-nauchi').value.trim();
   var todo     = document.getElementById('nk-todo').value.trim();
+  var hakaK    = (document.getElementById('nk-haka')  || {value:''}).value.trim();
+  var sesyuK   = (document.getElementById('nk-sesyu') || {value:''}).value.trim();
 
   var errEl = document.getElementById('nk-error');
   if (!name)     { errEl.textContent='顧客名は必須です'; errEl.style.display='block'; return; }
@@ -4878,6 +5115,8 @@ function submitNewKouji() {
   if (contents)  fields['ConstructionContents'] = contents;
   if (nauchi)    fields['InternalCommunication'] = nauchi;
   if (todo)      fields['TODO']           = todo;
+  if (hakaK)     fields['HakaName']       = hakaK;
+  if (sesyuK)    fields['_x5f6b__x523b__x8005__x540d_'] = sesyuK;
 
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
 
@@ -4901,12 +5140,8 @@ function submitNewKouji() {
       _newItemCusSpId = null;
       allItems = []; loadKoujiList();
     };
-    if (_newItemCusSpId && newItemId) {
-      submitBtn.textContent = '添付コピー中...';
-      copyCustomerAttachments(_newItemCusSpId, siteId2, KOUJI_LIST_ID, newItemId, afterCopy);
-    } else {
-      afterCopy();
-    }
+    submitBtn.textContent = '添付コピー中...';
+    _copyCusAttachSelected('nk-cus-attach-area', siteId2, KOUJI_LIST_ID, newItemId, afterCopy);
   })
   .catch(function(e) {
     submitBtn.disabled = false;
@@ -4918,6 +5153,96 @@ function submitNewKouji() {
 
 // ===== 顧客リスト添付ファイルを新規アイテムにコピー =====
 var _newItemCusSpId = null; // 顧客リストのSP内部ID（添付コピー用）
+
+// 顧客SP添付を選択チェックボックス付きでモーダルに読み込む
+function _loadCusAttachForModal(cusSpId, areaId, secId) {
+  var area = document.getElementById(areaId);
+  var sec  = document.getElementById(secId);
+  if (!area || !sec || !cusSpId) return;
+  sec.style.display = '';
+  area.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px">読み込み中...</div>';
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items(" + cusSpId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var files = (d && d.d && d.d.results) ? d.d.results : [];
+        if (files.length === 0) {
+          area.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px">添付ファイルなし</div>';
+          return;
+        }
+        var isImg = function(n){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(n||''); };
+        var html = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
+          '<label style="font-size:11px;color:#555;cursor:pointer;display:flex;align-items:center;gap:4px">' +
+          '<input type="checkbox" onchange="(function(me){me.closest(\'[id]\').querySelectorAll(\'.catt-chk\').forEach(function(c){c.checked=me.checked;});}).call(null,this)" checked> すべて選択</label></div>' +
+          '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">';
+        files.forEach(function(f) {
+          var fname = f.FileName || '';
+          var relUrl = f.ServerRelativeUrl || '';
+          var absUrl = 'https://shojisekizai.sharepoint.com' + relUrl;
+          var preview = isImg(fname)
+            ? '<img src="' + absUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;display:block">'
+            : '<div style="aspect-ratio:1;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:22px;border-radius:3px">📄</div>';
+          html += '<label style="cursor:pointer;border:1px solid #e0e0e0;border-radius:4px;overflow:hidden;display:block">' +
+            preview +
+            '<div style="display:flex;align-items:center;gap:3px;padding:2px 4px;background:#f8f8f8">' +
+              '<input type="checkbox" class="catt-chk" data-url="' + relUrl + '" data-name="' + fname + '" checked style="flex-shrink:0">' +
+              '<span style="font-size:9px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + fname + '</span>' +
+            '</div></label>';
+        });
+        html += '</div>';
+        area.innerHTML = html;
+      });
+  }).catch(function(e) {
+    area.innerHTML = '<div style="color:#c00;font-size:11px;padding:4px">読み込みエラー</div>';
+    console.warn('顧客添付読み込みエラー:', e.message);
+  });
+}
+
+// 選択されたファイルのみコピー
+function _copyCusAttachSelected(areaId, targetSiteId, targetListId, newItemId, callback) {
+  var area = document.getElementById(areaId);
+  var checked = area ? Array.prototype.slice.call(area.querySelectorAll('.catt-chk:checked')) : [];
+  if (checked.length === 0) { callback(); return; }
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var spToken = resp.accessToken;
+    return getToken().then(function(resp2) {
+      var graphToken = resp2.accessToken;
+      var idx = 0;
+      function next() {
+        if (idx >= checked.length) { callback(); return; }
+        var el = checked[idx++];
+        var relUrl = el.dataset.url;
+        var fname  = el.dataset.name;
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+          relUrl.replace(/'/g,"''") + "')/$value";
+        fetch(binUrl, { headers: { Authorization: 'Bearer ' + spToken } })
+          .then(function(r) { return r.arrayBuffer(); })
+          .then(function(buf) {
+            var bytes = new Uint8Array(buf);
+            var binary = '';
+            bytes.forEach(function(b) { binary += String.fromCharCode(b); });
+            var b64 = btoa(binary);
+            return fetch(
+              'https://graph.microsoft.com/v1.0/sites/' + targetSiteId + '/lists/' + targetListId + '/items/' + newItemId + '/attachments',
+              { method:'POST', headers:{ Authorization:'Bearer '+graphToken, 'Content-Type':'application/json' },
+                body: JSON.stringify({ name: fname, contentBytes: b64 }) }
+            );
+          })
+          .then(function() { next(); })
+          .catch(function(e) { console.warn('添付コピー失敗:', fname, e.message); next(); });
+      }
+      next();
+    });
+  }).catch(function(e) { console.warn('添付コピートークン取得失敗:', e.message); callback(); });
+}
 
 function copyCustomerAttachments(cusSpId, targetSiteId, targetListId, newItemId, callback) {
   if (!cusSpId) { callback(); return; }
@@ -4994,39 +5319,96 @@ function toWareki(dateStr) {
 // ===== 顧客リスト登録モーダル：添付ファイル読み込み =====
 function loadCrmAttachments(mode, d) {
   var el = document.getElementById('crm-attach-list');
+  var felEl = document.getElementById('crm-folder-list');
   if (!el) return;
   el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">読み込み中...</div>';
+  if (felEl) felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">読み込み中...</div>';
+
   var listTitle = mode === 'kouji' ? '工事関連' : '納骨・戒切';
   var itemId = d['id'];
-  if (!itemId) { el.textContent = '添付なし'; return; }
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-    account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    var token = resp.accessToken;
-    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('" + listTitle + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
-    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
-  }).then(function(r){ return r.json(); })
-  .then(function(d2) {
-    var files = (d2.d && d2.d.results) ? d2.d.results : [];
+
+  // --- SP添付ファイルを読み込み ---
+  if (!itemId) {
+    el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付なし</div>';
+  } else {
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var token = resp.accessToken;
+      var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('" + listTitle + "')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+      return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+    }).then(function(r){ return r.json(); })
+    .then(function(d2) {
+      var files = (d2.d && d2.d.results) ? d2.d.results : [];
+      if (files.length === 0) {
+        el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付ファイルなし</div>';
+        return;
+      }
+      var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+      var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+      var imgHtml = '';
+      if (imgs.length > 0) {
+        imgHtml = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-bottom:8px">' +
+          imgs.map(function(f) {
+            var fname = f.FileName || '';
+            var relUrl = f.ServerRelativeUrl || '';
+            var imgUrl = 'https://shojisekizai.sharepoint.com' + relUrl;
+            return '<div style="position:relative">' +
+              '<label style="cursor:pointer;display:block">' +
+                '<img src="' + imgUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px">' +
+                '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f8f8f8;border-radius:0 0 4px 4px">' +
+                  '<input type="checkbox" class="crm-attach-chk" data-type="sp" data-url="' + relUrl + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#1a5a1a">' +
+                  '<span style="font-size:9px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + fname + '</span>' +
+                '</div>' +
+              '</label>' +
+            '</div>';
+          }).join('') + '</div>';
+      }
+      var otherHtml = others.map(function(f) {
+        var fname = f.FileName || '';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:0.5px solid #eee">' +
+          '<input type="checkbox" class="crm-attach-chk" data-type="sp" data-url="' + (f.ServerRelativeUrl||'') + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#1a5a1a">' +
+          '<span style="font-size:13px">📄</span>' +
+          '<span style="font-size:12px;color:#185fa5;flex:1">' + fname + '</span>' +
+        '</div>';
+      }).join('');
+      el.innerHTML = imgHtml + otherHtml;
+    })
+    .catch(function(e) { el.innerHTML = '<div style="color:#c00;font-size:11px">読込エラー: ' + e.message + '</div>'; });
+  }
+
+  // --- OneDriveフォルダー内のファイルを読み込み ---
+  if (!felEl) return;
+  var folderPath = mode === 'kouji' ? (d['Folder_Pass'] || '') : (d['FolderPass'] || '');
+  if (!folderPath) {
+    felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">フォルダーが登録されていません</div>';
+    return;
+  }
+  getToken().then(function(resp) {
+    var encoded = folderPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/children?$select=name,id,file&$orderby=name&$top=200';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.json(); })
+  .then(function(data) {
+    var files = (data.value || []).filter(function(f) { return f.file; });
     if (files.length === 0) {
-      el.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">添付ファイルなし</div>';
+      felEl.innerHTML = '<div style="color:#aaa;font-size:11px;padding:4px 0">フォルダー内にファイルなし</div>';
       return;
     }
-    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
-    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName||''); });
+    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.name||''); });
+    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.name||''); });
     var imgHtml = '';
     if (imgs.length > 0) {
       imgHtml = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-bottom:8px">' +
         imgs.map(function(f) {
-          var fname = f.FileName || '';
-          var relUrl = f.ServerRelativeUrl || '';
-          var imgUrl = 'https://shojisekizai.sharepoint.com' + relUrl;
+          var fname = f.name || '';
+          var thumbUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.id + '/thumbnails/0/small/content';
           return '<div style="position:relative">' +
             '<label style="cursor:pointer;display:block">' +
-              '<img src="' + imgUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px">' +
-              '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f8f8f8;border-radius:0 0 4px 4px">' +
-                '<input type="checkbox" class="crm-attach-chk" data-url="' + relUrl + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#1a5a1a">' +
+              '<img src="' + thumbUrl + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:3px;border:0.5px solid #e0e0e0;display:block;max-height:80px" onerror="this.style.display=\'none\'">' +
+              '<div style="display:flex;align-items:center;gap:4px;padding:2px 4px;background:#f0f8f0;border-radius:0 0 4px 4px">' +
+                '<input type="checkbox" class="crm-folder-chk" data-type="drive" data-item-id="' + f.id + '" data-name="' + fname + '" style="width:13px;height:13px;accent-color:#005a4a">' +
                 '<span style="font-size:9px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + fname + '</span>' +
               '</div>' +
             '</label>' +
@@ -5034,16 +5416,26 @@ function loadCrmAttachments(mode, d) {
         }).join('') + '</div>';
     }
     var otherHtml = others.map(function(f) {
-      var fname = f.FileName || '';
+      var fname = f.name || '';
       return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:0.5px solid #eee">' +
-        '<input type="checkbox" class="crm-attach-chk" data-url="' + (f.ServerRelativeUrl||'') + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#1a5a1a">' +
+        '<input type="checkbox" class="crm-folder-chk" data-type="drive" data-item-id="' + f.id + '" data-name="' + fname + '" style="width:15px;height:15px;accent-color:#005a4a">' +
         '<span style="font-size:13px">📄</span>' +
         '<span style="font-size:12px;color:#185fa5;flex:1">' + fname + '</span>' +
       '</div>';
     }).join('');
-    el.innerHTML = imgHtml + otherHtml;
+    felEl.innerHTML = imgHtml + otherHtml;
   })
-  .catch(function(e) { el.innerHTML = '<div style="color:#c00;font-size:11px">読込エラー: ' + e.message + '</div>'; });
+  .catch(function(e) { felEl.innerHTML = '<div style="color:#c00;font-size:11px">フォルダー読込エラー: ' + e.message + '</div>'; });
+}
+function crmSelectAllAttach() {
+  var cks = document.querySelectorAll('#crm-attach-list .crm-attach-chk');
+  var all = Array.from(cks).every(function(c){return c.checked;});
+  cks.forEach(function(c){c.checked = !all;});
+}
+function crmSelectAllFolder() {
+  var cks = document.querySelectorAll('#crm-folder-list .crm-folder-chk');
+  var all = Array.from(cks).every(function(c){return c.checked;});
+  cks.forEach(function(c){c.checked = !all;});
 }
 
 
@@ -5072,7 +5464,7 @@ function openCustRegModal(d, mode) {
   var iraisha  = mode==='kouji' ? (d['Customers']||'') : (d['_x9867__x5ba2__x540d_']||'');
   var rawAmt    = mode==='kouji' ? d['InvoiceAmount'] : d['PaymentValue'];
   var moneyDisp = rawAmt ? Number(rawAmt).toLocaleString('ja-JP') : '―';
-  var moneySave = rawAmt ? String(Math.round(Number(rawAmt)/1000)) : '';
+  var moneySave = rawAmt ? String(parseFloat((Number(rawAmt)/1000).toFixed(2))) : '';
   var money     = moneyDisp;
   var tanto    = mode==='kouji' ? (d['PersonInCharge']||d['Editor0']||'') : (d['personincharge']||d['Editor0']||'');
 
@@ -5128,7 +5520,7 @@ function openCustRegModal(d, mode) {
       var tuiPayDate = toWareki((d['PaymentDate_tui']||'').substring(0,10));
       var tuiRaw    = d['tui_ContractMoney'];
       var tuiMoney  = tuiRaw ? Number(tuiRaw).toLocaleString('ja-JP') : '―';
-      var tuiMoneySave = tuiRaw ? String(Math.round(Number(tuiRaw)/1000)) : '';
+      var tuiMoneySave = tuiRaw ? String(parseFloat((Number(tuiRaw)/1000).toFixed(2))) : '';
       var tuiContent = d['addition']||'追加工事';
       var setInp2 = function(id,v){var e=document.getElementById(id);if(e){if(e.tagName==='INPUT')e.value=v||'';else e.textContent=v||'';}};
       setInp2('crm-tui-content', tuiContent);
@@ -5432,11 +5824,16 @@ function submitCustReg() {
   var btn = document.querySelector('#cust-reg-modal button[onclick="submitCustReg()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 登録中...'; }
 
-  // 選択された添付ファイルを収集
+  // 選択された添付ファイルを収集（SP添付 + フォルダーファイル）
   var selectedAttach = [];
   document.querySelectorAll('#crm-attach-list .crm-attach-chk').forEach(function(chk) {
     if (chk.checked) {
-      selectedAttach.push({ url: chk.getAttribute('data-url'), name: chk.getAttribute('data-name') });
+      selectedAttach.push({ type: 'sp', url: chk.getAttribute('data-url'), name: chk.getAttribute('data-name') });
+    }
+  });
+  document.querySelectorAll('#crm-folder-list .crm-folder-chk').forEach(function(chk) {
+    if (chk.checked) {
+      selectedAttach.push({ type: 'drive', itemId: chk.getAttribute('data-item-id'), name: chk.getAttribute('data-name') });
     }
   });
 
@@ -6857,6 +7254,111 @@ function createKoujiFolder(item) {
   }).catch(function(e) { showSaveToast(false, 'フォルダー作成エラー: ' + e.message); });
 }
 
+// ===== 納骨フォルダー作成 =====
+function buildNokFolderPath(d) {
+  var temple   = d['_x304a__x5bfa_'] || '';
+  var date     = (d['RequestDate'] || '').substring(0, 10);
+  var customer = d['_x9867__x5ba2__x540d_'] || '';
+  var haka     = d['_x304a__x5893__x306e__x540d__x7f'] ? '_' + d['_x304a__x5893__x306e__x540d__x7f'] : '';
+  var cusId    = d['Cus_ID'] ? String(d['Cus_ID']) : '';
+  var category = d['_x5206__x985e_'] || '';
+  var folderName = date + '_' + customer + '＜' + temple + haka + cusId + '＞' + (category ? '_' + category : '');
+  return '/工事受付/' + temple + '/' + folderName;
+}
+
+function _saveFolderFieldsNok(itemId, sharingUrl, folderPath, token) {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var base = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items/' + itemId;
+  var folderLabel = folderPath.split('/').pop();
+  return fetch(base, {
+    method: 'PATCH',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Prefer': 'apiversion=2.1' },
+    body: JSON.stringify({ fields: { '_x8cc7__x6599_': { Url: sharingUrl, Description: folderLabel }, FolderPass: folderPath } })
+  }).then(function(r) {
+    if (r.ok) return;
+    return r.json().then(function(e) {
+      console.warn('資料URL保存失敗、FolderPassのみ保存:', JSON.stringify(e));
+      return fetch(base, {
+        method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: { FolderPass: folderPath } })
+      }).then(function(r2) {
+        if (!r2.ok) return r2.json().then(function(e2) { throw new Error(e2.error ? e2.error.message : r2.status); });
+      });
+    });
+  });
+}
+
+function createNokFolder(item) {
+  var d = item;
+  if (!d['RequestDate'] || !d['_x9867__x5ba2__x540d_']) {
+    alert('受付日と顧客名は必須です。入力してから再度お試しください。');
+    return;
+  }
+  var folderPath = buildNokFolderPath(d);
+  if (!confirm('以下のフォルダーを作成します：\n\n' + folderPath + '\n\n実行しますか？')) return;
+  showSaveToast(null, 'フォルダーを作成中...');
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var encodedPath = folderPath.split('/').map(encodeURIComponent).join('/');
+    var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + ':';
+    return fetch(driveUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+    })
+    .then(function(r) {
+      if (r.status === 409) {
+        if (!confirm('同名のフォルダーが既に存在します。\n\n' + folderPath + '\n\nこのフォルダーをリストに登録しますか？')) throw new Error('キャンセルしました');
+        return fetch(driveUrl + '?$select=id,webUrl', { headers: { 'Authorization': 'Bearer ' + token } })
+          .then(function(r2) {
+            if (!r2.ok) throw new Error('既存フォルダーの取得に失敗しました');
+            return r2.json();
+          });
+      }
+      if (!r.ok) return r.json().then(function(e) { throw new Error(e.error ? e.error.message : r.status); });
+      return r.json();
+    })
+    .then(function(folderData) {
+      var driveItemId = folderData.id;
+      var itemId = d['id'];
+      return _createFolderSharingLink(driveItemId, token)
+        .catch(function() { return null; })
+        .then(function(sharingUrl) {
+          var displayUrl = sharingUrl || folderData.webUrl;
+          return _saveFolderFieldsNok(itemId, displayUrl, folderPath, token)
+            .then(function() {
+              d['_x8cc7__x6599_'] = { Url: displayUrl, Description: folderPath.split('/').pop() };
+              d['FolderPass'] = folderPath;
+              if (currentItem && currentItem['id'] === itemId) {
+                currentItem['_x8cc7__x6599_'] = d['_x8cc7__x6599_'];
+                currentItem['FolderPass'] = folderPath;
+              }
+              ['noukotsu','noukotsu_all'].forEach(function(ckey) {
+                var arr = _menuSearchCache[ckey];
+                if (!Array.isArray(arr)) return;
+                var idx = arr.findIndex(function(x){ return x['id'] === itemId; });
+                if (idx >= 0) { arr[idx]['_x8cc7__x6599_'] = d['_x8cc7__x6599_']; arr[idx]['FolderPass'] = folderPath; idbSet(ckey, arr).catch(function(){}); }
+              });
+              showSaveToast(true, 'フォルダーを作成・登録しました');
+              var cfg2 = getFolderCfg();
+              if (cfg2.templateRoot && cfg2.common) {
+                showSaveToast(null, 'テンプレートをコピー中...');
+                _odCopyFolderContents(token, cfg2.templateRoot + '/' + cfg2.common, driveItemId)
+                  .catch(function(e){ console.warn('共通テンプレートコピー失敗:', e.message); })
+                  .then(function() {
+                    showSaveToast(true, 'フォルダー作成・テンプレートコピー完了');
+                    renderNokDataTab(d);
+                  });
+              } else {
+                renderNokDataTab(d);
+              }
+            });
+        });
+    });
+  }).catch(function(e) { showSaveToast(false, 'フォルダー作成エラー: ' + e.message); });
+}
+
 // srcPath 内の全アイテム（ファイル・フォルダー）を destId にコピー
 function _odCopyFolderContents(token, srcPath, destId) {
   var enc = srcPath.split('/').map(encodeURIComponent).join('/');
@@ -7281,15 +7783,12 @@ function showKoujiTab(i, d) {
 
   } else if (i === 3) {
     b.innerHTML = editBtnHtml +
-      '<div class="sec"><span class="sec-hdr bg3">石材制作業者①</span>' +
-      nkgBar('kj2a') + nkgCanvas('kj2a', KOUJI_T2A_CARDS, d, itemId) +
-      '</div>' +
-      '<div class="sec"><span class="sec-hdr bg2">石材制作業者②</span>' +
-      nkgBar('kj2b') + nkgCanvas('kj2b', KOUJI_T2B_CARDS, d, itemId) +
-      '</div>' +
-      '<div class="sec"><span class="sec-hdr bg5">彫刻</span>' +
-      nkgBar('kj2c') + nkgCanvas('kj2c', KOUJI_T2C_CARDS, d, itemId) +
-      '</div>' +
+      _kjSec('kj_maker1', d, 'bg3', '', '石材制作業者①',
+        nkgBar('kj2a') + nkgCanvas('kj2a', KOUJI_T2A_CARDS, d, itemId)) +
+      _kjSec('kj_maker2', d, 'bg2', '', '石材制作業者②',
+        nkgBar('kj2b') + nkgCanvas('kj2b', KOUJI_T2B_CARDS, d, itemId)) +
+      _kjSec('kj_chokoku', d, 'bg5', '', '彫刻',
+        nkgBar('kj2c') + nkgCanvas('kj2c', KOUJI_T2C_CARDS, d, itemId)) +
       '<div class="sec"><span class="sec-hdr bg4">その他の資料</span>' +
       nkgBar('kj2d') + nkgCanvas('kj2d', KOUJI_T2D_CARDS, d, itemId) +
       '</div>';
@@ -7954,6 +8453,7 @@ function renderKoujiDataTab(d) {
 
   if (_koujiDataSubtab === 'sp') {
     var hasAttach = d['Attachments'] === true;
+    var cusId = String(d['Cus_ID'] || '').trim();
     b.innerHTML = subtabHtml +
       '<div class="sec"><span class="sec-hdr bg3">添付ファイル</span>' +
       (hasAttach
@@ -7966,8 +8466,13 @@ function renderKoujiDataTab(d) {
         '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteKoujiFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
       '</div>' +
       '<input type="file" id="kouji-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadKoujiAttachments(\'' + itemId + '\',this)">' +
-      '</div>';
+      '<div style="margin-top:8px;text-align:right">' +
+        '<button type="button" onclick="openFileMgrPanel(currentItem,\'kouji\')" style="background:#2a4a7a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit">🗂 ファイル整理</button>' +
+      '</div>' +
+      '</div>' +
+      (cusId ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-kouji-' + cusId + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
     if (hasAttach) loadKoujiAttachments(itemId);
+    if (cusId) loadLinkedCusAttachments(cusId, 'cus-linked-attach-kouji-' + cusId);
     return;
   }
 
@@ -8022,13 +8527,18 @@ function renderNokDataTab(d) {
       loadFolderExplorer(folderPass, d['_x8cc7__x6599_'], true);
     } else {
       var fe = document.getElementById('folder-explorer');
-      if (fe) fe.innerHTML = '<div style="text-align:center;color:#888;font-size:12px;padding:20px">フォルダーパスが登録されていません</div>';
+      if (fe) fe.innerHTML =
+        '<div style="text-align:center;padding:20px">' +
+          '<div style="color:#888;font-size:12px;margin-bottom:12px">フォルダーパスが登録されていません</div>' +
+          '<button onclick="createNokFolder(currentItem)" style="background:#2a6a2a;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:13px;cursor:pointer;font-family:inherit">📁 フォルダー作成</button>' +
+        '</div>';
     }
     return;
   }
 
   // SP添付（default）
   var hasAttach = d['Attachments'] === true;
+  var cusIdNok = String(d['Cus_ID'] || '').trim();
   b.innerHTML = subtabHtml +
     '<div class="sec"><span class="sec-hdr bg1">添付ファイル</span>' +
     (hasAttach
@@ -8041,8 +8551,13 @@ function renderNokDataTab(d) {
       '<button type="button" class="cb-btn cb-paste" data-tip="クリップボードから貼り付け" onclick="_pasteNokFromClipboard(this,\'' + itemId + '\')" style="padding:8px 14px;font-size:12px;flex-shrink:0">📥 貼り付け</button>' +
     '</div>' +
     '<input type="file" id="nok-file-' + itemId + '" multiple accept="image/*,application/pdf" style="display:none" onchange="uploadNokAttachments(\'' + itemId + '\',this)">' +
-    '</div>';
+    '<div style="margin-top:8px;text-align:right">' +
+      '<button type="button" onclick="openFileMgrPanel(currentItem,\'noukotsu\')" style="background:#2a4a7a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit">🗂 ファイル整理</button>' +
+    '</div>' +
+    '</div>' +
+    (cusIdNok ? '<div class="sec" style="margin-top:14px"><span class="sec-hdr" style="background:#3a6a1a;color:#fff">👤 顧客リスト添付ファイル（閲覧・コピー）</span><div id="cus-linked-attach-nok-' + cusIdNok + '"><div class="attach-loading">読み込み中...</div></div></div>' : '');
   if (hasAttach) loadAttachments(itemId);
+  if (cusIdNok) loadLinkedCusAttachments(cusIdNok, 'cus-linked-attach-nok-' + cusIdNok);
   setTimeout(function() {
     var area = document.getElementById('det-body');
     if (!area) return;
@@ -8725,7 +9240,7 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
       var copyBtns =
         '<div style="position:absolute;bottom:24px;right:4px;display:flex;gap:3px">' +
           '<button type="button" class="cb-btn cb-thumb cb-icon-only" data-tip="🖼 サムネを画像コピー" ' +
-            'onclick="event.stopPropagation();_copyFolderThumbToClipboard(\'' + jsStr(thumbUrl) + '\',this)">🖼</button>' +
+            'onclick="event.stopPropagation();_copyFolderThumbToClipboard(\'' + jsStr(fpath) + '\',this)">🖼</button>' +
           '<button type="button" class="cb-btn cb-file cb-icon-only" data-tip="📷 原寸ファイルを画像コピー" ' +
             'onclick="event.stopPropagation();_copyFolderFileToClipboard(\'' + jsStr(fpath) + '\',this)">📷</button>' +
         '</div>';
@@ -9103,7 +9618,9 @@ var CHOUKOKU_BIND_FIELDS = [
   {key:'deadlines',label:'納期'},
   {key:'ReasonDelivery',label:'納期理由'},
   {key:'situation',label:'工事仕様'},
-  {key:'InternalCommunication',label:'打ち合わせメモ'},
+  {key:'InternalCommunication',label:'社内連絡'},
+  {key:'DetailedMemo',label:'工事仕様メモ'},
+  {key:'TODO',label:'お客様との状況メモ'},
   {key:'Creator',label:'仕入先①'},
   {key:'DrawingCompleted',label:'図面完成①'},
   {key:'OrderingMaterials',label:'発注日①'},
@@ -9132,7 +9649,9 @@ var CHOUKOKU_BIND_FIELDS = [
   {key:'MF_cloud_1',label:'MF①'},
   {key:'PaymentDate',label:'入金日'},
   {key:'MF_cloud_2',label:'MF②'},
-  {key:'ReceiptIssuanceDate',label:'領収書日'}];
+  {key:'ReceiptIssuanceDate',label:'領収書日'},
+  {key:'endinfo',label:'最終チェック'},
+  {key:'submission',label:'資料提出'}];
 
 // 納骨リスト用のSP参照フィールド（内部名は埋め込み列名）
 var NOUKOTSU_BIND_FIELDS = [
@@ -9192,9 +9711,10 @@ var NOUKOTSU_BIND_FIELDS = [
   {key:'DateFinalProofreading',label:'校正完了日'},
   {key:'SendDocumentsCustomer',label:'資料郵送日'},
   {key:'RequestedWork',label:'彫刻依頼日'},
-  {key:'InternalCommunication',label:'打ち合わせメモ'},
-  {key:'_x8ffd__x52a0__x5185__x5bb9_',label:'追加内容'},
-  {key:'Noukotumemo',label:'追加メモ'},
+  {key:'InternalCommunication',label:'社内連絡'},
+  {key:'_x6ce8__x610f__x4e8b__x9805__x30',label:'注意事項メモ'},
+  {key:'addition',label:'追加修繕'},
+  {key:'note_tui',label:'追加分_メモ'},
   {key:'Estimate_tui',label:'追加見積日'},
   {key:'tui_ContractMoney',label:'追加金額'},
   {key:'IssueDate_tui',label:'追加契約日'},
@@ -9202,7 +9722,10 @@ var NOUKOTSU_BIND_FIELDS = [
   {key:'DateInvoice_tui',label:'追加請求日'},
   {key:'MF_cloud_3',label:'MF③'},
   {key:'PaymentDate_tui',label:'追加入金日'},
-  {key:'MF_cloud_4',label:'MF④'}];
+  {key:'MF_cloud_4',label:'MF④'},
+  {key:'tui_OutsourcingCosts',label:'追加分_外注費'},
+  {key:'RedMark',label:'朱取点検'},
+  {key:'Inspection',label:'点検'}];
 
 function _buildUketsukeTemplateJson() {
   function t(x,y,w,h,text,fs,bold,align){
@@ -9273,8 +9796,8 @@ function _buildUketsukeTemplateJson() {
     // ── 追加分（左） ──
     box(10,128,122,17),
     t(11,129,120,4,'追加分',6),
-    t(11,133,120,5,'内容:{{追加内容}}',8),
-    t(11,139,120,5,'メモ:{{追加メモ}}',8),
+    t(11,133,120,5,'内容:{{追加修繕}}',8),
+    t(11,139,120,5,'メモ:{{追加分_メモ}}',8),
     // ── 追加分（右） ──
     box(133,64,67,32),
     t(134,65,65,4,'追加分',6),
@@ -10842,7 +11365,7 @@ function _buildChoukokuTemplateElems(tpl, orientation, fnameLine) {
       var bodyHtml = (_itemHtml != null && _itemHtml !== '')
         ? String(_itemHtml)
         : esc(_itemText);
-      return '<div class="elem elem-text" data-type="text" data-fontsize="' + fs + '" data-bold="' + (item.bold ? '1' : '0') + '" style="' + style + '">' + bodyHtml + '<div class="hdl"></div></div>';
+      return '<div class="elem elem-text" data-type="text" data-fontsize="' + fs + '" data-bold="' + (item.bold ? '1' : '0') + '" style="' + style + '">' + bodyHtml + '<div class="hdl" contenteditable="false"></div></div>';
     } else if (item.type === 'outline') {
       var lbl = (item.label != null) ? item.label : '枠';
       return '<div class="elem elem-outline" data-type="outline" data-label="' + esc(lbl) + '" style="' + style + '"><div class="lbl"' + (lbl ? '' : ' style="display:none"') + '>' + esc(lbl) + '</div><div class="hdl"></div></div>';
@@ -10979,7 +11502,8 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
 '.panel .row textarea{resize:vertical;min-height:50px}' +
 '.panel .empty{color:#888;font-size:11px;text-align:center;padding:14px 0}' +
 '.panel button{font-family:inherit}.panel .cropbtn{width:100%;padding:6px;background:#1a7a3a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px}.panel .delbtn{width:100%;padding:6px;background:#c43030;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-top:4px}' +
-'@media print{html,body{height:auto!important;overflow:visible!important}body{background:#fff}.tb,.panel,.page-bar{display:none!important}.ws{display:block!important;padding:0!important;min-height:0!important;gap:0!important}.page-wrap{display:block!important}.page-wrap+.page-wrap{page-break-before:always}.page{zoom:1!important;box-shadow:none!important;margin:0!important}.elem.sel{outline:none}.elem .hdl{display:none}.boxlabel,.img-ph{display:none!important}}' +
+'*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}' +
+'@media print{html,body{height:auto!important;overflow:visible!important}body{background:#fff}.tb,.panel,.page-bar{display:none!important}body>div:not(.ws){display:none!important}.ws{display:block!important;padding:0!important;min-height:0!important;gap:0!important}.page-wrap{display:block!important}.page-wrap+.page-wrap{page-break-before:always}.page{zoom:1!important;box-shadow:none!important;margin:0!important}.elem.sel{outline:none}.elem .hdl{display:none}.boxlabel,.img-ph{display:none!important}}' +
 'body.pdf-mode .boxlabel,body.pdf-mode .img-ph,body.pdf-mode .elem.sel{outline:none!important}body.pdf-mode .boxlabel,body.pdf-mode .img-ph{display:none!important}body.pdf-mode .hdl{display:none!important}' +
 /* PDF生成時は zoom を解除して mm 寸法そのままでキャプチャ（文字位置ズレ対策） */
 'body.pdf-mode .page{zoom:1!important;box-shadow:none!important;margin:0!important;background:transparent!important}' +
@@ -11058,7 +11582,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
       '<div class="it" style="color:#c00" onclick="deleteCurrentTemplate();closeTplMenu()">🗑️ このテンプレートを削除</div>' +
     '</div>' +
   '</div>' +
-  '<div class="ddwrap">' +
+  '<div class="ddwrap"' + (isNormalMode ? '' : ' style="display:none"') + '>' +
     '<button class="pr" onclick="toggleSaveMenu(event)" title="案件フォルダに保存">☁️ 保存 ▾</button>' +
     '<div class="ddmenu" id="saveMenu">' +
       '<div class="it" onclick="savetoSharePoint();closeSaveMenu()" title="編集可能なJSON形式で案件フォルダに途中保存">📄 途中保存（.json）</div>' +
@@ -11067,7 +11591,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   '</div>' +
   '<div style="flex:1"></div>' +
   '<span style="font-size:11px;color:#aac;margin-right:8px">📋 Ctrl+V／ドラッグで画像追加 / 重なり時は前面・背面ボタンで並べ替え</span>' +
-  '<button onclick="window.print()">🖨️ 印刷</button>' +
+  (isNormalMode ? '<button onclick="window.print()">🖨️ 印刷</button>' : '') +
 '</div>' +
 pagesHtml +
 '<div class="panel" id="panel"><h4 id="ph">プロパティ</h4><div id="pb"><div class="empty">要素をクリックして選択してください</div></div></div>' +
@@ -11178,7 +11702,7 @@ pagesHtml +
     'function up(){document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);}' +
     'document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);' +
   '});}' +
-  'if(el.dataset.type==="text"){el.addEventListener("dblclick",function(e){e.stopPropagation();el.contentEditable="true";el.focus();});el.addEventListener("blur",function(){el.contentEditable="false";});}' +
+  'if(el.dataset.type==="text"){el.addEventListener("dblclick",function(e){e.stopPropagation();el.contentEditable="true";el.focus();});el.addEventListener("blur",function(){el.contentEditable="false";var h=el.querySelector(".hdl");if(!h){h=document.createElement("div");h.className="hdl";h.contentEditable="false";el.appendChild(h);setupDrag(el);}});}' +
 '}' +
 'function refreshPanel(){if(!sel){phead.textContent="プロパティ";panel.innerHTML="<div class=\\"empty\\">要素をクリックして選択してください</div>";return;}' +
   'var t=sel.dataset.type;phead.textContent=t==="image"?"画像":(t==="text"?"テキスト":(t==="line"?"線":"枠"));' +
@@ -11245,7 +11769,7 @@ pagesHtml +
   'document.getElementById("pw").addEventListener("input",function(){setMm(sel,"width",clamp(parseFloat(this.value)||minSz,minSz,PAGE_W-getMm(sel,"left")));});' +
   'document.getElementById("ph2").addEventListener("input",function(){setMm(sel,"height",clamp(parseFloat(this.value)||minSz,minSz,PAGE_H-getMm(sel,"top")));});' +
   'if(t==="text"){' +
-    'document.getElementById("ptx").addEventListener("input",function(){var hdl=sel.querySelector(".hdl");sel.textContent=this.value;if(hdl)sel.appendChild(hdl);if(tplMode)sel.dataset.tplText=this.value;});' +
+    'document.getElementById("ptx").addEventListener("input",function(){var hdl=sel.querySelector(".hdl");sel.textContent=this.value;if(hdl){sel.appendChild(hdl);}else{var h=document.createElement("div");h.className="hdl";h.contentEditable="false";sel.appendChild(h);setupDrag(sel);}if(tplMode)sel.dataset.tplText=this.value;});' +
     'document.getElementById("pfs").addEventListener("input",function(){var v=parseFloat(this.value)||14;sel.dataset.fontsize=v;sel.style.fontSize=v+"pt";});' +
     'document.getElementById("pbd").addEventListener("change",function(){sel.dataset.bold=this.checked?"1":"0";sel.style.fontWeight=this.checked?"700":"400";});' +
     // 部分書式ボタン: 範囲選択があればその範囲に、なければ要素全体に適用
@@ -11373,10 +11897,10 @@ pagesHtml +
         'lbl=lbl.trim();var info=_labelMap[lbl];if(!info)return m;' +
         'var raw=_resolveSp(info.key);if(raw==null)return "";' +
         'var v;if(info.jsonResolve){var jv=_resolveJson(info.jsonResolve,raw,fmt?fmt.trim():"");if(jv==null)return m;v=String(jv);if(v.indexOf("\\n")>=0)hasML=true;return v;}' +
-        'v=String(raw);if(info.prefix)v=info.prefix+v;if(info.suffix)v=v+info.suffix;' +
+        'v=String(raw);if(v.indexOf("\\n")>=0)hasML=true;if(info.prefix)v=info.prefix+v;if(info.suffix)v=v+info.suffix;' +
         'return _applyHonor(v,fmt?fmt.trim():"");' +
       '});' +
-      'if(nv!==tplTxt){if(hasML)el.style.whiteSpace="pre-line";_setBoundText(el,nv);}' +
+      'if(nv!==tplTxt){if(hasML||nv.indexOf("\\n")>=0)el.style.whiteSpace="pre-line";_setBoundText(el,nv);}' +
     '}' +
   '});' +
   'refreshPanel();' +
@@ -11600,7 +12124,7 @@ pagesHtml +
     '});' +
   '});' +
 '};' +
-'window.addText=function(){var el=document.createElement("div");el.className="elem elem-text";el.dataset.type="text";el.dataset.fontsize="14";el.style.cssText="left:80mm;top:200mm;width:140mm;height:20mm;font-size:14pt";el.textContent="テキストを入力";el.id="elem-"+(nextId++);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);_pages[currentPageIdx].appendChild(el);setupDrag(el);setSel(el);};' +
+'window.addText=function(){var el=document.createElement("div");el.className="elem elem-text";el.dataset.type="text";el.dataset.fontsize="14";el.style.cssText="left:80mm;top:200mm;width:140mm;height:20mm;font-size:14pt";el.textContent="テキストを入力";el.id="elem-"+(nextId++);var hdl=document.createElement("div");hdl.className="hdl";hdl.contentEditable="false";el.appendChild(hdl);_pages[currentPageIdx].appendChild(el);setupDrag(el);setSel(el);};' +
 'window.addOutline=function(){var el=document.createElement("div");el.className="elem elem-outline";el.dataset.type="outline";el.dataset.label="枠";el.style.cssText="left:90mm;top:150mm;width:80mm;height:120mm";el.id="elem-"+(nextId++);var lbl=document.createElement("div");lbl.className="lbl";lbl.textContent=el.dataset.label;el.appendChild(lbl);var hdl=document.createElement("div");hdl.className="hdl";el.appendChild(hdl);_pages[currentPageIdx].appendChild(el);setupDrag(el);setSel(el);};' +
 'window._lineSvgHtml=function(orient,thickness,color,arrow,mid){' +
   'var x1,y1,x2,y2;' +
@@ -11864,6 +12388,14 @@ pagesHtml +
     'if(fmt==="sama"){return v+" 様";}' +
     'return v;' +
   '}' +
+  'function _innerTextBr(n){' +
+    'if(n.nodeType===3)return n.nodeValue;' +
+    'if(n.nodeName==="BR")return "\\n";' +
+    'if(n.nodeType!==1)return "";' +
+    'var s="";for(var i=0;i<n.childNodes.length;i++)s+=_innerTextBr(n.childNodes[i]);' +
+    'var bn=n.nodeName;if((bn==="DIV"||bn==="P")&&s&&s[s.length-1]!=="\\n")s+="\\n";' +
+    'return s;' +
+  '}' +
   'function _setBoundText(el,newVal){' +
     'var hdl=el.querySelector(".hdl");' +
     'var textNodes=[];' +
@@ -11944,7 +12476,7 @@ pagesHtml +
   '}' +
   'document.querySelectorAll(".elem-text").forEach(function(el){' +
     'var clone=el.cloneNode(true);var h=clone.querySelector(".hdl");if(h)h.remove();' +
-    'var orig=clone.textContent;' +
+    'var orig=_innerTextBr(clone).replace(/\\n$/,"");' +
     'el.dataset.tplText=orig;' +
     'if(tplMode)return;' +
     'if(orig.indexOf("{{")<0)return;' +
@@ -11965,13 +12497,14 @@ pagesHtml +
         'return v;' +
       '}else{' +
         'v=String(raw);' +
+        'if(v.indexOf("\\n")>=0)hasMultiline=true;' +
         'if(info.prefix)v=info.prefix+v;' +
         'if(info.suffix)v=v+info.suffix;' +
       '}' +
       'return _applyHonor(v,fmt?fmt.trim():"");' +
     '});' +
     'if(nv!==orig){' +
-      'if(hasMultiline)el.style.whiteSpace="pre-line";' +
+      'if(hasMultiline||nv.indexOf("\\n")>=0)el.style.whiteSpace="pre-line";' +
       '_setBoundText(el,nv);' +
     '}' +
   '});' +
@@ -12655,7 +13188,6 @@ function _copyImgResizedToClipboard(blobUrl, btn, maxSize) {
   var orig = btn ? btn.innerHTML : '';
   if (btn) btn.innerHTML = '⏳';
   var img = new Image();
-  img.crossOrigin = 'anonymous';
   img.onload = function() {
     var ratio = Math.min(maxSize / img.naturalWidth, maxSize / img.naturalHeight, 1);
     var w = Math.max(1, Math.round(img.naturalWidth * ratio));
@@ -12681,10 +13213,47 @@ function _copyImgResizedToClipboard(blobUrl, btn, maxSize) {
   img.src = blobUrl;
 }
 
-// OneDrive ファイル: サムネURLをそのまま PNG コピー
-function _copyFolderThumbToClipboard(thumbUrl, btn) {
-  if (!thumbUrl) { showSaveToast(false, 'サムネがありません'); return; }
-  copyImgToClipboard(thumbUrl, btn);
+// OneDrive ファイル: Graph API サムネイルエンドポイントから認証付きで取得してコピー
+function _copyFolderThumbToClipboard(filePath, btn) {
+  if (!filePath) { showSaveToast(false, 'サムネがありません'); return; }
+  if (!navigator.clipboard || !window.ClipboardItem) {
+    showSaveToast(false, 'このブラウザはクリップボードコピー非対応');
+    return;
+  }
+  var orig = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '⏳';
+  getToken().then(function(resp) {
+    var enc = filePath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/thumbnails/0/medium/content',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.blob();
+  }).then(function(blob) {
+    var blobUrl = URL.createObjectURL(blob);
+    return new Promise(function(resolve, reject) {
+      var img = new Image();
+      img.onload = function() {
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        c.toBlob(function(png) {
+          URL.revokeObjectURL(blobUrl);
+          if (!png) { reject(new Error('PNG変換失敗')); return; }
+          resolve(png);
+        }, 'image/png');
+      };
+      img.onerror = function() { URL.revokeObjectURL(blobUrl); reject(new Error('画像読込失敗')); };
+      img.src = blobUrl;
+    });
+  }).then(function(png) {
+    return navigator.clipboard.write([new ClipboardItem({'image/png': png})]);
+  }).then(function() {
+    if (btn) { btn.innerHTML = '✅'; setTimeout(function(){ btn.innerHTML = orig; }, 1500); }
+  }).catch(function(e) {
+    if (btn) btn.innerHTML = orig;
+    showSaveToast(false, 'サムネコピー失敗: ' + (e && e.message || ''));
+  });
 }
 
 // OneDrive ファイル: 原寸ファイル本体を取得して PNG コピー
@@ -12914,7 +13483,7 @@ function renderFolderContents(items, currentPath, token) {
       thumbCopyBtn.innerHTML = '🖼';
       thumbCopyBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        _copyFolderThumbToClipboard(thumbUrl, this);
+        _copyFolderThumbToClipboard(filePath, this);
       });
       var fileCopyBtn = document.createElement('button');
       fileCopyBtn.className = 'cb-btn cb-file cb-icon-only';
@@ -12980,7 +13549,7 @@ function _renderFolderFileRow(el, f, currentPath) {
   if (thumbBtn) {
     thumbBtn.addEventListener('click', function(e) {
       e.stopPropagation();
-      _copyFolderThumbToClipboard(thumbUrlList, this);
+      _copyFolderThumbToClipboard(filePath, this);
     });
   }
   var fileBtn = row.querySelector('.folder-list-file-btn');
@@ -14443,6 +15012,460 @@ function loadCustomerAttachments(spItemId) {
   });
 }
 
+// 納骨・工事から顧客リストの添付ファイルを読み取り専用で表示
+function loadLinkedCusAttachments(cusId, areaId) {
+  var area = document.getElementById(areaId);
+  if (!area) return;
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items(" + cusId + ")/AttachmentFiles";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    var files = (d && d.d && d.d.results) || [];
+    if (files.length === 0) {
+      area.innerHTML = '<div class="attach-empty">添付ファイルなし</div>';
+      return;
+    }
+    var imgs   = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
+    var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName); });
+    var html = '<div class="attach-grid">';
+    imgs.forEach(function(f, fi) {
+      var isMap = f.FileName.toLowerCase().includes('map');
+      var label = isMap ? '🗺️ 地図' : '📷 写真';
+      html += '<div class="attach-item" style="position:relative">' +
+        '<img class="attach-thumb cus-linked-img-lazy" ' +
+        'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+        'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
+        'data-fi="' + fi + '" style="background:#e0e0e0">' +
+        '<button class="attach-thumb-btn cb-btn cb-thumb cb-icon-only" data-tip="🖼 サムネを画像コピー" style="position:absolute;top:4px;left:4px">🖼</button>' +
+        '<button class="attach-file-btn cb-btn cb-file cb-icon-only" data-tip="📷 原寸を画像コピー" style="position:absolute;top:4px;left:34px">📷</button>' +
+        '<div class="attach-label">' + label + ' ' + f.FileName + '</div>' +
+        '</div>';
+    });
+    others.forEach(function(f) {
+      html += '<div class="attach-item" style="display:flex;flex-direction:column;gap:4px">' +
+        '<a href="https://shojisekizai.sharepoint.com' + f.ServerRelativeUrl + '" target="_blank" class="attach-file-link">📎 ' + f.FileName + '</a>' +
+        '</div>';
+    });
+    html += '</div>';
+    area.innerHTML = html;
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var t2 = resp.accessToken;
+      area.querySelectorAll('.cus-linked-img-lazy').forEach(function(imgEl) {
+        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+                     relPath.replace(/'/g, "''") + "')/$value";
+        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
+        .then(function(r){ return r.ok ? r.blob() : null; })
+        .then(function(blob) {
+          if (!blob) return;
+          var blobUrl = URL.createObjectURL(blob);
+          imgEl.src = blobUrl;
+          imgEl.style.background = '';
+          imgEl.onclick = function(){ openCustImgPreview(blobUrl); };
+          var thumbBtn = imgEl.parentElement.querySelector('.attach-thumb-btn');
+          if (thumbBtn) thumbBtn.onclick = function(e){ e.stopPropagation(); _copyImgResizedToClipboard(blobUrl, this, 600); };
+          var fileBtn = imgEl.parentElement.querySelector('.attach-file-btn');
+          if (fileBtn) fileBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
+        }).catch(function(){});
+      });
+    }).catch(function(){});
+  })
+  .catch(function(e) {
+    if (area) area.innerHTML = '<div class="err-banner">エラー: ' + e.message + '</div>';
+  });
+}
+
+// ===== ファイル整理フローティングパネル =====
+var _fmgr = {
+  open: false, x: null, y: null,
+  panelDragX: 0, panelDragY: 0, panelDragging: false,
+  panelLoc: '',      // 'cus_sp' | 'cur_sp' | 'folder'
+  panelFiles: [],    // パネル側ファイル一覧
+  mainFiles: [],     // メイン側ファイル一覧
+  item: null,
+  listMode: '',      // 'noukotsu' | 'kouji'
+  fileDragData: null,
+  fileDragSide: ''   // 'panel' | 'main'
+};
+
+function openFileMgrPanel(item, listMode) {
+  _fmgr.item = item;
+  _fmgr.listMode = listMode;
+  _fmgr.open = true;
+  if (_fmgr.x === null) {
+    _fmgr.x = Math.max(20, window.innerWidth - 420);
+    _fmgr.y = 80;
+  }
+  var cusId = String(item['Cus_ID'] || '').trim();
+  var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+  if (!_fmgr.panelLoc || _fmgr.panelLoc === 'cur_sp') {
+    _fmgr.panelLoc = cusId ? 'cus_sp' : (folderPass ? 'folder' : 'cur_sp');
+  }
+  _fmgrBuildPanel();
+  _fmgrLoadPanelFiles();
+  _fmgrLoadMainFiles();
+}
+
+function closeFileMgrPanel() {
+  _fmgr.open = false;
+  var p = document.getElementById('fmgr-panel');
+  if (p) p.remove();
+}
+
+function _fmgrBuildPanel() {
+  var existing = document.getElementById('fmgr-panel');
+  if (existing) existing.remove();
+  var item = _fmgr.item;
+  var cusId = String(item['Cus_ID'] || '').trim();
+  var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+  var curLabel = _fmgr.listMode === 'noukotsu' ? 'この納骨SP' : 'この工事SP';
+  var locOpts = '';
+  if (cusId) locOpts += '<option value="cus_sp">👤 顧客SP添付</option>';
+  if (folderPass) locOpts += '<option value="folder">📁 フォルダー</option>';
+  locOpts += '<option value="cur_sp">' + curLabel + '添付</option>';
+
+  var panel = document.createElement('div');
+  panel.id = 'fmgr-panel';
+  panel.style.cssText = 'position:fixed;top:' + _fmgr.y + 'px;left:' + _fmgr.x + 'px;width:370px;max-height:82vh;background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:9990;display:flex;flex-direction:column;font-family:inherit;border:2px solid #1a3a6a;overflow:hidden;resize:both;min-width:280px;min-height:260px';
+
+  var btnS = 'flex:1;padding:5px 2px;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;font-weight:500';
+  panel.innerHTML =
+    // タイトルバー（ドラッグ用）
+    '<div id="fmgr-tb" style="background:#1a3a6a;color:#fff;padding:7px 10px;cursor:move;display:flex;align-items:center;gap:6px;user-select:none;flex-shrink:0">' +
+      '<span style="flex:1;font-size:13px;font-weight:600">🗂 ファイル整理</span>' +
+      '<button onclick="closeFileMgrPanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px">✕</button>' +
+    '</div>' +
+    // 転送ボタン（中段）
+    '<div style="padding:6px 8px;background:#f0f4fa;border-bottom:1px solid #c8d8f0;flex-shrink:0">' +
+      '<div style="display:flex;gap:4px;margin-bottom:4px">' +
+        '<button onclick="_fmgrExec(\'panel_to_main\',\'copy\')" style="' + btnS + ';background:#1a7a3a;color:#fff">↓ メインへコピー</button>' +
+        '<button onclick="_fmgrExec(\'panel_to_main\',\'move\')" style="' + btnS + ';background:#1a5a9a;color:#fff">↓ メインへ移動</button>' +
+        '<button onclick="_fmgrExec(\'main_to_panel\',\'copy\')" style="' + btnS + ';background:#7a5a1a;color:#fff">↑ パネルへコピー</button>' +
+        '<button onclick="_fmgrExec(\'main_to_panel\',\'move\')" style="' + btnS + ';background:#7a1a1a;color:#fff">↑ パネルへ移動</button>' +
+      '</div>' +
+    '</div>' +
+    // パネル側
+    '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:80px">' +
+      '<div style="background:#e8f0fb;padding:4px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #c8d8f0">' +
+        '<span style="font-size:11px;color:#1a3a6a;font-weight:600">パネル側</span>' +
+        '<select id="fmgr-loc" onchange="_fmgrSwitchLoc(this.value)" style="flex:1;font-size:11px;padding:3px 4px;border:1px solid #aac;border-radius:3px;font-family:inherit">' + locOpts + '</select>' +
+        '<button onclick="_fmgrLoadPanelFiles()" style="background:#1a3a6a;color:#fff;border:none;border-radius:3px;padding:3px 6px;cursor:pointer;font-size:10px">🔄</button>' +
+        '<label style="font-size:10px;color:#666"><input type="checkbox" id="fmgr-p-all" onchange="_fmgrSelAll(\'panel\',this.checked)"> 全</label>' +
+      '</div>' +
+      '<div id="fmgr-panel-list" style="flex:1;overflow-y:auto;padding:4px"' +
+        ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #1a7a3a\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'panel\')">' +
+        '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>' +
+      '</div>' +
+    '</div>' +
+    // 区切り
+    '<div style="background:#ddd;height:3px;flex-shrink:0;cursor:row-resize"></div>' +
+    // メイン側
+    '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:80px">' +
+      '<div style="background:#fbe8e8;padding:4px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #f0c8c8">' +
+        '<span style="font-size:11px;color:#6a1a1a;font-weight:600">メイン側</span>' +
+        '<span id="fmgr-main-label" style="flex:1;font-size:11px;color:#666"></span>' +
+        '<button onclick="_fmgrLoadMainFiles()" style="background:#6a1a1a;color:#fff;border:none;border-radius:3px;padding:3px 6px;cursor:pointer;font-size:10px">🔄</button>' +
+        '<label style="font-size:10px;color:#666"><input type="checkbox" id="fmgr-m-all" onchange="_fmgrSelAll(\'main\',this.checked)"> 全</label>' +
+      '</div>' +
+      '<div id="fmgr-main-list" style="flex:1;overflow-y:auto;padding:4px"' +
+        ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #7a1a1a\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'main\')">' +
+        '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(panel);
+  var sel = document.getElementById('fmgr-loc');
+  if (sel) sel.value = _fmgr.panelLoc;
+
+  // タイトルバードラッグ（マウス）
+  var tb = document.getElementById('fmgr-tb');
+  if (tb) {
+    tb.addEventListener('mousedown', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      _fmgr.panelDragging = true;
+      var rect = document.getElementById('fmgr-panel').getBoundingClientRect();
+      _fmgr.panelDragX = e.clientX - rect.left;
+      _fmgr.panelDragY = e.clientY - rect.top;
+      document.addEventListener('mousemove', _fmgrPanelMove);
+      document.addEventListener('mouseup', _fmgrPanelUp);
+      e.preventDefault();
+    });
+    tb.addEventListener('touchstart', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      var t = e.touches[0];
+      var rect = document.getElementById('fmgr-panel').getBoundingClientRect();
+      _fmgr.panelDragX = t.clientX - rect.left;
+      _fmgr.panelDragY = t.clientY - rect.top;
+      document.addEventListener('touchmove', _fmgrPanelTouch, { passive: false });
+      document.addEventListener('touchend', _fmgrPanelTouchEnd);
+      e.preventDefault();
+    }, { passive: false });
+  }
+}
+
+function _fmgrPanelMove(e) {
+  if (!_fmgr.panelDragging) return;
+  var p = document.getElementById('fmgr-panel'); if (!p) return;
+  var x = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - _fmgr.panelDragX));
+  var y = Math.max(0, Math.min(window.innerHeight - 50, e.clientY - _fmgr.panelDragY));
+  p.style.left = x + 'px'; p.style.top = y + 'px';
+  _fmgr.x = x; _fmgr.y = y;
+}
+function _fmgrPanelUp() {
+  _fmgr.panelDragging = false;
+  document.removeEventListener('mousemove', _fmgrPanelMove);
+  document.removeEventListener('mouseup', _fmgrPanelUp);
+}
+function _fmgrPanelTouch(e) {
+  var t = e.touches[0];
+  var p = document.getElementById('fmgr-panel'); if (!p) return;
+  var x = Math.max(0, Math.min(window.innerWidth - 100, t.clientX - _fmgr.panelDragX));
+  var y = Math.max(0, Math.min(window.innerHeight - 50, t.clientY - _fmgr.panelDragY));
+  p.style.left = x + 'px'; p.style.top = y + 'px';
+  e.preventDefault();
+}
+function _fmgrPanelTouchEnd() {
+  document.removeEventListener('touchmove', _fmgrPanelTouch);
+  document.removeEventListener('touchend', _fmgrPanelTouchEnd);
+}
+
+function _fmgrSwitchLoc(loc) {
+  _fmgr.panelLoc = loc;
+  _fmgrLoadPanelFiles();
+}
+
+function _fmgrSelAll(side, checked) {
+  var sel = side === 'panel' ? '#fmgr-panel-list .fmgr-chk' : '#fmgr-main-list .fmgr-chk';
+  document.querySelectorAll(sel).forEach(function(cb) { cb.checked = checked; });
+}
+
+function _fmgrFetchSPFiles(listEncoded, itemId) {
+  return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+    .then(function(r) {
+      var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + listEncoded + ')/items(' + itemId + ')/AttachmentFiles';
+      return fetch(url, { headers: { Authorization: 'Bearer ' + r.accessToken, Accept: 'application/json;odata=verbose' } });
+    }).then(function(r) { return r.json(); })
+    .then(function(d) { return (d && d.d && d.d.results) || []; });
+}
+
+function _fmgrRenderFileList(elId, files, side) {
+  var el = document.getElementById(elId);
+  if (!el) return;
+  if (!files || !files.length) { el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">ファイルなし</div>'; return; }
+  var html = '';
+  files.forEach(function(f, i) {
+    var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
+    var icon = isImg ? '📷' : (f.name.toLowerCase().endsWith('.pdf') ? '📄' : '📎');
+    var fj = encodeURIComponent(JSON.stringify(f));
+    html += '<div class="fmgr-row" draggable="true" data-fi="' + i + '" data-side="' + side + '"' +
+      ' ondragstart="_fmgrDragStart(event,\'' + side + '\',' + i + ')"' +
+      ' style="display:flex;align-items:center;gap:5px;padding:4px 3px;border-bottom:1px solid #f0f0f0;cursor:grab;border-radius:3px"' +
+      ' onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
+      '<input type="checkbox" class="fmgr-chk" data-fi="' + i + '">' +
+      '<span>' + icon + '</span>' +
+      '<span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + f.name + '">' + f.name + '</span>' +
+      '<span style="font-size:10px;color:#ccc">⠿</span>' +
+    '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function _fmgrLoadPanelFiles() {
+  var el = document.getElementById('fmgr-panel-list');
+  if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>';
+  var item = _fmgr.item;
+  var loc = _fmgr.panelLoc;
+
+  if (loc === 'cus_sp') {
+    var cusId = String(item['Cus_ID'] || '').trim();
+    _fmgrFetchSPFiles("'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", cusId)
+      .then(function(files) {
+        _fmgr.panelFiles = files.map(function(f) {
+          return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId:cusId };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+
+  } else if (loc === 'cur_sp') {
+    var isNok = _fmgr.listMode === 'noukotsu';
+    var lEnc = isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'";
+    var lTitle = isNok ? '納骨・戒切' : '工事関連';
+    var iid = item['id'] || '';
+    _fmgrFetchSPFiles(lEnc, iid)
+      .then(function(files) {
+        _fmgr.panelFiles = files.map(function(f) {
+          return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+
+  } else if (loc === 'folder') {
+    var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
+    if (!folderPass) { if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">フォルダーパス未登録</div>'; return; }
+    msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(resp) {
+        var enc = folderPass.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,id&$orderby=name',
+          { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+      }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        var items = ((d && d.value) || []).filter(function(f) { return f.file; });
+        _fmgr.panelFiles = items.map(function(f) {
+          return { type:'folder', name:f.name, folderPath:folderPass, graphId:f.id };
+        });
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
+      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+  }
+}
+
+function _fmgrLoadMainFiles() {
+  var el = document.getElementById('fmgr-main-list');
+  if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px">読み込み中...</div>';
+  var item = _fmgr.item;
+  var isNok = _fmgr.listMode === 'noukotsu';
+  var lEnc = isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'";
+  var lTitle = isNok ? '納骨・戒切' : '工事関連';
+  var iid = item['id'] || '';
+  var lbl = document.getElementById('fmgr-main-label');
+  if (lbl) lbl.textContent = lTitle;
+  _fmgrFetchSPFiles(lEnc, iid)
+    .then(function(files) {
+      _fmgr.mainFiles = files.map(function(f) {
+        return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
+      });
+      _fmgrRenderFileList('fmgr-main-list', _fmgr.mainFiles, 'main');
+    }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px">エラー: ' + e.message + '</div>'; });
+}
+
+function _fmgrGetSelected(side) {
+  var files = side === 'panel' ? _fmgr.panelFiles : _fmgr.mainFiles;
+  var selected = [];
+  var cbs = document.querySelectorAll('#fmgr-' + side + '-list .fmgr-chk');
+  cbs.forEach(function(cb) { if (cb.checked) { var f = files[parseInt(cb.getAttribute('data-fi'))]; if (f) selected.push(f); } });
+  return selected;
+}
+
+function _fmgrExec(direction, op) {
+  var files = direction === 'panel_to_main' ? _fmgrGetSelected('panel') : _fmgrGetSelected('main');
+  if (!files.length) { showSaveToast(false, 'ファイルを選択してください'); return; }
+  var dst = direction === 'panel_to_main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
+  if (!dst) { showSaveToast(false, '転送先の情報が取得できません'); return; }
+  if (!confirm(files.length + '件を' + (op === 'copy' ? 'コピー' : '移動') + 'します:\n' + files.map(function(f){return '  ' + f.name;}).join('\n') + '\n\n続行しますか？')) return;
+  _fmgrDoChain(files, dst, op, 0, 0);
+}
+
+function _fmgrMainDstInfo() {
+  var item = _fmgr.item;
+  var isNok = _fmgr.listMode === 'noukotsu';
+  return { type:'sp', listTitle: isNok ? '納骨・戒切' : '工事関連', listEnc: isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: item['id'] || '' };
+}
+
+function _fmgrPanelDstInfo() {
+  var item = _fmgr.item;
+  var loc = _fmgr.panelLoc;
+  if (loc === 'cus_sp') return { type:'sp', listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId: String(item['Cus_ID'] || '').trim() };
+  if (loc === 'cur_sp') return _fmgrMainDstInfo();
+  if (loc === 'folder') return { type:'folder', folderPath: item['Folder_Pass'] || item['FolderPass'] || '' };
+  return null;
+}
+
+function _fmgrDoChain(files, dst, op, idx, ok) {
+  if (idx >= files.length) {
+    showSaveToast(true, ok + '件' + (op === 'copy' ? 'コピー' : '移動') + '完了');
+    _fmgrLoadPanelFiles(); _fmgrLoadMainFiles();
+    return;
+  }
+  var f = files[idx];
+  showSaveToast(null, (op === 'copy' ? 'コピー' : '移動') + '中 ' + (idx+1) + '/' + files.length + ': ' + f.name);
+  _fmgrFetchBin(f).then(function(blob) {
+    return _fmgrUpload(blob, f.name, dst);
+  }).then(function() {
+    if (op === 'move') return _fmgrDelete(f);
+  }).then(function() {
+    _fmgrDoChain(files, dst, op, idx + 1, ok + 1);
+  }).catch(function(e) {
+    showSaveToast(false, f.name + ' 失敗: ' + (e && e.message || e));
+  });
+}
+
+function _fmgrFetchBin(fileInfo) {
+  if (fileInfo.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" + fileInfo.serverRelativeUrl.replace(/'/g,"''") + "')/$value";
+        return fetch(url, { headers: { Authorization: 'Bearer ' + r.accessToken } });
+      }).then(function(r) { return r.ok ? r.blob() : Promise.reject(new Error('DL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.Read'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileInfo.graphId + '/content', { headers: { Authorization: 'Bearer ' + r.accessToken } });
+      }).then(function(r) { return r.ok ? r.blob() : Promise.reject(new Error('DL失敗 ' + r.status)); });
+  }
+}
+
+function _fmgrUpload(blob, fileName, dst) {
+  if (dst.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + dst.listEnc + ')/items(' + dst.itemId + ')/AttachmentFiles/add(FileName=\'' + encodeURIComponent(fileName) + '\')';
+        return fetch(url, { method:'POST', headers:{ Authorization:'Bearer ' + r.accessToken, Accept:'application/json;odata=verbose' }, body:blob });
+      }).then(function(r) { return r.ok ? r : Promise.reject(new Error('UL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var enc = dst.folderPath.split('/').map(encodeURIComponent).join('/');
+        var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(fileName) + ':/content';
+        return fetch(url, { method:'PUT', headers:{ Authorization:'Bearer ' + r.accessToken, 'Content-Type': blob.type || 'application/octet-stream' }, body:blob });
+      }).then(function(r) { return r.ok ? r : Promise.reject(new Error('UL失敗 ' + r.status)); });
+  }
+}
+
+function _fmgrDelete(fileInfo) {
+  if (fileInfo.type === 'sp') {
+    return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + fileInfo.listEnc + ')/items(' + fileInfo.itemId + ')/AttachmentFiles/getByFileName(\'' + encodeURIComponent(fileInfo.name) + '\')';
+        return fetch(url, { method:'DELETE', headers:{ Authorization:'Bearer ' + r.accessToken, Accept:'application/json;odata=verbose', 'X-HTTP-Method':'DELETE', 'IF-MATCH':'*' } });
+      }).then(function(r) { return (r.ok || r.status===204) ? r : Promise.reject(new Error('DEL失敗 ' + r.status)); });
+  } else {
+    return msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
+      .then(function(r) {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + fileInfo.graphId, { method:'DELETE', headers:{ Authorization:'Bearer ' + r.accessToken } });
+      }).then(function(r) { return (r.ok || r.status===204) ? r : Promise.reject(new Error('DEL失敗 ' + r.status)); });
+  }
+}
+
+// ドラッグ＆ドロップ
+function _fmgrDragStart(event, side, fi) {
+  var f = side === 'panel' ? _fmgr.panelFiles[fi] : _fmgr.mainFiles[fi];
+  _fmgr.fileDragData = f;
+  _fmgr.fileDragSide = side;
+  event.dataTransfer.setData('text/plain', JSON.stringify(f));
+  event.dataTransfer.effectAllowed = 'copyMove';
+}
+
+function _fmgrDropOn(event, target) {
+  event.preventDefault();
+  var listEl = event.currentTarget; if (listEl) listEl.style.outline = '';
+  var f = _fmgr.fileDragData;
+  if (!f || _fmgr.fileDragSide === target) return;
+  var dst = target === 'main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
+  if (!dst) return;
+  var op = event.shiftKey ? 'move' : 'copy';
+  var label = op === 'copy' ? 'コピー' : '移動';
+  if (!confirm('「' + f.name + '」を' + (target === 'main' ? 'メイン側' : 'パネル側') + 'へ' + label + 'しますか？\n\n(Shiftキーで移動)')) return;
+  _fmgrDoChain([f], dst, op, 0, 0);
+}
+
 function handleBackBtn() {
   if (currentListMode === 'kouji') {
     editMode = false;
@@ -14529,6 +15552,7 @@ function getToken() {
 
 // ===== UI設定 SharePoint同期 =====
 var SP_UI_PATH = '/業務アプリ/app_ui_settings.json';
+var SP_UI_PATH_ENC = SP_UI_PATH.split('/').map(encodeURIComponent).join('/');
 var SP_UI_KEYS = [
   'nok_chk_sp_v1','nok_chk_sm_v1','nok_chk_lg_v1',
   'nk_rcpt_v1','nk_rcpt_vis_v1','nk_fmap_v1',
@@ -14539,7 +15563,7 @@ var _spUiSaveTimer = null;
 function loadSettingsFromSP(){
   return getToken().then(function(res){
     return fetch(
-      'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH+':/content',
+      'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH_ENC+':/content',
       {headers:{'Authorization':'Bearer '+res.accessToken}}
     );
   }).then(function(r){
@@ -14594,7 +15618,7 @@ function saveSettingsToSP(){
     } catch(e){}
     getToken().then(function(res){
       return fetch(
-        'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH+':/content',
+        'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+SP_UI_PATH_ENC+':/content',
         {method:'PUT',headers:{'Authorization':'Bearer '+res.accessToken,'Content-Type':'application/json'},
          body:JSON.stringify(data)}
       );
@@ -16182,7 +17206,7 @@ var KOUJI_T1A_CARDS=[
 ];
 var KOUJI_T1B_CARDS=[
   {label:'見積日',    fld:function(d,it){return efld('見積日',it,'Estimate',(d['Estimate']||'').substring(0,10),false,false,false,true);}},
-  {label:'発注日',    fld:function(d,it){return efld('発注日',it,'OrderDay',(d['OrderDay']||'').substring(0,10),false,false,false,true);}},
+  {label:'契約日',    fld:function(d,it){return efld('契約日',it,'OrderDay',(d['OrderDay']||'').substring(0,10),false,false,false,true);}},
   {label:'納期',      fld:function(d,it){return efld('納期',it,'deadlines',(d['deadlines']||'').substring(0,10),false,false,false,true);}},
   {label:'納期理由',  fld:function(d,it){return efld('納期理由',it,'ReasonDelivery',d['ReasonDelivery']||'');}},
   {label:'工事開始日',fld:function(d,it){return efld('工事開始日',it,'ConstructionStartDate',(d['ConstructionStartDate']||'').substring(0,10),false,false,false,true);}},
@@ -16307,30 +17331,31 @@ var KH_CARDS=[
 ];
 function renderKhEntriesHtml(logs){
   if(!logs||logs.length===0)return '<div class="attach-empty">工事履歴なし</div>';
-  var cfg=nkgModeCfg('kh');
-  var saved=null;try{saved=JSON.parse(localStorage.getItem(cfg.key));}catch(e){}
-  if(!saved)saved=_NKG_DEFAULTS[cfg.key]||null;
-  var savedOrder=[],savedSpans={},savedBreaks=[];
-  if(saved&&!Array.isArray(saved)){savedOrder=saved.order||[];savedSpans=saved.spans||{};savedBreaks=saved.breaks||[];}
-  else if(Array.isArray(saved)){savedOrder=saved;}
-  var n=KH_CARDS.length;
-  var ord=savedOrder.filter(function(k){return k>=0&&k<n;});
-  KH_CARDS.forEach(function(c,i){if(ord.indexOf(i)<0)ord.push(i);});
-  var html='<div style="font-size:11px;color:#888;margin-bottom:8px">工事履歴 — '+logs.length+'件</div>';
+  var html='<div style="font-size:11px;color:#888;margin-bottom:6px">工事履歴 — '+logs.length+'件</div>';
+  html+='<div style="overflow-x:auto">';
+  html+='<table style="width:100%;border-collapse:collapse;font-size:12px;font-family:inherit">';
+  html+='<thead><tr style="background:#e8f0fb;color:#185fa5">';
+  html+='<th style="padding:5px 8px;text-align:center;font-weight:600;border:1px solid #c8d8f0;white-space:nowrap;width:2em">#</th>';
+  html+='<th style="padding:5px 8px;text-align:left;font-weight:600;border:1px solid #c8d8f0;white-space:nowrap">時期</th>';
+  html+='<th style="padding:5px 8px;text-align:left;font-weight:600;border:1px solid #c8d8f0;white-space:nowrap">内容</th>';
+  html+='<th style="padding:5px 8px;text-align:left;font-weight:600;border:1px solid #c8d8f0">備考</th>';
+  html+='<th style="padding:5px 8px;text-align:left;font-weight:600;border:1px solid #c8d8f0;white-space:nowrap">依頼主</th>';
+  html+='<th style="padding:5px 8px;text-align:right;font-weight:600;border:1px solid #c8d8f0;white-space:nowrap">金額</th>';
+  html+='</tr></thead>';
+  html+='<tbody>';
   logs.forEach(function(l,idx){
-    html+='<div class="kh-item" style="margin-bottom:12px;border:1px solid #dde4f0;border-radius:6px;overflow:hidden">';
-    html+='<div style="background:#e8f0fb;padding:4px 10px;font-size:11px;font-weight:600;color:#185fa5;border-bottom:1px solid #c8d8f0">#'+(idx+1)+'</div>';
-    html+='<div style="display:grid;grid-template-columns:repeat('+cfg.cols+',1fr);gap:4px;padding:6px">';
-    ord.forEach(function(k){
-      var c=KH_CARDS[k];
-      var sp=savedSpans[k]!==undefined?savedSpans[k]:cfg.defSpan;
-      var isBreak=savedBreaks.indexOf(k)>=0;
-      var val=l[c.key]||'';
-      if(!val)return;
-      html+='<div class="nk-card" style="grid-column:'+(isBreak?'1 / span ':'span ')+sp+'"><div class="fi"><label>'+c.label+'</label><div class="fv">'+val+'</div></div></div>';
-    });
-    html+='</div></div>';
+    var bg=idx%2===0?'#fff':'#f5f8ff';
+    html+='<tr style="background:'+bg+';vertical-align:top">';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;text-align:center;color:#888;font-size:11px">'+(idx+1)+'</td>';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;white-space:nowrap;color:#333">'+(l['時期']||'')+'</td>';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;font-weight:500;color:#1a2535">'+(l['内容']||'')+'</td>';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;color:#555;font-size:11px">'+(l['備考']||'')+'</td>';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;white-space:nowrap;color:#555">'+(l['依頼']||'')+'</td>';
+    var kin=l['決済金額']||'';
+    html+='<td style="padding:5px 8px;border:1px solid #dde4f0;text-align:right;white-space:nowrap;color:#1a5a1a;font-weight:500">'+(kin?Number(kin).toLocaleString('ja-JP'):'')+'</td>';
+    html+='</tr>';
   });
+  html+='</tbody></table></div>';
   return html;
 }
 
@@ -16697,6 +17722,119 @@ function saveRequestDetails() {
 }
 // ===========================================
 
+// ===== 納骨セクションの分類別折りたたみルール =====
+// secKey → デフォルト開く分類リスト
+var _NK_SEC_RULES = {
+  // Tab0
+  'msg_to_nok':       ['納骨','納骨戒切','骨出し'],
+  // Tab1
+  'nok_date':         ['納骨','納骨戒切','骨出し'],
+  'choukoku':         ['戒切','納骨戒切'],
+  // Tab2
+  'choukoku_place':   ['戒切','納骨戒切'],
+  'sekitou':          ['戒切','納骨戒切'],
+  'boshi':            ['戒切','納骨戒切'],
+  // Tab3
+  'choukoku_progress':['戒切','納骨戒切']
+};
+// secKey → そのセクションが扱うフィールドキー（データありなら自動展開）
+var _NK_SEC_FIELDS = {
+  'msg_to_nok':        ['Noukotumemo'],
+  'nok_date':          ['_x7d0d__x671f__xff08__x7d0d__x9a','_x7d0d__x9aa8__x6642__x9593_','noukotu_kaisi_jyoutai','personincharge'],
+  'choukoku':          ['_x6212__x5207__x7d0d__x671f_','Editor0','SculptureName'],
+  'choukoku_place':    ['_x5f6b__x523b__x5834__x6240_'],
+  'sekitou':           ['_x77f3__x5854__x306e__x7a2e__x98','_x77f3__x5854__x5f6b__x523b__x4f','_x4f55__x884c__x76ee_'],
+  'boshi':             ['_x5893__x8a8c__x5834__x6240_','_x5893__x8a8c__x3007__x884c__x76'],
+  'choukoku_progress': ['GotManuscript','ManuscriptContributor','Editor0','_x6212__x5207__x7d0d__x671f_','DateFinalProofreading','SendDocumentsCustomer','Resubmission','ReturnDocumentsCus','SendDocuVendor','RequestedWork','CompletionDate']
+};
+function _nkSecOpen(key, d) {
+  var rules = _NK_SEC_RULES[key];
+  if (!rules) return true;
+  var bunrui = G(d,'分類') || '';
+  if (rules.indexOf(bunrui) >= 0) return true;
+  var fields = _NK_SEC_FIELDS[key] || [];
+  for (var i = 0; i < fields.length; i++) {
+    var v = d[fields[i]];
+    if (v != null && v !== '' && v !== false) return true;
+  }
+  return false;
+}
+function _nkSecToggle(headerEl) {
+  var sec = headerEl.parentElement;
+  var body = sec.querySelector('.nk-sec-body');
+  var tg = headerEl.querySelector('.nk-sec-tg');
+  if (!body) return;
+  if (body.style.display === 'none') {
+    body.style.display = '';
+    if (tg) tg.textContent = '▼';
+  } else {
+    body.style.display = 'none';
+    if (tg) tg.textContent = '▶';
+  }
+}
+// 折りたたみセクションHTMLを生成
+// hdrClass: 'bg1'等のクラス名 / hdrStyle: インラインstyle / hdrInner: ラベル等のHTML
+function _nkSec(key, d, hdrClass, hdrStyle, hdrInner, bodyHtml) {
+  var open = _nkSecOpen(key, d);
+  var ch = '<span class="nk-sec-tg" style="font-size:9px;margin-right:6px;display:inline-block;width:9px">' + (open ? '▼' : '▶') + '</span>';
+  var styleAttr = (hdrStyle ? hdrStyle + ';' : '') + 'cursor:pointer;user-select:none';
+  var classAttr = 'sec-hdr' + (hdrClass ? ' ' + hdrClass : '');
+  return '<div class="sec" data-nksec="' + key + '">' +
+    '<span class="' + classAttr + '" style="' + styleAttr + '" onclick="_nkSecToggle(this)">' + ch + hdrInner + '</span>' +
+    '<div class="nk-sec-body"' + (open ? '' : ' style="display:none"') + '>' + bodyHtml + '</div>' +
+    '</div>';
+}
+
+// ===== 工事関連セクションの分類別折りたたみルール =====
+var _KJ_SEC_RULES = {
+  'kj_maker1':  ['墓新規','修繕','移設','花立交換'],
+  'kj_maker2':  ['墓新規'],
+  'kj_chokoku': ['墓新規','彫刻変更']
+};
+var _KJ_SEC_FIELDS = {
+  'kj_maker1':  ['Creator','DrawingCompleted','OrderingMaterials','MaterialDelivery'],
+  'kj_maker2':  ['Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2'],
+  'kj_chokoku': ['SendingSculptureMaterials','ReturnSculptureMaterials','ManuscriptSubmission1','ManuscriptSubmission2','ReturnManuscripts1','ReturnManuscripts2','Resubmission','DecideSculpture','Engraver','HandingEngraver','DeliveredByEngraver']
+};
+function _kjActiveCats(d) {
+  var cats = [];
+  if (d && d['category']) cats.push(d['category']);
+  try {
+    var raw = d && d['HakaSpec'];
+    var spec = (raw && typeof raw === 'string') ? JSON.parse(raw) : null;
+    if (spec && spec.categories) {
+      spec.categories.forEach(function(c) {
+        if (cats.indexOf(c) < 0) cats.push(c);
+      });
+    }
+  } catch(e) {}
+  return cats;
+}
+function _kjSecOpen(key, d) {
+  var rules = _KJ_SEC_RULES[key];
+  if (!rules) return true;
+  var cats = _kjActiveCats(d);
+  for (var i = 0; i < cats.length; i++) {
+    if (rules.indexOf(cats[i]) >= 0) return true;
+  }
+  var fields = _KJ_SEC_FIELDS[key] || [];
+  for (var j = 0; j < fields.length; j++) {
+    var v = d[fields[j]];
+    if (v != null && v !== '' && v !== false) return true;
+  }
+  return false;
+}
+function _kjSec(key, d, hdrClass, hdrStyle, hdrInner, bodyHtml) {
+  var open = _kjSecOpen(key, d);
+  var ch = '<span class="nk-sec-tg" style="font-size:9px;margin-right:6px;display:inline-block;width:9px">' + (open ? '▼' : '▶') + '</span>';
+  var styleAttr = (hdrStyle ? hdrStyle + ';' : '') + 'cursor:pointer;user-select:none';
+  var classAttr = 'sec-hdr' + (hdrClass ? ' ' + hdrClass : '');
+  return '<div class="sec" data-kjsec="' + key + '">' +
+    '<span class="' + classAttr + '" style="' + styleAttr + '" onclick="_nkSecToggle(this)">' + ch + hdrInner + '</span>' +
+    '<div class="nk-sec-body"' + (open ? '' : ' style="display:none"') + '>' + bodyHtml + '</div>' +
+    '</div>';
+}
+
 function showTab(i, d) {
   var b = document.getElementById('det-body');
   var nokOk = d['_x524a__x9664_'] === true;
@@ -16710,7 +17848,7 @@ function showTab(i, d) {
       : '';
     var folderBtnNok = folderUrlNok
       ? '<a href="' + folderUrlNok + '" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#1a2535;color:#fff;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none">📁 フォルダーを開く</a>'
-      : '<span style="font-size:12px;color:#aaa">📁 フォルダーURL未登録</span>';
+      : '<button onclick="createNokFolder(currentItem)" style="padding:8px 16px;background:#2a6a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📁 フォルダー作成</button>';
     var cusRegBtnNok = !editMode && d['Cus_ID']
       ? '<button onclick="openCustRegModal(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>'
       : '';
@@ -16734,28 +17872,23 @@ function showTab(i, d) {
         efld('社内連絡', itemId, '社内連絡', G(d,'社内連絡') || '', true, true) +
       '</div>' +
       // 注意事項メモ
-      '<div class="sec"><span class="sec-hdr bg5">注意事項メモ</span>' +
-      '<div class="fgrid">' +
-        efld('注意事項', itemId, '注意事項メモ', G(d,'注意事項メモ') || '', true, true) +
-      '</div></div>' +
-      // 納骨者への伝言
-      '<div class="sec"><span class="sec-hdr" style="background:#5a3a7a;color:#fff">納骨者への伝言</span>' +
-      '<div class="fgrid">' +
-        efld('納骨者への伝言', itemId, 'Noukotumemo', d['Noukotumemo'] || '', true, true) +
-      '</div></div>' +
+      _nkSec('attention', d, 'bg5', '', '注意事項メモ',
+        '<div class="fgrid">' +
+          efld('注意事項', itemId, '注意事項メモ', G(d,'注意事項メモ') || '', true, true) +
+        '</div>') +
+      // 納骨者への伝言（分類ルールあり）
+      _nkSec('msg_to_nok', d, '', 'background:#5a3a7a;color:#fff', '納骨者への伝言',
+        '<div class="fgrid">' +
+          efld('納骨者への伝言', itemId, 'Noukotumemo', d['Noukotumemo'] || '', true, true) +
+        '</div>') +
       // 基本情報
-      '<div class="sec"><span class="sec-hdr bg1">基本情報</span>' +
-      nkgBar('t0b') +
-      nkgCanvas('t0b',NK_T0B_CARDS,d,itemId) +
-      '</div>' +
+      _nkSec('basic', d, 'bg1', '', '基本情報',
+        nkgBar('t0b') + nkgCanvas('t0b',NK_T0B_CARDS,d,itemId)) +
       // 資料郵送先
-      '<div class="sec"><span class="sec-hdr bg2" style="display:flex;justify-content:space-between;align-items:center">' +
+      _nkSec('addr', d, 'bg2', 'display:flex;justify-content:space-between;align-items:center',
         '<span>資料郵送先</span>' +
-        '<button onclick="openEnvelopePrint(currentItem)" style="font-size:10px;padding:3px 8px;background:#1a2535;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">✉️ 封筒印刷</button>' +
-      '</span>' +
-      nkgBar('t0a') +
-      nkgCanvas('t0a',NK_T0A_CARDS,d,itemId) +
-      '</div>';
+        '<button onclick="event.stopPropagation();openEnvelopePrint(currentItem)" style="font-size:10px;padding:3px 8px;background:#1a2535;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">✉️ 封筒印刷</button>',
+        nkgBar('t0a') + nkgCanvas('t0a',NK_T0A_CARDS,d,itemId));
     bindEditInputs(itemId);
     nkgInit('t0b',NK_T0B_CARDS);
     nkgInit('t0a',NK_T0A_CARDS);
@@ -16768,14 +17901,10 @@ function showTab(i, d) {
       nkgBar('t1r') +
       nkgCanvas('t1r',NK_T1R_CARDS,d,itemId) +
       '</div>' +
-      '<div class="sec"><span class="sec-hdr bg4">納骨</span>' +
-      nkgBar('t1n') +
-      nkgCanvas('t1n',NK_T1N_CARDS,d,itemId) +
-      '</div>' +
-      '<div class="sec"><span class="sec-hdr bg4">彫刻</span>' +
-      nkgBar('t1c') +
-      nkgCanvas('t1c',NK_T1C_CARDS,d,itemId) +
-      '</div>';
+      _nkSec('nok_date', d, 'bg4', '', '納骨',
+        nkgBar('t1n') + nkgCanvas('t1n',NK_T1N_CARDS,d,itemId)) +
+      _nkSec('choukoku', d, 'bg4', '', '彫刻',
+        nkgBar('t1c') + nkgCanvas('t1c',NK_T1C_CARDS,d,itemId));
     bindEditInputs(itemId);
     nkgInit('t1r',NK_T1R_CARDS);
     nkgInit('t1n',NK_T1N_CARDS);
@@ -16793,18 +17922,14 @@ function showTab(i, d) {
       nkgBar('t2s') +
       nkgCanvas('t2s',NK_T2S_CARDS,d,itemId) +
       '</div>' +
-      '<div class="sec"><span class="sec-hdr bg5">彫刻予定場所</span>' +
-      '<div class="fgrid">' +
-      efld('彫刻予定場所', itemId, '_x5f6b__x523b__x5834__x6240_', d['_x5f6b__x523b__x5834__x6240_'] || '') +
-      '</div></div>' +
-      '<div class="sec"><span class="sec-hdr bg1">石塔の場合</span>' +
-      nkgBar('t2k') +
-      nkgCanvas('t2k',NK_T2K_CARDS,d,itemId) +
-      '</div>' +
-      '<div class="sec"><span class="sec-hdr bg2">墓誌の場合</span>' +
-      nkgBar('t2h') +
-      nkgCanvas('t2h',NK_T2H_CARDS,d,itemId) +
-      '</div>';
+      _nkSec('choukoku_place', d, 'bg5', '', '彫刻予定場所',
+        '<div class="fgrid">' +
+        efld('彫刻予定場所', itemId, '_x5f6b__x523b__x5834__x6240_', d['_x5f6b__x523b__x5834__x6240_'] || '') +
+        '</div>') +
+      _nkSec('sekitou', d, 'bg1', '', '石塔の場合',
+        nkgBar('t2k') + nkgCanvas('t2k',NK_T2K_CARDS,d,itemId)) +
+      _nkSec('boshi', d, 'bg2', '', '墓誌の場合',
+        nkgBar('t2h') + nkgCanvas('t2h',NK_T2H_CARDS,d,itemId));
     bindEditInputs(itemId);
     nkgInit('t2b',NK_T2B_CARDS);
     nkgInit('t2s',NK_T2S_CARDS);
@@ -16821,11 +17946,11 @@ function showTab(i, d) {
         '</select></div>' :
         '<div class="fi"><label>完了</label><span class="pill ' + (nokOk ? 'pg' : 'py') + '">' + (nokOk ? '完了' : '未完了') + '</span></div>') +
       '</div></div>' +
-      '<div class="sec"><span class="sec-hdr bg3">彫刻進捗</span>' +
-      '<div class="nkc-lay-bar"><button id="nkc-lay-btn" class="nkc-lay-btn" onclick="toggleNkChkEdit()">⇅ 並替</button><button class="nkc-rst-btn" onclick="resetNkChkLayout()">↺ リセット</button><span id="nkc-mode-lbl" class="nkc-mode-lbl"></span></div>' +
-      '<div id="nk-chk-canvas">' +
-      (function(){var h='';NK_CHK_CARDS.forEach(function(c){var v=c.gkey?G(d,c.gkey):(d[c.key]||'');h+='<div id="nkc-'+c.key+'" class="nk-card" data-span="2" draggable="false"><div class="nkc-dh"><span class="nkc-dh-drag">⠿ '+c.label+'</span><span class="nkc-ctrl"><button class="nkc-sb" onclick="nkChkSpan(this,-1)">◀</button><span class="nkc-sp-val">2</span><button class="nkc-sb" onclick="nkChkSpan(this,1)">▶</button><button class="nkc-sb nkc-br" onclick="nkChkBreak(this)" title="この位置で改行">↵</button></span></div>'+efld(c.label,itemId,c.key,v,false,false,false,c.date)+'</div>';});return h;})() +
-      '</div></div>' +
+      _nkSec('choukoku_progress', d, 'bg3', '', '彫刻進捗',
+        '<div class="nkc-lay-bar"><button id="nkc-lay-btn" class="nkc-lay-btn" onclick="toggleNkChkEdit()">⇅ 並替</button><button class="nkc-rst-btn" onclick="resetNkChkLayout()">↺ リセット</button><span id="nkc-mode-lbl" class="nkc-mode-lbl"></span></div>' +
+        '<div id="nk-chk-canvas">' +
+        (function(){var h='';NK_CHK_CARDS.forEach(function(c){var v=c.gkey?G(d,c.gkey):(d[c.key]||'');h+='<div id="nkc-'+c.key+'" class="nk-card" data-span="2" draggable="false"><div class="nkc-dh"><span class="nkc-dh-drag">⠿ '+c.label+'</span><span class="nkc-ctrl"><button class="nkc-sb" onclick="nkChkSpan(this,-1)">◀</button><span class="nkc-sp-val">2</span><button class="nkc-sb" onclick="nkChkSpan(this,1)">▶</button><button class="nkc-sb nkc-br" onclick="nkChkBreak(this)" title="この位置で改行">↵</button></span></div>'+efld(c.label,itemId,c.key,v,false,false,false,c.date)+'</div>';});return h;})() +
+        '</div>') +
       '<div class="sec"><span class="sec-hdr bg5">請求・入金</span>' +
       nkgBar('t3b') +
       nkgCanvas('t3b',NK_T3B_CARDS,d,itemId) +
@@ -17290,50 +18415,50 @@ function handleDropNok(event, itemId) {
 // ===== 顧客リスト登録モーダル：添付ファイルコピー =====
 function copyCrmAttachments(cusId, selectedFiles, callback) {
   if (!selectedFiles || selectedFiles.length === 0) { callback(); return; }
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+  var hasDrive = selectedFiles.some(function(f) { return f.type === 'drive'; });
+  var spP = msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
     account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    var token = resp.accessToken;
-    return getToken().then(function(resp2) {
-      var graphToken = resp2.accessToken;
-      var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-      var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
-      var done = 0; var errors = 0;
-      function copyNext(idx) {
-        if (idx >= selectedFiles.length) {
-          showSaveToast(errors === 0, errors === 0 ? done + '件コピーしました' : done + '件成功、' + errors + '件失敗');
-          callback();
-          return;
-        }
-        var f = selectedFiles[idx];
-        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
-          f.url.replace(/'/g, "''") + "')/$value";
-        fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-          .then(function(r) { return r.arrayBuffer(); })
-          .then(function(buf) {
-            var bytes = new Uint8Array(buf);
-            var binary = '';
-            bytes.forEach(function(b) { binary += String.fromCharCode(b); });
-            var b64 = btoa(binary);
-            return fetch(
-              'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + cusId + '/attachments',
-              {
-                method: 'POST',
-                headers: { Authorization: 'Bearer ' + graphToken, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: f.name, contentBytes: b64 })
-              }
-            );
-          })
-          .then(function(r) {
-            if (r.ok || r.status === 201) done++;
-            else errors++;
-            copyNext(idx + 1);
-          })
-          .catch(function() { errors++; copyNext(idx + 1); });
+  });
+  Promise.all([spP, hasDrive ? getToken() : Promise.resolve(null)]).then(function(results) {
+    var spToken = results[0].accessToken;
+    var graphToken = results[1] ? results[1].accessToken : null;
+    var done = 0; var errors = 0;
+    function copyNext(idx) {
+      if (idx >= selectedFiles.length) {
+        showSaveToast(errors === 0, errors === 0 ? done + '件コピーしました' : done + '件成功、' + errors + '件失敗');
+        callback();
+        return;
       }
-      copyNext(0);
-    });
+      var f = selectedFiles[idx];
+      var fname = f.name;
+      var fetchBuf;
+      if (f.type === 'drive') {
+        var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.itemId + '/content';
+        fetchBuf = fetch(driveUrl, { headers: { Authorization: 'Bearer ' + graphToken } }).then(function(r) { return r.arrayBuffer(); });
+      } else {
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+          (f.url||'').replace(/'/g, "''") + "')/$value";
+        fetchBuf = fetch(binUrl, { headers: { Authorization: 'Bearer ' + spToken } }).then(function(r) { return r.arrayBuffer(); });
+      }
+      fetchBuf
+        .then(function(buf) {
+          var uploadUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')" +
+            "/items(" + cusId + ")/AttachmentFiles/add(FileName='" + encodeURIComponent(fname) + "')";
+          return fetch(uploadUrl, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' },
+            body: buf
+          });
+        })
+        .then(function(r) {
+          if (r.ok || r.status === 201) done++;
+          else { console.warn('添付アップロード失敗:', fname, r.status); errors++; }
+          copyNext(idx + 1);
+        })
+        .catch(function(e) { console.warn('添付コピーエラー:', fname, e.message); errors++; copyNext(idx + 1); });
+    }
+    copyNext(0);
   }).catch(function(e) { showSaveToast(false, 'コピーエラー: ' + e.message); callback(); });
 }
 
@@ -17781,6 +18906,47 @@ function openImageViewer(imgs, startIdx) {
         </div>
       </div>
 
+      <!-- 墓石情報（顧客リストから引き継ぎ） -->
+      <div class="ni-sec" id="ni-haka-sec" style="display:none">
+        <span class="ni-sec-hdr" style="background:#3a1a7a;color:#fff">🪦 墓石情報（顧客リストより）</span>
+        <div class="ni-grid">
+          <div class="ni-full">
+            <label class="ni-lbl">墓名（○○家）</label>
+            <input id="ni-haka" class="ni-inp" type="text" placeholder="例：山田家">
+          </div>
+          <div class="ni-full">
+            <label class="ni-lbl">施主名</label>
+            <input id="ni-sesyu" class="ni-inp" type="text" placeholder="施主名">
+          </div>
+          <div>
+            <label class="ni-lbl">石塔 石種</label>
+            <input id="ni-sekitou-seki" class="ni-inp" type="text">
+          </div>
+          <div>
+            <label class="ni-lbl">墓誌 石種</label>
+            <input id="ni-bosi-seki" class="ni-inp" type="text">
+          </div>
+          <div>
+            <label class="ni-lbl">蓋</label>
+            <input id="ni-futa" class="ni-inp" type="text">
+          </div>
+          <div>
+            <label class="ni-lbl">目地</label>
+            <input id="ni-meji" class="ni-inp" type="text">
+          </div>
+          <div class="ni-full">
+            <label class="ni-lbl">納骨者への伝言</label>
+            <textarea id="ni-noukotumemo" rows="2" class="ni-inp" placeholder="納骨者への伝言" style="resize:vertical"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- 顧客SP添付（選択コピー） -->
+      <div class="ni-sec" id="ni-cus-attach-sec" style="display:none">
+        <span class="ni-sec-hdr" style="background:#1a5a1a;color:#fff">📎 顧客SP添付（選択してコピー）</span>
+        <div id="ni-cus-attach-area"><div style="color:#aaa;font-size:11px;padding:4px">読み込み中...</div></div>
+      </div>
+
       <!-- 添付ファイル -->
       <div class="ni-sec">
         <span class="ni-sec-hdr orange">📎 添付ファイル</span>
@@ -17911,6 +19077,27 @@ function openImageViewer(imgs, startIdx) {
             <input id="nk-contents" class="ni-inp" type="text" placeholder="工事内容を入力">
           </div>
         </div>
+      </div>
+
+      <!-- 墓石情報（顧客リストから引き継ぎ） -->
+      <div class="ni-sec" id="nk-haka-sec" style="display:none">
+        <span class="ni-sec-hdr" style="background:#3a1a7a;color:#fff">🪦 墓石情報（顧客リストより）</span>
+        <div class="ni-grid">
+          <div class="ni-full">
+            <label class="ni-lbl">墓名（○○家）</label>
+            <input id="nk-haka" class="ni-inp" type="text" placeholder="例：山田家">
+          </div>
+          <div class="ni-full">
+            <label class="ni-lbl">施主名</label>
+            <input id="nk-sesyu" class="ni-inp" type="text" placeholder="施主名">
+          </div>
+        </div>
+      </div>
+
+      <!-- 顧客SP添付（選択コピー） -->
+      <div class="ni-sec" id="nk-cus-attach-sec" style="display:none">
+        <span class="ni-sec-hdr" style="background:#1a5a1a;color:#fff">📎 顧客SP添付（選択してコピー）</span>
+        <div id="nk-cus-attach-area"><div style="color:#aaa;font-size:11px;padding:4px">読み込み中...</div></div>
       </div>
 
       <!-- メモ -->
@@ -18073,13 +19260,14 @@ function openImageViewer(imgs, startIdx) {
             <option value="claude">Claude API</option>
             <option value="openai">ローカルLLM（Ollama直接）</option>
             <option value="anythingllm">AnythingLLM</option>
+            <option value="dify">Dify</option>
           </select>
         </div>
         <div id="ai-apikey-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <label style="font-size:12px;color:#555;min-width:80px">APIキー <span style="font-size:10px;color:#888;font-weight:normal">(端末のみ)</span></label>
           <input id="ai-apikey" type="password" placeholder="sk-ant-..." style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
         </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="ai-model-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <label style="font-size:12px;color:#555;min-width:80px">モデル</label>
           <input id="ai-model" list="ai-model-list" placeholder="claude-sonnet-4-6" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
           <datalist id="ai-model-list"></datalist>
@@ -18089,11 +19277,23 @@ function openImageViewer(imgs, startIdx) {
             <label style="font-size:12px;color:#555;min-width:80px">エンドポイント</label>
             <input id="ai-endpoint" placeholder="http://localhost:11434" style="flex:1;min-width:200px;font-size:12px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
           </div>
-          <div style="background:#fff8e1;border:1px solid #f5c842;border-radius:6px;padding:7px 10px;font-size:11px;color:#7a5a00;line-height:1.6">
-            ⚠️ <b>注意事項:</b><br>
-            ・別PCの場合は <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">http://IPアドレス:ポート</code> を指定（localhost不可）<br>
-            ・<b>Ollama直接:</b> <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">OLLAMA_HOST=0.0.0.0:11434 OLLAMA_ORIGINS=* ollama serve</code><br>
-            ・<b>AnythingLLM:</b> Settings → API Keys でキー発行＋LAN許可<br>
+          <div id="ep-note-ollama" style="background:#fff8e1;border:1px solid #f5c842;border-radius:6px;padding:7px 10px;font-size:11px;color:#7a5a00;line-height:1.6">
+            ⚠️ <b>Ollama直接 注意事項:</b><br>
+            ・別PCの場合は <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">http://IPアドレス:11434</code> を指定<br>
+            ・起動オプション: <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">OLLAMA_HOST=0.0.0.0:11434 OLLAMA_ORIGINS=* ollama serve</code><br>
+            ・SharePoint(HTTPS)からHTTPアクセスはMixed Contentでブロックされる場合あり
+          </div>
+          <div id="ep-note-anyllm" style="display:none;background:#fff8e1;border:1px solid #f5c842;border-radius:6px;padding:7px 10px;font-size:11px;color:#7a5a00;line-height:1.6">
+            ⚠️ <b>AnythingLLM 注意事項:</b><br>
+            ・エンドポイント例: <code style="background:#f0e8c0;padding:1px 4px;border-radius:3px">http://192.168.x.x:3001</code><br>
+            ・Settings → API Keys でキー発行＋LAN許可<br>
+            ・SharePoint(HTTPS)からHTTPアクセスはMixed Contentでブロックされる場合あり
+          </div>
+          <div id="ep-note-dify" style="display:none;background:#e8f5e9;border:1px solid #81c784;border-radius:6px;padding:7px 10px;font-size:11px;color:#1b5e20;line-height:1.6">
+            ℹ️ <b>Dify 設定方法:</b><br>
+            ・エンドポイント: <code style="background:#c8e6c9;padding:1px 4px;border-radius:3px">http://DifyサーバーIP:80</code>（ポートは環境による）<br>
+            ・APIキー: Dify スタジオ → 対象アプリ → <b>APIアクセス</b> → 「APIキーを作成する」<br>
+            ・モデル欄は不要（Difyアプリ側で設定済み）<br>
             ・SharePoint(HTTPS)からHTTPアクセスはMixed Contentでブロックされる場合あり
           </div>
         </div>
@@ -18110,14 +19310,14 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💴 価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>価格表（List7）</b>を <b>1つのナラティブ形式テキスト（sekizai-price-list.txt）</b>に変換して AnythingLLM ワークスペースに登録します。<br>
-        ・各行が1商品を完結した日本語文章（「商品「○○」のXXは○○円です…」）として表現するため、CSV形式より検索精度が向上します<br>
+        ℹ️ SharePointの<b>価格表（List7）</b>を <b>sekizai-price-data.json</b> として AnythingLLM に登録します。<br>
+        ・AnythingLLM の <b>Agent Tool（sekizai-price-search）</b>がJSONを直接キーワード検索するため、ベクトル検索より正確に商品を特定できます<br>
         ・同期するたびに既存の価格表ドキュメントは削除されて再登録されます（重複なし）<br>
         ・<b>事前に上のAI設定で「AnythingLLM」を選択し、エンドポイント・モデル(ワークスペースslug)・APIキーを入力＆保存してください。</b>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="price-sync-btn" onclick="syncAllPricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
-        <button id="price-dl-btn" onclick="downloadPriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 TXTダウンロード</button>
+        <button id="price-dl-btn" onclick="downloadPriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 HTMLダウンロード</button>
         <button id="price-cleanup-btn" onclick="cleanupNonPriceDocsFromWorkspace()" style="padding:9px 18px;background:#7a4a2a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🧹 旧データをWSから外す</button>
         <button id="ai-prompt-btn" onclick="editAnyLLMPrompt()" style="padding:9px 18px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📝 AIプロンプト編集</button>
       </div>
@@ -18128,13 +19328,13 @@ function openImageViewer(imgs, startIdx) {
     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:8px">💎 石材価格表 → AnythingLLM 同期</div>
       <div style="background:#eef5ff;border:1px solid #b8d4f5;border-radius:6px;padding:7px 10px;font-size:11px;color:#1a3a6a;line-height:1.6;margin-bottom:10px">
-        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>ナラティブ形式テキスト（sekizai-stone-price-list.txt）</b>として AnythingLLM ワークスペースに登録します。<br>
+        ℹ️ SharePointの<b>石材価格表（List6）</b>を <b>sekizai-stone-price-data.json</b> として AnythingLLM に登録します。Agent Tool（sekizai-stone-price-search）がJSONを直接キーワード検索します。<br>
         ・各行が1石材を完結した日本語文章（「石材「○○」（産地「○○」）の単価は○○円です…」）として表現し、CSV形式より検索精度が向上します<br>
         ・同期するたびに既存の石材価格表ドキュメントは削除されて再登録されます
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button id="stone-price-sync-btn" onclick="syncAllStonePricesToAI()" style="padding:9px 18px;background:#2a7a4a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🔄 全件同期</button>
-        <button id="stone-price-dl-btn" onclick="downloadStonePriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 TXTダウンロード</button>
+        <button id="stone-price-dl-btn" onclick="downloadStonePriceCsv()" style="padding:9px 18px;background:#1a5a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">📥 HTMLダウンロード</button>
       </div>
       <div id="stone-price-sync-progress" style="display:none;font-size:12px;font-family:inherit;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
     </div>
@@ -18278,7 +19478,7 @@ function openImageViewer(imgs, startIdx) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px">
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">内容</div><input id="crm-f-category" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">依頼主</div><input id="crm-f-iraisha" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">決済金額（千円単位で登録）</div><input id="crm-f-money" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
+        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">決済金額（千円単位・小数点2位まで）</div><input id="crm-f-money" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">入金日（和暦）</div><input id="crm-f-paydate" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
       </div>
       <!-- 備考（納骨・戒切の場合は自動組み立て） -->
@@ -18304,7 +19504,7 @@ function openImageViewer(imgs, startIdx) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px">
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">内容</div><input id="crm-tui-content" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">依頼主</div><input id="crm-tui-iraisha" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">決済金額（千円単位で登録）</div><input id="crm-tui-money" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
+        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">決済金額（千円単位・小数点2位まで）</div><input id="crm-tui-money" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
         <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">入金日（和暦）</div><input id="crm-tui-paydate" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
       </div>
       <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">備考</div>
@@ -18557,14 +19757,21 @@ function openImageViewer(imgs, startIdx) {
 
     <!-- 添付ファイルをコピー -->
     <div style="margin-bottom:10px">
-      <div style="background:#8a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px">
-        <span style="font-size:11px;font-weight:500;color:#fff">添付ファイルをコピー</span>
+      <div style="background:#8a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;font-weight:500;color:#fff">📎 添付ファイルをコピー</span>
+        <button onclick="crmSelectAllAttach()" style="font-size:10px;padding:2px 8px;background:#a06000;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">全選択</button>
       </div>
-      <div style="font-size:11px;color:#c07000;background:#fff8e6;border:0.5px solid #f0c000;border-radius:5px;padding:6px 10px;margin-bottom:6px">
-        ⚠️ 添付ファイルのコピー機能は後日登録予定です。現在はファイルの確認のみ可能です。
-      </div>
-      <div style="font-size:11px;color:#888;margin-bottom:6px;font-style:italic">工事リストに保存されている添付ファイルから選んでコピーします</div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-style:italic">工事/納骨リストの添付ファイルから選択してコピー</div>
       <div id="crm-attach-list" style="color:#aaa;font-size:12px;padding:8px;text-align:center">（添付ファイルを読み込み中...）</div>
+    </div>
+    <!-- フォルダー内のファイルをコピー -->
+    <div style="margin-bottom:10px">
+      <div style="background:#005a4a;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;font-weight:500;color:#fff">🗂 フォルダー内のファイルをコピー</span>
+        <button onclick="crmSelectAllFolder()" style="font-size:10px;padding:2px 8px;background:#006a56;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">全選択</button>
+      </div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-style:italic">OneDriveフォルダー内のファイルから選択してコピー</div>
+      <div id="crm-folder-list" style="color:#aaa;font-size:12px;padding:8px;text-align:center">（フォルダーファイルを読み込み中...）</div>
     </div>
 
   </div>

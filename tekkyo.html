@@ -168,6 +168,9 @@ table.master .lbl{text-align:left;background:#fafbfc}
 
 table.est-items{width:100%;border-collapse:collapse;font-size:10pt;margin-bottom:3mm}
 table.est-items th,table.est-items td{border:1px solid #000;padding:1.5mm 2mm}
+table.est-items td[contenteditable]{cursor:text}
+table.est-items td[contenteditable]:hover{background:#fffde0}
+table.est-items td[contenteditable]:focus{background:#fff8c4;outline:2px solid #e6a700;outline-offset:-1px}
 table.est-items th{background:#e8e8e8;font-weight:bold;text-align:center;font-size:9.5pt}
 table.est-items .cat{width:16mm;text-align:center}
 table.est-items .desc{width:auto}
@@ -192,6 +195,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
   .estimate{margin:0;box-shadow:none;padding:12mm 10mm;min-height:auto;height:auto;
     -webkit-print-color-adjust:exact;print-color-adjust:exact}
   .estimate > *:last-child{margin-bottom:0}
+  table.est-items td[contenteditable]:hover,table.est-items td[contenteditable]:focus{background:transparent;outline:none}
   @page{size:A4;margin:0}
 }
 
@@ -637,6 +641,8 @@ let EXTRAS = [
 let CALC = {};
 /* 編集可能なあいさつ文（プレビューで contenteditable で上書き可、null=デフォルト） */
 let CUSTOM_AISATSU = {見積書:null, 請求書:null, 領収書:null};
+/* プレビュー明細の手動オーバーライド {rowKey: {cat,desc,qty,price}} */
+let EST_OVERRIDES = {};
 /* 印鑑（係印・社判）の位置とサイズ。ドラッグ＆ホイールで操作、localStorage に保存 */
 const DEFAULT_STAMPS = {
   stamp:  {x:0, y:0, size:18},   // 係印（合計金額の右）
@@ -1432,9 +1438,22 @@ function renderEstimate(){
     </div>
   `;
   $('est_body').innerHTML = html;
+  // 編集可能セルのblurでオーバーライド保存
+  $('est_body').querySelectorAll('td[contenteditable]').forEach(td=>{
+    td.addEventListener('blur', function(){
+      const tr = this.closest('tr');
+      const rk = tr && tr.dataset.rk;
+      const f  = this.dataset.f;
+      if(!rk || !f) return;
+      if(!EST_OVERRIDES[rk]) EST_OVERRIDES[rk] = {};
+      EST_OVERRIDES[rk][f] = this.textContent.trim();
+      markDirty();
+    });
+  });
 }
 
 function buildEstRows(D, C){
+  _estRowIdx = 0;
   const rows = [];
   const sekiOnly = C.sekiOnly;
   const items = ITEMS;
@@ -1546,13 +1565,20 @@ function buildEstRows(D, C){
 
   return rows.join('');
 }
+let _estRowIdx = 0;
 function estRow(cat, desc, qty, unit, price, amount){
-  return `<tr>
-    <td class="cat">${escapeHtml(cat)}</td>
-    <td class="desc">${escapeHtml(desc)}</td>
-    <td class="qty">${qty}</td>
+  const rk = 'r' + (_estRowIdx++);
+  const ov = EST_OVERRIDES[rk] || {};
+  const c = ov.cat !== undefined ? ov.cat : cat;
+  const d = ov.desc !== undefined ? ov.desc : desc;
+  const q = ov.qty !== undefined ? ov.qty : qty;
+  const p = ov.price !== undefined ? ov.price : price;
+  return `<tr data-rk="${rk}">
+    <td class="cat" contenteditable="true" data-f="cat">${escapeHtml(c)}</td>
+    <td class="desc" contenteditable="true" data-f="desc">${escapeHtml(d)}</td>
+    <td class="qty" contenteditable="true" data-f="qty">${q}</td>
     <td class="unit">${escapeHtml(unit)}</td>
-    <td class="price">${price?yen(price):''}</td>
+    <td class="price" contenteditable="true" data-f="price">${p?yen(p):''}</td>
     <td class="amount">${amount?yen(amount):''}</td>
   </tr>`;
 }
@@ -1746,6 +1772,7 @@ function buildDraftData(){
     items: ITEMS,
     extras: EXTRAS,
     adj_total: $('adj_total').value,
+    estOverrides: EST_OVERRIDES,
   };
 }
 
@@ -1859,6 +1886,7 @@ function applyData(d){
   ITEMS.forEach(it => { it.nin_manual = false; it.juki_manual = false; it.nen_manual = false; });
   if(d.extras) EXTRAS = d.extras;
   if(d.adj_total!==undefined) $('adj_total').value = d.adj_total;
+  if(d.estOverrides) EST_OVERRIDES = d.estOverrides; else EST_OVERRIDES = {};
   renderItems();
   renderExtras();
   recalc();

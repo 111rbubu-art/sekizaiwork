@@ -2811,7 +2811,19 @@ function openStonePriceItemEdit(item) {
     }
     html += '</div>';
   });
+  // 石材サンプル画像セクション（既存アイテムのみ）
+  if (!isNew) {
+    html += '<div style="border-top:1px solid #eee;padding-top:14px;margin-top:4px">';
+    html += '<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:8px">📷 石材サンプル画像</div>';
+    html += '<div id="stone-sample-imgs-' + item.id + '"><div style="color:#bbb;font-size:12px">読み込み中...</div></div>';
+    html += '<label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;padding:7px 16px;background:#2a4a7a;color:#fff;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">';
+    html += '📷 画像を追加';
+    html += '<input type="file" accept="image/*" multiple style="display:none" onchange="uploadStoneSampleImage(\'' + item.id + '\',this)">';
+    html += '</label>';
+    html += '</div>';
+  }
   document.getElementById('stone-price-edit-fields').innerHTML = html;
+  if (!isNew) setTimeout(function(){ loadStoneSampleImages(item.id); }, 50);
   var delBtn = document.getElementById('stone-price-edit-delete');
   if (delBtn) delBtn.style.display = isNew ? 'none' : '';
   document.getElementById('stone-price-edit-dialog').style.display = 'flex';
@@ -2888,6 +2900,111 @@ function deleteStonePriceItem() {
     showSaveToast(false, '削除失敗: ' + e.message);
     if (delBtn) { delBtn.disabled = false; delBtn.textContent = '🗑️ 削除'; }
   });
+}
+
+// ===== 石材サンプル画像 =====
+var _STONE_LIST_ENC = encodeURIComponent("'石材価格表'");
+
+function loadStoneSampleImages(itemId) {
+  var area = document.getElementById('stone-sample-imgs-' + itemId);
+  if (!area) return;
+  area.innerHTML = '<div style="color:#999;font-size:12px">読み込み中...</div>';
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' +
+      _STONE_LIST_ENC + ')/items(' + itemId + ')/AttachmentFiles';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+  }).then(function(r) { return r.json(); })
+  .then(function(data) {
+    var files = (data.d && data.d.results) ? data.d.results : [];
+    var imgs = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
+    if (imgs.length === 0) {
+      area.innerHTML = '<div style="color:#bbb;font-size:12px;padding:6px 0">（画像なし）</div>';
+      return;
+    }
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 8px">';
+    imgs.forEach(function(f) {
+      var fnEsc = f.FileName.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      html += '<div style="position:relative;flex-shrink:0">';
+      html += '<img class="stone-sample-lazy" data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
+        'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+        'style="width:90px;height:90px;object-fit:cover;border-radius:8px;background:#e8e8e8;cursor:pointer;display:block">';
+      html += '<button onclick="deleteStoneSampleImage(\'' + itemId + '\',\'' + fnEsc + '\')" ' +
+        'style="position:absolute;top:3px;right:3px;background:rgba(160,0,0,0.82);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:22px;text-align:center;padding:0">✕</button>';
+      html += '<div style="font-size:10px;color:#888;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px;margin-top:2px">' + f.FileName + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    area.innerHTML = html;
+    msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+      account: msalApp.getActiveAccount()
+    }).then(function(resp) {
+      var t2 = resp.accessToken;
+      area.querySelectorAll('.stone-sample-lazy').forEach(function(imgEl) {
+        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+          relPath.replace(/'/g,"''") + "')/$value";
+        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
+          .then(function(r){ return r.ok ? r.blob() : null; })
+          .then(function(blob){
+            if (!blob) return;
+            var burl = URL.createObjectURL(blob);
+            imgEl.src = burl;
+            imgEl.style.background = '';
+            imgEl.onclick = function(){ openCustImgPreview(burl); };
+          }).catch(function(){});
+      });
+    }).catch(function(){});
+  }).catch(function(e) {
+    if (area) area.innerHTML = '<div style="color:#c0392b;font-size:12px">読み込みエラー: ' + _esc(e.message) + '</div>';
+  });
+}
+
+function uploadStoneSampleImage(itemId, input) {
+  var files = input.files;
+  if (!files || !files.length) return;
+  showSaveToast(null, '⏳ アップロード中... (0/' + files.length + ')');
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var done = 0; var errors = 0;
+    function uploadNext(idx) {
+      if (idx >= files.length) {
+        input.value = '';
+        if (errors === 0) {
+          showSaveToast(true, done + '件アップロードしました');
+          loadStoneSampleImages(itemId);
+        } else {
+          showSaveToast(false, done + '件成功、' + errors + '件失敗');
+        }
+        return;
+      }
+      var file = files[idx];
+      var fname = file.name;
+      var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' +
+        _STONE_LIST_ENC + ')/items(' + itemId + ')/AttachmentFiles/add(FileName=\'' + encodeURIComponent(fname) + '\')';
+      fetch(url, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' },
+        body: file
+      }).then(function(r){
+        if (r.ok || r.status === 201) done++; else errors++;
+        showSaveToast(null, '⏳ アップロード中... (' + (done+errors) + '/' + files.length + ')');
+        uploadNext(idx + 1);
+      }).catch(function(){ errors++; uploadNext(idx + 1); });
+    }
+    uploadNext(0);
+  }).catch(function(e){ showSaveToast(false, 'トークン取得失敗: ' + e.message); });
+}
+
+function deleteStoneSampleImage(itemId, fileName) {
+  deleteAttachment('石材価格表', itemId, fileName, function(){ loadStoneSampleImages(itemId); });
 }
 
 function _syncStonePriceToAIQuiet() {
@@ -4240,7 +4357,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.457';
+var APP_VERSION = 'v1.8.458';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7738,10 +7855,21 @@ function showKoujiTab(i, d) {
       '</div>' + (editMode ? '<div class="edit-note">✏️ 編集中 — 保存ボタンでSharePointに反映されます</div>' : '');
 
     var koujiSituation = d['situation'] || '';
+    var _endInfo = d['endinfo'] || '';
+    var _endInfoEl = editMode
+      ? '<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 0 10px">' +
+        '<label style="font-size:12px;color:#555;font-weight:500;white-space:nowrap">最終チェック</label>' +
+        '<input class="edit-input" data-id="' + itemId + '" data-field="endinfo" value="' + (_endInfo||'').replace(/"/g,'&quot;') + '" ' +
+        'style="padding:5px 10px;border:1.5px solid #ccc;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px">' +
+        '</div>'
+      : '<div style="padding:4px 0 10px"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 18px;border-radius:20px;font-size:13px;font-weight:600;' +
+        (_endInfo === '完了' ? 'background:#e8f5e9;color:#2e7d32;border:1.5px solid #4caf50' :
+         _endInfo ? 'background:#f5f5f5;color:#555;border:1.5px solid #bbb' :
+         'background:#fff8e1;color:#c07000;border:1.5px solid #ffc107') + '">' +
+        (_endInfo === '完了' ? '✅ 完了' : _endInfo ? '📝 ' + _endInfo : '⏳ 進行中') +
+        '</span></div>';
     b.innerHTML = koujiBtnsRow +
-      '<div class="sec"><span class="sec-hdr bg5">最終チェック</span>' +
-      nkgBar('kj1d') + nkgCanvas('kj1d', KOUJI_T1D_CARDS, d, itemId) +
-      '</div>' +
+      _endInfoEl +
       '<div style="padding:4px 0 0">' +
       '<div class="sec" style="margin-bottom:0"><span class="sec-hdr bg1" style="background:#5a3a00;color:#fff">社内メモ</span>' +
       nkgBar('kj0a') + nkgCanvas('kj0a', KOUJI_T0A_CARDS, d, itemId) +
@@ -7754,7 +7882,6 @@ function showKoujiTab(i, d) {
       nkgBar('kj0c') + nkgCanvas('kj0c', KOUJI_T0C_CARDS, d, itemId) +
       '</div>';
     if (editMode) bindEditInputs(itemId);
-    nkgInit('kj1d', KOUJI_T1D_CARDS);
     nkgInit('kj0a', KOUJI_T0A_CARDS);
     nkgInit('kj0b', KOUJI_T0B_CARDS);
     nkgInit('kj0c', KOUJI_T0C_CARDS);

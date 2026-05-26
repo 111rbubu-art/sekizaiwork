@@ -3007,6 +3007,179 @@ function deleteStoneSampleImage(itemId, fileName) {
   deleteAttachment('石材価格表', itemId, fileName, function(){ loadStoneSampleImages(itemId); });
 }
 
+// ===== 基礎コンクリート計算 =====
+// 配合別 1m³あたり材料量（現場練り標準値）
+var _FOUND_MIX = {
+  '1:3:6': { name:'捨てコン用（弱）',   cement:6.0,  sand:0.50, gravel:1.00, water:155 },
+  '1:2:4': { name:'基礎用（標準）',     cement:8.5,  sand:0.44, gravel:0.88, water:175 },
+  '1:2:3': { name:'基礎用（強度重視）', cement:10.5, sand:0.43, gravel:0.65, water:185 }
+};
+
+function openFoundCalc(d) {
+  var modal = document.getElementById('found-calc-modal');
+  if (!modal) return;
+  // 案件情報表示
+  var jobName = '';
+  if (d) {
+    jobName = (d['HakaName'] ? d['HakaName'] + '家' : '') +
+              (d['Title'] ? '　' + d['Title'] : '') +
+              (d['ConstructionContents'] ? '　' + d['ConstructionContents'] : '');
+  }
+  var infoEl = document.getElementById('fc-job-info');
+  if (infoEl) infoEl.textContent = jobName.trim() || '（案件名未設定）';
+  // 工事仕様の寸法を自動入力
+  var w = '', dep = '';
+  if (d) {
+    var spec = loadHakaSpec ? loadHakaSpec(d) : null;
+    if (spec) { w = spec['敷地_幅'] || ''; dep = spec['敷地_奥行'] || ''; }
+  }
+  var wEl = document.getElementById('fc-width');
+  var dEl = document.getElementById('fc-depth');
+  if (wEl) wEl.value = w;
+  if (dEl) dEl.value = dep;
+  modal.style.display = 'flex';
+  calcFoundation();
+}
+
+function closeFoundCalc() {
+  var m = document.getElementById('found-calc-modal');
+  if (m) m.style.display = 'none';
+}
+
+function calcFoundation() {
+  var w   = parseFloat(document.getElementById('fc-width').value)   || 0;
+  var dep = parseFloat(document.getElementById('fc-depth').value)   || 0;
+  var t   = parseFloat(document.getElementById('fc-thick').value)   || 150;
+  var mix = document.getElementById('fc-mix').value   || '1:2:4';
+  var rd  = parseInt(document.getElementById('fc-rebar-d').value)   || 10;
+  var rsp = parseInt(document.getElementById('fc-rebar-sp').value)  || 200;
+  var lyr = parseInt(document.getElementById('fc-layers').value)    || 1;
+  var lossRate = parseFloat(document.getElementById('fc-loss').value) || 10;
+  var memo = (document.getElementById('fc-memo') && document.getElementById('fc-memo').value) || '';
+
+  var res = document.getElementById('fc-results');
+  if (!w || !dep) {
+    res.innerHTML = '<div style="text-align:center;color:#aaa;padding:24px">幅と奥行を入力してください</div>';
+    return;
+  }
+
+  var loss = 1 + lossRate / 100;
+  var vol   = (w/1000) * (dep/1000) * (t/1000);   // m³
+  var volL  = vol * loss;                           // ロス込 m³
+
+  var m = _FOUND_MIX[mix] || _FOUND_MIX['1:2:4'];
+  var cBags   = Math.ceil(volL * m.cement);
+  var sandM3  = volL * m.sand;
+  var gravM3  = volL * m.gravel;
+  var waterL  = Math.ceil(volL * m.water);
+
+  // 鉄筋
+  var cover  = 40;
+  var anchor = Math.max(40 * rd, 200);
+  var nX = Math.floor((w   - cover*2) / rsp) + 1;  // 縦筋本数（幅方向に並ぶ）
+  var nY = Math.floor((dep - cover*2) / rsp) + 1;  // 横筋本数（奥行方向に並ぶ）
+  var lenXm = (dep + anchor*2) / 1000;              // 縦筋1本長さ(m)
+  var lenYm = (w   + anchor*2) / 1000;              // 横筋1本長さ(m)
+  var totalNX = nX * lyr;
+  var totalNY = nY * lyr;
+  var totalLen = totalNX * lenXm + totalNY * lenYm;
+
+  // 結果HTML生成（印刷用コンテンツに流用）
+  var now = new Date();
+  var dateStr = now.getFullYear() + '年' + (now.getMonth()+1) + '月' + now.getDate() + '日';
+  var html = '<div id="fc-print-body">';
+
+  // 施工概要
+  html += '<div style="border:2px solid #2a4a2a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
+  html += '<div style="background:#2a4a2a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 施工概要</div>';
+  html += '<div style="padding:10px 14px;background:#f9fdf9;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:13px">';
+  html += '<div><span style="color:#888;font-size:11px">幅</span><br><b>' + w.toLocaleString() + '</b> mm</div>';
+  html += '<div><span style="color:#888;font-size:11px">奥行</span><br><b>' + dep.toLocaleString() + '</b> mm</div>';
+  html += '<div><span style="color:#888;font-size:11px">基礎厚さ</span><br><b>' + t + '</b> mm</div>';
+  html += '<div><span style="color:#888;font-size:11px">配合</span><br><b>' + mix + '</b><br><span style="font-size:11px;color:#555">' + m.name + '</span></div>';
+  html += '<div><span style="color:#888;font-size:11px">鉄筋</span><br><b>D' + rd + ' @' + rsp + 'mm</b></div>';
+  html += '<div><span style="color:#888;font-size:11px">配筋</span><br><b>' + (lyr === 1 ? 'シングル' : 'ダブル') + '</b></div>';
+  html += '</div></div>';
+
+  // コンクリート量
+  html += '<div style="border:2px solid #2a5a2a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
+  html += '<div style="background:#2a5a2a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ コンクリート量　体積 ' + vol.toFixed(3) + ' m³（ロス' + lossRate + '%込 ' + volL.toFixed(3) + ' m³）</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px">';
+  var rows = [
+    ['🔵 セメント', cBags + ' 袋', '（25kg/袋 = ' + (cBags*25).toLocaleString() + ' kg）'],
+    ['🟡 砂',       sandM3.toFixed(2) + ' m³', '≒ ' + Math.ceil(sandM3*1600).toLocaleString() + ' kg'],
+    ['🟤 砂利',     gravM3.toFixed(2) + ' m³', '≒ ' + Math.ceil(gravM3*1500).toLocaleString() + ' kg'],
+    ['💧 水',       waterL + ' L', '']
+  ];
+  rows.forEach(function(r, i) {
+    var bg = i%2===0 ? '#f5fdf5' : '#fff';
+    html += '<tr style="background:' + bg + '">';
+    html += '<td style="padding:9px 14px;font-weight:500;width:30%;border-bottom:1px solid #e0ead0">' + r[0] + '</td>';
+    html += '<td style="padding:9px 14px;font-size:17px;font-weight:700;color:#1a5a1a;width:30%;border-bottom:1px solid #e0ead0">' + r[1] + '</td>';
+    html += '<td style="padding:9px 14px;color:#888;font-size:12px;border-bottom:1px solid #e0ead0">' + r[2] + '</td>';
+    html += '</tr>';
+  });
+  html += '</table></div>';
+
+  // 鉄筋量
+  html += '<div style="border:2px solid #5a3a1a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
+  html += '<div style="background:#5a3a1a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 鉄筋量　D' + rd + ' @' + rsp + 'mm　定着長さ ' + anchor + 'mm</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px">';
+  var rbRows = [
+    ['縦筋（奥行方向・' + nX + '列）', totalNX + ' 本', '1本 ' + lenXm.toFixed(2) + ' m'],
+    ['横筋（幅方向・' + nY + '列）',   totalNY + ' 本', '1本 ' + lenYm.toFixed(2) + ' m'],
+    ['合計', (totalNX+totalNY) + ' 本', totalLen.toFixed(1) + ' m']
+  ];
+  rbRows.forEach(function(r, i) {
+    var bg = i===2 ? '#fff8f0' : (i%2===0 ? '#fdf7f0' : '#fff');
+    var fw = i===2 ? 'font-weight:700;' : '';
+    html += '<tr style="background:' + bg + '">';
+    html += '<td style="padding:9px 14px;font-weight:500;width:40%;border-bottom:1px solid #f0e0d0">' + r[0] + '</td>';
+    html += '<td style="padding:9px 14px;font-size:17px;' + fw + 'color:#5a2a00;width:25%;border-bottom:1px solid #f0e0d0">' + r[1] + '</td>';
+    html += '<td style="padding:9px 14px;font-size:' + (i===2?'17':'14') + 'px;' + fw + 'color:#5a2a00;border-bottom:1px solid #f0e0d0">' + r[2] + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  if (lyr > 1) html += '<div style="font-size:11px;color:#888;padding:5px 14px">※ダブル配筋（2段）で計算</div>';
+  html += '</div>';
+
+  if (memo) {
+    html += '<div style="border:1px solid #ddd;border-radius:8px;padding:10px 14px;font-size:13px;background:#fffde7">';
+    html += '<span style="font-size:11px;color:#888">メモ</span><br>' + memo.replace(/\n/g,'<br>');
+    html += '</div>';
+  }
+  html += '</div>'; // #fc-print-body
+  res.innerHTML = html;
+
+  // 印刷用データを更新
+  window._fcPrintData = {
+    jobName: document.getElementById('fc-job-info') ? document.getElementById('fc-job-info').textContent : '',
+    date: dateStr,
+    html: html
+  };
+}
+
+function printFoundCalc() {
+  var pd = window._fcPrintData;
+  if (!pd) { alert('先に寸法を入力してください'); return; }
+  var w = window.open('', '_blank', 'width=820,height=700');
+  w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">');
+  w.document.write('<title>基礎コンクリート計算書</title>');
+  w.document.write('<style>');
+  w.document.write('body{font-family:"Hiragino Sans","Meiryo",sans-serif;margin:0;padding:16px 20px;color:#000;font-size:13px}');
+  w.document.write('h1{font-size:18px;margin:0 0 4px;border-bottom:2px solid #2a4a2a;padding-bottom:6px}');
+  w.document.write('.meta{color:#555;font-size:12px;margin-bottom:14px}');
+  w.document.write('table{width:100%;border-collapse:collapse}td{padding:7px 12px;border:1px solid #ccc}');
+  w.document.write('@media print{@page{margin:10mm}button{display:none!important}}');
+  w.document.write('</style></head><body>');
+  w.document.write('<div style="text-align:right;margin-bottom:8px"><button onclick="window.print()" style="padding:8px 18px;background:#2a4a2a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨️ 印刷 / PDF保存</button></div>');
+  w.document.write('<h1>🧮 基礎コンクリート計算書</h1>');
+  w.document.write('<div class="meta">案件: ' + pd.jobName + '　／　計算日: ' + pd.date + '</div>');
+  w.document.write(pd.html.replace(/id="fc-print-body"/,''));
+  w.document.write('</body></html>');
+  w.document.close();
+}
+
 function _syncStonePriceToAIQuiet() {
   var cfg = getAICfg();
   if (cfg.provider !== 'anythingllm') return;
@@ -4357,7 +4530,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.460';
+var APP_VERSION = 'v1.8.461';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -7873,7 +8046,9 @@ function showKoujiTab(i, d) {
     // 編集ボタン+全ボタンを右寄せ1行にまとめる（編集ボタンと同じ高さ・位置）
     var koujiBtnsRow =
       '<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 10px">' +
-      connectBtnKouji + (cusLinkBtnKouji||'') + (cusRegBtnKouji||'') +
+      connectBtnKouji +
+      '<button onclick="openFoundCalc(currentItem)" style="' + _bSt + ';background:#4a3a00">🧮 基礎計算</button>' +
+      (cusLinkBtnKouji||'') + (cusRegBtnKouji||'') +
       '<button class="edit-btn" onclick="toggleKoujiEdit(currentItem,' + i + ')" style="float:none;margin:0">' +
       (editMode ? '✅ 保存' : '✏️ 編集') + '</button>' +
       (editMode ? '<button class="edit-btn cancel" onclick="cancelKoujiEdit(' + i + ')" style="float:none;margin:0">✖ 戻る</button>' : '') +
@@ -20066,6 +20241,81 @@ function openImageViewer(imgs, startIdx) {
       <button id="stone-price-edit-save" onclick="saveStonePriceItem()" style="padding:8px 18px;background:#1a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">💾 保存</button>
       <button id="stone-price-edit-delete" onclick="deleteStonePriceItem()" style="padding:8px 18px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">🗑️ 削除</button>
       <button onclick="closeStonePriceDialog()" style="padding:8px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;margin-left:auto">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 基礎コンクリート計算モーダル ===== -->
+<div id="found-calc-modal" style="display:none;position:fixed;inset:0;z-index:1300;overflow-y:auto;background:rgba(0,0,0,0.55);padding:12px;align-items:flex-start;justify-content:center">
+  <div style="max-width:620px;width:100%;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+    <!-- ヘッダー -->
+    <div style="background:#2a4a2a;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:15px;font-weight:600;flex:1">🧮 基礎コンクリート計算書</span>
+      <button onclick="printFoundCalc()" style="padding:6px 14px;background:rgba(255,255,255,0.18);color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:8px;cursor:pointer;font-size:12px;font-family:inherit">🖨️ 印刷・PDF</button>
+      <button onclick="closeFoundCalc()" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;padding:0;line-height:1">✕</button>
+    </div>
+    <!-- 案件情報 -->
+    <div id="fc-job-info" style="background:#f0f5f0;border-bottom:1px solid #d8e8d8;padding:7px 16px;font-size:12px;color:#444;min-height:28px"></div>
+    <!-- 入力フォーム -->
+    <div style="padding:14px 16px;border-bottom:1px solid #eee">
+      <div style="font-size:12px;font-weight:600;color:#555;margin-bottom:10px">▼ 入力値</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">幅 (mm)</label>
+          <input id="fc-width" type="number" oninput="calcFoundation()" placeholder="例: 1800" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">奥行 (mm)</label>
+          <input id="fc-depth" type="number" oninput="calcFoundation()" placeholder="例: 2400" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">基礎厚さ (mm)</label>
+          <input id="fc-thick" type="number" oninput="calcFoundation()" value="150" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">配合（セメント:砂:砂利）</label>
+          <select id="fc-mix" onchange="calcFoundation()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">
+            <option value="1:3:6">1:3:6（捨てコン用）</option>
+            <option value="1:2:4" selected>1:2:4（基礎・標準）</option>
+            <option value="1:2:3">1:2:3（基礎・強度重視）</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">鉄筋径</label>
+          <select id="fc-rebar-d" onchange="calcFoundation()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">
+            <option value="10" selected>D10</option>
+            <option value="13">D13</option>
+            <option value="16">D16</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">鉄筋間隔</label>
+          <select id="fc-rebar-sp" onchange="calcFoundation()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">
+            <option value="150">@150mm</option>
+            <option value="200" selected>@200mm</option>
+            <option value="300">@300mm</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">配筋段数</label>
+          <select id="fc-layers" onchange="calcFoundation()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">
+            <option value="1" selected>シングル配筋（1段）</option>
+            <option value="2">ダブル配筋（2段）</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">ロス率（%）</label>
+          <input id="fc-loss" type="number" oninput="calcFoundation()" value="10" min="0" max="50" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">メモ（印刷資料に含まれます）</label>
+        <textarea id="fc-memo" oninput="calcFoundation()" rows="2" placeholder="施工上の注意・特記事項など" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical"></textarea>
+      </div>
+    </div>
+    <!-- 計算結果 -->
+    <div id="fc-results" style="padding:14px 16px">
+      <div style="text-align:center;color:#aaa;padding:24px">幅と奥行を入力してください</div>
     </div>
   </div>
 </div>

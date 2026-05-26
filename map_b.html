@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.12</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.17</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -2524,7 +2524,36 @@ function vpDeleteAttachment(encRelUrl, encFileName) {
 
 // ===== SharePoint保存・読込（Graph API方式）=====
 var SP_DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp';
-var SP_FOLDER   = '%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA'; // 業務アプリ
+var SP_FOLDER   = '%E6%A5%AD%E5%8B%99%E3%82%A2%E3%83%97%E3%83%AA/%E3%81%8A%E5%AF%BA%E7%94%A8%E3%83%9E%E3%83%83%E3%83%97'; // 業務アプリ/お寺用マップ
+
+// Graph APIトークン取得（グローバル版）
+// MSAL が target にスコープ名のみ保存するため getSPToken() では graph.microsoft.com が
+// 見つからず常に失敗する。SP以外のトークンをスキャンし、なければ acquireTokenSilent を使う。
+function getMapGraphToken() {
+  var now = Date.now() / 1000;
+  try {
+    var lsKeys = Object.keys(localStorage);
+    for (var li = 0; li < lsKeys.length; li++) {
+      var lk = lsKeys[li];
+      if (lk.indexOf('accesstoken') < 0) continue;
+      var litem = JSON.parse(localStorage.getItem(lk));
+      if (!litem || !litem.secret) continue;
+      var lexp = litem.expiresOn || litem.extended_expires_on || '0';
+      var lexpTime = isNaN(lexp) ? new Date(lexp).getTime() / 1000 : Number(lexp);
+      if (lexpTime <= now + 60) continue;
+      var ltarget = (litem.target || '').toLowerCase();
+      if (ltarget.indexOf('shojisekizai.sharepoint.com') >= 0 || ltarget.length === 0) continue;
+      return Promise.resolve(litem.secret);
+    }
+  } catch(e) {}
+  return initMapMsal().then(function(app) {
+    var accounts = app.getAllAccounts();
+    if (accounts.length === 0) return Promise.reject(new Error('未ログイン'));
+    return app.acquireTokenSilent({ scopes: _MAP_SCOPES, account: accounts[0] })
+      .then(function(r) { return r.accessToken; })
+      .catch(function() { return Promise.reject(new Error('セッション切れ')); });
+  });
+}
 
 
 // ===== map.html内MSAL（トークン更新用）=====
@@ -2559,10 +2588,9 @@ function initMapMsal() {
   });
 }
 
-// M-2: 再読込（SPトークンあり→SP再読込、なし→ページリロード）
+// M-2: 再読込（Graphトークンあり→SP再読込、なし→ページリロード）
 function mapReload(){
-  var token = getSPToken();
-  if(token){ syncFromSP(); } else { location.reload(); }
+  getMapGraphToken().then(function(){ syncFromSP(); }).catch(function(){ location.reload(); });
 }
 
 function mapRelogin() {
@@ -2609,10 +2637,10 @@ function mapRelogin() {
 
 // トークン切れを検知してボタンを表示
 function checkTokenAndShowBtn() {
-  if (_isOfflineMode) return; // オフライン時は再ログインボタン不要
-  var t = getSPToken();
+  if (_isOfflineMode) return;
   var btn = document.getElementById('relogin-btn');
-  if (btn) btn.style.display = t ? 'none' : '';
+  if (!btn) return;
+  getMapGraphToken().then(function(){ btn.style.display = 'none'; }).catch(function(){ btn.style.display = ''; });
 }
 
 function getSPToken(forSP) {
@@ -2762,11 +2790,6 @@ function syncToSP() {
 }
 
 function saveToSP(callback) {
-  var token = getSPToken();
-  if (!token) {
-    showSPStatus('SharePoint未ログイン。ビューアーからマップを開いてください。', 'err');
-    return;
-  }
   var data = {
     version: '2.0',
     savedAt: new Date().toISOString(),
@@ -2779,13 +2802,12 @@ function saveToSP(callback) {
   var url = 'https://graph.microsoft.com/v1.0/drives/' + SP_DRIVE_ID +
             '/root:/' + SP_FOLDER + '/' + encodeURIComponent(fileName) + ':/content';
   showSPStatus('SharePointに保存中...', 'ing');
-  fetch(url, {
-    method: 'PUT',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Content-Type': 'application/json'
-    },
-    body: jsonStr
+  getMapGraphToken().then(function(token) {
+    return fetch(url, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: jsonStr
+    });
   })
   .then(function(r) {
     if (r.ok || r.status === 201) {
@@ -2795,7 +2817,7 @@ function saveToSP(callback) {
       if (callback) callback();
     } else {
       return r.json().then(function(d) {
-        throw new Error(r.status + ': ' + (d.error?.message || JSON.stringify(d).substring(0,80)));
+        throw new Error(r.status + ': ' + (d.error && d.error.message ? d.error.message : JSON.stringify(d).substring(0,80)));
       });
     }
   })
@@ -2806,52 +2828,52 @@ function saveToSP(callback) {
 }
 
 function loadFromSP(callback) {
-  var token = getSPToken();
-  if (!token) {
-    loadFromLocalStorage(callback);
-    return;
-  }
   var fileName = 'data_' + _templeId + '.json';
   var url = 'https://graph.microsoft.com/v1.0/drives/' + SP_DRIVE_ID +
             '/root:/' + SP_FOLDER + '/' + encodeURIComponent(fileName) + ':/content';
-  // 8秒タイムアウト
-  var ctrl = new AbortController();
-  var timer = setTimeout(function(){ ctrl.abort(); }, 8000);
-  fetch(url, { headers: { 'Authorization': 'Bearer ' + token }, signal: ctrl.signal })
-  .then(function(r) {
-    clearTimeout(timer);
-    if (r.ok) return r.json();
-    if (r.status === 404) { setDataSource('github', null); return null; }
-    throw new Error(r.status);
-  })
-  .then(function(data) {
-    // plots（小文字）とPLOTS（大文字）の両方に対応
-    var rawPlots = (data && (data.plots || data.PLOTS)) || null;
-    if (data && rawPlots) {
-      data.plots = rawPlots;
-      PLOTS = rawPlots;
-      savedAreas = data.savedAreas || [];
-      if (data.fontScale) {
-        _fontScale = data.fontScale;
-        var lbl = document.getElementById('fontScaleLabel');
-        if (lbl) lbl.textContent = _fontScale.toFixed(1) + '×';
+  getMapGraphToken().then(function(token) {
+    // 8秒タイムアウト
+    var ctrl = new AbortController();
+    var timer = setTimeout(function(){ ctrl.abort(); }, 8000);
+    return fetch(url, { headers: { 'Authorization': 'Bearer ' + token }, signal: ctrl.signal })
+    .then(function(r) {
+      clearTimeout(timer);
+      if (r.ok) return r.json();
+      if (r.status === 404) { setDataSource('github', null); return null; }
+      throw new Error(r.status);
+    })
+    .then(function(data) {
+      var rawPlots = (data && (data.plots || data.PLOTS)) || null;
+      if (data && rawPlots) {
+        data.plots = rawPlots;
+        PLOTS = rawPlots;
+        savedAreas = data.savedAreas || [];
+        if (data.fontScale) {
+          _fontScale = data.fontScale;
+          var lbl = document.getElementById('fontScaleLabel');
+          if (lbl) lbl.textContent = _fontScale.toFixed(1) + '×';
+        }
+        draw(); updateStats();
+        showSPStatus('✅ SharePointから読み込みました (' + (data.savedAt||'').substring(0,16).replace('T',' ') + ')', 'ok');
+        setSyncBtnState('syncFromBtn', 'idle', '📥 SP読込');
+        setDataSource('sp', data.savedAt || null);
+        if (callback) callback();
+      } else {
+        loadFromLocalStorage(callback);
       }
-      draw(); updateStats();
-      showSPStatus('✅ SharePointから読み込みました (' + (data.savedAt||'').substring(0,16).replace('T',' ') + ')', 'ok');
-      setSyncBtnState('syncFromBtn', 'idle', '📥 SP読込');
-      setDataSource('sp', data.savedAt || null);
-      if (callback) callback();
-    } else {
+    })
+    .catch(function(e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        console.warn('[loadFromSP] タイムアウト（8秒）');
+        showSPStatus('⚠️ SP読込タイムアウト。ローカルデータを使用します', 'err');
+      } else {
+        showSPStatus('⚠️ SP読込エラー: ' + e.message, 'err');
+      }
       loadFromLocalStorage(callback);
-    }
-  })
-  .catch(function(e) {
-    clearTimeout(timer);
-    if (e.name === 'AbortError') {
-      // タイムアウト → ローカルデータで続行
-      console.warn('[loadFromSP] タイムアウト（8秒）');
-      showSPStatus('⚠️ SP読込タイムアウト。ローカルデータを使用します', 'err');
-    }
+    });
+  }).catch(function() {
+    showSPStatus('SharePoint未ログイン。ビューアーからマップを開いてください。', 'err');
     loadFromLocalStorage(callback);
   });
 }
@@ -3249,16 +3271,28 @@ if (_isOfflineMode) {
   function applyScaleAt(newScale, clientMidX, clientMidY) {
     newScale = Math.min(Math.max(newScale, 0.3), 4);
     var ratio = newScale / currentScale;
-    // mapWrap上のピンチ中点座標（スクロール込み）
-    var wrapRect = mapWrap.getBoundingClientRect();
-    var focalX = (clientMidX - wrapRect.left) + mapWrap.scrollLeft;
-    var focalY = (clientMidY - wrapRect.top) + mapWrap.scrollTop;
+    if (ratio === 1) return;
+    // canvas の現在のscreen位置（padding等もここに含まれる）
+    var mcRect = mc.getBoundingClientRect();
+    // canvas 内のカーソル位置（現在のCSSピクセル）
+    var canvasX = clientMidX - mcRect.left;
+    var canvasY = clientMidY - mcRect.top;
     currentScale = newScale;
     mc.style.width = Math.round(baseW * currentScale) + 'px';
     mc.style.height = Math.round(baseH * currentScale) + 'px';
-    // ズーム後のfocalPointが同じ画面位置に来るようスクロール
-    mapWrap.scrollLeft = Math.round(focalX * ratio - (clientMidX - wrapRect.left));
-    mapWrap.scrollTop = Math.round(focalY * ratio - (clientMidY - wrapRect.top));
+    // 拡大後、同じcanvas点がカーソル位置に来るようスクロール補正
+    var dx = canvasX * (ratio - 1);
+    var dy = canvasY * (ratio - 1);
+    if (mapWrap.scrollWidth > mapWrap.clientWidth) {
+      mapWrap.scrollLeft += dx;
+    } else {
+      window.scrollBy(dx, 0);
+    }
+    if (mapWrap.scrollHeight > mapWrap.clientHeight) {
+      mapWrap.scrollTop += dy;
+    } else {
+      window.scrollBy(0, dy);
+    }
   }
 
   var lastDist = 0;
@@ -3312,6 +3346,51 @@ if (_isOfflineMode) {
     '<button onclick="mapZoom(1/1.5)" style="width:36px;height:36px;background:#1a1a1a;color:#f0ece0;border:none;font-size:18px;cursor:pointer;border-radius:4px;opacity:0.85">－</button>' +
     '<button onclick="mapZoomReset()" style="width:36px;height:36px;background:#1a1a1a;color:#f0ece0;border:none;font-size:11px;cursor:pointer;border-radius:4px;opacity:0.85">1:1</button>';
   document.body.appendChild(zoomBar);
+
+  // マウスホイールでズーム（カーソル位置を固定点）
+  mapWrap.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var ratio = e.deltaY < 0 ? 1.1 : 1/1.1;
+    applyScaleAt(currentScale * ratio, e.clientX, e.clientY);
+  }, { passive: false });
+
+  // マウス中ボタンドラッグでパン（縦は window 側のスクロールにフォールバック）
+  var midDragging = false, midStartX = 0, midStartY = 0;
+  var midStartSL = 0, midStartST = 0, midStartWX = 0, midStartWY = 0;
+  mapWrap.addEventListener('mousedown', function(e) {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    midDragging = true;
+    midStartX = e.clientX; midStartY = e.clientY;
+    midStartSL = mapWrap.scrollLeft; midStartST = mapWrap.scrollTop;
+    midStartWX = window.scrollX || window.pageXOffset || 0;
+    midStartWY = window.scrollY || window.pageYOffset || 0;
+    mapWrap.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!midDragging) return;
+    var dx = e.clientX - midStartX;
+    var dy = e.clientY - midStartY;
+    if (mapWrap.scrollWidth > mapWrap.clientWidth) {
+      mapWrap.scrollLeft = midStartSL - dx;
+    } else {
+      window.scrollTo(midStartWX - dx, window.scrollY);
+    }
+    if (mapWrap.scrollHeight > mapWrap.clientHeight) {
+      mapWrap.scrollTop = midStartST - dy;
+    } else {
+      window.scrollTo(window.scrollX, midStartWY - dy);
+    }
+  });
+  window.addEventListener('mouseup', function(e) {
+    if (e.button !== 1 || !midDragging) return;
+    midDragging = false;
+    mapWrap.style.cursor = '';
+  });
+  // 中ボタンの自動スクロール（菱形カーソル）抑制
+  mapWrap.addEventListener('auxclick', function(e) {
+    if (e.button === 1) e.preventDefault();
+  });
 
   window.mapZoom = function(ratio) {
     // ボタン操作時は画面中央を固定点に

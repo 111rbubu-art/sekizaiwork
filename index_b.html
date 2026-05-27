@@ -14245,6 +14245,15 @@ function renderFolderDropZone(el, folderPath) {
   dropDiv.addEventListener('drop', function(e){
     e.preventDefault();
     this.style.background = '#e6f1fb';
+    // パネルからのドロップ検出
+    if (_fmgr && _fmgr.fileDragData) {
+      var pf = _fmgr.fileDragData;
+      _fmgr.fileDragData = null;
+      var op = _fmgr.opMode || 'copy';
+      var dst = { type:'folder', folderPath: folderPath };
+      _fmgrDoChain([pf], dst, op, 0, 0);
+      return;
+    }
     var files = Array.from(e.dataTransfer.files);
     if (files.length > 0) uploadFilesToFolder(files, folderPath, el);
   });
@@ -15603,7 +15612,12 @@ function loadCustomerAttachments(spItemId) {
       var isMap = f.FileName.toLowerCase().includes('map');
       var label = isMap ? '🗺️ 地図' : '📷 写真';
       var fnEsc = f.FileName.replace(/'/g, "\\'");
-      html += '<div class="attach-item" style="position:relative">' +
+      var fnAttr = f.FileName.replace(/"/g, '&quot;');
+      html += '<div class="attach-item" draggable="true"' +
+        ' data-fname="' + fnAttr + '" data-list="顧客リスト" data-item-id="' + spItemId + '"' +
+        ' data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '"' +
+        ' ondragstart="_fmgrMainDragStart(event)"' +
+        ' style="position:relative">' +
         '<img class="attach-thumb cust-img-lazy" ' +
         'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
@@ -15737,13 +15751,13 @@ function loadLinkedCusAttachments(cusId, areaId) {
 var _fmgr = {
   open: false, x: null, y: null,
   panelDragX: 0, panelDragY: 0, panelDragging: false,
-  panelLoc: '',      // 'cus_sp' | 'cur_sp' | 'folder'
-  panelFiles: [],    // パネル側ファイル一覧
-  mainFiles: [],     // メイン側ファイル一覧
+  panelLoc: '',        // 'cus_sp' | 'cur_sp' | 'folder'
+  panelFiles: [],      // パネルファイル一覧
   item: null,
-  listMode: '',      // 'noukotsu' | 'kouji'
-  fileDragData: null,
-  fileDragSide: ''   // 'panel' | 'main'
+  listMode: '',        // 'noukotsu' | 'kouji'
+  fileDragData: null,  // パネルからドラッグ中のファイル
+  mainDragData: null,  // メイン画面からドラッグ中のファイル
+  opMode: 'copy'       // 'copy' | 'move'
 };
 
 function openFileMgrPanel(item, listMode) {
@@ -15751,17 +15765,16 @@ function openFileMgrPanel(item, listMode) {
   _fmgr.listMode = listMode;
   _fmgr.open = true;
   if (_fmgr.x === null) {
-    _fmgr.x = Math.max(10, Math.floor((window.innerWidth - 820) / 2));
+    _fmgr.x = Math.max(10, Math.floor((window.innerWidth - 420) / 2));
     _fmgr.y = 60;
   }
   var cusId = String(item['Cus_ID'] || '').trim();
   var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
-  if (!_fmgr.panelLoc || _fmgr.panelLoc === 'cur_sp') {
+  if (!_fmgr.panelLoc) {
     _fmgr.panelLoc = cusId ? 'cus_sp' : (folderPass ? 'folder' : 'cur_sp');
   }
   _fmgrBuildPanel();
   _fmgrLoadPanelFiles();
-  _fmgrLoadMainFiles();
 }
 
 function closeFileMgrPanel() {
@@ -15769,6 +15782,8 @@ function closeFileMgrPanel() {
   var p = document.getElementById('fmgr-panel');
   if (p) p.remove();
 }
+
+function _fmgrSetOp(v) { _fmgr.opMode = v; }
 
 function _fmgrBuildPanel() {
   var existing = document.getElementById('fmgr-panel');
@@ -15784,42 +15799,38 @@ function _fmgrBuildPanel() {
 
   var panel = document.createElement('div');
   panel.id = 'fmgr-panel';
-  panel.style.cssText = 'position:fixed;top:' + _fmgr.y + 'px;left:' + _fmgr.x + 'px;width:820px;max-width:98vw;height:72vh;min-height:300px;min-width:420px;background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:9990;display:flex;flex-direction:column;font-family:inherit;border:2px solid #1a3a6a;overflow:hidden;resize:both';
+  panel.style.cssText = 'position:fixed;top:' + _fmgr.y + 'px;left:' + _fmgr.x + 'px;width:420px;max-width:98vw;min-height:300px;max-height:85vh;min-width:260px;background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:9990;display:flex;flex-direction:column;font-family:inherit;border:2px solid #1a3a6a;overflow:hidden;resize:both';
 
   panel.innerHTML =
-    // タイトルバー（ドラッグ用）
+    // タイトルバー
     '<div id="fmgr-tb" style="background:#1a3a6a;color:#fff;padding:7px 12px;cursor:move;display:flex;align-items:center;gap:8px;user-select:none;flex-shrink:0">' +
-      '<span style="flex:1;font-size:13px;font-weight:600">🗂 ファイル整理　<span style="font-size:11px;font-weight:400;opacity:0.75">ドラッグで移動 / Shiftドロップで移動（通常はコピー）</span></span>' +
+      '<span style="flex:1;font-size:13px;font-weight:600">🗂 ファイル整理</span>' +
       '<button onclick="closeFileMgrPanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:4px;padding:2px 10px;cursor:pointer;font-size:13px;font-family:inherit">✕</button>' +
     '</div>' +
-    // 2ペイン横並び
-    '<div style="flex:1;display:flex;overflow:hidden">' +
-      // 左ペイン（パネル側）
-      '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:160px">' +
-        '<div style="background:#e8f0fb;padding:5px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #c8d8f0">' +
-          '<span style="font-size:11px;color:#1a3a6a;font-weight:700;white-space:nowrap">📂 参照元</span>' +
-          '<select id="fmgr-loc" onchange="_fmgrSwitchLoc(this.value)" style="flex:1;font-size:11px;padding:3px 4px;border:1px solid #aac;border-radius:3px;font-family:inherit">' + locOpts + '</select>' +
-          '<button onclick="_fmgrLoadPanelFiles()" style="background:#1a3a6a;color:#fff;border:none;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;flex-shrink:0" title="再読み込み">🔄</button>' +
-        '</div>' +
-        '<div id="fmgr-panel-list" style="flex:1;overflow-y:auto;padding:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;align-content:start"' +
-          ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #1a7a3a\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'panel\')">' +
-          '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">読み込み中...</div>' +
-        '</div>' +
-      '</div>' +
-      // 中央区切り
-      '<div style="width:6px;background:linear-gradient(to right,#dde,#c8d8f0,#dde);flex-shrink:0;cursor:col-resize"></div>' +
-      // 右ペイン（メイン側）
-      '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:160px">' +
-        '<div style="background:#fbe8e8;padding:5px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #f0c8c8">' +
-          '<span style="font-size:11px;color:#6a1a1a;font-weight:700;white-space:nowrap">📌 工事SP添付</span>' +
-          '<span id="fmgr-main-label" style="flex:1;font-size:11px;color:#888"></span>' +
-          '<button onclick="_fmgrLoadMainFiles()" style="background:#6a1a1a;color:#fff;border:none;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;flex-shrink:0" title="再読み込み">🔄</button>' +
-        '</div>' +
-        '<div id="fmgr-main-list" style="flex:1;overflow-y:auto;padding:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;align-content:start"' +
-          ' ondragover="event.preventDefault();this.style.outline=\'2px dashed #c00\'" ondragleave="this.style.outline=\'\'" ondrop="_fmgrDropOn(event,\'main\')">' +
-          '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">読み込み中...</div>' +
-        '</div>' +
-      '</div>' +
+    // ソース選択ツールバー
+    '<div style="background:#e8f0fb;padding:5px 8px;display:flex;align-items:center;gap:6px;flex-shrink:0;border-bottom:1px solid #c8d8f0">' +
+      '<span style="font-size:11px;color:#1a3a6a;font-weight:700">📂 表示元</span>' +
+      '<select id="fmgr-loc" onchange="_fmgrSwitchLoc(this.value)" style="flex:1;font-size:11px;padding:3px 4px;border:1px solid #aac;border-radius:3px;font-family:inherit">' + locOpts + '</select>' +
+      '<button onclick="_fmgrLoadPanelFiles()" style="background:#1a3a6a;color:#fff;border:none;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;flex-shrink:0" title="再読み込み">🔄</button>' +
+    '</div>' +
+    // 操作モード
+    '<div style="padding:4px 10px;background:#f5f7fa;border-bottom:1px solid #e8e8e8;font-size:11px;display:flex;gap:14px;align-items:center;flex-shrink:0">' +
+      '<span style="color:#555;font-weight:600">操作:</span>' +
+      '<label style="cursor:pointer;display:flex;align-items:center;gap:3px"><input type="radio" name="fmgr-op" value="copy" onchange="_fmgrSetOp(\'copy\')" ' + (_fmgr.opMode==='copy'?'checked':'') + '> コピー</label>' +
+      '<label style="cursor:pointer;display:flex;align-items:center;gap:3px"><input type="radio" name="fmgr-op" value="move" onchange="_fmgrSetOp(\'move\')" ' + (_fmgr.opMode==='move'?'checked':'') + '> 移動</label>' +
+      '<span style="color:#aaa;font-size:10px;margin-left:auto">←ドラッグしてメイン画面へ</span>' +
+    '</div>' +
+    // ファイルグリッド
+    '<div id="fmgr-panel-list" style="flex:1;overflow-y:auto;padding:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;align-content:start;min-height:120px">' +
+      '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">読み込み中...</div>' +
+    '</div>' +
+    // ドロップゾーン（メイン画面→パネル）
+    '<div id="fmgr-drop-zone"' +
+      ' ondragover="event.preventDefault();this.style.background=\'#d8f5e4\';this.style.borderTopColor=\'#2a7a4a\'"' +
+      ' ondragleave="this.style.background=\'\';this.style.borderTopColor=\'#bbb\'"' +
+      ' ondrop="_fmgrDropOnPanel(event)"' +
+      ' style="flex-shrink:0;height:52px;border-top:2px dashed #bbb;background:#fafafa;display:flex;align-items:center;justify-content:center;font-size:11px;color:#888;cursor:default;transition:background .15s,border-color .15s">' +
+      '⬇ ここにドロップで追加（メイン画面 → パネル）' +
     '</div>';
 
   document.body.appendChild(panel);
@@ -15883,10 +15894,7 @@ function _fmgrSwitchLoc(loc) {
   _fmgrLoadPanelFiles();
 }
 
-function _fmgrSelAll(side, checked) {
-  var sel = side === 'panel' ? '#fmgr-panel-list .fmgr-chk' : '#fmgr-main-list .fmgr-chk';
-  document.querySelectorAll(sel).forEach(function(cb) { cb.checked = checked; });
-}
+// (旧チェックボックス選択関数は削除)
 
 function _fmgrFetchSPFiles(listEncoded, itemId) {
   return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
@@ -15897,7 +15905,7 @@ function _fmgrFetchSPFiles(listEncoded, itemId) {
     .then(function(d) { return (d && d.d && d.d.results) || []; });
 }
 
-function _fmgrRenderFileList(elId, files, side) {
+function _fmgrRenderFileList(elId, files) {
   var el = document.getElementById(elId);
   if (!el) return;
   if (!files || !files.length) {
@@ -15908,19 +15916,16 @@ function _fmgrRenderFileList(elId, files, side) {
   files.forEach(function(f, i) {
     var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
     var isPdf = f.name.toLowerCase().endsWith('.pdf');
-    // サムネイル or アイコン
     var thumbInner = '';
     if (isImg) {
       if (f.thumbMedium || f.thumbSmall) {
-        // フォルダーファイル: Graph APIサムネイルURL直接使用
         var tUrl = f.thumbMedium || f.thumbSmall;
         thumbInner = '<img loading="lazy" decoding="async"' +
           ' src="' + tUrl + '"' +
           ' onerror="this.style.display=\'none\'"' +
           ' style="width:100%;height:90px;object-fit:cover;display:block;border-radius:6px 6px 0 0">';
       } else {
-        // SP添付: プレースホルダー + lazy load で blob URL をセット
-        thumbInner = '<img class="fmgr-img-lazy" data-side="' + side + '" data-fi="' + i + '"' +
+        thumbInner = '<img class="fmgr-img-lazy" data-fi="' + i + '"' +
           ' src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"' +
           ' style="width:100%;height:90px;object-fit:cover;display:block;background:#e8e8e8;border-radius:6px 6px 0 0">';
       }
@@ -15928,10 +15933,10 @@ function _fmgrRenderFileList(elId, files, side) {
       var fileIcon = isPdf ? '📄' : '📎';
       thumbInner = '<div style="height:90px;display:flex;align-items:center;justify-content:center;font-size:36px;background:#f5f5f5;border-radius:6px 6px 0 0">' + fileIcon + '</div>';
     }
-    html += '<div class="fmgr-card" draggable="true" data-fi="' + i + '" data-side="' + side + '"' +
-      ' ondragstart="_fmgrDragStart(event,\'' + side + '\',' + i + ')"' +
+    html += '<div class="fmgr-card" draggable="true" data-fi="' + i + '"' +
+      ' ondragstart="_fmgrDragStart(event,' + i + ')"' +
       ' style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.08)"' +
-      ' onmouseover="this.style.borderColor=\'#99b\'" onmouseout="this.style.borderColor=\'#ddd\'">' +
+      ' onmouseover="this.style.borderColor=\'#4a7acf\'" onmouseout="this.style.borderColor=\'#ddd\'">' +
       thumbInner +
       '<div style="font-size:9px;padding:3px 5px;background:#fff;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + f.name + '">' + f.name + '</div>' +
     '</div>';
@@ -15940,18 +15945,16 @@ function _fmgrRenderFileList(elId, files, side) {
 }
 
 // SP添付ファイルのサムネイルを非同期でロード（blob URL方式）
-function _fmgrLoadSPThumbs(side, files) {
-  var elId = side === 'panel' ? 'fmgr-panel-list' : 'fmgr-main-list';
+function _fmgrLoadSPThumbs(files) {
   msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
     .then(function(resp) {
       var token = resp.accessToken;
-      var el = document.getElementById(elId);
+      var el = document.getElementById('fmgr-panel-list');
       if (!el) return;
-      el.querySelectorAll('.fmgr-img-lazy[data-side="' + side + '"]').forEach(function(imgEl) {
+      el.querySelectorAll('.fmgr-img-lazy').forEach(function(imgEl) {
         var fi = parseInt(imgEl.getAttribute('data-fi'));
         var f = files[fi];
         if (!f) return;
-        // SP添付: ServerRelativeUrl, フォルダ: thumbMedium or graphId
         var fetchProm = null;
         if (f.type === 'sp' && f.serverRelativeUrl) {
           var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
@@ -15959,7 +15962,6 @@ function _fmgrLoadSPThumbs(side, files) {
           fetchProm = fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
             .then(function(r) { return r.ok ? r.blob() : null; });
         } else if (f.type === 'folder') {
-          // Graph APIサムネイル
           if (f.thumbMedium) {
             fetchProm = fetch(f.thumbMedium, { headers: { Authorization: 'Bearer ' + token } })
               .then(function(r) { return r.ok ? r.blob() : null; });
@@ -15973,7 +15975,7 @@ function _fmgrLoadSPThumbs(side, files) {
           fetchProm.then(function(blob) {
             if (blob) {
               var blobUrl = URL.createObjectURL(blob);
-              var imgElNow = document.querySelector('#' + elId + ' .fmgr-img-lazy[data-side="' + side + '"][data-fi="' + fi + '"]');
+              var imgElNow = document.querySelector('#fmgr-panel-list .fmgr-img-lazy[data-fi="' + fi + '"]');
               if (imgElNow) { imgElNow.src = blobUrl; imgElNow.style.background = ''; }
             }
           }).catch(function(){});
@@ -15983,25 +15985,9 @@ function _fmgrLoadSPThumbs(side, files) {
 }
 
 // フォルダーファイル用: Graph APIサムネイルURL直接セット（認証ヘッダー不要なケース）
-function _fmgrLoadFolderThumbs(side, files) {
-  var elId = side === 'panel' ? 'fmgr-panel-list' : 'fmgr-main-list';
-  var el = document.getElementById(elId);
-  if (!el) return;
-  el.querySelectorAll('.fmgr-img-lazy[data-side="' + side + '"]').forEach(function(imgEl) {
-    var fi = parseInt(imgEl.getAttribute('data-fi'));
-    var f = files[fi];
-    if (!f) return;
-    if (f.thumbMedium) {
-      imgEl.src = f.thumbMedium;
-      imgEl.onerror = function() { this.style.display = 'none'; };
-    }
-  });
-}
-
 function _fmgrLoadPanelFiles() {
   var el = document.getElementById('fmgr-panel-list');
   if (el) {
-    el.style.display = 'grid';
     el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">読み込み中...</div>';
   }
   var item = _fmgr.item;
@@ -16014,8 +16000,8 @@ function _fmgrLoadPanelFiles() {
         _fmgr.panelFiles = files.map(function(f) {
           return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId:cusId };
         });
-        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
-        _fmgrLoadSPThumbs('panel', _fmgr.panelFiles);
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
+        _fmgrLoadSPThumbs(_fmgr.panelFiles);
       }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
 
   } else if (loc === 'cur_sp') {
@@ -16028,8 +16014,8 @@ function _fmgrLoadPanelFiles() {
         _fmgr.panelFiles = files.map(function(f) {
           return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
         });
-        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
-        _fmgrLoadSPThumbs('panel', _fmgr.panelFiles);
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
+        _fmgrLoadSPThumbs(_fmgr.panelFiles);
       }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
 
   } else if (loc === 'folder') {
@@ -16051,63 +16037,21 @@ function _fmgrLoadPanelFiles() {
             thumbSmall:  (t0.small  && t0.small.url)  || null
           };
         });
-        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles, 'panel');
-        _fmgrLoadSPThumbs('panel', _fmgr.panelFiles);
+        _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
+        _fmgrLoadSPThumbs(_fmgr.panelFiles);
       }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
   }
 }
 
-function _fmgrLoadMainFiles() {
-  var el = document.getElementById('fmgr-main-list');
-  if (el) {
-    el.style.display = 'grid';
-    el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">読み込み中...</div>';
-  }
-  var item = _fmgr.item;
-  var isNok = _fmgr.listMode === 'noukotsu';
-  var lEnc = isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'";
-  var lTitle = isNok ? '納骨・戒切' : '工事関連';
-  var iid = item['id'] || '';
-  var lbl = document.getElementById('fmgr-main-label');
-  if (lbl) lbl.textContent = '(' + lTitle + ')';
-  _fmgrFetchSPFiles(lEnc, iid)
-    .then(function(files) {
-      _fmgr.mainFiles = files.map(function(f) {
-        return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
-      });
-      _fmgrRenderFileList('fmgr-main-list', _fmgr.mainFiles, 'main');
-      _fmgrLoadSPThumbs('main', _fmgr.mainFiles);
-    }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
-}
-
-function _fmgrGetSelected(side) {
-  var files = side === 'panel' ? _fmgr.panelFiles : _fmgr.mainFiles;
-  var selected = [];
-  var cbs = document.querySelectorAll('#fmgr-' + side + '-list .fmgr-chk');
-  cbs.forEach(function(cb) { if (cb.checked) { var f = files[parseInt(cb.getAttribute('data-fi'))]; if (f) selected.push(f); } });
-  return selected;
-}
-
-function _fmgrExec(direction, op) {
-  var files = direction === 'panel_to_main' ? _fmgrGetSelected('panel') : _fmgrGetSelected('main');
-  if (!files.length) { showSaveToast(false, 'ファイルを選択してください'); return; }
-  var dst = direction === 'panel_to_main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
-  if (!dst) { showSaveToast(false, '転送先の情報が取得できません'); return; }
-  if (!confirm(files.length + '件を' + (op === 'copy' ? 'コピー' : '移動') + 'します:\n' + files.map(function(f){return '  ' + f.name;}).join('\n') + '\n\n続行しますか？')) return;
-  _fmgrDoChain(files, dst, op, 0, 0);
-}
-
-function _fmgrMainDstInfo() {
-  var item = _fmgr.item;
-  var isNok = _fmgr.listMode === 'noukotsu';
-  return { type:'sp', listTitle: isNok ? '納骨・戒切' : '工事関連', listEnc: isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: item['id'] || '' };
-}
 
 function _fmgrPanelDstInfo() {
   var item = _fmgr.item;
   var loc = _fmgr.panelLoc;
   if (loc === 'cus_sp') return { type:'sp', listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId: String(item['Cus_ID'] || '').trim() };
-  if (loc === 'cur_sp') return _fmgrMainDstInfo();
+  if (loc === 'cur_sp') {
+    var isNok = _fmgr.listMode === 'noukotsu';
+    return { type:'sp', listTitle: isNok ? '納骨・戒切' : '工事関連', listEnc: isNok ? "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'" : "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: item['id'] || '' };
+  }
   if (loc === 'folder') return { type:'folder', folderPath: item['Folder_Pass'] || item['FolderPass'] || '' };
   return null;
 }
@@ -16115,7 +16059,7 @@ function _fmgrPanelDstInfo() {
 function _fmgrDoChain(files, dst, op, idx, ok) {
   if (idx >= files.length) {
     showSaveToast(true, ok + '件' + (op === 'copy' ? 'コピー' : '移動') + '完了');
-    _fmgrLoadPanelFiles(); _fmgrLoadMainFiles();
+    _fmgrLoadPanelFiles();
     return;
   }
   var f = files[idx];
@@ -16178,25 +16122,52 @@ function _fmgrDelete(fileInfo) {
   }
 }
 
-// ドラッグ＆ドロップ
-function _fmgrDragStart(event, side, fi) {
-  var f = side === 'panel' ? _fmgr.panelFiles[fi] : _fmgr.mainFiles[fi];
+// ===== ドラッグ＆ドロップ =====
+
+// パネルカードのドラッグ開始
+function _fmgrDragStart(event, fi) {
+  var f = _fmgr.panelFiles[fi];
   _fmgr.fileDragData = f;
-  _fmgr.fileDragSide = side;
-  event.dataTransfer.setData('text/plain', JSON.stringify(f));
+  _fmgr.mainDragData = null;
+  event.dataTransfer.setData('text/plain', JSON.stringify({ source: 'fmgr-panel', name: f ? f.name : '' }));
   event.dataTransfer.effectAllowed = 'copyMove';
 }
 
-function _fmgrDropOn(event, target) {
+// メイン画面カードのドラッグ開始
+function _fmgrMainDragStart(event) {
+  var card = event.currentTarget;
+  var relPath = decodeURIComponent(card.getAttribute('data-relpath') || '');
+  var fname = card.getAttribute('data-fname') || '';
+  var listTitle = card.getAttribute('data-list') || '';
+  var itemId = card.getAttribute('data-item-id') || '';
+  var listEncMap = {
+    '工事関連': "'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'",
+    '納骨・戒切': "'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'",
+    '顧客リスト': "'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'"
+  };
+  _fmgr.mainDragData = {
+    type: 'sp', name: fname,
+    serverRelativeUrl: relPath,
+    listTitle: listTitle,
+    listEnc: listEncMap[listTitle] || '',
+    itemId: itemId
+  };
+  _fmgr.fileDragData = null;
+  event.dataTransfer.setData('text/plain', JSON.stringify({ source: 'main', name: fname }));
+  event.dataTransfer.effectAllowed = 'copyMove';
+}
+
+// パネルのドロップゾーン（メイン画面 → パネル）
+function _fmgrDropOnPanel(event) {
   event.preventDefault();
-  var listEl = event.currentTarget; if (listEl) listEl.style.outline = '';
-  var f = _fmgr.fileDragData;
-  if (!f || _fmgr.fileDragSide === target) return;
-  var dst = target === 'main' ? _fmgrMainDstInfo() : _fmgrPanelDstInfo();
-  if (!dst) return;
-  var op = event.shiftKey ? 'move' : 'copy';
-  var label = op === 'copy' ? 'コピー' : '移動';
-  if (!confirm('「' + f.name + '」を' + (target === 'main' ? 'メイン側' : 'パネル側') + 'へ' + label + 'しますか？\n\n(Shiftキーで移動)')) return;
+  var dz = document.getElementById('fmgr-drop-zone');
+  if (dz) { dz.style.background = ''; dz.style.borderTopColor = '#bbb'; }
+  var f = _fmgr.mainDragData;
+  if (!f) return;
+  _fmgr.mainDragData = null;
+  var dst = _fmgrPanelDstInfo();
+  if (!dst) { showSaveToast(false, '転送先の情報が取得できません'); return; }
+  var op = _fmgr.opMode || 'copy';
   _fmgrDoChain([f], dst, op, 0, 0);
 }
 
@@ -19005,7 +18976,12 @@ function loadKoujiAttachments(itemId) {
     var html = '<div class="attach-grid">';
     imgs.forEach(function(f, fi) {
       var fnEsc = f.FileName.replace(/'/g, "\\'");
-      html += '<div class="attach-item" style="position:relative">' +
+      var fnAttr = f.FileName.replace(/"/g, '&quot;');
+      html += '<div class="attach-item" draggable="true"' +
+        ' data-fname="' + fnAttr + '" data-list="工事関連" data-item-id="' + itemId + '"' +
+        ' data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '"' +
+        ' ondragstart="_fmgrMainDragStart(event)"' +
+        ' style="position:relative">' +
         '<img class="attach-thumb kouji-img-lazy" ' +
         'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +
@@ -19109,9 +19085,17 @@ function handleDropKouji(event, itemId) {
   event.preventDefault();
   var dropZone = document.getElementById('kouji-drop-' + itemId);
   if (dropZone) dropZone.style.background = '';
+  // パネルからのドロップ検出
+  if (_fmgr && _fmgr.fileDragData) {
+    var f = _fmgr.fileDragData;
+    _fmgr.fileDragData = null;
+    var op = _fmgr.opMode || 'copy';
+    var dst = { type:'sp', listTitle:'工事関連', listEnc:"'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: String(itemId) };
+    _fmgrDoChain([f], dst, op, 0, 0);
+    return;
+  }
   var files = event.dataTransfer.files;
   if (!files || files.length === 0) return;
-  // DataTransfer.files をそのままuploadに渡す
   uploadKoujiAttachments(itemId, { files: files, value: '' });
 }
 
@@ -19137,6 +19121,15 @@ function handleDropNok(event, itemId) {
   event.preventDefault();
   var dropZone = document.getElementById('nok-drop-' + itemId);
   if (dropZone) dropZone.style.background = '';
+  // パネルからのドロップ検出
+  if (_fmgr && _fmgr.fileDragData) {
+    var f = _fmgr.fileDragData;
+    _fmgr.fileDragData = null;
+    var op = _fmgr.opMode || 'copy';
+    var dst = { type:'sp', listTitle:'納骨・戒切', listEnc:"'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'", itemId: String(itemId) };
+    _fmgrDoChain([f], dst, op, 0, 0);
+    return;
+  }
   var files = event.dataTransfer.files;
   if (!files || files.length === 0) return;
   uploadNokAttachments(itemId, { files: files, value: '' });
@@ -19196,6 +19189,15 @@ function handleDropCust(event, itemId) {
   event.preventDefault();
   var dropZone = document.getElementById('cust-drop-' + itemId);
   if (dropZone) dropZone.style.background = '';
+  // パネルからのドロップ検出
+  if (_fmgr && _fmgr.fileDragData) {
+    var f = _fmgr.fileDragData;
+    _fmgr.fileDragData = null;
+    var op = _fmgr.opMode || 'copy';
+    var dst = { type:'sp', listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId: String(itemId) };
+    _fmgrDoChain([f], dst, op, 0, 0);
+    return;
+  }
   var files = event.dataTransfer.files;
   if (files && files.length > 0) {
     uploadCustAttachments(itemId, { files: files, value: '' });
@@ -19346,7 +19348,12 @@ function loadAttachments(itemId) {
     var html = '<div class="attach-grid">';
     imgs.forEach(function(f, fi) {
       var fnEsc = f.FileName.replace(/'/g, "\\'");
-      html += '<div class="attach-item" style="position:relative">' +
+      var fnAttr = f.FileName.replace(/"/g, '&quot;');
+      html += '<div class="attach-item" draggable="true"' +
+        ' data-fname="' + fnAttr + '" data-list="納骨・戒切" data-item-id="' + itemId + '"' +
+        ' data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '"' +
+        ' ondragstart="_fmgrMainDragStart(event)"' +
+        ' style="position:relative">' +
         '<img class="attach-thumb noukotsu-img-lazy" ' +
         'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
         'data-relpath="' + encodeURIComponent(f.ServerRelativeUrl) + '" ' +

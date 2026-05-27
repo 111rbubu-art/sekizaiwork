@@ -15920,17 +15920,10 @@ function _fmgrRenderFileList(elId, files) {
     var isPdf = f.name.toLowerCase().endsWith('.pdf');
     var thumbInner = '';
     if (isImg) {
-      if (f.thumbMedium || f.thumbSmall) {
-        var tUrl = f.thumbMedium || f.thumbSmall;
-        thumbInner = '<img loading="lazy" decoding="async"' +
-          ' src="' + tUrl + '"' +
-          ' onerror="this.style.display=\'none\'"' +
-          ' style="width:100%;height:90px;object-fit:cover;display:block;border-radius:6px 6px 0 0">';
-      } else {
-        thumbInner = '<img class="fmgr-img-lazy" data-fi="' + i + '"' +
-          ' src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"' +
-          ' style="width:100%;height:90px;object-fit:cover;display:block;background:#e8e8e8;border-radius:6px 6px 0 0">';
-      }
+      // 常にlazyロード（CDN直接URLは接続リセットの原因になるため使わない）
+      thumbInner = '<img class="fmgr-img-lazy" data-fi="' + i + '"' +
+        ' src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"' +
+        ' style="width:100%;height:90px;object-fit:cover;display:block;background:#e8e8e8;border-radius:6px 6px 0 0">';
     } else {
       var fileIcon = isPdf ? '📄' : '📎';
       thumbInner = '<div style="height:90px;display:flex;align-items:center;justify-content:center;font-size:36px;background:#f5f5f5;border-radius:6px 6px 0 0">' + fileIcon + '</div>';
@@ -15946,44 +15939,48 @@ function _fmgrRenderFileList(elId, files) {
   el.innerHTML = html;
 }
 
-// SP添付ファイルのサムネイルを非同期でロード（blob URL方式）
+// サムネイルを非同期でロード（SP: AllSites.Read token / フォルダー: Graph token）
 function _fmgrLoadSPThumbs(files) {
-  msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
-    .then(function(resp) {
-      var token = resp.accessToken;
-      var el = document.getElementById('fmgr-panel-list');
-      if (!el) return;
-      el.querySelectorAll('.fmgr-img-lazy').forEach(function(imgEl) {
-        var fi = parseInt(imgEl.getAttribute('data-fi'));
-        var f = files[fi];
-        if (!f) return;
-        var fetchProm = null;
-        if (f.type === 'sp' && f.serverRelativeUrl) {
+  // SP添付ファイルのサムネイル（SharePoint REST API）
+  var spFiles = files.filter(function(f) { return f.type === 'sp' && f.serverRelativeUrl; });
+  if (spFiles.length) {
+    msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: msalApp.getActiveAccount() })
+      .then(function(resp) {
+        var token = resp.accessToken;
+        spFiles.forEach(function(f) {
+          var fi = files.indexOf(f);
           var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
             f.serverRelativeUrl.replace(/'/g, "''") + "')/$value";
-          fetchProm = fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-            .then(function(r) { return r.ok ? r.blob() : null; });
-        } else if (f.type === 'folder') {
-          if (f.thumbMedium) {
-            fetchProm = fetch(f.thumbMedium, { headers: { Authorization: 'Bearer ' + token } })
-              .then(function(r) { return r.ok ? r.blob() : null; });
-          } else if (f.graphId) {
-            var thumbUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.graphId + '/thumbnails/0/medium/content';
-            fetchProm = fetch(thumbUrl, { headers: { Authorization: 'Bearer ' + token } })
-              .then(function(r) { return r.ok ? r.blob() : null; });
-          }
-        }
-        if (fetchProm) {
-          fetchProm.then(function(blob) {
-            if (blob) {
+          fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+            .then(function(r) { return r.ok ? r.blob() : null; })
+            .then(function(blob) {
+              if (!blob) return;
               var blobUrl = URL.createObjectURL(blob);
-              var imgElNow = document.querySelector('#fmgr-panel-list .fmgr-img-lazy[data-fi="' + fi + '"]');
-              if (imgElNow) { imgElNow.src = blobUrl; imgElNow.style.background = ''; }
-            }
+              var imgEl = document.querySelector('#fmgr-panel-list .fmgr-img-lazy[data-fi="' + fi + '"]');
+              if (imgEl) { imgEl.src = blobUrl; imgEl.style.background = ''; }
+            }).catch(function(){});
+        });
+      }).catch(function(){});
+  }
+  // フォルダーファイルのサムネイル（Graph API: Files.ReadWrite.All token）
+  var folderFiles = files.filter(function(f) { return f.type === 'folder' && f.graphId; });
+  if (folderFiles.length) {
+    getToken().then(function(resp) {
+      var token = resp.accessToken;
+      folderFiles.forEach(function(f) {
+        var fi = files.indexOf(f);
+        var thumbUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + f.graphId + '/thumbnails/0/medium/content';
+        fetch(thumbUrl, { headers: { Authorization: 'Bearer ' + token } })
+          .then(function(r) { return r.ok ? r.blob() : null; })
+          .then(function(blob) {
+            if (!blob) return;
+            var blobUrl = URL.createObjectURL(blob);
+            var imgEl = document.querySelector('#fmgr-panel-list .fmgr-img-lazy[data-fi="' + fi + '"]');
+            if (imgEl) { imgEl.src = blobUrl; imgEl.style.background = ''; }
           }).catch(function(){});
-        }
       });
     }).catch(function(){});
+  }
 }
 
 // フォルダーファイル用: Graph APIサムネイルURL直接セット（認証ヘッダー不要なケース）
@@ -15999,12 +15996,16 @@ function _fmgrLoadPanelFiles() {
     var cusId = String(item['Cus_ID'] || '').trim();
     _fmgrFetchSPFiles("'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", cusId)
       .then(function(files) {
+        var elNow = document.getElementById('fmgr-panel-list'); if (!elNow) return;
         _fmgr.panelFiles = files.map(function(f) {
           return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId:cusId };
         });
         _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
         _fmgrLoadSPThumbs(_fmgr.panelFiles);
-      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
+      }).catch(function(e) {
+        var elNow = document.getElementById('fmgr-panel-list');
+        if (elNow) elNow.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>';
+      });
 
   } else if (loc === 'cur_sp') {
     var isNok = _fmgr.listMode === 'noukotsu';
@@ -16013,35 +16014,39 @@ function _fmgrLoadPanelFiles() {
     var iid = item['id'] || '';
     _fmgrFetchSPFiles(lEnc, iid)
       .then(function(files) {
+        var elNow = document.getElementById('fmgr-panel-list'); if (!elNow) return;
         _fmgr.panelFiles = files.map(function(f) {
           return { type:'sp', name:f.FileName, serverRelativeUrl:f.ServerRelativeUrl, listTitle:lTitle, listEnc:lEnc, itemId:iid };
         });
         _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
         _fmgrLoadSPThumbs(_fmgr.panelFiles);
-      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
+      }).catch(function(e) {
+        var elNow = document.getElementById('fmgr-panel-list');
+        if (elNow) elNow.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>';
+      });
 
   } else if (loc === 'folder') {
     var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
     if (!folderPass) { if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">フォルダーパス未登録</div>'; return; }
-    msalApp.acquireTokenSilent({ scopes: ['https://graph.microsoft.com/Files.ReadWrite'], account: msalApp.getActiveAccount() })
-      .then(function(resp) {
+    // getToken()を使用（Files.ReadWrite.Allスコープを含む）
+    getToken().then(function(resp) {
         var enc = folderPass.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,id&$orderby=name&$expand=thumbnails',
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,id&$orderby=name',
           { headers: { Authorization: 'Bearer ' + resp.accessToken } });
       }).then(function(r) { return r.json(); })
       .then(function(d) {
         var items = ((d && d.value) || []).filter(function(f) { return f.file; });
         _fmgr.panelFiles = items.map(function(f) {
-          var t0 = (f.thumbnails && f.thumbnails[0]) || {};
-          return {
-            type:'folder', name:f.name, folderPath:folderPass, graphId:f.id,
-            thumbMedium: (t0.medium && t0.medium.url) || null,
-            thumbSmall:  (t0.small  && t0.small.url)  || null
-          };
+          return { type:'folder', name:f.name, folderPath:folderPass, graphId:f.id };
         });
+        var elNow = document.getElementById('fmgr-panel-list');
+        if (!elNow) return;
         _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
         _fmgrLoadSPThumbs(_fmgr.panelFiles);
-      }).catch(function(e) { if (el) el.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>'; });
+      }).catch(function(e) {
+        var elNow = document.getElementById('fmgr-panel-list');
+        if (elNow) elNow.innerHTML = '<div style="color:#c00;font-size:11px;padding:8px;grid-column:1/-1">エラー: ' + e.message + '</div>';
+      });
   }
 }
 

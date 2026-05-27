@@ -3064,13 +3064,21 @@ function closeFoundCalc() {
 function calcFoundation() {
   var w   = parseFloat(document.getElementById('fc-width').value)   || 0;
   var dep = parseFloat(document.getElementById('fc-depth').value)   || 0;
-  var t   = parseFloat(document.getElementById('fc-thick').value)   || 150;
-  var mix = document.getElementById('fc-mix').value   || 'HC';
+  var tMin = parseFloat(document.getElementById('fc-thick-min').value);
+  var tMax = parseFloat(document.getElementById('fc-thick-max').value);
+  if (isNaN(tMin)) tMin = 100; if (isNaN(tMax)) tMax = 150;
+  if (tMin > tMax) { var _t = tMin; tMin = tMax; tMax = _t; }
+  var mix = document.getElementById('fc-mix').value || 'HC';
   var rd  = parseInt(document.getElementById('fc-rebar-d').value)   || 10;
   var rsp = parseInt(document.getElementById('fc-rebar-sp').value)  || 200;
   var lyr = parseInt(document.getElementById('fc-layers').value)    || 1;
   var lossRate = parseFloat(document.getElementById('fc-loss').value) || 10;
-  var saisekiT = parseFloat(document.getElementById('fc-saiseki').value) || 0;
+  var sMin = parseFloat(document.getElementById('fc-saiseki-min').value);
+  var sMax = parseFloat(document.getElementById('fc-saiseki-max').value);
+  if (isNaN(sMin)) sMin = 100; if (isNaN(sMax)) sMax = 150;
+  if (sMin > sMax) { var _s = sMin; sMin = sMax; sMax = _s; }
+  var yieldEl = document.getElementById('fc-yield');
+  var yieldFactor = yieldEl ? (parseFloat(yieldEl.value) || 0.63) : 0.63;
   var memo = (document.getElementById('fc-memo') && document.getElementById('fc-memo').value) || '';
 
   var res = document.getElementById('fc-results');
@@ -3079,75 +3087,63 @@ function calcFoundation() {
     return;
   }
 
-  var loss = 1 + lossRate / 100;
-  var vol   = (w/1000) * (dep/1000) * (t/1000);   // m³
-  var volL  = vol * loss;                           // ロス込 m³
-
   var m = _FOUND_MIX[mix] || _FOUND_MIX['HC'];
-  var cBags, sandM3, gravM3, waterL, sandBags, gravBags, numSets;
-  if (m.hc) {
-    numSets   = Math.ceil(volL / _HC_YIELD);
-    cBags     = numSets * _HC_SET.cementBags;
-    sandBags  = numSets * _HC_SET.sandBags;
-    gravBags  = numSets * _HC_SET.gravelBags;
-    sandM3    = (sandBags * 20) / _HC_SET.sandDensity;
-    gravM3    = (gravBags * 20) / _HC_SET.gravelDensity;
-    waterL    = Math.ceil(numSets * _HC_SET.cementKg * 0.55);
-  } else {
-    cBags     = Math.ceil(volL * m.cement);
-    sandM3    = volL * m.sand;
-    gravM3    = volL * m.gravel;
-    waterL    = Math.ceil(volL * m.water);
-    sandBags  = Math.ceil(sandM3 * 1600 / 20);
-    gravBags  = Math.ceil(gravM3 * 1520 / 20);
-  }
+  var isRange = (tMin !== tMax);
+  var lo = _calcConcrete(w, dep, tMin, mix, lossRate, yieldFactor);
+  var hi = isRange ? _calcConcrete(w, dep, tMax, mix, lossRate, yieldFactor) : lo;
 
-  // 砕石計算
-  var saisekiVol = (w/1000) * (dep/1000) * (saisekiT/1000);
-  var saisekiVolL = saisekiVol * loss;
-  var saisekiKg  = Math.ceil(saisekiVolL * 1800);
-  var saisekiBags = Math.ceil(saisekiKg / 20);
+  // 砕石
+  var loss = 1 + lossRate / 100;
+  var saisekiRange = (sMin !== sMax);
+  var sLoVol = (w/1000) * (dep/1000) * (sMin/1000) * loss;
+  var sHiVol = saisekiRange ? (w/1000) * (dep/1000) * (sMax/1000) * loss : sLoVol;
+  var hasSaiseki = (sMin > 0 || sMax > 0);
 
-  // 鉄筋
-  var cover  = 40;
-  var anchor = Math.max(40 * rd, 200);
-  var nX = Math.floor((w   - cover*2) / rsp) + 1;  // 縦筋本数（幅方向に並ぶ）
-  var nY = Math.floor((dep - cover*2) / rsp) + 1;  // 横筋本数（奥行方向に並ぶ）
-  var lenXm = (dep + anchor*2) / 1000;              // 縦筋1本長さ(m)
-  var lenYm = (w   + anchor*2) / 1000;              // 横筋1本長さ(m)
-  var totalNX = nX * lyr;
-  var totalNY = nY * lyr;
-  var totalLen = totalNX * lenXm + totalNY * lenYm;
+  // 鉄筋（寸法固定 — 厚みに依存しない）
+  var cover = 40;
+  var cross = 30;
+  var rebarLenW = w - cover * 2;
+  var rebarLenD = dep - cover * 2;
+  var placeW = rebarLenW - cross * 2;
+  var placeD = rebarLenD - cross * 2;
+  var nX = Math.max(Math.floor(placeW / rsp), 1) * lyr;
+  var nY = Math.max(Math.floor(placeD / rsp), 1) * lyr;
+  var totalBars = nX + nY;
+  var totalLenM = (nX * rebarLenD + nY * rebarLenW) / 1000;
 
-  // 結果HTML生成（印刷用コンテンツに流用）
+  // 結果HTML
   var now = new Date();
   var dateStr = now.getFullYear() + '年' + (now.getMonth()+1) + '月' + now.getDate() + '日';
   var html = '<div id="fc-print-body">';
 
   // 施工概要
+  var thickLabel = isRange ? tMin + '〜' + tMax : String(tMin);
+  var saisekiLabel = hasSaiseki ? (saisekiRange ? sMin + '〜' + sMax : String(sMin)) : '0';
   html += '<div style="border:2px solid #2a4a2a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
   html += '<div style="background:#2a4a2a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 施工概要</div>';
   html += '<div style="padding:10px 14px;background:#f9fdf9;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:13px">';
   html += '<div><span style="color:#888;font-size:11px">幅</span><br><b>' + w.toLocaleString() + '</b> mm</div>';
   html += '<div><span style="color:#888;font-size:11px">奥行</span><br><b>' + dep.toLocaleString() + '</b> mm</div>';
-  html += '<div><span style="color:#888;font-size:11px">基礎厚さ</span><br><b>' + t + '</b> mm</div>';
+  html += '<div><span style="color:#888;font-size:11px">基礎厚さ</span><br><b>' + thickLabel + '</b> mm</div>';
   html += '<div><span style="color:#888;font-size:11px">配合</span><br><b>' + mix + '</b><br><span style="font-size:11px;color:#555">' + m.name + '</span></div>';
   html += '<div><span style="color:#888;font-size:11px">鉄筋</span><br><b>D' + rd + ' @' + rsp + 'mm</b></div>';
   html += '<div><span style="color:#888;font-size:11px">配筋</span><br><b>' + (lyr === 1 ? 'シングル' : 'ダブル') + '</b></div>';
-  if (saisekiT > 0) html += '<div><span style="color:#888;font-size:11px">砕石</span><br><b>' + saisekiT + ' mm</b></div>';
+  if (hasSaiseki) html += '<div><span style="color:#888;font-size:11px">砕石</span><br><b>' + saisekiLabel + '</b> mm</div>';
   html += '</div></div>';
 
   // コンクリート量
   html += '<div style="border:2px solid #2a5a2a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
-  var _concrHdr = '■ コンクリート量　体積 ' + vol.toFixed(3) + ' m³（ロス' + lossRate + '%込 ' + volL.toFixed(3) + ' m³）';
-  if (m.hc) _concrHdr += '　→ ' + numSets + ' セット';
+  var _volStr = isRange ? lo.vol.toFixed(3) + '〜' + hi.vol.toFixed(3) : lo.vol.toFixed(3);
+  var _volLStr = isRange ? lo.volL.toFixed(3) + '〜' + hi.volL.toFixed(3) : lo.volL.toFixed(3);
+  var _concrHdr = '■ コンクリート量　体積 ' + _volStr + ' m³（ロス' + lossRate + '%込 ' + _volLStr + ' m³）';
+  if (m.hc) _concrHdr += '　→ ' + _rng(lo.numSets, hi.numSets) + ' セット';
   html += '<div style="background:#2a5a2a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">' + _concrHdr + '</div>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:14px">';
   var rows = [
-    ['🔵 セメント（25kg）', cBags + ' 袋', '= ' + (cBags*25).toLocaleString() + ' kg'],
-    ['🟡 砂（20kg）',       sandBags + ' 袋', '= ' + (sandBags*20).toLocaleString() + ' kg ≒ ' + sandM3.toFixed(2) + ' m³'],
-    ['🟤 砂利（20kg）',     gravBags + ' 袋', '= ' + (gravBags*20).toLocaleString() + ' kg ≒ ' + gravM3.toFixed(2) + ' m³'],
-    ['💧 水',       waterL + ' L', m.hc ? '（W/C=0.55）' : '']
+    ['🔵 セメント（25kg）', _rng(lo.cBags, hi.cBags) + ' 袋', '= ' + _rng(lo.cBags*25, hi.cBags*25) + ' kg'],
+    ['🟡 砂（20kg）', _rng(lo.sandBags, hi.sandBags) + ' 袋', '= ' + _rng(lo.sandBags*20, hi.sandBags*20) + ' kg'],
+    ['🟤 砂利（20kg）', _rng(lo.gravBags, hi.gravBags) + ' 袋', '= ' + _rng(lo.gravBags*20, hi.gravBags*20) + ' kg'],
+    ['💧 水', _rng(lo.waterL, hi.waterL) + ' L', m.hc ? '（W/C=0.55）' : '']
   ];
   rows.forEach(function(r, i) {
     var bg = i%2===0 ? '#f5fdf5' : '#fff';
@@ -3160,25 +3156,27 @@ function calcFoundation() {
   html += '</table></div>';
 
   // 砕石量
-  if (saisekiT > 0) {
+  if (hasSaiseki) {
+    var _sThickStr = saisekiRange ? sMin + '〜' + sMax : String(sMin);
+    var _sVolStr = saisekiRange ? sLoVol.toFixed(3) + '〜' + sHiVol.toFixed(3) : sLoVol.toFixed(3);
     html += '<div style="border:2px solid #555;border-radius:8px;overflow:hidden;margin-bottom:12px">';
-    html += '<div style="background:#555;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 砕石量　厚さ ' + saisekiT + ' mm（ロス' + lossRate + '%込 ' + saisekiVolL.toFixed(3) + ' m³）</div>';
+    html += '<div style="background:#555;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 砕石量　厚さ ' + _sThickStr + ' mm</div>';
     html += '<table style="width:100%;border-collapse:collapse;font-size:14px">';
     html += '<tr style="background:#f5f5f5">';
-    html += '<td style="padding:9px 14px;font-weight:500;width:30%;border-bottom:1px solid #ddd">🪨 砕石（20kg）</td>';
-    html += '<td style="padding:9px 14px;font-size:17px;font-weight:700;color:#333;width:30%;border-bottom:1px solid #ddd">' + saisekiBags + ' 袋</td>';
-    html += '<td style="padding:9px 14px;color:#888;font-size:12px;border-bottom:1px solid #ddd">= ' + saisekiKg.toLocaleString() + ' kg ≒ ' + saisekiVolL.toFixed(2) + ' m³</td>';
+    html += '<td style="padding:9px 14px;font-weight:500;width:30%;border-bottom:1px solid #ddd">🪨 砕石</td>';
+    html += '<td style="padding:9px 14px;font-size:17px;font-weight:700;color:#333;width:30%;border-bottom:1px solid #ddd">' + _sVolStr + ' m³</td>';
+    html += '<td style="padding:9px 14px;color:#888;font-size:12px;border-bottom:1px solid #ddd">ロス' + lossRate + '%込</td>';
     html += '</tr></table></div>';
   }
 
   // 鉄筋量
   html += '<div style="border:2px solid #5a3a1a;border-radius:8px;overflow:hidden;margin-bottom:12px">';
-  html += '<div style="background:#5a3a1a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 鉄筋量　D' + rd + ' @' + rsp + 'mm　定着長さ ' + anchor + 'mm</div>';
+  html += '<div style="background:#5a3a1a;color:#fff;padding:7px 14px;font-size:13px;font-weight:600">■ 鉄筋量　D' + rd + ' @' + rsp + 'mm</div>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:14px">';
   var rbRows = [
-    ['縦筋（奥行方向・' + nX + '列）', totalNX + ' 本', '1本 ' + lenXm.toFixed(2) + ' m'],
-    ['横筋（幅方向・' + nY + '列）',   totalNY + ' 本', '1本 ' + lenYm.toFixed(2) + ' m'],
-    ['合計', (totalNX+totalNY) + ' 本', totalLen.toFixed(1) + ' m']
+    ['縦筋（奥行方向）', nX + ' 本', '1本 ' + rebarLenD + ' mm'],
+    ['横筋（幅方向）', nY + ' 本', '1本 ' + rebarLenW + ' mm'],
+    ['合計', totalBars + ' 本', '総長 ' + totalLenM.toFixed(1) + ' m']
   ];
   rbRows.forEach(function(r, i) {
     var bg = i===2 ? '#fff8f0' : (i%2===0 ? '#fdf7f0' : '#fff');
@@ -3207,6 +3205,35 @@ function calcFoundation() {
     date: dateStr,
     html: html
   };
+}
+
+// 単一厚みのコンクリート材料計算
+function _calcConcrete(w, dep, t, mix, lossRate, yieldFactor) {
+  var loss = 1 + lossRate / 100;
+  var vol  = (w/1000) * (dep/1000) * (t/1000);
+  var volL = vol * loss;
+  var m = _FOUND_MIX[mix] || _FOUND_MIX['HC'];
+  var r = { vol: vol, volL: volL };
+  if (m.hc) {
+    var hcYield = _HC_DRY_VOL * yieldFactor;
+    r.numSets  = Math.ceil(volL / hcYield);
+    r.cBags    = r.numSets * _HC_SET.cementBags;
+    r.sandBags = r.numSets * _HC_SET.sandBags;
+    r.gravBags = r.numSets * _HC_SET.gravelBags;
+    r.waterL   = Math.ceil(r.numSets * _HC_SET.cementKg * 0.55);
+  } else {
+    r.cBags    = Math.ceil(volL * m.cement);
+    r.sandBags = Math.ceil((volL * m.sand) * 1600 / 20);
+    r.gravBags = Math.ceil((volL * m.gravel) * 1520 / 20);
+    r.waterL   = Math.ceil(volL * m.water);
+    r.numSets  = 0;
+  }
+  return r;
+}
+
+// 範囲表示ヘルパー（同値なら単一表示）
+function _rng(a, b) {
+  return a === b ? String(a) : a + '〜' + b;
 }
 
 function printFoundCalc() {
@@ -4580,7 +4607,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.8.466';
+var APP_VERSION = 'v1.8.467';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -20330,12 +20357,16 @@ function openImageViewer(imgs, startIdx) {
           <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">奥行 (mm)</label>
           <input id="fc-depth" type="number" oninput="calcFoundation()" placeholder="例: 2400" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
         </div>
-        <div>
-          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">基礎厚さ (mm)</label>
-          <input id="fc-thick" type="number" oninput="calcFoundation()" value="150" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        <div style="grid-column:1/3">
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">基礎厚さ (mm)　※同じ値で単一指定可</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="fc-thick-min" type="number" oninput="calcFoundation()" value="100" placeholder="最小" style="flex:1;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+            <span style="font-size:13px;color:#888;font-weight:600">〜</span>
+            <input id="fc-thick-max" type="number" oninput="calcFoundation()" value="150" placeholder="最大" style="flex:1;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+          </div>
         </div>
         <div>
-          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">配合（セメント:砂:砂利）</label>
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">配合</label>
           <select id="fc-mix" onchange="calcFoundation()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit">
             <option value="HC" selected>HC袋（C25kg×1, 砂20kg×3, 砂利20kg×3）</option>
             <option value="1:3:6">1:3:6（捨てコン用）</option>
@@ -20344,8 +20375,16 @@ function openImageViewer(imgs, startIdx) {
           </select>
         </div>
         <div>
-          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">砕石厚さ (mm)</label>
-          <input id="fc-saiseki" type="number" oninput="calcFoundation()" value="150" min="0" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">練り上がり係数</label>
+          <input id="fc-yield" type="number" oninput="calcFoundation()" value="0.63" step="0.01" min="0.4" max="0.85" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+        </div>
+        <div style="grid-column:1/3">
+          <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">砕石厚さ (mm)　※0で砕石なし</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="fc-saiseki-min" type="number" oninput="calcFoundation()" value="100" min="0" placeholder="最小" style="flex:1;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+            <span style="font-size:13px;color:#888;font-weight:600">〜</span>
+            <input id="fc-saiseki-max" type="number" oninput="calcFoundation()" value="150" min="0" placeholder="最大" style="flex:1;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit">
+          </div>
         </div>
         <div>
           <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">鉄筋径</label>
@@ -20383,6 +20422,36 @@ function openImageViewer(imgs, startIdx) {
     <!-- 計算結果 -->
     <div id="fc-results" style="padding:14px 16px">
       <div style="text-align:center;color:#aaa;padding:24px">幅と奥行を入力してください</div>
+    </div>
+    <!-- 計算メモ -->
+    <div style="padding:0 16px 14px">
+      <div onclick="var el=document.getElementById('fc-calc-memo');el.style.display=el.style.display==='none'?'block':'none';this.querySelector('span').textContent=el.style.display==='none'?'▶':'▼'" style="cursor:pointer;color:#666;font-size:12px;font-weight:600;padding:8px 0;user-select:none">
+        📝 計算メモ <span>▶</span>
+      </div>
+      <div id="fc-calc-memo" style="display:none;font-size:11px;color:#555;line-height:1.9;background:#f8f8f8;border-radius:8px;padding:12px 14px">
+        <b>■ HC袋配合（1セット）</b><br>
+        セメント 25kg × 1袋 ＋ 砂 20kg × 3袋 ＋ 砂利 20kg × 3袋<br><br>
+        <b>■ 乾燥体積（1セット）</b><br>
+        セメント: 25kg ÷ 1440 kg/m³ = 0.01736 m³<br>
+        砂: 3×20kg ÷ 1600 kg/m³ = 0.03750 m³<br>
+        砂利: 3×20kg ÷ 1520 kg/m³ = 0.03947 m³<br>
+        <b>合計: 0.09433 m³</b><br><br>
+        <b>■ 練り上がり体積</b><br>
+        乾燥体積合計 × 練り上がり係数(0.63)<br>
+        = 0.09433 × 0.63 = <b>0.05943 m³/セット</b><br>
+        ※係数は入力欄で調整可能（0.60〜0.67が一般的）<br><br>
+        <b>■ 水量</b><br>
+        W/C比 = 0.55（セメント重量の55%）<br>
+        = 25kg × 0.55 = 13.75 L/セット<br><br>
+        <b>■ 鉄筋の考え方</b><br>
+        長さ = 基礎寸法 − かぶり 80mm（40mm × 2）<br>
+        有効配置範囲 = 鉄筋長さ − クロス部 60mm（30mm × 2）<br>
+        本数 = floor(有効配置範囲 ÷ 間隔)<br>
+        <span style="color:#888">例: 2000mm → 長さ1920mm、配置1860mm、@200で9本</span><br><br>
+        <b>■ 砕石</b><br>
+        体積 = 幅 × 奥行 × 厚さ × ロス率<br>
+        ※m³単位で表示（現場配達のため袋換算なし）
+      </div>
     </div>
   </div>
 </div>

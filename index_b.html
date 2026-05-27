@@ -4788,7 +4788,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.012';
+var APP_VERSION = 'v1.9.014';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -15753,16 +15753,23 @@ function loadLinkedCusAttachments(cusId, areaId) {
 var _fmgr = {
   open: false, x: null, y: null,
   panelDragX: 0, panelDragY: 0, panelDragging: false,
-  panelLoc: '',        // 'cus_sp' | 'cur_sp' | 'folder'
-  panelFiles: [],      // パネルファイル一覧
+  panelLoc: '',            // 'cus_sp' | 'cur_sp' | 'folder'
+  panelFiles: [],          // パネルファイル一覧（folder-dir含む）
   item: null,
-  listMode: '',        // 'noukotsu' | 'kouji'
-  fileDragData: null,  // パネルからドラッグ中のファイル
-  mainDragData: null,  // メイン画面からドラッグ中のファイル
-  opMode: 'copy'       // 'copy' | 'move'
+  listMode: '',            // 'noukotsu' | 'kouji'
+  fileDragData: null,      // パネルからドラッグ中のファイル
+  mainDragData: null,      // メイン画面からドラッグ中のファイル
+  opMode: 'copy',          // 'copy' | 'move'
+  folderCurrentPath: null, // フォルダー現在のパス（nullはアイテムのfolderPass）
+  folderNavStack: []       // フォルダー履歴（戻る用）
 };
 
 function openFileMgrPanel(item, listMode) {
+  // アイテムが変わったらフォルダーナビをリセット
+  if (_fmgr.item !== item) {
+    _fmgr.folderCurrentPath = null;
+    _fmgr.folderNavStack = [];
+  }
   _fmgr.item = item;
   _fmgr.listMode = listMode;
   _fmgr.open = true;
@@ -15772,12 +15779,15 @@ function openFileMgrPanel(item, listMode) {
   }
   var cusId = String(item['Cus_ID'] || '').trim();
   var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
-  if (!_fmgr.panelLoc) {
+  // panelLocが現在アイテムで有効か検証
+  var locValid = (_fmgr.panelLoc === 'cus_sp' && cusId) ||
+                 (_fmgr.panelLoc === 'folder' && folderPass) ||
+                 _fmgr.panelLoc === 'cur_sp';
+  if (!_fmgr.panelLoc || !locValid) {
     _fmgr.panelLoc = cusId ? 'cus_sp' : (folderPass ? 'folder' : 'cur_sp');
   }
   _fmgrBuildPanel();
   _fmgrLoadPanelFiles();
-
 }
 
 function closeFileMgrPanel() {
@@ -15814,6 +15824,11 @@ function _fmgrBuildPanel() {
       '<span style="font-size:11px;color:#1a3a6a;font-weight:700">📂 表示元</span>' +
       '<select id="fmgr-loc" onchange="_fmgrSwitchLoc(this.value)" style="flex:1;font-size:11px;padding:3px 4px;border:1px solid #aac;border-radius:3px;font-family:inherit">' + locOpts + '</select>' +
       '<button onclick="_fmgrLoadPanelFiles()" style="background:#1a3a6a;color:#fff;border:none;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;flex-shrink:0" title="再読み込み">🔄</button>' +
+    '</div>' +
+    // フォルダーナビゲーションパスバー（サブフォルダー移動時に表示）
+    '<div id="fmgr-path-bar" style="display:none;padding:3px 8px;background:#e8f0fa;border-bottom:1px solid #c8d8f0;font-size:11px;align-items:center;gap:6px;flex-shrink:0">' +
+      '<button onclick="_fmgrFolderNavBack()" style="background:#3a5a9a;color:#fff;border:none;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:11px;font-family:inherit;flex-shrink:0">← 戻る</button>' +
+      '<span id="fmgr-path-label" style="flex:1;color:#1a3a6a;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>' +
     '</div>' +
     // 操作モード
     '<div style="padding:4px 10px;background:#f5f7fa;border-bottom:1px solid #e8e8e8;font-size:11px;display:flex;gap:14px;align-items:center;flex-shrink:0">' +
@@ -15893,6 +15908,25 @@ function _fmgrPanelTouchEnd() {
 
 function _fmgrSwitchLoc(loc) {
   _fmgr.panelLoc = loc;
+  if (loc !== 'folder') {
+    _fmgr.folderCurrentPath = null;
+    _fmgr.folderNavStack = [];
+  }
+  _fmgrLoadPanelFiles();
+}
+
+function _fmgrNavFolder(subPath, subName) {
+  var item = _fmgr.item;
+  var rootPass = item['Folder_Pass'] || item['FolderPass'] || '';
+  var current = _fmgr.folderCurrentPath || rootPass;
+  _fmgr.folderNavStack.push(current);
+  _fmgr.folderCurrentPath = subPath;
+  _fmgrLoadPanelFiles();
+}
+
+function _fmgrFolderNavBack() {
+  if (!_fmgr.folderNavStack.length) return;
+  _fmgr.folderCurrentPath = _fmgr.folderNavStack.pop();
   _fmgrLoadPanelFiles();
 }
 
@@ -15916,6 +15950,18 @@ function _fmgrRenderFileList(elId, files) {
   }
   var html = '';
   files.forEach(function(f, i) {
+    if (f.type === 'folder-dir') {
+      // サブフォルダーカード（クリックで移動、ドラッグ不可）
+      html += '<div class="fmgr-card" data-fi="' + i + '"' +
+        ' onclick="_fmgrNavFolder(' + JSON.stringify(f.subPath) + ',' + JSON.stringify(f.name) + ')"' +
+        ' style="position:relative;border:1px solid #c8d8f0;border-radius:8px;overflow:hidden;background:#f0f4fb;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)"' +
+        ' onmouseover="this.style.borderColor=\'#4a7acf\';this.style.background=\'#e0ecff\'"' +
+        ' onmouseout="this.style.borderColor=\'#c8d8f0\';this.style.background=\'#f0f4fb\'">' +
+        '<div style="height:70px;display:flex;align-items:center;justify-content:center;font-size:36px;background:#e8f0fb;border-radius:6px 6px 0 0">📁</div>' +
+        '<div style="font-size:9px;padding:3px 5px;background:#fff;color:#1a3a6a;font-weight:600;word-break:break-all;line-height:1.3;max-height:34px;overflow:hidden" title="' + f.name + '">' + f.name + '</div>' +
+      '</div>';
+      return;
+    }
     var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
     var isPdf = f.name.toLowerCase().endsWith('.pdf');
     var thumbInner = '';
@@ -15923,17 +15969,17 @@ function _fmgrRenderFileList(elId, files) {
       // 常にlazyロード（CDN直接URLは接続リセットの原因になるため使わない）
       thumbInner = '<img class="fmgr-img-lazy" data-fi="' + i + '"' +
         ' src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"' +
-        ' style="width:100%;height:90px;object-fit:cover;display:block;background:#e8e8e8;border-radius:6px 6px 0 0">';
+        ' style="width:100%;height:70px;object-fit:cover;display:block;background:#e8e8e8;border-radius:6px 6px 0 0">';
     } else {
       var fileIcon = isPdf ? '📄' : '📎';
-      thumbInner = '<div style="height:90px;display:flex;align-items:center;justify-content:center;font-size:36px;background:#f5f5f5;border-radius:6px 6px 0 0">' + fileIcon + '</div>';
+      thumbInner = '<div style="height:70px;display:flex;align-items:center;justify-content:center;font-size:32px;background:#f5f5f5;border-radius:6px 6px 0 0">' + fileIcon + '</div>';
     }
     html += '<div class="fmgr-card" draggable="true" data-fi="' + i + '"' +
       ' ondragstart="_fmgrDragStart(event,' + i + ')"' +
       ' style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.08)"' +
       ' onmouseover="this.style.borderColor=\'#4a7acf\'" onmouseout="this.style.borderColor=\'#ddd\'">' +
       thumbInner +
-      '<div style="font-size:9px;padding:3px 5px;background:#fff;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + f.name + '">' + f.name + '</div>' +
+      '<div style="font-size:9px;padding:3px 5px;background:#fff;color:#333;word-break:break-all;line-height:1.3;max-height:34px;overflow:hidden" title="' + f.name + '">' + f.name + '</div>' +
     '</div>';
   });
   el.innerHTML = html;
@@ -15983,7 +16029,7 @@ function _fmgrLoadSPThumbs(files) {
   }
 }
 
-// フォルダーファイル用: Graph APIサムネイルURL直接セット（認証ヘッダー不要なケース）
+// パネルのファイル一覧を読み込む
 function _fmgrLoadPanelFiles() {
   var el = document.getElementById('fmgr-panel-list');
   if (el) {
@@ -16028,17 +16074,43 @@ function _fmgrLoadPanelFiles() {
   } else if (loc === 'folder') {
     var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
     if (!folderPass) { if (el) el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:11px;padding:12px;grid-column:1/-1">フォルダーパス未登録</div>'; return; }
+    // 現在のパス（サブフォルダーナビ対応）
+    var currentPath = _fmgr.folderCurrentPath !== null ? _fmgr.folderCurrentPath : folderPass;
+    // パスバー表示/非表示の更新
+    var pathBar = document.getElementById('fmgr-path-bar');
+    var pathLabel = document.getElementById('fmgr-path-label');
+    if (pathBar) {
+      if (_fmgr.folderNavStack.length > 0) {
+        pathBar.style.display = 'flex';
+        if (pathLabel) {
+          var parts = currentPath.split('/');
+          pathLabel.textContent = parts[parts.length - 1] || currentPath;
+        }
+      } else {
+        pathBar.style.display = 'none';
+      }
+    }
     // getToken()を使用（Files.ReadWrite.Allスコープを含む）
     getToken().then(function(resp) {
-        var enc = folderPass.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,size,id&$orderby=name',
+        var enc = currentPath.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file,folder,size,id&$orderby=name',
           { headers: { Authorization: 'Bearer ' + resp.accessToken } });
       }).then(function(r) { return r.json(); })
       .then(function(d) {
-        var items = ((d && d.value) || []).filter(function(f) { return f.file; });
-        _fmgr.panelFiles = items.map(function(f) {
-          return { type:'folder', name:f.name, folderPath:folderPass, graphId:f.id };
+        var allItems = (d && d.value) || [];
+        // サブフォルダーと通常ファイルに分類
+        var dirs = allItems.filter(function(f) { return f.folder; });
+        var files = allItems.filter(function(f) { return f.file; });
+        // folder-dir（サブフォルダー）を先頭に、ファイルを後に並べる
+        var panelItems = [];
+        dirs.forEach(function(f) {
+          var subPath = currentPath.replace(/\/+$/, '') + '/' + f.name;
+          panelItems.push({ type:'folder-dir', name:f.name, subPath:subPath });
         });
+        files.forEach(function(f) {
+          panelItems.push({ type:'folder', name:f.name, folderPath:currentPath, graphId:f.id });
+        });
+        _fmgr.panelFiles = panelItems;
         var elNow = document.getElementById('fmgr-panel-list');
         if (!elNow) return;
         _fmgrRenderFileList('fmgr-panel-list', _fmgr.panelFiles);
@@ -16133,9 +16205,14 @@ function _fmgrDelete(fileInfo) {
 // パネルカードのドラッグ開始
 function _fmgrDragStart(event, fi) {
   var f = _fmgr.panelFiles[fi];
+  // サブフォルダーはドラッグ不可
+  if (!f || f.type === 'folder-dir') {
+    event.preventDefault();
+    return;
+  }
   _fmgr.fileDragData = f;
   _fmgr.mainDragData = null;
-  event.dataTransfer.setData('text/plain', JSON.stringify({ source: 'fmgr-panel', name: f ? f.name : '' }));
+  event.dataTransfer.setData('text/plain', JSON.stringify({ source: 'fmgr-panel', name: f.name }));
   event.dataTransfer.effectAllowed = 'copyMove';
 }
 

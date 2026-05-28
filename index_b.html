@@ -4788,7 +4788,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.033';
+var APP_VERSION = 'v1.9.034';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8830,22 +8830,155 @@ function _tplDrop(ev, targetName, sectionKey, groupKey) {
   ev.currentTarget.style.boxShadow = '';
   try {
     var d = JSON.parse(ev.dataTransfer.getData('text/plain'));
-    if (d.s !== sectionKey || d.g !== groupKey || d.n === targetName) return;
-    var list = _choukokuTplList;
-    var groupItems = list.filter(function(n) {
-      var p = _parseTplName(n);
-      return (p.group1 + (p.group2 ? '__' + p.group2 : '')) === groupKey;
+    if (d.s !== sectionKey || d.n === targetName) return;
+    // 同じグループ内: 並び替えのみ
+    if (d.g === groupKey) {
+      var list = _choukokuTplList;
+      var groupItems = list.filter(function(n) {
+        var p = _parseTplName(n);
+        return (p.group1 + (p.group2 ? '__' + p.group2 : '')) === groupKey;
+      });
+      groupItems = _sortByTplOrder(groupItems, sectionKey, groupKey);
+      var src = groupItems.indexOf(d.n), tgt = groupItems.indexOf(targetName);
+      if (src < 0 || tgt < 0) return;
+      groupItems.splice(src, 1);
+      groupItems.splice(tgt, 0, d.n);
+      if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
+      _tplOrderCache[sectionKey][groupKey] = groupItems;
+      var area = document.getElementById('kouji-docs-tpl-area');
+      if (area) area.innerHTML = _renderKoujiDocsTplListInner();
+      var area2 = document.getElementById('nok-docs-tpl-area');
+      if (area2) area2.innerHTML = _renderNokDocsTplListInner();
+      _saveTplOrder(sectionKey, groupKey, groupItems);
+    } else {
+      // 異なるグループ間: テンプレートをリネームしてグループ移動
+      _moveTplToGroup(d.n, groupKey, targetName);
+    }
+  } catch(e) {}
+}
+// テンプレートを別のグループ(g1__g2 or g1)へ移動: ファイル名をリネーム
+function _moveTplToGroup(oldName, newGroupKey, insertBeforeName) {
+  var p = _parseTplName(oldName);
+  var displayName = p.display || oldName;
+  // newGroupKey は "g1" または "g1__g2"
+  var newName;
+  if (!newGroupKey) {
+    newName = displayName;
+  } else {
+    newName = newGroupKey + '__' + displayName;
+  }
+  if (newName === oldName) return;
+  if (_choukokuTplList.indexOf(newName) >= 0) {
+    showSaveToast(false, '同名のテンプレートが移動先に既に存在します');
+    return;
+  }
+  // ファイル名リネーム（SP の move アクションで親folderは同じまま名前変更）
+  var encOld = (CHOUKOKU_TPL_FOLDER + '/' + oldName + '.json').split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encOld + ':', {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName + '.json' })
     });
-    groupItems = _sortByTplOrder(groupItems, sectionKey, groupKey);
-    var src = groupItems.indexOf(d.n), tgt = groupItems.indexOf(targetName);
-    if (src < 0 || tgt < 0) return;
-    groupItems.splice(src, 1);
-    groupItems.splice(tgt, 0, d.n);
-    if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
-    _tplOrderCache[sectionKey][groupKey] = groupItems;
+  }).then(function(r) {
+    if (!r.ok) throw new Error(r.status);
+    // ローカルキャッシュ更新
+    var idx = _choukokuTplList.indexOf(oldName);
+    if (idx >= 0) _choukokuTplList[idx] = newName;
+    if (_choukokuTplMeta[oldName]) { _choukokuTplMeta[newName] = _choukokuTplMeta[oldName]; delete _choukokuTplMeta[oldName]; _saveChoukokuTplMeta(); }
+    // 並び順キャッシュも更新
+    Object.keys(_tplOrderCache.choukoku || {}).forEach(function(k) {
+      var arr = _tplOrderCache.choukoku[k];
+      if (!Array.isArray(arr)) return;
+      var i = arr.indexOf(oldName);
+      if (i >= 0) arr[i] = newName;
+    });
+    // 移動先グループに挿入位置を反映
+    if (insertBeforeName && _tplOrderCache.choukoku) {
+      var arr2 = _tplOrderCache.choukoku[newGroupKey] || [];
+      var listMembers = _choukokuTplList.filter(function(n) {
+        var pp = _parseTplName(n);
+        return (pp.group1 + (pp.group2 ? '__' + pp.group2 : '')) === newGroupKey;
+      });
+      var sorted = _sortByTplOrder(listMembers, 'choukoku', newGroupKey);
+      var ipos = sorted.indexOf(insertBeforeName);
+      if (ipos >= 0) {
+        sorted = sorted.filter(function(n) { return n !== newName; });
+        sorted.splice(ipos, 0, newName);
+        _tplOrderCache.choukoku[newGroupKey] = sorted;
+        _saveTplOrder('choukoku', newGroupKey, sorted);
+      }
+    }
     var area = document.getElementById('kouji-docs-tpl-area');
     if (area) area.innerHTML = _renderKoujiDocsTplListInner();
-    _saveTplOrder(sectionKey, groupKey, groupItems);
+    var area2 = document.getElementById('nok-docs-tpl-area');
+    if (area2) area2.innerHTML = _renderNokDocsTplListInner();
+    showSaveToast(true, 'テンプレートを移動しました');
+  }).catch(function(e) {
+    showSaveToast(false, 'テンプレート移動エラー: ' + (e && e.message || e));
+  });
+}
+// サブカテゴリ並び替えD&D
+function _subDragStart(ev, g1, g2, sectionKey) {
+  ev.dataTransfer.setData('application/x-tpl-sub', JSON.stringify({g1:g1, g2:g2, s:sectionKey}));
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.stopPropagation();
+  ev.currentTarget.style.opacity = '0.4';
+}
+function _subDragEnd(ev) { ev.currentTarget.style.opacity = ''; ev.stopPropagation(); }
+function _subDragOver(ev) {
+  var box = ev.currentTarget;
+  var types = ev.dataTransfer.types || [];
+  var isSub = Array.prototype.indexOf.call(types, 'application/x-tpl-sub') >= 0;
+  var isTpl = Array.prototype.indexOf.call(types, 'text/plain') >= 0 && !Array.prototype.indexOf.call(types, 'application/x-tpl-group') >= 0;
+  if (!isSub && !isTpl) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'move';
+  box.style.outline = '2px solid #4a9eff';
+}
+function _subDragLeave(ev) { ev.currentTarget.style.outline = ''; }
+function _subDrop(ev, targetG1, targetG2, sectionKey) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.currentTarget.style.outline = '';
+  // テンプレートチップが落とされた場合: 移動
+  try {
+    var tplRaw = ev.dataTransfer.getData('text/plain');
+    if (tplRaw) {
+      var td = JSON.parse(tplRaw);
+      if (td && td.n && td.s === sectionKey) {
+        var newGroupKey = targetG1 + '__' + targetG2;
+        if (td.g !== newGroupKey) {
+          _moveTplToGroup(td.n, newGroupKey, null);
+          return;
+        }
+      }
+    }
+  } catch(e) {}
+  try {
+    var raw = ev.dataTransfer.getData('application/x-tpl-sub');
+    if (!raw) return;
+    var d = JSON.parse(raw);
+    if (d.s !== sectionKey || d.g1 !== targetG1 || d.g2 === targetG2) return;
+    // 同じ親カテゴリ内のサブカテゴリ並び替え
+    var subOrderKey = '_subOrder__' + targetG1;
+    var area = document.getElementById('kouji-docs-tpl-area') || document.getElementById('nok-docs-tpl-area');
+    if (!area) return;
+    var subEls = area.querySelectorAll('.tpl-sub-box[data-g1="' + targetG1.replace(/"/g, '\\"') + '"]');
+    var order = [];
+    subEls.forEach(function(b) { var g2 = b.getAttribute('data-g2'); if (g2) order.push(g2); });
+    var src = order.indexOf(d.g2), tgt = order.indexOf(targetG2);
+    if (src < 0 || tgt < 0) return;
+    order.splice(src, 1);
+    order.splice(tgt, 0, d.g2);
+    if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
+    _tplOrderCache[sectionKey][subOrderKey] = order;
+    var ka = document.getElementById('kouji-docs-tpl-area');
+    if (ka) ka.innerHTML = _renderKoujiDocsTplListInner();
+    var na = document.getElementById('nok-docs-tpl-area');
+    if (na) na.innerHTML = _renderNokDocsTplListInner();
+    _saveTplOrder(sectionKey, subOrderKey, order);
   } catch(e) {}
 }
 // カテゴリ（グループ）の並び替えD&D
@@ -8858,18 +8991,36 @@ function _grpDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
 function _grpDragOver(ev) {
   var box = ev.currentTarget;
   if (!box.classList.contains('tpl-group-box')) return;
-  if (!ev.dataTransfer.types || Array.prototype.indexOf.call(ev.dataTransfer.types, 'application/x-tpl-group') < 0) return;
+  var types = ev.dataTransfer.types || [];
+  var isGrp = Array.prototype.indexOf.call(types, 'application/x-tpl-group') >= 0;
+  var isTpl = Array.prototype.indexOf.call(types, 'text/plain') >= 0;
+  if (!isGrp && !isTpl) return;
   ev.preventDefault();
   ev.stopPropagation();
   ev.dataTransfer.dropEffect = 'move';
-  var rect = box.getBoundingClientRect();
-  var mid = rect.top + rect.height / 2;
-  box.style.boxShadow = ev.clientY < mid ? '0 -3px 0 0 #4a9eff' : '0 3px 0 0 #4a9eff';
+  if (isGrp) {
+    var rect = box.getBoundingClientRect();
+    var mid = rect.top + rect.height / 2;
+    box.style.boxShadow = ev.clientY < mid ? '0 -3px 0 0 #4a9eff' : '0 3px 0 0 #4a9eff';
+  } else {
+    box.style.boxShadow = 'inset 0 0 0 2px #4a9eff';
+  }
 }
 function _grpDragLeave(ev) { ev.currentTarget.style.boxShadow = ''; }
 function _grpDrop(ev, targetG1, sectionKey) {
   ev.preventDefault();
   ev.currentTarget.style.boxShadow = '';
+  // テンプレートチップがカテゴリへ落とされた場合: カテゴリ直下へ移動
+  try {
+    var tplRaw = ev.dataTransfer.getData('text/plain');
+    if (tplRaw) {
+      var td = JSON.parse(tplRaw);
+      if (td && td.n && td.s === sectionKey && td.g !== targetG1) {
+        _moveTplToGroup(td.n, targetG1, null);
+        return;
+      }
+    }
+  } catch(e) {}
   try {
     var raw = ev.dataTransfer.getData('application/x-tpl-group');
     if (!raw) return;
@@ -8892,12 +9043,29 @@ function _grpDrop(ev, targetG1, sectionKey) {
   } catch(e) {}
 }
 
+// レイアウト列数（1 or 2）。localStorage に保存
+function _getTplCols() {
+  var v = parseInt(localStorage.getItem('tplGridCols_v1') || '1', 10);
+  return (v === 2) ? 2 : 1;
+}
+window._setTplCols = function(n) {
+  localStorage.setItem('tplGridCols_v1', String(n));
+  var ka = document.getElementById('kouji-docs-tpl-area');
+  if (ka) ka.innerHTML = _renderKoujiDocsTplListInner();
+  var na = document.getElementById('nok-docs-tpl-area');
+  if (na) na.innerHTML = _renderNokDocsTplListInner();
+};
+
 // group1 ごとに独立した枠を生成する動的レンダラー
 // ファイル名規則: [セクション名__][サブグループ名__]テンプレート名
 function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, bgColor, borderColor, hoverBg) {
   var hint = '<span style="font-size:10px;color:#aaa;margin-left:6px">クリック=資料作成 ✏️=編集 ⠿=並び替え</span>';
+  var cols = _getTplCols();
+  var colBtn1 = '<button onclick="_setTplCols(1)" title="1列表示" style="padding:3px 9px;background:' + (cols===1?'#5a3a00':'#fff') + ';color:' + (cols===1?'#fff':'#5a3a00') + ';border:1px solid #c8b8a0;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">▭ 1列</button>';
+  var colBtn2 = '<button onclick="_setTplCols(2)" title="2列表示" style="padding:3px 9px;background:' + (cols===2?'#5a3a00':'#fff') + ';color:' + (cols===2?'#fff':'#5a3a00') + ';border:1px solid #c8b8a0;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;margin-left:-1px">▥ 2列</button>';
+  var colSwitcher = '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;gap:0">' + colBtn1 + colBtn2 + '</div>';
   if (!tplList || tplList.length === 0) {
-    return '<div style="padding:12px;background:' + bgColor + ';border:1px dashed ' + borderColor + ';border-radius:10px;margin-bottom:10px;text-align:center;color:#aaa;font-size:12px">' +
+    return colSwitcher + '<div style="padding:12px;background:' + bgColor + ';border:1px dashed ' + borderColor + ';border-radius:10px;margin-bottom:10px;text-align:center;color:#aaa;font-size:12px">' +
       'テンプレートなし — エディタ「🧩 テンプレート▾ → 名前を付けて保存」で追加</div>';
   }
 
@@ -8992,6 +9160,18 @@ function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, 
 
   // group1 ごとに独立した枠
   g1Order.forEach(function(g1) {
+    // サブカテゴリ並び順を保存値で並び替え
+    var subOrderKey = '_subOrder__' + g1;
+    var savedSubOrder = (_tplOrderCache[sectionKey] && _tplOrderCache[sectionKey][subOrderKey]) || null;
+    if (savedSubOrder && savedSubOrder.length) {
+      var sOrderMap = {};
+      savedSubOrder.forEach(function(g, i) { sOrderMap[g] = i; });
+      g1SubOrder[g1].sort(function(a, b) {
+        var ia = (a in sOrderMap) ? sOrderMap[a] : Infinity;
+        var ib = (b in sOrderMap) ? sOrderMap[b] : Infinity;
+        return ia - ib;
+      });
+    }
     html += renderBox(g1, g1, function() {
       var inner = '';
       if (g1Direct[g1].length > 0) {
@@ -8999,8 +9179,16 @@ function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, 
       }
       g1SubOrder[g1].forEach(function(g2) {
         var subKey = g1 + '__' + g2;
-        inner += '<div style="margin-top:6px">' +
-          '<div style="font-size:11px;font-weight:600;color:' + themeColor + ';opacity:.7;margin-bottom:4px;padding-left:2px">› ' + _hakaSpecEsc(g2) + '</div>' +
+        var jsG1s = _hakaSpecJsStr(g1);
+        var jsG2s = _hakaSpecJsStr(g2);
+        inner += '<div class="tpl-sub-box" data-g1="' + _hakaSpecEsc(g1) + '" data-g2="' + _hakaSpecEsc(g2) + '" draggable="true"' +
+          ' ondragstart="_subDragStart(event,\'' + jsG1s + '\',\'' + jsG2s + '\',\'' + sectionKey + '\')"' +
+          ' ondragend="_subDragEnd(event)"' +
+          ' ondragover="_subDragOver(event)"' +
+          ' ondragleave="_subDragLeave(event)"' +
+          ' ondrop="_subDrop(event,\'' + jsG1s + '\',\'' + jsG2s + '\',\'' + sectionKey + '\')"' +
+          ' style="margin-top:6px;padding:4px;border-radius:6px;transition:outline .1s">' +
+          '<div style="font-size:11px;font-weight:600;color:' + themeColor + ';opacity:.7;margin-bottom:4px;padding-left:2px;cursor:grab">⠿ › ' + _hakaSpecEsc(g2) + '</div>' +
           renderChips(g1Subs[g1][g2], subKey) +
         '</div>';
       });
@@ -9008,7 +9196,13 @@ function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, 
     });
   });
 
-  return html;
+  // 列数に応じてグリッドラップ
+  if (cols === 2) {
+    html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start">' + html + '</div>';
+    // 2列のときは margin-bottom を抑えるため、外側はgrid gapで管理
+    html = html.replace(/margin-bottom:10px;/g, '');
+  }
+  return colSwitcher + html;
 }
 
 function _renderKoujiDocsTplListInner() {

@@ -4788,7 +4788,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.031';
+var APP_VERSION = 'v1.9.032';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8848,6 +8848,49 @@ function _tplDrop(ev, targetName, sectionKey, groupKey) {
     _saveTplOrder(sectionKey, groupKey, groupItems);
   } catch(e) {}
 }
+// カテゴリ（グループ）の並び替えD&D
+function _grpDragStart(ev, g1, sectionKey) {
+  ev.dataTransfer.setData('application/x-tpl-group', JSON.stringify({g:g1, s:sectionKey}));
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.currentTarget.style.opacity = '0.4';
+}
+function _grpDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _grpDragOver(ev) {
+  var box = ev.currentTarget;
+  if (!box.classList.contains('tpl-group-box')) return;
+  if (!ev.dataTransfer.types || Array.prototype.indexOf.call(ev.dataTransfer.types, 'application/x-tpl-group') < 0) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'move';
+  var rect = box.getBoundingClientRect();
+  var mid = rect.top + rect.height / 2;
+  box.style.boxShadow = ev.clientY < mid ? '0 -3px 0 0 #4a9eff' : '0 3px 0 0 #4a9eff';
+}
+function _grpDragLeave(ev) { ev.currentTarget.style.boxShadow = ''; }
+function _grpDrop(ev, targetG1, sectionKey) {
+  ev.preventDefault();
+  ev.currentTarget.style.boxShadow = '';
+  try {
+    var raw = ev.dataTransfer.getData('application/x-tpl-group');
+    if (!raw) return;
+    var d = JSON.parse(raw);
+    if (d.s !== sectionKey || d.g === targetG1) return;
+    // 現在の全グループ順序を取得
+    var area = document.getElementById('kouji-docs-tpl-area');
+    if (!area) return;
+    var boxes = area.querySelectorAll('.tpl-group-box[data-group]');
+    var order = [];
+    boxes.forEach(function(b) { var g = b.getAttribute('data-group'); if (g) order.push(g); });
+    var src = order.indexOf(d.g), tgt = order.indexOf(targetG1);
+    if (src < 0 || tgt < 0) return;
+    order.splice(src, 1);
+    order.splice(tgt, 0, d.g);
+    if (!_tplOrderCache[sectionKey]) _tplOrderCache[sectionKey] = {};
+    _tplOrderCache[sectionKey]._groupOrder = order;
+    area.innerHTML = _renderKoujiDocsTplListInner();
+    _saveTplOrder(sectionKey, '_groupOrder', order);
+  } catch(e) {}
+}
 
 // group1 ごとに独立した枠を生成する動的レンダラー
 // ファイル名規則: [セクション名__][サブグループ名__]テンプレート名
@@ -8897,19 +8940,45 @@ function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, 
     return h + '</div>';
   }
   function renderBox(title, g1, renderFn) {
-    return '<div style="padding:12px 14px;background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;margin-bottom:10px">' +
+    var jsG1 = _hakaSpecJsStr(g1);
+    return '<div class="tpl-group-box" data-group="' + _hakaSpecEsc(g1) + '" draggable="true"' +
+      ' ondragstart="_grpDragStart(event,\'' + jsG1 + '\',\'' + sectionKey + '\')"' +
+      ' ondragend="_grpDragEnd(event)"' +
+      ' ondragover="_grpDragOver(event)"' +
+      ' ondragleave="_grpDragLeave(event)"' +
+      ' ondrop="_grpDrop(event,\'' + jsG1 + '\',\'' + sectionKey + '\')"' +
+      ' style="padding:12px 14px;background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;margin-bottom:10px;transition:box-shadow .15s">' +
       '<div style="display:flex;align-items:center;margin-bottom:8px">' +
+        '<span style="cursor:grab;color:#bbb;font-size:13px;margin-right:6px" title="ドラッグでカテゴリ並び替え">⠿</span>' +
         '<span style="font-size:13px;font-weight:700;color:' + themeColor + '">📋 ' + _hakaSpecEsc(title) + '</span>' + hint +
       '</div>' +
       renderFn() +
     '</div>';
   }
 
+  // カテゴリ順序を _order.json の _groupOrder から取得
+  var savedGroupOrder = (_tplOrderCache[sectionKey] && _tplOrderCache[sectionKey]._groupOrder) || null;
+  if (savedGroupOrder && savedGroupOrder.length) {
+    var orderMap = {};
+    savedGroupOrder.forEach(function(g, i) { orderMap[g] = i; });
+    g1Order.sort(function(a, b) {
+      var ia = (a in orderMap) ? orderMap[a] : Infinity;
+      var ib = (b in orderMap) ? orderMap[b] : Infinity;
+      if (ia !== ib) return ia - ib;
+      return 0;
+    });
+  }
+
   var html = '';
 
   // 未分類（group1 なし）
   if (ungrouped.length > 0) {
-    html += renderBox('未分類', '', function() { return renderChips(ungrouped, ''); });
+    html += '<div style="padding:12px 14px;background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;margin-bottom:10px">' +
+      '<div style="display:flex;align-items:center;margin-bottom:8px">' +
+        '<span style="font-size:13px;font-weight:700;color:' + themeColor + '">📋 未分類</span>' + hint +
+      '</div>' +
+      renderChips(ungrouped, '') +
+    '</div>';
   }
 
   // group1 ごとに独立した枠

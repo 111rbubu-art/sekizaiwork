@@ -4802,7 +4802,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.050';
+var APP_VERSION = 'v1.9.051';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16144,9 +16144,10 @@ function loadLinkedCusAttachments(cusId, areaId) {
 
 function handleDropLinkedCus(event, cusId, areaId) {
   event.preventDefault();
-  if (_fmgr && _fmgr.fileDragData) {
-    var f = _fmgr.fileDragData;
+  if (_fmgr && (_fmgr.fileDragData || _fmgr.mainDragData)) {
+    var f = _fmgr.fileDragData || _fmgr.mainDragData;
     _fmgr.fileDragData = null;
+    _fmgr.mainDragData = null;
     var op = _fmgr.opMode || 'copy';
     var dst = { type:'sp', listTitle:'顧客リスト', listEnc:"'%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88'", itemId: String(cusId) };
     showSaveToast(null, (op==='copy'?'コピー':'移動') + '中: ' + f.name);
@@ -16664,9 +16665,24 @@ function _fmgrUpload(blob, fileName, dst) {
   if (dst.type === 'sp') {
     return msalApp.acquireTokenSilent({ scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'], account: msalApp.getActiveAccount() })
       .then(function(r) {
-        var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + dst.listEnc + ')/items(' + dst.itemId + ')/AttachmentFiles/add(FileName=\'' + encodeURIComponent(fileName) + '\')';
-        return fetch(url, { method:'POST', headers:{ Authorization:'Bearer ' + r.accessToken, Accept:'application/json;odata=verbose' }, body:blob });
-      }).then(function(r) { return r.ok ? r : Promise.reject(new Error('UL失敗 ' + r.status)); });
+        var token = r.accessToken;
+        var spHdr = { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' };
+        var uploadUrl = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + dst.listEnc + ')/items(' + dst.itemId + ')/AttachmentFiles/add(FileName=\'' + encodeURIComponent(fileName) + '\')';
+        return fetch(uploadUrl, { method: 'POST', headers: spHdr, body: blob })
+          .then(function(r2) {
+            if (r2.ok) return r2;
+            if (r2.status === 400) {
+              // 同名ファイルが既に存在する場合に備えて削除してリトライ
+              var delUrl = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' + dst.listEnc + ')/items(' + dst.itemId + ')/AttachmentFiles/getByFileName(\'' + encodeURIComponent(fileName) + '\')';
+              return fetch(delUrl, { method: 'DELETE', headers: Object.assign({}, spHdr, { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' }) })
+                .then(function() {}, function() {})
+                .then(function() {
+                  return fetch(uploadUrl, { method: 'POST', headers: spHdr, body: blob });
+                }).then(function(r3) { return r3.ok ? r3 : Promise.reject(new Error('UL失敗 ' + r3.status)); });
+            }
+            return Promise.reject(new Error('UL失敗 ' + r2.status));
+          });
+      });
   } else {
     return getToken().then(function(r) {
         var enc = dst.folderPath.split('/').map(encodeURIComponent).join('/');
@@ -19674,10 +19690,10 @@ function handleDropKouji(event, itemId) {
   event.preventDefault();
   var dropZone = document.getElementById('kouji-drop-' + itemId);
   if (dropZone) dropZone.style.background = '';
-  // パネルからのドロップ検出
-  if (_fmgr && _fmgr.fileDragData) {
-    var f = _fmgr.fileDragData;
+  if (_fmgr && (_fmgr.fileDragData || _fmgr.mainDragData)) {
+    var f = _fmgr.fileDragData || _fmgr.mainDragData;
     _fmgr.fileDragData = null;
+    _fmgr.mainDragData = null;
     var op = _fmgr.opMode || 'copy';
     var dst = { type:'sp', listTitle:'工事関連', listEnc:"'%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3'", itemId: String(itemId) };
     _fmgrDoChain([f], dst, op, 0, 0);
@@ -19710,10 +19726,10 @@ function handleDropNok(event, itemId) {
   event.preventDefault();
   var dropZone = document.getElementById('nok-drop-' + itemId);
   if (dropZone) dropZone.style.background = '';
-  // パネルからのドロップ検出
-  if (_fmgr && _fmgr.fileDragData) {
-    var f = _fmgr.fileDragData;
+  if (_fmgr && (_fmgr.fileDragData || _fmgr.mainDragData)) {
+    var f = _fmgr.fileDragData || _fmgr.mainDragData;
     _fmgr.fileDragData = null;
+    _fmgr.mainDragData = null;
     var op = _fmgr.opMode || 'copy';
     var dst = { type:'sp', listTitle:'納骨・戒切', listEnc:"'%E7%B4%8D%E9%AA%A8%E3%83%BB%E6%88%92%E5%88%87'", itemId: String(itemId) };
     _fmgrDoChain([f], dst, op, 0, 0);

@@ -6,7 +6,11 @@
 ## プロジェクト概要
 
 - **リポジトリ**: `111rbubu-art/sekizaiwork`
+- **GitHub URL**: `https://github.com/111rbubu-art/sekizaiwork`
 - **開発ブランチ**: `main`
+- **git push コマンド**: `git push -u origin main`
+- **GitHub MCP**: セッション内で `mcp__github__*` ツールが利用可能（GitHub操作はこれを使う）
+- **MCP対象リポジトリ**: `111rbubu-art/sekizaiwork`（他リポジトリへのアクセス不可）
 - **唯一のアプリファイル**: `/home/user/sekizaiwork/index_b.html`（約21,000行超）
 - **SharePoint サイト**: `https://shojisekizai.sharepoint.com/sites/stoneworks`
 - **認証アカウント**: `syojisekizai0808@gmail.com`（社員用）、`shojisekizai@gmail.com`（法人カレンダー用）

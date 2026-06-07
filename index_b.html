@@ -3973,6 +3973,248 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
   }).catch(function(e){ onDone(e); });
 }
 
+// ===== AI業務データ検索（ツール実行型 / ReActループ・ローカルLLM向け） =====
+// Ollama(provider==='openai')選択時、顧客リスト・価格表(部材/石材)をローカル検索する
+// ツールをAIに与え、AIが必要に応じて検索を呼び出して回答する。
+// 価格表・石材のローカルキャッシュ（AI検索専用）
+var _aiPartPriceItems = null;
+var _aiStonePriceItems = null;
+
+function _ensureAiData() {
+  var jobs = [];
+  if (!_aiPartPriceItems) {
+    jobs.push(_fetchPriceListItems()
+      .then(function(items){ _aiPartPriceItems = items || []; })
+      .catch(function(){ _aiPartPriceItems = _aiPartPriceItems || []; }));
+  }
+  if (!_aiStonePriceItems) {
+    jobs.push(_fetchStonePriceListItems()
+      .then(function(items){ _aiStonePriceItems = items || []; })
+      .catch(function(){ _aiStonePriceItems = _aiStonePriceItems || []; }));
+  }
+  return Promise.all(jobs);
+}
+
+// 顧客キャッシュ(グループ別 or 配列)をフラットな配列に
+function _aiCustomerList() {
+  var c = (typeof _menuSearchCache !== 'undefined' && _menuSearchCache) ? _menuSearchCache['customer'] : null;
+  if (!c) return [];
+  if (Array.isArray(c)) return c;
+  var out = [];
+  Object.keys(c).forEach(function(g){ (c[g]||[]).forEach(function(it){ out.push(it); }); });
+  return out;
+}
+
+function _aiNorm(s) { return String(s == null ? '' : s).replace(/[\s　\-]/g, '').toLowerCase(); }
+
+function _aiSearchCustomer(args) {
+  var q = String((args && (args.query || args.name || args.keyword)) || '').trim();
+  if (!q) return { error: 'query（検索語）が空です。顧客名・電話番号・IDの一部を指定してください。' };
+  var grp = (args && args.group != null && args.group !== '') ? String(args.group) : null;
+  var nq = _aiNorm(q);
+  var list = _aiCustomerList();
+  if (!list.length) return { error: '顧客データが未取得です（ログイン状態やオフラインを確認してください）', count: 0, results: [] };
+  var hits = [];
+  for (var i = 0; i < list.length; i++) {
+    var it = list[i];
+    if (grp && String(it.Group == null ? '' : it.Group) !== grp) continue;
+    var hay = [it.CusName, it.furigana, it.telephonenumber, it.Cus_ID, it.id, it.atena, it.addressee, it.Temple, it.HakaName, it.address_1, it.address_2]
+      .map(function(x){ return x == null ? '' : String(x); }).join(' ');
+    if (_aiNorm(hay).indexOf(nq) === -1) continue;
+    hits.push({
+      id: it.id, Cus_ID: it.Cus_ID || '', 顧客名: it.CusName || '', ふりがな: it.furigana || '',
+      電話番号: it.telephonenumber || '', 寺院: it.Temple || '',
+      住所: ((it.address_1 || '') + (it.address_2 || '')) || '',
+      墓石名: it.HakaName || '', グループ: it.Group, 宛名: it.atena || '', メモ: it.memo || ''
+    });
+    if (hits.length >= 10) break;
+  }
+  return { count: hits.length, results: hits,
+    note: hits.length >= 10 ? '上位10件のみ。さらに絞るには query を具体化してください。' : '' };
+}
+
+function _aiSearchPrice(args) {
+  var kw = String((args && (args.keyword || args.query || args.name)) || '').trim();
+  if (!kw) return { error: 'keyword（検索語）が空です。品名・規格・色などの一部を指定してください。' };
+  var type = String((args && args.type) || '').trim();
+  var nkw = _aiNorm(kw);
+  var wantStone = /石材|stone/i.test(type);
+  var wantPart  = /部材|部品|part|material/i.test(type);
+  if (!wantStone && !wantPart) { wantStone = true; wantPart = true; } // 未指定は両方
+  var out = { keyword: kw };
+
+  if (wantPart) {
+    var ap = _aiPartPriceItems || [];
+    var ph = [];
+    for (var i = 0; i < ap.length && ph.length < 10; i++) {
+      var it = ap[i];
+      var hay = [it.Title, it.choice, it.choice_x2461_, it.choice3, it.note, it.note0]
+        .map(function(x){ return x == null ? '' : String(x); }).join(' ');
+      if (_aiNorm(hay).indexOf(nkw) === -1) continue;
+      ph.push({
+        id: it.id, 商品名: it.Title || '', カテゴリ: it.choice || '',
+        選択2: it.choice_x2461_ || '', 選択3: it.choice3 || '',
+        販売価格税抜: (it.cost != null && it.cost !== '') ? it.cost : null,
+        仕入先1: it.supplier || '', 仕入価格1: (it.PurchasePrice != null && it.PurchasePrice !== '') ? it.PurchasePrice : null,
+        仕入先2: it.supplier2 || '', 仕入価格2: (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') ? it.PurchasePrice2 : null,
+        備考: it.note || ''
+      });
+    }
+    out.部材価格 = ph;
+  }
+  if (wantStone) {
+    var as = _aiStonePriceItems || [];
+    var sh = [];
+    for (var k = 0; k < as.length && sh.length < 10; k++) {
+      var st = as[k];
+      var hay2 = [st.Title, st.made, st.country, st.color, st.name, st.Features, st.comment]
+        .map(function(x){ return x == null ? '' : String(x); }).join(' ');
+      if (_aiNorm(hay2).indexOf(nkw) === -1) continue;
+      sh.push({
+        id: st.id, 石材名: st.Title || '', 産地: st.made || '', 国: st.country || '', 色: st.color || '',
+        単価: (st.cost != null && st.cost !== '') ? st.cost : null,
+        係数規格: (st.name != null && st.name !== '') ? st.name : '',
+        仕入先1: st.Supplier1 || '', 仕入価格1: (st.price1 != null && st.price1 !== '') ? st.price1 : null,
+        加工費込1: st.MachiningCostsIncluded1 ? true : false,
+        仕入先2: st.Supplier2 || '', 仕入価格2: (st.price2 != null && st.price2 !== '') ? st.price2 : null,
+        加工費込2: st.MachiningCostsIncluded2 ? true : false,
+        見積日: st.EstimateDay ? String(st.EstimateDay).slice(0, 10) : '', 特徴: st.Features || '', 備考: st.comment || ''
+      });
+    }
+    out.石材価格 = sh;
+  }
+  var total = (out.部材価格 ? out.部材価格.length : 0) + (out.石材価格 ? out.石材価格.length : 0);
+  out.count = total;
+  if (total === 0) out.note = '該当なし。別のキーワードや表記（ひらがな/漢字/型番）で再検索してください。';
+  return out;
+}
+
+function _execAiTool(name, args) {
+  if (name === 'search_customer') return _aiSearchCustomer(args || {});
+  if (name === 'search_price')    return _aiSearchPrice(args || {});
+  return { error: '未知のツール: ' + name + '（利用可能: search_customer, search_price）' };
+}
+
+function _aiToolSystemPrompt() {
+  return [
+    'あなたは庄司石材店の社内アシスタントです。社内のSharePointデータ（顧客リスト・価格表）を検索できます。',
+    'ユーザーの質問に答えるためにデータが必要なときは、次の形式で「1回に1つだけ」ツールを呼び出してください。',
+    'ツールを呼ぶターンでは説明文を書かず、次のブロックだけを出力します:',
+    '```action',
+    '{"tool":"ツール名","args":{ ... }}',
+    '```',
+    '',
+    '【利用可能なツール】',
+    '1. search_customer … 顧客を検索。args: {"query":"顧客名・ふりがな・電話番号・IDの一部", "group":(任意)グループ番号}',
+    '2. search_price … 価格表を検索。args: {"keyword":"品名・規格・産地・色などの一部", "type":"部材" または "石材"（省略時は両方検索）}',
+    '',
+    'ツールの実行結果は次の形式で observation として返されます:',
+    '```observation',
+    '{ ...検索結果(JSON)... }',
+    '```',
+    'observation を読み、さらに検索が必要なら別のツールを呼び、十分な情報が集まったら action ブロックを書かずに日本語で最終回答してください。',
+    '価格・電話番号など、検索結果に無い情報は推測せず「データにありません」と答えてください。',
+    '挨拶・一般的な質問・データ不要な質問にはツールを使わず直接答えてください。'
+  ].join('\n');
+}
+
+function _stripThinkTags(t) { return String(t == null ? '' : t).replace(/<think>[\s\S]*?<\/think>/gi, '').trim(); }
+
+// AIの出力から {"tool":...} のJSONを頑健に抽出（フェンス有無・前後の雑文を許容）
+function _extractToolJson(s) {
+  if (!s) return null;
+  var start = s.indexOf('{');
+  while (start !== -1) {
+    var depth = 0, inStr = false, esc = false;
+    for (var j = start; j < s.length; j++) {
+      var ch = s.charAt(j);
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try { var o = JSON.parse(s.slice(start, j + 1)); if (o && o.tool) return o; } catch (e) {}
+          break;
+        }
+      }
+    }
+    start = s.indexOf('{', start + 1);
+  }
+  return null;
+}
+function _parseAiAction(text) {
+  if (!text) return null;
+  var m = text.match(/```(?:action|json)?\s*([\s\S]*?)```/i);
+  if (m) { var o = _extractToolJson(m[1]); if (o) return o; }
+  return _extractToolJson(text);
+}
+
+// Ollama(OpenAI互換) 非ストリーミング1ターン呼び出し
+function _ollamaChatOnce(cfg, messages, cb) {
+  fetch((cfg.endpoint || 'http://localhost:11434') + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: cfg.model || 'llama3', stream: false, messages: messages })
+  }).then(function(r) {
+    if (!r.ok) { r.text().then(function(t){ cb(new Error('LLM API ' + r.status + ': ' + t)); }); return; }
+    r.json().then(function(j) {
+      var txt = (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+      cb(null, txt);
+    }).catch(function(e){ cb(e); });
+  }).catch(function(e){ cb(e); });
+}
+
+// ReActループ本体。callAI と同じ (system,user,onChunk,onDone,images) シグネチャ
+function runAIDataAgent(baseSystem, user, onChunk, onDone, images) {
+  var cfg = getAICfg();
+  _ensureAiData().then(function() {
+    var sys = (baseSystem ? baseSystem + '\n\n' : '') + _aiToolSystemPrompt();
+    var userContent = user;
+    if (images && images.length > 0) {
+      userContent = images.map(function(img){ return { type: 'image_url', image_url: { url: img } }; });
+      if (user) userContent.push({ type: 'text', text: user });
+    }
+    var msgs = [{ role: 'system', content: sys }, { role: 'user', content: userContent }];
+    var MAX = 5, step = 0;
+    function loop() {
+      step++;
+      _ollamaChatOnce(cfg, msgs, function(err, text) {
+        if (err) { onDone(err); return; }
+        var clean = _stripThinkTags(text);
+        var action = _parseAiAction(clean);
+        if (action && step < MAX) {
+          var obs;
+          try { obs = _execAiTool(action.tool, action.args || {}); }
+          catch (e) { obs = { error: String((e && e.message) || e) }; }
+          msgs.push({ role: 'assistant', content: text });
+          msgs.push({ role: 'user', content: '```observation\n' + JSON.stringify(obs) + '\n```\nこの結果をもとに回答するか、必要なら別のツールを呼んでください。' });
+          loop();
+        } else {
+          var ans = clean;
+          if (action) { // 上限到達でまだツールを呼ぼうとした場合はactionを除去
+            ans = clean.replace(/```[\s\S]*?```/g, '').trim();
+            if (!ans) ans = '（検索回数の上限に達しました。質問を具体化して再度お試しください。）';
+          }
+          if (!ans) ans = '回答を生成できませんでした。';
+          onChunk(ans);
+          onDone(null);
+        }
+      });
+    }
+    loop();
+  }).catch(function(e) { onDone(e); });
+}
+
+// チャットUIからの入口：Ollama選択時はツール検索エージェント、それ以外は従来のcallAI
+function callAIChat(system, user, onChunk, onDone, images) {
+  var cfg = getAICfg();
+  if (cfg.provider === 'openai') runAIDataAgent(system, user, onChunk, onDone, images);
+  else callAI(system, user, onChunk, onDone, images);
+}
+
 // ===== AIチャット（仮・別ウィンドウで開く・履歴はそのウィンドウ内のみ） =====
 var _aiChatWin = null;
 function openAIChat() {
@@ -4123,7 +4365,7 @@ function openAIChat() {
   'var msg=(inp.value||"").trim();' +
   'var imgs=_pendingImgs.slice();' +
   'if(!msg&&!imgs.length)return;' +
-  'if(!window.opener||!window.opener.callAI){_append("user",msg,imgs);var e=_append("ai","❌ 親ウィンドウとの接続が切れています。\\nアプリのタブを開いた状態でチャットを使ってください。");e.classList.add("me");return;}' +
+  'if(!window.opener||!window.opener.callAIChat){_append("user",msg,imgs);var e=_append("ai","❌ 親ウィンドウとの接続が切れています。\\nアプリのタブを開いた状態でチャットを使ってください。");e.classList.add("me");return;}' +
   'inp.value="";_pendingImgs=[];_renderStrip();' +
   '_append("user",msg,imgs);' +
   'var histEntry=msg+(imgs.length?"\\n[画像 "+imgs.length+"枚]":"");' +
@@ -4135,7 +4377,7 @@ function openAIChat() {
   'var sys="あなたは石材店スタッフを補助する日本語AIアシスタントです。簡潔・丁寧に回答してください。";' +
   'var full="",firstChunk=true;' +
   'try{' +
-    'window.opener.callAI(sys,userPrompt,' +
+    'window.opener.callAIChat(sys,userPrompt,' +
       'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;var disp=_stripThink(full);aiDiv.textContent=disp||"⏳ 考え中…";var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
       'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);_renderLinks(clean,aiDiv);_hist.push({role:"assistant",content:clean});}inp.focus();},' +
       'imgs' +
@@ -4812,7 +5054,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.073';
+var APP_VERSION = 'v1.9.074';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

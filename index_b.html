@@ -4259,19 +4259,25 @@ function callAIChat(system, user, onChunk, onDone, images) {
 // ===== AIチャット（仮・別ウィンドウで開く・履歴はそのウィンドウ内のみ） =====
 var _aiChatWin = null;
 var _aiImagePromise = null;
-var _spSiteAssetsDriveId = null;
 
-// SP石目画像をGraph API経由で取得してdataURL配列で返す
+// SP石目画像をGraph shares API経由で取得してdataURL配列で返す
 function _fetchStoneImages(imagePaths) {
-  var _siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-  function _doFetch(token, driveId) {
+  var _origin = 'https://shojisekizai.sharepoint.com';
+  // 絶対URL→Graph shares APIのエンコードID（UTF-8/日本語対応のbase64url）
+  function _encodeShareUrl(absUrl) {
+    var b64 = btoa(unescape(encodeURIComponent(absUrl)));
+    return 'u!' + b64.replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+  }
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
     return Promise.all(imagePaths.map(function(item) {
-      console.log('[石目画像] path:', item.path);
-      var relPath = item.path
-        .replace(/^\/sites\/[^\/]+\/SiteAssets\//, '')
-        .replace(/^\/?SiteAssets\//, '');
-      var apiUrl = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:/' + encodeURIComponent(relPath).replace(/%2F/g, '/') + ':/content';
-      console.log('[石目画像] fetch:', apiUrl);
+      // item.path は serverRelativeUrl（例: /sites/stoneworks/SiteAssets/Lists/.../稲田石2.png）
+      var p = item.path || '';
+      if (p.charAt(0) !== '/') p = '/' + p;
+      var absUrl = _origin + p;
+      var shareId = _encodeShareUrl(absUrl);
+      var apiUrl = 'https://graph.microsoft.com/v1.0/shares/' + shareId + '/driveItem/content';
+      console.log('[石目画像] absUrl:', absUrl);
       return fetch(apiUrl, { headers: { 'Authorization': 'Bearer ' + token } })
         .then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
         .then(function(blob) {
@@ -4280,41 +4286,8 @@ function _fetchStoneImages(imagePaths) {
             reader.onload = function() { resolve({ name: item.name, dataUrl: reader.result }); };
             reader.readAsDataURL(blob);
           });
-        }).catch(function(e) { console.warn('[石目画像] エラー:', apiUrl, e); return null; });
+        }).catch(function(e) { console.warn('[石目画像] エラー:', absUrl, e); return null; });
     }));
-  }
-  function _tryGetDrive(token, siteId) {
-    // SiteAssetsに直接アクセス（非表示リストも含む）
-    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/SiteAssets/drive', {
-      headers: { 'Authorization': 'Bearer ' + token }
-    }).then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(d) { return (d && d.id) ? d.id : null; });
-  }
-  return getToken().then(function(resp) {
-    var token = resp.accessToken;
-    if (_spSiteAssetsDriveId) return _doFetch(token, _spSiteAssetsDriveId);
-    // まずstoneworksサイトのSiteAssetsを試す
-    return _tryGetDrive(token, _siteId).then(function(driveId) {
-      if (driveId) {
-        console.log('[石目画像] stoneworks SiteAssets driveId:', driveId);
-        _spSiteAssetsDriveId = driveId;
-        return _doFetch(token, driveId);
-      }
-      // serverRelativeUrlが /SiteAssets/... の場合、rootサイト配下の可能性
-      console.log('[石目画像] stoneworks SiteAssets未検出 → rootサイトを試す');
-      return fetch('https://graph.microsoft.com/v1.0/sites/root', {
-        headers: { 'Authorization': 'Bearer ' + token }
-      }).then(function(r) { return r.json(); })
-      .then(function(rootSite) {
-        console.log('[石目画像] rootサイト:', rootSite.id, rootSite.webUrl);
-        return _tryGetDrive(token, rootSite.id).then(function(driveId2) {
-          if (!driveId2) throw new Error('SiteAssets drive not found (stoneworks & root)');
-          console.log('[石目画像] rootサイト SiteAssets driveId:', driveId2);
-          _spSiteAssetsDriveId = driveId2;
-          return _doFetch(token, driveId2);
-        });
-      });
-    });
   }).then(function(results) { return results.filter(Boolean); })
   .catch(function(e) { console.warn('[石目画像] 全体エラー:', e); return []; });
 }
@@ -5196,7 +5169,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.086';
+var APP_VERSION = 'v1.9.087';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

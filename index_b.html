@@ -5192,7 +5192,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.091';
+var APP_VERSION = 'v1.9.092';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -10886,10 +10886,14 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
           '<button type="button" class="cb-btn cb-file cb-icon-only" data-tip="📷 原寸ファイルを画像コピー" ' +
             'onclick="event.stopPropagation();_copyFolderFileToClipboard(\'' + jsStr(fpath) + '\',this)">📷</button>' +
         '</div>';
+      var isPdfFile = /\.pdf$/i.test(f.name);
+      var mergeCb = isPdfFile ?
+        '<input type="checkbox" class="pdf-merge-cb"' + (_pdfMergeIsSelected(fpath) ? ' checked' : '') + ' title="PDF結合用に選択" onclick="event.stopPropagation();_pdfMergeToggle(\'' + jsStr(fpath) + '\',\'' + jsStr(f.name) + '\',this)" style="position:absolute;bottom:26px;left:4px;width:20px;height:20px;cursor:pointer;z-index:3">' : '';
       grid += '<div style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa">' +
         '<img src="' + thumbUrl + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:100%;height:140px;object-fit:cover;cursor:pointer;display:block" ' +
           'title="ダブルクリックで開く" ondblclick="' + openFn + '(\'' + jsStr(fpath) + '\')">' +
         badgeOverlay +
+        mergeCb +
         copyBtns +
         '<div style="font-size:10px;padding:4px 6px;background:#fff;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + f.name + '">' + f.name + '</div>' +
         '<button onclick="deleteHakaSpecFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
@@ -10905,7 +10909,9 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
     noThumbFiles.forEach(function(f) {
       var fpath = subPath + '/' + f.name;
       var isImgFile = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
+      var isPdfFile = /\.pdf$/i.test(f.name);
       listHtml += '<div style="display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid #eee">' +
+        (isPdfFile ? '<input type="checkbox" class="pdf-merge-cb"' + (_pdfMergeIsSelected(fpath) ? ' checked' : '') + ' title="PDF結合用に選択" onclick="event.stopPropagation();_pdfMergeToggle(\'' + jsStr(fpath) + '\',\'' + jsStr(f.name) + '\',this)" style="width:17px;height:17px;flex-shrink:0;cursor:pointer">' : '') +
         '<span style="font-size:18px">' + (isImgFile ? '🖼' : '📄') + '</span>' +
         '<a href="javascript:void(0)" ondblclick="' + (isImgFile ? 'previewFolderImage' : 'openFolderFile') + '(\'' + jsStr(fpath) + '\')" title="ダブルクリックで開く" style="flex:1;color:#1565c0;text-decoration:none;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer">' + f.name + '</a>' +
         '<button type="button" class="cb-btn cb-file" data-tip="📷 原寸ファイルを画像コピー" ' +
@@ -14904,6 +14910,7 @@ var _folderCurrentPath = null;
 var _folderThumbMode = false;
 var _folderClipboard = null;  // { mode:'copy'|'cut', item:{id,name,path} }
 var _folderMenuEl = null;
+var _pdfMergeSel = [];  // PDF結合用に選択中のファイル [{path, name}]（選択順）
 
 // ===== 画像クリップボードコピー =====
 function copyImgToClipboard(blobUrl, btn) {
@@ -15085,6 +15092,121 @@ function _pasteClipboardToUpload(uploadCallback, btn) {
   });
 }
 
+// ===== PDF結合（写真・図面 / フォルダー タブ共通） =====
+function _loadPdfLib(cb) {
+  if (window.PDFLib) { cb(); return; }
+  var url = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+  var existing = document.querySelector("script[data-pdflib]");
+  if (existing) { existing.addEventListener('load', cb); return; }
+  var s = document.createElement('script');
+  s.src = url;
+  s.setAttribute('data-pdflib', '1');
+  s.onload = function() { cb(); };
+  s.onerror = function() { cb(); };
+  document.head.appendChild(s);
+}
+function _pdfMergeIsSelected(path) {
+  for (var i = 0; i < _pdfMergeSel.length; i++) { if (_pdfMergeSel[i].path === path) return true; }
+  return false;
+}
+function _pdfMergeToggle(path, name, cbEl) {
+  var idx = -1;
+  for (var i = 0; i < _pdfMergeSel.length; i++) { if (_pdfMergeSel[i].path === path) { idx = i; break; } }
+  if (idx >= 0) _pdfMergeSel.splice(idx, 1);
+  else _pdfMergeSel.push({ path: path, name: name });
+  if (cbEl) cbEl.checked = (idx < 0);
+  _pdfMergeUpdateBar();
+}
+function _pdfMergeClear() {
+  _pdfMergeSel = [];
+  document.querySelectorAll('.pdf-merge-cb').forEach(function(c){ c.checked = false; });
+  _pdfMergeUpdateBar();
+}
+function _pdfMergeUpdateBar() {
+  var bar = document.getElementById('pdf-merge-bar');
+  if (_pdfMergeSel.length === 0) { if (bar) bar.parentNode.removeChild(bar); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'pdf-merge-bar';
+    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9000;background:#1a3a5a;color:#fff;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 -2px 8px rgba(0,0,0,0.25);font-size:13px';
+    document.body.appendChild(bar);
+  }
+  var names = _pdfMergeSel.map(function(x, i){ return (i + 1) + '. ' + x.name; }).join('  ／  ');
+  bar.innerHTML = '';
+  var info = document.createElement('div');
+  info.style.cssText = 'flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  info.textContent = '📑 結合順 ' + names;
+  var runBtn = document.createElement('button');
+  runBtn.textContent = '🔗 ' + _pdfMergeSel.length + '件のPDFを結合';
+  runBtn.style.cssText = 'padding:7px 14px;background:#2a7a4a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:700;flex-shrink:0';
+  if (_pdfMergeSel.length < 2) { runBtn.disabled = true; runBtn.style.opacity = '0.5'; runBtn.style.cursor = 'default'; }
+  runBtn.addEventListener('click', _pdfMergeRun);
+  var clrBtn = document.createElement('button');
+  clrBtn.textContent = '✕ 選択解除';
+  clrBtn.style.cssText = 'padding:7px 12px;background:rgba(255,255,255,0.2);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;flex-shrink:0';
+  clrBtn.addEventListener('click', _pdfMergeClear);
+  bar.appendChild(info); bar.appendChild(runBtn); bar.appendChild(clrBtn);
+}
+function _pdfMergeReload() {
+  // 写真・図面タブ優先、なければフォルダータブを現在地で再描画
+  var ha = document.getElementById('haka-spec-photo-area');
+  if (ha && currentItem) { renderHakaSpecPhotoList(currentItem, _hakaSpecPhotoCat); return; }
+  var fe = document.getElementById('folder-explorer');
+  if (fe && _folderCurrentPath) { loadFolderExplorer(_folderCurrentPath, null, false); }
+}
+function _pdfMergeRun() {
+  if (_pdfMergeSel.length < 2) { alert('PDFを2つ以上選択してください'); return; }
+  var sel = _pdfMergeSel.slice();
+  var firstFolder = sel[0].path.replace(/\/[^\/]+$/, '');
+  var defName = '結合_' + sel[0].name.replace(/\.pdf$/i, '') + '_他' + (sel.length - 1) + '件.pdf';
+  var outName = prompt(sel.length + '件のPDFを選択順に結合します。\n結合後のファイル名を入力してください。\n（保存先: ' + firstFolder + ' / 元のファイルは残ります）', defName);
+  if (outName === null) return;
+  outName = (outName || '').trim();
+  if (!outName) return;
+  if (!/\.pdf$/i.test(outName)) outName += '.pdf';
+  var bar = document.getElementById('pdf-merge-bar');
+  if (bar) bar.innerHTML = '<div style="flex:1">⏳ 結合中… PDFを読み込んでいます</div>';
+  _loadPdfLib(function() {
+    if (!window.PDFLib) { alert('PDFライブラリの読み込みに失敗しました。通信環境を確認してください。'); _pdfMergeUpdateBar(); return; }
+    getToken().then(function(resp) {
+      var token = resp.accessToken;
+      return Promise.all(sel.map(function(item) {
+        var enc = item.path.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', { headers: { Authorization: 'Bearer ' + token } })
+          .then(function(r) { if (!r.ok) throw new Error(item.name + ' の取得に失敗 (' + r.status + ')'); return r.arrayBuffer(); });
+      })).then(function(buffers) {
+        return PDFLib.PDFDocument.create().then(function(merged) {
+          var chain = Promise.resolve();
+          buffers.forEach(function(buf) {
+            chain = chain.then(function() {
+              return PDFLib.PDFDocument.load(buf, { ignoreEncryption: true }).then(function(src) {
+                return merged.copyPages(src, src.getPageIndices()).then(function(pages) {
+                  pages.forEach(function(p) { merged.addPage(p); });
+                });
+              });
+            });
+          });
+          return chain.then(function() { return merged.save(); });
+        });
+      }).then(function(bytes) {
+        var uploadPath = firstFolder + '/' + outName;
+        var enc = uploadPath.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+          method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/pdf' }, body: bytes
+        }).then(function(r) { if (!r.ok) throw new Error('アップロードに失敗 (' + r.status + ')'); return r.json(); });
+      }).then(function() {
+        if (typeof showSaveToast === 'function') showSaveToast(true, 'PDFを結合しました: ' + outName);
+        else alert('PDFを結合しました: ' + outName);
+        _pdfMergeClear();
+        _pdfMergeReload();
+      });
+    }).catch(function(e) {
+      alert('結合エラー: ' + (e.message || e));
+      _pdfMergeUpdateBar();
+    });
+  });
+}
+
 function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
   var el = document.getElementById('folder-explorer');
   if (!el) return;
@@ -15131,6 +15253,7 @@ function folderGoUp() {
 function renderFolderContents(items, currentPath, token) {
   var el = document.getElementById('folder-explorer');
   if (!el) return;
+  _folderCurrentPath = currentPath;
 
   if (items.length === 0) {
     el.innerHTML = '';
@@ -15258,6 +15381,15 @@ function renderFolderContents(items, currentPath, token) {
       copyWrap.appendChild(thumbCopyBtn);
       copyWrap.appendChild(fileCopyBtn);
       cell.appendChild(copyWrap);
+      if (/\.pdf$/i.test(f.name)) {
+        var mcb = document.createElement('input');
+        mcb.type = 'checkbox'; mcb.className = 'pdf-merge-cb';
+        mcb.checked = _pdfMergeIsSelected(filePath);
+        mcb.title = 'PDF結合用に選択';
+        mcb.style.cssText = 'position:absolute;top:4px;left:4px;width:20px;height:20px;cursor:pointer;z-index:3';
+        mcb.addEventListener('click', function(e){ e.stopPropagation(); _pdfMergeToggle(filePath, f.name, this); });
+        cell.appendChild(mcb);
+      }
       var lbl = document.createElement('div');
       lbl.style.cssText = 'font-size:9px;color:#555;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
       lbl.textContent = f.name;
@@ -15330,6 +15462,15 @@ function _renderFolderFileRow(el, f, currentPath) {
     _showFolderItemMenu(e, f, currentPath);
   });
   row.appendChild(menuBtn);
+  if (ext === 'pdf') {
+    var mcb = document.createElement('input');
+    mcb.type = 'checkbox'; mcb.className = 'pdf-merge-cb';
+    mcb.checked = _pdfMergeIsSelected(filePath);
+    mcb.title = 'PDF結合用に選択';
+    mcb.style.cssText = 'width:17px;height:17px;flex-shrink:0;cursor:pointer;margin-right:2px';
+    mcb.addEventListener('click', function(e){ e.stopPropagation(); _pdfMergeToggle(filePath, f.name, this); });
+    row.insertBefore(mcb, row.firstChild);
+  }
   el.appendChild(row);
 }
 

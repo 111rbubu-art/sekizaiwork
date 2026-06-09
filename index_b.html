@@ -4259,32 +4259,43 @@ function callAIChat(system, user, onChunk, onDone, images) {
 // ===== AIチャット（仮・別ウィンドウで開く・履歴はそのウィンドウ内のみ） =====
 var _aiChatWin = null;
 var _aiImagePromise = null;
+var _spSiteAssetsDriveId = null;
 
 // SP石目画像をGraph API経由で取得してdataURL配列で返す
 function _fetchStoneImages(imagePaths) {
   var _siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-  return getToken().then(function(resp) {
+  function _doFetch(token, driveId) {
     return Promise.all(imagePaths.map(function(item) {
-      // serverRelativeUrl例: /sites/stoneworks/SiteAssets/Lists/.../稲田石2.png
-      // Graph APIパス: SiteAssets/Lists/.../稲田石2.png（/sites/stoneworks/を除去）
-      var relPath = item.path.replace(/^\/sites\/[^\/]+\//, '');
-      var apiUrl = 'https://graph.microsoft.com/v1.0/sites/' + _siteId + '/drive/root:/' + encodeURIComponent(relPath).replace(/%2F/g, '/') + ':/content';
-      return fetch(apiUrl, {
-        headers: { 'Authorization': 'Bearer ' + resp.accessToken }
-      }).then(function(r) {
-        if (!r.ok) throw new Error(r.status);
-        return r.blob();
-      }).then(function(blob) {
-        return new Promise(function(resolve) {
-          var reader = new FileReader();
-          reader.onload = function() { resolve({ name: item.name, dataUrl: reader.result }); };
-          reader.readAsDataURL(blob);
-        });
-      }).catch(function() { return null; });
+      // serverRelativeUrl: /sites/stoneworks/SiteAssets/Lists/.../稲田石2.png
+      // SiteAssets drive内パス: Lists/.../稲田石2.png
+      var relPath = item.path.replace(/^\/sites\/[^\/]+\/SiteAssets\//, '');
+      var apiUrl = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:/' + encodeURIComponent(relPath).replace(/%2F/g, '/') + ':/content';
+      return fetch(apiUrl, { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
+        .then(function(blob) {
+          return new Promise(function(resolve) {
+            var reader = new FileReader();
+            reader.onload = function() { resolve({ name: item.name, dataUrl: reader.result }); };
+            reader.readAsDataURL(blob);
+          });
+        }).catch(function() { return null; });
     }));
-  }).then(function(results) {
-    return results.filter(Boolean);
-  }).catch(function() { return []; });
+  }
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    if (_spSiteAssetsDriveId) return _doFetch(token, _spSiteAssetsDriveId);
+    // SiteAssetsライブラリのDrive IDを取得してキャッシュ
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/drives', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      var drives = data.value || [];
+      drives.forEach(function(d) { if (/site.?assets/i.test(d.name)) _spSiteAssetsDriveId = d.id; });
+      if (!_spSiteAssetsDriveId) throw new Error('SiteAssets drive not found');
+      return _doFetch(token, _spSiteAssetsDriveId);
+    });
+  }).then(function(results) { return results.filter(Boolean); })
+  .catch(function() { return []; });
 }
 function openAIChat() {
   // 既に開いていれば前面に
@@ -5164,7 +5175,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.081';
+var APP_VERSION = 'v1.9.082';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

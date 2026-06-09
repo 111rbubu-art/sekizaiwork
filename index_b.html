@@ -2451,9 +2451,6 @@ function _fetchStonePriceListItems() {
       'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + STONE_PRICE_LIST_ID + '/items?$expand=fields&$top=500',
       resp.accessToken
     );
-  }).then(function(items) {
-    if (items && items[0]) console.log('[石材価格] 1件目のフィールドキー一覧:', Object.keys(items[0]).sort().join(', '));
-    return items;
   });
 }
 
@@ -3086,45 +3083,29 @@ function closeStonePriceDialog() {
 // 解決値: { data, removed:[除外したフィールド名] }
 // SP側フィールド内部名→アプリ側キーの対応（エラーメッセージに SP内部名が出る場合の対応）
 var _SP_FIELD_ALIAS = { 'FileLeafRef': 'name', 'LinkTitle': 'Title', 'LinkFilename': 'name' };
-// 500エラー時に優先的に除外を試みるSP予約/計算列候補
-var _SP_RESERVED_TRY = ['name', 'cost', 'FileLeafRef', 'LinkTitle'];
-function _spSubmitFields(url, method, token, fields, removed, _retry500) {
+function _spSubmitFields(url, method, token, fields, removed) {
   removed = removed || [];
-  _retry500 = _retry500 || 0;
-  return fetch(url, {
+  // PATCH: /items/{id}/fields エンドポイント＋フラットボディ（nameフィールド等の500回避）
+  // POST:  /items エンドポイント＋{ fields: {} } ラッパー
+  var isPatch = (method === 'PATCH');
+  var apiUrl = isPatch ? url.replace(/\/fields$/, '') + '/fields' : url;
+  var bodyObj = isPatch ? fields : { fields: fields };
+  return fetch(apiUrl, {
     method: method,
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fields: fields })
+    body: JSON.stringify(bodyObj)
   }).then(function(r) {
     if (r.ok) return r.json().then(function(j) { return { data: j, removed: removed }; });
-    // 500エラー: SP が詳細情報を返さない場合、予約フィールド候補を順次除外して再試行
-    if (r.status === 500) {
-      console.error('[石材価格保存] 500エラー (retry=' + _retry500 + ') 送信フィールド:', Object.keys(fields).join(','));
-      if (_retry500 < _SP_RESERVED_TRY.length) {
-        var candidate = _SP_RESERVED_TRY[_retry500];
-        var targetKey = Object.prototype.hasOwnProperty.call(fields, candidate) ? candidate
-          : (_SP_FIELD_ALIAS[candidate] && Object.prototype.hasOwnProperty.call(fields, _SP_FIELD_ALIAS[candidate]) ? _SP_FIELD_ALIAS[candidate] : null);
-        if (targetKey) {
-          delete fields[targetKey];
-          removed.push(targetKey);
-          if (Object.keys(fields).length === 0) throw new Error('保存できる項目がありません');
-          return _spSubmitFields(url, method, token, fields, removed, _retry500 + 1);
-        }
-        return _spSubmitFields(url, method, token, fields, removed, _retry500 + 1);
-      }
-      throw new Error('Internal Server Error (500) - 送信フィールドを確認してください');
-    }
     return r.json().then(function(e) {
       var msg = (e && e.error && e.error.message) || ('HTTP ' + r.status);
       console.error('[石材価格保存] SPエラー:', JSON.stringify(e), '| 送信フィールド:', Object.keys(fields).join(','));
-      // 各種 read-only / 無効フィールドエラーパターン（ハイフンあり/なし・引用符の種類不問）
+      // 各種 read-only / 無効フィールドエラーパターン
       var fieldMatch =
         msg.match(/Field ['"]([^'"]+)['"] is read[- ]only/i) ||
         msg.match(/['"]([^'"]+)['"] is read[- ]only/i) ||
         msg.match(/read[- ]only field ['"]([^'"]+)['"]/i) ||
         msg.match(/column ['"]([^'"]+)['"] is read[- ]only/i) ||
-        msg.match(/Cannot set.*['"]([^'"]+)['"]/i) ||
-        msg.match(/Invalid value.*field ['"]([^'"]+)['"]/i);
+        msg.match(/Cannot set.*['"]([^'"]+)['"]/i);
       if (fieldMatch && fieldMatch[1]) {
         var errField = fieldMatch[1];
         var targetKey = Object.prototype.hasOwnProperty.call(fields, errField) ? errField
@@ -3133,7 +3114,7 @@ function _spSubmitFields(url, method, token, fields, removed, _retry500) {
           delete fields[targetKey];
           removed.push(targetKey);
           if (Object.keys(fields).length === 0) throw new Error('保存できる項目がありません（すべて読み取り専用）');
-          return _spSubmitFields(url, method, token, fields, removed, _retry500);
+          return _spSubmitFields(url, method, token, fields, removed);
         }
       }
       throw new Error(msg);
@@ -5484,7 +5465,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.103';
+var APP_VERSION = 'v1.9.104';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

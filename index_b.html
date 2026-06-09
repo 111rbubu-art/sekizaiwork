@@ -4266,8 +4266,7 @@ function _fetchStoneImages(imagePaths) {
   var _siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   function _doFetch(token, driveId) {
     return Promise.all(imagePaths.map(function(item) {
-      // serverRelativeUrl形式: /SiteAssets/Lists/.../稲田石2.png  または  /sites/name/SiteAssets/Lists/.../稲田石2.png
-      // SiteAssetsドライブ内パス: Lists/.../稲田石2.png
+      console.log('[石目画像] path:', item.path);
       var relPath = item.path
         .replace(/^\/sites\/[^\/]+\/SiteAssets\//, '')
         .replace(/^\/?SiteAssets\//, '');
@@ -4284,35 +4283,37 @@ function _fetchStoneImages(imagePaths) {
         }).catch(function(e) { console.warn('[石目画像] エラー:', apiUrl, e); return null; });
     }));
   }
-  function _getSiteAssetsDriveId(token) {
-    // /drivesではSiteAssetsが出ない場合、/listsエンドポイントで探す
-    return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/lists?$select=id,name,webUrl', {
+  function _tryGetDrive(token, siteId) {
+    // SiteAssetsに直接アクセス（非表示リストも含む）
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/SiteAssets/drive', {
       headers: { 'Authorization': 'Bearer ' + token }
-    }).then(function(r) { return r.json(); })
-    .then(function(data) {
-      var lists = data.value || [];
-      console.log('[石目画像] lists:', lists.map(function(l){ return l.name + ' | ' + l.webUrl; }));
-      var saList = null;
-      lists.forEach(function(l) {
-        if (/site.?assets/i.test(l.name || '') || /\/SiteAssets$/i.test(l.webUrl || '')) saList = l;
-      });
-      if (!saList) throw new Error('SiteAssets not found in lists');
-      return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/lists/' + saList.id + '/drive', {
-        headers: { 'Authorization': 'Bearer ' + token }
-      }).then(function(r) { return r.json(); })
-      .then(function(d) {
-        console.log('[石目画像] SiteAssets drive via list:', d.id, d.name);
-        if (!d.id) throw new Error('SiteAssets drive not accessible');
-        return d.id;
-      });
-    });
+    }).then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { return (d && d.id) ? d.id : null; });
   }
   return getToken().then(function(resp) {
     var token = resp.accessToken;
     if (_spSiteAssetsDriveId) return _doFetch(token, _spSiteAssetsDriveId);
-    return _getSiteAssetsDriveId(token).then(function(driveId) {
-      _spSiteAssetsDriveId = driveId;
-      return _doFetch(token, driveId);
+    // まずstoneworksサイトのSiteAssetsを試す
+    return _tryGetDrive(token, _siteId).then(function(driveId) {
+      if (driveId) {
+        console.log('[石目画像] stoneworks SiteAssets driveId:', driveId);
+        _spSiteAssetsDriveId = driveId;
+        return _doFetch(token, driveId);
+      }
+      // serverRelativeUrlが /SiteAssets/... の場合、rootサイト配下の可能性
+      console.log('[石目画像] stoneworks SiteAssets未検出 → rootサイトを試す');
+      return fetch('https://graph.microsoft.com/v1.0/sites/root', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      }).then(function(r) { return r.json(); })
+      .then(function(rootSite) {
+        console.log('[石目画像] rootサイト:', rootSite.id, rootSite.webUrl);
+        return _tryGetDrive(token, rootSite.id).then(function(driveId2) {
+          if (!driveId2) throw new Error('SiteAssets drive not found (stoneworks & root)');
+          console.log('[石目画像] rootサイト SiteAssets driveId:', driveId2);
+          _spSiteAssetsDriveId = driveId2;
+          return _doFetch(token, driveId2);
+        });
+      });
     });
   }).then(function(results) { return results.filter(Boolean); })
   .catch(function(e) { console.warn('[石目画像] 全体エラー:', e); return []; });
@@ -5195,7 +5196,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.085';
+var APP_VERSION = 'v1.9.086';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

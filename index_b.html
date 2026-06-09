@@ -4284,24 +4284,35 @@ function _fetchStoneImages(imagePaths) {
         }).catch(function(e) { console.warn('[石目画像] エラー:', apiUrl, e); return null; });
     }));
   }
-  return getToken().then(function(resp) {
-    var token = resp.accessToken;
-    if (_spSiteAssetsDriveId) return _doFetch(token, _spSiteAssetsDriveId);
-    // SiteAssetsライブラリのDrive IDを取得してキャッシュ
-    return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/drives', {
+  function _getSiteAssetsDriveId(token) {
+    // /drivesではSiteAssetsが出ない場合、/listsエンドポイントで探す
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/lists?$select=id,name,webUrl', {
       headers: { 'Authorization': 'Bearer ' + token }
     }).then(function(r) { return r.json(); })
     .then(function(data) {
-      var drives = data.value || [];
-      console.log('[石目画像] drives:', drives.map(function(d){ return d.name + ' | ' + d.webUrl; }));
-      drives.forEach(function(d) {
-        if (/site.?assets/i.test(d.name || '') || /\/SiteAssets$/i.test(d.webUrl || '')) {
-          _spSiteAssetsDriveId = d.id;
-        }
+      var lists = data.value || [];
+      console.log('[石目画像] lists:', lists.map(function(l){ return l.name + ' | ' + l.webUrl; }));
+      var saList = null;
+      lists.forEach(function(l) {
+        if (/site.?assets/i.test(l.name || '') || /\/SiteAssets$/i.test(l.webUrl || '')) saList = l;
       });
-      if (!_spSiteAssetsDriveId) throw new Error('SiteAssets drive not found');
-      console.log('[石目画像] SiteAssets driveId:', _spSiteAssetsDriveId);
-      return _doFetch(token, _spSiteAssetsDriveId);
+      if (!saList) throw new Error('SiteAssets not found in lists');
+      return fetch('https://graph.microsoft.com/v1.0/sites/' + _siteId + '/lists/' + saList.id + '/drive', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        console.log('[石目画像] SiteAssets drive via list:', d.id, d.name);
+        if (!d.id) throw new Error('SiteAssets drive not accessible');
+        return d.id;
+      });
+    });
+  }
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    if (_spSiteAssetsDriveId) return _doFetch(token, _spSiteAssetsDriveId);
+    return _getSiteAssetsDriveId(token).then(function(driveId) {
+      _spSiteAssetsDriveId = driveId;
+      return _doFetch(token, driveId);
     });
   }).then(function(results) { return results.filter(Boolean); })
   .catch(function(e) { console.warn('[石目画像] 全体エラー:', e); return []; });
@@ -5184,7 +5195,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.084';
+var APP_VERSION = 'v1.9.085';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

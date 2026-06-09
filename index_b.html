@@ -2703,12 +2703,17 @@ function openStonePriceFromLink(id) {
 }
 
 function openStonePriceScreen() {
+  _stonePendingEdits = {};
+  _stonePendingDeletes = {};
   document.getElementById('stone-price-list-screen').classList.remove('hidden');
   document.getElementById('stone-price-search').value = '';
   loadStonePriceList();
 }
 
 function closeStonePriceScreen() {
+  if (_stonePendingCount().total > 0 && !confirm('未保存の変更があります。破棄して閉じますか？')) return;
+  _stonePendingEdits = {};
+  _stonePendingDeletes = {};
   document.getElementById('stone-price-list-screen').classList.add('hidden');
 }
 
@@ -2768,28 +2773,41 @@ function _stoneTabBtn(tab, label) {
   return '<button onclick="_setStonePriceTab(\'' + tab + '\')" style="padding:8px 18px;border:1px solid #1a2535;border-bottom:none;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-family:inherit;font-weight:600;' +
     (active ? 'background:#1a2535;color:#fff' : 'background:#fff;color:#1a2535') + '">' + label + '</button>';
 }
-function _stoneCellHtml(it, f) {
-  var val = (it[f.key] != null) ? it[f.key] : '';
+// 編集は即SP反映せず、保存ボタンで一括反映するためのペンディング管理
+var _stonePendingEdits = {};   // { itemId: { fieldKey: newValue, ... } }
+var _stonePendingDeletes = {}; // { itemId: true }
+function _stoneFindItem(id) {
+  for (var i = 0; i < _stonePriceItems.length; i++) { if (String(_stonePriceItems[i].id) === String(id)) return _stonePriceItems[i]; }
+  return null;
+}
+function _stoneCellHtml(it, f, disabled) {
+  var pe = _stonePendingEdits[it.id];
+  var hasPending = pe && Object.prototype.hasOwnProperty.call(pe, f.key);
+  var val = hasPending ? pe[f.key] : ((it[f.key] != null) ? it[f.key] : '');
   var idAttr = ' data-id="' + _esc(String(it.id)) + '" data-field="' + f.key + '" data-type="' + f.type + '"';
-  var commonStyle = 'width:100%;box-sizing:border-box;border:1px solid #e2e2e2;border-radius:4px;padding:4px 6px;font-size:12px;font-family:inherit;background:#fff';
+  var dis = disabled ? ' disabled' : '';
+  var bdr = hasPending ? '2px solid #e8a33d' : '1px solid #e2e2e2';
+  var bg  = hasPending ? '#fff6e0' : '#fff';
+  var commonStyle = 'width:100%;box-sizing:border-box;border:' + bdr + ';border-radius:4px;padding:4px 6px;font-size:12px;font-family:inherit;background:' + bg;
   if (f.type === 'checkbox') {
     var checked = (val === true || val === 'true') ? ' checked' : '';
-    return '<input type="checkbox"' + idAttr + checked + ' onchange="_stoneCellSave(this)" style="width:17px;height:17px;cursor:pointer">';
+    var ol = hasPending ? ';outline:2px solid #e8a33d' : '';
+    return '<input type="checkbox"' + idAttr + checked + dis + ' onchange="_stoneCellEdit(this)" style="width:17px;height:17px;cursor:pointer' + ol + '">';
   }
   if (f.type === 'date') {
     var dval = val ? String(val).slice(0, 10) : '';
-    return '<input type="date"' + idAttr + ' value="' + _esc(dval) + '" onchange="_stoneCellSave(this)" style="' + commonStyle + '">';
+    return '<input type="date"' + idAttr + dis + ' value="' + _esc(dval) + '" onchange="_stoneCellEdit(this)" style="' + commonStyle + '">';
   }
   if (f.type === 'number') {
     var stepAttr = f.step ? ' step="' + f.step + '"' : '';
-    return '<input type="number"' + idAttr + stepAttr + ' value="' + _esc(String(val)) + '" onchange="_stoneCellSave(this)" style="' + commonStyle + ';text-align:right">';
+    return '<input type="number"' + idAttr + stepAttr + dis + ' value="' + _esc(String(val)) + '" onchange="_stoneCellEdit(this)" style="' + commonStyle + ';text-align:right">';
   }
   if (f.type === 'textarea') {
     // 特徴・備考は改行可・4行表示
-    return '<textarea' + idAttr + ' rows="4" onchange="_stoneCellSave(this)" style="' + commonStyle + ';resize:vertical;white-space:pre-wrap;line-height:1.35;min-height:74px">' + _esc(String(val)) + '</textarea>';
+    return '<textarea' + idAttr + dis + ' rows="4" onchange="_stoneCellEdit(this)" style="' + commonStyle + ';resize:vertical;white-space:pre-wrap;line-height:1.35;min-height:74px">' + _esc(String(val)) + '</textarea>';
   }
   // text は1行入力
-  return '<input type="text"' + idAttr + ' value="' + _esc(String(val)) + '" onchange="_stoneCellSave(this)" style="' + commonStyle + '">';
+  return '<input type="text"' + idAttr + dis + ' value="' + _esc(String(val)) + '" onchange="_stoneCellEdit(this)" style="' + commonStyle + '">';
 }
 function renderStonePriceList(items) {
   var el = document.getElementById('stone-price-list-container');
@@ -2805,8 +2823,8 @@ function renderStonePriceList(items) {
     return null;
   }).filter(Boolean);
   var headBg = '#1a2535';
-  var html = tabsHtml;
-  html += '<div style="overflow:auto;max-height:calc(100vh - 180px);border-radius:0 10px 10px 10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);border:1px solid #1a2535">';
+  var html = tabsHtml + _stoneSaveBarHtml();
+  html += '<div style="overflow:auto;max-height:calc(100vh - 210px);border-radius:0 10px 10px 10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);border:1px solid #1a2535">';
   html += '<table style="border-collapse:separate;border-spacing:0;font-size:12px;background:#fff;white-space:nowrap">';
   // ヘッダー
   html += '<thead><tr>';
@@ -2817,87 +2835,163 @@ function renderStonePriceList(items) {
       : 'position:sticky;top:0;z-index:2;';
     html += '<th style="' + sticky + 'background:' + headBg + ';color:#fff;font-weight:500;padding:8px 8px;text-align:left;min-width:' + w + 'px;width:' + w + 'px;border-right:1px solid #2a3545">' + _esc(f.label) + '</th>';
   });
-  html += '<th style="position:sticky;top:0;z-index:2;background:' + headBg + ';color:#fff;font-weight:500;padding:8px 8px;text-align:center;min-width:80px;width:80px">操作</th>';
+  html += '<th style="position:sticky;top:0;z-index:2;background:' + headBg + ';color:#fff;font-weight:500;padding:8px 8px;text-align:center;min-width:90px;width:90px">操作</th>';
   html += '</tr></thead><tbody>';
   // 各行
   items.forEach(function(it, i) {
-    var bg = i % 2 === 0 ? '#ffffff' : '#f7f9fb';
-    html += '<tr>';
+    var willDel = !!_stonePendingDeletes[it.id];
+    var bg = willDel ? '#f3e0e0' : (i % 2 === 0 ? '#ffffff' : '#f7f9fb');
+    html += '<tr data-rowid="' + _esc(String(it.id)) + '"' + (willDel ? ' style="opacity:0.55"' : '') + '>';
     fields.forEach(function(f) {
       var w = _stoneColW(f);
       var sticky = (f.key === 'Title') ? 'position:sticky;left:0;z-index:1;' : '';
-      html += '<td style="' + sticky + 'background:' + bg + ';padding:4px 6px;border-bottom:1px solid #eee;border-right:1px solid #f0f0f0;min-width:' + w + 'px;width:' + w + 'px;text-align:' + (f.type === 'checkbox' ? 'center' : 'left') + '">' + _stoneCellHtml(it, f) + '</td>';
+      var deco = willDel ? ';text-decoration:line-through' : '';
+      html += '<td style="' + sticky + 'background:' + bg + ';padding:4px 6px;border-bottom:1px solid #eee;border-right:1px solid #f0f0f0;min-width:' + w + 'px;width:' + w + 'px;text-align:' + (f.type === 'checkbox' ? 'center' : 'left') + deco + '">' + _stoneCellHtml(it, f, willDel) + '</td>';
     });
-    html += '<td style="background:' + bg + ';padding:4px 6px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap">' +
-      '<button onclick="_openStonePriceById(\'' + _esc(String(it.id)) + '\')" title="詳細編集・画像" style="background:none;border:1px solid #ccc;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:13px;margin-right:3px">✏️</button>' +
-      '<button onclick="_stoneRowDelete(\'' + _esc(String(it.id)) + '\')" title="削除" style="background:none;border:1px solid #e0b0b0;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:13px">🗑️</button>' +
-      '</td>';
+    var actBtns = willDel
+      ? '<button onclick="_stoneRowToggleDelete(\'' + _esc(String(it.id)) + '\')" title="削除を取り消す" style="background:#fff;border:1px solid #b08;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:11px;color:#a04;font-family:inherit">↩ 取消</button>'
+      : '<button onclick="_openStonePriceById(\'' + _esc(String(it.id)) + '\')" title="詳細編集・画像" style="background:none;border:1px solid #ccc;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:13px;margin-right:3px">✏️</button>' +
+        '<button onclick="_stoneRowToggleDelete(\'' + _esc(String(it.id)) + '\')" title="削除予定にする" style="background:none;border:1px solid #e0b0b0;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:13px">🗑️</button>';
+    html += '<td style="background:' + bg + ';padding:4px 6px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap">' + actBtns + '</td>';
     html += '</tr>';
   });
   html += '</tbody></table></div>';
-  html += '<div style="font-size:11px;color:#999;margin-top:6px;padding:0 2px">各セルを直接編集すると自動保存されます（石材名は固定列）。✏️で画像・詳細編集、🗑️で削除。</div>';
+  html += '<div style="font-size:11px;color:#999;margin-top:6px;padding:0 2px">セルを編集すると変更がオレンジ枠で表示されます。🗑️は削除予定（取消可）。<b>「💾 SPへ保存」を押すまでSharePointには反映されません。</b></div>';
   el.innerHTML = html;
 }
 
 var _STONE_SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-function _stoneCellSave(el) {
+function _stonePendingCount() {
+  var nE = 0, nD = Object.keys(_stonePendingDeletes).length;
+  Object.keys(_stonePendingEdits).forEach(function(id) {
+    if (!_stonePendingDeletes[id]) nE += Object.keys(_stonePendingEdits[id]).length;
+  });
+  return { edits: nE, dels: nD, total: nE + nD };
+}
+function _stoneSaveBarText() {
+  var c = _stonePendingCount();
+  return '⚠️ 未保存の変更：編集 ' + c.edits + ' 項目 / 削除 ' + c.dels + ' 件';
+}
+function _stoneSaveBarHtml() {
+  var has = _stonePendingCount().total > 0;
+  return '<div id="stone-save-bar" style="display:' + (has ? 'flex' : 'none') + ';align-items:center;gap:10px;flex-wrap:wrap;background:#fff3e0;border:1px solid #e8a33d;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px;color:#8a5a00">' +
+    '<span id="stone-save-bar-txt" style="flex:1;min-width:170px;font-weight:600">' + _stoneSaveBarText() + '</span>' +
+    '<button id="stone-save-bar-btn" onclick="_stoneSavePending()" style="padding:7px 16px;background:#2a7a4a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit">💾 SPへ保存</button>' +
+    '<button onclick="_stoneDiscardPending()" style="padding:7px 12px;background:#fff;color:#8a5a00;border:1px solid #e8a33d;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">変更を破棄</button>' +
+    '</div>';
+}
+function _stoneUpdateSaveBar() {
+  var bar = document.getElementById('stone-save-bar');
+  if (!bar) return;
+  var has = _stonePendingCount().total > 0;
+  bar.style.display = has ? 'flex' : 'none';
+  var txt = document.getElementById('stone-save-bar-txt');
+  if (txt) txt.textContent = _stoneSaveBarText();
+}
+function _stoneCellEdit(el) {
   var id = el.getAttribute('data-id');
   var key = el.getAttribute('data-field');
   var ftype = el.getAttribute('data-type');
-  var item = null;
-  for (var i = 0; i < _stonePriceItems.length; i++) { if (String(_stonePriceItems[i].id) === String(id)) { item = _stonePriceItems[i]; break; } }
+  var item = _stoneFindItem(id);
   if (!item) return;
   var newVal;
   if (ftype === 'checkbox') newVal = el.checked;
   else if (ftype === 'number') { var v = el.value; newVal = (v === '' || v == null) ? null : Number(v); }
   else if (ftype === 'date') newVal = el.value ? el.value : null;
   else newVal = el.value;
-  if (key === 'Title' && (!newVal || !String(newVal).trim())) { alert('石材名は必須です'); el.value = item.Title || ''; return; }
-  // 変更なしならスキップ
-  if (ftype === 'checkbox') { if (!!item[key] === !!newVal) return; }
-  else {
-    var curStr = (item[key] == null ? '' : String(item[key]));
-    var nvStr = (newVal == null ? '' : String(newVal));
-    if (ftype === 'date') curStr = curStr.slice(0, 10);
-    if (curStr === nvStr) return;
+  if (key === 'Title' && (!newVal || !String(newVal).trim())) {
+    alert('石材名は必須です');
+    var pe0 = _stonePendingEdits[id];
+    el.value = (pe0 && 'Title' in pe0) ? pe0.Title : (item.Title || '');
+    return;
   }
-  el.style.background = '#fff8d0';
+  // 元の値と比較
+  var same;
+  if (ftype === 'checkbox') same = (!!item[key] === !!newVal);
+  else {
+    var a = (item[key] == null ? '' : String(item[key]));
+    var b = (newVal == null ? '' : String(newVal));
+    if (ftype === 'date') a = a.slice(0, 10);
+    same = (a === b);
+  }
+  if (!_stonePendingEdits[id]) _stonePendingEdits[id] = {};
+  if (same) {
+    delete _stonePendingEdits[id][key];
+    if (!Object.keys(_stonePendingEdits[id]).length) delete _stonePendingEdits[id];
+  } else {
+    _stonePendingEdits[id][key] = newVal;
+  }
+  // セルの変更マーク
+  if (ftype === 'checkbox') { el.style.outline = same ? '' : '2px solid #e8a33d'; }
+  else { el.style.border = same ? '1px solid #e2e2e2' : '2px solid #e8a33d'; el.style.background = same ? '#fff' : '#fff6e0'; }
+  _stoneUpdateSaveBar();
+}
+function _stoneRowToggleDelete(id) {
+  if (_stonePendingDeletes[id]) delete _stonePendingDeletes[id];
+  else _stonePendingDeletes[id] = true;
+  filterStonePriceList(); // 行の見た目（取消線・無効化）を反映
+}
+function _stoneSavePending() {
+  var SP = 'https://graph.microsoft.com/v1.0/sites/' + _STONE_SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items/';
+  var delIds = Object.keys(_stonePendingDeletes);
+  var editIds = Object.keys(_stonePendingEdits).filter(function(id) { return !_stonePendingDeletes[id]; });
+  if (!editIds.length && !delIds.length) return;
+  if (delIds.length) {
+    if (!confirm('削除 ' + delIds.length + ' 件を SharePoint に反映します。\nこの削除は元に戻せません。よろしいですか？')) return;
+  }
+  var btn = document.getElementById('stone-save-bar-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 保存中...'; }
   getToken().then(function(resp) {
-    var body = {}; body[key] = newVal;
-    return fetch('https://graph.microsoft.com/v1.0/sites/' + _STONE_SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items/' + id, {
-      method: 'PATCH',
-      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: body })
+    var token = resp.accessToken;
+    var jobs = [];
+    editIds.forEach(function(id) {
+      jobs.push({ type: 'edit', id: id, p: fetch(SP + id, {
+        method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: _stonePendingEdits[id] })
+      }) });
     });
-  }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
-    item[key] = newVal;
-    el.style.background = '#e7f7e7';
-    setTimeout(function() { el.style.background = '#fff'; }, 800);
+    delIds.forEach(function(id) {
+      jobs.push({ type: 'del', id: id, p: fetch(SP + id, {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + token }
+      }) });
+    });
+    return Promise.all(jobs.map(function(j) {
+      return j.p.then(function(r) {
+        if (!r.ok && !(j.type === 'del' && r.status === 204)) {
+          return r.text().then(function(t) { return { ok: false, id: j.id, type: j.type, msg: t }; });
+        }
+        return { ok: true, id: j.id, type: j.type };
+      }).catch(function(e) { return { ok: false, id: j.id, type: j.type, msg: String(e) }; });
+    }));
+  }).then(function(results) {
+    var fails = 0;
+    results.forEach(function(x) {
+      if (x.ok) {
+        if (x.type === 'edit') {
+          var it = _stoneFindItem(x.id);
+          if (it && _stonePendingEdits[x.id]) { Object.keys(_stonePendingEdits[x.id]).forEach(function(k) { it[k] = _stonePendingEdits[x.id][k]; }); }
+          delete _stonePendingEdits[x.id];
+        } else {
+          delete _stonePendingDeletes[x.id];
+        }
+      } else { fails++; }
+    });
+    if (fails) showSaveToast(false, fails + ' 件の保存に失敗しました（未反映分は残っています）');
+    else showSaveToast(true, '✅ SharePointに保存しました');
     _syncStonePriceToAIQuiet();
+    loadStonePriceList();
   }).catch(function(e) {
-    el.style.background = '#ffe0e0';
-    showSaveToast(false, '保存失敗: ' + e.message);
+    showSaveToast(false, '保存エラー: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '💾 SPへ保存'; }
   });
 }
-function _stoneRowDelete(id) {
-  var item = null;
-  for (var i = 0; i < _stonePriceItems.length; i++) { if (String(_stonePriceItems[i].id) === String(id)) { item = _stonePriceItems[i]; break; } }
-  if (!item) return;
-  if (!confirm('「' + (item.Title || '') + '」を削除しますか？')) return;
-  getToken().then(function(resp) {
-    return fetch('https://graph.microsoft.com/v1.0/sites/' + _STONE_SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items/' + id, {
-      method: 'DELETE',
-      headers: { 'Authorization': 'Bearer ' + resp.accessToken }
-    });
-  }).then(function(r) {
-    if (!r.ok && r.status !== 204) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
-    showSaveToast(true, '✅ 削除しました');
-    loadStonePriceList();
-    _syncStonePriceToAIQuiet();
-  }).catch(function(e) {
-    showSaveToast(false, '削除失敗: ' + e.message);
-  });
+function _stoneDiscardPending() {
+  if (_stonePendingCount().total > 0 && !confirm('未保存の変更をすべて破棄しますか？')) return;
+  _stonePendingEdits = {};
+  _stonePendingDeletes = {};
+  filterStonePriceList();
 }
 
 function _openStonePriceById(id) {
@@ -5320,7 +5414,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.097';
+var APP_VERSION = 'v1.9.098';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

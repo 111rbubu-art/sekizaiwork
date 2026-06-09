@@ -3081,6 +3081,8 @@ function closeStonePriceDialog() {
 
 // SharePointへfields送信。read-only列があれば自動除外して再試行する
 // 解決値: { data, removed:[除外したフィールド名] }
+// SP側フィールド内部名→アプリ側キーの対応（エラーメッセージに SP内部名が出る場合の対応）
+var _SP_FIELD_ALIAS = { 'FileLeafRef': 'name', 'LinkTitle': 'Title', 'LinkFilename': 'name' };
 function _spSubmitFields(url, method, token, fields, removed) {
   removed = removed || [];
   return fetch(url, {
@@ -3091,12 +3093,26 @@ function _spSubmitFields(url, method, token, fields, removed) {
     if (r.ok) return r.json().then(function(j) { return { data: j, removed: removed }; });
     return r.json().then(function(e) {
       var msg = (e && e.error && e.error.message) || ('HTTP ' + r.status);
-      var m = msg.match(/Field '([^']+)' is read-only/i);
-      if (m && m[1] && Object.prototype.hasOwnProperty.call(fields, m[1])) {
-        delete fields[m[1]];
-        removed.push(m[1]);
-        if (Object.keys(fields).length === 0) throw new Error('保存できる項目がありません（すべて読み取り専用）');
-        return _spSubmitFields(url, method, token, fields, removed);
+      console.error('[石材価格保存] SPエラー:', JSON.stringify(e), '| 送信フィールド:', Object.keys(fields).join(','));
+      // 各種 read-only / 無効フィールドエラーパターン（ハイフンあり/なし・引用符の種類不問）
+      var fieldMatch =
+        msg.match(/Field ['"]([^'"]+)['"] is read[- ]only/i) ||
+        msg.match(/['"]([^'"]+)['"] is read[- ]only/i) ||
+        msg.match(/read[- ]only field ['"]([^'"]+)['"]/i) ||
+        msg.match(/column ['"]([^'"]+)['"] is read[- ]only/i) ||
+        msg.match(/Cannot set.*['"]([^'"]+)['"]/i) ||
+        msg.match(/Invalid value.*field ['"]([^'"]+)['"]/i);
+      if (fieldMatch && fieldMatch[1]) {
+        var errField = fieldMatch[1];
+        // エラーフィールド名がそのまま fields に存在するか、エイリアス経由で存在するか
+        var targetKey = Object.prototype.hasOwnProperty.call(fields, errField) ? errField
+          : (_SP_FIELD_ALIAS[errField] && Object.prototype.hasOwnProperty.call(fields, _SP_FIELD_ALIAS[errField]) ? _SP_FIELD_ALIAS[errField] : null);
+        if (targetKey) {
+          delete fields[targetKey];
+          removed.push(targetKey);
+          if (Object.keys(fields).length === 0) throw new Error('保存できる項目がありません（すべて読み取り専用）');
+          return _spSubmitFields(url, method, token, fields, removed);
+        }
       }
       throw new Error(msg);
     });
@@ -5446,7 +5462,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.100';
+var APP_VERSION = 'v1.9.101';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

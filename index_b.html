@@ -2945,11 +2945,8 @@ function _stoneSavePending() {
     var token = resp.accessToken;
     var jobs = [];
     editIds.forEach(function(id) {
-      jobs.push({ type: 'edit', id: id, p: fetch(SP + id, {
-        method: 'PATCH',
-        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: _stonePendingEdits[id] })
-      }) });
+      // read-only列(cost等)があれば自動除外して再試行
+      jobs.push({ type: 'edit', id: id, p: _spSubmitFields(SP + id, 'PATCH', token, Object.assign({}, _stonePendingEdits[id]), []) });
     });
     delIds.forEach(function(id) {
       jobs.push({ type: 'del', id: id, p: fetch(SP + id, {
@@ -2958,28 +2955,39 @@ function _stoneSavePending() {
       }) });
     });
     return Promise.all(jobs.map(function(j) {
+      if (j.type === 'edit') {
+        return j.p.then(function(res) { return { ok: true, id: j.id, type: 'edit', removed: (res && res.removed) || [] }; })
+          .catch(function(e) { return { ok: false, id: j.id, type: 'edit', msg: String(e && e.message || e) }; });
+      }
       return j.p.then(function(r) {
-        if (!r.ok && !(j.type === 'del' && r.status === 204)) {
-          return r.text().then(function(t) { return { ok: false, id: j.id, type: j.type, msg: t }; });
+        if (!r.ok && r.status !== 204 && r.status !== 404) {
+          return r.text().then(function(t) { return { ok: false, id: j.id, type: 'del', msg: t }; });
         }
-        return { ok: true, id: j.id, type: j.type };
-      }).catch(function(e) { return { ok: false, id: j.id, type: j.type, msg: String(e) }; });
+        return { ok: true, id: j.id, type: 'del' };
+      }).catch(function(e) { return { ok: false, id: j.id, type: 'del', msg: String(e) }; });
     }));
   }).then(function(results) {
     var fails = 0;
+    var removedAll = {};
     results.forEach(function(x) {
       if (x.ok) {
         if (x.type === 'edit') {
           var it = _stoneFindItem(x.id);
-          if (it && _stonePendingEdits[x.id]) { Object.keys(_stonePendingEdits[x.id]).forEach(function(k) { it[k] = _stonePendingEdits[x.id][k]; }); }
+          var skipped = {};
+          (x.removed || []).forEach(function(k) { skipped[k] = true; removedAll[k] = true; });
+          if (it && _stonePendingEdits[x.id]) {
+            Object.keys(_stonePendingEdits[x.id]).forEach(function(k) { if (!skipped[k]) it[k] = _stonePendingEdits[x.id][k]; });
+          }
           delete _stonePendingEdits[x.id];
         } else {
           delete _stonePendingDeletes[x.id];
         }
       } else { fails++; }
     });
-    if (fails) showSaveToast(false, fails + ' 件の保存に失敗しました（未反映分は残っています）');
-    else showSaveToast(true, '✅ SharePointに保存しました');
+    var removedKeys = Object.keys(removedAll);
+    var roNote = removedKeys.length ? '（読み取り専用のため未保存: ' + _stoneFieldLabels(removedKeys) + '）' : '';
+    if (fails) showSaveToast(false, fails + ' 件の保存に失敗しました（未反映分は残っています）' + roNote);
+    else showSaveToast(true, '✅ SharePointに保存しました' + roNote);
     _syncStonePriceToAIQuiet();
     loadStonePriceList();
   }).catch(function(e) {
@@ -3071,6 +3079,29 @@ function closeStonePriceDialog() {
   _editingStonePriceItem = null;
 }
 
+// SharePointへfields送信。read-only列があれば自動除外して再試行する
+// 解決値: { data, removed:[除外したフィールド名] }
+function _spSubmitFields(url, method, token, fields, removed) {
+  removed = removed || [];
+  return fetch(url, {
+    method: method,
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: fields })
+  }).then(function(r) {
+    if (r.ok) return r.json().then(function(j) { return { data: j, removed: removed }; });
+    return r.json().then(function(e) {
+      var msg = (e && e.error && e.error.message) || ('HTTP ' + r.status);
+      var m = msg.match(/Field '([^']+)' is read-only/i);
+      if (m && m[1] && Object.prototype.hasOwnProperty.call(fields, m[1])) {
+        delete fields[m[1]];
+        removed.push(m[1]);
+        if (Object.keys(fields).length === 0) throw new Error('保存できる項目がありません（すべて読み取り専用）');
+        return _spSubmitFields(url, method, token, fields, removed);
+      }
+      throw new Error(msg);
+    });
+  });
+}
 function saveStonePriceItem() {
   var SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var body = {};
@@ -3096,16 +3127,10 @@ function saveStonePriceItem() {
   var url = 'https://graph.microsoft.com/v1.0/sites/' + SP_SITE + '/lists/' + STONE_PRICE_LIST_ID + '/items';
   if (!isNew) url += '/' + _editingStonePriceItem.id;
   getToken().then(function(resp) {
-    return fetch(url, {
-      method: isNew ? 'POST' : 'PATCH',
-      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: body })
-    });
-  }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
-    return r.json();
-  }).then(function() {
-    showSaveToast(true, isNew ? '✅ 追加しました' : '✅ 更新しました');
+    return _spSubmitFields(url, isNew ? 'POST' : 'PATCH', resp.accessToken, body, []);
+  }).then(function(result) {
+    var note = (result.removed && result.removed.length) ? '（読み取り専用のため未保存: ' + _stoneFieldLabels(result.removed) + '）' : '';
+    showSaveToast(true, (isNew ? '✅ 追加しました' : '✅ 更新しました') + note);
     closeStonePriceDialog();
     if (!document.getElementById('stone-price-list-screen').classList.contains('hidden')) loadStonePriceList();
     _syncStonePriceToAIQuiet();
@@ -3114,6 +3139,13 @@ function saveStonePriceItem() {
   }).finally(function() {
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存'; }
   });
+}
+// 内部フィールド名→ラベルに変換（通知用）
+function _stoneFieldLabels(keys) {
+  return keys.map(function(k) {
+    for (var i = 0; i < STONE_FIELDS.length; i++) { if (STONE_FIELDS[i].key === k) return STONE_FIELDS[i].label; }
+    return k;
+  }).join('・');
 }
 
 function deleteStonePriceItem() {
@@ -5414,7 +5446,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.099';
+var APP_VERSION = 'v1.9.100';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.111';
+var APP_VERSION = 'v1.9.112';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9228,9 +9228,9 @@ function renderKoujiList(filter) {
     var _rightTags = stoneTag1 + stoneTag2 + choukokuTag;
     var rightTagGroup = _rightTags ? '<div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px">' + _rightTags + '</div>' : '';
 
-    var placePicVal = d['PlacePic'] || '';
-    var thumbHtml = (placePicVal && typeof placePicVal === 'string' && placePicVal.indexOf('drivepath:') === 0)
-      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" data-drive-path="' + _esc(placePicVal.substring('drivepath:'.length)) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center">'
+    var _ppDrivePath = _extractPlacePicDrivePath(d['PlacePic']);
+    var thumbHtml = _ppDrivePath
+      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" data-drive-path="' + _esc(_ppDrivePath) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center">'
       : '';
     var cardInner =
       '<div class="card-tags"><div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
@@ -20914,6 +20914,47 @@ function lvNav(dir) {
 }
 
 // ===== PlacePic: OneDriveパスを保存 =====
+// PlacePicの各種フォーマットから OneDrive 相対パスを抽出
+function _extractPlacePicDrivePath(val) {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    if (val.indexOf('drivepath:') === 0) return val.substring('drivepath:'.length);
+    if (val.charAt(0) === '{') {
+      try { var o = JSON.parse(val); return _extractPlacePicDrivePath(o); } catch(e) { return null; }
+    }
+    return null;
+  }
+  if (typeof val === 'object') {
+    var desc = val.Description || val.description || '';
+    if (desc && desc.indexOf('drivepath:') === 0) return desc.substring('drivepath:'.length);
+  }
+  return null;
+}
+
+// PlacePic列の型をキャッシュ（'text' | 'hyperlink' | 'thumbnail' | 'unknown'）
+var _placePicColType = null;
+function _getPlacePicColType(token) {
+  if (_placePicColType) return Promise.resolve(_placePicColType);
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/columns',
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var cols = data.value || [];
+      for (var i = 0; i < cols.length; i++) {
+        if (cols[i].name === 'PlacePic') {
+          if (cols[i].text) _placePicColType = 'text';
+          else if (cols[i].hyperlinkOrPicture) _placePicColType = 'hyperlink';
+          else if (cols[i].thumbnail) _placePicColType = 'thumbnail';
+          else _placePicColType = 'unknown';
+          return _placePicColType;
+        }
+      }
+      _placePicColType = 'unknown';
+      return _placePicColType;
+    });
+}
+
 function setKoujiPlacePic(fpath) {
   var d = currentItem;
   if (!d) return;
@@ -20922,11 +20963,28 @@ function setKoujiPlacePic(fpath) {
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var patchUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/items/' + itemId;
   showSaveToast(null, 'サムネ設定中...');
+  var _token;
   getToken().then(function(resp) {
-    return _spSubmitFields(patchUrl, 'PATCH', resp.accessToken, { PlacePic: 'drivepath:' + fpath }, []);
+    _token = resp.accessToken;
+    return _getPlacePicColType(_token);
+  }).then(function(colType) {
+    if (colType === 'thumbnail') {
+      throw new Error('PlacePic列は画像列のため、この方法では設定できません');
+    }
+    var fieldVal, storeVal;
+    if (colType === 'hyperlink') {
+      // ハイパーリンク型: Description に drivepath を埋め込む
+      var webUrl = 'https://shojisekizai.sharepoint.com';
+      fieldVal = { Url: webUrl, Description: 'drivepath:' + fpath };
+      storeVal = fieldVal;
+    } else {
+      // text / unknown: プレーン文字列
+      fieldVal = 'drivepath:' + fpath;
+      storeVal = fieldVal;
+    }
+    return _spSubmitFields(patchUrl, 'PATCH', _token, { PlacePic: fieldVal }, [])
+      .then(function() { d['PlacePic'] = storeVal; });
   }).then(function() {
-    d['PlacePic'] = 'drivepath:' + fpath;
-    // リストカードのサムネも即時更新
     _loadKoujiThumbByPath(fpath, d['id'] || d['ID']);
     showSaveToast(true, 'サムネを設定しました');
   }).catch(function(e) {
@@ -20957,9 +21015,9 @@ function loadPlacePic(d) {
   var picUrl = d['PlacePic'];
   if (!picUrl) { area.innerHTML = '<div class="attach-empty">写真なし</div>'; return; }
 
-  // drivepath: プレフィックス（アプリ内サムネ設定）→ Graph API で取得
-  if (typeof picUrl === 'string' && picUrl.indexOf('drivepath:') === 0) {
-    var dpath = picUrl.substring('drivepath:'.length);
+  // drivepath（アプリ内サムネ設定）→ Graph API で取得（文字列/ハイパーリンクDescription両対応）
+  var dpath = _extractPlacePicDrivePath(picUrl);
+  if (dpath) {
     var img = document.createElement('img');
     img.style.cssText = 'width:100%;border-radius:10px;cursor:pointer';
     img.alt = '場所写真';

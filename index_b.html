@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.114';
+var APP_VERSION = 'v1.9.115';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9228,9 +9228,10 @@ function renderKoujiList(filter) {
     var _rightTags = stoneTag1 + stoneTag2 + choukokuTag;
     var rightTagGroup = _rightTags ? '<div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px">' + _rightTags + '</div>' : '';
 
-    var _ppDrivePath = _extractPlacePicDrivePath(d['PlacePic']);
-    var thumbHtml = _ppDrivePath
-      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" data-drive-path="' + _esc(_ppDrivePath) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center">'
+    // サムネ: 添付ありアイテムのみスロットを用意（_loadKoujiListThumbsが_thumb_添付を探して表示）
+    var _hasAttach = d['Attachments'] === true;
+    var thumbHtml = _hasAttach
+      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center;display:none">'
       : '';
     var cardInner =
       '<div class="card-tags"><div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
@@ -9253,27 +9254,56 @@ function renderKoujiList(filter) {
   }).join('') + '</div>';
 
   document.getElementById('list-content').innerHTML = html;
-  // PlacePic サムネの遅延読み込み
+  // サムネ（SP添付 _thumb_*）の遅延読み込み
   _loadKoujiListThumbs();
 }
 
+// itemId -> blobUrl（表示する） | 'none'（サムネ添付なし）
+var _koujiThumbCache = {};
+var KOUJI_THUMB_PREFIX = '_thumb_';
+
 function _loadKoujiListThumbs() {
-  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-drive-path]');
+  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
   if (!imgs.length) return;
-  getToken().then(function(resp) {
+  // キャッシュ済みは即反映、未取得のみフェッチ
+  var toFetch = [];
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    var id = img.getAttribute('data-item-id');
+    var c = _koujiThumbCache[id];
+    if (c === 'none') continue;
+    if (c) { img.src = c; img.style.display = ''; continue; }
+    toFetch.push(img);
+  }
+  if (!toFetch.length) return;
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
     var token = resp.accessToken;
-    for (var i = 0; i < imgs.length; i++) {
-      (function(img) {
-        var fpath = img.getAttribute('data-drive-path');
-        if (!fpath) return;
-        var enc = fpath.split('/').map(encodeURIComponent).join('/');
-        fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
-          { headers: { Authorization: 'Bearer ' + token } })
-        .then(function(r) { return r.ok ? r.blob() : null; })
-        .then(function(blob) { if (blob) img.src = URL.createObjectURL(blob); })
-        .catch(function(){});
-      })(imgs[i]);
-    }
+    toFetch.forEach(function(img) {
+      var itemId = img.getAttribute('data-item-id');
+      if (!itemId) return;
+      var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+      fetch(listUrl, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+      .then(function(r) { return r.json(); })
+      .then(function(j) {
+        var files = (j.d && j.d.results) || [];
+        var thumb = files.filter(function(f){ return f.FileName.indexOf(KOUJI_THUMB_PREFIX) === 0; })[0];
+        if (!thumb) { _koujiThumbCache[itemId] = 'none'; return; }
+        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+                     thumb.ServerRelativeUrl.replace(/'/g, "''") + "')/$value";
+        return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+          .then(function(r) { return r.ok ? r.blob() : null; })
+          .then(function(blob) {
+            if (!blob) { _koujiThumbCache[itemId] = 'none'; return; }
+            var blobUrl = URL.createObjectURL(blob);
+            _koujiThumbCache[itemId] = blobUrl;
+            img.src = blobUrl;
+            img.style.display = '';
+          });
+      }).catch(function(){ _koujiThumbCache[itemId] = 'none'; });
+    });
   }).catch(function(){});
 }
 
@@ -20931,104 +20961,68 @@ function _extractPlacePicDrivePath(val) {
   return null;
 }
 
-// PlacePicサムネ設定: Graphでは書き込み不可の列タイプ（URL/画像）のため SP REST で書き込む
-var _SP_SITE_REST = 'https://shojisekizai.sharepoint.com/sites/stoneworks';
-var _placePicFieldType = null; // TypeAsString キャッシュ
-var _koujiEntityType = null;   // ListItemEntityTypeFullName キャッシュ
-
-function _spRestGet(url, token) {
-  return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
-    .then(function(r) { return r.json(); });
-}
-
+// リストサムネ設定: 選んだOneDrive画像をSP添付（_thumb_接頭辞）としてコピー
+// PlacePic列は画像列のため書き込み不可 → 添付ファイル方式で実現
 function setKoujiPlacePic(fpath) {
   var d = currentItem;
   if (!d) return;
   var itemId = d['id'] || d['ID'];
   if (!itemId) { showSaveToast(false, 'アイテムIDが取得できません'); return; }
-  var listRest = _SP_SITE_REST + "/_api/web/lists(guid'" + KOUJI_LIST_ID + "')";
-  var storeVal = 'drivepath:' + fpath;
+  var base = fpath.split('/').pop();
+  var thumbName = KOUJI_THUMB_PREFIX + base;
+  var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3')/items(" + itemId + ")/AttachmentFiles";
   showSaveToast(null, 'サムネ設定中...');
-  var _token;
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
-    account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    _token = resp.accessToken;
-    // 列タイプ＋EntityType を取得（キャッシュ利用）
-    var needType = _placePicFieldType ? Promise.resolve(_placePicFieldType)
-      : _spRestGet(listRest + "/fields?$filter=EntityPropertyName%20eq%20'PlacePic'&$select=TypeAsString", _token)
-          .then(function(j) {
-            var arr = (j.d && j.d.results) || [];
-            _placePicFieldType = arr.length ? arr[0].TypeAsString : 'unknown';
-            console.log('[PlacePic列 TypeAsString]', _placePicFieldType);
-            return _placePicFieldType;
-          });
-    var needEntity = _koujiEntityType ? Promise.resolve(_koujiEntityType)
-      : _spRestGet(listRest + "?$select=ListItemEntityTypeFullName", _token)
-          .then(function(j) {
-            _koujiEntityType = (j.d && j.d.ListItemEntityTypeFullName) || 'SP.ListItem';
-            return _koujiEntityType;
-          });
-    return Promise.all([needType, needEntity]);
-  }).then(function(res) {
-    var fieldType = res[0], entityType = res[1];
-    var itemUrl = listRest + '/items(' + itemId + ')';
-    var bodyObj = { '__metadata': { 'type': entityType } };
-    // URL型（ハイパーリンク/画像）→ SP.FieldUrlValue。drivepath を Description に格納
-    if (fieldType === 'URL') {
-      bodyObj['PlacePic'] = {
-        '__metadata': { 'type': 'SP.FieldUrlValue' },
-        'Description': storeVal,
-        'Url': 'https://shojisekizai.sharepoint.com/_layouts/15/images/blank.gif'
-      };
-    } else {
-      // テキスト等 → 文字列
-      bodyObj['PlacePic'] = storeVal;
-    }
-    return fetch(itemUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + _token,
-        Accept: 'application/json;odata=verbose',
-        'Content-Type': 'application/json;odata=verbose',
-        'X-HTTP-Method': 'MERGE',
-        'IF-MATCH': '*'
-      },
-      body: JSON.stringify(bodyObj)
-    }).then(function(r) {
-      if (r.ok || r.status === 204) {
-        d['PlacePic'] = bodyObj['PlacePic'];
-        return;
-      }
-      return r.json().then(function(e) {
-        var msg = (e && e.error && e.error.message && (e.error.message.value || e.error.message)) || ('HTTP ' + r.status);
-        throw new Error('型=' + fieldType + ': ' + msg);
-      });
-    });
-  }).then(function() {
-    _loadKoujiThumbByPath(fpath, d['id'] || d['ID']);
-    showSaveToast(true, 'サムネを設定しました');
-  }).catch(function(e) {
-    console.error('[PlacePicサムネ設定] 失敗:', e);
-    showSaveToast(false, 'サムネ設定エラー: ' + e.message);
-  });
-}
-
-// OneDriveパスから画像をロードしてimgに設定
-function _loadKoujiThumbByPath(fpath, itemId) {
-  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
-  if (!imgs.length) return;
+  var blobToUpload, spToken;
+  // 1. OneDrive画像をダウンロード
   getToken().then(function(resp) {
     var enc = fpath.split('/').map(encodeURIComponent).join('/');
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
       { headers: { Authorization: 'Bearer ' + resp.accessToken } });
-  }).then(function(r) { return r.ok ? r.blob() : null; })
-  .then(function(blob) {
-    if (!blob) return;
-    var blobUrl = URL.createObjectURL(blob);
-    for (var i = 0; i < imgs.length; i++) imgs[i].src = blobUrl;
-  }).catch(function(){});
+  }).then(function(r) {
+    if (!r.ok) throw new Error('画像取得失敗 HTTP ' + r.status);
+    return r.blob();
+  }).then(function(blob) {
+    blobToUpload = blob;
+    // 2. SP書き込みトークン
+    return msalApp.acquireTokenSilent({
+      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
+      account: msalApp.getActiveAccount()
+    });
+  }).then(function(resp) {
+    spToken = resp.accessToken;
+    // 3. 既存の _thumb_* 添付を削除（置換）
+    return fetch(listUrl + "?$select=FileName", { headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' } })
+      .then(function(r) { return r.json(); })
+      .then(function(j) {
+        var existing = (j.d && j.d.results) || [];
+        var dels = existing.filter(function(f){ return f.FileName.indexOf(KOUJI_THUMB_PREFIX) === 0; })
+          .map(function(f) {
+            var delUrl = listUrl + "/getByFileName('" + encodeURIComponent(f.FileName) + "')";
+            return fetch(delUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose', 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' } });
+          });
+        return Promise.all(dels);
+      });
+  }).then(function() {
+    // 4. 新しいサムネを添付アップロード
+    var addUrl = listUrl + "/add(FileName='" + encodeURIComponent(thumbName) + "')";
+    return fetch(addUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' }, body: blobToUpload });
+  }).then(function(r) {
+    if (!(r.ok || r.status === 201)) throw new Error('アップロード失敗 HTTP ' + r.status);
+    d['Attachments'] = true;
+    // allItems側のフラグも更新（リスト再描画でサムネスロットを出すため）
+    for (var i = 0; i < allItems.length; i++) {
+      if (String(allItems[i]['id']) === String(itemId)) { allItems[i]['Attachments'] = true; break; }
+    }
+    // キャッシュ無効化してリスト再描画→サムネ表示
+    delete _koujiThumbCache[String(itemId)];
+    if (typeof _koujiCurrentFilter !== 'undefined' && document.getElementById('list-content')) {
+      renderKoujiList(_koujiCurrentFilter);
+    }
+    showSaveToast(true, 'サムネを設定しました');
+  }).catch(function(e) {
+    console.error('[リストサムネ設定] 失敗:', e);
+    showSaveToast(false, 'サムネ設定エラー: ' + e.message);
+  });
 }
 
 function loadPlacePic(d) {

@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.113';
+var APP_VERSION = 'v1.9.114';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -20931,30 +20931,14 @@ function _extractPlacePicDrivePath(val) {
   return null;
 }
 
-// PlacePic列の型をキャッシュ（'text' | 'hyperlink' | 'thumbnail' | 'unknown'）
-var _placePicColType = null;
-function _getPlacePicColType(token) {
-  if (_placePicColType) return Promise.resolve(_placePicColType);
-  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-  return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/columns',
-    { headers: { Authorization: 'Bearer ' + token } })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      var cols = data.value || [];
-      for (var i = 0; i < cols.length; i++) {
-        if (cols[i].name === 'PlacePic') {
-          console.log('[PlacePic列定義]', JSON.stringify(cols[i]));
-          if (cols[i].text) _placePicColType = 'text';
-          else if (cols[i].hyperlinkOrPicture) _placePicColType = 'hyperlink';
-          else if (cols[i].thumbnail) _placePicColType = 'thumbnail';
-          else _placePicColType = 'unknown';
-          return _placePicColType;
-        }
-      }
-      console.log('[PlacePic列] columns一覧に見つかりません。列名一覧:', cols.map(function(c){return c.name;}).join(','));
-      _placePicColType = 'notfound';
-      return _placePicColType;
-    });
+// PlacePicサムネ設定: Graphでは書き込み不可の列タイプ（URL/画像）のため SP REST で書き込む
+var _SP_SITE_REST = 'https://shojisekizai.sharepoint.com/sites/stoneworks';
+var _placePicFieldType = null; // TypeAsString キャッシュ
+var _koujiEntityType = null;   // ListItemEntityTypeFullName キャッシュ
+
+function _spRestGet(url, token) {
+  return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+    .then(function(r) { return r.json(); });
 }
 
 function setKoujiPlacePic(fpath) {
@@ -20962,39 +20946,71 @@ function setKoujiPlacePic(fpath) {
   if (!d) return;
   var itemId = d['id'] || d['ID'];
   if (!itemId) { showSaveToast(false, 'アイテムIDが取得できません'); return; }
-  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
-  var patchUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/items/' + itemId;
+  var listRest = _SP_SITE_REST + "/_api/web/lists(guid'" + KOUJI_LIST_ID + "')";
+  var storeVal = 'drivepath:' + fpath;
   showSaveToast(null, 'サムネ設定中...');
   var _token;
-  getToken().then(function(resp) {
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
     _token = resp.accessToken;
-    return _getPlacePicColType(_token);
-  }).then(function(colType) {
-    console.log('[PlacePicサムネ設定] 検出した列型:', colType);
-    var storeVal = 'drivepath:' + fpath;
-    if (colType === 'hyperlink') {
-      // ハイパーリンク型: Description に drivepath を埋め込む
-      var hv = { Url: 'https://shojisekizai.sharepoint.com', Description: storeVal };
-      return _spSubmitFields(patchUrl, 'PATCH', _token, { PlacePic: hv }, [])
-        .then(function() { d['PlacePic'] = hv; });
-    }
-    // text / unknown / thumbnail / notfound: まずプレーン文字列を試す
-    return _spSubmitFields(patchUrl, 'PATCH', _token, { PlacePic: storeVal }, [])
-      .then(function() { d['PlacePic'] = storeVal; })
-      .catch(function(e1) {
-        // 文字列で失敗 → ハイパーリンク形式で再試行
-        console.log('[PlacePicサムネ設定] 文字列で失敗、ハイパーリンク形式で再試行:', e1.message);
-        var hv2 = { Url: 'https://shojisekizai.sharepoint.com', Description: storeVal };
-        return _spSubmitFields(patchUrl, 'PATCH', _token, { PlacePic: hv2 }, [])
-          .then(function() { d['PlacePic'] = hv2; })
-          .catch(function(e2) {
-            throw new Error('列型=' + colType + ' / 文字列:' + e1.message + ' / リンク:' + e2.message);
+    // 列タイプ＋EntityType を取得（キャッシュ利用）
+    var needType = _placePicFieldType ? Promise.resolve(_placePicFieldType)
+      : _spRestGet(listRest + "/fields?$filter=EntityPropertyName%20eq%20'PlacePic'&$select=TypeAsString", _token)
+          .then(function(j) {
+            var arr = (j.d && j.d.results) || [];
+            _placePicFieldType = arr.length ? arr[0].TypeAsString : 'unknown';
+            console.log('[PlacePic列 TypeAsString]', _placePicFieldType);
+            return _placePicFieldType;
           });
+    var needEntity = _koujiEntityType ? Promise.resolve(_koujiEntityType)
+      : _spRestGet(listRest + "?$select=ListItemEntityTypeFullName", _token)
+          .then(function(j) {
+            _koujiEntityType = (j.d && j.d.ListItemEntityTypeFullName) || 'SP.ListItem';
+            return _koujiEntityType;
+          });
+    return Promise.all([needType, needEntity]);
+  }).then(function(res) {
+    var fieldType = res[0], entityType = res[1];
+    var itemUrl = listRest + '/items(' + itemId + ')';
+    var bodyObj = { '__metadata': { 'type': entityType } };
+    // URL型（ハイパーリンク/画像）→ SP.FieldUrlValue。drivepath を Description に格納
+    if (fieldType === 'URL') {
+      bodyObj['PlacePic'] = {
+        '__metadata': { 'type': 'SP.FieldUrlValue' },
+        'Description': storeVal,
+        'Url': 'https://shojisekizai.sharepoint.com/_layouts/15/images/blank.gif'
+      };
+    } else {
+      // テキスト等 → 文字列
+      bodyObj['PlacePic'] = storeVal;
+    }
+    return fetch(itemUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + _token,
+        Accept: 'application/json;odata=verbose',
+        'Content-Type': 'application/json;odata=verbose',
+        'X-HTTP-Method': 'MERGE',
+        'IF-MATCH': '*'
+      },
+      body: JSON.stringify(bodyObj)
+    }).then(function(r) {
+      if (r.ok || r.status === 204) {
+        d['PlacePic'] = bodyObj['PlacePic'];
+        return;
+      }
+      return r.json().then(function(e) {
+        var msg = (e && e.error && e.error.message && (e.error.message.value || e.error.message)) || ('HTTP ' + r.status);
+        throw new Error('型=' + fieldType + ': ' + msg);
       });
+    });
   }).then(function() {
     _loadKoujiThumbByPath(fpath, d['id'] || d['ID']);
     showSaveToast(true, 'サムネを設定しました');
   }).catch(function(e) {
+    console.error('[PlacePicサムネ設定] 失敗:', e);
     showSaveToast(false, 'サムネ設定エラー: ' + e.message);
   });
 }

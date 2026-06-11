@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.110';
+var APP_VERSION = 'v1.9.111';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9228,7 +9228,11 @@ function renderKoujiList(filter) {
     var _rightTags = stoneTag1 + stoneTag2 + choukokuTag;
     var rightTagGroup = _rightTags ? '<div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px">' + _rightTags + '</div>' : '';
 
-    return _catSepHtml + '<div class="card" data-item-id="' + (d['id']||'') + '" onclick="showKoujiDetail(allItems[' + realIdx + '])">' +
+    var placePicVal = d['PlacePic'] || '';
+    var thumbHtml = (placePicVal && typeof placePicVal === 'string' && placePicVal.indexOf('drivepath:') === 0)
+      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" data-drive-path="' + _esc(placePicVal.substring('drivepath:'.length)) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center">'
+      : '';
+    var cardInner =
       '<div class="card-tags"><div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
       '<div class="tag-group">' + catTag + statusTag + '</div>' + rightTagGroup + '</div>' +
       '<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">' +
@@ -9242,11 +9246,35 @@ function renderKoujiList(filter) {
         (billingDate ? '　請求：' + billingDate : '') +
         (payDate2 ? '　入金：' + payDate2 : '') +
       '</div>' +
-      (d['InternalCommunication'] ? '<div class="card-memo">📋 ' + d['InternalCommunication'] + '</div>' : '') +
+      (d['InternalCommunication'] ? '<div class="card-memo">📋 ' + d['InternalCommunication'] + '</div>' : '');
+    return _catSepHtml + '<div class="card" data-item-id="' + (d['id']||'') + '" onclick="showKoujiDetail(allItems[' + realIdx + '])">' +
+      (thumbHtml ? '<div style="display:flex;gap:10px;align-items:flex-start">' + thumbHtml + '<div style="flex:1;min-width:0">' + cardInner + '</div></div>' : cardInner) +
     '</div>';
   }).join('') + '</div>';
 
   document.getElementById('list-content').innerHTML = html;
+  // PlacePic サムネの遅延読み込み
+  _loadKoujiListThumbs();
+}
+
+function _loadKoujiListThumbs() {
+  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-drive-path]');
+  if (!imgs.length) return;
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    for (var i = 0; i < imgs.length; i++) {
+      (function(img) {
+        var fpath = img.getAttribute('data-drive-path');
+        if (!fpath) return;
+        var enc = fpath.split('/').map(encodeURIComponent).join('/');
+        fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+          { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) { return r.ok ? r.blob() : null; })
+        .then(function(blob) { if (blob) img.src = URL.createObjectURL(blob); })
+        .catch(function(){});
+      })(imgs[i]);
+    }
+  }).catch(function(){});
 }
 
 function toggleKoujiSort() {
@@ -10339,48 +10367,60 @@ function _buildKoujiStatusFilesHtml(d) {
   if (!_hakaSpecData || !_hakaSpecData.fileStatus) return '';
   var folderPass = d['Folder_Pass'] || '';
   var cats = HAKA_SPEC_PHOTO_CATS;
-  var rows = [];
+  // フォルダー毎にまとめる
+  var byFolder = {}; // subPath → [{fname, fpath, status}]
+  var folderOrder = [];
   function jsEsc(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
   for (var ci = 0; ci < cats.length; ci++) {
     var cat = cats[ci];
     var catFiles = _hakaSpecData.fileStatus[cat];
     if (!catFiles) continue;
     var fileNames = Object.keys(catFiles);
+    var subPath = _hakaSpecCatSubPath(cat);
     for (var fi = 0; fi < fileNames.length; fi++) {
       var fname = fileNames[fi];
       var st = catFiles[fname];
       if (st !== 'latest' && st !== 'confirmed') continue;
-      var subPath = _hakaSpecCatSubPath(cat);
       var fpath = folderPass ? folderPass + '/' + subPath + '/' + fname : '';
-      rows.push({ fname: fname, subPath: subPath, fpath: fpath, status: st });
+      if (!byFolder[subPath]) { byFolder[subPath] = []; folderOrder.push(subPath); }
+      byFolder[subPath].push({ fname: fname, fpath: fpath, status: st });
     }
   }
-  if (rows.length === 0) return '';
-  // 確定→最新の順で並べる
-  rows.sort(function(a,b){ return (a.status === 'confirmed' ? 0 : 1) - (b.status === 'confirmed' ? 0 : 1); });
+  if (folderOrder.length === 0) return '';
+  // 各フォルダー内は 確定→最新 の順
+  folderOrder.forEach(function(sp) {
+    byFolder[sp].sort(function(a,b){ return (a.status==='confirmed'?0:1)-(b.status==='confirmed'?0:1); });
+  });
+  var totalCount = folderOrder.reduce(function(n,sp){ return n + byFolder[sp].length; }, 0);
   var html =
-    '<div style="display:inline-block;max-width:50%;min-width:220px;background:#f8fbff;border:1px solid #b5d4f4;border-radius:10px;margin-bottom:14px;overflow:hidden;vertical-align:top">' +
+    '<div style="display:inline-block;max-width:55%;min-width:220px;background:#f8fbff;border:1px solid #b5d4f4;border-radius:10px;margin-bottom:14px;overflow:hidden;vertical-align:top">' +
     '<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:#e0ecff;border-bottom:1px solid #b5d4f4;font-size:11px;font-weight:700;color:#1a3a7a;white-space:nowrap">' +
     '📌 ステータス登録ファイル（最新・確定）' +
-    '<span style="background:#1a3a7a;color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;margin-left:auto">' + rows.length + '件</span>' +
+    '<span style="background:#1a3a7a;color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;margin-left:auto">' + totalCount + '件</span>' +
     '</div>';
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i];
-    var stInfo = HAKA_SPEC_STATUSES[row.status] || HAKA_SPEC_STATUSES.undecided;
-    var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(row.fname);
-    var openFn = isImg ? 'previewFolderImage' : 'openFolderFile';
-    var dblClick = row.fpath ? 'ondblclick="' + openFn + '(\'' + jsEsc(row.fpath) + '\')"' : '';
-    var isLast = (i === rows.length - 1);
-    html +=
-      '<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;' + (isLast ? '' : 'border-bottom:0.5px solid #d8e8f8;') + '">' +
-      '<span style="flex-shrink:0;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;' +
-      'background:' + stInfo.btnBg + ';color:' + stInfo.btnColor + ';border:1px solid ' + stInfo.btnBorder + '">' +
-      stInfo.icon + ' ' + stInfo.label + '</span>' +
-      '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" ' + dblClick + ' title="ダブルクリックで開く">' +
-      '<span style="font-size:12px;color:#1a2535;font-weight:500">' + _esc(row.fname) + '</span>' +
-      '<span style="font-size:10px;color:#999;margin-left:6px">📂 ' + _esc(row.subPath) + '</span>' +
-      '</div>' +
-      '</div>';
+  for (var fi2 = 0; fi2 < folderOrder.length; fi2++) {
+    var sp = folderOrder[fi2];
+    var rows = byFolder[sp];
+    var isLastFolder = (fi2 === folderOrder.length - 1);
+    // フォルダー見出し
+    html += '<div style="padding:4px 10px;background:#eef4ff;font-size:10px;font-weight:700;color:#3a5a8a;border-bottom:0.5px solid #d0dcf0">📂 ' + _esc(sp) + '</div>';
+    for (var ri = 0; ri < rows.length; ri++) {
+      var row = rows[ri];
+      var stInfo = HAKA_SPEC_STATUSES[row.status] || HAKA_SPEC_STATUSES.undecided;
+      var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(row.fname);
+      var openFn = isImg ? 'previewFolderImage' : 'openFolderFile';
+      var dblClick = row.fpath ? 'ondblclick="' + openFn + '(\'' + jsEsc(row.fpath) + '\')"' : '';
+      var isLastRow = (ri === rows.length - 1) && isLastFolder;
+      html +=
+        '<div style="display:flex;align-items:center;gap:6px;padding:5px 10px 5px 16px;' + (isLastRow ? '' : 'border-bottom:0.5px solid #d8e8f8;') + '">' +
+        '<span style="flex-shrink:0;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;' +
+        'background:' + stInfo.btnBg + ';color:' + stInfo.btnColor + ';border:1px solid ' + stInfo.btnBorder + '">' +
+        stInfo.icon + ' ' + stInfo.label + '</span>' +
+        '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" ' + dblClick + ' title="ダブルクリックで開く">' +
+        '<span style="font-size:12px;color:#1a2535;font-weight:500">' + _esc(row.fname) + '</span>' +
+        '</div>' +
+        '</div>';
+    }
   }
   html += '</div>';
   return html;
@@ -16019,6 +16059,9 @@ function _showHakaSpecItemMenu(e, cat, fname, fpath, hasThumb) {
   if (hasThumb) menuItems.push(['🖼', 'サムネをコピー', function(){ _hideFolderMenu(); _copyFolderThumbToClipboard(fpath, null); }]);
   menuItems.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(fpath, null); }]);
   menuItems.push(['↗️', '開く', function(){ _hideFolderMenu(); openFolderFile(fpath); }]);
+  if (/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(fname) && currentItem) {
+    menuItems.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(fpath); }]);
+  }
   menuItems.push(null);
   menuItems.push(['🗑️', '削除', function(){ _hideFolderMenu(); deleteHakaSpecFile(cat, fname); }]);
   menuItems.forEach(function(mi) {
@@ -20870,12 +20913,68 @@ function lvNav(dir) {
   document.getElementById('lv-name').textContent = '端末保存写真 ' + (window._lvIdx+1) + ' / ' + imgs.length;
 }
 
+// ===== PlacePic: OneDriveパスを保存 =====
+function setKoujiPlacePic(fpath) {
+  var d = currentItem;
+  if (!d) return;
+  var itemId = d['id'] || d['ID'];
+  if (!itemId) { showSaveToast(false, 'アイテムIDが取得できません'); return; }
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var patchUrl = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/items/' + itemId;
+  showSaveToast(null, 'サムネ設定中...');
+  getToken().then(function(resp) {
+    return _spSubmitFields(patchUrl, 'PATCH', resp.accessToken, { PlacePic: 'drivepath:' + fpath }, []);
+  }).then(function() {
+    d['PlacePic'] = 'drivepath:' + fpath;
+    // リストカードのサムネも即時更新
+    _loadKoujiThumbByPath(fpath, d['id'] || d['ID']);
+    showSaveToast(true, 'サムネを設定しました');
+  }).catch(function(e) {
+    showSaveToast(false, 'サムネ設定エラー: ' + e.message);
+  });
+}
+
+// OneDriveパスから画像をロードしてimgに設定
+function _loadKoujiThumbByPath(fpath, itemId) {
+  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
+  if (!imgs.length) return;
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.ok ? r.blob() : null; })
+  .then(function(blob) {
+    if (!blob) return;
+    var blobUrl = URL.createObjectURL(blob);
+    for (var i = 0; i < imgs.length; i++) imgs[i].src = blobUrl;
+  }).catch(function(){});
+}
+
 function loadPlacePic(d) {
   var itemId = d['id'];
   var area = document.getElementById('placepic-area-' + itemId);
   if (!area) return;
   var picUrl = d['PlacePic'];
   if (!picUrl) { area.innerHTML = '<div class="attach-empty">写真なし</div>'; return; }
+
+  // drivepath: プレフィックス（アプリ内サムネ設定）→ Graph API で取得
+  if (typeof picUrl === 'string' && picUrl.indexOf('drivepath:') === 0) {
+    var dpath = picUrl.substring('drivepath:'.length);
+    var img = document.createElement('img');
+    img.style.cssText = 'width:100%;border-radius:10px;cursor:pointer';
+    img.alt = '場所写真';
+    area.innerHTML = '';
+    area.appendChild(img);
+    getToken().then(function(resp) {
+      var enc = dpath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content',
+        { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+    }).then(function(r) { return r.ok ? r.blob() : null; })
+    .then(function(blob) { if (blob) img.src = URL.createObjectURL(blob); })
+    .catch(function() { img.style.background = '#ddd'; });
+    img.addEventListener('click', function() { previewFolderImage(dpath); });
+    return;
+  }
 
   // PlacePicの型に応じてURL文字列を取得
   var url = '';
@@ -20889,13 +20988,10 @@ function loadPlacePic(d) {
 
   if (parsed) {
     if (parsed.Url || parsed.url) {
-      // ハイパーリンク型
       url = parsed.Url || parsed.url;
     } else if (parsed.serverRelativeUrl) {
-      // サムネイル型
       url = 'https://shojisekizai.sharepoint.com' + parsed.serverRelativeUrl;
     } else if (parsed.originalImageName) {
-      // 画像列（Image型）: GUIDからGetFileByIdで取得
       url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/GetFileById(\'' +
             parsed.originalImageName + '\')/$value';
     }

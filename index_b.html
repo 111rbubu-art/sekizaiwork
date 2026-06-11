@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.116';
+var APP_VERSION = 'v1.9.117';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9258,9 +9258,10 @@ function renderKoujiList(filter) {
   _loadKoujiListThumbs();
 }
 
-// itemId -> blobUrl（表示する） | 'none'（サムネ添付なし）
+// itemId -> blobUrl（表示する） | 'none'（サムネ添付なし＝確定的に存在しない）
 var _koujiThumbCache = {};
 var KOUJI_THUMB_PREFIX = '_thumb_';
+var _koujiThumbRetryScheduled = false;
 
 function _loadKoujiListThumbs() {
   var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
@@ -9271,40 +9272,82 @@ function _loadKoujiListThumbs() {
     var img = imgs[i];
     var id = img.getAttribute('data-item-id');
     var c = _koujiThumbCache[id];
-    if (c === 'none') continue;
-    if (c) { img.src = c; img.style.display = ''; continue; }
+    if (c === 'none') continue;            // 確定的にサムネ無し
+    if (c) { img.src = c; img.style.display = ''; continue; }  // キャッシュ済み
     toFetch.push(img);
   }
   if (!toFetch.length) return;
+
   msalApp.acquireTokenSilent({
     scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
     account: msalApp.getActiveAccount()
   }).then(function(resp) {
     var token = resp.accessToken;
-    toFetch.forEach(function(img) {
+    // 並列数を制限してスロットリング(429)を回避
+    var MAX_PARALLEL = 5;
+    var queue = toFetch.slice();
+    var transientFailed = false;
+
+    function fetchOne(img) {
       var itemId = img.getAttribute('data-item-id');
-      if (!itemId) return;
+      if (!itemId) return Promise.resolve();
       var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
-      fetch(listUrl, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
-      .then(function(r) { return r.json(); })
+      return fetch(listUrl, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+      .then(function(r) {
+        if (!r.ok) { throw { transient: (r.status === 429 || r.status >= 500) }; }
+        return r.json();
+      })
       .then(function(j) {
         var files = (j.d && j.d.results) || [];
         var thumb = files.filter(function(f){ return f.FileName.indexOf(KOUJI_THUMB_PREFIX) === 0; })[0];
+        // 一覧取得は成功 → サムネ添付が本当に無ければ確定的に 'none'
         if (!thumb) { _koujiThumbCache[itemId] = 'none'; return; }
         var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
                      thumb.ServerRelativeUrl.replace(/'/g, "''") + "')/$value";
         return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-          .then(function(r) { return r.ok ? r.blob() : null; })
+          .then(function(r) {
+            if (!r.ok) { throw { transient: (r.status === 429 || r.status >= 500) }; }
+            return r.blob();
+          })
           .then(function(blob) {
-            if (!blob) { _koujiThumbCache[itemId] = 'none'; return; }
+            if (!blob || !blob.size) { throw { transient: true }; }
             var blobUrl = URL.createObjectURL(blob);
             _koujiThumbCache[itemId] = blobUrl;
-            img.src = blobUrl;
-            img.style.display = '';
+            // 再描画でimg要素が差し替わっている可能性があるので最新を取り直して反映
+            var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
+            var target = cur || img;
+            target.src = blobUrl;
+            target.style.display = '';
           });
-      }).catch(function(){ _koujiThumbCache[itemId] = 'none'; });
+      })
+      .catch(function(e) {
+        // 一過性エラー（429/5xx/ネットワーク）はキャッシュせず、後で再試行できるよう残す
+        if (e && e.transient) { transientFailed = true; }
+        else { _koujiThumbCache[itemId] = 'none'; }  // 404等の確定エラーのみ 'none'
+      });
+    }
+
+    // 簡易並列ワーカー
+    function worker() {
+      if (!queue.length) return Promise.resolve();
+      return fetchOne(queue.shift()).then(worker);
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(MAX_PARALLEL, queue.length); w++) workers.push(worker());
+    return Promise.all(workers).then(function() {
+      // 一過性失敗があれば一度だけ自動リトライ（5秒後）
+      if (transientFailed && !_koujiThumbRetryScheduled) {
+        _koujiThumbRetryScheduled = true;
+        setTimeout(function() { _koujiThumbRetryScheduled = false; _loadKoujiListThumbs(); }, 5000);
+      }
     });
-  }).catch(function(){});
+  }).catch(function() {
+    // トークン取得失敗 → 一度だけ再試行（キャッシュは汚さない）
+    if (!_koujiThumbRetryScheduled) {
+      _koujiThumbRetryScheduled = true;
+      setTimeout(function() { _koujiThumbRetryScheduled = false; _loadKoujiListThumbs(); }, 5000);
+    }
+  });
 }
 
 function toggleKoujiSort() {

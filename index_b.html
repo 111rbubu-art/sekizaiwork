@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.118';
+var APP_VERSION = 'v1.9.119';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9258,78 +9258,108 @@ function renderKoujiList(filter) {
   _loadKoujiListThumbs();
 }
 
-// ===== リストサムネ（OneDrive/Graph 集中フォルダー方式） =====
+// ===== リストサムネ（各工事の Folder_Pass 内に保存・Graph方式） =====
 // SharePoint REST API は環境によって ERR_CONNECTION_RESET が頻発するため、
 // 確実に動作する Graph API のみで完結させる。
-// サムネは 業務アプリ/工事リストサムネ/{itemId}.png に保存し、
-// リスト表示時はそのフォルダーを「1回だけ」一覧取得して全件のサムネURLを得る。
-var KOUJI_THUMB_PREFIX = '_thumb_';                 // 旧SP添付方式の名残（互換用に残置）
-var KOUJI_THUMB_FOLDER = '業務アプリ/工事リストサムネ'; // drive内の集中サムネフォルダー
-var _koujiThumbMap = null;        // {itemId: thumbUrl}（null=未取得）
+// サムネは各アイテムのフォルダー直下に「_リストサムネ.png」として保存し、
+// リスト表示時は Graph の $batch（20件ずつ）でまとめて存在＆サムネURLを取得する。
+var KOUJI_THUMB_PREFIX = '_thumb_';            // 旧SP添付方式の名残（互換用に残置）
+var KOUJI_THUMB_NAME = '_リストサムネ.png';     // 各フォルダー内のサムネファイル名
+var _koujiThumbMap = {};          // {itemId: thumbUrl | 'none'}（未取得は未定義）
 var _koujiThumbMapLoading = false;
-var _koujiThumbRetryScheduled = false;
 
-function _koujiThumbFolderEnc() {
-  return KOUJI_THUMB_FOLDER.split('/').map(encodeURIComponent).join('/');
+function _koujiItemFolderPass(item) {
+  return item && (item['Folder_Pass'] || item['FolderPass']) || '';
 }
 
-// 集中フォルダーを1回の Graph 呼び出しで一覧 → itemId→サムネURL のマップを構築
 function _loadKoujiListThumbs() {
   var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
   if (!imgs.length) return;
-  if (_koujiThumbMap) { _applyKoujiThumbs(); return; }   // 取得済みなら即反映
+  _applyKoujiThumbs();                 // 取得済みは即反映
   if (_koujiThumbMapLoading) return;
+
+  // itemId → Folder_Pass のマップ（allItemsから）
+  var idToPass = {};
+  for (var i = 0; i < allItems.length; i++) {
+    var it = allItems[i];
+    var id = String(it['id'] || '');
+    if (!id) continue;
+    var fp = _koujiItemFolderPass(it);
+    if (fp) idToPass[id] = fp;
+  }
+  // 表示中かつ未取得・フォルダーありのアイテムを収集（重複排除）
+  var pending = [], seen = {};
+  for (var k = 0; k < imgs.length; k++) {
+    var did = imgs[k].getAttribute('data-item-id');
+    if (!did || seen[did]) continue;
+    seen[did] = 1;
+    if (did in _koujiThumbMap) continue;     // 取得済み（url or 'none'）
+    if (!idToPass[did]) continue;            // フォルダー未設定→対象外
+    pending.push(did);
+  }
+  if (!pending.length) return;
   _koujiThumbMapLoading = true;
 
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    var map = {};
-    function fetchPage(url) {
-      return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
-        .then(function(r) {
-          if (r.status === 404) return null;            // フォルダー未作成＝サムネ未登録
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        })
-        .then(function(data) {
-          if (!data) return;
-          (data.value || []).forEach(function(f) {
-            if (!f.file) return;
-            var m = f.name.match(/^(\d+)\.(?:png|jpg|jpeg|gif|webp|bmp)$/i);
-            if (!m) return;
-            var t = f.thumbnails && f.thumbnails[0];
+    // 20件ずつ $batch に分割
+    var chunks = [];
+    for (var c = 0; c < pending.length; c += 20) chunks.push(pending.slice(c, c + 20));
+
+    function runChunk(ids) {
+      var requests = ids.map(function(id) {
+        var rel = (idToPass[id] + '/' + KOUJI_THUMB_NAME).split('/').map(encodeURIComponent).join('/');
+        return {
+          id: id,
+          method: 'GET',
+          url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&$expand=thumbnails'
+        };
+      });
+      return fetch('https://graph.microsoft.com/v1.0/$batch', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: requests })
+      }).then(function(r) {
+        if (!r.ok) throw new Error('batch HTTP ' + r.status);
+        return r.json();
+      }).then(function(data) {
+        (data.responses || []).forEach(function(res) {
+          if (res.status === 200 && res.body) {
+            var t = res.body.thumbnails && res.body.thumbnails[0];
             var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
-            if (u) map[m[1]] = u;
-          });
-          if (data['@odata.nextLink']) return fetchPage(data['@odata.nextLink']);
+            _koujiThumbMap[res.id] = u || 'none';
+          } else if (res.status === 404) {
+            _koujiThumbMap[res.id] = 'none';   // サムネ未登録（確定）
+          }
+          // それ以外(429/5xx)は未定義のまま＝後で再試行可能
         });
+        _applyKoujiThumbs();
+      });
     }
-    var firstUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
-                   _koujiThumbFolderEnc() + ':/children?$select=name,file,thumbnails&$expand=thumbnails&$top=200';
-    return fetchPage(firstUrl).then(function() {
-      _koujiThumbMap = map;
+
+    // バッチを最大3並列で処理
+    var idx = 0;
+    function next() {
+      if (idx >= chunks.length) return Promise.resolve();
+      return runChunk(chunks[idx++]).catch(function(){}).then(next);
+    }
+    return Promise.all([next(), next(), next()]).then(function() {
       _koujiThumbMapLoading = false;
-      _applyKoujiThumbs();
     });
   }).catch(function() {
     _koujiThumbMapLoading = false;
-    // 取得失敗 → 一度だけ再試行（マップは確定させない）
-    if (!_koujiThumbRetryScheduled) {
-      _koujiThumbRetryScheduled = true;
-      setTimeout(function() { _koujiThumbRetryScheduled = false; _loadKoujiListThumbs(); }, 5000);
-    }
   });
 }
 
 // 取得済みマップを現在表示中のimg要素へ反映
 function _applyKoujiThumbs() {
-  if (!_koujiThumbMap) return;
   var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
     var id = img.getAttribute('data-item-id');
     var u = _koujiThumbMap[id];
-    if (!u) continue;
+    if (!u || u === 'none') continue;
+    if (img.getAttribute('src') === u) continue;   // 反映済みはスキップ
     img.onerror = function() { _thumbRetry(this); };
     img.src = u;
     img.style.display = '';
@@ -21014,31 +21044,23 @@ function _extractPlacePicDrivePath(val) {
   return null;
 }
 
-// リストサムネ設定: 画像blobを 業務アプリ/工事リストサムネ/{itemId}.png として
+// リストサムネ設定: 画像blobを 各工事の Folder_Pass 内に「_リストサムネ.png」として
 // OneDrive(Graph) に保存。SP REST API は使わないため接続リセットの影響を受けない。
 function _uploadKoujiThumbBlob(blob, baseName) {
   var d = currentItem;
   if (!d) return Promise.reject(new Error('no currentItem'));
   var itemId = d['id'] || d['ID'];
   if (!itemId) return Promise.reject(new Error('no itemId'));
+  var folderPass = _koujiItemFolderPass(d);
+  if (!folderPass) {
+    showSaveToast(false, '先にこの工事のフォルダーを作成してください');
+    return Promise.reject(new Error('no Folder_Pass'));
+  }
   var token;
   return getToken().then(function(resp) {
     token = resp.accessToken;
-    // 集中フォルダーが無ければ作成（既存なら409は無視）
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
-                 KOUJI_THUMB_FOLDER.split('/').slice(0, -1).map(encodeURIComponent).join('/') + ':/children', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: KOUJI_THUMB_FOLDER.split('/').pop(),
-        folder: {},
-        '@microsoft.graph.conflictBehavior': 'fail'
-      })
-    }).then(function() { return; }, function() { return; });  // 成否問わず続行
-  }).then(function() {
-    var fname = itemId + '.png';
-    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
-              _koujiThumbFolderEnc() + '/' + encodeURIComponent(fname) + ':/content';
+    var rel = (folderPass + '/' + KOUJI_THUMB_NAME).split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + rel + ':/content';
     return fetch(url, {
       method: 'PUT',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': (blob.type || 'image/png') },
@@ -21048,7 +21070,6 @@ function _uploadKoujiThumbBlob(blob, baseName) {
     if (!(r.ok || r.status === 201)) throw new Error('アップロード失敗 HTTP ' + r.status);
     // 即時表示: 手元のblobで表示（Graphサムネ生成は数秒遅れるため）
     var blobUrl = URL.createObjectURL(blob);
-    if (!_koujiThumbMap) _koujiThumbMap = {};
     _koujiThumbMap[String(itemId)] = blobUrl;
     var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
     if (cur) { cur.onerror = null; cur.src = blobUrl; cur.style.display = ''; }

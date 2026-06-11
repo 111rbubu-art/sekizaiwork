@@ -5500,7 +5500,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.117';
+var APP_VERSION = 'v1.9.118';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9228,10 +9228,10 @@ function renderKoujiList(filter) {
     var _rightTags = stoneTag1 + stoneTag2 + choukokuTag;
     var rightTagGroup = _rightTags ? '<div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px">' + _rightTags + '</div>' : '';
 
-    // サムネ: 添付ありアイテムのみスロットを用意（_loadKoujiListThumbsが_thumb_添付を探して表示）
-    var _hasAttach = d['Attachments'] === true;
-    var thumbHtml = _hasAttach
-      ? '<img class="kouji-list-thumb" data-item-id="' + (d['id']||'') + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:104px;height:104px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center;display:none">'
+    // サムネスロットを用意（非表示）。_loadKoujiListThumbsが集中フォルダーから
+    // 該当アイテムのサムネを見つけたものだけ表示する。
+    var thumbHtml = d['id']
+      ? '<img class="kouji-list-thumb" data-item-id="' + d['id'] + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:104px;height:104px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#e8e8e8;align-self:center;display:none">'
       : '';
     var cardInner =
       '<div class="card-tags"><div style="font-size:13px;margin-right:5px">' + templeIcon(temple) + '</div>' +
@@ -9258,96 +9258,82 @@ function renderKoujiList(filter) {
   _loadKoujiListThumbs();
 }
 
-// itemId -> blobUrl（表示する） | 'none'（サムネ添付なし＝確定的に存在しない）
-var _koujiThumbCache = {};
-var KOUJI_THUMB_PREFIX = '_thumb_';
+// ===== リストサムネ（OneDrive/Graph 集中フォルダー方式） =====
+// SharePoint REST API は環境によって ERR_CONNECTION_RESET が頻発するため、
+// 確実に動作する Graph API のみで完結させる。
+// サムネは 業務アプリ/工事リストサムネ/{itemId}.png に保存し、
+// リスト表示時はそのフォルダーを「1回だけ」一覧取得して全件のサムネURLを得る。
+var KOUJI_THUMB_PREFIX = '_thumb_';                 // 旧SP添付方式の名残（互換用に残置）
+var KOUJI_THUMB_FOLDER = '業務アプリ/工事リストサムネ'; // drive内の集中サムネフォルダー
+var _koujiThumbMap = null;        // {itemId: thumbUrl}（null=未取得）
+var _koujiThumbMapLoading = false;
 var _koujiThumbRetryScheduled = false;
 
+function _koujiThumbFolderEnc() {
+  return KOUJI_THUMB_FOLDER.split('/').map(encodeURIComponent).join('/');
+}
+
+// 集中フォルダーを1回の Graph 呼び出しで一覧 → itemId→サムネURL のマップを構築
 function _loadKoujiListThumbs() {
   var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
   if (!imgs.length) return;
-  // キャッシュ済みは即反映、未取得のみフェッチ
-  var toFetch = [];
-  for (var i = 0; i < imgs.length; i++) {
-    var img = imgs[i];
-    var id = img.getAttribute('data-item-id');
-    var c = _koujiThumbCache[id];
-    if (c === 'none') continue;            // 確定的にサムネ無し
-    if (c) { img.src = c; img.style.display = ''; continue; }  // キャッシュ済み
-    toFetch.push(img);
-  }
-  if (!toFetch.length) return;
+  if (_koujiThumbMap) { _applyKoujiThumbs(); return; }   // 取得済みなら即反映
+  if (_koujiThumbMapLoading) return;
+  _koujiThumbMapLoading = true;
 
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-    account: msalApp.getActiveAccount()
-  }).then(function(resp) {
+  getToken().then(function(resp) {
     var token = resp.accessToken;
-    // 並列数を制限してスロットリング(429)を回避
-    var MAX_PARALLEL = 5;
-    var queue = toFetch.slice();
-    var transientFailed = false;
-
-    function fetchOne(img) {
-      var itemId = img.getAttribute('data-item-id');
-      if (!itemId) return Promise.resolve();
-      var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3')/items(" + itemId + ")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
-      return fetch(listUrl, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
-      .then(function(r) {
-        if (!r.ok) { throw { transient: (r.status === 429 || r.status >= 500) }; }
-        return r.json();
-      })
-      .then(function(j) {
-        var files = (j.d && j.d.results) || [];
-        var thumb = files.filter(function(f){ return f.FileName.indexOf(KOUJI_THUMB_PREFIX) === 0; })[0];
-        // 一覧取得は成功 → サムネ添付が本当に無ければ確定的に 'none'
-        if (!thumb) { _koujiThumbCache[itemId] = 'none'; return; }
-        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
-                     thumb.ServerRelativeUrl.replace(/'/g, "''") + "')/$value";
-        return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-          .then(function(r) {
-            if (!r.ok) { throw { transient: (r.status === 429 || r.status >= 500) }; }
-            return r.blob();
-          })
-          .then(function(blob) {
-            if (!blob || !blob.size) { throw { transient: true }; }
-            var blobUrl = URL.createObjectURL(blob);
-            _koujiThumbCache[itemId] = blobUrl;
-            // 再描画でimg要素が差し替わっている可能性があるので最新を取り直して反映
-            var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
-            var target = cur || img;
-            target.src = blobUrl;
-            target.style.display = '';
+    var map = {};
+    function fetchPage(url) {
+      return fetch(url, { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) {
+          if (r.status === 404) return null;            // フォルダー未作成＝サムネ未登録
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(data) {
+          if (!data) return;
+          (data.value || []).forEach(function(f) {
+            if (!f.file) return;
+            var m = f.name.match(/^(\d+)\.(?:png|jpg|jpeg|gif|webp|bmp)$/i);
+            if (!m) return;
+            var t = f.thumbnails && f.thumbnails[0];
+            var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
+            if (u) map[m[1]] = u;
           });
-      })
-      .catch(function(e) {
-        // 一過性エラー（429/5xx/ネットワーク）はキャッシュせず、後で再試行できるよう残す
-        if (e && e.transient) { transientFailed = true; }
-        else { _koujiThumbCache[itemId] = 'none'; }  // 404等の確定エラーのみ 'none'
-      });
+          if (data['@odata.nextLink']) return fetchPage(data['@odata.nextLink']);
+        });
     }
-
-    // 簡易並列ワーカー
-    function worker() {
-      if (!queue.length) return Promise.resolve();
-      return fetchOne(queue.shift()).then(worker);
-    }
-    var workers = [];
-    for (var w = 0; w < Math.min(MAX_PARALLEL, queue.length); w++) workers.push(worker());
-    return Promise.all(workers).then(function() {
-      // 一過性失敗があれば一度だけ自動リトライ（5秒後）
-      if (transientFailed && !_koujiThumbRetryScheduled) {
-        _koujiThumbRetryScheduled = true;
-        setTimeout(function() { _koujiThumbRetryScheduled = false; _loadKoujiListThumbs(); }, 5000);
-      }
+    var firstUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
+                   _koujiThumbFolderEnc() + ':/children?$select=name,file,thumbnails&$expand=thumbnails&$top=200';
+    return fetchPage(firstUrl).then(function() {
+      _koujiThumbMap = map;
+      _koujiThumbMapLoading = false;
+      _applyKoujiThumbs();
     });
   }).catch(function() {
-    // トークン取得失敗 → 一度だけ再試行（キャッシュは汚さない）
+    _koujiThumbMapLoading = false;
+    // 取得失敗 → 一度だけ再試行（マップは確定させない）
     if (!_koujiThumbRetryScheduled) {
       _koujiThumbRetryScheduled = true;
       setTimeout(function() { _koujiThumbRetryScheduled = false; _loadKoujiListThumbs(); }, 5000);
     }
   });
+}
+
+// 取得済みマップを現在表示中のimg要素へ反映
+function _applyKoujiThumbs() {
+  if (!_koujiThumbMap) return;
+  var imgs = document.querySelectorAll('img.kouji-list-thumb[data-item-id]');
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    var id = img.getAttribute('data-item-id');
+    var u = _koujiThumbMap[id];
+    if (!u) continue;
+    img.onerror = function() { _thumbRetry(this); };
+    img.src = u;
+    img.style.display = '';
+  }
 }
 
 function toggleKoujiSort() {
@@ -21028,45 +21014,44 @@ function _extractPlacePicDrivePath(val) {
   return null;
 }
 
-// リストサムネ設定: 選んだOneDrive画像をSP添付（_thumb_接頭辞）としてコピー
-// PlacePic列は画像列のため書き込み不可 → 添付ファイル方式で実現
+// リストサムネ設定: 画像blobを 業務アプリ/工事リストサムネ/{itemId}.png として
+// OneDrive(Graph) に保存。SP REST API は使わないため接続リセットの影響を受けない。
 function _uploadKoujiThumbBlob(blob, baseName) {
   var d = currentItem;
   if (!d) return Promise.reject(new Error('no currentItem'));
   var itemId = d['id'] || d['ID'];
   if (!itemId) return Promise.reject(new Error('no itemId'));
-  var thumbName = KOUJI_THUMB_PREFIX + baseName;
-  var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E5%B7%A5%E4%BA%8B%E9%96%A2%E9%80%A3')/items(" + itemId + ")/AttachmentFiles";
-  var spToken;
-  return msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Write'],
-    account: msalApp.getActiveAccount()
-  }).then(function(resp) {
-    spToken = resp.accessToken;
-    return fetch(listUrl + "?$select=FileName", { headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' } })
-      .then(function(r) { return r.json(); })
-      .then(function(j) {
-        var existing = (j.d && j.d.results) || [];
-        var dels = existing.filter(function(f){ return f.FileName.indexOf(KOUJI_THUMB_PREFIX) === 0; })
-          .map(function(f) {
-            var delUrl = listUrl + "/getByFileName('" + encodeURIComponent(f.FileName) + "')";
-            return fetch(delUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose', 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' } });
-          });
-        return Promise.all(dels);
-      });
+  var token;
+  return getToken().then(function(resp) {
+    token = resp.accessToken;
+    // 集中フォルダーが無ければ作成（既存なら409は無視）
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
+                 KOUJI_THUMB_FOLDER.split('/').slice(0, -1).map(encodeURIComponent).join('/') + ':/children', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: KOUJI_THUMB_FOLDER.split('/').pop(),
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'fail'
+      })
+    }).then(function() { return; }, function() { return; });  // 成否問わず続行
   }).then(function() {
-    var addUrl = listUrl + "/add(FileName='" + encodeURIComponent(thumbName) + "')";
-    return fetch(addUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + spToken, Accept: 'application/json;odata=verbose' }, body: blob });
+    var fname = itemId + '.png';
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:/' +
+              _koujiThumbFolderEnc() + '/' + encodeURIComponent(fname) + ':/content';
+    return fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': (blob.type || 'image/png') },
+      body: blob
+    });
   }).then(function(r) {
     if (!(r.ok || r.status === 201)) throw new Error('アップロード失敗 HTTP ' + r.status);
-    d['Attachments'] = true;
-    for (var i = 0; i < allItems.length; i++) {
-      if (String(allItems[i]['id']) === String(itemId)) { allItems[i]['Attachments'] = true; break; }
-    }
-    delete _koujiThumbCache[String(itemId)];
-    if (typeof _koujiCurrentFilter !== 'undefined' && document.getElementById('list-content')) {
-      renderKoujiList(_koujiCurrentFilter);
-    }
+    // 即時表示: 手元のblobで表示（Graphサムネ生成は数秒遅れるため）
+    var blobUrl = URL.createObjectURL(blob);
+    if (!_koujiThumbMap) _koujiThumbMap = {};
+    _koujiThumbMap[String(itemId)] = blobUrl;
+    var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
+    if (cur) { cur.onerror = null; cur.src = blobUrl; cur.style.display = ''; }
     showSaveToast(true, 'サムネを設定しました');
   });
 }

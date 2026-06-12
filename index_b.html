@@ -5569,7 +5569,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.132';
+var APP_VERSION = 'v1.9.133';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18811,6 +18811,17 @@ function renderList() {
     var kakeName = d['HakaName'] ? d['HakaName'] + '家' : (d['_x304a__x5893__x306e__x540d__x7f'] ? d['_x304a__x5893__x306e__x540d__x7f'] + '家' : '');
     var shutoriVal = d['RedMark'] || '';
     var showShutori = (shutoriVal === '朱有' || shutoriVal === '朱有（朱取必要）') && d['FinDelRedText'] !== true;
+    var nokThumbHtml = d['id']
+      ? '<div onclick="openDetailAt(_displayItems[' + idx + '],5);event.stopPropagation()" ' +
+        'style="width:80px;height:80px;border-radius:8px;flex-shrink:0;cursor:pointer;' +
+        'border:2px dashed #c8cdd5;background:#f3f4f6;position:relative;overflow:hidden;' +
+        'display:flex;flex-direction:column;align-items:center;justify-content:center;box-sizing:border-box;gap:1px">' +
+        '<img class="nok-list-thumb" data-item-id="' + d['id'] + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" ' +
+        'style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;border-radius:6px">' +
+        '<span style="font-size:20px;pointer-events:none">📷</span>' +
+        '<span style="font-size:9px;color:#aaa;pointer-events:none">データ</span>' +
+        '</div>'
+      : '';
     return _sepHtml + '<div class="card" data-idx="' + idx + '" data-item-id="' + (d['id']||'') + '" style="position:relative">' +
       (showShutori ? '<span style="position:absolute;top:6px;right:6px;background:#c00;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;line-height:1.4;z-index:1;pointer-events:none">朱取</span>' : '') +
       '<div class="card-tags" style="display:flex;align-items:center">' +
@@ -18822,6 +18833,9 @@ function renderList() {
       '</div>' +
       '</div>' +
       '<div class="card-main">' +
+      '<div style="display:flex;gap:10px;align-items:flex-start">' +
+      nokThumbHtml +
+      '<div style="flex:1;min-width:0">' +
       '<div style="display:flex;align-items:flex-start;gap:6px">' +
       '<div class="card-name-wrap" style="flex:1;min-width:0">' +
       '<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">' +
@@ -18838,6 +18852,8 @@ function renderList() {
       '</div>' +
       (d['InternalCommunication'] ? '<div class="card-memo">📋 ' + d['InternalCommunication'] + '</div>' : '') +
       '</div>' +
+      '</div>' +
+      '</div>' +
       '</div>';
   }).join('') + '</div>';
 
@@ -18850,6 +18866,7 @@ function renderList() {
       openDetail(_displayItems[idx]);
     });
   });
+  _loadNokListThumbs();
 }
 
 // ===== フィルター =====
@@ -18953,29 +18970,88 @@ function _bgReloadFull(d, listMode) {
   }).catch(function(e){ _bgReloading = false; console.warn('[BG Reload]', e.message); });
 }
 
-function openDetail(d) {
+var _nokThumbMap = {}; // {itemId: blobUrl | 'none'}
+
+function _loadNokListThumbs() {
+  var imgs = document.querySelectorAll('img.nok-list-thumb[data-item-id]');
+  if (!imgs.length) return;
+  // キャッシュ済みを即反映
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    var id = img.getAttribute('data-item-id');
+    var c = _nokThumbMap[id];
+    if (c && c !== 'none') {
+      img.src = c; img.style.display = '';
+      var par = img.parentNode;
+      if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
+    }
+  }
+  // PlacePicパスが取れるもののみ取得
+  var pending = [], seen = {};
+  for (var k = 0; k < imgs.length; k++) {
+    var did = imgs[k].getAttribute('data-item-id');
+    if (!did || seen[did] || _nokThumbMap[did] !== undefined) continue;
+    seen[did] = 1;
+    var item = null;
+    for (var j = 0; j < allItems.length; j++) {
+      if (String(allItems[j]['id']) === did) { item = allItems[j]; break; }
+    }
+    if (!item) continue;
+    var dpath = _extractPlacePicDrivePath(item['PlacePic']);
+    if (!dpath) { _nokThumbMap[did] = 'none'; continue; }
+    pending.push({ id: did, dpath: dpath });
+  }
+  if (!pending.length) return;
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var idx = 0;
+    function fetchOne() {
+      if (idx >= pending.length) return Promise.resolve();
+      var p = pending[idx++];
+      var enc = p.dpath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':?$select=id,name&$expand=thumbnails',
+        { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var t = data.thumbnails && data.thumbnails[0];
+          var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
+          if (u) {
+            _nokThumbMap[p.id] = u;
+            var el = document.querySelector('img.nok-list-thumb[data-item-id="' + p.id + '"]');
+            if (el) {
+              el.src = u; el.style.display = '';
+              var par = el.parentNode;
+              if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
+            }
+          } else { _nokThumbMap[p.id] = 'none'; }
+        })
+        .catch(function() { _nokThumbMap[p.id] = 'none'; })
+        .then(fetchOne);
+    }
+    return Promise.all([fetchOne(), fetchOne(), fetchOne()]);
+  }).catch(function() {});
+}
+
+function openDetailAt(d, tabIdx) {
   editMode = false;
   currentItem = d;
   currentListMode = 'noukotsu';
-  currentTab = 0;
+  currentTab = tabIdx;
   document.getElementById('det-title').textContent = buildDetTitle(d, 'noukotsu');
   highlightActiveCard(d['id']);
   showDetScreen();
-  // 必ず納骨・戒切用タブに書き換え（他画面からの戻りでタブが残るバグを修正）
   var tabs = document.getElementById('tabs');
+  var _t = function(i, lbl) { return '<button class="tab' + (i === tabIdx ? ' on' : '') + '" data-i="' + i + '">' + lbl + '</button>'; };
   tabs.innerHTML =
-    '<button class="tab on" data-i="0">基本情報</button>' +
-    '<button class="tab" data-i="1">依頼内容</button>' +
-    '<button class="tab" data-i="2">墓石確認</button>' +
-    '<button class="tab" data-i="3">進捗状況</button>' +
-    '<button class="tab" data-i="4">📑 資料作成</button>' +
-    '<button class="tab" data-i="5">📂 データ</button>' +
-    '<button class="tab" data-i="6">追加分</button>' +
-    '<button class="tab" data-i="7">その他</button>' +
+    _t(0,'基本情報') + _t(1,'依頼内容') + _t(2,'墓石確認') + _t(3,'進捗状況') +
+    _t(4,'📑 資料作成') + _t(5,'📂 データ') + _t(6,'追加分') + _t(7,'その他') +
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>';
-  showTab(0, d);
-  // バックグラウンドで全フィールド補完（KoujiLogJson等の重いデータ）
+  showTab(tabIdx, d);
   setTimeout(function(){ _bgReloadFull(d, 'noukotsu'); }, 800);
+}
+
+function openDetail(d) {
+  openDetailAt(d, 0);
 }
 
 document.getElementById('back-btn').addEventListener('click', function() {

@@ -2855,12 +2855,13 @@ function renderStonePriceList(items) {
   var html = tabsHtml + _stoneSaveBarHtml();
   html += '<div style="overflow:auto;max-height:calc(100vh - 210px);border-radius:0 10px 10px 10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);border:1px solid #1a2535">';
   html += '<table style="border-collapse:separate;border-spacing:0;font-size:12px;background:#fff;white-space:nowrap">';
-  // ヘッダー
+  // ヘッダー（サムネ列 + フィールド列）
   html += '<thead><tr>';
+  html += '<th style="position:sticky;left:0;top:0;z-index:5;background:' + headBg + ';color:#fff;font-weight:500;padding:8px 4px;text-align:center;min-width:60px;width:60px;border-right:1px solid #2a3545">📷</th>';
   fields.forEach(function(f) {
     var w = _stoneColW(f);
     var sticky = (f.key === 'Title')
-      ? 'position:sticky;left:0;top:0;z-index:4;'
+      ? 'position:sticky;left:60px;top:0;z-index:4;'
       : 'position:sticky;top:0;z-index:2;';
     html += '<th style="' + sticky + 'background:' + headBg + ';color:#fff;font-weight:500;padding:8px 8px;text-align:left;min-width:' + w + 'px;width:' + w + 'px;border-right:1px solid #2a3545">' + _esc(f.label) + '</th>';
   });
@@ -2871,9 +2872,18 @@ function renderStonePriceList(items) {
     var willDel = !!_stonePendingDeletes[it.id];
     var bg = willDel ? '#f3e0e0' : (i % 2 === 0 ? '#ffffff' : '#f7f9fb');
     html += '<tr data-rowid="' + _esc(String(it.id)) + '"' + (willDel ? ' style="opacity:0.55"' : '') + '>';
+    // サムネセル
+    var cached = _stoneThumbCache[String(it.id)];
+    var thumbSrc = (cached && cached !== 'none') ? cached : 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    var thumbVis = (cached && cached !== 'none') ? 'block' : 'none';
+    html += '<td style="position:sticky;left:0;z-index:1;background:' + bg + ';padding:4px;border-bottom:1px solid #eee;border-right:1px solid #f0f0f0;text-align:center;min-width:60px;width:60px">' +
+      '<img class="stone-list-thumb" data-sid="' + _esc(String(it.id)) + '" src="' + thumbSrc + '" ' +
+      'style="width:52px;height:52px;object-fit:cover;border-radius:6px;background:#e0e8f0;display:' + thumbVis + ';cursor:pointer" ' +
+      'onclick="_openStonePriceById(\'' + _esc(String(it.id)) + '\')">' +
+      '</td>';
     fields.forEach(function(f) {
       var w = _stoneColW(f);
-      var sticky = (f.key === 'Title') ? 'position:sticky;left:0;z-index:1;' : '';
+      var sticky = (f.key === 'Title') ? 'position:sticky;left:60px;z-index:1;' : '';
       var deco = willDel ? ';text-decoration:line-through' : '';
       html += '<td style="' + sticky + 'background:' + bg + ';padding:4px 6px;border-bottom:1px solid #eee;border-right:1px solid #f0f0f0;min-width:' + w + 'px;width:' + w + 'px;text-align:' + (f.type === 'checkbox' ? 'center' : 'left') + deco + '">' + _stoneCellHtml(it, f, willDel) + '</td>';
     });
@@ -2887,6 +2897,65 @@ function renderStonePriceList(items) {
   html += '</tbody></table></div>';
   html += '<div style="font-size:11px;color:#999;margin-top:6px;padding:0 2px">セルを編集すると変更がオレンジ枠で表示されます。🗑️は削除予定（取消可）。<b>「💾 SPへ保存」を押すまでSharePointには反映されません。</b></div>';
   el.innerHTML = html;
+  _loadStoneListThumbs(items);
+}
+
+var _stoneThumbCache = {}; // {itemId: blobUrl | 'none'}
+var _stoneThumbLoading = false;
+
+function _loadStoneListThumbs(items) {
+  if (!items || !items.length) return;
+  // キャッシュ済みをすぐ反映
+  items.forEach(function(it) {
+    var c = _stoneThumbCache[String(it.id)];
+    if (c && c !== 'none') {
+      var el = document.querySelector('img.stone-list-thumb[data-sid="' + it.id + '"]');
+      if (el) { el.src = c; el.style.display = 'block'; }
+    }
+  });
+  var toFetch = items.filter(function(it) { return _stoneThumbCache[String(it.id)] === undefined; });
+  if (!toFetch.length || _stoneThumbLoading) return;
+  _stoneThumbLoading = true;
+  msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
+    account: msalApp.getActiveAccount()
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    var idx = 0;
+    function fetchOne() {
+      if (idx >= toFetch.length) return Promise.resolve();
+      var it = toFetch[idx++];
+      var sid = String(it.id);
+      var url = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle(' +
+        _STONE_LIST_ENC + ')/items(' + sid + ')/AttachmentFiles';
+      return fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var files = (data.d && data.d.results) ? data.d.results : [];
+          var imgs = files.filter(function(f) { return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
+          if (!imgs.length) { _stoneThumbCache[sid] = 'none'; return fetchOne(); }
+          var relPath = imgs[0].ServerRelativeUrl;
+          var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+            relPath.replace(/'/g, "''") + "')/$value";
+          return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+            .then(function(r) { return r.ok ? r.blob() : null; })
+            .then(function(blob) {
+              if (blob) {
+                var burl = URL.createObjectURL(blob);
+                _stoneThumbCache[sid] = burl;
+                var el = document.querySelector('img.stone-list-thumb[data-sid="' + sid + '"]');
+                if (el) { el.src = burl; el.style.display = 'block'; }
+              } else {
+                _stoneThumbCache[sid] = 'none';
+              }
+            }).then(fetchOne);
+        })
+        .catch(function() { _stoneThumbCache[sid] = 'none'; return fetchOne(); });
+    }
+    // 4並列で取得
+    return Promise.all([fetchOne(), fetchOne(), fetchOne(), fetchOne()]);
+  }).catch(function() {})
+  .then(function() { _stoneThumbLoading = false; });
 }
 
 var _STONE_SP_SITE = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
@@ -5500,7 +5569,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.129';
+var APP_VERSION = 'v1.9.130';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

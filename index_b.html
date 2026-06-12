@@ -5569,7 +5569,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.133';
+var APP_VERSION = 'v1.9.134';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18812,7 +18812,7 @@ function renderList() {
     var shutoriVal = d['RedMark'] || '';
     var showShutori = (shutoriVal === '朱有' || shutoriVal === '朱有（朱取必要）') && d['FinDelRedText'] !== true;
     var nokThumbHtml = d['id']
-      ? '<div onclick="openDetailAt(_displayItems[' + idx + '],5);event.stopPropagation()" ' +
+      ? '<div onclick="event.stopPropagation();openNokDetailById(\'' + d['id'] + '\',5)" ' +
         'style="width:80px;height:80px;border-radius:8px;flex-shrink:0;cursor:pointer;' +
         'border:2px dashed #c8cdd5;background:#f3f4f6;position:relative;overflow:hidden;' +
         'display:flex;flex-direction:column;align-items:center;justify-content:center;box-sizing:border-box;gap:1px">' +
@@ -18971,65 +18971,95 @@ function _bgReloadFull(d, listMode) {
 }
 
 var _nokThumbMap = {}; // {itemId: blobUrl | 'none'}
+var _nokThumbMapLoading = false;
 
-function _loadNokListThumbs() {
+// 取得済みマップを現在表示中の納骨サムネimg要素へ反映
+function _applyNokThumbs() {
   var imgs = document.querySelectorAll('img.nok-list-thumb[data-item-id]');
-  if (!imgs.length) return;
-  // キャッシュ済みを即反映
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
     var id = img.getAttribute('data-item-id');
-    var c = _nokThumbMap[id];
-    if (c && c !== 'none') {
-      img.src = c; img.style.display = '';
-      var par = img.parentNode;
-      if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
-    }
+    var u = _nokThumbMap[id];
+    if (!u || u === 'none') continue;
+    if (img.getAttribute('src') === u) continue;
+    img.onerror = function() { _thumbRetry(this); };
+    img.src = u;
+    img.style.display = '';
+    var par = img.parentNode;
+    if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
   }
-  // PlacePicパスが取れるもののみ取得
+}
+
+// 納骨リストサムネ：各納骨の FolderPass 内「_リストサムネ.png」を Graph $batch で取得
+// （工事関連と全く同じ仕組み。SP REST/PlacePic列は使わない）
+function _loadNokListThumbs() {
+  var imgs = document.querySelectorAll('img.nok-list-thumb[data-item-id]');
+  if (!imgs.length) return;
+  _applyNokThumbs();                 // 取得済みは即反映
+  if (_nokThumbMapLoading) return;
+
+  var idToPass = {};
+  for (var i = 0; i < allItems.length; i++) {
+    var it = allItems[i];
+    var id = String(it['id'] || '');
+    if (!id) continue;
+    var fp = _koujiItemFolderPass(it);
+    if (fp) idToPass[id] = fp;
+  }
   var pending = [], seen = {};
   for (var k = 0; k < imgs.length; k++) {
     var did = imgs[k].getAttribute('data-item-id');
-    if (!did || seen[did] || _nokThumbMap[did] !== undefined) continue;
+    if (!did || seen[did]) continue;
     seen[did] = 1;
-    var item = null;
-    for (var j = 0; j < allItems.length; j++) {
-      if (String(allItems[j]['id']) === did) { item = allItems[j]; break; }
-    }
-    if (!item) continue;
-    var dpath = _extractPlacePicDrivePath(item['PlacePic']);
-    if (!dpath) { _nokThumbMap[did] = 'none'; continue; }
-    pending.push({ id: did, dpath: dpath });
+    if (did in _nokThumbMap) continue;     // 取得済み（url or 'none'）
+    if (!idToPass[did]) continue;          // フォルダー未設定→対象外
+    pending.push(did);
   }
   if (!pending.length) return;
+  _nokThumbMapLoading = true;
+
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    var idx = 0;
-    function fetchOne() {
-      if (idx >= pending.length) return Promise.resolve();
-      var p = pending[idx++];
-      var enc = p.dpath.split('/').map(encodeURIComponent).join('/');
-      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':?$select=id,name&$expand=thumbnails',
-        { headers: { Authorization: 'Bearer ' + token } })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          var t = data.thumbnails && data.thumbnails[0];
-          var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
-          if (u) {
-            _nokThumbMap[p.id] = u;
-            var el = document.querySelector('img.nok-list-thumb[data-item-id="' + p.id + '"]');
-            if (el) {
-              el.src = u; el.style.display = '';
-              var par = el.parentNode;
-              if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
-            }
-          } else { _nokThumbMap[p.id] = 'none'; }
-        })
-        .catch(function() { _nokThumbMap[p.id] = 'none'; })
-        .then(fetchOne);
+    var chunks = [];
+    for (var c = 0; c < pending.length; c += 20) chunks.push(pending.slice(c, c + 20));
+
+    function runChunk(ids) {
+      var requests = ids.map(function(id) {
+        var rel = (idToPass[id] + '/' + KOUJI_THUMB_NAME).split('/').map(encodeURIComponent).join('/');
+        return { id: id, method: 'GET', url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&$expand=thumbnails' };
+      });
+      return fetch('https://graph.microsoft.com/v1.0/$batch', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: requests })
+      }).then(function(r) { if (!r.ok) throw new Error('batch HTTP ' + r.status); return r.json(); })
+      .then(function(data) {
+        (data.responses || []).forEach(function(res) {
+          if (res.status === 200 && res.body) {
+            var t = res.body.thumbnails && res.body.thumbnails[0];
+            var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
+            _nokThumbMap[res.id] = u || 'none';
+          } else if (res.status === 404) {
+            _nokThumbMap[res.id] = 'none';
+          }
+        });
+        _applyNokThumbs();
+      });
     }
-    return Promise.all([fetchOne(), fetchOne(), fetchOne()]);
-  }).catch(function() {});
+    var idx = 0;
+    function next() {
+      if (idx >= chunks.length) return Promise.resolve();
+      return runChunk(chunks[idx++]).catch(function(){}).then(next);
+    }
+    return Promise.all([next(), next(), next()]).then(function() { _nokThumbMapLoading = false; });
+  }).catch(function() { _nokThumbMapLoading = false; });
+}
+
+// 納骨カードのサムネ枠クリック → IDで該当アイテムを探してデータタブを開く
+function openNokDetailById(id, tab) {
+  for (var i = 0; i < allItems.length; i++) {
+    if (String(allItems[i]['id']) === String(id)) { openDetailAt(allItems[i], tab); return; }
+  }
 }
 
 function openDetailAt(d, tabIdx) {
@@ -21224,7 +21254,7 @@ function _uploadKoujiThumbBlob(blob, baseName) {
   if (!itemId) return Promise.reject(new Error('no itemId'));
   var folderPass = _koujiItemFolderPass(d);
   if (!folderPass) {
-    showSaveToast(false, '先にこの工事のフォルダーを作成してください');
+    showSaveToast(false, '先にこのフォルダーを作成してください');
     return Promise.reject(new Error('no Folder_Pass'));
   }
   var token;
@@ -21240,10 +21270,16 @@ function _uploadKoujiThumbBlob(blob, baseName) {
   }).then(function(r) {
     if (!(r.ok || r.status === 201)) throw new Error('アップロード失敗 HTTP ' + r.status);
     // 即時表示: 手元のblobで表示（Graphサムネ生成は数秒遅れるため）
+    // 工事・納骨どちらのリストサムネにも反映（仕組みは共通）
     var blobUrl = URL.createObjectURL(blob);
     _koujiThumbMap[String(itemId)] = blobUrl;
-    var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"]');
-    if (cur) { cur.onerror = null; cur.src = blobUrl; cur.style.display = ''; }
+    _nokThumbMap[String(itemId)] = blobUrl;
+    var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"], img.nok-list-thumb[data-item-id="' + itemId + '"]');
+    if (cur) {
+      cur.onerror = null; cur.src = blobUrl; cur.style.display = '';
+      var par = cur.parentNode;
+      if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
+    }
     showSaveToast(true, 'サムネを設定しました');
   });
 }
@@ -21760,6 +21796,8 @@ function loadAttachments(itemId) {
         'style="position:absolute;top:4px;left:4px">🖼</button>' +
         '<button class="attach-file-btn cb-btn cb-file cb-icon-only" data-tip="📷 原寸を画像コピー" ' +
         'style="position:absolute;top:4px;left:34px">📷</button>' +
+        (currentItem ? '<button class="nok-attach-set-thumb-btn" ' +
+        'style="position:absolute;bottom:26px;left:4px;background:rgba(26,90,154,0.85);color:#fff;border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;line-height:1.4">📌 サムネ</button>' : '') +
         '<button onclick="deleteAttachment(\'納骨・戒切\',' + itemId + ',\'' + fnEsc + '\',function(){loadAttachments(' + itemId + ')})" ' +
         'style="position:absolute;top:4px;right:4px;background:rgba(139,0,0,0.8);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>' +
         '<div class="attach-label">' + f.FileName + '</div>' +
@@ -21797,6 +21835,19 @@ function loadAttachments(itemId) {
             if (thumbBtn) thumbBtn.onclick = function(e){ e.stopPropagation(); _copyImgResizedToClipboard(blobUrl, this, 600); };
             var fileBtn = imgEl.parentElement.querySelector('.attach-file-btn');
             if (fileBtn) fileBtn.onclick = function(e){ e.stopPropagation(); copyImgToClipboard(blobUrl, this); };
+            // 📌 サムネ設定: SP添付の画像blobを納骨フォルダーの_リストサムネ.pngとして保存
+            var setThumbBtn = imgEl.parentElement.querySelector('.nok-attach-set-thumb-btn');
+            if (setThumbBtn) {
+              (function(b, btn) {
+                btn.onclick = function(e) {
+                  e.stopPropagation();
+                  showSaveToast(null, 'サムネ設定中...');
+                  _uploadKoujiThumbBlob(b, '_リストサムネ.png').catch(function(err) {
+                    showSaveToast(false, 'サムネ設定エラー: ' + err.message);
+                  });
+                };
+              })(blob, setThumbBtn);
+            }
           }
         }).catch(function(){});
       });

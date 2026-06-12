@@ -5569,7 +5569,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.137';
+var APP_VERSION = 'v1.9.138';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -5592,6 +5592,53 @@ function _thumbRetry(img) {
   }, 1000 * Math.pow(2, n));
 }
 window._thumbRetry = _thumbRetry;
+
+// リストサムネ専用エラー処理: サムネCDN(japanwest1-mediap.svc.ms)が
+// 接続リセットになる環境向けに、CDN再試行を数回行ったあと
+// SharePointの通常ダウンロード(/content)経由でblob取得にフォールバックする。
+function _listThumbError(img) {
+  if (!img || !img.src) return;
+  var n = parseInt(img.dataset.retry || '0', 10);
+  if (n >= 3) { _thumbBlobFallback(img); return; }   // CDN3回失敗→ダウンロード方式へ
+  img.dataset.retry = String(n + 1);
+  var src = img.src;
+  setTimeout(function() {
+    img.src = '';
+    img.src = src.replace(/([?&])_r=\d+/, '') + (src.indexOf('?') >= 0 ? '&' : '?') + '_r=' + Date.now();
+  }, 600 * (n + 1));
+}
+window._listThumbError = _listThumbError;
+
+// _リストサムネ.png の実体を Graph /content（SharePointダウンロード）経由でblob取得して表示。
+// CDNを介さないため接続リセットの影響を受けにくい。
+function _thumbBlobFallback(img) {
+  if (!img || img.dataset.blobTried) return;
+  img.dataset.blobTried = '1';
+  var id = img.getAttribute('data-item-id');
+  if (!id || typeof allItems === 'undefined') return;
+  var item = null;
+  for (var i = 0; i < allItems.length; i++) {
+    if (String(allItems[i]['id']) === String(id)) { item = allItems[i]; break; }
+  }
+  if (!item || typeof _koujiItemFolderPass !== 'function') return;
+  var fp = _koujiItemFolderPass(item);
+  if (!fp) return;
+  var rel = (fp + '/' + KOUJI_THUMB_NAME).split('/').map(encodeURIComponent).join('/');
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + rel + ':/content',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.ok ? r.blob() : null; })
+  .then(function(blob) {
+    if (!blob) return;
+    img.onerror = null;
+    img.src = URL.createObjectURL(blob);
+    img.style.display = '';
+    img.style.opacity = '';
+    var par = img.parentNode;
+    if (par) par.querySelectorAll('span').forEach(function(s){ s.style.display = 'none'; });
+  }).catch(function() {});
+}
+window._thumbBlobFallback = _thumbBlobFallback;
 var currentListMode = 'noukotsu'; // 'noukotsu' or 'customer'
 var TEMPLE_GROUP_MAP = {1:'願泉寺',2:'宗福寺',3:'慈宏寺',4:'光明院',5:'福寿院',6:'長泉寺',7:'浄因寺',8:'霊園＆共同墓地',9:'久我山墓地',10:'専光寺'};
 
@@ -9451,7 +9498,8 @@ function _applyKoujiThumbs() {
     var u = _koujiThumbMap[id];
     if (!u || u === 'none') continue;
     if (img.getAttribute('src') === u) continue;   // 反映済みはスキップ
-    img.onerror = function() { _thumbRetry(this); };
+    img.dataset.retry = '0';
+    img.onerror = function() { _listThumbError(this); };
     img.src = u;
     img.style.display = '';
     // 親divのプレースホルダーアイコンを非表示
@@ -18996,7 +19044,8 @@ function _applyNokThumbs() {
     var u = _nokThumbMap[id];
     if (!u || u === 'none') continue;
     if (img.getAttribute('src') === u) continue;
-    img.onerror = function() { _thumbRetry(this); };
+    img.dataset.retry = '0';
+    img.onerror = function() { _listThumbError(this); };
     img.src = u;
     img.style.display = '';
     var par = img.parentNode;

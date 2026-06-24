@@ -5809,7 +5809,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.147';
+var APP_VERSION = 'v1.9.148';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11644,15 +11644,72 @@ function reloadHakaSpecCurrent() {
 }
 
 // ----- 写真・図面サブタブ -----
+var _hakaSpecDragFile = null; // {graphId, fname, srcCat}
+
 function renderHakaSpecPhotosShell() {
   var catBtns = HAKA_SPEC_PHOTO_CATS.map(function(c) {
     var sel = c === _hakaSpecPhotoCat;
-    return '<button onclick="switchHakaSpecPhotoCat(\'' + c + '\')" style="' +
-      (sel ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;' : 'background:#fff;color:#5a3a00;border:1px solid #d8c8a8;') +
-      'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500">' + c + '</button>';
+    var baseSt = sel
+      ? 'background:#5a3a00;color:#fff;border:1px solid #5a3a00;'
+      : 'background:#fff;color:#5a3a00;border:1px solid #d8c8a8;';
+    return '<button id="haka-cat-btn-' + c + '" onclick="switchHakaSpecPhotoCat(\'' + c + '\')" ' +
+      'ondragover="_hakaSpecCatDragOver(event,\'' + c + '\')" ' +
+      'ondragleave="_hakaSpecCatDragLeave(event,\'' + c + '\')" ' +
+      'ondrop="_hakaSpecCatDrop(event,\'' + c + '\')" ' +
+      'style="' + baseSt + 'padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;transition:background 0.15s">' + c + '</button>';
   }).join('');
   return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + catBtns + '</div>' +
     '<div id="haka-spec-photo-area"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div>';
+}
+
+function _hakaSpecCatDragOver(e, cat) {
+  if (!_hakaSpecDragFile) return;
+  if (cat === _hakaSpecDragFile.srcCat) return;
+  e.preventDefault();
+  var btn = document.getElementById('haka-cat-btn-' + cat);
+  if (btn) { btn.style.background = '#ffdc80'; btn.style.color = '#5a3a00'; btn.style.borderColor = '#c07000'; }
+}
+
+function _hakaSpecCatDragLeave(e, cat) {
+  var btn = document.getElementById('haka-cat-btn-' + cat);
+  if (!btn) return;
+  var sel = cat === _hakaSpecPhotoCat;
+  btn.style.background = sel ? '#5a3a00' : '#fff';
+  btn.style.color = sel ? '#fff' : '#5a3a00';
+  btn.style.borderColor = sel ? '#5a3a00' : '#d8c8a8';
+}
+
+function _hakaSpecCatDrop(e, dstCat) {
+  e.preventDefault();
+  _hakaSpecCatDragLeave(e, dstCat);
+  var df = _hakaSpecDragFile;
+  _hakaSpecDragFile = null;
+  if (!df || dstCat === df.srcCat) return;
+  _moveHakaSpecFileToCat(df.graphId, df.fname, df.srcCat, dstCat);
+}
+
+function _moveHakaSpecFileToCat(graphId, fname, srcCat, dstCat) {
+  var d = currentItem;
+  if (!d) return;
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var targetPath = folderPass + '/' + _hakaSpecCatSubPath(dstCat);
+  showSaveToast(null, '移動中: ' + fname + ' → ' + dstCat);
+  ensureHakaSpecFolder(d, dstCat).then(function() {
+    return getToken();
+  }).then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/items/' + graphId, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentReference: { driveId: DRIVE_ID, path: '/drive/root:' + targetPath } })
+    });
+  }).then(function(r) {
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t.substring(0, 200)); });
+    showSaveToast(true, fname + ' を「' + dstCat + '」へ移動しました');
+    renderHakaSpecPhotoList(d, srcCat);
+  }).catch(function(e) {
+    showSaveToast(false, '移動失敗: ' + (e && e.message || e));
+  });
 }
 
 function switchHakaSpecPhotoCat(cat) {
@@ -11781,7 +11838,8 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
         '<button type="button" onclick="event.stopPropagation();_showHakaSpecItemMenu(event,\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\',\'' + jsStr(fpath) + '\',true)" ' +
           'title="メニュー（コピー・削除など）" ' +
           'style="position:absolute;top:4px;right:4px;background:rgba(255,255,255,0.92);color:#444;border:1px solid #ccc;border-radius:6px;width:28px;height:24px;cursor:pointer;font-size:15px;line-height:1;padding:0;box-shadow:0 1px 2px rgba(0,0,0,0.2)">⋯</button>';
-      grid += '<div style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa">' +
+      grid += '<div draggable="true" ondragstart="_hakaSpecDragFile={graphId:\'' + jsStr(f.id) + '\',fname:\'' + jsStr(f.name) + '\',srcCat:\'' + jsStr(cat) + '\'}" ' +
+        'style="position:relative;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fafafa;cursor:grab">' +
         '<img src="' + thumbUrl + '" loading="lazy" decoding="async" onerror="_thumbRetry(this)" style="width:100%;height:140px;object-fit:cover;cursor:pointer;display:block" ' +
           'title="ダブルクリックで開く" ondblclick="' + openFn + '(\'' + jsStr(fpath) + '\')">' +
         badgeOverlay +
@@ -11800,7 +11858,8 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
       var fpath = subPath + '/' + f.name;
       var isImgFile = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
       var isPdfFile = /\.pdf$/i.test(f.name);
-      listHtml += '<div style="display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid #eee">' +
+      listHtml += '<div draggable="true" ondragstart="_hakaSpecDragFile={graphId:\'' + jsStr(f.id) + '\',fname:\'' + jsStr(f.name) + '\',srcCat:\'' + jsStr(cat) + '\'}" ' +
+        'style="display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid #eee;cursor:grab">' +
         (isPdfFile ? '<input type="checkbox" class="pdf-merge-cb"' + (_pdfMergeIsSelected(fpath) ? ' checked' : '') + ' title="PDF結合用に選択" onclick="event.stopPropagation();_pdfMergeToggle(\'' + jsStr(fpath) + '\',\'' + jsStr(f.name) + '\',this)" style="width:17px;height:17px;flex-shrink:0;cursor:pointer">' : '') +
         '<span style="font-size:18px">' + (isImgFile ? '🖼' : '📄') + '</span>' +
         '<a href="javascript:void(0)" ondblclick="' + (isImgFile ? 'previewFolderImage' : 'openFolderFile') + '(\'' + jsStr(fpath) + '\')" title="ダブルクリックで開く" style="flex:1;color:#1565c0;text-decoration:none;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer">' + f.name + '</a>' +

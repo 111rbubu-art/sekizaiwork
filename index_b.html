@@ -12326,6 +12326,61 @@ function uploadHakaSpecFiles(files, cat) {
   });
 }
 
+function uploadKoujiCardFile(input, key, tag, cat) {
+  var files = Array.prototype.slice.call(input.files);
+  input.value = '';
+  if (files.length) doUploadKoujiCard(files, key, tag, cat);
+}
+function handleKoujiCardDrop(e, key, tag, cat) {
+  e.preventDefault();
+  e.currentTarget.style.background = '#f0f6ff';
+  var files = (e.dataTransfer && e.dataTransfer.files) ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+  if (files.length) doUploadKoujiCard(files, key, tag, cat);
+}
+function doUploadKoujiCard(files, key, tag, cat) {
+  var d = currentItem || {};
+  var itemId = d['id'] || d['ID'] || '';
+  var dateVal = getEdit(itemId, key, d[key] || '');
+  var dateRaw = String(dateVal).substring(0, 10).replace(/[^0-9]/g, '');
+  if (!dateRaw) {
+    var t = new Date();
+    dateRaw = t.getFullYear() + ('0' + (t.getMonth() + 1)).slice(-2) + ('0' + t.getDate()).slice(-2);
+  }
+  var haka = d['HakaName'] || '';
+  var base = dateRaw + '_' + tag + (haka ? '_' + haka + '家' : '');
+  function sanitize(n) { return n.replace(/[\\\/]/g, '_'); }
+  var customNames = files.map(function(f, i) {
+    var ext = (f.name.match(/\.[^.]+$/) || [''])[0];
+    var suffix = files.length > 1 ? '_' + (i + 1) : '';
+    return sanitize(base + suffix) + ext;
+  });
+  var folderPass = d['Folder_Pass'] || '';
+  if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
+  var targetPath = folderPass + '/' + _hakaSpecCatSubPath(cat);
+  ensureHakaSpecFolder(d, cat).then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    return customNames.reduce(function(chain, saveName, idx) {
+      return chain.then(function() {
+        var file = files[idx];
+        var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        }).then(function(r) {
+          if (!r.ok) return r.text().then(function(t){ throw new Error(saveName + ': ' + t.substring(0, 120)); });
+        });
+      });
+    }, Promise.resolve());
+  }).then(function() {
+    showSaveToast(true, files.length + '件アップロード完了');
+  }).catch(function(e) {
+    showSaveToast(false, 'アップロードエラー: ' + e.message);
+  });
+}
+
 function deleteHakaSpecFile(cat, fileName) {
   if (!confirm('「' + fileName + '」を削除しますか？')) return;
   if (!currentItem) return;
@@ -20981,9 +21036,20 @@ function nkgCanvas(p,cards,d,itemId){
     '</span>';
   cards.forEach(function(c,i){
     var cardCls='nk-card'+(c.isLabel?' nk-label':'');
+    var body=c.fld(d,itemId);
+    if(c.uploadCfg){
+      var uc=c.uploadCfg;
+      var fid='kj-file-inp-'+uc.key+'-'+itemId;
+      var msBtn='<input type="file" id="'+fid+'" multiple style="display:none" onchange="uploadKoujiCardFile(this,\''+uc.key+'\',\''+uc.tag+'\',\''+uc.cat+'\')">'+
+        '<div ondragover="event.preventDefault();this.style.background=\'#d8e8ff\'" ondragleave="this.style.background=\'#f0f6ff\'" '+
+        'ondrop="handleKoujiCardDrop(event,\''+uc.key+'\',\''+uc.tag+'\',\''+uc.cat+'\')" '+
+        'onclick="document.getElementById(\''+fid+'\').click()" '+
+        'style="flex-shrink:0;align-self:stretch;writing-mode:vertical-rl;border:1.5px dashed #a0c0e0;border-radius:4px;padding:6px 7px;margin-right:6px;text-align:center;font-size:10px;color:#185fa5;cursor:pointer;background:#f0f6ff;white-space:nowrap">📎 資料登録</div>';
+      body='<div style="display:flex;align-items:stretch;justify-content:flex-end;gap:4px"><div style="flex:1;min-width:0">'+body+'</div>'+msBtn+'</div>';
+    }
     h+='<div id="nkg-'+p+'-'+i+'" class="'+cardCls+'" data-prefix="'+p+'" data-idx="'+i+'" data-span="2" draggable="false">'+
       '<div class="nkc-dh"><span class="nkc-dh-drag">⠿ '+c.label+'</span>'+ctrl+'</div>'+
-      c.fld(d,itemId)+'</div>';
+      body+'</div>';
   });
   return h+'</div>';
 }
@@ -21114,7 +21180,7 @@ var KOUJI_T1B_CARDS=[
   {label:'納期',      fld:function(d,it){return efld('納期',it,'deadlines',(d['deadlines']||'').substring(0,10),false,false,false,true);}},
   {label:'納期理由',  fld:function(d,it){return efld('納期理由',it,'ReasonDelivery',d['ReasonDelivery']||'');}},
   {label:'工事開始日',fld:function(d,it){return efld('工事開始日',it,'ConstructionStartDate',(d['ConstructionStartDate']||'').substring(0,10),false,false,false,true);}},
-  {label:'工事完了日',fld:function(d,it){return efld('工事完了日',it,'ConstructionCompletionDate',(d['ConstructionCompletionDate']||'').substring(0,10),false,false,false,true);}},
+  {label:'工事完了日',uploadCfg:{key:'ConstructionCompletionDate',tag:'工事完',cat:'現場写真'},          fld:function(d,it){return efld('工事完了日',it,'ConstructionCompletionDate',(d['ConstructionCompletionDate']||'').substring(0,10),false,false,false,true);}},
 ];
 var KOUJI_T1C_CARDS=[
   {label:'請求日',            fld:function(d,it){return efld('請求日',it,'billing',(d['billing']||'').substring(0,10),false,false,false,true);}},
@@ -21143,16 +21209,16 @@ var KOUJI_T2B_CARDS=[
 ];
 var KOUJI_T2C_CARDS=[
   {label:'彫刻用紙記入',    fld:function(d,it){return efld('彫刻用紙記入',it,'SendingSculptureMaterials',(d['SendingSculptureMaterials']||'').substring(0,10),false,false,false,true);}},
-  {label:'記入用紙 返却',   fld:function(d,it){return efld('記入用紙 返却',it,'ReturnSculptureMaterials',(d['ReturnSculptureMaterials']||'').substring(0,10),false,false,false,true);}},
+  {label:'記入用紙 返却',   uploadCfg:{key:'ReturnSculptureMaterials',tag:'彫刻記入用紙返却',cat:'提出資料'},  fld:function(d,it){return efld('記入用紙 返却',it,'ReturnSculptureMaterials',(d['ReturnSculptureMaterials']||'').substring(0,10),false,false,false,true);}},
   {label:'校正案 送付①',   fld:function(d,it){return efld('校正案 送付①',it,'ManuscriptSubmission1',(d['ManuscriptSubmission1']||'').substring(0,10),false,false,false,true);}},
   {label:'校正案 返却①',   fld:function(d,it){return efld('校正案 返却①',it,'ReturnManuscripts1',(d['ReturnManuscripts1']||'').substring(0,10),false,false,false,true);}},
   {label:'校正案 送付②',   fld:function(d,it){return efld('校正案 送付②',it,'ManuscriptSubmission2',(d['ManuscriptSubmission2']||'').substring(0,10),false,false,false,true);}},
   {label:'校正案 返却②',   fld:function(d,it){return efld('校正案 返却②',it,'ReturnManuscripts2',(d['ReturnManuscripts2']||'').substring(0,10),false,false,false,true);}},
   {label:'返却結果',        fld:function(d,it){return efld('返却結果',it,'Resubmission',d['Resubmission']||'');}},
-  {label:'校正 確定',       fld:function(d,it){return efld('校正 確定',it,'DecideSculpture',(d['DecideSculpture']||'').substring(0,10),false,false,false,true);}},
+  {label:'校正 確定',       uploadCfg:{key:'DecideSculpture',tag:'彫刻確認返却',cat:'提出資料'},          fld:function(d,it){return efld('校正 確定',it,'DecideSculpture',(d['DecideSculpture']||'').substring(0,10),false,false,false,true);}},
   {label:'彫刻業者',        fld:function(d,it){return efld('彫刻業者',it,'Engraver',d['Engraver']||'');}},
   {label:'彫刻業者引渡',    fld:function(d,it){return efld('彫刻業者引渡',it,'HandingEngraver',(d['HandingEngraver']||'').substring(0,10),false,false,false,true);}},
-  {label:'彫刻納品',        fld:function(d,it){return efld('彫刻納品',it,'DeliveredByEngraver',(d['DeliveredByEngraver']||'').substring(0,10),false,false,false,true);}},
+  {label:'彫刻納品',        uploadCfg:{key:'DeliveredByEngraver',tag:'彫刻納品',cat:'彫刻資料'},           fld:function(d,it){return efld('彫刻納品',it,'DeliveredByEngraver',(d['DeliveredByEngraver']||'').substring(0,10),false,false,false,true);}},
 ];
 var KOUJI_T2D_CARDS=[
   {label:'資料提出',        fld:function(d,it){return efld('資料提出',it,'submission',d['submission']||'');}},

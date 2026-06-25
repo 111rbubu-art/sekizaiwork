@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.153';
+var APP_VERSION = 'v1.9.154';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9957,10 +9957,11 @@ function showKoujiTab(i, d) {
     renderKoujiDocsTab(d);
 
   } else if (i === 5) {
-    // 📁 データタブ（写真・図面 / SP添付 / フォルダー）
+    // 📁 データタブ（写真・図面 / SP添付 / フォルダー）- 常に写真・図面を先頭表示
     _hakaSpecData = loadHakaSpec(d);
     _hakaSpecDirty = false;
     if (!_hakaSpecPhotoCat) _hakaSpecPhotoCat = '現場写真';
+    _koujiDataSubtab = 'photos';
     renderKoujiDataTab(d);
 
   } else if (i === 6) {
@@ -11097,6 +11098,197 @@ function switchNokDataSubtab(name) {
   if (name !== 'sp' && name !== 'folder') return;
   _nokDataSubtab = name;
   if (currentItem) renderNokDataTab(currentItem);
+}
+
+// ===== 納骨「📷 写真・資料」タブ =====
+var NOK_PHOTO_CATS = ['写真', '提出資料', '帳票類'];
+var _nokPhotoCat = '写真';
+var _nokPhotoDragFile = null;
+
+function _nokCatSubPath(cat) { return cat; }
+
+function ensureNokPhotoFolder(d, cat) {
+  var base = (d && d['FolderPass']) || '';
+  if (!base) return Promise.reject(new Error('FolderPass がありません'));
+  return getToken().then(function(resp) {
+    var token = resp.accessToken;
+    function mkFolder(parentPath, name) {
+      var enc = parentPath.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children',
+        { method:'POST', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+          body: JSON.stringify({name:name,folder:{}, '@microsoft.graph.conflictBehavior':'fail'}) })
+        .then(function(r){ if(r.ok||r.status===409)return; return r.text().then(function(t){throw new Error(t.substring(0,200));}); });
+    }
+    return mkFolder(base, cat);
+  });
+}
+
+function switchNokPhotoCat(cat) {
+  _nokPhotoCat = cat;
+  document.querySelectorAll('[id^="nok-cat-btn-"]').forEach(function(b){
+    var isSel = b.id === 'nok-cat-btn-' + cat;
+    b.style.background = isSel ? '#1a5a7a' : '#fff';
+    b.style.color      = isSel ? '#fff'    : '#1a5a7a';
+    b.style.borderColor= isSel ? '#1a5a7a' : '#a0c4d8';
+  });
+  if (currentItem) renderNokPhotoList(currentItem, cat);
+}
+
+function renderNokPhotosShell() {
+  var catBtns = NOK_PHOTO_CATS.map(function(c) {
+    var sel = c === _nokPhotoCat;
+    return '<button id="nok-cat-btn-' + c + '" onclick="switchNokPhotoCat(\'' + c + '\')" ' +
+      'style="padding:6px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;' +
+      (sel ? 'background:#1a5a7a;color:#fff;border:1px solid #1a5a7a'
+           : 'background:#fff;color:#1a5a7a;border:1px solid #a0c4d8') + '">' + c + '</button>';
+  }).join('');
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + catBtns + '</div>' +
+    '<div id="nok-photo-area"><div style="text-align:center;color:#888;font-size:12px;padding:20px">読み込み中...</div></div>';
+}
+
+function renderNokPhotoList(d, cat) {
+  var el = document.getElementById('nok-photo-area');
+  if (!el) return;
+  var folderPass = (d && d['FolderPass']) || '';
+  if (!folderPass) {
+    el.innerHTML = '<div style="text-align:center;color:#c00;font-size:12px;padding:16px">FolderPass が登録されていません。基本情報タブからフォルダーを作成してください。</div>';
+    return;
+  }
+  var subPath = folderPass + '/' + _nokCatSubPath(cat);
+  getToken().then(function(resp) {
+    var encoded = subPath.split('/').map(encodeURIComponent).join('/');
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded +
+      ':/children?$select=name,file,folder,size,id,webUrl,lastModifiedDateTime&$expand=thumbnails&$orderby=name';
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+      .then(function(r) {
+        if (r.status === 404) return ensureNokPhotoFolder(d, cat).then(function(){ return {value:[]}; });
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      });
+  }).then(function(data) {
+    renderNokPhotoFiles(d, cat, data.value || []);
+  }).catch(function(e) {
+    var el2 = document.getElementById('nok-photo-area');
+    if (el2) el2.innerHTML = '<div style="color:#c00;font-size:12px;padding:8px">エラー: ' + _esc(e.message) + '</div>';
+  });
+}
+
+function renderNokPhotoFiles(d, cat, items) {
+  var el = document.getElementById('nok-photo-area');
+  if (!el) return;
+  var files = items.filter(function(i){ return i.file; });
+  function jsStr(s){ return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+  var dropZone =
+    '<div style="display:flex;gap:8px;align-items:stretch;margin-bottom:10px">' +
+      '<div ondragover="event.preventDefault();this.style.background=\'#d0eeff\'" ondragleave="this.style.background=\'#e6f4fb\'" ' +
+        'ondrop="handleNokPhotoDrop(event,\'' + jsStr(cat) + '\')" ' +
+        'onclick="document.getElementById(\'nok-photo-file-input\').click()" ' +
+        'style="flex:1;border:2px dashed #a0c4d8;border-radius:10px;background:#e6f4fb;padding:14px;text-align:center;color:#1a5a7a;font-size:13px;cursor:pointer">' +
+        '📷 撮影 / 📎 ファイルをドロップ または タップして追加（' + cat + '）' +
+      '</div>' +
+    '</div>' +
+    '<input type="file" id="nok-photo-file-input" multiple accept="image/*,application/pdf" capture="environment" ' +
+      'onchange="handleNokPhotoFileInput(this,\'' + jsStr(cat) + '\')" style="display:none">';
+
+  if (files.length === 0) {
+    el.innerHTML = dropZone + '<div style="text-align:center;color:#aaa;font-size:12px;padding:20px">（まだファイルがありません）</div>';
+    return;
+  }
+  var thumbs = files.map(function(f) {
+    var thumbUrl = f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium ? f.thumbnails[0].medium.url : null;
+    var isPdf = /\.pdf$/i.test(f.name||'');
+    var thumbHtml = thumbUrl
+      ? '<img src="' + thumbUrl + '" style="width:100%;height:80px;object-fit:cover;border-radius:4px 4px 0 0" loading="lazy">'
+      : '<div style="width:100%;height:80px;background:#f5f5f5;border-radius:4px 4px 0 0;display:flex;align-items:center;justify-content:center;font-size:28px">' + (isPdf?'📄':'📁') + '</div>';
+    return '<div style="width:120px;flex-shrink:0;border:1px solid #ddd;border-radius:6px;overflow:hidden;background:#fff;position:relative">' +
+      '<a href="' + _esc(f.webUrl||'#') + '" target="_blank" style="display:block;text-decoration:none">' + thumbHtml + '</a>' +
+      '<div style="padding:4px 6px;font-size:10px;color:#555;word-break:break-all;line-height:1.3">' + _esc(f.name) + '</div>' +
+      '<button onclick="deleteNokPhotoFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+        'style="position:absolute;top:2px;right:2px;padding:2px 5px;font-size:10px;background:rgba(200,0,0,.75);color:#fff;border:none;border-radius:3px;cursor:pointer">✕</button>' +
+    '</div>';
+  }).join('');
+  el.innerHTML = dropZone + '<div style="display:flex;flex-wrap:wrap;gap:8px">' + thumbs + '</div>';
+}
+
+function handleNokPhotoDrop(e, cat) {
+  e.preventDefault();
+  var files = e.dataTransfer && e.dataTransfer.files ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+  if (files.length) uploadNokPhotoFiles(files, cat);
+}
+
+function handleNokPhotoFileInput(input, cat) {
+  var files = Array.prototype.slice.call(input.files);
+  if (!files.length) return;
+  uploadNokPhotoFiles(files, cat);
+  input.value = '';
+}
+
+function uploadNokPhotoFiles(files, cat, customNames) {
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['FolderPass'] || '';
+  if (!folderPass) { showSaveToast(false, 'FolderPass がありません'); return; }
+  var targetPath = folderPass + '/' + _nokCatSubPath(cat);
+  ensureNokPhotoFolder(d, cat).then(function() {
+    return getToken();
+  }).then(function(resp) {
+    var token = resp.accessToken;
+    return files.reduce(function(chain, file, idx) {
+      return chain.then(function() {
+        var saveName = (customNames && customNames[idx]) ? customNames[idx] : file.name;
+        var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
+          method:'PUT', headers:{'Authorization':'Bearer '+token,'Content-Type':file.type||'application/octet-stream'}, body:file
+        }).then(function(r){ if(!r.ok) return r.text().then(function(t){throw new Error(saveName+': '+t.substring(0,120));}); });
+      });
+    }, Promise.resolve());
+  }).then(function() {
+    showSaveToast(true, files.length + '件アップロード完了');
+    setTimeout(function(){
+      _nokPhotoCat = cat;
+      if (document.getElementById('nok-photo-area')) renderNokPhotoList(d, cat);
+    }, 800);
+  }).catch(function(e) { showSaveToast(false, 'アップロードエラー: ' + e.message); });
+}
+
+function deleteNokPhotoFile(cat, fileName) {
+  if (!confirm('「' + fileName + '」を削除しますか？')) return;
+  if (!currentItem) return;
+  var d = currentItem;
+  var folderPass = d['FolderPass'] || '';
+  if (!folderPass) return;
+  var fpath = folderPass + '/' + _nokCatSubPath(cat) + '/' + fileName;
+  getToken().then(function(resp) {
+    var enc = fpath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc, {
+      method:'DELETE', headers:{Authorization:'Bearer '+resp.accessToken}
+    });
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) throw new Error(r.status);
+    showSaveToast(true, '削除しました');
+    setTimeout(function(){ renderNokPhotoList(d, cat); }, 500);
+  }).catch(function(e){ showSaveToast(false, '削除エラー: ' + e.message); });
+}
+
+function renderNokPhotosTab(d) {
+  var b = document.getElementById('det-body');
+  if (!b) return;
+  b.innerHTML = renderNokPhotosShell();
+  renderNokPhotoList(d, _nokPhotoCat);
+}
+
+function uploadNokCamPhoto(input) {
+  var files = Array.prototype.slice.call(input.files);
+  if (!files.length) return;
+  input.value = '';
+  var file = files[0];
+  var custom = (document.getElementById('nok-cam-name-custom') || {}).value || '';
+  var sel    = document.getElementById('nok-cam-name-sel');
+  var base   = custom.trim() || (sel ? sel.value : '撮影');
+  var ext    = (file.name.match(/\.[^.]+$/) || ['.jpg'])[0];
+  var saveName = base + ext;
+  uploadNokPhotoFiles([file], '写真', [saveName]);
 }
 
 // ===== 納骨「📑 資料作成」タブ =====
@@ -19546,7 +19738,7 @@ function openDetailAt(d, tabIdx) {
     : '';
   tabs.innerHTML =
     _t(0,'基本情報') + _t(1,'依頼内容') + _t(2,'墓石確認') + _t(3,'進捗状況') +
-    _t(4,'📑 資料作成') + _t(5,'📂 データ') + _t(6,'追加分') + _t(7,'その他') +
+    _t(4,'📑 資料作成') + _t(5,'📂 データ') + _t(6,'追加分') + _t(7,'その他') + _t(8,'📷 写真・資料') +
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>' +
     _cusTabs;
   showTab(tabIdx, d);
@@ -21441,7 +21633,19 @@ function showTab(i, d) {
       _nkSec('sekitou', d, 'bg1', '', '石塔の場合',
         nkgBar('t2k') + nkgCanvas('t2k',NK_T2K_CARDS,d,itemId)) +
       _nkSec('boshi', d, 'bg2', '', '墓誌の場合',
-        nkgBar('t2h') + nkgCanvas('t2h',NK_T2H_CARDS,d,itemId));
+        nkgBar('t2h') + nkgCanvas('t2h',NK_T2H_CARDS,d,itemId)) +
+      '<div class="sec"><span class="sec-hdr" style="background:#2a5a3a;color:#fff">📷 現地撮影（写真フォルダーに保存）</span>' +
+      '<div style="padding:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<select id="nok-cam-name-sel" style="padding:7px 10px;border:1px solid #ccd2db;border-radius:6px;font-size:13px;font-family:inherit;flex:1;min-width:110px">' +
+          '<option>現状</option><option>石塔正面</option><option>石塔側面</option>' +
+          '<option>墓誌</option><option>全体</option><option>彫刻場所</option><option>完成</option>' +
+        '</select>' +
+        '<input type="text" id="nok-cam-name-custom" placeholder="任意のファイル名" ' +
+          'style="padding:7px 10px;border:1px solid #ccd2db;border-radius:6px;font-size:13px;font-family:inherit;width:130px">' +
+        '<button onclick="document.getElementById(\'nok-cam-input\').click()" ' +
+          'style="padding:7px 16px;background:#2a5a3a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:600;white-space:nowrap">📷 カメラ</button>' +
+        '<input type="file" id="nok-cam-input" accept="image/*" capture="environment" style="display:none" onchange="uploadNokCamPhoto(this)">' +
+      '</div></div>';
     bindEditInputs(itemId);
     nkgInit('t2b',NK_T2B_CARDS);
     nkgInit('t2s',NK_T2S_CARDS);
@@ -21518,6 +21722,9 @@ function showTab(i, d) {
       fld('Longitude', d['Longitude'] ? String(d['Longitude']) : '') +
       fld('Place', d['Place']||'') +
       '</div></div>';
+  } else if (i === 8) {
+    _nokPhotoCat = '写真';
+    renderNokPhotosTab(d);
   }
 }
 

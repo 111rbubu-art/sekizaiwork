@@ -286,7 +286,7 @@ body.force-sp .menu-bottom-grid {
   width: 100% !important;
   grid-template-columns: 1fr 1fr !important;
 }
-body.force-sp .attach-grid { grid-template-columns: repeat(3,1fr) !important; }
+body.force-sp .attach-grid { grid-template-columns: repeat(3,1fr); }
 body.force-sp .attach-thumb { aspect-ratio: 1 !important; border-radius: 6px !important; }
 body.force-sp .fgrid { grid-template-columns: minmax(0,1fr) minmax(0,1fr) !important; }
 /* force-sp時はhidden を本当に隠す（PCのメディアクエリ上書きを打ち消す） */
@@ -465,7 +465,7 @@ body.force-sp #panel-resizer { display: none !important; }
   #det-screen .hdr-back { font-size: 18px; }
 
   /* ===== 添付グリッド：PC では3列 ===== */
-  .attach-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  .attach-grid { grid-template-columns: repeat(3, 1fr); }
   .attach-thumb { aspect-ratio: 1 !important; border-radius: 6px !important; }
 
   /* ===== 新規作成モーダル ===== */
@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.165';
+var APP_VERSION = 'v1.9.166';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -10002,11 +10002,12 @@ var HAKA_SPEC_PHOTO_CATS = ['現場写真','図面','彫刻資料','参考画像
 var _photoThumbSize = (function(){ try{ return localStorage.getItem('photoThumbSize')||'m'; }catch(e){ return 'm'; } })();
 var _PHOTO_SIZES = { s:{minW:80,imgH:60}, m:{minW:160,imgH:120}, l:{minW:280,imgH:220} };
 function setPhotoThumbSize(sz) {
-  if (!_PHOTO_SIZES[sz]) return;
+  if (['list','s','m','l'].indexOf(sz) < 0) return;
   _photoThumbSize = sz;
   try { localStorage.setItem('photoThumbSize', sz); } catch(e) {}
-  var _psz = _PHOTO_SIZES[sz];
-  ['s','m','l'].forEach(function(s) {
+  var _psz = _PHOTO_SIZES[sz] || null;
+  _folderThumbMode = (sz !== 'list');
+  ['list','s','m','l'].forEach(function(s) {
     var btn = document.getElementById('photo-sz-btn-' + s);
     if (!btn) return;
     var sel = s === sz;
@@ -10015,26 +10016,34 @@ function setPhotoThumbSize(sz) {
     btn.style.borderColor = sel ? '#333' : '#ccc';
   });
   if (!currentItem) return;
+  var iid = currentItem['id'] || currentItem['ID'] || '';
   if (document.getElementById('haka-spec-photo-area')) {
     renderHakaSpecPhotoList(currentItem, _hakaSpecPhotoCat);
   } else if (document.getElementById('nok-photo-area')) {
     renderNokPhotoList(currentItem, _nokPhotoCat);
+  } else if (document.getElementById('folder-explorer')) {
+    if (_folderLastItems && _folderLastToken) {
+      renderFolderContents(_folderLastItems, _folderCurrentPath, _folderLastToken);
+    }
+  } else if (!_psz) {
+    // リストモード × SP添付：再フェッチで構造ごと変える
+    if (document.getElementById('kouji-attach-area-' + iid)) loadKoujiAttachments(iid);
+    else if (document.getElementById('attach-area-' + iid)) loadAttachments(iid);
   } else {
-    // SP添付タブ：フェッチなしでグリッド幅を直接更新
+    // サムネモード × SP添付：!important 除去済みなので直接DOM更新
     document.querySelectorAll('.attach-grid').forEach(function(g) {
       g.style.gridTemplateColumns = 'repeat(auto-fill,minmax(' + _psz.minW + 'px,1fr))';
     });
   }
 }
 function _photoSzBtnsHtml() {
-  return '<span style="font-size:11px;color:#999;white-space:nowrap">サムネ:</span>' +
-    ['s','m','l'].map(function(sz) {
-      var sel = sz === _photoThumbSize;
-      return '<button id="photo-sz-btn-' + sz + '" onclick="setPhotoThumbSize(\'' + sz + '\')" ' +
-        'style="padding:3px 9px;border-radius:10px;font-size:11px;cursor:pointer;font-family:inherit;' +
-        (sel ? 'background:#333;color:#fff;border:1px solid #333' : 'background:#f5f5f5;color:#555;border:1px solid #ccc') + '">' +
-        {s:'小',m:'中',l:'大'}[sz] + '</button>';
-    }).join('');
+  var OPTS = [{sz:'list',label:'リスト'},{sz:'s',label:'小'},{sz:'m',label:'中'},{sz:'l',label:'大'}];
+  return OPTS.map(function(o) {
+    var sel = o.sz === _photoThumbSize;
+    return '<button id="photo-sz-btn-' + o.sz + '" onclick="setPhotoThumbSize(\'' + o.sz + '\')" ' +
+      'style="padding:3px 9px;border-radius:10px;font-size:11px;cursor:pointer;font-family:inherit;' +
+      (sel ? 'background:#333;color:#fff;border:1px solid #333' : 'background:#f5f5f5;color:#555;border:1px solid #ccc') + '">' + o.label + '</button>';
+  }).join('');
 }
 // カテゴリ → Folder_Pass からの相対パス。提出資料・帳票類はルート直下、それ以外は 工事仕様/ 配下
 function _hakaSpecCatSubPath(cat) {
@@ -11247,6 +11256,21 @@ function renderNokPhotoFiles(d, cat, items) {
     el.innerHTML = dropZone + '<div style="text-align:center;color:#aaa;font-size:12px;padding:20px">（まだファイルがありません）</div>';
     return;
   }
+  if (_photoThumbSize === 'list') {
+    var listRows = files.map(function(f) {
+      var isPdf = /\.pdf$/i.test(f.name||'');
+      return '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">' +
+        '<a href="' + _esc(f.webUrl||'#') + '" target="_blank" style="display:flex;align-items:center;gap:8px;flex:1;text-decoration:none;color:inherit;overflow:hidden">' +
+        '<span style="font-size:15px">' + (isPdf?'📄':'🖼') + '</span>' +
+        '<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(f.name) + '</span>' +
+        '</a>' +
+        '<button onclick="deleteNokPhotoFile(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+          'style="flex-shrink:0;padding:2px 7px;font-size:10px;background:rgba(200,0,0,.75);color:#fff;border:none;border-radius:3px;cursor:pointer">✕</button>' +
+        '</div>';
+    }).join('');
+    el.innerHTML = dropZone + '<div>' + listRows + '</div>';
+    return;
+  }
   var _psz = _PHOTO_SIZES[_photoThumbSize] || _PHOTO_SIZES.m;
   var thumbs = files.map(function(f) {
     var thumbUrl = f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium ? f.thumbnails[0].medium.url : null;
@@ -12109,6 +12133,27 @@ function renderHakaSpecPhotoFiles(d, cat, items) {
       s.icon + ' ' + s.label + '</button>';
   }
 
+  if (_photoThumbSize === 'list') {
+    var allFiles = files;
+    var listRows = allFiles.map(function(f) {
+      var fpath = subPath + '/' + f.name;
+      var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name);
+      var isPdf = /\.pdf$/i.test(f.name);
+      var st = _hakaSpecGetFileStatus(cat, f.name);
+      var s = HAKA_SPEC_STATUSES[st] || HAKA_SPEC_STATUSES.undecided;
+      return '<div draggable="true" ondragstart="_hakaSpecDragFile={graphId:\'' + jsStr(f.id||'') + '\',fname:\'' + jsStr(f.name) + '\',srcCat:\'' + jsStr(cat) + '\'}" ' +
+        'style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">' +
+        '<span style="font-size:15px">' + (isImg?'🖼':isPdf?'📄':'📎') + '</span>' +
+        '<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + f.name + '">' + f.name + '</span>' +
+        '<button type="button" onclick="event.stopPropagation();cycleHakaSpecFileStatus(\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\')" ' +
+          'style="flex-shrink:0;background:' + s.btnBg + ';color:' + s.btnColor + ';border:1px solid ' + s.btnBorder + ';border-radius:10px;padding:2px 8px;cursor:pointer;font-size:10px;font-family:inherit;font-weight:700">' + s.icon + ' ' + s.label + '</button>' +
+        '<button type="button" onclick="event.stopPropagation();_showHakaSpecItemMenu(event,\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\',\'' + jsStr(fpath) + '\',false)" ' +
+          'style="background:rgba(255,255,255,.92);color:#444;border:1px solid #ccc;border-radius:6px;width:28px;height:24px;cursor:pointer;font-size:15px;line-height:1;padding:0;flex-shrink:0">⋯</button>' +
+        '</div>';
+    }).join('');
+    el.innerHTML = dropZone + '<div>' + listRows + '</div>';
+    return;
+  }
   var _psz = _PHOTO_SIZES[_photoThumbSize] || _PHOTO_SIZES.m;
   var grid = '';
   if (thumbFiles.length > 0) {
@@ -16250,7 +16295,9 @@ var DRIVE_ID = 'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_V
 var _folderHistory = [];
 var _folderRootPass = null;
 var _folderCurrentPath = null;
-var _folderThumbMode = false;
+var _folderThumbMode = (_photoThumbSize !== 'list');
+var _folderLastItems = null;
+var _folderLastToken = null;
 var _folderClipboard = null;  // { mode:'copy'|'cut', item:{id,name,path} }
 var _folderMenuEl = null;
 var _pdfMergeSel = [];  // PDF結合用に選択中のファイル [{path, name}]（選択順）
@@ -16597,6 +16644,8 @@ function renderFolderContents(items, currentPath, token) {
   var el = document.getElementById('folder-explorer');
   if (!el) return;
   _folderCurrentPath = currentPath;
+  _folderLastItems = items;
+  _folderLastToken = token;
 
   if (items.length === 0) {
     el.innerHTML = '';
@@ -16653,18 +16702,7 @@ function renderFolderContents(items, currentPath, token) {
   mkdirBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:#1a5a9a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
   mkdirBtn.addEventListener('click', function() { createSubFolder(currentPath, token); });
   header.appendChild(mkdirBtn);
-  // サムネ切替ボタン（サムネが存在するファイルがある場合のみ）
   var thumbFiles = files.filter(function(f){ return f.thumbnails && f.thumbnails[0] && f.thumbnails[0].medium; });
-  if (thumbFiles.length > 0) {
-    var thumbBtn = document.createElement('button');
-    thumbBtn.textContent = _folderThumbMode ? '📋 リスト' : '🖼️ サムネ';
-    thumbBtn.style.cssText = 'flex-shrink:0;padding:4px 10px;font-size:11px;background:' + (_folderThumbMode ? '#5a3a7a' : '#5a7a1a') + ';color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit';
-    thumbBtn.addEventListener('click', function(){
-      _folderThumbMode = !_folderThumbMode;
-      renderFolderContents(items, currentPath, token);
-    });
-    header.appendChild(thumbBtn);
-  }
   el.appendChild(header);
 
   // ===== 2. フォルダー行 =====
@@ -16685,8 +16723,9 @@ function renderFolderContents(items, currentPath, token) {
   // ===== 3. ファイル =====
   if (_folderThumbMode && thumbFiles.length > 0) {
     // --- サムネグリッドモード ---
+    var _fpsz = _PHOTO_SIZES[_photoThumbSize] || _PHOTO_SIZES.m;
     var grid = document.createElement('div');
-    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;padding:6px 0';
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(' + _fpsz.minW + 'px,1fr));gap:6px;padding:6px 0';
     thumbFiles.forEach(function(f) {
       var filePath = currentPath + '/' + f.name;
       var thumbUrl = f.thumbnails[0].medium.url;
@@ -22208,6 +22247,22 @@ function loadKoujiAttachments(itemId) {
     }
     var imgs   = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName) && f.FileName.indexOf(KOUJI_THUMB_PREFIX) !== 0; });
     var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp)$/i.test(f.FileName) && f.FileName.indexOf(KOUJI_THUMB_PREFIX) !== 0; });
+    if (_photoThumbSize === 'list') {
+      var listHtml = '<div>';
+      imgs.concat(others).forEach(function(f) {
+        var fnEsc = f.FileName.replace(/'/g, "\\'");
+        var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName);
+        listHtml += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">' +
+          '<span style="font-size:15px">' + (isImg?'🖼':'📎') + '</span>' +
+          '<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.FileName + '</span>' +
+          '<button onclick="deleteAttachment(\'工事関連\',' + itemId + ',\'' + fnEsc + '\',function(){loadKoujiAttachments(' + itemId + ')})" ' +
+            'style="flex-shrink:0;padding:2px 7px;font-size:10px;background:rgba(200,0,0,.75);color:#fff;border:none;border-radius:3px;cursor:pointer">✕</button>' +
+          '</div>';
+      });
+      listHtml += '</div>';
+      area2.innerHTML = listHtml;
+      return;
+    }
     var _psz = _PHOTO_SIZES[_photoThumbSize] || _PHOTO_SIZES.m;
     // 顧客リストと完全同一構造：attach-gridを外側で開き両方を中に入れる
     var html = '<div class="attach-grid" style="grid-template-columns:repeat(auto-fill,minmax(' + _psz.minW + 'px,1fr))">';
@@ -22594,6 +22649,22 @@ function loadAttachments(itemId) {
     }
     var imgs   = files.filter(function(f){ return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
     var others = files.filter(function(f){ return !/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName); });
+    if (_photoThumbSize === 'list') {
+      var listHtml = '<div>';
+      imgs.concat(others).forEach(function(f) {
+        var fnEsc = f.FileName.replace(/'/g, "\\'");
+        var isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.FileName);
+        listHtml += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">' +
+          '<span style="font-size:15px">' + (isImg?'🖼':'📎') + '</span>' +
+          '<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + f.FileName + '</span>' +
+          '<button onclick="deleteAttachment(\'納骨・戒切\',' + itemId + ',\'' + fnEsc + '\',function(){loadAttachments(' + itemId + ')})" ' +
+            'style="flex-shrink:0;padding:2px 7px;font-size:10px;background:rgba(200,0,0,.75);color:#fff;border:none;border-radius:3px;cursor:pointer">✕</button>' +
+          '</div>';
+      });
+      listHtml += '</div>';
+      area.innerHTML = listHtml;
+      return;
+    }
     var _psz = _PHOTO_SIZES[_photoThumbSize] || _PHOTO_SIZES.m;
     // 顧客リストと完全同一構造：attach-gridを外側で開き、imgs・others両方を中に入れる
     var html = '<div class="attach-grid" style="grid-template-columns:repeat(auto-fill,minmax(' + _psz.minW + 'px,1fr))">';

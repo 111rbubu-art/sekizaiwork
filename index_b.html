@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.158';
+var APP_VERSION = 'v1.9.159';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11233,22 +11233,44 @@ function handleNokPhotoFileInput(input, cat) {
   input.value = '';
 }
 
+// 既存ファイル名（existing: 小文字キーのオブジェクト）と衝突したら末尾に _2,_3… を付与
+function _nokUniqueName(name, existing) {
+  if (!existing[name.toLowerCase()]) return name;
+  var m = name.match(/^(.*?)(\.[^.]+)?$/);
+  var base = m[1] || name;
+  var ext = m[2] || '';
+  var n = 2;
+  while (existing[(base + '_' + n + ext).toLowerCase()]) n++;
+  return base + '_' + n + ext;
+}
+
 function uploadNokPhotoFiles(files, cat, customNames) {
   if (!currentItem) return;
   var d = currentItem;
   var folderPass = d['FolderPass'] || '';
   if (!folderPass) { showSaveToast(false, 'FolderPass がありません'); return; }
   var targetPath = folderPass + '/' + _nokCatSubPath(cat);
+  var _token = '';
+  var _existing = {}; // 既存ファイル名（小文字）のセット
   ensureNokPhotoFolder(d, cat).then(function() {
     return getToken();
   }).then(function(resp) {
-    var token = resp.accessToken;
+    _token = resp.accessToken;
+    // フォルダー内の既存ファイル名を取得（連番付与のため）
+    var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name&$top=999', {
+      headers:{'Authorization':'Bearer '+_token}
+    }).then(function(r){ return r.ok ? r.json() : {value:[]}; }).catch(function(){ return {value:[]}; });
+  }).then(function(listing) {
+    (listing.value || []).forEach(function(it){ if(it.name) _existing[it.name.toLowerCase()] = true; });
     return files.reduce(function(chain, file, idx) {
       return chain.then(function() {
-        var saveName = (customNames && customNames[idx]) ? customNames[idx] : file.name;
+        var rawName = (customNames && customNames[idx]) ? customNames[idx] : file.name;
+        var saveName = _nokUniqueName(rawName, _existing);
+        _existing[saveName.toLowerCase()] = true; // 同一バッチ内の重複も回避
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
         return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
-          method:'PUT', headers:{'Authorization':'Bearer '+token,'Content-Type':file.type||'application/octet-stream'}, body:file
+          method:'PUT', headers:{'Authorization':'Bearer '+_token,'Content-Type':file.type||'application/octet-stream'}, body:file
         }).then(function(r){ if(!r.ok) return r.text().then(function(t){throw new Error(saveName+': '+t.substring(0,120));}); });
       });
     }, Promise.resolve());

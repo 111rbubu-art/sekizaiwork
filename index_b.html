@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.178';
+var APP_VERSION = 'v1.9.179';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9795,7 +9795,9 @@ function showKoujiDetailAt(d, tabIdx) {
     ? '<span class="tab-cus-divider"></span><span class="tab-cus-label">👥顧客</span>' +
       _tc(10,'基本情報') + _tc(11,'工事履歴') + _tc(12,'墓石情報') + _tc(13,'データ') +
       '<button class="map-link-btn" onclick="openLinkedCusMap()" ' +
-      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer">🗺️ 地図</button>'
+      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer">🗺️ 地図</button>' +
+      '<button class="map-link-btn" onclick="openCusImportModal()" ' +
+      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer;background:#5a3a9a">⬇ 取り込み</button>'
     : '';
   tabs.innerHTML =
     _t(0,'基本情報') + _t(1,'進捗・日程') + _t(2,'工事仕様') + _t(3,'手配関連') +
@@ -16257,6 +16259,203 @@ function openLinkedCusMap() {
   .catch(function(e) { alert('エラー: ' + e.message); });
 }
 
+// ===== 顧客リスト → 納骨/工事 情報取り込み =====
+// 顧客リスト（過去の登録情報）から、現在の納骨/工事レコードへ項目を選択コピー
+var CUS_IMPORT_MAP = {
+  noukotsu: [
+    { group: '基本情報', rows: [
+      { label: '顧客名',   src: 'CusName',         dst: '_x9867__x5ba2__x540d_' },
+      { label: 'フリガナ', src: 'furigana',        dst: '_x30d5__x30ea__x30ac__x30ca_' },
+      { label: '電話番号', src: 'telephonenumber', dst: '_x96fb__x8a71__x756a__x53f7_' },
+      { label: '郵便番号', src: 'Zipcode',         dst: '_x90f5__x4fbf__x756a__x53f7_' },
+      { label: '住所1',    src: 'address_1',       dst: '_x4f4f__x6240_1' },
+      { label: '住所2',    src: 'address_2',       dst: '_x4f4f__x6240_2' },
+      { label: 'お寺',     src: 'Temple',          dst: '_x304a__x5bfa_' },
+      { label: '顧客No',   src: 'CusNumber',       dst: '_x9867_No' }
+    ]},
+    { group: '施主・家名', rows: [
+      { label: 'お墓の名義', src: 'HakaName',   dst: '_x304a__x5893__x306e__x540d__x7f' },
+      { label: '墓施主名',   src: 'sesyu_name', dst: '_x5f6b__x523b__x8005__x540d_' }
+    ]},
+    { group: '石材スペック', rows: [
+      { label: '石塔石種', src: 'sekitou_sekisyu', dst: '_x77f3__x7a2e_' },
+      { label: '墓誌石種', src: 'bosi_sekisyu',    dst: '_x5893__x8a8c__x77f3__x7a2e_' }
+    ]},
+    { group: '彫刻内容', rows: [
+      { label: '彫刻内容', src: 'choukoku', dst: '_x5f6b__x523b__x5185__x5bb9_' }
+    ]}
+  ],
+  kouji: [
+    { group: '基本情報', rows: [
+      { label: '顧客名',   src: 'CusName',         dst: 'Customers' },
+      { label: 'フリガナ', src: 'furigana',        dst: 'furigana' },
+      { label: '電話番号', src: 'telephonenumber', dst: 'telephonenumber' },
+      { label: '郵便番号', src: 'Zipcode',         dst: 'Zipcode' },
+      { label: '住所1',    src: 'address_1',       dst: 'address_xff11_' },
+      { label: '住所2',    src: 'address_2',       dst: 'address_xff12_' },
+      { label: 'お寺',     src: 'Temple',          dst: 'Temples' },
+      { label: '顧客No',   src: 'CusNumber',       dst: 'no' }
+    ]},
+    { group: '施主・家名', rows: [
+      { label: '○○家墓', src: 'HakaName', dst: 'HakaName' }
+    ]}
+    // ※石材スペック・彫刻内容は工事関連リストに対応フィールドが無いため非表示
+  ]
+};
+var _cusImportTarget = null;  // { item, mode }
+var _cusImportCusData = null;
+
+function openCusImportModal() {
+  var tgtItem = (_inlineCusTab && _inlineCusTabSource) ? _inlineCusTabSource.item : currentItem;
+  var tgtMode = (_inlineCusTab && _inlineCusTabSource) ? _inlineCusTabSource.mode : currentListMode;
+  if (!tgtItem) { alert('取り込み先のレコードが特定できません'); return; }
+  if (tgtMode !== 'noukotsu' && tgtMode !== 'kouji') { alert('納骨・工事レコードでのみ利用できます'); return; }
+  var cusId = tgtItem['Cus_ID'];
+  if (!cusId) { alert('顧客リストに紐づいていません'); return; }
+  _cusImportTarget = { item: tgtItem, mode: tgtMode };
+  if (_linkedCusData && _linkedCusSourceId === String(cusId)) {
+    _cusImportCusData = _linkedCusData;
+    _renderCusImportModal(false);
+    return;
+  }
+  _renderCusImportModal(true);
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + _LINKED_CUS_SITE +
+      '/lists/' + _LINKED_CUS_LIST + '/items/' + cusId + '?$expand=fields',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { return r.json(); }).then(function(item) {
+    var f = (item && item.fields) || {};
+    f['id'] = item.id || String(cusId);
+    _cusImportCusData = f;
+    _linkedCusData = f; _linkedCusSourceId = String(cusId);
+    _renderCusImportModal(false);
+  }).catch(function(e) { alert('顧客情報の取得に失敗しました: ' + e.message); _closeCusImportModal(); });
+}
+
+function _closeCusImportModal() {
+  var m = document.getElementById('cus-import-modal');
+  if (m) m.style.display = 'none';
+}
+
+function _ensureCusImportModal() {
+  var m = document.getElementById('cus-import-modal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'cus-import-modal';
+  m.style.cssText = 'display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:16px';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)">' +
+      '<div style="padding:12px 16px;background:#5a3a9a;color:#fff;display:flex;align-items:center;gap:8px">' +
+        '<span style="font-size:14px;font-weight:700">⬇ 顧客リストから取り込み</span>' +
+        '<button onclick="_closeCusImportModal()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:16px;font-family:inherit">✕</button>' +
+      '</div>' +
+      '<div id="cus-import-info" style="padding:8px 16px;font-size:11px;color:#666;background:#f5f0fb;border-bottom:1px solid #e0d4f0"></div>' +
+      '<div style="padding:6px 16px;display:flex;gap:6px;align-items:center;border-bottom:1px solid #eee">' +
+        '<button onclick="_cusImportSelectAll(true)" style="padding:3px 10px;font-size:11px;border:1px solid #5a3a9a;color:#5a3a9a;background:#fff;border-radius:10px;cursor:pointer;font-family:inherit">全選択</button>' +
+        '<button onclick="_cusImportSelectAll(false)" style="padding:3px 10px;font-size:11px;border:1px solid #999;color:#666;background:#fff;border-radius:10px;cursor:pointer;font-family:inherit">全解除</button>' +
+        '<span style="margin-left:auto;font-size:10px;color:#999">顧客リスト値 → 現在値</span>' +
+      '</div>' +
+      '<div id="cus-import-body" style="flex:1;overflow-y:auto;padding:8px 16px"></div>' +
+      '<div style="padding:12px 16px;border-top:1px solid #eee;display:flex;gap:8px">' +
+        '<button onclick="_closeCusImportModal()" style="flex:1;padding:10px;background:#eee;color:#555;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px">キャンセル</button>' +
+        '<button id="cus-import-submit" onclick="submitCusImport()" style="flex:2;padding:10px;background:#5a3a9a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600">✅ 選択項目を取り込み</button>' +
+      '</div>' +
+    '</div>';
+  m.addEventListener('click', function(e) { if (e.target === m) _closeCusImportModal(); });
+  document.body.appendChild(m);
+  return m;
+}
+
+function _renderCusImportModal(loading) {
+  var m = _ensureCusImportModal();
+  m.style.display = 'flex';
+  var info = document.getElementById('cus-import-info');
+  var body = document.getElementById('cus-import-body');
+  var tgt = _cusImportTarget;
+  var modeLbl = tgt.mode === 'kouji' ? '工事関連' : '納骨・戒切';
+  if (loading) { if (body) body.innerHTML = '<div style="text-align:center;color:#888;padding:30px">顧客情報を読み込み中...</div>'; return; }
+  var cf = _cusImportCusData || {};
+  if (info) info.innerHTML = '取り込み先: <b>' + _esc(modeLbl) + '</b> ／ 顧客: <b>' + _esc(cf['CusName'] || cf['Title'] || '') + '</b>（過去の登録情報から選択してコピー）';
+  var groups = CUS_IMPORT_MAP[tgt.mode] || [];
+  var html = '';
+  groups.forEach(function(g) {
+    var rowsHtml = '';
+    g.rows.forEach(function(r) {
+      var sv = cf[r.src]; sv = (sv == null ? '' : String(sv));
+      if (!sv) return; // 顧客側が空ならコピー対象にしない
+      var cv = tgt.item[r.dst]; cv = (cv == null ? '' : String(cv));
+      var same = (sv === cv);
+      rowsHtml +=
+        '<label style="display:flex;align-items:flex-start;gap:8px;padding:7px 4px;border-bottom:1px solid #f0f0f0;cursor:pointer">' +
+          '<input type="checkbox" id="cusimp-' + r.dst + '" ' + (same ? '' : 'checked') + ' style="margin-top:2px;flex-shrink:0;width:16px;height:16px">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:11px;color:#5a3a9a;font-weight:700">' + _esc(r.label) + (same ? ' <span style="color:#999;font-weight:400">（現在値と同じ）</span>' : '') + '</div>' +
+            '<div style="font-size:12px;color:#1a2535;word-break:break-all">' + _esc(sv) + '</div>' +
+            (cv ? '<div style="font-size:10px;color:#999;word-break:break-all">現在: ' + _esc(cv) + '</div>' : '<div style="font-size:10px;color:#bbb">現在: （空欄）</div>') +
+          '</div>' +
+        '</label>';
+    });
+    if (rowsHtml) {
+      html += '<div style="margin:8px 0 2px;font-size:11px;font-weight:700;color:#7a5ab0;border-left:3px solid #7a5ab0;padding-left:6px">' + _esc(g.group) + '</div>' + rowsHtml;
+    }
+  });
+  if (!html) html = '<div style="text-align:center;color:#888;padding:30px">取り込める情報がありません<br>（顧客リストに登録がない、または対応する項目がありません）</div>';
+  if (body) body.innerHTML = html;
+}
+
+function _cusImportSelectAll(on) {
+  var body = document.getElementById('cus-import-body');
+  if (!body) return;
+  body.querySelectorAll('input[type=checkbox]').forEach(function(c) { c.checked = on; });
+}
+
+function submitCusImport() {
+  var tgt = _cusImportTarget, cf = _cusImportCusData;
+  if (!tgt || !cf) return;
+  var groups = CUS_IMPORT_MAP[tgt.mode] || [];
+  var body = {};
+  groups.forEach(function(g) { g.rows.forEach(function(r) {
+    var c = document.getElementById('cusimp-' + r.dst);
+    if (c && c.checked) { var v = cf[r.src]; body[r.dst] = (v == null ? '' : v); }
+  }); });
+  var keys = Object.keys(body);
+  if (!keys.length) { alert('取り込む項目を選択してください'); return; }
+  var modeLbl = tgt.mode === 'kouji' ? '工事関連' : '納骨・戒切';
+  if (!confirm(keys.length + '件の情報を「' + modeLbl + '」に取り込みます。よろしいですか？')) return;
+  var listId = tgt.mode === 'kouji' ? KOUJI_LIST_ID : '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var itemId = tgt.item['id'];
+  var btn = document.getElementById('cus-import-submit');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/fields',
+      { method: 'PATCH', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e) { throw new Error(e.error && e.error.message || r.status); });
+    Object.keys(body).forEach(function(k) {
+      tgt.item[k] = body[k];
+      if (currentItem && currentItem['id'] === itemId) currentItem[k] = body[k];
+    });
+    if (Array.isArray(allItems)) {
+      var ai = allItems.findIndex(function(x) { return x['id'] === itemId; });
+      if (ai >= 0) Object.assign(allItems[ai], body);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '✅ 選択項目を取り込み'; }
+    _closeCusImportModal();
+    showSaveToast(true, keys.length + '件を取り込みました');
+    // 取り込み先の詳細を表示中なら再描画（インライン顧客タブ中は左リストを切り替えない）
+    if (!_inlineCusTab && currentItem && currentItem['id'] === itemId) {
+      var ct = (typeof currentTab !== 'undefined' && currentTab != null) ? currentTab : 0;
+      if (tgt.mode === 'kouji') showKoujiTab(ct, currentItem); else showTab(ct, currentItem);
+      if (tgt.mode === 'kouji') renderKoujiList(_koujiCurrentFilter || 'micom'); else renderList();
+      if (currentItem) highlightActiveCard(currentItem['id']);
+    }
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ 選択項目を取り込み'; }
+    showSaveToast(false, '取り込みエラー: ' + e.message);
+  });
+}
+
 function showLinkedCusTab(cusTabIdx, sourceItem) {
   var cusId = sourceItem['Cus_ID'];
   if (!cusId) return;
@@ -16275,7 +16474,8 @@ function showLinkedCusTab(cusTabIdx, sourceItem) {
     var b = document.getElementById('det-body');
     var header = '<div style="background:#ede7f6;color:#5a3a9a;padding:7px 14px;font-size:11px;font-weight:700;' +
       'margin:-12px -14px 10px;display:flex;align-items:center;gap:6px;border-bottom:2px solid #c4a0e8">' +
-      '<span>👥</span><span>顧客リスト情報 — ' + _esc(cusData['CusName'] || cusData['Title'] || '') + '</span>' +
+      '<span>👥</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">顧客リスト情報 — ' + _esc(cusData['CusName'] || cusData['Title'] || '') + '</span>' +
+      '<button onclick="openCusImportModal()" style="margin-left:auto;flex-shrink:0;background:#5a3a9a;color:#fff;border:none;border-radius:12px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:inherit;font-weight:600">⬇ この情報を取り込み</button>' +
       '</div>';
     b.insertAdjacentHTML('afterbegin', header);
   };
@@ -20007,7 +20207,9 @@ function openDetailAt(d, tabIdx) {
     ? '<span class="tab-cus-divider"></span><span class="tab-cus-label">👥顧客</span>' +
       _tc(10,'基本情報') + _tc(11,'工事履歴') + _tc(12,'墓石情報') + _tc(13,'データ') +
       '<button class="map-link-btn" onclick="openLinkedCusMap()" ' +
-      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer">🗺️ 地図</button>'
+      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer">🗺️ 地図</button>' +
+      '<button class="map-link-btn" onclick="openCusImportModal()" ' +
+      'style="font-size:12px;padding:5px 10px;margin:3px 2px;flex-shrink:0;border:none;cursor:pointer;background:#5a3a9a">⬇ 取り込み</button>'
     : '';
   tabs.innerHTML =
     _t(0,'基本情報') + _t(1,'依頼内容') + _t(2,'墓石確認') + _t(3,'進捗状況') +

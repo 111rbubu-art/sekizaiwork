@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.177';
+var APP_VERSION = 'v1.9.178';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -12349,25 +12349,31 @@ function doUploadKoujiCard(files, key, tag, cat) {
   var haka = d['HakaName'] || '';
   var base = dateRaw + '_' + tag + (haka ? '_' + haka + '家' : '');
   function sanitize(n) { return n.replace(/[\\\/]/g, '_'); }
-  var customNames = files.map(function(f, i) {
-    var ext = (f.name.match(/\.[^.]+$/) || [''])[0];
-    var suffix = files.length > 1 ? '_' + (i + 1) : '';
-    return sanitize(base + suffix) + ext;
-  });
   var folderPass = d['Folder_Pass'] || '';
   if (!folderPass) { showSaveToast(false, 'Folder_Pass がありません'); return; }
   var targetPath = folderPass + '/' + _hakaSpecCatSubPath(cat);
+  var _token = '';
+  var _existing = {}; // 既存ファイル名（小文字）
   ensureHakaSpecFolder(d, cat).then(function() {
     return getToken();
   }).then(function(resp) {
-    var token = resp.accessToken;
-    return customNames.reduce(function(chain, saveName, idx) {
+    _token = resp.accessToken;
+    // フォルダー内の既存ファイル名を取得（連番付与のため）
+    var enc = targetPath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name&$top=999', {
+      headers: { 'Authorization': 'Bearer ' + _token }
+    }).then(function(r){ return r.ok ? r.json() : { value: [] }; }).catch(function(){ return { value: [] }; });
+  }).then(function(listing) {
+    (listing.value || []).forEach(function(it){ if (it.name) _existing[it.name.toLowerCase()] = true; });
+    return files.reduce(function(chain, file) {
       return chain.then(function() {
-        var file = files[idx];
+        var ext = (file.name.match(/\.[^.]+$/) || [''])[0];
+        var saveName = _nokUniqueName(sanitize(base) + ext, _existing);
+        _existing[saveName.toLowerCase()] = true; // 同一バッチ内の重複も回避
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
         return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
           method: 'PUT',
-          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
+          headers: { 'Authorization': 'Bearer ' + _token, 'Content-Type': file.type || 'application/octet-stream' },
           body: file
         }).then(function(r) {
           if (!r.ok) return r.text().then(function(t){ throw new Error(saveName + ': ' + t.substring(0, 120)); });

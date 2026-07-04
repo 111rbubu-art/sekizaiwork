@@ -5814,7 +5814,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.195';
+var APP_VERSION = 'v1.9.196';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -5926,6 +5926,7 @@ var allItems = [];
 var currentFilter = 'micom';
 var currentItem = null;
 var _currentCusGroupId = null;
+var _cusTempleFilter = null; // 顧客リスト：特定の寺名で絞り込む場合（霊園＆共同墓地の寺選択など）
 var currentTab = 0;
 var _nokSortByDate = true; // 納骨日ソートON/OFF
 var _koujiSortByCategory = true; // 工事分類ソートON/OFF（デフォルトON）
@@ -6008,6 +6009,8 @@ function hideTempleMenu() {
 }
 
 function selectTempleGroup(groupId, templeName) {
+  // 霊園＆共同墓地（グループ8）は、まず登録されている寺名の一覧を表示
+  if (parseInt(groupId) === 8) { showEireiSubmenu(); return; }
   document.getElementById('menu-screen').classList.add('hidden');
   document.getElementById('menu-temple').classList.add('hidden');
   document.getElementById('menu-main').classList.remove('hidden');
@@ -6018,6 +6021,56 @@ function selectTempleGroup(groupId, templeName) {
   document.getElementById('app').classList.remove('hidden');
   allItems = [];
   loadCustomerByGroup(parseInt(groupId), templeName);
+}
+
+// 霊園＆共同墓地（グループ8）：登録寺名をチップ表示するサブメニュー
+function showEireiSubmenu() {
+  var list = document.getElementById('temple-btn-list');
+  if (!list) return;
+  list.innerHTML = '<div style="color:rgba(255,255,255,0.85);padding:16px;text-align:center;font-size:13px">寺名を読み込み中...</div>';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var siteUrl = 'https://graph.microsoft.com/v1.0/sites/' + SP_HOST + ':/sites/' + SP_SITE;
+    return fetch(siteUrl, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) { return r.json(); })
+      .then(function(site) {
+        window._custSiteId = site.id;
+        var url = 'https://graph.microsoft.com/v1.0/sites/' + site.id +
+          '/lists/%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88/items?expand=fields&$top=500&$filter=fields/Group eq 8';
+        return fetchAllPages(url, token);
+      });
+  }).then(function(items) {
+    var counts = {};
+    items.forEach(function(d) { var t = (d['Temple'] || '').trim(); if (t) counts[t] = (counts[t] || 0) + 1; });
+    var names = Object.keys(counts).sort();
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+    var backBtn = '<button class="temple-menu-btn" onclick="showTempleMenu()" style="opacity:0.85"><span>← グループ一覧へ戻る</span><span></span></button>';
+    if (!names.length) {
+      list.innerHTML = backBtn + '<div style="color:rgba(255,255,255,0.85);padding:16px;text-align:center;font-size:13px">登録されている寺名がありません</div>';
+      return;
+    }
+    list.innerHTML = backBtn + names.map(function(n) {
+      return '<button class="temple-menu-btn" data-tp="' + esc(n) + '" onclick="selectEireiTemple(this.getAttribute(&quot;data-tp&quot;))">' +
+        '<span>⛩ ' + esc(n) + '</span><span style="color:rgba(255,255,255,0.5)">' + counts[n] + '件 ›</span></button>';
+    }).join('');
+  }).catch(function(e) {
+    list.innerHTML = '<button class="temple-menu-btn" onclick="showTempleMenu()"><span>← 戻る</span><span></span></button>' +
+      '<div style="color:#ffd0d0;padding:16px;text-align:center;font-size:13px">エラー: ' + (e && e.message || e) + '</div>';
+  });
+}
+
+// 霊園＆共同墓地：特定の寺名でフィルターした顧客リストへ
+function selectEireiTemple(temple) {
+  document.getElementById('menu-screen').classList.add('hidden');
+  document.getElementById('menu-temple').classList.add('hidden');
+  document.getElementById('menu-main').classList.remove('hidden');
+  LIST_NAME = '顧客リスト';
+  currentListMode = 'customer';
+  document.getElementById('list-title').textContent = '顧客 - ' + temple;
+  document.getElementById('hdr-back-btn').textContent = '←';
+  document.getElementById('app').classList.remove('hidden');
+  allItems = [];
+  loadCustomerByGroup(8, temple, temple);
 }
 
 function startApp() {
@@ -18302,8 +18355,9 @@ function selectMenu(mode) {
   }
 }
 
-function loadCustomerByGroup(groupId, templeName) {
+function loadCustomerByGroup(groupId, templeName, templeFilter) {
   _currentCusGroupId = parseInt(groupId);
+  _cusTempleFilter = templeFilter || null;
   // 画面切替時にフィルター値をリセット
   var _srchEl = document.getElementById('srch');
   var _temSelEl = document.getElementById('srch-temple');
@@ -18360,6 +18414,7 @@ function renderCustomerList() {
   var q = (document.getElementById('srch') && document.getElementById('srch').value) || '';
   var qt = (document.getElementById('srch-temple') && document.getElementById('srch-temple').value) || '';
   var items = allItems.filter(function(d) {
+    if (_cusTempleFilter && d['Temple'] !== _cusTempleFilter) return false;
     if (qt && d['Temple'] !== qt) return false;
     if (q) {
       var name = d['CusName'] || '';

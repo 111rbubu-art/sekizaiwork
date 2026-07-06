@@ -1307,8 +1307,8 @@ function loadMenuNauchi() {
       if (_tantoFilterOn && _loginSurname && !d['InternalCommunication'].includes(_loginSurname)) return false;
       return true;
     });
-    // 🆕新規（1週間以内）を上位に表示
-    nokItems.sort(function(a,b){ return (_isNewItem(b)?1:0) - (_isNewItem(a)?1:0); });
+    // 🆕新規登録を上位に、新規どうしは新しい順
+    nokItems.sort(_newFirstCmp);
     var nokBadge = document.getElementById('menu-badge-nok');
     if (nokBadge) { if(nokItems.length>0){nokBadge.textContent=nokItems.length+'件';nokBadge.style.display='';}else{nokBadge.style.display='none';} }
     if (nokItems.length > 0) {
@@ -1350,8 +1350,8 @@ function loadMenuNauchi() {
       if (_tantoFilterOn && _loginSurname && !d['InternalCommunication'].includes(_loginSurname)) return false;
       return true;
     });
-    // 🆕新規（1週間以内）を上位に表示
-    koujiItems.sort(function(a,b){ return (_isNewItem(b)?1:0) - (_isNewItem(a)?1:0); });
+    // 🆕新規登録を上位に、新規どうしは新しい順
+    koujiItems.sort(_newFirstCmp);
     var kBadge = document.getElementById('menu-badge-kouji');
     if (kBadge) { if(koujiItems.length>0){kBadge.textContent=koujiItems.length+'件';kBadge.style.display='';}else{kBadge.style.display='none';} }
     // 描画後に高さ揃え
@@ -5840,7 +5840,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.205';
+var APP_VERSION = 'v1.9.206';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9509,18 +9509,19 @@ function renderKoujiList(filter) {
     return;
   }
 
-  // 🆕新規（1週間以内）を上位に表示（分類ソート時は分類順が優先されるため無効）
-  if (!_koujiSortByCategory) {
-    items.sort(function(a,b){ return (_isNewItem(b)?1:0) - (_isNewItem(a)?1:0); });
-  }
+  // 🆕新規登録（7日以内）は最上部の専用グループに（新しい順）。新規以外は従来ロジック
+  var _kNew = items.filter(_isNewItem).sort(function(a,b){
+    return (Date.parse(b['Created']) || 0) - (Date.parse(a['Created']) || 0);
+  });
+  var _kRest = items.filter(function(d){ return !_isNewItem(d); });
 
-  // 分類順ソート
-  var _koujiDisplayItems = items;
+  // 分類順ソート（新規以外を対象）
+  var _koujiDisplayItems = _kRest;
   var _koujiCatSeps = {}; // index -> label
   if (_koujiSortByCategory) {
     var _catOrder = ['墓新規','修繕','撤去','移設','彫刻変更','花立交換','クリーニング','小工事','他工事'];
     var _cats = [];
-    items.forEach(function(d) {
+    _kRest.forEach(function(d) {
       var c = d['category'] || '（分類なし）';
       if (_cats.indexOf(c) < 0) _cats.push(c);
     });
@@ -9533,7 +9534,7 @@ function renderKoujiList(filter) {
     });
     var _sorted = [];
     _cats.forEach(function(c) {
-      var cItems = items.filter(function(d){ return (d['category']||'（分類なし）') === c; });
+      var cItems = _kRest.filter(function(d){ return (d['category']||'（分類なし）') === c; });
       var cInc = cItems.filter(function(d){ return (d['endinfo']||'') === ''; });
       var cCom = cItems.filter(function(d){ return (d['endinfo']||'') !== ''; });
       _koujiCatSeps[_sorted.length] = c;
@@ -9541,10 +9542,21 @@ function renderKoujiList(filter) {
     });
     _koujiDisplayItems = _sorted;
   }
+  // 🆕新規登録グループを最上部に付与
+  if (_kNew.length) {
+    var _kShift = _kNew.length;
+    var _kSh = {};
+    Object.keys(_koujiCatSeps).forEach(function(k){ _kSh[(+k) + _kShift] = _koujiCatSeps[k]; });
+    _koujiCatSeps = _kSh;
+    _koujiCatSeps[0] = '🆕 新規登録';
+    _koujiDisplayItems = _kNew.concat(_koujiDisplayItems);
+  }
 
   var html = '<div class="cards">' + _koujiDisplayItems.map(function(d, _kidx) {
-    var _catSepHtml = (_koujiSortByCategory && _koujiCatSeps[_kidx])
-      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e0ead0;border-radius:6px;font-size:11px;color:#4a6a10;text-align:center">── ' + _koujiCatSeps[_kidx] + ' ──</div>'
+    var _kSepLbl = _koujiCatSeps[_kidx];
+    var _catSepHtml = _kSepLbl
+      ? '<div style="margin:10px 0 6px;padding:5px 10px;border-radius:6px;text-align:center;' +
+        (_kSepLbl.indexOf('🆕') === 0 ? 'background:#fdecea;color:#c0392b;font-size:12px;font-weight:700' : 'background:#e0ead0;color:#4a6a10;font-size:11px') + '">── ' + _kSepLbl + ' ──</div>'
       : '';
     var realIdx  = allItems.indexOf(d);
     var title    = d['Title'] || '';
@@ -19998,7 +20010,13 @@ function _isNewItem(d) {
   return (Date.now() - t) <= 7 * 24 * 60 * 60 * 1000 && (Date.now() - t) >= 0;
 }
 function _newBadgeHtml(d) {
-  return _isNewItem(d) ? '<span class="new-badge">🆕 新規</span>' : '';
+  return _isNewItem(d) ? '<span class="new-badge">🆕 新規登録</span>' : '';
+}
+// 新規を先頭に、新規どうしは作成日の新しい順に並べる比較関数
+function _newFirstCmp(a, b) {
+  var an = _isNewItem(a), bn = _isNewItem(b);
+  if (an && bn) return (Date.parse(b['Created']) || 0) - (Date.parse(a['Created']) || 0);
+  return (bn ? 1 : 0) - (an ? 1 : 0);
 }
 
 function loadItems() {
@@ -20099,13 +20117,14 @@ function renderList() {
     return;
   }
 
-  // 🆕新規（1週間以内）を上位に表示（納骨日ソート時は日付順が優先されるため無効）
-  if (!_nokSortByDate) {
-    items.sort(function(a,b){ return (_isNewItem(b)?1:0) - (_isNewItem(a)?1:0); });
-  }
+  // 🆕新規登録（7日以内）は最上部の専用グループに（新しい順）。新規以外は従来ロジック
+  var _newItems = items.filter(_isNewItem).sort(function(a,b){
+    return (Date.parse(b['Created']) || 0) - (Date.parse(a['Created']) || 0);
+  });
+  var _restItems = items.filter(function(d){ return !_isNewItem(d); });
 
-  // 納骨日ソート
-  var _displayItems = items;
+  // 納骨日ソート（新規以外を対象）
+  var _displayItems = _restItems;
   var _separators = {}; // index -> label
   if (_nokSortByDate) {
     var _today = new Date(); _today.setHours(0,0,0,0);
@@ -20117,22 +20136,22 @@ function renderList() {
     };
     var _hasTui = function(d) { return !!(d['IssueDate_tui'] || d['Estimate_tui']); };
     // 未来日あり（未完了）→ 日付なし（未完了）→ 過去日（未完了）→ 納骨彫刻完了 → 追加分
-    var _future = items.filter(function(d){
+    var _future = _restItems.filter(function(d){
       var dt = _nokDateOf(d);
       return dt && dt >= _today && d['_x524a__x9664_'] !== true;
     });
-    var _noDate = items.filter(function(d){
+    var _noDate = _restItems.filter(function(d){
       var dt = _nokDateOf(d);
       return !dt && d['_x524a__x9664_'] !== true;
     });
-    var _pastPending = items.filter(function(d){
+    var _pastPending = _restItems.filter(function(d){
       var dt = _nokDateOf(d);
       return dt && dt < _today && d['_x524a__x9664_'] !== true;
     });
-    var _doneNormal = items.filter(function(d){
+    var _doneNormal = _restItems.filter(function(d){
       return d['_x524a__x9664_'] === true && !_hasTui(d);
     });
-    var _doneAdditional = items.filter(function(d){
+    var _doneAdditional = _restItems.filter(function(d){
       return d['_x524a__x9664_'] === true && _hasTui(d);
     });
     // 未来：近い順（昇順）
@@ -20160,9 +20179,22 @@ function renderList() {
     _displayItems = _future.concat(_noDate).concat(_pastPending).concat(_doneNormal).concat(_doneAdditional);
   }
 
+  // 🆕新規登録グループを最上部に付与（区切りラベル付き）
+  if (_newItems.length) {
+    var _nShift = _newItems.length;
+    var _shSep = {};
+    Object.keys(_separators).forEach(function(k){ _shSep[(+k) + _nShift] = _separators[k]; });
+    _separators = _shSep;
+    if (_nokSortByDate && _restItems.length && _separators[_nShift] === undefined) _separators[_nShift] = '📅 納骨日順';
+    _separators[0] = '🆕 新規登録';
+    _displayItems = _newItems.concat(_displayItems);
+  }
+
   var html = '<div class="cards">' + _displayItems.map(function(d, idx) {
-    var _sepHtml = (_nokSortByDate && _separators[idx])
-      ? '<div style="margin:10px 0 6px;padding:4px 10px;background:#e8e8e8;border-radius:6px;font-size:11px;color:#888;text-align:center">── ' + _separators[idx] + ' ──</div>'
+    var _sepLbl = _separators[idx];
+    var _sepHtml = _sepLbl
+      ? '<div style="margin:10px 0 6px;padding:5px 10px;border-radius:6px;text-align:center;' +
+        (_sepLbl.indexOf('🆕') === 0 ? 'background:#fdecea;color:#c0392b;font-size:12px;font-weight:700' : 'background:#e8e8e8;color:#888;font-size:11px') + '">── ' + _sepLbl + ' ──</div>'
       : '';
     var title = d['Title'] || '';
     var name = G(d,'顧客名') || '';

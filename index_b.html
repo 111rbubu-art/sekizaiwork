@@ -5840,7 +5840,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.208';
+var APP_VERSION = 'v1.9.209';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21114,6 +21114,50 @@ function autoResizeTA(el) {
   el.style.height = Math.max(el.scrollHeight, 80) + 'px';
 }
 
+// ===== 社内連絡：編集ボタン不要の常時インライン入力（フォーカスを外すと自動保存）=====
+function naiuchiInlineHtml(d, listName) {
+  var itemId = d['id'] || '';
+  var val = (d['InternalCommunication'] || '').replace(/</g, '&lt;');
+  return '<div class="fi w" style="position:relative">' +
+    '<label class="edit-label">📝 社内連絡（そのまま入力できます）</label>' +
+    '<textarea id="naiuchi-inline-' + itemId + '" data-list="' + listName + '" ' +
+      'oninput="autoResizeTA(this)" onblur="saveNaiuchiInline(this)" ' +
+      'placeholder="ここに直接入力（フォーカスを外すと自動保存）" ' +
+      'style="width:100%;box-sizing:border-box;min-height:70px;font-family:inherit;font-size:13px;padding:8px 8px 20px;border:1.5px solid #b5d4f4;border-radius:6px;background:#f5faff;resize:vertical">' + val + '</textarea>' +
+    '<span id="naiuchi-inline-status-' + itemId + '" style="font-size:10px;color:#aaa;position:absolute;right:8px;bottom:6px;pointer-events:none"></span>' +
+  '</div>';
+}
+function saveNaiuchiInline(ta) {
+  var itemId = (ta.id || '').replace('naiuchi-inline-', '');
+  var listName = ta.getAttribute('data-list') || '';
+  var val = ta.value;
+  var d = currentItem;
+  if (!d || String(d['id']) !== String(itemId)) return;
+  if (val === (d['InternalCommunication'] || '')) return; // 変更なし
+  var statusEl = document.getElementById('naiuchi-inline-status-' + itemId);
+  if (statusEl) { statusEl.textContent = '保存中...'; statusEl.style.color = '#888'; }
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = (listName === '工事関連') ? KOUJI_LIST_ID : '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/fields',
+      { method: 'PATCH', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ InternalCommunication: val }) });
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e) { throw new Error(e.error && e.error.message || r.status); });
+    d['InternalCommunication'] = val;
+    if (currentItem) currentItem['InternalCommunication'] = val;
+    ['noukotsu','kouji','noukotsu_all','kouji_all'].forEach(function(ck) {
+      var arr = _menuSearchCache[ck];
+      if (Array.isArray(arr)) { var idx = arr.findIndex(function(x){ return String(x['id']) === String(itemId); }); if (idx >= 0) arr[idx]['InternalCommunication'] = val; }
+    });
+    if (Array.isArray(allItems)) { var ai = allItems.findIndex(function(x){ return String(x['id']) === String(itemId); }); if (ai >= 0) allItems[ai]['InternalCommunication'] = val; }
+    if (statusEl) { statusEl.textContent = '✅ 保存済'; statusEl.style.color = '#1a7a3a'; setTimeout(function(){ if (statusEl) statusEl.textContent = ''; }, 2000); }
+  }).catch(function(e) {
+    if (statusEl) { statusEl.textContent = '❌ 失敗'; statusEl.style.color = '#c00'; }
+    showSaveToast(false, '社内連絡の保存に失敗: ' + e.message);
+  });
+}
+
 function bindEditInputs(itemId) {
   document.querySelectorAll('[data-id="' + itemId + '"]').forEach(function(el) {
     // textareaは初期表示時に高さを自動調整
@@ -21727,7 +21771,7 @@ var NK_T5B_CARDS=[
 ];
 // ===== 工事関連カード定義 =====
 var KOUJI_T0A_CARDS=[
-  {label:'社内連絡',            fld:function(d,it){return efld('社内連絡',it,'InternalCommunication',d['InternalCommunication']||'',true,true);}},
+  {label:'社内連絡',            fld:function(d,it){return naiuchiInlineHtml(d,'工事関連');}},
   {label:'工事仕様メモ',        fld:function(d,it){return efld('工事仕様メモ',it,'DetailedMemo',d['DetailedMemo']||'',false,true);}},
   {label:'お客様との状況メモ',  fld:function(d,it){return efld('お客様との状況メモ',it,'TODO',d['TODO']||'',false,true);}},
 ];
@@ -22499,7 +22543,7 @@ function showTab(i, d) {
       '</div>' + nokEditNote +
       // 社内連絡（セクションなし・全幅）
       '<div class="fgrid" style="margin-bottom:6px">' +
-        efld('社内連絡', itemId, '社内連絡', G(d,'社内連絡') || '', true, true) +
+        naiuchiInlineHtml(d, '納骨・戒切') +
       '</div>' +
       // 注意事項メモ
       _nkSec('attention', d, 'bg5', '', '注意事項メモ',

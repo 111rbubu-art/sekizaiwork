@@ -5843,7 +5843,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.221';
+var APP_VERSION = 'v1.9.222';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9954,6 +9954,9 @@ function showKoujiTab(i, d) {
     var cusRegBtnKouji = !editMode && d['Cus_ID']
       ? '<button onclick="openCustRegModal(currentItem,\'kouji\')" style="' + _bSt + ';background:#2a5a1a">📋 顧客リストに完了情報を登録</button>'
       : '';
+    var newCusBtnKouji = !editMode && !d['Cus_ID']
+      ? '<button onclick="openNewCusReg(currentItem,\'kouji\')" style="' + _bSt + ';background:#7a3a1a">🆕 顧客リスト新規登録</button>'
+      : '';
     var connectBtnKouji = (d['telephonenumber'] || '').trim()
       ? '<button onclick="registerOutlookContact(currentItem,\'kouji\')" style="' + _bSt + ';background:#0078d4">📇 連絡先登録</button>'
       : '';
@@ -9991,7 +9994,7 @@ function showKoujiTab(i, d) {
         '</div>' +
         '<div style="flex:0 0 16px"></div>' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-          _btnGroup('機能', connectBtnKouji + (cusRegBtnKouji||'')) +
+          _btnGroup('機能', connectBtnKouji + (cusRegBtnKouji||'') + (newCusBtnKouji||'')) +
           _btnGroup('リンク', detailLinkButtonsHtml(_bSt)) +
         '</div>' +
       '</div>' + (editMode ? '<div class="edit-note">✏️ 編集中 — 保存ボタンでSharePointに反映されます</div>' : '');
@@ -18584,6 +18587,122 @@ function loadCustomerByGroup(groupId, templeName, templeFilter) {
   });
 }
 
+// ===== 顧客リスト 新規登録（空きID候補の提示） =====
+function _ncEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// 工事/納骨レコードのお寺名
+function _recordTemple(d){ return (d && (d['Temple'] || d['_x304a__x5bfa_'] || d['Temples'])) || ''; }
+// お寺名 → 顧客リストグループID（グループ名と一致すれば判定、なければ null）
+function _cusGroupFromTemple(t){
+  if (!t) return null;
+  t = String(t).trim();
+  for (var g in TEMPLE_GROUP_MAP) { if (TEMPLE_GROUP_MAP[g] === t) return parseInt(g, 10); }
+  return null;
+}
+// 指定グループの顧客を取得（フラット化済みfields。ID=顧客番号, CusName=顧客名）
+function _fetchGroupCustomers(groupId){
+  return getToken().then(function(resp){
+    var token = resp.accessToken;
+    function go(siteId){
+      var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId +
+        '/lists/%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88/items?expand=fields&$top=500&$filter=fields/Group eq ' + groupId;
+      return fetchAllPages(url, token);
+    }
+    if (window._custSiteId) return go(window._custSiteId);
+    var siteUrl = 'https://graph.microsoft.com/v1.0/sites/' + SP_HOST + ':/sites/' + SP_SITE;
+    return fetch(siteUrl, { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r){ return r.json(); })
+      .then(function(site){ window._custSiteId = site.id; return go(site.id); });
+  });
+}
+// 顧客名が未入力の行を、ID番号の若い順に返す
+function _findVacantId(customers){
+  return customers.filter(function(c){
+    var nm = (c['CusName'] == null ? '' : String(c['CusName'])).replace(/[\s　]/g, '');
+    return nm === '';
+  }).map(function(c){
+    return { id: c['ID'], num: parseInt(c['ID'], 10) };
+  }).filter(function(x){ return !isNaN(x.num); })
+    .sort(function(a,b){ return a.num - b.num; });
+}
+function _ensureNewCusModal(){
+  var m = document.getElementById('newcus-modal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'newcus-modal';
+  m.style.cssText = 'display:none;position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:16px';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:12px;max-width:480px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)">' +
+      '<div style="padding:12px 16px;background:#7a3a1a;color:#fff;display:flex;align-items:center;gap:8px">' +
+        '<span style="font-size:15px;font-weight:700">🆕 顧客リスト新規登録</span>' +
+        '<button onclick="_closeNewCusModal()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:16px;font-family:inherit">✕</button>' +
+      '</div>' +
+      '<div id="newcus-body" style="padding:16px;overflow-y:auto"></div>' +
+      '<div style="padding:12px 16px;border-top:1px solid #eee;display:flex;gap:8px">' +
+        '<button onclick="_closeNewCusModal()" style="flex:1;padding:10px;background:#eee;color:#555;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px">閉じる</button>' +
+      '</div>' +
+    '</div>';
+  m.addEventListener('click', function(e){ if (e.target === m) _closeNewCusModal(); });
+  document.body.appendChild(m);
+  return m;
+}
+function _closeNewCusModal(){ var m = document.getElementById('newcus-modal'); if (m) m.style.display = 'none'; }
+function openNewCusReg(d, mode){
+  var m = _ensureNewCusModal();
+  m.style.display = 'flex';
+  var temple = _recordTemple(d);
+  var groupId = _cusGroupFromTemple(temple);
+  window._newCusCtx = { mode: mode, d: d, temple: temple, groupId: groupId, candidates: [] };
+  var body = document.getElementById('newcus-body');
+  var head = '<div style="font-size:13px;color:#555;margin-bottom:12px">レコードのお寺：<b>' + (temple ? _ncEsc(temple) : '（未設定）') + '</b></div>';
+  if (groupId != null) {
+    head += '<div style="font-size:13px;margin-bottom:12px">顧客リストグループ：<b>' + _ncEsc(TEMPLE_GROUP_MAP[groupId] || ('グループ'+groupId)) + '</b> <span style="color:#888;font-size:11px">（お寺から自動判定）</span></div>';
+    body.innerHTML = head + '<div id="newcus-candidate"></div>';
+    _loadCandidate(groupId);
+  } else {
+    var sel = '<select id="newcus-group-sel" onchange="_onNewCusGroupChange(this.value)" style="padding:8px 10px;border:1px solid #ccc;border-radius:7px;font-size:14px;font-family:inherit;width:100%">' +
+      '<option value="">顧客リストグループを選択…</option>';
+    Object.keys(TEMPLE_GROUP_MAP).sort(function(a,b){ return a - b; }).forEach(function(g){
+      sel += '<option value="' + g + '">' + _ncEsc(TEMPLE_GROUP_MAP[g]) + '</option>';
+    });
+    sel += '</select>';
+    head += '<div style="font-size:13px;margin-bottom:6px;color:#c0322b">お寺からグループを判定できませんでした。グループを選択してください：</div>' + sel;
+    body.innerHTML = head + '<div id="newcus-candidate" style="margin-top:12px"></div>';
+  }
+}
+function _onNewCusGroupChange(g){
+  if (!g) { var el = document.getElementById('newcus-candidate'); if (el) el.innerHTML = ''; return; }
+  window._newCusCtx.groupId = parseInt(g, 10);
+  _loadCandidate(parseInt(g, 10));
+}
+function _loadCandidate(groupId){
+  var el = document.getElementById('newcus-candidate');
+  el.innerHTML = '<div style="padding:14px;color:#666;font-size:13px">🔄 空きID候補を検索中…</div>';
+  _fetchGroupCustomers(groupId).then(function(customers){
+    var vacant = _findVacantId(customers);
+    window._newCusCtx.candidates = vacant;
+    if (!vacant.length){
+      el.innerHTML = '<div style="padding:14px;background:#fff3f3;border:1px solid #f0c0c0;border-radius:8px;color:#c0322b;font-size:13px">このグループには顧客名が未入力の空きIDがありません。<br>顧客リスト側で空き行を用意してください。</div>';
+      return;
+    }
+    var top = vacant[0];
+    var more = vacant.slice(1, 6).map(function(x){ return x.id; }).join('、');
+    el.innerHTML =
+      '<div style="padding:14px;background:#f0f7f0;border:1px solid #bfe0bf;border-radius:8px">' +
+        '<div style="font-size:12px;color:#555">候補（顧客名が未入力の一番若いID）</div>' +
+        '<div style="font-size:28px;font-weight:800;color:#1a5a1a;margin:4px 0">ID ' + _ncEsc(top.id) + '</div>' +
+        '<button onclick="_copyCandidateId()" style="padding:6px 12px;font-size:12px;background:#1a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600">📋 IDをコピー</button>' +
+        (more ? '<div style="font-size:11px;color:#888;margin-top:8px">次の空き：' + _ncEsc(more) + '</div>' : '') +
+        '<div style="font-size:11px;color:#888;margin-top:6px">空き ' + vacant.length + ' 件</div>' +
+      '</div>';
+  }).catch(function(e){
+    el.innerHTML = '<div style="padding:14px;color:#c0322b;font-size:13px">検索エラー：' + _ncEsc(e.message) + '</div>';
+  });
+}
+function _copyCandidateId(){
+  var c = window._newCusCtx && window._newCusCtx.candidates && window._newCusCtx.candidates[0];
+  if (c && typeof _copyPlainText === 'function') _copyPlainText(String(c.id), '顧客IDをコピー: ' + c.id);
+}
+
 function renderCustomerList() {
   // 顧客リスト用にUI調整
   var filterBar = document.querySelector('.bnav');
@@ -22664,6 +22783,9 @@ function showTab(i, d) {
     var cusRegBtnNok = !editMode && d['Cus_ID']
       ? '<button onclick="openCustRegModal(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#2a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📋 顧客リストに完了情報を登録</button>'
       : '';
+    var newCusBtnNok = !editMode && !d['Cus_ID']
+      ? '<button onclick="openNewCusReg(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#7a3a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🆕 顧客リスト新規登録</button>'
+      : '';
     var nokFolderPassVal = d['FolderPass'] || '';
     var teishutsuBtnNok = nokFolderPassVal
       ? '<button onclick="openSubmissionFolder(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#0a6a6a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📄 提出資料</button>'
@@ -22686,7 +22808,7 @@ function showTab(i, d) {
         '<div style="display:flex;align-items:center;gap:8px">' + nokCompletePill + nokEditBtn + '</div>' +
         '<div style="flex:0 0 16px"></div>' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-          _btnGroup('機能', connectBtnNok + (cusRegBtnNok || '') + gcalDelBtnNok) +
+          _btnGroup('機能', connectBtnNok + (cusRegBtnNok || '') + (newCusBtnNok || '') + gcalDelBtnNok) +
           _btnGroup('リンク', detailLinkButtonsHtml('padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;color:#fff')) +
         '</div>' +
       '</div>' + nokEditNote +

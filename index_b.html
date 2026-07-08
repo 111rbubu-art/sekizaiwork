@@ -578,6 +578,7 @@ body.force-sp #panel-resizer { display: none !important; }
       <button id="menu-price" onclick="openPriceScreen()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:#fff;cursor:pointer;font-family:inherit">💴 価格表</button>
       <button id="menu-stone-price" onclick="openStonePriceScreen()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:#fff;cursor:pointer;font-family:inherit">💎 石材価格表</button>
       <button id="menu-gaichu" onclick="openGaichuKanri()" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:rgba(217,119,6,0.35);color:#fff;cursor:pointer;font-family:inherit">🏭 外注管理</button>
+      <button id="menu-spcheck" onclick="checkUnusedSpFields()" title="SharePointにあるがアプリで使っていない項目を検出" style="font-size:11px;padding:4px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.85);cursor:pointer;font-family:inherit">🔍 項目チェック</button>
     </div>
     <!-- 外部リンク（MFクラウド・Googleカレンダー・カスタム。renderTopLinksで生成） -->
     <div id="top-links-row" style="display:flex;justify-content:flex-end;gap:6px;padding:0 12px 8px;flex-wrap:wrap"></div>
@@ -5843,7 +5844,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.223';
+var APP_VERSION = 'v1.9.224';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21248,6 +21249,86 @@ function loadSPFieldChoices() {
   })
   .catch(function(e) {
     console.warn('[FIELD_CHOICES] SP取得失敗:', e.message);
+  });
+}
+
+// ===== 診断: SPにあるがアプリで使われていない項目を検出 =====
+function _openSpCheckModal(inner) {
+  var m = document.getElementById('spcheck-modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'spcheck-modal';
+    m.style.cssText = 'position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+    m.addEventListener('click', function(e){ if (e.target === m) m.style.display = 'none'; });
+    document.body.appendChild(m);
+  }
+  m.style.display = 'flex';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)">' +
+      '<div style="padding:12px 16px;background:#1a2535;color:#fff;display:flex;align-items:center;gap:8px">' +
+        '<span style="font-size:15px;font-weight:700">🔍 SP項目チェック（アプリ未使用の項目）</span>' +
+        '<button onclick="document.getElementById(\'spcheck-modal\').style.display=\'none\'" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:16px;font-family:inherit">✕</button>' +
+      '</div>' +
+      '<div style="padding:16px;overflow-y:auto">' + inner + '</div>' +
+    '</div>';
+}
+function checkUnusedSpFields() {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var LISTS = [
+    { name: '工事関連',   id: KOUJI_LIST_ID },
+    { name: '納骨・戒切', id: '3ae4bd1d-47b8-4300-aab5-6b828aa0e480' },
+    { name: '顧客リスト', id: '29524f89-0370-44ea-8d01-161f34e5a1ab' }
+  ];
+  var SYS = { 'ID':1,'Title':1,'Modified':1,'Created':1,'Author':1,'Editor':1,'Attachments':1,'ContentType':1,
+    'AppAuthor':1,'AppEditor':1,'ComplianceAssetId':1,'Edit':1,'LinkTitle':1,'LinkTitleNoMenu':1,'DocIcon':1,
+    'ItemChildCount':1,'FolderChildCount':1,'_UIVersionString':1,'_ModerationStatus':1,'_ModerationComments':1,
+    'Order':1,'GUID':1,'FileLeafRef':1,'FileRef':1 };
+  _openSpCheckModal('<div style="padding:24px;text-align:center;color:#666">🔄 SPの列を取得してアプリのソースと照合中…</div>');
+  var src = '';
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var headers = { Authorization: 'Bearer ' + token };
+    return fetch(location.href).then(function(r){ return r.text(); }).then(function(t) {
+      src = t;
+      return Promise.all(LISTS.map(function(L) {
+        return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + L.id +
+            '/columns?$select=name,displayName,readOnly,hidden&$top=400', { headers: headers })
+          .then(function(r){ return r.json(); })
+          .then(function(j){ return { list: L, cols: (j.value || []) }; });
+      }));
+    });
+  }).then(function(all) {
+    var html = '';
+    all.forEach(function(res) {
+      var missing = res.cols.filter(function(c) {
+        if (!c.name) return false;
+        if (c.hidden || c.readOnly) return false;
+        if (SYS[c.name]) return false;
+        if (c.name.charAt(0) === '_' && c.name.substring(0, 2) !== '_x') return false; // システム隠し列
+        return src.indexOf(c.name) < 0; // 内部名がソースに出現しない＝アプリ未使用
+      });
+      html += '<div style="margin-bottom:18px">';
+      html += '<div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#1a2535">' + _ncEsc(res.list.name) +
+        '　<span style="font-weight:400;color:#888;font-size:12px">アプリ未使用 ' + missing.length + ' 件 / 全 ' + res.cols.length + ' 列</span></div>';
+      if (!missing.length) {
+        html += '<div style="color:#2a7a2a;font-size:13px">✅ 未使用の項目はありません</div>';
+      } else {
+        html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>' +
+          '<th style="text-align:left;border-bottom:1px solid #ddd;padding:4px 6px">表示名</th>' +
+          '<th style="text-align:left;border-bottom:1px solid #ddd;padding:4px 6px">内部名</th></tr></thead><tbody>';
+        missing.forEach(function(c) {
+          html += '<tr><td style="padding:4px 6px;border-bottom:1px solid #f0f0f0">' + _ncEsc(c.displayName || '') +
+            '</td><td style="padding:4px 6px;border-bottom:1px solid #f0f0f0;font-family:monospace;color:#555">' + _ncEsc(c.name) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+    });
+    html += '<div style="font-size:11px;color:#999;margin-top:8px;border-top:1px solid #eee;padding-top:8px">' +
+      '※ 非表示・読み取り専用・システム列は除外。内部名がアプリのソースに出現しない列を「未使用」と判定した概算です（コメント等での言及も「使用」に含みます）。</div>';
+    _openSpCheckModal(html);
+  }).catch(function(e) {
+    _openSpCheckModal('<div style="padding:24px;color:#c0322b">エラー: ' + _ncEsc(e.message) + '</div>');
   });
 }
 

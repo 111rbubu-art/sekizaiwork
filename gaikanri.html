@@ -12,6 +12,13 @@
   .gai-bar .title { font-size: 15px; font-weight: 700; }
   .gai-bar .spacer { flex: 1 1 8px; }
   .gai-bar button, .gai-bar a { padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; font-family: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+  .gai-bar2 { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 8px 12px; background: #eef1f5; border-bottom: 1px solid #e2e5ea; }
+  .gai-bar2:empty { display: none; }
+  .dc-box { display: inline-flex; align-items: center; gap: 6px; }
+  .dc-box label { font-size: 12px; font-weight: 700; color: #46536b; }
+  .dc-box select { padding: 5px 8px; border: 1px solid #ccd2dc; border-radius: 6px; font-size: 13px; font-family: inherit; }
+  .dc-toggle { padding: 5px 12px; border: 1px solid #c3c9d4; background: #fff; color: #46536b; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .dc-toggle.on { background: #1a2535; color: #fff; border-color: #1a2535; }
   .btn-excel { background: #0a6a3a; color: #fff; }
   .btn-add { background: #d97706; color: #fff; }
   .btn-reload { background: #46536b; color: #fff; }
@@ -62,6 +69,7 @@
     <button class="btn-reload" onclick="loadGai()">🔄 更新</button>
     <button class="btn-add" onclick="openForm(-1)">➕ 新規追加</button>
   </div>
+  <div class="gai-bar2" id="date-controls"></div>
   <div id="content"><div class="msg"><span class="spinner"></span> 読み込み中…</div></div>
 
   <!-- Add/Edit modal -->
@@ -89,6 +97,9 @@ var COLTYPE = [];      // 'date' | 'number' | 'text'
 var WB = null;         // { base, webUrl }
 var editingIndex = -1; // -1: 新規, それ以外: ROWSの添字（=テーブル行index）
 var filterValue = '';  // 対象者フィルター（''=すべて）
+var sortDir = 'desc';  // 'desc'=新しい順, 'asc'=古い順
+var monthFilter = '';  // '' or 'YYYY-MM'
+var dateColIndex = -1; // 並び替え・月フィルターの基準日列
 
 // ---------- 共通 ----------
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -182,6 +193,7 @@ function loadGai() {
       });
       computeColTypes();
       buildFilter();
+      buildDateControls();
       renderGai();
     })
     .catch(function (e) {
@@ -236,6 +248,43 @@ function buildFilter() {
 }
 function onFilterChange(v) { filterValue = v; renderGai(); }
 
+// ---------- 並び順・月フィルター（日付列がある場合のみ） ----------
+function buildDateControls() {
+  var wrap = document.getElementById('date-controls');
+  if (!wrap) return;
+  var dcs = dateColumns();
+  if (!dcs.length) { wrap.innerHTML = ''; dateColIndex = -1; return; }
+  if (dcs.indexOf(dateColIndex) < 0) dateColIndex = dcs[0];
+  // 月候補
+  var seen = {}, months = [];
+  ROWS.forEach(function (row) {
+    var ms = rowDateMs(row, dateColIndex);
+    if (ms == null) return;
+    var ym = ymOf(ms);
+    if (!seen[ym]) { seen[ym] = 1; months.push(ym); }
+  });
+  months.sort();
+  if (sortDir === 'desc') months.reverse();
+  if (months.indexOf(monthFilter) < 0) monthFilter = '';
+  var h = '';
+  if (dcs.length > 1) {
+    h += '<span class="dc-box"><label>基準日</label><select onchange="onDateColChange(this.value)">';
+    dcs.forEach(function (ci) { h += '<option value="' + ci + '"' + (ci === dateColIndex ? ' selected' : '') + '>' + escapeHtml(COLUMNS[ci]) + '</option>'; });
+    h += '</select></span>';
+  }
+  h += '<span class="dc-box"><label>並び順</label>' +
+    '<button class="dc-toggle' + (sortDir === 'desc' ? ' on' : '') + '" onclick="setSort(\'desc\')">新しい順</button>' +
+    '<button class="dc-toggle' + (sortDir === 'asc' ? ' on' : '') + '" onclick="setSort(\'asc\')">古い順</button></span>';
+  h += '<span class="dc-box"><label>月</label><select onchange="onMonthChange(this.value)">';
+  h += '<option value=""' + (monthFilter === '' ? ' selected' : '') + '>すべて</option>';
+  months.forEach(function (ym) { h += '<option value="' + ym + '"' + (ym === monthFilter ? ' selected' : '') + '>' + ymLabel(ym) + '</option>'; });
+  h += '</select></span>';
+  wrap.innerHTML = h;
+}
+function setSort(dir) { sortDir = dir; buildDateControls(); renderGai(); }
+function onMonthChange(v) { monthFilter = v; renderGai(); }
+function onDateColChange(v) { dateColIndex = parseInt(v, 10); monthFilter = ''; buildDateControls(); renderGai(); }
+
 // システム列（Power Appsが自動管理する __PowerAppsId__ 等）は表示・編集しない
 function isSysCol(name) { return /^__.*__$/.test(String(name == null ? '' : name)); }
 function genGuid() {
@@ -245,19 +294,59 @@ function genGuid() {
     return v.toString(16);
   });
 }
+// セルの日付を ミリ秒(UTC) で返す（Excelシリアル値 or 表示文字列をパース）。無ければ null
+function rowDateMs(row, ci) {
+  if (ci == null || ci < 0) return null;
+  var v = row.values[ci];
+  if (typeof v === 'number' && isFinite(v)) return Date.UTC(1899, 11, 30) + Math.round(v) * 86400000;
+  var t = cellStr(row, ci);
+  if (!t) return null;
+  var m = t.match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  var p = Date.parse(t);
+  return isNaN(p) ? null : p;
+}
+function _p2(n) { return (n < 10 ? '0' : '') + n; }
+function ymOf(ms) { var d = new Date(ms); return d.getUTCFullYear() + '-' + _p2(d.getUTCMonth() + 1); }
+function ymLabel(ym) { var p = ym.split('-'); return p[0] + '年' + p[1] + '月'; }
+function msToISO(ms) { var d = new Date(ms); return d.getUTCFullYear() + '-' + _p2(d.getUTCMonth() + 1) + '-' + _p2(d.getUTCDate()); }
+// 日付列（システム列以外でCOLTYPE==='date'）のインデックス一覧
+function dateColumns() {
+  var arr = [];
+  COLUMNS.forEach(function (col, ci) { if (!isSysCol(col) && COLTYPE[ci] === 'date') arr.push(ci); });
+  return arr;
+}
 
 // ---------- 一覧描画 ----------
 function renderGai() {
   var c = document.getElementById('content');
   if (!COLUMNS.length) { c.innerHTML = '<div class="msg">列が取得できませんでした。テーブル「' + escapeHtml(TABLE) + '」を確認してください。</div>'; return; }
   var tc = targetColIndex();
-  var visible = ROWS.map(function (row, ri) { return ri; }).filter(function (ri) {
-    if (filterValue === '' || tc < 0) return true;
-    return cellStr(ROWS[ri], tc) === filterValue;
-  });
+  var dc = dateColIndex;
+  var visible = [];
+  for (var vi = 0; vi < ROWS.length; vi++) {
+    if (filterValue !== '' && tc >= 0 && cellStr(ROWS[vi], tc) !== filterValue) continue;
+    if (monthFilter && dc >= 0) {
+      var vms = rowDateMs(ROWS[vi], dc);
+      if (vms == null || ymOf(vms) !== monthFilter) continue;
+    }
+    visible.push(vi);
+  }
+  if (dc >= 0) {
+    visible.sort(function (a, b) {
+      var ma = rowDateMs(ROWS[a], dc), mb = rowDateMs(ROWS[b], dc);
+      if (ma == null && mb == null) return 0;
+      if (ma == null) return 1;
+      if (mb == null) return -1;
+      return sortDir === 'asc' ? (ma - mb) : (mb - ma);
+    });
+  }
 
   var visCols = COLUMNS.filter(function (col) { return !isSysCol(col); }).length;
-  var h = '<div class="count">' + visible.length + ' 件' + (filterValue ? '（対象者: ' + escapeHtml(filterValue) + '）' : '') + '</div>';
+  var h = '<div class="count">' + visible.length + ' 件' +
+    (filterValue ? '（対象者: ' + escapeHtml(filterValue) + '）' : '') +
+    (monthFilter ? '（' + ymLabel(monthFilter) + '）' : '') +
+    (dc >= 0 ? '　' + (sortDir === 'asc' ? '古い順' : '新しい順') : '') + '</div>';
   h += '<div class="tbl-wrap"><table class="gai"><thead><tr>';
   COLUMNS.forEach(function (col) { if (isSysCol(col)) return; h += '<th>' + escapeHtml(col) + '</th>'; });
   h += '<th>操作</th></tr></thead><tbody>';
@@ -287,18 +376,21 @@ function openForm(ri) {
   var f = '';
   COLUMNS.forEach(function (col, ci) {
     if (isSysCol(col)) return; // __PowerAppsId__ 等は編集させない
-    var v = '';
-    if (row) {
-      // 日付列は表示文字列、それ以外は生値を初期表示
-      v = (COLTYPE[ci] === 'date') ? (row.text[ci] == null ? '' : String(row.text[ci]))
-                                   : (row.values[ci] == null ? '' : String(row.values[ci]));
-    } else if (targetColIndex() === ci && filterValue) {
-      v = filterValue; // フィルター中の新規は対象者を初期セット
+    var isDate = (COLTYPE[ci] === 'date');
+    var tag = isDate ? '<span class="tag">（日付）</span>' : (COLTYPE[ci] === 'number' ? '<span class="tag">（数値）</span>' : '');
+    var input;
+    if (isDate) {
+      // ミニカレンダーで選択（値は YYYY-MM-DD）
+      var ms = row ? rowDateMs(row, ci) : null;
+      var iso = (ms != null) ? msToISO(ms) : '';
+      input = '<input type="date" data-ci="' + ci + '" value="' + iso + '">';
+    } else {
+      var v = '';
+      if (row) v = (row.values[ci] == null ? '' : String(row.values[ci]));
+      else if (targetColIndex() === ci && filterValue) v = filterValue;
+      input = '<input type="text" data-ci="' + ci + '" value="' + escapeHtml(v) + '">';
     }
-    var tag = COLTYPE[ci] === 'date' ? '<span class="tag">（日付）</span>' : (COLTYPE[ci] === 'number' ? '<span class="tag">（数値）</span>' : '');
-    f += '<div class="fld"><label>' + escapeHtml(col) + ' ' + tag + '</label>' +
-      '<input type="text" data-ci="' + ci + '" value="' + escapeHtml(v) + '"' +
-      (COLTYPE[ci] === 'date' ? ' placeholder="例: 2026/07/07"' : '') + '></div>';
+    f += '<div class="fld"><label>' + escapeHtml(col) + ' ' + tag + '</label>' + input + '</div>';
   });
   document.getElementById('modal-fields').innerHTML = f;
   document.getElementById('modal').classList.add('show');

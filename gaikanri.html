@@ -358,7 +358,7 @@ function fetchAllKouji() {
   if (_koujiCache) return Promise.resolve(_koujiCache);
   var siteId = (window.opener && window.opener.GRAPH_SITE_ID) || 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listId = (window.opener && window.opener.KOUJI_LIST_ID) || 'dea1de47-62cc-4216-afb3-7c313485eba4';
-  var sel = 'HakaName,Customers,ConstructionContents,category,ConstructionStartDate,ConstructionCompletionDate';
+  var sel = 'HakaName,Customers,ConstructionContents,category,ConstructionStartDate,ConstructionCompletionDate,Temples';
   var url0 = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items?$top=999&$expand=fields($select=' + sel + ')';
   var all = [];
   function page(url, guard) {
@@ -382,13 +382,14 @@ function parseSpDate(v) {
   var p = Date.parse(v); return isNaN(p) ? null : p;
 }
 // 工事期間（開始〜完了）が選択月に重なるか
+// 完了日が未記入の場合は「まだ工事中（継続中）」とみなし、開始月以降ずっと候補に出す
 function koujiInMonth(k, ym) {
   var r = monthRange(ym);
   var s = parseSpDate(k.ConstructionStartDate);
   var e = parseSpDate(k.ConstructionCompletionDate);
   if (s == null && e == null) return false;
-  if (s == null) s = e;
-  if (e == null) e = s;
+  if (s == null) s = e;          // 開始日のみ空 → 完了日を期間とする
+  if (e == null) e = Infinity;   // 完了日のみ空 → 継続中（終わり無し）
   return s <= r[1] && e >= r[0];
 }
 // 件名: ○○家(なければ顧客名) ＋ 工事内容(なければ分類)
@@ -405,15 +406,20 @@ function populateKoujiSuggest() {
   if (!ym) { sel.innerHTML = '<option value="">月を選択してください</option>'; return; }
   sel.innerHTML = '<option value="">読み込み中…</option>';
   fetchAllKouji().then(function (items) {
-    var seen = {}, uniq = [];
+    var seen = {}, list = [];
     items.forEach(function (k) {
       if (!koujiInMonth(k, ym)) return;
       var t = koujiTitle(k);
-      if (t !== '' && !seen[t]) { seen[t] = 1; uniq.push(t); }
+      if (t === '') return;
+      var temple = (k.Temples && String(k.Temples).trim()) || '';
+      var disp = t + (temple ? '（' + temple + '）' : '');
+      if (seen[disp]) return;
+      seen[disp] = 1;
+      list.push({ value: t, disp: disp });
     });
-    uniq.sort(function (a, b) { return a.localeCompare(b, 'ja'); });
-    var h = '<option value="">— 工事を選ぶ（' + uniq.length + '件）—</option>';
-    uniq.forEach(function (t) { h += '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>'; });
+    list.sort(function (a, b) { return a.disp.localeCompare(b.disp, 'ja'); });
+    var h = '<option value="">— 工事を選ぶ（' + list.length + '件）—</option>';
+    list.forEach(function (o) { h += '<option value="' + escapeHtml(o.value) + '">' + escapeHtml(o.disp) + '</option>'; });
     sel.innerHTML = h;
   }).catch(function (e) {
     sel.innerHTML = '<option value="">取得失敗: ' + escapeHtml(e.message) + '</option>';

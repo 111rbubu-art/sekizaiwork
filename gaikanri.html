@@ -201,8 +201,17 @@ function loadGai() {
         return { index: i, values: rowVals || [], text: (txt[i] || []), fmt: (fmt[i] || []) };
       });
       computeColTypes();
-      titleColIndex = findCol(['工事名称', '工事名', '件名', '案件名', '案件', '名称']);
-      amountColIndex = findCol(['委託料', '金額', '日当', '単価']);
+      titleColIndex = findCol(['工事名称', '工事名', '件名', '案件名', '案件', '名称', '内容', '工事', '現場']);
+      amountColIndex = findCol(['委託料', '金額', '日当', '単価', '料金']);
+      // 件名列が見つからない場合は最初のテキスト列（対象者以外）を仮の書き込み先に
+      if (titleColIndex < 0) {
+        for (var _ci = 0; _ci < COLUMNS.length; _ci++) {
+          if (isSysCol(COLUMNS[_ci])) continue;
+          if (COLTYPE[_ci] !== 'text') continue;
+          if (_ci === targetColIndex()) continue;
+          titleColIndex = _ci; break;
+        }
+      }
       buildFilter();
       buildDateControls();
       renderGai();
@@ -321,6 +330,16 @@ function _p2(n) { return (n < 10 ? '0' : '') + n; }
 function ymOf(ms) { var d = new Date(ms); return d.getUTCFullYear() + '-' + _p2(d.getUTCMonth() + 1); }
 function ymLabel(ym) { var p = ym.split('-'); return p[0] + '年' + p[1] + '月'; }
 function msToISO(ms) { var d = new Date(ms); return d.getUTCFullYear() + '-' + _p2(d.getUTCMonth() + 1) + '-' + _p2(d.getUTCDate()); }
+// 直近15か月（新しい順）の 'YYYY-MM' 配列
+function recentMonths() {
+  var d = new Date(), y = d.getFullYear(), m = d.getMonth(), arr = [];
+  for (var i = 0; i < 15; i++) {
+    var yy = y, mm = m - i;
+    while (mm < 0) { mm += 12; yy -= 1; }
+    arr.push(yy + '-' + _p2(mm + 1));
+  }
+  return arr;
+}
 // 日付列（システム列以外でCOLTYPE==='date'）のインデックス一覧
 function dateColumns() {
   var arr = [];
@@ -380,16 +399,20 @@ function koujiTitle(k) {
 }
 function populateKoujiSuggest() {
   var sel = document.getElementById('kouji-suggest');
-  if (!sel || !monthFilter) return;
+  if (!sel) return;
+  var mo = document.getElementById('kouji-month');
+  var ym = mo ? mo.value : monthFilter;
+  if (!ym) { sel.innerHTML = '<option value="">月を選択してください</option>'; return; }
+  sel.innerHTML = '<option value="">読み込み中…</option>';
   fetchAllKouji().then(function (items) {
     var seen = {}, uniq = [];
     items.forEach(function (k) {
-      if (!koujiInMonth(k, monthFilter)) return;
+      if (!koujiInMonth(k, ym)) return;
       var t = koujiTitle(k);
       if (t !== '' && !seen[t]) { seen[t] = 1; uniq.push(t); }
     });
     uniq.sort(function (a, b) { return a.localeCompare(b, 'ja'); });
-    var h = '<option value="">— ' + ymLabel(monthFilter) + ' の工事から選ぶ（' + uniq.length + '件）—</option>';
+    var h = '<option value="">— 工事を選ぶ（' + uniq.length + '件）—</option>';
     uniq.forEach(function (t) { h += '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>'; });
     sel.innerHTML = h;
   }).catch(function (e) {
@@ -465,11 +488,17 @@ function openForm(ri) {
   var row = (ri >= 0 && ROWS[ri]) ? ROWS[ri] : null;
   document.getElementById('modal-title').textContent = (ri >= 0) ? '編集' : '新規追加';
   var f = '';
-  // 新規かつ月選択中：その月に工事した工事案件から件名を選べるように
-  var showSuggest = (ri < 0 && monthFilter && titleColIndex >= 0);
+  // 新規追加：その月に工事期間が重なる工事案件から件名を選べるように（月はここで選択）
+  var showSuggest = (ri < 0 && titleColIndex >= 0);
   if (showSuggest) {
-    f += '<div class="fld"><label>工事から選ぶ <span class="tag">（' + ymLabel(monthFilter) + ' に工事期間が重なる案件）</span></label>' +
-      '<select id="kouji-suggest" onchange="onKoujiPick(this.value)"><option value="">読み込み中…</option></select></div>';
+    var months = recentMonths();
+    var cur = (monthFilter && months.indexOf(monthFilter) < 0) ? (function () { months.unshift(monthFilter); return monthFilter; })() : (monthFilter || months[0]);
+    var monthOpts = months.map(function (mm) { return '<option value="' + mm + '"' + (mm === cur ? ' selected' : '') + '>' + ymLabel(mm) + '</option>'; }).join('');
+    f += '<div class="fld"><label>工事から選ぶ <span class="tag">（工事期間が重なる案件）</span></label>' +
+      '<div style="display:flex;gap:6px">' +
+      '<select id="kouji-month" onchange="populateKoujiSuggest()" style="flex:0 0 40%">' + monthOpts + '</select>' +
+      '<select id="kouji-suggest" onchange="onKoujiPick(this.value)" style="flex:1"><option value="">読み込み中…</option></select>' +
+      '</div></div>';
   }
   COLUMNS.forEach(function (col, ci) {
     if (isSysCol(col)) return; // __PowerAppsId__ 等は編集させない

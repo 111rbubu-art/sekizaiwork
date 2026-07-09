@@ -55,6 +55,10 @@
   .btn-clear { background: #fff3e6; color: #b45309; border: 1px solid #f0c992 !important; }
   .btn-save { background: #1a5a1a; color: #fff; flex: 2; }
   #modal-fields select { width: 100%; padding: 9px 10px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; font-family: inherit; background: #fff; }
+  .ref-pick { display: flex; flex-direction: column; gap: 6px; background: #f5f6f8; border: 1px solid #e2e5ea; border-radius: 8px; padding: 8px; }
+  .ref-row { display: flex; align-items: center; gap: 8px; }
+  .ref-lbl { flex: 0 0 34px; font-size: 12px; font-weight: 700; color: #46536b; text-align: right; }
+  .ref-row select { flex: 1; min-width: 0; }
   .date-hybrid { display: flex; gap: 6px; align-items: stretch; }
   .date-hybrid input[type="text"] { flex: 1; }
   .date-hybrid .cal { flex: 0 0 auto; width: 46px; padding: 9px 2px; }
@@ -112,6 +116,7 @@ var dateColIndex = -1; // 並び替え・月フィルターの基準日列
 var titleColIndex = -1;// 工事名称（件名）列
 var amountColIndex = -1;// 委託料（金額）列
 var _koujiCache = null;// 工事関連リスト（fields抜粋）のキャッシュ
+var _nokCache = null;  // 納骨・戒切リスト（納骨/彫刻候補用）のキャッシュ
 
 // ---------- 共通 ----------
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -436,16 +441,76 @@ function populateKoujiSuggest() {
     sel.innerHTML = '<option value="">取得失敗: ' + escapeHtml(e.message) + '</option>';
   });
 }
-function onKoujiPick(v) {
-  if (!v || titleColIndex < 0) return;
-  var inp = document.querySelector('#modal-fields input[data-ci="' + titleColIndex + '"]');
-  if (inp) inp.value = v;
-}
+function onKoujiPick(v) { _setTitle(v); }
 function setAmount(n) {
   if (amountColIndex < 0) return;
   var inp = document.querySelector('#modal-fields input[data-ci="' + amountColIndex + '"]');
   if (inp) inp.value = n;
 }
+function _setTitle(v) {
+  if (!v || titleColIndex < 0) return;
+  var inp = document.querySelector('#modal-fields input[data-ci="' + titleColIndex + '"]');
+  if (inp) inp.value = v;
+}
+
+// ---------- 納骨・彫刻の候補（納骨・戒切リストから） ----------
+function fetchAllNoukotsu() {
+  if (_nokCache) return Promise.resolve(_nokCache);
+  var siteId = (window.opener && window.opener.GRAPH_SITE_ID) || 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480'; // 納骨・戒切
+  var url0 = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items?$top=999&$expand=fields';
+  var all = [];
+  function page(url, guard) {
+    return gfetch(url).then(function (j) {
+      (j.value || []).forEach(function (it) { if (it.fields) all.push(it.fields); });
+      var next = j['@odata.nextLink'];
+      if (next && guard < 12) return page(next, guard + 1);
+      return all;
+    });
+  }
+  return page(url0, 0).then(function (items) { _nokCache = items; return items; });
+}
+var NOK_DATE = '_x7d0d__x671f__xff08__x7d0d__x9a'; // 納骨日
+var NOK_CUS = '_x9867__x5ba2__x540d_';             // 顧客名
+var NOK_TEMPLE = '_x304a__x5bfa_';                  // お寺
+// 汎用: 納骨・戒切から「日付列が選択月」「担当列に対象者名を含む」レコードの件名候補を作る
+function _nokCandidates(ym, person, dateField, personField, sel, emptyLabel) {
+  if (!sel) return;
+  if (!ym) { sel.innerHTML = '<option value="">月を選択してください</option>'; return; }
+  sel.innerHTML = '<option value="">読み込み中…</option>';
+  fetchAllNoukotsu().then(function (items) {
+    var seen = {}, list = [];
+    items.forEach(function (k) {
+      var dts = parseSpDate(k[dateField]);
+      if (dts == null || ymOf(dts) !== ym) return;
+      if (person && String(k[personField] == null ? '' : k[personField]).indexOf(person) < 0) return;
+      var t = String(k[NOK_CUS] == null ? '' : k[NOK_CUS]).trim();
+      if (t === '') return;
+      var temple = String(k[NOK_TEMPLE] == null ? '' : k[NOK_TEMPLE]).trim();
+      var disp = t + (temple ? '（' + temple + '）' : '');
+      if (seen[disp]) return;
+      seen[disp] = 1;
+      list.push({ value: t, disp: disp });
+    });
+    list.sort(function (a, b) { return a.disp.localeCompare(b.disp, 'ja'); });
+    var h = '<option value="">— ' + emptyLabel + '（' + list.length + '件）—</option>';
+    list.forEach(function (o) { h += '<option value="' + escapeHtml(o.value) + '">' + escapeHtml(o.disp) + '</option>'; });
+    sel.innerHTML = h;
+  }).catch(function (e) {
+    sel.innerHTML = '<option value="">取得失敗: ' + escapeHtml(e.message) + '</option>';
+  });
+}
+function _refMonth() { var mo = document.getElementById('kouji-month'); return mo ? mo.value : monthFilter; }
+function populateNoukotsuSuggest() {
+  _nokCandidates(_refMonth(), filterValue, NOK_DATE, 'personincharge', document.getElementById('nok-suggest'), '納骨を選ぶ');
+}
+function populateChokokuSuggest() {
+  _nokCandidates(_refMonth(), filterValue, 'CompletionDate', 'Editor0', document.getElementById('chokoku-suggest'), '彫刻を選ぶ');
+}
+function onNoukotsuPick(v) { if (!v) return; _setTitle(v); setAmount(15000); }
+function onChokokuPick(v) { if (!v) return; _setTitle(v); setAmount(13000); }
+function repopulateRefs() { populateKoujiSuggest(); populateNoukotsuSuggest(); populateChokokuSuggest(); }
+
 function clearForm() { openForm(-1); }
 
 // ---------- 一覧描画 ----------
@@ -511,10 +576,12 @@ function openForm(ri) {
     var months = recentMonths();
     var cur = (monthFilter && months.indexOf(monthFilter) < 0) ? (function () { months.unshift(monthFilter); return monthFilter; })() : (monthFilter || months[0]);
     var monthOpts = months.map(function (mm) { return '<option value="' + mm + '"' + (mm === cur ? ' selected' : '') + '>' + ymLabel(mm) + '</option>'; }).join('');
-    f += '<div class="fld"><label>工事から選ぶ <span class="tag">（工事期間が重なる案件）</span></label>' +
-      '<div style="display:flex;gap:6px">' +
-      '<select id="kouji-month" onchange="populateKoujiSuggest()" style="flex:0 0 40%">' + monthOpts + '</select>' +
-      '<select id="kouji-suggest" onchange="onKoujiPick(this.value)" style="flex:1"><option value="">読み込み中…</option></select>' +
+    f += '<div class="fld"><label>参照して入力 <span class="tag">（選ぶと「項目」に入ります' + (filterValue ? '／対象者: ' + escapeHtml(filterValue) : '') + '）</span></label>' +
+      '<div class="ref-pick">' +
+      '<div class="ref-row"><span class="ref-lbl">月</span><select id="kouji-month" onchange="repopulateRefs()">' + monthOpts + '</select></div>' +
+      '<div class="ref-row"><span class="ref-lbl">工事</span><select id="kouji-suggest" onchange="onKoujiPick(this.value)"><option value="">読み込み中…</option></select></div>' +
+      '<div class="ref-row"><span class="ref-lbl">納骨</span><select id="nok-suggest" onchange="onNoukotsuPick(this.value)"><option value="">読み込み中…</option></select></div>' +
+      '<div class="ref-row"><span class="ref-lbl">彫刻</span><select id="chokoku-suggest" onchange="onChokokuPick(this.value)"><option value="">読み込み中…</option></select></div>' +
       '</div></div>';
   }
   COLUMNS.forEach(function (col, ci) {
@@ -548,7 +615,7 @@ function openForm(ri) {
   });
   document.getElementById('modal-fields').innerHTML = f;
   document.getElementById('modal').classList.add('show');
-  if (showSuggest) populateKoujiSuggest();
+  if (showSuggest) repopulateRefs();
 }
 function closeForm() { document.getElementById('modal').classList.remove('show'); }
 

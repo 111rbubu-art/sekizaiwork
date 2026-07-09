@@ -236,6 +236,16 @@ function buildFilter() {
 }
 function onFilterChange(v) { filterValue = v; renderGai(); }
 
+// システム列（Power Appsが自動管理する __PowerAppsId__ 等）は表示・編集しない
+function isSysCol(name) { return /^__.*__$/.test(String(name == null ? '' : name)); }
+function genGuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 // ---------- 一覧描画 ----------
 function renderGai() {
   var c = document.getElementById('content');
@@ -246,18 +256,19 @@ function renderGai() {
     return cellStr(ROWS[ri], tc) === filterValue;
   });
 
+  var visCols = COLUMNS.filter(function (col) { return !isSysCol(col); }).length;
   var h = '<div class="count">' + visible.length + ' 件' + (filterValue ? '（対象者: ' + escapeHtml(filterValue) + '）' : '') + '</div>';
   h += '<div class="tbl-wrap"><table class="gai"><thead><tr>';
-  COLUMNS.forEach(function (col) { h += '<th>' + escapeHtml(col) + '</th>'; });
+  COLUMNS.forEach(function (col) { if (isSysCol(col)) return; h += '<th>' + escapeHtml(col) + '</th>'; });
   h += '<th>操作</th></tr></thead><tbody>';
   if (!visible.length) {
-    h += '<tr><td colspan="' + (COLUMNS.length + 1) + '" style="text-align:center;color:#888;padding:20px">' +
+    h += '<tr><td colspan="' + (visCols + 1) + '" style="text-align:center;color:#888;padding:20px">' +
       (ROWS.length ? '該当するデータがありません。' : 'データがありません。「➕ 新規追加」から登録できます。') + '</td></tr>';
   } else {
     visible.forEach(function (ri) {
       var row = ROWS[ri];
       h += '<tr>';
-      COLUMNS.forEach(function (col, ci) { h += '<td>' + escapeHtml(cellStr(row, ci)) + '</td>'; });
+      COLUMNS.forEach(function (col, ci) { if (isSysCol(col)) return; h += '<td>' + escapeHtml(cellStr(row, ci)) + '</td>'; });
       h += '<td><div class="row-act">' +
         '<button class="act-edit" onclick="openForm(' + ri + ')">✏️</button>' +
         '<button class="act-del" onclick="deleteRow(' + ri + ')">🗑️</button>' +
@@ -275,6 +286,7 @@ function openForm(ri) {
   document.getElementById('modal-title').textContent = (ri >= 0) ? '編集' : '新規追加';
   var f = '';
   COLUMNS.forEach(function (col, ci) {
+    if (isSysCol(col)) return; // __PowerAppsId__ 等は編集させない
     var v = '';
     if (row) {
       // 日付列は表示文字列、それ以外は生値を初期表示
@@ -295,16 +307,26 @@ function closeForm() { document.getElementById('modal').classList.remove('show')
 
 function collectForm() {
   var inputs = document.querySelectorAll('#modal-fields input');
+  var byCi = {};
+  inputs.forEach(function (inp) { byCi[parseInt(inp.getAttribute('data-ci'), 10)] = inp.value; });
   var arr = new Array(COLUMNS.length).fill('');
-  inputs.forEach(function (inp) {
-    var ci = parseInt(inp.getAttribute('data-ci'), 10);
-    var raw = inp.value;
+  for (var ci = 0; ci < COLUMNS.length; ci++) {
+    if (isSysCol(COLUMNS[ci])) {
+      // システム列：編集は既存値を維持、新規はPower Apps用にGUID自動生成
+      if (editingIndex >= 0 && ROWS[editingIndex]) {
+        arr[ci] = (ROWS[editingIndex].values[ci] != null) ? ROWS[editingIndex].values[ci] : '';
+      } else {
+        arr[ci] = (COLUMNS[ci] === '__PowerAppsId__') ? genGuid() : '';
+      }
+      continue;
+    }
+    var raw = (byCi[ci] != null) ? byCi[ci] : '';
     var out = raw;
     if (raw.trim() === '') { out = ''; }
     else if (COLTYPE[ci] === 'date') { var s = toExcelSerial(raw); out = (s != null) ? s : raw; }
     else if (COLTYPE[ci] === 'number') { var n = raw.replace(/,/g, ''); out = /^-?\d+(\.\d+)?$/.test(n) ? Number(n) : raw; }
     arr[ci] = out;
-  });
+  }
   return arr;
 }
 function saveForm() {

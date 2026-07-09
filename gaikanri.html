@@ -52,7 +52,12 @@
   .modal-ft { padding: 12px 16px; border-top: 1px solid #eee; display: flex; gap: 8px; }
   .modal-ft button { flex: 1; padding: 11px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; font-family: inherit; }
   .btn-cancel { background: #eee; color: #555; }
+  .btn-clear { background: #fff3e6; color: #b45309; border: 1px solid #f0c992 !important; }
   .btn-save { background: #1a5a1a; color: #fff; flex: 2; }
+  #modal-fields select { width: 100%; padding: 9px 10px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; font-family: inherit; background: #fff; }
+  .amt-quick { display: flex; gap: 8px; margin-top: 6px; }
+  .amt-quick button { flex: 1; padding: 8px; border: 1px solid #1a5a1a; background: #f0f7f0; color: #1a5a1a; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  .amt-quick button:active { background: #1a5a1a; color: #fff; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #1a2535; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 13px; z-index: 200; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .toast.err { background: #c0322b; }
@@ -79,6 +84,7 @@
       <div class="modal-body" id="modal-fields"></div>
       <div class="modal-ft">
         <button class="btn-cancel" onclick="closeForm()">キャンセル</button>
+        <button class="btn-clear" onclick="clearForm()">クリア</button>
         <button class="btn-save" id="modal-save" onclick="saveForm()">✅ 保存</button>
       </div>
     </div>
@@ -100,6 +106,9 @@ var filterValue = '';  // 対象者フィルター（''=すべて）
 var sortDir = 'desc';  // 'desc'=新しい順, 'asc'=古い順
 var monthFilter = '';  // '' or 'YYYY-MM'
 var dateColIndex = -1; // 並び替え・月フィルターの基準日列
+var titleColIndex = -1;// 工事名称（件名）列
+var amountColIndex = -1;// 委託料（金額）列
+var _koujiCache = null;// 工事関連リスト（fields抜粋）のキャッシュ
 
 // ---------- 共通 ----------
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -192,6 +201,8 @@ function loadGai() {
         return { index: i, values: rowVals || [], text: (txt[i] || []), fmt: (fmt[i] || []) };
       });
       computeColTypes();
+      titleColIndex = findCol(['工事名称', '工事名', '件名', '案件名', '案件', '名称']);
+      amountColIndex = findCol(['委託料', '金額', '日当', '単価']);
       buildFilter();
       buildDateControls();
       renderGai();
@@ -316,6 +327,86 @@ function dateColumns() {
   COLUMNS.forEach(function (col, ci) { if (!isSysCol(col) && COLTYPE[ci] === 'date') arr.push(ci); });
   return arr;
 }
+// 列名の候補（完全一致 → 部分一致）で列インデックスを探す
+function findCol(cands) {
+  for (var i = 0; i < COLUMNS.length; i++) for (var j = 0; j < cands.length; j++) if (COLUMNS[i] === cands[j]) return i;
+  for (var i = 0; i < COLUMNS.length; i++) for (var j = 0; j < cands.length; j++) if (String(COLUMNS[i]).indexOf(cands[j]) >= 0) return i;
+  return -1;
+}
+
+// ---------- 工事関連リストから候補件名を取得 ----------
+function fetchAllKouji() {
+  if (_koujiCache) return Promise.resolve(_koujiCache);
+  var siteId = (window.opener && window.opener.GRAPH_SITE_ID) || 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = (window.opener && window.opener.KOUJI_LIST_ID) || 'dea1de47-62cc-4216-afb3-7c313485eba4';
+  var sel = 'HakaName,Customers,ConstructionContents,category,ConstructionStartDate,ConstructionCompletionDate';
+  var url0 = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items?$top=999&$expand=fields($select=' + sel + ')';
+  var all = [];
+  function page(url, guard) {
+    return gfetch(url).then(function (j) {
+      (j.value || []).forEach(function (it) { if (it.fields) all.push(it.fields); });
+      var next = j['@odata.nextLink'];
+      if (next && guard < 12) return page(next, guard + 1);
+      return all;
+    });
+  }
+  return page(url0, 0).then(function (items) { _koujiCache = items; return items; });
+}
+function monthRange(ym) {
+  var p = ym.split('-'); var y = +p[0], m = +p[1];
+  return [Date.UTC(y, m - 1, 1), Date.UTC(y, m, 1) - 1];
+}
+function parseSpDate(v) {
+  if (!v) return null;
+  var m = String(v).match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  var p = Date.parse(v); return isNaN(p) ? null : p;
+}
+// 工事期間（開始〜完了）が選択月に重なるか
+function koujiInMonth(k, ym) {
+  var r = monthRange(ym);
+  var s = parseSpDate(k.ConstructionStartDate);
+  var e = parseSpDate(k.ConstructionCompletionDate);
+  if (s == null && e == null) return false;
+  if (s == null) s = e;
+  if (e == null) e = s;
+  return s <= r[1] && e >= r[0];
+}
+// 件名: ○○家(なければ顧客名) ＋ 工事内容(なければ分類)
+function koujiTitle(k) {
+  var n1 = (k.HakaName && String(k.HakaName).trim()) || (k.Customers && String(k.Customers).trim()) || '';
+  var n2 = (k.ConstructionContents && String(k.ConstructionContents).trim()) || (k.category && String(k.category).trim()) || '';
+  return (n1 + (n2 ? ' ' + n2 : '')).trim();
+}
+function populateKoujiSuggest() {
+  var sel = document.getElementById('kouji-suggest');
+  if (!sel || !monthFilter) return;
+  fetchAllKouji().then(function (items) {
+    var seen = {}, uniq = [];
+    items.forEach(function (k) {
+      if (!koujiInMonth(k, monthFilter)) return;
+      var t = koujiTitle(k);
+      if (t !== '' && !seen[t]) { seen[t] = 1; uniq.push(t); }
+    });
+    uniq.sort(function (a, b) { return a.localeCompare(b, 'ja'); });
+    var h = '<option value="">— ' + ymLabel(monthFilter) + ' の工事から選ぶ（' + uniq.length + '件）—</option>';
+    uniq.forEach(function (t) { h += '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>'; });
+    sel.innerHTML = h;
+  }).catch(function (e) {
+    sel.innerHTML = '<option value="">取得失敗: ' + escapeHtml(e.message) + '</option>';
+  });
+}
+function onKoujiPick(v) {
+  if (!v || titleColIndex < 0) return;
+  var inp = document.querySelector('#modal-fields input[data-ci="' + titleColIndex + '"]');
+  if (inp) inp.value = v;
+}
+function setAmount(n) {
+  if (amountColIndex < 0) return;
+  var inp = document.querySelector('#modal-fields input[data-ci="' + amountColIndex + '"]');
+  if (inp) inp.value = n;
+}
+function clearForm() { openForm(-1); }
 
 // ---------- 一覧描画 ----------
 function renderGai() {
@@ -374,6 +465,12 @@ function openForm(ri) {
   var row = (ri >= 0 && ROWS[ri]) ? ROWS[ri] : null;
   document.getElementById('modal-title').textContent = (ri >= 0) ? '編集' : '新規追加';
   var f = '';
+  // 新規かつ月選択中：その月に工事した工事案件から件名を選べるように
+  var showSuggest = (ri < 0 && monthFilter && titleColIndex >= 0);
+  if (showSuggest) {
+    f += '<div class="fld"><label>工事から選ぶ <span class="tag">（' + ymLabel(monthFilter) + ' に工事期間が重なる案件）</span></label>' +
+      '<select id="kouji-suggest" onchange="onKoujiPick(this.value)"><option value="">読み込み中…</option></select></div>';
+  }
   COLUMNS.forEach(function (col, ci) {
     if (isSysCol(col)) return; // __PowerAppsId__ 等は編集させない
     var isDate = (COLTYPE[ci] === 'date');
@@ -390,10 +487,18 @@ function openForm(ri) {
       else if (targetColIndex() === ci && filterValue) v = filterValue;
       input = '<input type="text" data-ci="' + ci + '" value="' + escapeHtml(v) + '">';
     }
+    // 委託料（金額）列には「1日/半日」クイックボタンを添える
+    if (ci === amountColIndex) {
+      input += '<div class="amt-quick">' +
+        '<button type="button" onclick="setAmount(25000)">1日 ¥25,000</button>' +
+        '<button type="button" onclick="setAmount(12500)">半日 ¥12,500</button>' +
+        '</div>';
+    }
     f += '<div class="fld"><label>' + escapeHtml(col) + ' ' + tag + '</label>' + input + '</div>';
   });
   document.getElementById('modal-fields').innerHTML = f;
   document.getElementById('modal').classList.add('show');
+  if (showSuggest) populateKoujiSuggest();
 }
 function closeForm() { document.getElementById('modal').classList.remove('show'); }
 
@@ -423,19 +528,26 @@ function collectForm() {
 }
 function saveForm() {
   var arr = collectForm();
+  var wasAdd = (editingIndex < 0);
   var btn = document.getElementById('modal-save');
   btn.disabled = true; btn.textContent = '保存中…';
   var op;
-  if (editingIndex >= 0) {
+  if (!wasAdd) {
     var idx = ROWS[editingIndex].index;
     op = resolveWorkbook().then(function () { return gfetch(tblUrl('/rows/itemAt(index=' + idx + ')'), { method: 'PATCH', body: { values: [arr] } }); });
   } else {
     op = resolveWorkbook().then(function () { return gfetch(tblUrl('/rows'), { method: 'POST', body: { index: null, values: [arr] } }); });
   }
   op.then(function () {
-    closeForm();
-    toast(editingIndex >= 0 ? '更新しました' : '追加しました');
-    loadGai();
+    if (wasAdd) {
+      // 連続登録のためフォームは閉じず、入力値も保持（日付だけ変えて再登録できる）
+      toast('追加しました（続けて登録できます。消すには「クリア」）');
+      loadGai();
+    } else {
+      closeForm();
+      toast('更新しました');
+      loadGai();
+    }
   }).catch(function (e) {
     toast('保存エラー: ' + e.message, true);
   }).then(function () {

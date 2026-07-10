@@ -533,25 +533,6 @@ function repopulateRefs() { populateKoujiSuggest(); populateNoukotsuSuggest(); p
 function clearForm() { openForm(-1); }
 
 // ---------- 請求書作成：対象者・月の明細を「◯◯請求書」シートの「◯◯」テーブルへコピー ----------
-// 指定テーブルの startIndex から count 行を、1行ずつ削除（毎回 startIndex を消せば順に上詰めされる）
-function deleteTableRows(tableName, startIndex, count) {
-  var enc = encodeURIComponent(tableName);
-  function step(remaining) {
-    if (remaining <= 0) return Promise.resolve();
-    return gfetch(WB.base + '/tables/' + enc + '/rows/itemAt(index=' + startIndex + ')/range?$select=address')
-      .then(function (r) {
-        var addr = r.address || '';
-        var bang = addr.lastIndexOf('!');
-        var sheet = bang >= 0 ? addr.substring(0, bang) : '';
-        var local = bang >= 0 ? addr.substring(bang + 1) : addr;
-        if (sheet.charAt(0) === "'" && sheet.charAt(sheet.length - 1) === "'") sheet = sheet.substring(1, sheet.length - 1).replace(/''/g, "'");
-        var sheetEsc = encodeURIComponent(sheet.replace(/'/g, "''"));
-        return gfetch(WB.base + "/worksheets('" + sheetEsc + "')/range(address='" + local + "')/delete", { method: 'POST', body: { shift: 'Up' } });
-      })
-      .then(function () { return step(remaining - 1); });
-  }
-  return step(count);
-}
 function makeInvoice() {
   var person = filterValue;
   var ym = monthFilter;
@@ -602,16 +583,25 @@ function makeInvoice() {
         throw new Error('__cancel__');
       }
       var enc = encodeURIComponent(tableName);
-      var oldCount = 0;
-      return gfetch(WB.base + '/tables/' + enc + '/dataBodyRange?$select=rowCount')
-        .then(function (rng) { oldCount = (rng && rng.rowCount) || 0; }, function () { oldCount = 0; })
+      var oldRange = null; // 追記前の既存データ範囲（後でまとめて1回で削除）
+      return gfetch(WB.base + '/tables/' + enc + '/dataBodyRange?$select=address,rowCount')
+        .then(function (rng) {
+          if (rng && rng.address && rng.rowCount > 0) {
+            var addr = rng.address, bang = addr.lastIndexOf('!');
+            var sheet = bang >= 0 ? addr.substring(0, bang) : '', local = bang >= 0 ? addr.substring(bang + 1) : addr;
+            if (sheet.charAt(0) === "'" && sheet.charAt(sheet.length - 1) === "'") sheet = sheet.substring(1, sheet.length - 1).replace(/''/g, "'");
+            oldRange = { sheet: sheet, local: local };
+          }
+        }, function () { oldRange = null; })
         .then(function () {
-          // ① 先に新規行を追記（失敗しても既存データは消えない）
+          // ① 先に新規行を追記（既存の下に付く。失敗しても既存は消えない）
           return gfetch(WB.base + '/tables/' + enc + '/rows', { method: 'POST', body: { index: null, values: values } });
         })
         .then(function () {
-          // ② 追記後、先頭にある古い行(oldCount件)を削除して置き換え
-          return deleteTableRows(tableName, 0, oldCount);
+          // ② 控えておいた古いデータ範囲を「1回で」まとめて削除（上詰め）
+          if (!oldRange) return null;
+          var sheetEsc = encodeURIComponent(oldRange.sheet.replace(/'/g, "''"));
+          return gfetch(WB.base + "/worksheets('" + sheetEsc + "')/range(address='" + oldRange.local + "')/delete", { method: 'POST', body: { shift: 'Up' } });
         })
         .then(function () { return values.length; });
     })

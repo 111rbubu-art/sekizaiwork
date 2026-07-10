@@ -21,6 +21,7 @@
   .dc-toggle.on { background: #1a2535; color: #fff; border-color: #1a2535; }
   .btn-excel { background: #0a6a3a; color: #fff; }
   .btn-add { background: #d97706; color: #fff; }
+  .btn-invoice { background: #6d28d9; color: #fff; }
   .btn-reload { background: #46536b; color: #fff; }
   .filter-box { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.12); padding: 4px 8px; border-radius: 8px; }
   .filter-box label { font-size: 12px; font-weight: 700; }
@@ -80,6 +81,7 @@
     <a id="open-excel" class="btn-excel" target="_blank" rel="noopener">📊 Excelを開いて編集</a>
     <button class="btn-reload" onclick="loadGai()">🔄 更新</button>
     <button class="btn-add" onclick="openForm(-1)">➕ 新規追加</button>
+    <button class="btn-invoice" onclick="makeInvoice()" title="選択中の対象者・月の明細を「◯◯請求書」シートの「◯◯」テーブルにコピー">🧾 請求書作成</button>
   </div>
   <div class="gai-bar2" id="date-controls"></div>
   <div id="content"><div class="msg"><span class="spinner"></span> 読み込み中…</div></div>
@@ -529,6 +531,84 @@ function onChokokuPick(sel) { if (!sel.value) return; _setTitle(sel.value); setA
 function repopulateRefs() { populateKoujiSuggest(); populateNoukotsuSuggest(); populateChokokuSuggest(); }
 
 function clearForm() { openForm(-1); }
+
+// ---------- 請求書作成：対象者・月の明細を「◯◯請求書」シートの「◯◯」テーブルへコピー ----------
+function clearTableBody(tableName) {
+  return gfetch(WB.base + '/tables/' + encodeURIComponent(tableName) + '/dataBodyRange?$select=address,rowCount')
+    .then(function (rng) {
+      if (!rng || !rng.address || rng.rowCount === 0) return null;
+      var addr = rng.address;
+      var bang = addr.lastIndexOf('!');
+      var sheet = bang >= 0 ? addr.substring(0, bang) : '';
+      var local = bang >= 0 ? addr.substring(bang + 1) : addr;
+      if (sheet.charAt(0) === "'" && sheet.charAt(sheet.length - 1) === "'") sheet = sheet.substring(1, sheet.length - 1).replace(/''/g, "'");
+      var sheetEsc = encodeURIComponent(sheet.replace(/'/g, "''"));
+      return gfetch(WB.base + "/worksheets('" + sheetEsc + "')/range(address='" + local + "')/delete", { method: 'POST', body: { shift: 'Up' } });
+    })
+    .catch(function () { return null; }); // データ行が無い等は無視
+}
+function makeInvoice() {
+  var person = filterValue;
+  var ym = monthFilter;
+  if (!person) { toast('先に上部で「対象者」を選択してください', true); return; }
+  if (!ym) { toast('先に「月」を選択してください', true); return; }
+  var tc = targetColIndex(), dc = dateColIndex;
+  if (dc < 0) { toast('日付列が見つかりません', true); return; }
+  // 対象者・対象月の明細を抽出（一覧の並び順に合わせる：日付昇順）
+  var src = [];
+  for (var i = 0; i < ROWS.length; i++) {
+    if (tc >= 0 && cellStr(ROWS[i], tc) !== person) continue;
+    var ms = rowDateMs(ROWS[i], dc);
+    if (ms == null || ymOf(ms) !== ym) continue;
+    src.push({ row: ROWS[i], ms: ms });
+  }
+  if (!src.length) { toast('該当する明細がありません（' + person + ' / ' + ymLabel(ym) + '）', true); return; }
+  src.sort(function (a, b) { return a.ms - b.ms; });
+
+  var tableName = person; // 例: 内田
+  resolveWorkbook()
+    .then(function () {
+      return gfetch(WB.base + '/tables/' + encodeURIComponent(tableName) + '/columns?$select=name,index&$top=200');
+    })
+    .then(function (colsResp) {
+      var tgtCols = (colsResp.value || []).slice().sort(function (a, b) { return a.index - b.index; }).map(function (c) { return c.name; });
+      if (!tgtCols.length) throw new Error('テーブル「' + tableName + '」の列が取得できませんでした');
+      // ターゲット列名 → GaiListsの列index（完全一致優先、無ければ包含一致）
+      function srcIndexFor(tn) {
+        for (var i = 0; i < COLUMNS.length; i++) if (COLUMNS[i] === tn) return i;
+        for (var i = 0; i < COLUMNS.length; i++) {
+          if (isSysCol(COLUMNS[i])) continue;
+          if (String(COLUMNS[i]).indexOf(tn) >= 0 || String(tn).indexOf(COLUMNS[i]) >= 0) return i;
+        }
+        return -1;
+      }
+      var map = tgtCols.map(srcIndexFor);
+      var values = src.map(function (o) {
+        return map.map(function (si, ti) {
+          if (tgtCols[ti] === '__PowerAppsId__') return genGuid();
+          if (si < 0) return '';
+          var v = o.row.values[si];
+          return (v == null) ? '' : v;
+        });
+      });
+      var matched = map.filter(function (x) { return x >= 0; }).length;
+      if (!confirm(person + ' の請求書（' + ymLabel(ym) + '）を作成します。\n\n・明細 ' + values.length + ' 件を「' + tableName + '」テーブルへ書き込みます\n・一致する列 ' + matched + ' / ' + tgtCols.length + '\n・テーブルの既存データは消去して置き換えます\n\nよろしいですか？')) {
+        throw new Error('__cancel__');
+      }
+      return clearTableBody(tableName).then(function () {
+        return gfetch(WB.base + '/tables/' + encodeURIComponent(tableName) + '/rows', { method: 'POST', body: { index: null, values: values } });
+      }).then(function () { return values.length; });
+    })
+    .then(function (n) {
+      toast(person + ' の請求書を作成しました（' + ymLabel(ym) + '・' + n + '件）');
+    })
+    .catch(function (e) {
+      if (e.message === '__cancel__') return;
+      var msg = e.message;
+      if (/ItemNotFound|not found|見つかり/i.test(msg)) msg = '「' + tableName + '」テーブルが見つかりません。Excelに「' + tableName + '請求書」シートと「' + tableName + '」という名前のテーブルがあるか確認してください。';
+      toast('請求書作成エラー: ' + msg, true);
+    });
+}
 
 // ---------- 一覧描画 ----------
 function renderGai() {

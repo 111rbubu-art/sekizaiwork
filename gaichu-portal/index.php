@@ -1,98 +1,182 @@
 <?php
 /*
- * 外注先向け 案件資料 閲覧ページ（さくらのレンタルサーバ / PHP）
- * -------------------------------------------------------------
- * このファイルを各外注先フォルダー（例: /gaichu/a-sha/）に置きます。
- * 同じフォルダーの中に「案件ごとのサブフォルダー」を作り、
- * その中に 地図/図面/写真 などのファイル（またはサブフォルダー）を入れます。
+ * 外注先ポータル（さくらのレンタルサーバ / PHP）— Phase 2 閲覧版
+ * ------------------------------------------------------------------
+ * 内部アプリ（index_b.html の「外注先へ公開」）から upload.php 経由で
+ * 送られてきた案件データ（cases/<id>/case.json ＋ 地図/図面/写真 …）を、
+ * スマホ向けUI（工事・納骨・彫刻タブ）で「閲覧のみ」表示します。
  *
- * 例:
- *   a-sha/
- *     index.php            ← このファイル
- *     .htaccess            ← パスワード（Basic認証）
- *     山田家墓石工事/
- *       info.txt           ← 任意（案件名・納期・メモ）
- *       地図/  *.jpg,pdf
- *       図面/  *.pdf
- *       写真/  *.jpg
+ * 置き場所（各外注先フォルダー = Basic認証をかけたフォルダー）:
+ *   yamada/
+ *     index.php        ← このファイル
+ *     upload.php       ← 受信スクリプト
+ *     .htaccess        ← パスワード（Basic認証）
+ *     .htsecret        ← アップロード合言葉（Apacheが .ht* を配信拒否）
+ *     cases/
+ *       k-123/  case.json  地図/  図面/  写真/
+ *       n-45/   case.json  資料/
+ *       c-45/   case.json  地図/  写真/
  *
- * info.txt の書式（任意・1行1項目）:
- *   案件名: 山田家 墓石工事
- *   納期: 2026/08/10
- *   メモ: 図面は最新版のみ参照してください
+ * case.json（すべて文字列。無い項目は省略可）:
+ *   { "type":"kouji|nok|chokoku", "temple":"光明院", "family":"小張家",
+ *     "titleExtra":"墓石建立", "category":"墓石工事", "status":"open|done",
+ *     "dateLabel":"納期", "date":"7/20", "sortDate":"2026-07-20",
+ *     "time":"10:00", "state":"式あり", "noteLabel":"彫刻箇所",
+ *     "note":"墓誌 3行目 …", "updated":"7/10" }
  */
 
 mb_internal_encoding('UTF-8');
-$BASE = __DIR__;
-$SELF = basename(__FILE__);
-$HIDE = array('.', '..', $SELF, '.htaccess', '.htpasswd', 'robots.txt', 'index.html', 'info.txt');
+$BASE      = __DIR__;
+$CASES_DIR = $BASE . '/cases';
+$IMG_EXT   = array('jpg','jpeg','png','gif','webp','bmp','heic','heif');
+// 資料グループの表示順（先頭ほど上に）
+$GROUP_ORDER = array('地図','図面','写真','資料');
 
-$IMG_EXT = array('jpg','jpeg','png','gif','webp','bmp','heic');
-
-function h($s){ return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
+function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 function urlseg($s){ return implode('/', array_map('rawurlencode', explode('/', $s))); }
 function ext_of($f){ return strtolower(pathinfo($f, PATHINFO_EXTENSION)); }
-function is_hidden($name){ return (substr($name,0,1) === '.'); }
+function is_hidden($n){ return substr($n,0,1) === '.'; }
 
-function parse_info($path){
-  $info = array();
-  if (is_file($path)) {
-    $lines = file($path, FILE_IGNORE_NEW_LINES);
-    if ($lines) foreach ($lines as $ln) {
-      if (preg_match('/^\s*([^:：]+)[:：]\s*(.*)$/u', $ln, $m)) {
-        $info[trim($m[1])] = trim($m[2]);
-      }
-    }
-  }
-  return $info;
-}
-
-// 案件（直下のサブフォルダー）を収集
-$jobs = array();
-$entries = scandir($BASE);
-if ($entries) foreach ($entries as $name) {
-  if (in_array($name, $HIDE) || is_hidden($name)) continue;
-  $full = $BASE . '/' . $name;
-  if (!is_dir($full)) continue;
-  $info = parse_info($full . '/info.txt');
-  $jobs[] = array(
-    'dir'      => $name,
-    'title'    => (isset($info['案件名']) && $info['案件名'] !== '') ? $info['案件名'] : $name,
-    'deadline' => isset($info['納期']) ? $info['納期'] : '',
-    'note'     => isset($info['メモ']) ? $info['メモ'] : '',
-    'path'     => $full,
-  );
-}
-
-// 納期の昇順（空は最後）
-usort($jobs, function($a, $b){
-  if ($a['deadline'] === '' && $b['deadline'] === '') return strcmp($a['title'], $b['title']);
-  if ($a['deadline'] === '') return 1;
-  if ($b['deadline'] === '') return -1;
-  return strcmp($a['deadline'], $b['deadline']);
-});
-
-// 案件内のファイルを「サブフォルダー名」でグループ化（直下ファイルは「資料」）
-function collect_groups($jobPath){
+// 1案件フォルダー内のファイルを「サブフォルダー名」でグループ化（直下ファイルは「資料」）
+function collect_groups($casePath, $caseId){
   $groups = array();
   $root = array();
-  $items = scandir($jobPath);
+  $items = @scandir($casePath);
   if ($items) foreach ($items as $n) {
-    if (in_array($n, array('.','..','info.txt')) || is_hidden($n)) continue;
-    $p = $jobPath . '/' . $n;
-    if (is_file($p)) { $root[] = $n; }
+    if (in_array($n, array('.','..','case.json'), true) || is_hidden($n)) continue;
+    $p = $casePath . '/' . $n;
+    if (is_file($p)) { $root[] = array('name'=>$n, 'rel'=>$n); }
     else if (is_dir($p)) {
       $sub = array();
-      $items2 = scandir($p);
+      $items2 = @scandir($p);
       if ($items2) foreach ($items2 as $n2) {
-        if (in_array($n2, array('.','..')) || is_hidden($n2)) continue;
-        if (is_file($p . '/' . $n2)) $sub[] = $n . '/' . $n2;
+        if (in_array($n2, array('.','..'), true) || is_hidden($n2)) continue;
+        if (is_file($p . '/' . $n2)) $sub[] = array('name'=>$n2, 'rel'=>$n.'/'.$n2);
       }
       if (count($sub)) $groups[$n] = $sub;
     }
   }
-  if (count($root)) $groups['資料'] = $root;
+  if (count($root)) $groups['資料'] = isset($groups['資料'])
+      ? array_merge($groups['資料'], $root) : $root;
   return $groups;
+}
+
+// 案件を収集
+$cases = array('kouji'=>array(), 'nok'=>array(), 'chokoku'=>array());
+if (is_dir($CASES_DIR)) {
+  $dirs = @scandir($CASES_DIR);
+  if ($dirs) foreach ($dirs as $d) {
+    if (in_array($d, array('.','..'), true) || is_hidden($d)) continue;
+    $cp = $CASES_DIR . '/' . $d;
+    if (!is_dir($cp)) continue;
+    $jsonPath = $cp . '/case.json';
+    if (!is_file($jsonPath)) continue;
+    $c = json_decode(file_get_contents($jsonPath), true);
+    if (!is_array($c)) continue;
+    $type = isset($c['type']) ? $c['type'] : 'kouji';
+    if (!isset($cases[$type])) $type = 'kouji';
+    $c['_id']     = $d;
+    $c['_groups'] = collect_groups($cp, $d);
+    $cases[$type][] = $c;
+  }
+}
+
+// 各タブ内を sortDate 昇順（空は最後）
+function sort_cases(&$arr){
+  usort($arr, function($a, $b){
+    $sa = isset($a['sortDate']) ? $a['sortDate'] : '';
+    $sb = isset($b['sortDate']) ? $b['sortDate'] : '';
+    if ($sa === '' && $sb === '') return 0;
+    if ($sa === '') return 1;
+    if ($sb === '') return -1;
+    return strcmp($sa, $sb);
+  });
+}
+foreach ($cases as $k => &$arr) sort_cases($arr);
+unset($arr);
+
+$total = count($cases['kouji']) + count($cases['nok']) + count($cases['chokoku']);
+
+// 環境変数 GAICHU_NAME があれば「○○ ログイン中」に使う（無ければ表示しない）
+$loginName = getenv('GAICHU_NAME');
+
+// ----- 1枚のカードを描画 -----
+function render_card($c, $GROUP_ORDER, $IMG_EXT){
+  $type   = isset($c['type']) ? $c['type'] : 'kouji';
+  $status = (isset($c['status']) && $c['status']==='done') ? 'done' : 'open';
+  $temple = isset($c['temple']) ? $c['temple'] : '';
+  $family = isset($c['family']) ? $c['family'] : '';
+  $extra  = isset($c['titleExtra']) ? $c['titleExtra'] : '';
+  $head   = trim($family . ($extra !== '' ? ' ' . $extra : ''));
+
+  echo '<article class="card" data-st="'.h($status).'">';
+  // ヘッダー（お寺名＋家名を同じ行）
+  echo '<div class="head"><h2>';
+  if ($temple !== '') echo '<span class="temple">'.h($temple).'</span>　';
+  echo h($head).'</h2>';
+  echo '<div class="chips">';
+  if (!empty($c['category'])) echo '<span class="chip">'.h($c['category']).'</span>';
+  if (!empty($c['state']))    echo '<span class="chip state">'.h($c['state']).'</span>';
+  echo '</div>';
+  // 日付行
+  echo '<div class="srow">';
+  if ($status === 'done') echo '<span class="pill done">完了</span>';
+  if (!empty($c['date'])) {
+    echo '<span class="due"><span class="tag">'.h(isset($c['dateLabel'])?$c['dateLabel']:'納期').'</span> ';
+    echo '<b class="tnum">'.h($c['date']).'</b>';
+    if (!empty($c['time'])) echo ' <b class="tnum">'.h($c['time']).'</b>';
+    echo '</span>';
+  }
+  echo '</div></div>';
+
+  // 彫刻箇所などのコメント
+  if (!empty($c['note'])) {
+    echo '<div class="note"><div class="nlbl">'.h(isset($c['noteLabel'])?$c['noteLabel']:'メモ').'</div>';
+    echo '<div class="ntxt">'.nl2br(h($c['note'])).'</div></div>';
+  }
+
+  // 資料（地図/図面/写真/資料）
+  $groups = isset($c['_groups']) ? $c['_groups'] : array();
+  if (count($groups)) {
+    // 表示順を整える
+    $ordered = array();
+    foreach ($GROUP_ORDER as $g) if (isset($groups[$g])) { $ordered[$g] = $groups[$g]; unset($groups[$g]); }
+    foreach ($groups as $g => $f) $ordered[$g] = $f; // 残り
+    echo '<div class="sec">';
+    foreach ($ordered as $gname => $files) {
+      $dot = ($gname==='地図')?'var(--map)':(($gname==='図面')?'var(--draw)':'var(--photo)');
+      echo '<div class="mgroup"><div class="mlabel"><span class="dot" style="background:'.$dot.'"></span>'.h($gname).'</div>';
+      // 画像とファイルを分けて描画
+      $imgs = array(); $docs = array();
+      foreach ($files as $f) { if (in_array(ext_of($f['name']), $IMG_EXT, true)) $imgs[]=$f; else $docs[]=$f; }
+      if (count($imgs)) {
+        echo '<div class="thumbs">';
+        foreach ($imgs as $f) {
+          $href = 'cases/'.urlseg($c['_id']).'/'.urlseg($f['rel']);
+          echo '<a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" '
+             . 'data-cap="'.h(pathinfo($f['name'], PATHINFO_FILENAME)).'" onclick="return openLightbox(this)"></a>';
+        }
+        echo '</div>';
+      }
+      if (count($docs)) {
+        echo '<div class="files">';
+        foreach ($docs as $f) {
+          $href = 'cases/'.urlseg($c['_id']).'/'.urlseg($f['rel']);
+          $ico = (ext_of($f['name'])==='pdf') ? '📄' : '📎';
+          echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">'
+             . '<span class="ico">'.$ico.'</span> '.h($f['name']).'</a>';
+        }
+        echo '</div>';
+      }
+      echo '</div>';
+    }
+    echo '</div>';
+  }
+
+  if (!empty($c['updated'])) {
+    echo '<div class="cardfoot"><span class="updated tnum">更新 '.h($c['updated']).'</span></div>';
+  }
+  echo '</article>';
 }
 ?>
 <!DOCTYPE html>
@@ -101,71 +185,145 @@ function collect_groups($jobPath){
 <meta charset="UTF-8">
 <meta name="robots" content="noindex,nofollow">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>案件資料</title>
+<title>外注ポータル — 庄司石材</title>
 <style>
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"Segoe UI","Hiragino Kaku Gothic ProN",Meiryo,sans-serif;color:#1a2535;background:#f0f2f5}
-  header{background:#1a2535;color:#fff;padding:14px 16px;position:sticky;top:0;z-index:5}
-  header h1{margin:0;font-size:17px}
-  header .sub{font-size:12px;color:rgba(255,255,255,.7);margin-top:2px}
-  main{max-width:1000px;margin:0 auto;padding:16px}
-  .job{background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:16px;overflow:hidden}
-  .job h2{margin:0;padding:12px 16px;font-size:16px;background:#eef1f5;border-bottom:1px solid #e2e5ea}
-  .meta{padding:8px 16px 0;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
-  .deadline{display:inline-block;background:#fff3e6;color:#b45309;border:1px solid #f0c992;border-radius:8px;padding:3px 10px;font-size:13px;font-weight:700}
-  .note{font-size:13px;color:#555}
-  .group{padding:10px 16px 4px}
-  .gname{font-size:13px;font-weight:700;color:#46536b;margin-bottom:8px;border-left:3px solid #d97706;padding-left:8px}
-  .files{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
-  .thumb{display:block;width:120px;height:120px;border-radius:8px;overflow:hidden;border:1px solid #ddd;background:#fafafa}
-  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
-  .file{display:inline-flex;align-items:center;gap:6px;padding:9px 12px;background:#f5f6f8;border:1px solid #dde1e7;border-radius:8px;font-size:13px;color:#1a2535;text-decoration:none;max-width:100%}
-  .file:hover,.thumb:hover{opacity:.85}
-  .empty{padding:14px 16px;color:#888;font-size:13px}
-  footer{max-width:1000px;margin:0 auto;padding:8px 16px 30px;color:#aaa;font-size:11px}
+  :root {
+    --ground:#f3f2ef; --surface:#fff; --surface-2:#faf9f7;
+    --ink:#1c1f26; --muted:#6c7078; --faint:#9a9ea6; --line:#e4e2dd;
+    --accent:#33507e; --accent-soft:#e9edf5;
+    --iron:#a83e30; --amber:#a86a12; --green:#3d7a54;
+    --map:#2f6f8f; --draw:#4a4c8a; --photo:#3f7d6b;
+    --shadow:0 1px 2px rgba(20,22,28,.06),0 4px 16px rgba(20,22,28,.05);
+    --serif:"Hiragino Mincho ProN","Yu Mincho","YuMincho","Noto Serif JP",serif;
+    --sans:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo",sans-serif;
+  }
+  @media (prefers-color-scheme: dark){ :root{
+    --ground:#101216; --surface:#191c22; --surface-2:#20242c; --ink:#eceef2; --muted:#9aa0ab; --faint:#71767f; --line:#2b3038;
+    --accent:#8ea8dd; --accent-soft:#232c3d; --iron:#d9776a; --amber:#d5a04e; --green:#6fb389;
+    --map:#6fb0cc; --draw:#9a9ce0; --photo:#74c2ab; --shadow:0 1px 2px rgba(0,0,0,.35),0 6px 20px rgba(0,0,0,.3); } }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .app { max-width:440px; margin:0 auto; min-height:100vh; background:var(--ground); box-shadow:0 0 40px rgba(0,0,0,.06); }
+  .pad { padding:0 14px 40px; }
+  h2 { font-family:var(--serif); font-weight:600; text-wrap:balance; }
+  .tnum { font-variant-numeric:tabular-nums; }
+
+  .topbar { position:sticky; top:0; z-index:20; background:color-mix(in srgb,var(--surface) 92%,transparent); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+  .topbar .row { padding:11px 14px; display:flex; align-items:center; gap:10px; }
+  .seal { width:32px; height:32px; border-radius:7px; background:var(--iron); color:#fff; font-family:var(--serif); font-size:17px; display:grid; place-items:center; box-shadow:inset 0 0 0 1px rgba(255,255,255,.18); flex-shrink:0; }
+  .brand b { font-family:var(--serif); font-size:16px; }
+  .login { margin-left:auto; font-size:13px; color:var(--muted); }
+  .login b { color:var(--ink); font-family:var(--serif); font-weight:600; }
+
+  .maintabs { display:flex; background:var(--surface); border-bottom:1px solid var(--line); position:sticky; top:54px; z-index:19; }
+  .maintab { flex:1; border:none; background:transparent; font-family:var(--serif); font-size:15px; color:var(--muted); padding:12px 4px; cursor:pointer; border-bottom:2.5px solid transparent; margin-bottom:-1px; }
+  .maintab.on { color:var(--ink); border-bottom-color:var(--accent); }
+  .maintab .n { font-family:var(--sans); font-size:11px; color:var(--faint); margin-left:4px; }
+
+  .toolbar { display:flex; align-items:center; gap:10px; padding:12px 0 6px; }
+  .seg { display:inline-flex; background:var(--surface); border:1px solid var(--line); border-radius:22px; padding:3px; }
+  .seg button { border:none; background:transparent; color:var(--muted); font-size:14px; font-weight:700; padding:8px 24px; border-radius:20px; cursor:pointer; font-family:var(--sans); }
+  .seg button.on { background:var(--accent); color:#fff; }
+
+  .jobs { display:flex; flex-direction:column; gap:14px; margin-top:6px; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
+  .card.fhide { display:none; }
+  .head { padding:13px 15px 12px; }
+  .temple { font-family:var(--serif); font-size:17px; font-weight:700; color:var(--accent); }
+  .head h2 { font-size:16px; margin:1px 0 8px; color:var(--ink); line-height:1.3; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .chip { font-size:11px; padding:2px 9px; border-radius:20px; background:var(--surface-2); border:1px solid var(--line); color:var(--muted); }
+  .chip.state { color:var(--iron); background:color-mix(in srgb,var(--iron) 10%,transparent); border-color:color-mix(in srgb,var(--iron) 30%,transparent); font-weight:700; }
+  .srow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .pill { font-size:11.5px; font-weight:700; padding:3px 11px; border-radius:20px; }
+  .pill.done { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
+  .due { font-size:12.5px; color:var(--muted); }
+  .due b { font-family:var(--serif); font-size:15px; color:var(--ink); }
+  .due .tag { font-size:11px; font-weight:700; }
+
+  .note { border-top:1px solid var(--line); padding:11px 15px; background:color-mix(in srgb,var(--amber) 8%,var(--surface)); }
+  .note .nlbl { font-size:10.5px; font-weight:700; letter-spacing:.08em; color:var(--amber); margin-bottom:2px; }
+  .note .ntxt { font-size:14px; font-family:var(--serif); }
+
+  .sec { border-top:1px solid var(--line); padding:12px 15px; }
+  .mgroup + .mgroup { margin-top:13px; }
+  .mlabel { font-size:11px; font-weight:700; letter-spacing:.08em; color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:7px; }
+  .dot { width:8px; height:8px; border-radius:3px; }
+  .files { display:flex; flex-wrap:wrap; gap:8px; }
+  .file { display:inline-flex; align-items:center; gap:7px; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:10px 13px; font-size:13.5px; color:var(--ink); text-decoration:none; }
+  .file:active { border-color:var(--accent); } .file .ico { font-size:16px; }
+  .thumbs { display:flex; flex-wrap:wrap; gap:8px; }
+  .thumb { width:88px; height:66px; border-radius:9px; border:1px solid var(--line); position:relative; overflow:hidden; background-size:cover; background-position:center; cursor:pointer; display:block; }
+  .thumb::after { content:attr(data-cap); position:absolute; left:0; right:0; bottom:0; font-size:10px; color:#fff; background:linear-gradient(transparent,rgba(0,0,0,.55)); padding:9px 6px 3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  .cardfoot { border-top:1px solid var(--line); background:var(--surface-2); padding:9px 15px; display:flex; align-items:center; gap:10px; }
+  .updated { margin-left:auto; font-size:11px; color:var(--faint); }
+  .empty { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:26px 16px; text-align:center; color:var(--muted); font-size:13.5px; margin-top:16px; box-shadow:var(--shadow); }
+  footer { text-align:center; color:var(--faint); font-size:11px; margin-top:22px; }
+  .hidden { display:none; }
+
+  #lightbox { display:none; position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.82); align-items:center; justify-content:center; padding:16px; }
+  #lightbox.show { display:flex; }
+  #lightbox .lb-img { width:100%; max-width:520px; aspect-ratio:4/3; border-radius:12px; background-size:contain; background-position:center; background-repeat:no-repeat; box-shadow:0 10px 40px rgba(0,0,0,.5); }
+  #lightbox .lb-cap { position:absolute; bottom:24px; color:#fff; font-size:13px; opacity:.85; }
+  @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
 </style>
 </head>
 <body>
-<header>
-  <h1>📁 案件資料</h1>
-  <div class="sub">閲覧のみ。ダウンロード・印刷は各ファイルから行えます。</div>
-</header>
-<main>
-<?php if (!count($jobs)): ?>
-  <div class="job"><div class="empty">現在、閲覧できる案件はありません。</div></div>
-<?php else: foreach ($jobs as $job):
-  $groups = collect_groups($job['path']);
-?>
-  <section class="job">
-    <h2><?php echo h($job['title']); ?></h2>
-    <?php if ($job['deadline'] !== '' || $job['note'] !== ''): ?>
-    <div class="meta">
-      <?php if ($job['deadline'] !== ''): ?><span class="deadline">納期 <?php echo h($job['deadline']); ?></span><?php endif; ?>
-      <?php if ($job['note'] !== ''): ?><span class="note"><?php echo h($job['note']); ?></span><?php endif; ?>
+<div class="app">
+  <div class="topbar">
+    <div class="row">
+      <div class="seal">庄</div>
+      <div class="brand"><b>庄司石材</b></div>
+      <?php if ($loginName): ?><div class="login"><b><?php echo h($loginName); ?></b> ログイン中</div><?php endif; ?>
     </div>
-    <?php endif; ?>
-    <?php if (!count($groups)): ?>
-      <div class="empty">（ファイルはまだありません）</div>
-    <?php else: foreach ($groups as $gname => $files): ?>
-      <div class="group">
-        <div class="gname"><?php echo h($gname); ?></div>
-        <div class="files">
-        <?php foreach ($files as $rel):
-          $href = urlseg($job['dir']) . '/' . urlseg($rel);
-          $ext = ext_of($rel);
-        ?>
-          <?php if (in_array($ext, $IMG_EXT)): ?>
-            <a class="thumb" href="<?php echo h($href); ?>" target="_blank" rel="noopener"><img loading="lazy" src="<?php echo h($href); ?>" alt=""></a>
-          <?php else: ?>
-            <a class="file" href="<?php echo h($href); ?>" target="_blank" rel="noopener"><?php echo ($ext==='pdf'?'📄':'📎'); ?> <?php echo h(basename($rel)); ?></a>
-          <?php endif; ?>
-        <?php endforeach; ?>
+    <div class="maintabs">
+      <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo count($cases['kouji']); ?></span></button>
+      <button class="maintab" data-t="nok" onclick="showTab('nok')">納骨 <span class="n tnum"><?php echo count($cases['nok']); ?></span></button>
+      <button class="maintab" data-t="chokoku" onclick="showTab('chokoku')">彫刻 <span class="n tnum"><?php echo count($cases['chokoku']); ?></span></button>
+    </div>
+  </div>
+
+  <div class="pad">
+    <div class="toolbar">
+      <div class="seg"><button class="on" data-f="open" onclick="setFilter('open')">未完</button><button data-f="done" onclick="setFilter('done')">完了</button></div>
+    </div>
+
+    <?php foreach (array('kouji','nok','chokoku') as $tab): ?>
+    <div id="list-<?php echo $tab; ?>"<?php echo $tab==='kouji'?'':' class="hidden"'; ?>>
+      <?php if (!count($cases[$tab])): ?>
+        <div class="empty">現在、この区分に公開されている案件はありません。</div>
+      <?php else: ?>
+        <div class="jobs">
+          <?php foreach ($cases[$tab] as $c) render_card($c, $GROUP_ORDER, $IMG_EXT); ?>
         </div>
-      </div>
-    <?php endforeach; endif; ?>
-  </section>
-<?php endforeach; endif; ?>
-</main>
-<footer>外注先専用 / 無断転載・第三者への共有はご遠慮ください。</footer>
+      <?php endif; ?>
+    </div>
+    <?php endforeach; ?>
+
+    <footer>庄司石材 外注ポータル — 閲覧専用</footer>
+  </div>
+</div>
+
+<div id="lightbox" onclick="this.classList.remove('show')"><div class="lb-img"></div><div class="lb-cap">タップで閉じる</div></div>
+
+<script>
+  function showTab(t){
+    document.querySelectorAll('.maintab').forEach(function(b){ b.classList.toggle('on', b.dataset.t===t); });
+    ['kouji','nok','chokoku'].forEach(function(k){ document.getElementById('list-'+k).classList.toggle('hidden', k!==t); });
+  }
+  function setFilter(s){
+    document.querySelectorAll('.seg button').forEach(function(b){ b.classList.toggle('on', b.dataset.f===s); });
+    document.querySelectorAll('.card').forEach(function(c){ c.classList.toggle('fhide', c.dataset.st!==s); });
+  }
+  function openLightbox(el){
+    var lb=document.getElementById('lightbox'); var img=lb.querySelector('.lb-img');
+    img.style.backgroundImage = el.style.backgroundImage || ('url('+el.getAttribute('href')+')');
+    lb.classList.add('show');
+    return false;
+  }
+  setFilter('open');
+</script>
 </body>
 </html>

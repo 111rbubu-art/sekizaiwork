@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.252';
+var APP_VERSION = 'v1.9.253';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16623,7 +16623,234 @@ function _setDetLinkbar(show) {
   if (!show) { el.style.display = 'none'; el.innerHTML = ''; return; }
   el.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 12px;background:#eef1f5;border-bottom:1px solid #e2e5ea';
   var st = 'padding:5px 12px;border-radius:14px;font-size:12px;font-weight:600;font-family:inherit;border:none;cursor:pointer;color:#fff;line-height:1.2';
-  el.innerHTML = '<span style="font-size:11px;font-weight:700;color:#8a94a6">リンク</span>' + detailLinkButtonsHtml(st);
+  el.innerHTML = '<span style="font-size:11px;font-weight:700;color:#8a94a6">リンク</span>' + detailLinkButtonsHtml(st) +
+    '<button onclick="openGaichuPublish()" title="この案件を外注先ポータルに公開／更新" style="' + st + ';background:#8a5a2b">🌐 外注公開</button>';
+}
+
+// ============================================================
+// 外注先ポータルへ公開（片方向Push・ファイルはピッカーで選択）
+// ============================================================
+var _gaichuFiles = [];
+function _gaichuEsc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _gaichuCfg(){ try { return JSON.parse(localStorage.getItem('gaichuCfg') || '{}') || {}; } catch(e){ return {}; } }
+function _gaichuSaveCfg(c){ try { localStorage.setItem('gaichuCfg', JSON.stringify(c)); } catch(e){} }
+function _gaichuEnsureCfg(){
+  var c = _gaichuCfg();
+  if (!c.url){ var u = prompt('外注ポータルの upload.php のURLを入力してください\n例: https://xxxx.sakura.ne.jp/gaichu/yamada/upload.php'); if(!u) return null; c.url = u.trim(); }
+  if (!c.secret){ var s = prompt('アップロード合言葉（さくらの .htsecret と同じ文字列）を入力してください'); if(!s) return null; c.secret = s.trim(); }
+  _gaichuSaveCfg(c); return c;
+}
+function _gaichuResetCfg(){ if(confirm('外注ポータルのURL・合言葉をこの端末から消去します。よろしいですか？')){ _gaichuSaveCfg({}); showSaveToast(true,'設定を消去しました'); } }
+
+function _gaichuMD(s){ if(!s) return ''; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? (parseInt(m[2],10)+'/'+parseInt(m[3],10)) : ''; }
+function _gaichuSortDate(s){ if(!s) return ''; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? (m[1]+'-'+m[2]+'-'+m[3]) : ''; }
+function _gaichuHM(s){ if(!s) return ''; var m=String(s).match(/[T ](\d{2}):(\d{2})/); return m ? (m[1]+':'+m[2]) : ''; }
+function _gaichuToday(){ var d=new Date(); return (d.getMonth()+1)+'/'+d.getDate(); }
+function _gaichuId(d, type){ var p = type==='kouji'?'k':(type==='nok'?'n':'c'); return p+'-'+(d['id']||d['ID']||''); }
+function _gaichuGuessGroup(name){
+  if(/地図|案内|map/i.test(name)) return '地図';
+  if(/図面|zumen|drawing|dwg|dxf/i.test(name)) return '図面';
+  if(/写真|photo|img|画像|jpg|jpeg|png|heic/i.test(name)) return '写真';
+  return '資料';
+}
+function _gaichuBuildCase(d, type){
+  var isK = (type==='kouji');
+  var temple = isK ? (d['Temples']||'') : (d['_x304a__x5bfa_']||'');
+  var haka   = isK ? (d['HakaName']||'') : (d['_x304a__x5893__x306e__x540d__x7f']||'');
+  var cus    = isK ? (d['Customers']||d['Title']||'') : (d['_x9867__x5ba2__x540d_']||d['Title']||'');
+  var family = (haka ? haka+'家' : '') || cus;
+  var c = { type:type, temple:temple, family:family, updated:_gaichuToday() };
+  if (type==='kouji'){
+    c.category   = d['category']||'';
+    c.titleExtra = d['ConstructionContents']||'';
+    c.dateLabel  = '納期';
+    c.date       = _gaichuMD(d['deadlines']);
+    c.sortDate   = _gaichuSortDate(d['deadlines']);
+    c.status     = d['ConstructionCompletionDate'] ? 'done' : 'open';
+  } else if (type==='nok'){
+    var nd = d['_x7d0d__x671f__xff08__x7d0d__x9a']||'';
+    c.category  = '納骨';
+    c.dateLabel = '納骨日';
+    c.date      = _gaichuMD(nd);
+    c.sortDate  = _gaichuSortDate(nd);
+    c.time      = _gaichuHM(nd);
+    c.state     = d['noukotu_kaisi_jyoutai']||'';
+    c.status    = 'open';
+  } else { // chokoku
+    var cd = d['CompletionDate']||'';
+    var nd2 = d['_x7d0d__x671f__xff08__x7d0d__x9a']||'';
+    c.category = '彫刻';
+    if (cd){ c.dateLabel='彫刻完了'; c.date=_gaichuMD(cd); c.sortDate=_gaichuSortDate(cd); c.status='done'; }
+    else   { c.dateLabel='納骨日';  c.date=_gaichuMD(nd2); c.sortDate=_gaichuSortDate(nd2); c.status='open'; }
+    var note=[d['chokokuBasho']||'', d['sekitouPos']||'', (d['sekitouLine']?('行数 '+d['sekitouLine']):''), d['sculpture']||''].filter(Boolean).join(' ／ ');
+    if (note){ c.noteLabel='彫刻箇所'; c.note=note; }
+  }
+  return c;
+}
+
+// ドキュメントライブラリのフォルダー配下を1階層まで収集
+function _gaichuListFolder(path, token){
+  var enc = path.split('/').map(encodeURIComponent).join('/');
+  var url = 'https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/children?$select=name,id,file,folder&$top=200';
+  return fetch(url,{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json();}).then(function(data){
+    var items=(data && data.value)||[]; var out=[]; var subJobs=[];
+    items.forEach(function(f){
+      if (f.file){ out.push({source:'drive', name:f.name, driveId:f.id, group:'資料'}); }
+      else if (f.folder){
+        var sub = path+'/'+f.name; var gname=f.name;
+        var senc = sub.split('/').map(encodeURIComponent).join('/');
+        subJobs.push(fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+senc+':/children?$select=name,id,file&$top=200',{headers:{Authorization:'Bearer '+token}})
+          .then(function(r){return r.json();}).then(function(sd){
+            ((sd&&sd.value)||[]).forEach(function(sf){ if(sf.file) out.push({source:'drive', name:sf.name, driveId:sf.id, group:gname}); });
+          }).catch(function(){}));
+      }
+    });
+    return Promise.all(subJobs).then(function(){ return out; });
+  });
+}
+function _gaichuLoadFiles(d, mode){
+  var out=[]; var jobs=[];
+  var folderPass = (mode==='kouji') ? (d['Folder_Pass']||'') : (d['FolderPass']||'');
+  if (folderPass){
+    jobs.push(getToken().then(function(r){ return _gaichuListFolder(folderPass, r.accessToken); })
+      .then(function(list){ out=out.concat(list); }).catch(function(){}));
+  }
+  var listTitle = (mode==='kouji') ? '工事関連' : '納骨・戒切';
+  var itemId = d['id'];
+  if (itemId){
+    jobs.push(msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()})
+      .then(function(resp){
+        var url="https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('"+listTitle+"')/items("+itemId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+        return fetch(url,{headers:{Authorization:'Bearer '+resp.accessToken, Accept:'application/json;odata=verbose'}});
+      }).then(function(r){return r.json();}).then(function(d2){
+        var files=(d2 && d2.d && d2.d.results)?d2.d.results:[];
+        files.forEach(function(f){ out.push({source:'sp', name:f.FileName||'', relUrl:f.ServerRelativeUrl||'', group:'添付'}); });
+      }).catch(function(){}));
+  }
+  return Promise.all(jobs).then(function(){ return out; });
+}
+function _gaichuFetchBlob(file, gTok, sTok){
+  if (file.source==='drive'){
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/items/'+file.driveId+'/content',{headers:{Authorization:'Bearer '+gTok}})
+      .then(function(r){ if(!r.ok) throw new Error('DL失敗 '+r.status); return r.blob(); });
+  }
+  return fetch('https://shojisekizai.sharepoint.com'+file.relUrl,{headers:{Authorization:'Bearer '+(sTok||'')}})
+    .then(function(r){ if(!r.ok) throw new Error('添付DL失敗 '+r.status); return r.blob(); });
+}
+
+function _gaichuBuildModal(){
+  var m=document.getElementById('gaichu-pub-modal');
+  if (m) return m;
+  m=document.createElement('div');
+  m.id='gaichu-pub-modal';
+  m.style.cssText='display:none;position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:16px';
+  m.innerHTML=
+    '<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)">'+
+      '<div style="padding:12px 16px;background:#8a5a2b;color:#fff;display:flex;align-items:center;gap:8px">'+
+        '<span style="font-size:14px;font-weight:700">🌐 外注先ポータルへ公開</span>'+
+        '<button onclick="document.getElementById(\'gaichu-pub-modal\').style.display=\'none\'" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:16px;font-family:inherit">✕</button>'+
+      '</div>'+
+      '<div style="padding:10px 16px;border-bottom:1px solid #eee;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<label style="font-size:12px;color:#555">区分 <select id="gp-type" style="font-size:13px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit"></select></label>'+
+        '<div id="gp-preview" style="flex:1;min-width:200px;font-size:12.5px;line-height:1.5"></div>'+
+      '</div>'+
+      '<div style="padding:8px 16px 4px;font-size:11px;color:#8a5a2b;background:#fdf6ee;border-bottom:1px solid #f0e3d2">外注先に<b>見せるファイルだけ</b>チェックしてください。区分（地図/図面/写真/資料）はポータルの見出しになります。</div>'+
+      '<div id="gp-files" style="flex:1;overflow-y:auto;padding:6px 16px;min-height:80px"></div>'+
+      '<div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+        '<button onclick="_gaichuResetCfg()" title="URL・合言葉を消去" style="font-size:11px;padding:8px 10px;background:#f2f2f2;color:#777;border:none;border-radius:8px;cursor:pointer;font-family:inherit">⚙ 設定</button>'+
+        '<button onclick="_gaichuUnpublish()" style="font-size:12px;padding:9px 12px;background:#fff;color:#c0392b;border:1px solid #e0b4ad;border-radius:8px;cursor:pointer;font-family:inherit">公開を外す</button>'+
+        '<button onclick="document.getElementById(\'gaichu-pub-modal\').style.display=\'none\'" style="margin-left:auto;font-size:13px;padding:10px 14px;background:#eee;color:#555;border:none;border-radius:8px;cursor:pointer;font-family:inherit">キャンセル</button>'+
+        '<button onclick="_gaichuDoPublish()" style="font-size:13px;padding:10px 18px;background:#8a5a2b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:700">🌐 公開する</button>'+
+      '</div>'+
+    '</div>';
+  m.addEventListener('click', function(e){ if(e.target===m) m.style.display='none'; });
+  document.body.appendChild(m);
+  return m;
+}
+function _gaichuRefreshPreview(){
+  var d=currentItem; if(!d) return;
+  var type=document.getElementById('gp-type').value;
+  var c=_gaichuBuildCase(d,type);
+  var el=document.getElementById('gp-preview');
+  el.innerHTML='<b>'+_gaichuEsc(c.temple)+'　'+_gaichuEsc(c.family)+(c.titleExtra?' '+_gaichuEsc(c.titleExtra):'')+'</b>'+
+    '<br><span style="color:#666">'+_gaichuEsc(c.category||'')+'／'+_gaichuEsc(c.dateLabel||'')+' '+_gaichuEsc(c.date||'—')+(c.time?' '+_gaichuEsc(c.time):'')+(c.state?'／'+_gaichuEsc(c.state):'')+'</span>'+
+    (c.note?'<br><span style="color:#a86a12">彫刻箇所: '+_gaichuEsc(c.note)+'</span>':'')+
+    '<br><span style="color:#999;font-size:11px">ID: '+_gaichuEsc(_gaichuId(d,type))+' ／ 状態: '+(c.status==='done'?'完了':'未完')+'</span>';
+}
+function openGaichuPublish(){
+  var d=currentItem;
+  if(!d){ showSaveToast(false,'レコードが選択されていません'); return; }
+  var mode=(currentListMode==='kouji')?'kouji':'noukotsu';
+  _gaichuBuildModal();
+  document.getElementById('gaichu-pub-modal').style.display='flex';
+  var typeSel=document.getElementById('gp-type');
+  typeSel.innerHTML = (mode==='kouji')
+    ? '<option value="kouji">工事</option>'
+    : '<option value="nok">納骨</option><option value="chokoku">彫刻</option>';
+  typeSel.onchange=_gaichuRefreshPreview;
+  _gaichuRefreshPreview();
+  var fl=document.getElementById('gp-files');
+  fl.innerHTML='<div style="color:#888;font-size:12px;padding:8px">ファイル読み込み中...</div>';
+  _gaichuFiles=[];
+  _gaichuLoadFiles(d,mode).then(function(list){
+    _gaichuFiles=list;
+    if(!list.length){ fl.innerHTML='<div style="color:#888;font-size:12px;padding:8px">送信できるファイルが見つかりませんでした（ドキュメントライブラリ・添付なし）。項目だけを公開できます。</div>'; return; }
+    fl.innerHTML=list.map(function(f,i){
+      var g=(f.group==='添付')?'添付':_gaichuGuessGroup(f.group+' '+f.name);
+      var opts=['地図','図面','写真','資料','添付'].map(function(o){ return '<option'+(o===g?' selected':'')+'>'+o+'</option>'; }).join('');
+      return '<label class="gp-row" style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #eee">'+
+        '<input type="checkbox" class="gp-chk" value="'+i+'" checked>'+
+        '<span style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+_gaichuEsc(f.name)+'">'+_gaichuEsc(f.name)+'</span>'+
+        '<select class="gp-grp" style="font-size:11px;padding:3px 4px;border:1px solid #ccc;border-radius:5px;font-family:inherit">'+opts+'</select>'+
+      '</label>';
+    }).join('');
+  }).catch(function(e){ fl.innerHTML='<div style="color:#c00;font-size:12px;padding:8px">読込エラー: '+_gaichuEsc(e.message||e)+'</div>'; });
+}
+function _gaichuDoPublish(){
+  var d=currentItem; if(!d) return;
+  var cfg=_gaichuEnsureCfg(); if(!cfg) return;
+  var type=document.getElementById('gp-type').value;
+  var caseObj=_gaichuBuildCase(d,type);
+  var id=_gaichuId(d,type);
+  var chosen=[];
+  document.querySelectorAll('#gp-files .gp-row').forEach(function(row){
+    var cb=row.querySelector('.gp-chk');
+    if(cb && cb.checked) chosen.push({ idx:parseInt(cb.value,10), group:(row.querySelector('.gp-grp')||{}).value||'資料' });
+  });
+  showSaveToast(null,'外注ポータルへ送信中...');
+  Promise.all([
+    getToken(),
+    msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).catch(function(){return null;})
+  ]).then(function(toks){
+    var gTok=toks[0].accessToken; var sTok=toks[1]?toks[1].accessToken:null;
+    return Promise.all(chosen.map(function(x){
+      var f=_gaichuFiles[x.idx];
+      return _gaichuFetchBlob(f,gTok,sTok).then(function(b){ return {blob:b,name:f.name,group:x.group}; });
+    }));
+  }).then(function(withBlobs){
+    var fd=new FormData();
+    fd.append('secret',cfg.secret); fd.append('action','push'); fd.append('id',id);
+    fd.append('case',JSON.stringify(caseObj));
+    withBlobs.forEach(function(x){ fd.append('files[]', x.blob, x.name); fd.append('paths[]', x.group+'/'+x.name); });
+    return fetch(cfg.url,{method:'POST',body:fd});
+  }).then(function(r){ return r.json().catch(function(){ throw new Error('サーバ応答が不正（HTTP '+r.status+'）'); }); })
+  .then(function(res){
+    if(res && res.ok){ showSaveToast(true,'公開しました（送信 '+(res.saved||0)+' 件'+((res.skipped&&res.skipped.length)?' / スキップ '+res.skipped.length:'')+'）'); document.getElementById('gaichu-pub-modal').style.display='none'; }
+    else { showSaveToast(false,'公開失敗: '+((res&&res.error)||'不明')); }
+  }).catch(function(e){ showSaveToast(false,'公開失敗: '+(e.message||e)); });
+}
+function _gaichuUnpublish(){
+  var d=currentItem; if(!d) return;
+  var cfg=_gaichuEnsureCfg(); if(!cfg) return;
+  var type=document.getElementById('gp-type').value;
+  if(!confirm('この案件を外注ポータルから削除します（公開を外す）。よろしいですか？')) return;
+  showSaveToast(null,'削除中...');
+  var fd=new FormData();
+  fd.append('secret',cfg.secret); fd.append('action','unpublish'); fd.append('id',_gaichuId(d,type));
+  fetch(cfg.url,{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+    if(res && res.ok){ showSaveToast(true,'公開を外しました'); document.getElementById('gaichu-pub-modal').style.display='none'; }
+    else { showSaveToast(false,'削除失敗: '+((res&&res.error)||'不明')); }
+  }).catch(function(e){ showSaveToast(false,'削除失敗: '+(e.message||e)); });
 }
 // ボタン群をラベル付きの枠で囲む（詳細ページの「機能」「リンク」グループ分け用）
 function _btnGroup(label, innerHtml) {

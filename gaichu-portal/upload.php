@@ -124,7 +124,12 @@ if (!is_dir($CASES_DIR) && !@mkdir($CASES_DIR, 0755, true)) fail('cannot create 
 
 // いったん全消し → 作り直し（片方向なので毎回まるごと差し替え）
 rrmdir($caseDir);
-if (!@mkdir($caseDir, 0755, true)) fail('cannot create case dir', 500);
+clearstatcache();
+if (!is_dir($caseDir)) @mkdir($caseDir, 0755, true);
+clearstatcache();
+if (!is_dir($caseDir)) fail('cannot create case dir', 500);
+// 削除が一部残っていても再公開できるよう、中身を空にする
+foreach (glob($caseDir.'/*') as $g) { is_dir($g) ? rrmdir($g) : @unlink($g); }
 
 // case.json 書き込み
 file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_UNICODE));

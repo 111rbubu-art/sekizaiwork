@@ -87,19 +87,6 @@ function rrmdir($dir){
   @rmdir($dir);
 }
 
-// ---- unpublish: 案件フォルダーを削除（公開を外す）----
-if ($action === 'unpublish') {
-  rrmdir($caseDir);
-  out(array('ok'=>true, 'unpublished'=>$id));
-}
-
-// ---- push: 案件を作成・差し替え ----
-if ($action !== 'push') fail('unknown action');
-
-$caseJson = isset($_POST['case']) ? $_POST['case'] : '';
-$caseData = json_decode($caseJson, true);
-if (!is_array($caseData)) fail('invalid case json');
-
 // 許可する拡張子（実行系は拒否）
 $ALLOW_EXT = array('jpg','jpeg','png','gif','webp','bmp','heic','heif','pdf','txt','csv',
                    'doc','docx','xls','xlsx','ppt','pptx','dwg','dxf');
@@ -119,6 +106,39 @@ function safe_relpath($rel){
   }
   return $parts; // 配列（最後がファイル名）
 }
+
+// ---- unpublish: 案件フォルダーを削除（公開を外す）----
+if ($action === 'unpublish') {
+  rrmdir($caseDir);
+  out(array('ok'=>true, 'unpublished'=>$id));
+}
+
+// ---- addfile: 既存の案件フォルダーへ1ファイル追加（大きい工事写真対策・分割送信）----
+if ($action === 'addfile') {
+  if (!is_dir($caseDir)) fail('case not initialized (push first)');
+  if (!isset($_FILES['file']) || !isset($_FILES['file']['error']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK
+      || !is_uploaded_file($_FILES['file']['tmp_name'])) {
+    $e = isset($_FILES['file']['error']) ? $_FILES['file']['error'] : 'no file';
+    fail('upload error: '.$e); // 1=ini上限, 2=フォーム上限, 3=一部, 4=無し …
+  }
+  $rel  = (isset($_POST['path']) && $_POST['path'] !== '') ? $_POST['path'] : $_FILES['file']['name'];
+  $segs = safe_relpath($rel);
+  if (!count($segs)) fail('invalid path');
+  $fname = array_pop($segs);
+  $ext = strtolower(pathinfo($fname, PATHINFO_EXTENSION));
+  if (!in_array($ext, $ALLOW_EXT, true)) fail('extension not allowed: '.$ext);
+  $destDir = $caseDir . (count($segs) ? '/'.implode('/', $segs) : '');
+  if (!is_dir($destDir) && !@mkdir($destDir, 0755, true)) fail('cannot create dir', 500);
+  if (!@move_uploaded_file($_FILES['file']['tmp_name'], $destDir.'/'.$fname)) fail('cannot save file', 500);
+  out(array('ok'=>true, 'saved'=>$fname));
+}
+
+// ---- push: 案件を作成・差し替え（case.json＋任意でまとめてファイル）----
+if ($action !== 'push') fail('unknown action');
+
+$caseJson = isset($_POST['case']) ? $_POST['case'] : '';
+$caseData = json_decode($caseJson, true);
+if (!is_array($caseData)) fail('invalid case json');
 
 if (!is_dir($CASES_DIR) && !@mkdir($CASES_DIR, 0755, true)) fail('cannot create cases dir', 500);
 

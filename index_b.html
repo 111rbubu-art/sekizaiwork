@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.254';
+var APP_VERSION = 'v1.9.255';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16756,11 +16756,12 @@ function _gaichuBuildModal(){
       '</div>'+
       '<div style="padding:8px 16px 4px;font-size:11px;color:#8a5a2b;background:#fdf6ee;border-bottom:1px solid #f0e3d2">外注先に<b>見せるファイルだけ</b>チェックしてください。区分（地図/図面/写真/資料）はポータルの見出しになります。</div>'+
       '<div id="gp-files" style="flex:1;overflow-y:auto;padding:6px 16px;min-height:80px"></div>'+
+      '<div id="gp-status" style="display:none;padding:9px 16px;font-size:12.5px;border-top:1px solid #eee;background:#fbfaf8;line-height:1.5"></div>'+
       '<div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
         '<button onclick="_gaichuResetCfg()" title="URL・合言葉を消去" style="font-size:11px;padding:8px 10px;background:#f2f2f2;color:#777;border:none;border-radius:8px;cursor:pointer;font-family:inherit">⚙ 設定</button>'+
         '<button onclick="_gaichuUnpublish()" style="font-size:12px;padding:9px 12px;background:#fff;color:#c0392b;border:1px solid #e0b4ad;border-radius:8px;cursor:pointer;font-family:inherit">公開を外す</button>'+
-        '<button onclick="document.getElementById(\'gaichu-pub-modal\').style.display=\'none\'" style="margin-left:auto;font-size:13px;padding:10px 14px;background:#eee;color:#555;border:none;border-radius:8px;cursor:pointer;font-family:inherit">キャンセル</button>'+
-        '<button onclick="_gaichuDoPublish()" style="font-size:13px;padding:10px 18px;background:#8a5a2b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:700">🌐 公開する</button>'+
+        '<button onclick="document.getElementById(\'gaichu-pub-modal\').style.display=\'none\'" style="margin-left:auto;font-size:13px;padding:10px 14px;background:#eee;color:#555;border:none;border-radius:8px;cursor:pointer;font-family:inherit">閉じる</button>'+
+        '<button id="gp-go" onclick="_gaichuDoPublish()" style="font-size:13px;padding:10px 18px;background:#8a5a2b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:700">🌐 公開する</button>'+
       '</div>'+
     '</div>';
   m.addEventListener('click', function(e){ if(e.target===m) m.style.display='none'; });
@@ -16806,6 +16807,23 @@ function openGaichuPublish(){
     }).join('');
   }).catch(function(e){ fl.innerHTML='<div style="color:#c00;font-size:12px;padding:8px">読込エラー: '+_gaichuEsc(e.message||e)+'</div>'; });
 }
+function _gaichuSetStatus(msg, kind){
+  var el=document.getElementById('gp-status'); if(!el) return;
+  el.style.display='block';
+  el.style.color = (kind==='err') ? '#c0392b' : (kind==='ok' ? '#2e7d32' : '#555');
+  el.style.fontWeight = (kind==='ok'||kind==='err') ? '700' : '400';
+  el.textContent = msg;
+}
+// 1リクエスト送信 → 解析済みJSON（失敗時も {ok:false,error,_status} を返す）
+function _gaichuPost(url, fd){
+  return fetch(url,{method:'POST',body:fd}).then(function(r){
+    return r.text().then(function(t){
+      var j=null; try{ j=JSON.parse(t); }catch(e){}
+      if(!j) j={ ok:false, error:('HTTP '+r.status+' '+String(t||'').replace(/<[^>]*>/g,'').trim().substring(0,120)) };
+      j._status=r.status; return j;
+    });
+  });
+}
 function _gaichuDoPublish(){
   var d=currentItem; if(!d) return;
   var cfg=_gaichuEnsureCfg(); if(!cfg) return;
@@ -16817,42 +16835,59 @@ function _gaichuDoPublish(){
     var cb=row.querySelector('.gp-chk');
     if(cb && cb.checked) chosen.push({ idx:parseInt(cb.value,10), group:(row.querySelector('.gp-grp')||{}).value||'資料' });
   });
-  showSaveToast(null,'外注ポータルへ送信中...');
-  Promise.all([
-    getToken(),
-    msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).catch(function(){return null;})
-  ]).then(function(toks){
-    var gTok=toks[0].accessToken; var sTok=toks[1]?toks[1].accessToken:null;
-    return Promise.all(chosen.map(function(x){
-      var f=_gaichuFiles[x.idx];
-      return _gaichuFetchBlob(f,gTok,sTok).then(function(b){ return {blob:b,name:f.name,group:x.group}; });
-    }));
-  }).then(function(withBlobs){
-    var fd=new FormData();
-    fd.append('secret',cfg.secret); fd.append('action','push'); fd.append('id',id);
-    fd.append('case',JSON.stringify(caseObj));
-    withBlobs.forEach(function(x){ fd.append('files[]', x.blob, x.name); fd.append('paths[]', x.group+'/'+x.name); });
-    return fetch(cfg.url,{method:'POST',body:fd});
-  }).then(function(r){ return r.text().then(function(t){ return {status:r.status, text:t}; }); })
-  .then(function(o){
-    var res=null; try{ res=JSON.parse(o.text); }catch(e){}
-    if(res && res.ok){ showSaveToast(true,'公開しました（送信 '+(res.saved||0)+' 件'+((res.skipped&&res.skipped.length)?' / スキップ '+res.skipped.length:'')+'）'); document.getElementById('gaichu-pub-modal').style.display='none'; }
-    else if(res && res.error){ showSaveToast(false,'公開失敗: '+res.error+'（HTTP '+o.status+'）'); }
-    else { showSaveToast(false,'公開失敗: HTTP '+o.status+' '+String(o.text||'').replace(/<[^>]*>/g,'').trim().substring(0,140)); }
-  }).catch(function(e){ showSaveToast(false,'公開失敗(通信): '+(e.message||e)); });
+  var goBtn=document.getElementById('gp-go'); if(goBtn) goBtn.disabled=true;
+  _gaichuSetStatus('項目を送信中...','');
+  // Step1: case.json だけ push（フォルダを作り直し）
+  var fd0=new FormData();
+  fd0.append('secret',cfg.secret); fd0.append('action','push'); fd0.append('id',id); fd0.append('case',JSON.stringify(caseObj));
+  _gaichuPost(cfg.url, fd0).then(function(res){
+    if(!(res && res.ok)) throw new Error('項目送信に失敗: '+((res&&res.error)||'不明'));
+    if(!chosen.length) return { okCount:0, total:0, failNames:[] };
+    // Step2: トークン取得 → 1ファイルずつ addfile
+    return Promise.all([
+      getToken(),
+      msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).catch(function(){return null;})
+    ]).then(function(toks){
+      var gTok=toks[0].accessToken; var sTok=toks[1]?toks[1].accessToken:null;
+      var okCount=0, failNames=[];
+      function step(i){
+        if(i>=chosen.length) return { okCount:okCount, total:chosen.length, failNames:failNames };
+        var x=chosen[i]; var f=_gaichuFiles[x.idx];
+        _gaichuSetStatus('ファイル送信中 '+(i+1)+'/'+chosen.length+'：'+f.name,'');
+        return _gaichuFetchBlob(f,gTok,sTok).then(function(b){
+          var fd=new FormData();
+          fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id);
+          fd.append('path', x.group+'/'+f.name); fd.append('file', b, f.name);
+          return _gaichuPost(cfg.url, fd);
+        }).then(function(r){ if(r && r.ok) okCount++; else failNames.push(f.name+'（'+((r&&r.error)||'失敗')+'）'); return step(i+1); })
+          .catch(function(e){ failNames.push(f.name+'（'+(e.message||e)+'）'); return step(i+1); });
+      }
+      return step(0);
+    });
+  }).then(function(sum){
+    var okAll = (sum.failNames.length===0);
+    var msg='公開'+(okAll?'完了':'（一部失敗）')+'：ファイル '+sum.okCount+'/'+sum.total+' 件送信';
+    if(sum.failNames.length) msg += '\n失敗: '+sum.failNames.join(' ／ ');
+    _gaichuSetStatus(msg, okAll?'ok':'err');
+    showSaveToast(true,'外注ポータルに公開しました（'+sum.okCount+'件）');
+    if(okAll) setTimeout(function(){ var m=document.getElementById('gaichu-pub-modal'); if(m) m.style.display='none'; }, 1400);
+  }).catch(function(e){
+    _gaichuSetStatus('公開失敗: '+(e.message||e), 'err');
+    showSaveToast(false,'公開に失敗しました');
+  }).then(function(){ var b=document.getElementById('gp-go'); if(b) b.disabled=false; });
 }
 function _gaichuUnpublish(){
   var d=currentItem; if(!d) return;
   var cfg=_gaichuEnsureCfg(); if(!cfg) return;
   var type=document.getElementById('gp-type').value;
   if(!confirm('この案件を外注ポータルから削除します（公開を外す）。よろしいですか？')) return;
-  showSaveToast(null,'削除中...');
+  _gaichuSetStatus('公開を外しています...','');
   var fd=new FormData();
   fd.append('secret',cfg.secret); fd.append('action','unpublish'); fd.append('id',_gaichuId(d,type));
-  fetch(cfg.url,{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
-    if(res && res.ok){ showSaveToast(true,'公開を外しました'); document.getElementById('gaichu-pub-modal').style.display='none'; }
-    else { showSaveToast(false,'削除失敗: '+((res&&res.error)||'不明')); }
-  }).catch(function(e){ showSaveToast(false,'削除失敗: '+(e.message||e)); });
+  _gaichuPost(cfg.url,fd).then(function(res){
+    if(res && res.ok){ _gaichuSetStatus('公開を外しました','ok'); showSaveToast(true,'公開を外しました'); setTimeout(function(){ var m=document.getElementById('gaichu-pub-modal'); if(m) m.style.display='none'; },1200); }
+    else { _gaichuSetStatus('削除失敗: '+((res&&res.error)||'不明'),'err'); }
+  }).catch(function(e){ _gaichuSetStatus('削除失敗: '+(e.message||e),'err'); });
 }
 // ボタン群をラベル付きの枠で囲む（詳細ページの「機能」「リンク」グループ分け用）
 function _btnGroup(label, innerHtml) {

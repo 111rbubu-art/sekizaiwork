@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>3, 'actions'=>array('push','addfile','updatecase','status','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>4, 'actions'=>array('push','addfile','updatecase','delfile','status','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -162,6 +162,24 @@ if ($action === 'updatecase') {
   if (!is_array($caseData)) fail('invalid case json');
   file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_UNICODE));
   out(array('ok'=>true, 'updated'=>$id));
+}
+
+// ---- delfile: 公開中の案件から1ファイルだけ削除（写真の取り下げ等）----
+if ($action === 'delfile') {
+  if (!is_dir($caseDir)) fail('case not found');
+  $rel  = isset($_POST['path']) ? $_POST['path'] : '';
+  $segs = safe_relpath($rel);
+  if (!count($segs)) fail('invalid path');
+  $target = $caseDir . '/' . implode('/', $segs);
+  if (!is_file($target)) fail('file not found');
+  @unlink($target);
+  // 空になったサブフォルダーを掃除
+  $sub = dirname($target);
+  if ($sub !== $caseDir && is_dir($sub)) {
+    $rest = array_diff(scandir($sub), array('.','..'));
+    if (count($rest) === 0) @rmdir($sub);
+  }
+  out(array('ok'=>true, 'deleted'=>$rel, 'files'=>list_case_files($caseDir)));
 }
 
 // ---- push: 案件を作成・差し替え（case.json＋任意でまとめてファイル）----

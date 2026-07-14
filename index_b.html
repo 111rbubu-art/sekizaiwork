@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.267';
+var APP_VERSION = 'v1.9.268';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16635,24 +16635,26 @@ function _gaichuUpdateBtn(){
   var types=(mode==='kouji')?['kouji']:['nok','chokoku'];
   var labelOf={kouji:'工事',nok:'納骨',chokoku:'彫刻'};
   var refId=(d['id']||d['ID']);
-  var pub=[]; var names={};
+  var pub=[]; var names={}; var byType={};
   var checks=types.map(function(type){
     var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','status'); fd.append('id',_gaichuId(d,type));
     return _gaichuPost(cfg.url,fd).then(function(res){
-      if(res && res.ok && res.published){ pub.push(labelOf[type]); (res.files||[]).forEach(function(p){ names[_gaichuBase(p)]=true; }); }
+      if(res && res.ok && res.published){ pub.push(labelOf[type]); byType[type]={}; (res.files||[]).forEach(function(p){ var b=_gaichuBase(p); names[b]=true; byType[type][b]=true; }); }
     }).catch(function(){});
   });
   Promise.all(checks).then(function(){
     if(!currentItem || (currentItem['id']||currentItem['ID'])!==refId) return; // 別レコードに切替済みなら無視
-    _gaichuPubNames=names; _gaichuMarkPublished();
+    _gaichuPubNames=names; _gaichuPubFiles=byType; _gaichuPubTypes=Object.keys(byType); _gaichuMarkPublished();
     var b=document.getElementById('gaichu-pub-btn');
     if(!b) return;
     if(pub.length){ b.style.background='#2e7d32'; b.innerHTML='🌐 公開中（'+pub.join('・')+'）'; }
     else { b.style.background='#8a5a2b'; b.innerHTML='🌐 外注公開'; }
   });
 }
-// 公開済みファイル名キャッシュ（現在の案件・区分横断）と、DOMへの「✅公開済」バッジ後付け
+// 公開状態キャッシュ：names=区分横断の公開ファイル名（バッジ用）／PubTypes=公開中の区分／PubFiles=区分別の公開ファイル名
 var _gaichuPubNames = {};
+var _gaichuPubTypes = [];
+var _gaichuPubFiles = {};
 function _gaichuBase(p){ p=String(p||''); var i=p.lastIndexOf('/'); return i>=0 ? p.substring(i+1) : p; }
 function _gaichuMarkPublished(){
   // データタブの各⋯ボタン（onclick の2番目のクオート引数がファイル名）を走査してバッジを付与
@@ -17034,100 +17036,56 @@ function _gaichuDelFile(btn){
     else { _gaichuSetStatus('削除失敗: '+((res&&res.error)||'不明'),'err'); }
   }).catch(function(e){ _gaichuSetStatus('削除失敗: '+(e.message||e),'err'); });
 }
-// データタブの…メニュー用：単一ファイルを即公開
-// 選んだ区分に追加し、さらに「その案件で既に公開中の別区分」にも同じファイルを追加（未公開の区分は作らない）
-function _gaichuQuickPublish(type, fileName, src){
-  var d=currentItem; if(!d){ showSaveToast(false,'レコードが選択されていません'); return; }
+// …メニュー用：公開中の区分だけ、そのファイルの「追加/取消」を出す（案件の公開自体は作らない）
+function _gaichuMenuPubItems(fname, mode, src){
+  var base=_gaichuBase(fname);
+  var candidateTypes=(mode==='kouji')?['kouji']:['nok','chokoku'];
+  var lbl={kouji:'工事',nok:'納骨',chokoku:'彫刻'};
+  var items=[];
+  candidateTypes.forEach(function(t){
+    if(_gaichuPubTypes.indexOf(t)<0) return; // その区分が未公開ならメニューに出さない
+    var inThis=_gaichuPubFiles[t] && _gaichuPubFiles[t][base];
+    if(inThis) items.push(['🗑', lbl[t]+'から取消', function(){ _hideFolderMenu(); _gaichuFileToType('del', t, fname); }]);
+    else items.push(['🌐', lbl[t]+'に公開', function(){ _hideFolderMenu(); _gaichuFileToType('add', t, fname, src); }]);
+  });
+  return items; // 公開中の区分が無ければ空（＝ファイルメニューに公開項目は出ない）
+}
+// 指定区分に対して、そのファイルだけを追加/削除（案件の公開作成はしない）
+function _gaichuFileToType(op, type, fileName, src){
+  var d=currentItem; if(!d) return;
   var cfg=_gaichuEnsureCfg(); if(!cfg) return;
+  var id=_gaichuId(d,type); var base=_gaichuBase(fileName);
+  var label=type==='kouji'?'工事':type==='nok'?'納骨':'彫刻';
+  if(op==='del'){
+    showSaveToast(null,label+'から取消中: '+fileName);
+    var sfd=new FormData(); sfd.append('secret',cfg.secret); sfd.append('action','status'); sfd.append('id',id);
+    _gaichuPost(cfg.url,sfd).then(function(res){
+      if(!(res&&res.ok&&res.published)){ showSaveToast(false,label+'は未公開です'); return; }
+      var matches=(res.files||[]).filter(function(p){ return _gaichuBase(p)===base; });
+      if(!matches.length){ showSaveToast(false,'該当ファイルが見つかりません'); _gaichuUpdateBtn(); return; }
+      return Promise.all(matches.map(function(p){ var dfd=new FormData(); dfd.append('secret',cfg.secret); dfd.append('action','delfile'); dfd.append('id',id); dfd.append('path',p); return _gaichuPost(cfg.url,dfd); }))
+        .then(function(rs){ var n=rs.filter(function(r){return r&&r.ok;}).length; showSaveToast(n>0, n>0?(label+'から取消しました: '+fileName):'取消失敗'); _gaichuUpdateBtn(); });
+    }).catch(function(e){ showSaveToast(false,'取消失敗: '+(e.message||e)); });
+    return;
+  }
+  // add：その区分が公開中である前提で addfile のみ（push=公開作成はしない）
   var mode=(currentListMode==='kouji')?'kouji':'noukotsu';
-  var lbl=function(t){ return t==='kouji'?'工事':t==='nok'?'納骨':'彫刻'; };
-  showSaveToast(null,'外注公開中: '+fileName);
-  // 取得元：src指定（フォルダービュー等）があればそれを直接使う。無ければ候補一覧から名前一致
-  var pickFile = src
-    ? Promise.resolve({file:src, group:src.group||_gaichuGuessGroup(fileName)})
-    : _gaichuLoadFiles(d,mode).then(function(list){
-        var f=null; for(var i=0;i<list.length;i++){ if(list[i].name===fileName){ f=list[i]; break; } }
-        if(!f) throw new Error('候補にファイルが見つかりません');
-        return {file:f, group:(f.group==='添付')?'添付':_gaichuGuessGroup(f.group+' '+f.name)};
-      });
+  showSaveToast(null,label+'に公開中: '+fileName);
+  var pickFile = src ? Promise.resolve({file:src, group:src.group||_gaichuGuessGroup(fileName)})
+    : _gaichuLoadFiles(d,mode).then(function(list){ var f=null; for(var i=0;i<list.length;i++){ if(list[i].name===fileName){f=list[i];break;} } if(!f) throw new Error('候補にファイルが見つかりません'); return {file:f, group:(f.group==='添付')?'添付':_gaichuGuessGroup(f.group+' '+f.name)}; });
   pickFile.then(function(sel){
-    return Promise.all([
-      getToken(),
-      msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).catch(function(){return null;})
-    ]).then(function(toks){
+    return Promise.all([getToken(), msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).catch(function(){return null;})]).then(function(toks){
       var gTok=toks[0].accessToken; var sTok=toks[1]?toks[1].accessToken:null;
       return _gaichuFetchBlob(sel.file,gTok,sTok).then(function(blob){ return {blob:blob, group:sel.group}; });
     });
   }).then(function(fb){
-    var done=[], skipped=[];
-    function addTo(t, createIfMissing){
-      var id=_gaichuId(d,t), caseObj=_gaichuBuildCase(d,t);
-      function doAdd(){
-        var fd=new FormData();
-        fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id);
-        fd.append('path', fb.group+'/'+fileName); fd.append('file', fb.blob, fileName);
-        return _gaichuPost(cfg.url,fd);
-      }
-      return doAdd().then(function(r){
-        if(r && r.ok){ done.push(t); return; }
-        if(r && /not initialized/i.test(r.error||'')){
-          if(!createIfMissing){ skipped.push(t); return; } // 兄弟が未公開なら作らずスキップ
-          var fd0=new FormData(); fd0.append('secret',cfg.secret); fd0.append('action','push'); fd0.append('id',id); fd0.append('case',JSON.stringify(caseObj));
-          return _gaichuPost(cfg.url,fd0).then(function(pr){ if(!(pr&&pr.ok)) throw new Error((pr&&pr.error)||'項目作成に失敗');
-            return doAdd().then(function(r2){ if(r2&&r2.ok) done.push(t); else throw new Error((r2&&r2.error)||'送信失敗'); }); });
-        }
-        throw new Error((r&&r.error)||'送信失敗');
-      });
-    }
-    // 選んだ区分は必ず処理（無ければ作る）。納骨/彫刻の兄弟は既公開なら同期・失敗しても全体は止めない
-    var seq=addTo(type, true);
-    if(mode==='noukotsu'){
-      var sib=(type==='nok'?'chokoku':'nok');
-      seq=seq.then(function(){ return addTo(sib, false).catch(function(){ skipped.push(sib); }); });
-    }
-    return seq.then(function(){ return {done:done, skipped:skipped}; });
-  }).then(function(res){
-    showSaveToast(true,'外注公開: '+(res.done.map(lbl).join('・')||'—')+' に追加'+(res.skipped.length?'（'+res.skipped.map(lbl).join('・')+'は未公開のためスキップ）':''));
-    _gaichuPubNames[_gaichuBase(fileName)]=true; _gaichuMarkPublished(); _gaichuUpdateBtn();
+    var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id); fd.append('path',fb.group+'/'+fileName); fd.append('file',fb.blob,fileName);
+    return _gaichuPost(cfg.url,fd);
+  }).then(function(r){
+    if(r&&r.ok){ showSaveToast(true,label+'に公開しました: '+fileName); _gaichuUpdateBtn(); }
+    else if(r&&/not initialized/i.test(r.error||'')){ showSaveToast(false,label+'は未公開です。先に案件を「🌐 外注公開」してください'); }
+    else { showSaveToast(false,'公開失敗: '+((r&&r.error)||'不明')); }
   }).catch(function(e){ showSaveToast(false,'公開失敗: '+(e.message||e)); });
-}
-// …メニュー用：公開済みなら「取消」、未公開なら区分別の「公開」を返す（src=直接取得元・省略可）
-function _gaichuMenuPubItems(fname, mode, src){
-  if(_gaichuPubNames[_gaichuBase(fname)]){
-    return [['🗑','外注公開を取消',function(){ _hideFolderMenu(); _gaichuUnpublishFile(fname); }]];
-  }
-  if(mode==='kouji') return [['🌐','外注公開',function(){ _hideFolderMenu(); _gaichuQuickPublish('kouji',fname,src); }]];
-  return [
-    ['🌐','外注公開（納骨）',function(){ _hideFolderMenu(); _gaichuQuickPublish('nok',fname,src); }],
-    ['🌐','外注公開（彫刻）',function(){ _hideFolderMenu(); _gaichuQuickPublish('chokoku',fname,src); }]
-  ];
-}
-// 公開済みファイルを、この案件の公開中の全区分から削除（取消）
-function _gaichuUnpublishFile(fileName){
-  var d=currentItem; if(!d) return;
-  var cfg=_gaichuEnsureCfg(); if(!cfg) return;
-  var mode=(currentListMode==='kouji')?'kouji':'noukotsu';
-  var types=(mode==='kouji')?['kouji']:['nok','chokoku'];
-  var base=_gaichuBase(fileName);
-  showSaveToast(null,'外注公開を取消中: '+fileName);
-  var jobs=types.map(function(t){
-    var id=_gaichuId(d,t);
-    var sfd=new FormData(); sfd.append('secret',cfg.secret); sfd.append('action','status'); sfd.append('id',id);
-    return _gaichuPost(cfg.url,sfd).then(function(res){
-      if(!(res&&res.ok&&res.published)) return 0;
-      var matches=(res.files||[]).filter(function(p){ return _gaichuBase(p)===base; });
-      return Promise.all(matches.map(function(p){
-        var dfd=new FormData(); dfd.append('secret',cfg.secret); dfd.append('action','delfile'); dfd.append('id',id); dfd.append('path',p);
-        return _gaichuPost(cfg.url,dfd);
-      })).then(function(rs){ return rs.filter(function(r){return r&&r.ok;}).length; });
-    }).catch(function(){ return 0; });
-  });
-  Promise.all(jobs).then(function(counts){
-    var n=counts.reduce(function(a,b){return a+b;},0);
-    if(n>0){ delete _gaichuPubNames[base]; showSaveToast(true,'外注公開を取消しました（'+n+'件）: '+fileName); }
-    else { showSaveToast(false,'取消対象が見つかりませんでした'); }
-    _gaichuMarkPublished(); _gaichuUpdateBtn();
-  });
 }
 // 項目（case.json）だけ更新（ファイルは触らない）
 function _gaichuUpdateOnly(){

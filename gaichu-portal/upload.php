@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>2, 'actions'=>array('push','addfile','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>3, 'actions'=>array('push','addfile','updatecase','status','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -87,6 +87,18 @@ function rrmdir($dir){
     is_dir($p) ? rrmdir($p) : @unlink($p);
   }
   @rmdir($dir);
+}
+// 案件フォルダー内のファイル相対パス一覧（case.json除く）
+function list_case_files($dir, $base=''){
+  $out = array();
+  if (!is_dir($dir)) return $out;
+  foreach (scandir($dir) as $f) {
+    if ($f === '.' || $f === '..' || $f === 'case.json' || substr($f,0,1)==='.') continue;
+    $p = $dir.'/'.$f; $rel = ($base==='') ? $f : $base.'/'.$f;
+    if (is_dir($p)) $out = array_merge($out, list_case_files($p, $rel));
+    else $out[] = $rel;
+  }
+  return $out;
 }
 
 // 許可する拡張子（実行系は拒否）
@@ -133,6 +145,23 @@ if ($action === 'addfile') {
   if (!is_dir($destDir) && !@mkdir($destDir, 0755, true)) fail('cannot create dir', 500);
   if (!@move_uploaded_file($_FILES['file']['tmp_name'], $destDir.'/'.$fname)) fail('cannot save file', 500);
   out(array('ok'=>true, 'saved'=>$fname));
+}
+
+// ---- status: この案件の登録状況（公開中か／case.json／ファイル一覧）----
+if ($action === 'status') {
+  if (!is_dir($caseDir)) out(array('ok'=>true, 'published'=>false));
+  $c = json_decode(@file_get_contents($caseDir.'/case.json'), true);
+  out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null), 'files'=>list_case_files($caseDir)));
+}
+
+// ---- updatecase: 既存案件の case.json だけ差し替え（ファイルは触らない）----
+if ($action === 'updatecase') {
+  if (!is_dir($caseDir)) out(array('ok'=>true, 'notPublished'=>true));
+  $caseJson = isset($_POST['case']) ? $_POST['case'] : '';
+  $caseData = json_decode($caseJson, true);
+  if (!is_array($caseData)) fail('invalid case json');
+  file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_UNICODE));
+  out(array('ok'=>true, 'updated'=>$id));
 }
 
 // ---- push: 案件を作成・差し替え（case.json＋任意でまとめてファイル）----

@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>4, 'actions'=>array('push','addfile','updatecase','delfile','status','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>5, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -152,6 +152,23 @@ if ($action === 'status') {
   if (!is_dir($caseDir)) out(array('ok'=>true, 'published'=>false));
   $c = json_decode(@file_get_contents($caseDir.'/case.json'), true);
   out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null), 'files'=>list_case_files($caseDir)));
+}
+
+// ---- getfile: 合言葉付きでファイル本体を返す（アプリのサムネ表示用）----
+if ($action === 'getfile') {
+  if (!is_dir($caseDir)) fail('case not found', 404);
+  $rel  = isset($_POST['path']) ? $_POST['path'] : '';
+  $segs = safe_relpath($rel);
+  if (!count($segs)) fail('invalid path');
+  $target = $caseDir . '/' . implode('/', $segs);
+  if (!is_file($target)) fail('file not found', 404);
+  $ext = strtolower(pathinfo($target, PATHINFO_EXTENSION));
+  $types = array('jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif',
+                 'webp'=>'image/webp','bmp'=>'image/bmp','heic'=>'image/heic','heif'=>'image/heif','pdf'=>'application/pdf');
+  header('Content-Type: '.(isset($types[$ext]) ? $types[$ext] : 'application/octet-stream'));
+  header('Content-Length: '.filesize($target));
+  readfile($target);
+  exit;
 }
 
 // ---- updatecase: 既存案件の case.json だけ差し替え（ファイルは触らない）----

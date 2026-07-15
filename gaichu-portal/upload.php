@@ -93,7 +93,7 @@ function list_case_files($dir, $base=''){
   $out = array();
   if (!is_dir($dir)) return $out;
   foreach (scandir($dir) as $f) {
-    if ($f === '.' || $f === '..' || $f === 'case.json' || substr($f,0,1)==='.') continue;
+    if ($f === '.' || $f === '..' || $f === 'case.json' || $f === 'comments.json' || substr($f,0,1)==='.') continue;
     $p = $dir.'/'.$f; $rel = ($base==='') ? $f : $base.'/'.$f;
     if (is_dir($p)) $out = array_merge($out, list_case_files($p, $rel));
     else $out[] = $rel;
@@ -151,7 +151,9 @@ if ($action === 'addfile') {
 if ($action === 'status') {
   if (!is_dir($caseDir)) out(array('ok'=>true, 'published'=>false));
   $c = json_decode(@file_get_contents($caseDir.'/case.json'), true);
-  out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null), 'files'=>list_case_files($caseDir)));
+  $cm = is_file($caseDir.'/comments.json') ? json_decode(file_get_contents($caseDir.'/comments.json'), true) : array();
+  out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null),
+            'files'=>list_case_files($caseDir), 'comments'=>(is_array($cm)?$cm:array())));
 }
 
 // ---- getfile: 合言葉付きでファイル本体を返す（アプリのサムネ表示用）----

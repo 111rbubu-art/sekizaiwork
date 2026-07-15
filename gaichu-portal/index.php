@@ -231,11 +231,14 @@ function render_report($id, $files, $comments, $IMG_EXT){
   }
   echo '</div>';
   echo '<div class="clist">';
-  foreach ($comments as $cm) {
+  foreach ($comments as $i => $cm) {
     $nm = isset($cm['name']) ? $cm['name'] : '';
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
-    echo '<div class="cmt"><div class="cmeta"><b>'.h($nm).'</b> <span>'.h($at).'</span></div><p>'.nl2br(h($tx)).'</p></div>';
+    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><b>'.h($nm).'</b> <span>'.h($at).'</span>'
+       . '<span class="cact"><button onclick="repEditComment(\''.h($id).'\','.$i.')" title="編集">✏</button>'
+       . '<button onclick="repDelComment(\''.h($id).'\','.$i.')" title="削除">🗑</button></span></div>'
+       . '<p>'.nl2br(h($tx)).'</p></div>';
   }
   echo '</div>';
   echo '<div class="radd">'
@@ -355,6 +358,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
   .cmt .cmeta { display:flex; gap:8px; align-items:baseline; font-size:11px; }
   .cmt .cmeta b { font-size:12px; } .cmt .cmeta span { color:var(--faint); }
+  .cmt .cact { margin-left:auto; display:flex; gap:4px; }
+  .cmt .cact button { background:transparent; border:none; cursor:pointer; font-size:12px; padding:1px 4px; opacity:.6; }
+  .cmt .cact button:hover { opacity:1; }
   .cmt p { margin:3px 0 0; font-size:13px; white-space:pre-wrap; }
   .radd { display:flex; gap:7px; align-items:center; margin-top:8px; }
   .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
@@ -421,12 +427,6 @@ function render_report($id, $files, $comments, $IMG_EXT){
   setFilter('open');
 
   // ===== 外注先からの報告 =====
-  window.GP_NAME = <?php echo json_encode($loginName ? $loginName : '', JSON_UNESCAPED_UNICODE); ?>;
-  function repName(){
-    var n = localStorage.getItem('gpPoster') || window.GP_NAME || '';
-    if(!n){ n = (prompt('お名前（報告の投稿者名）を入力してください') || '').trim(); if(n) localStorage.setItem('gpPoster', n); }
-    return n || '外注先';
-  }
   function _esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function repRefresh(id){
     var fd=new FormData(); fd.append('action','list'); fd.append('case',id);
@@ -439,24 +439,42 @@ function render_report($id, $files, $comments, $IMG_EXT){
         if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
         return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
       }).join('');
-      cl.innerHTML=(res.comments||[]).map(function(cm){
-        return '<div class="cmt"><div class="cmeta"><b>'+_esc(cm.name)+'</b> <span>'+_esc(cm.at)+'</span></div><p>'+_esc(cm.text)+'</p></div>';
+      cl.innerHTML=(res.comments||[]).map(function(cm,i){
+        return '<div class="cmt" data-idx="'+i+'"><div class="cmeta"><b>'+_esc(cm.name)+'</b> <span>'+_esc(cm.at)+'</span>'+
+          '<span class="cact"><button onclick="repEditComment(\''+id+'\','+i+')" title="編集">✏</button>'+
+          '<button onclick="repDelComment(\''+id+'\','+i+')" title="削除">🗑</button></span></div><p>'+_esc(cm.text)+'</p></div>';
       }).join('');
     }).catch(function(){});
   }
   function repComment(id){
     var inp=document.getElementById('rc-'+id); var t=(inp.value||'').trim(); if(!t) return;
-    var fd=new FormData(); fd.append('action','comment'); fd.append('case',id); fd.append('name',repName()); fd.append('text',t);
+    var fd=new FormData(); fd.append('action','comment'); fd.append('case',id); fd.append('text',t);
     fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
       if(res&&res.ok){ inp.value=''; repRefresh(id); } else alert('送信失敗: '+((res&&res.error)||''));
     }).catch(function(){ alert('送信に失敗しました'); });
   }
+  function repEditComment(id, idx){
+    var box=document.querySelector('.report[data-case="'+id+'"] .cmt[data-idx="'+idx+'"] p');
+    var cur=box?box.textContent:'';
+    var t=prompt('コメントを編集', cur); if(t===null) return; t=t.trim(); if(!t) return;
+    var fd=new FormData(); fd.append('action','editcomment'); fd.append('case',id); fd.append('idx',idx); fd.append('text',t);
+    fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(res&&res.ok) repRefresh(id); else alert('編集失敗: '+((res&&res.error)||''));
+    }).catch(function(){ alert('編集に失敗しました'); });
+  }
+  function repDelComment(id, idx){
+    if(!confirm('このコメントを削除しますか？')) return;
+    var fd=new FormData(); fd.append('action','delcomment'); fd.append('case',id); fd.append('idx',idx);
+    fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(res&&res.ok) repRefresh(id); else alert('削除失敗: '+((res&&res.error)||''));
+    }).catch(function(){ alert('削除に失敗しました'); });
+  }
   function repUpload(inp, id){
-    var files=inp.files; if(!files||!files.length) return; var name=repName(); var arr=Array.prototype.slice.call(files); var i=0;
+    var files=inp.files; if(!files||!files.length) return; var arr=Array.prototype.slice.call(files); var i=0;
     (function next(){
       if(i>=arr.length){ inp.value=''; repRefresh(id); return; }
       var f=arr[i++]; if(!/^image\//.test(f.type)){ next(); return; }
-      var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('name',name); fd.append('file',f,f.name);
+      var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('file',f,f.name);
       fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(){ next(); }).catch(function(){ next(); });
     })();
   }

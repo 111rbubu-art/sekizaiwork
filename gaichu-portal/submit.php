@@ -31,6 +31,8 @@ $ALLOW_EXT = array_merge($IMG_EXT, array('pdf'));
 
 function valid_case($id){ return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $id); }
 function safe_name($s){ $s = str_replace(array("\0","/","\\","..",'"',"'"), '', $s); return trim(preg_replace('/\s+/u',' ',$s)); }
+// 投稿者名は自動決定（入力不要）：環境変数 GAICHU_NAME →無ければ外注先フォルダー名
+function poster_name(){ $n = getenv('GAICHU_NAME'); if ($n !== false && $n !== '') return safe_name($n); return safe_name(basename(__DIR__)); }
 
 function list_report($caseDir, $IMG_EXT){
   $dir = $caseDir . '/報告'; $out = array();
@@ -64,15 +66,38 @@ if ($action === 'list') {
   out(array('ok'=>true, 'photos'=>list_report($caseDir,$IMG_EXT), 'comments'=>load_comments($caseDir)));
 }
 
-// ---- comment ----
+// ---- comment（追記）----
 if ($action === 'comment') {
-  $name = safe_name(isset($_POST['name']) ? $_POST['name'] : '');
   $text = trim(isset($_POST['text']) ? $_POST['text'] : '');
   if ($text === '') fail('empty text');
   if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
   $c = load_comments($caseDir);
-  $c[] = array('name'=>($name!==''?$name:'外注先'), 'at'=>date('Y-m-d H:i'), 'text'=>$text);
+  $c[] = array('name'=>poster_name(), 'at'=>date('Y-m-d H:i'), 'text'=>$text);
   file_put_contents($caseDir.'/comments.json', json_encode($c, JSON_UNESCAPED_UNICODE));
+  out(array('ok'=>true));
+}
+
+// ---- editcomment（外注先が自分のコメントを修正）----
+if ($action === 'editcomment') {
+  $idx  = isset($_POST['idx']) ? intval($_POST['idx']) : -1;
+  $text = trim(isset($_POST['text']) ? $_POST['text'] : '');
+  $c = load_comments($caseDir);
+  if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  if ($text === '') fail('empty text');
+  if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
+  $c[$idx]['text'] = $text;
+  $c[$idx]['at']   = date('Y-m-d H:i') . '（編集）';
+  file_put_contents($caseDir.'/comments.json', json_encode($c, JSON_UNESCAPED_UNICODE));
+  out(array('ok'=>true));
+}
+
+// ---- delcomment（コメント削除）----
+if ($action === 'delcomment') {
+  $idx = isset($_POST['idx']) ? intval($_POST['idx']) : -1;
+  $c = load_comments($caseDir);
+  if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  array_splice($c, $idx, 1);
+  file_put_contents($caseDir.'/comments.json', json_encode(array_values($c), JSON_UNESCAPED_UNICODE));
   out(array('ok'=>true));
 }
 
@@ -85,7 +110,7 @@ if ($action === 'upload') {
   $orig = $_FILES['file']['name'];
   $ext  = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
   if (!in_array($ext, $ALLOW_EXT, true)) fail('extension not allowed: '.$ext);
-  $name = safe_name(isset($_POST['name']) ? $_POST['name'] : ''); if ($name==='') $name='外注先';
+  $name = poster_name(); // 元のファイル名は使わず、外注先名＋日付＋連番で命名
   $repDir = $caseDir.'/報告';
   if (!is_dir($repDir) && !@mkdir($repDir, 0755, true)) fail('cannot create 報告 dir', 500);
   // ファイル名：<名前>_<YYYYMMDD>_<2桁連番>

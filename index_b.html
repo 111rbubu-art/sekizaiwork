@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.273';
+var APP_VERSION = 'v1.9.274';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16639,11 +16639,18 @@ function _gaichuUpdateBtn(){
   var types=(mode==='kouji')?['kouji']:['nok','chokoku'];
   var labelOf={kouji:'工事',nok:'納骨',chokoku:'彫刻'};
   var refId=(d['id']||d['ID']);
-  var pub=[]; var names={}; var byType={};
+  var pub=[]; var names={}; var byType={}; var newAny=false;
   var checks=types.map(function(type){
-    var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','status'); fd.append('id',_gaichuId(d,type));
+    var tid=_gaichuId(d,type);
+    var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','status'); fd.append('id',tid);
     return _gaichuPost(cfg.url,fd).then(function(res){
-      if(res && res.ok && res.published){ pub.push(labelOf[type]); byType[type]={}; (res.files||[]).forEach(function(p){ var b=_gaichuBase(p); names[b]=true; byType[type][b]=true; }); }
+      if(res && res.ok && res.published){
+        pub.push(labelOf[type]); byType[type]={};
+        (res.files||[]).forEach(function(p){ var b=_gaichuBase(p); names[b]=true; byType[type][b]=true; });
+        // 報告（報告/写真＋コメント）が既読数より多ければ新着
+        var rep=(res.files||[]).filter(function(p){return p.indexOf('報告/')===0;}).length + (Array.isArray(res.comments)?res.comments.length:0);
+        if(rep>0 && rep > _gaichuSeenCount(tid)) newAny=true;
+      }
     }).catch(function(){});
   });
   Promise.all(checks).then(function(){
@@ -16651,7 +16658,8 @@ function _gaichuUpdateBtn(){
     _gaichuPubNames=names; _gaichuPubFiles=byType; _gaichuPubTypes=Object.keys(byType); _gaichuMarkPublished();
     var b=document.getElementById('gaichu-pub-btn');
     if(!b) return;
-    if(pub.length){ b.style.background='#2e7d32'; b.innerHTML='🌐 公開中（'+pub.join('・')+'）'; }
+    var nb = newAny ? ' <span style="background:#e53935;color:#fff;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700">🆕報告</span>' : '';
+    if(pub.length){ b.style.background='#2e7d32'; b.innerHTML='🌐 公開中（'+pub.join('・')+'）'+nb; }
     else { b.style.background='#8a5a2b'; b.innerHTML='🌐 外注公開'; }
   });
 }
@@ -16659,6 +16667,10 @@ function _gaichuUpdateBtn(){
 var _gaichuPubNames = {};
 var _gaichuPubTypes = [];
 var _gaichuPubFiles = {};
+// 報告の既読管理（端末ごと）：区分ID→既読済みの報告件数
+function _gaichuSeenAll(){ try{ return JSON.parse(localStorage.getItem('gaichuSeen')||'{}')||{}; }catch(e){ return {}; } }
+function _gaichuSeenCount(id){ var o=_gaichuSeenAll(); return o[id]||0; }
+function _gaichuMarkSeen(id, count){ var o=_gaichuSeenAll(); if(o[id]!==count){ o[id]=count; try{ localStorage.setItem('gaichuSeen',JSON.stringify(o)); }catch(e){} } var b=document.getElementById('gaichu-pub-btn'); if(b){ var nb=b.querySelector('span'); if(nb && /🆕/.test(nb.textContent)) nb.remove(); } }
 function _gaichuBase(p){ p=String(p||''); var i=p.lastIndexOf('/'); return i>=0 ? p.substring(i+1) : p; }
 function _gaichuMarkPublished(){
   // データタブの各⋯ボタンを走査してバッジを付与（onclickの2番目のクオート引数、またはdata-gpname属性がファイル名）
@@ -16865,11 +16877,11 @@ function _gaichuLoadCard(type){
       var c=res.case||{}; var files=res.files||[];
       var shared=files.filter(function(p){ return p.indexOf('報告/')!==0; });
       var reports=files.filter(function(p){ return p.indexOf('報告/')===0; });
+      var comments=Array.isArray(res.comments)?res.comments:[];
       col.style.borderColor='#97c9a9';
-      // コメントも取得してから描画
-      var cfd=new FormData(); cfd.append('secret',cfg.secret); cfd.append('action','comments'); cfd.append('id',id);
-      _gaichuPost(cfg.url,cfd).then(function(cres){
-        var comments=(cres&&cres.ok&&Array.isArray(cres.comments))?cres.comments:[];
+      // カードを見た＝既読：新着カウントを更新
+      _gaichuMarkSeen(id, reports.length+comments.length);
+      (function(){
         var reportBlock='';
         if(reports.length || comments.length){
           reportBlock='<div style="margin-top:9px;border-top:1px dashed #cdd6e0;padding-top:8px">'+
@@ -16893,7 +16905,7 @@ function _gaichuLoadCard(type){
             '</div>'+
           '</div>';
         _gaichuLoadThumbs(col, id);
-      });
+      })();
     } else {
       col.innerHTML=head+
         '<div style="padding:16px 10px;text-align:center">'+

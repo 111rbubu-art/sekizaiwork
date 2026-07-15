@@ -218,7 +218,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
 // 報告セクション（外注先が投稿・写真/コメント）
 function render_report($id, $files, $comments, $IMG_EXT){
   echo '<div class="report" data-case="'.h($id).'">';
-  echo '<div class="rlbl">📮 報告（外注先→庄司石材）</div>';
+  echo '<div class="rlbl">📮 報告（→庄司石材）</div>';
   echo '<div class="rphotos">';
   foreach ($files as $f) {
     $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']);
@@ -235,7 +235,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
     $nm = isset($cm['name']) ? $cm['name'] : '';
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
-    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><b>'.h($nm).'</b> <span>'.h($at).'</span>'
+    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><span>'.h($at).'</span>'
        . '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button>'
        . '<button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span></div>'
        . '<p>'.nl2br(h($tx)).'</p></div>';
@@ -243,7 +243,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   echo '</div>';
   echo '<div class="radd">'
      . '<label class="raddphoto">＋写真<input type="file" accept="image/*" capture="environment" multiple hidden onchange="repUpload(this,\''.h($id).'\')"></label>'
-     . '<input class="rcinput" id="rc-'.h($id).'" placeholder="コメントを入力" onkeydown="if(event.key===\'Enter\')repComment(\''.h($id).'\')">'
+     . '<textarea class="rcinput" id="rc-'.h($id).'" rows="2" placeholder="コメントを入力（改行できます）" oninput="repGrow(this)"></textarea>'
      . '<button class="rcsend" onclick="repComment(\''.h($id).'\')">送信</button>'
      . '</div>';
   echo '</div>';
@@ -363,10 +363,10 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .cmt .cact .cedit:active { border-color:var(--accent); color:var(--accent); }
   .cmt .cact .cdel { color:var(--iron); border-color:color-mix(in srgb,var(--iron) 35%,var(--line)); }
   .cmt p { margin:3px 0 0; font-size:13px; white-space:pre-wrap; }
-  .radd { display:flex; gap:7px; align-items:center; margin-top:8px; }
-  .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
-  .rcinput { flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-size:13px; color:var(--ink); font-family:var(--sans); }
-  .rcsend { flex-shrink:0; background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+  .radd { display:flex; gap:7px; align-items:flex-end; margin-top:8px; }
+  .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700; cursor:pointer; }
+  .rcinput { flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-size:14px; color:var(--ink); font-family:var(--sans); line-height:1.55; resize:vertical; min-height:42px; max-height:200px; overflow-y:auto; }
+  .rcsend { flex-shrink:0; background:var(--accent); color:#fff; border:none; border-radius:9px; padding:10px 16px; font-size:13px; font-weight:700; cursor:pointer; }
   .reload { margin-left:auto; background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:7px 14px; font-size:12.5px; font-weight:700; color:var(--accent); cursor:pointer; font-family:var(--sans); }
   @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
 </style>
@@ -441,17 +441,18 @@ function render_report($id, $files, $comments, $IMG_EXT){
         return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
       }).join('');
       cl.innerHTML=(res.comments||[]).map(function(cm,i){
-        return '<div class="cmt" data-idx="'+i+'"><div class="cmeta"><b>'+_esc(cm.name)+'</b> <span>'+_esc(cm.at)+'</span>'+
+        return '<div class="cmt" data-idx="'+i+'"><div class="cmeta"><span>'+_esc(cm.at)+'</span>'+
           '<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button>'+
           '<button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span></div><p>'+_esc(cm.text)+'</p></div>';
       }).join('');
     }).catch(function(){});
   }
+  function repGrow(t){ t.style.height='auto'; t.style.height=Math.min(t.scrollHeight,200)+'px'; }
   function repComment(id){
     var inp=document.getElementById('rc-'+id); var t=(inp.value||'').trim(); if(!t) return;
     var fd=new FormData(); fd.append('action','comment'); fd.append('case',id); fd.append('text',t);
     fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
-      if(res&&res.ok){ inp.value=''; repRefresh(id); } else alert('送信失敗: '+((res&&res.error)||''));
+      if(res&&res.ok){ inp.value=''; inp.style.height='auto'; repRefresh(id); } else alert('送信失敗: '+((res&&res.error)||''));
     }).catch(function(){ alert('送信に失敗しました'); });
   }
   function repEditComment(id, idx){

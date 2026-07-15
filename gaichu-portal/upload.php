@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>5, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>6, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -169,6 +169,13 @@ if ($action === 'getfile') {
   header('Content-Length: '.filesize($target));
   readfile($target);
   exit;
+}
+
+// ---- comments: 外注先コメント(comments.json)を返す（内部アプリの閲覧用）----
+if ($action === 'comments') {
+  $p = $caseDir.'/comments.json';
+  $c = is_file($p) ? json_decode(file_get_contents($p), true) : array();
+  out(array('ok'=>true, 'comments'=>is_array($c)?$c:array()));
 }
 
 // ---- updatecase: 既存案件の case.json だけ差し替え（ファイルは触らない）----

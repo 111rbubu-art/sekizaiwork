@@ -43,7 +43,7 @@ function collect_groups($casePath, $caseId){
   $root = array();
   $items = @scandir($casePath);
   if ($items) foreach ($items as $n) {
-    if (in_array($n, array('.','..','case.json'), true) || is_hidden($n)) continue;
+    if (in_array($n, array('.','..','case.json','comments.json'), true) || is_hidden($n)) continue;
     $p = $casePath . '/' . $n;
     if (is_file($p)) { $root[] = array('name'=>$n, 'rel'=>$n); }
     else if (is_dir($p)) {
@@ -59,6 +59,13 @@ function collect_groups($casePath, $caseId){
   if (count($root)) $groups['資料'] = isset($groups['資料'])
       ? array_merge($groups['資料'], $root) : $root;
   return $groups;
+}
+// 外注先コメント読み込み
+function load_comments($casePath){
+  $p = $casePath.'/comments.json';
+  if (!is_file($p)) return array();
+  $j = json_decode(file_get_contents($p), true);
+  return is_array($j) ? $j : array();
 }
 
 // 案件を収集
@@ -109,25 +116,51 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   $extra  = isset($c['titleExtra']) ? $c['titleExtra'] : '';
   $head   = trim($family . ($extra !== '' ? ' ' . $extra : ''));
 
+  global $CASES_DIR;
+  $caseDir = $CASES_DIR . '/' . $c['_id'];
+  $isNok = ($type === 'nok');
+
   echo '<article class="card" data-st="'.h($status).'">';
-  // ヘッダー（お寺名＋家名を同じ行）
-  echo '<div class="head"><h2>';
-  if ($temple !== '') echo '<span class="temple">'.h($temple).'</span>　';
-  echo h($head).'</h2>';
-  echo '<div class="chips">';
-  if (!empty($c['category'])) echo '<span class="chip">'.h($c['category']).'</span>';
-  if (!empty($c['state']))    echo '<span class="chip state">'.h($c['state']).'</span>';
-  echo '</div>';
-  // 日付行
-  echo '<div class="srow">';
-  if ($status === 'done') echo '<span class="pill done">完了</span>';
-  if (!empty($c['date'])) {
-    echo '<span class="due"><span class="tag">'.h(isset($c['dateLabel'])?$c['dateLabel']:'納期').'</span> ';
-    echo '<b class="tnum">'.h($c['date']).'</b>';
+  echo '<div class="head">';
+  if ($isNok) {
+    // 納骨：タイトル＝納骨日・時間・状態、改行して お寺　墓名
+    echo '<div class="srow">';
+    if ($status === 'done') echo '<span class="pill done">完了</span>';
+    echo '<span class="due"><span class="tag">納骨日</span> <b class="tnum">'.h(!empty($c['date'])?$c['date']:'—').'</b>';
     if (!empty($c['time'])) echo ' <b class="tnum">'.h($c['time']).'</b>';
     echo '</span>';
+    if (!empty($c['state'])) echo '<span class="chip state">'.h($c['state']).'</span>';
+    echo '</div>';
+    echo '<div class="subttl">';
+    if ($temple !== '') echo '<span class="temple">'.h($temple).'</span>　';
+    echo h($family).'</div>';
+    // 伝言・蓋・拝石目地
+    $rows = array();
+    if (!empty($c['message'])) $rows[] = array('納骨者への伝言', $c['message']);
+    if (!empty($c['futa']))    $rows[] = array('蓋の種類', $c['futa']);
+    if (!empty($c['meji']))    $rows[] = array('拝石目地', $c['meji']);
+    if (count($rows)) {
+      echo '<div class="info">';
+      foreach ($rows as $r) echo '<div class="irow"><span class="ilbl">'.h($r[0]).'</span><span class="ival">'.nl2br(h($r[1])).'</span></div>';
+      echo '</div>';
+    }
+  } else {
+    // 工事・彫刻：お寺＋墓名を同じ行
+    echo '<h2>';
+    if ($temple !== '') echo '<span class="temple">'.h($temple).'</span>　';
+    echo h($head).'</h2>';
+    echo '<div class="chips">';
+    if (!empty($c['category'])) echo '<span class="chip">'.h($c['category']).'</span>';
+    echo '</div>';
+    echo '<div class="srow">';
+    if ($status === 'done') echo '<span class="pill done">完了</span>';
+    if (!empty($c['date'])) {
+      echo '<span class="due"><span class="tag">'.h(isset($c['dateLabel'])?$c['dateLabel']:'納期').'</span> <b class="tnum">'.h($c['date']).'</b></span>';
+    }
+    echo '</div>';
+    if (!empty($c['reason'])) echo '<div class="reason"><span class="tag">納期理由</span> '.h($c['reason']).'</div>';
   }
-  echo '</div></div>';
+  echo '</div>'; // head
 
   // 彫刻箇所などのコメント
   if (!empty($c['note'])) {
@@ -135,18 +168,18 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo '<div class="ntxt">'.nl2br(h($c['note'])).'</div></div>';
   }
 
-  // 資料（地図/図面/写真/資料）
+  // 資料（報告は除外して別セクションに）
   $groups = isset($c['_groups']) ? $c['_groups'] : array();
+  $report = isset($groups['報告']) ? $groups['報告'] : array();
+  unset($groups['報告']);
   if (count($groups)) {
-    // 表示順を整える
     $ordered = array();
     foreach ($GROUP_ORDER as $g) if (isset($groups[$g])) { $ordered[$g] = $groups[$g]; unset($groups[$g]); }
-    foreach ($groups as $g => $f) $ordered[$g] = $f; // 残り
+    foreach ($groups as $g => $f) $ordered[$g] = $f;
     echo '<div class="sec">';
     foreach ($ordered as $gname => $files) {
       $dot = ($gname==='地図')?'var(--map)':(($gname==='図面')?'var(--draw)':'var(--photo)');
       echo '<div class="mgroup"><div class="mlabel"><span class="dot" style="background:'.$dot.'"></span>'.h($gname).'</div>';
-      // 画像とファイルを分けて描画
       $imgs = array(); $docs = array();
       foreach ($files as $f) { if (in_array(ext_of($f['name']), $IMG_EXT, true)) $imgs[]=$f; else $docs[]=$f; }
       if (count($imgs)) {
@@ -173,10 +206,44 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo '</div>';
   }
 
+  // 外注先からの報告（写真アップ＋コメント）
+  render_report($c['_id'], $report, load_comments($caseDir), $IMG_EXT);
+
   if (!empty($c['updated'])) {
     echo '<div class="cardfoot"><span class="updated tnum">更新 '.h($c['updated']).'</span></div>';
   }
   echo '</article>';
+}
+
+// 報告セクション（外注先が投稿・写真/コメント）
+function render_report($id, $files, $comments, $IMG_EXT){
+  echo '<div class="report" data-case="'.h($id).'">';
+  echo '<div class="rlbl">📮 報告（外注先→庄司石材）</div>';
+  echo '<div class="rphotos">';
+  foreach ($files as $f) {
+    $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']);
+    if (in_array(ext_of($f['name']), $IMG_EXT, true)) {
+      echo '<div class="rthumb"><a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" data-cap="'.h($f['name']).'" onclick="return openLightbox(this)"></a>'
+         . '<button class="rdel" title="削除" onclick="repDel(\''.h($id).'\',\''.h($f['rel']).'\')">🗑</button></div>';
+    } else {
+      echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">📎 '.h($f['name']).'</a>';
+    }
+  }
+  echo '</div>';
+  echo '<div class="clist">';
+  foreach ($comments as $cm) {
+    $nm = isset($cm['name']) ? $cm['name'] : '';
+    $at = isset($cm['at']) ? $cm['at'] : '';
+    $tx = isset($cm['text']) ? $cm['text'] : '';
+    echo '<div class="cmt"><div class="cmeta"><b>'.h($nm).'</b> <span>'.h($at).'</span></div><p>'.nl2br(h($tx)).'</p></div>';
+  }
+  echo '</div>';
+  echo '<div class="radd">'
+     . '<label class="raddphoto">＋写真<input type="file" accept="image/*" capture="environment" multiple hidden onchange="repUpload(this,\''.h($id).'\')"></label>'
+     . '<input class="rcinput" id="rc-'.h($id).'" placeholder="コメントを入力" onkeydown="if(event.key===\'Enter\')repComment(\''.h($id).'\')">'
+     . '<button class="rcsend" onclick="repComment(\''.h($id).'\')">送信</button>'
+     . '</div>';
+  echo '</div>';
 }
 ?>
 <!DOCTYPE html>
@@ -267,6 +334,33 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   #lightbox.show { display:flex; }
   #lightbox .lb-img { width:100%; max-width:520px; aspect-ratio:4/3; border-radius:12px; background-size:contain; background-position:center; background-repeat:no-repeat; box-shadow:0 10px 40px rgba(0,0,0,.5); }
   #lightbox .lb-cap { position:absolute; bottom:24px; color:#fff; font-size:13px; opacity:.85; }
+  /* 納骨タイトル下のお寺・墓名 */
+  .subttl { font-family:var(--serif); font-size:16px; color:var(--ink); margin-top:5px; }
+  .subttl .temple { font-size:16px; }
+  /* 伝言・蓋・目地 */
+  .info { margin-top:8px; display:flex; flex-direction:column; gap:5px; }
+  .irow { display:flex; gap:8px; font-size:12.5px; }
+  .irow .ilbl { flex:0 0 84px; color:var(--muted); font-weight:700; font-size:11px; padding-top:1px; }
+  .irow .ival { flex:1; color:var(--ink); font-family:var(--serif); }
+  .reason { margin-top:6px; font-size:12.5px; color:var(--muted); }
+  .reason .tag { font-size:11px; font-weight:700; margin-right:4px; }
+  /* 報告セクション */
+  .report { border-top:1px solid var(--line); padding:11px 15px; background:color-mix(in srgb,var(--accent) 5%,var(--surface)); }
+  .rlbl { font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--accent); margin-bottom:8px; }
+  .rphotos { display:flex; flex-wrap:wrap; gap:8px; }
+  .rthumb { position:relative; }
+  .rthumb .thumb { width:76px; height:58px; }
+  .rdel { position:absolute; top:2px; right:2px; background:rgba(255,255,255,.9); color:#c0392b; border:1px solid #e0b4ad; border-radius:6px; width:22px; height:20px; font-size:11px; line-height:1; cursor:pointer; padding:0; }
+  .clist { display:flex; flex-direction:column; gap:7px; margin:9px 0; }
+  .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
+  .cmt .cmeta { display:flex; gap:8px; align-items:baseline; font-size:11px; }
+  .cmt .cmeta b { font-size:12px; } .cmt .cmeta span { color:var(--faint); }
+  .cmt p { margin:3px 0 0; font-size:13px; white-space:pre-wrap; }
+  .radd { display:flex; gap:7px; align-items:center; margin-top:8px; }
+  .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
+  .rcinput { flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-size:13px; color:var(--ink); font-family:var(--sans); }
+  .rcsend { flex-shrink:0; background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+  .reload { margin-left:auto; background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:7px 14px; font-size:12.5px; font-weight:700; color:var(--accent); cursor:pointer; font-family:var(--sans); }
   @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
 </style>
 </head>
@@ -288,6 +382,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   <div class="pad">
     <div class="toolbar">
       <div class="seg"><button class="on" data-f="open" onclick="setFilter('open')">未完</button><button data-f="done" onclick="setFilter('done')">完了</button></div>
+      <button class="reload" onclick="location.reload()" title="最新に更新">🔄 更新</button>
     </div>
 
     <?php foreach (array('kouji','nok','chokoku') as $tab): ?>
@@ -324,6 +419,54 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     return false;
   }
   setFilter('open');
+
+  // ===== 外注先からの報告 =====
+  window.GP_NAME = <?php echo json_encode($loginName ? $loginName : '', JSON_UNESCAPED_UNICODE); ?>;
+  function repName(){
+    var n = localStorage.getItem('gpPoster') || window.GP_NAME || '';
+    if(!n){ n = (prompt('お名前（報告の投稿者名）を入力してください') || '').trim(); if(n) localStorage.setItem('gpPoster', n); }
+    return n || '外注先';
+  }
+  function _esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function repRefresh(id){
+    var fd=new FormData(); fd.append('action','list'); fd.append('case',id);
+    return fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(!res||!res.ok) return;
+      var box=document.querySelector('.report[data-case="'+id+'"]'); if(!box) return;
+      var ph=box.querySelector('.rphotos'); var cl=box.querySelector('.clist');
+      ph.innerHTML=(res.photos||[]).map(function(f){
+        var href='cases/'+encodeURIComponent(id)+'/'+f.rel.split('/').map(encodeURIComponent).join('/');
+        if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
+        return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
+      }).join('');
+      cl.innerHTML=(res.comments||[]).map(function(cm){
+        return '<div class="cmt"><div class="cmeta"><b>'+_esc(cm.name)+'</b> <span>'+_esc(cm.at)+'</span></div><p>'+_esc(cm.text)+'</p></div>';
+      }).join('');
+    }).catch(function(){});
+  }
+  function repComment(id){
+    var inp=document.getElementById('rc-'+id); var t=(inp.value||'').trim(); if(!t) return;
+    var fd=new FormData(); fd.append('action','comment'); fd.append('case',id); fd.append('name',repName()); fd.append('text',t);
+    fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(res&&res.ok){ inp.value=''; repRefresh(id); } else alert('送信失敗: '+((res&&res.error)||''));
+    }).catch(function(){ alert('送信に失敗しました'); });
+  }
+  function repUpload(inp, id){
+    var files=inp.files; if(!files||!files.length) return; var name=repName(); var arr=Array.prototype.slice.call(files); var i=0;
+    (function next(){
+      if(i>=arr.length){ inp.value=''; repRefresh(id); return; }
+      var f=arr[i++]; if(!/^image\//.test(f.type)){ next(); return; }
+      var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('name',name); fd.append('file',f,f.name);
+      fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(){ next(); }).catch(function(){ next(); });
+    })();
+  }
+  function repDel(id, rel){
+    if(!confirm('この報告写真を削除しますか？')) return;
+    var fd=new FormData(); fd.append('action','del'); fd.append('case',id); fd.append('path',rel);
+    fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(res&&res.ok) repRefresh(id); else alert('削除失敗: '+((res&&res.error)||''));
+    }).catch(function(){ alert('削除に失敗しました'); });
+  }
 </script>
 </body>
 </html>

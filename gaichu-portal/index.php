@@ -236,8 +236,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
     echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><b>'.h($nm).'</b> <span>'.h($at).'</span>'
-       . '<span class="cact"><button onclick="repEditComment(\''.h($id).'\','.$i.')" title="編集">✏</button>'
-       . '<button onclick="repDelComment(\''.h($id).'\','.$i.')" title="削除">🗑</button></span></div>'
+       . '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button>'
+       . '<button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span></div>'
        . '<p>'.nl2br(h($tx)).'</p></div>';
   }
   echo '</div>';
@@ -356,11 +356,12 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .rdel { position:absolute; top:2px; right:2px; background:rgba(255,255,255,.9); color:#c0392b; border:1px solid #e0b4ad; border-radius:6px; width:22px; height:20px; font-size:11px; line-height:1; cursor:pointer; padding:0; }
   .clist { display:flex; flex-direction:column; gap:7px; margin:9px 0; }
   .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
-  .cmt .cmeta { display:flex; gap:8px; align-items:baseline; font-size:11px; }
+  .cmt .cmeta { display:flex; gap:8px; align-items:center; font-size:11px; flex-wrap:wrap; }
   .cmt .cmeta b { font-size:12px; } .cmt .cmeta span { color:var(--faint); }
-  .cmt .cact { margin-left:auto; display:flex; gap:4px; }
-  .cmt .cact button { background:transparent; border:none; cursor:pointer; font-size:12px; padding:1px 4px; opacity:.6; }
-  .cmt .cact button:hover { opacity:1; }
+  .cmt .cact { margin-left:auto; display:flex; gap:6px; }
+  .cmt .cact button { background:var(--surface); border:1px solid var(--line); border-radius:7px; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; color:var(--muted); font-family:var(--sans); line-height:1.4; }
+  .cmt .cact .cedit:active { border-color:var(--accent); color:var(--accent); }
+  .cmt .cact .cdel { color:var(--iron); border-color:color-mix(in srgb,var(--iron) 35%,var(--line)); }
   .cmt p { margin:3px 0 0; font-size:13px; white-space:pre-wrap; }
   .radd { display:flex; gap:7px; align-items:center; margin-top:8px; }
   .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
@@ -441,8 +442,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
       }).join('');
       cl.innerHTML=(res.comments||[]).map(function(cm,i){
         return '<div class="cmt" data-idx="'+i+'"><div class="cmeta"><b>'+_esc(cm.name)+'</b> <span>'+_esc(cm.at)+'</span>'+
-          '<span class="cact"><button onclick="repEditComment(\''+id+'\','+i+')" title="編集">✏</button>'+
-          '<button onclick="repDelComment(\''+id+'\','+i+')" title="削除">🗑</button></span></div><p>'+_esc(cm.text)+'</p></div>';
+          '<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button>'+
+          '<button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span></div><p>'+_esc(cm.text)+'</p></div>';
       }).join('');
     }).catch(function(){});
   }

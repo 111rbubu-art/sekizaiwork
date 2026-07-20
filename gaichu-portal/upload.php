@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>7, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>8, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -173,8 +173,10 @@ if ($action === 'status') {
   if (!is_dir($caseDir)) out(array('ok'=>true, 'published'=>false));
   $c = json_decode(@file_get_contents($caseDir.'/case.json'), true);
   $cm = is_file($caseDir.'/comments.json') ? json_decode(file_get_contents($caseDir.'/comments.json'), true) : array();
+  $pg = is_file($caseDir.'/progress.json') ? json_decode(file_get_contents($caseDir.'/progress.json'), true) : null;
   out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null),
-            'files'=>list_case_files($caseDir), 'comments'=>(is_array($cm)?$cm:array())));
+            'files'=>list_case_files($caseDir), 'comments'=>(is_array($cm)?$cm:array()),
+            'progress'=>(is_array($pg)?$pg:null)));
 }
 
 // ---- getfile: 合言葉付きでファイル本体を返す（アプリのサムネ表示用）----

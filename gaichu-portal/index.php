@@ -67,6 +67,13 @@ function load_comments($casePath){
   $j = json_decode(file_get_contents($p), true);
   return is_array($j) ? $j : array();
 }
+// 完了報告(progress.json)読み込み
+function load_progress($casePath){
+  $p = $casePath.'/progress.json';
+  if (!is_file($p)) return null;
+  $j = json_decode(file_get_contents($p), true);
+  return is_array($j) ? $j : null;
+}
 
 // 案件を収集
 $cases = array('kouji'=>array(), 'nok'=>array(), 'chokoku'=>array());
@@ -151,6 +158,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo h($head).'</h2>';
     echo '<div class="chips">';
     if (!empty($c['category'])) echo '<span class="chip">'.h($c['category']).'</span>';
+    if (!empty($c['workStatus'])) echo '<span class="chip work">'.h($c['workStatus']).'</span>';
     echo '</div>';
     echo '<div class="srow">';
     if ($status === 'done') echo '<span class="pill done">完了</span>';
@@ -206,6 +214,9 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo '</div>';
   }
 
+  // 完了報告（工事・彫刻のみ：外注先が完了日を登録）
+  if ($type === 'kouji' || $type === 'chokoku') render_progress($c['_id'], load_progress($caseDir));
+
   // 外注先からの報告（写真アップ＋コメント）
   render_report($c['_id'], $report, load_comments($caseDir), $IMG_EXT);
 
@@ -215,6 +226,21 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   echo '</article>';
 }
 
+// 完了報告セクション（外注先が完了日を登録／取消）
+function render_progress($id, $prog){
+  echo '<div class="prog" data-case="'.h($id).'">';
+  echo '<span class="plbl">🏁 完了報告</span>';
+  echo '<span class="pbody">';
+  if ($prog && !empty($prog['done'])) {
+    $dt = isset($prog['date']) ? $prog['date'] : '';
+    echo '<span class="pdone">✅ 完了 '.h($dt).'</span>';
+    echo '<button class="pundo" onclick="progSet(\''.h($id).'\',\'\',0)">取消</button>';
+  } else {
+    echo '<input type="date" class="pdate" id="pg-'.h($id).'" value="'.h(date('Y-m-d')).'">';
+    echo '<button class="pbtn" onclick="progSet(\''.h($id).'\',document.getElementById(\'pg-'.h($id).'\').value,1)">完了にする</button>';
+  }
+  echo '</span></div>';
+}
 // 報告セクション（外注先が投稿・写真/コメント）
 function render_report($id, $files, $comments, $IMG_EXT){
   echo '<div class="report" data-case="'.h($id).'">';
@@ -347,6 +373,15 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .irow .ival { flex:1; color:var(--ink); font-family:var(--serif); }
   .reason { margin-top:6px; font-size:12.5px; color:var(--muted); }
   .reason .tag { font-size:11px; font-weight:700; margin-right:4px; }
+  .chip.work { color:var(--amber); background:color-mix(in srgb,var(--amber) 12%,transparent); border-color:color-mix(in srgb,var(--amber) 35%,transparent); font-weight:700; }
+  /* 完了報告 */
+  .prog { border-top:1px solid var(--line); padding:11px 15px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .prog .plbl { font-size:11px; font-weight:700; letter-spacing:.05em; color:var(--muted); }
+  .prog .pbody { display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end; }
+  .prog .pdate { background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:8px 10px; font-size:14px; color:var(--ink); font-family:var(--sans); }
+  .prog .pbtn { background:var(--green); color:#fff; border:none; border-radius:9px; padding:9px 15px; font-size:13px; font-weight:700; cursor:pointer; }
+  .prog .pdone { font-size:14px; font-weight:700; color:var(--green); font-family:var(--serif); }
+  .prog .pundo { background:transparent; border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:6px 11px; font-size:12px; cursor:pointer; }
   /* 報告セクション */
   .report { border-top:1px solid var(--line); padding:11px 15px; background:color-mix(in srgb,var(--accent) 5%,var(--surface)); }
   .rlbl { font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--accent); margin-bottom:8px; }
@@ -486,6 +521,22 @@ function render_report($id, $files, $comments, $IMG_EXT){
     fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
       if(res&&res.ok) repRefresh(id); else alert('削除失敗: '+((res&&res.error)||''));
     }).catch(function(){ alert('削除に失敗しました'); });
+  }
+  // 完了報告の登録／取消
+  function progSet(id, date, done){
+    if(done && !date){ alert('日付を選んでください'); return; }
+    if(!done && !confirm('完了報告を取り消しますか？')) return;
+    var fd=new FormData(); fd.append('action','progress'); fd.append('case',id); fd.append('done',done?'1':'0'); if(done) fd.append('date',date);
+    fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+      if(!res||!res.ok){ alert('保存失敗: '+((res&&res.error)||'')); return; }
+      var box=document.querySelector('.prog[data-case="'+id+'"] .pbody'); if(!box) return;
+      if(res.progress && res.progress.done){
+        box.innerHTML='<span class="pdone">✅ 完了 '+_esc(res.progress.date)+'</span><button class="pundo" onclick="progSet(\''+id+'\',\'\',0)">取消</button>';
+      } else {
+        var today=new Date().toISOString().slice(0,10);
+        box.innerHTML='<input type="date" class="pdate" id="pg-'+id+'" value="'+today+'"><button class="pbtn" onclick="progSet(\''+id+'\',document.getElementById(\'pg-'+id+'\').value,1)">完了にする</button>';
+      }
+    }).catch(function(){ alert('保存に失敗しました'); });
   }
 </script>
 </body>

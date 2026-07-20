@@ -54,6 +54,12 @@ function load_comments($caseDir){
   $j = json_decode(file_get_contents($p), true);
   return is_array($j) ? $j : array();
 }
+function load_progress($caseDir){
+  $p = $caseDir.'/progress.json';
+  if (!is_file($p)) return null;
+  $j = json_decode(file_get_contents($p), true);
+  return is_array($j) ? $j : null;
+}
 
 $action = isset($_POST['action']) ? $_POST['action'] : '';
 $case   = isset($_POST['case'])   ? $_POST['case']   : '';
@@ -63,7 +69,19 @@ if (!is_dir($caseDir)) fail('case not found', 404);
 
 // ---- list ----
 if ($action === 'list') {
-  out(array('ok'=>true, 'photos'=>list_report($caseDir,$IMG_EXT), 'comments'=>load_comments($caseDir)));
+  out(array('ok'=>true, 'photos'=>list_report($caseDir,$IMG_EXT), 'comments'=>load_comments($caseDir), 'progress'=>load_progress($caseDir)));
+}
+
+// ---- progress（完了報告：外注先が完了日を登録／取消）----
+if ($action === 'progress') {
+  $p = $caseDir.'/progress.json';
+  $done = isset($_POST['done']) ? $_POST['done'] : '1';
+  if ($done === '0') { @unlink($p); out(array('ok'=>true, 'progress'=>null)); }
+  $date = isset($_POST['date']) ? trim($_POST['date']) : '';
+  if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $date = date('Y-m-d');
+  $prog = array('done'=>true, 'date'=>$date);
+  file_put_contents($p, json_encode($prog, JSON_UNESCAPED_UNICODE));
+  out(array('ok'=>true, 'progress'=>$prog));
 }
 
 // ---- comment（追記）----

@@ -278,7 +278,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   }
   echo '</div>';
   echo '<div class="radd">'
-     . '<label class="raddphoto">＋写真<input type="file" accept="image/*" capture="environment" multiple hidden onchange="repUpload(this,\''.h($id).'\')"></label>'
+     . '<label class="raddphoto">＋写真・ファイル<input type="file" accept="image/*,application/pdf" multiple hidden onchange="repUpload(this,\''.h($id).'\')"></label>'
      . '<textarea class="rcinput" id="rc-'.h($id).'" rows="2" placeholder="コメントを入力（改行できます）" oninput="repGrow(this)"></textarea>'
      . '<button class="rcsend" onclick="repComment(\''.h($id).'\')">送信</button>'
      . '</div>';

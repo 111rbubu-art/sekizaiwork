@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.298';
+var APP_VERSION = 'v1.9.299';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18477,32 +18477,54 @@ function _officeScheme(name) {
   if (['ppt','pptx','pptm','pps','ppsx','pot','potx'].indexOf(ext) >= 0) return 'ms-powerpoint';
   return null;
 }
-// webUrl（SharePointのファイルURL）をデスクトップアプリで開く。Office以外はブラウザで開く。
-function _openWithDesktopApp(webUrl, name) {
+// ブラウザ内で見られる（プレビュー向き）拡張子
+function _isBrowserViewable(ext) {
+  return ['pdf','txt','png','jpg','jpeg','gif','webp','bmp'].indexOf(ext) >= 0;
+}
+// ファイルをできるだけPCのアプリで開く。
+//  Office → デスクトップアプリを直接起動（ms-office プロトコル）
+//  PDF等 → ブラウザで開く（プレビュー）
+//  それ以外（svg/dwg/dxf 等）→ 本体を直接ダウンロード→PCの既定アプリで開く
+function _openWithDesktopApp(data, name) {
+  var webUrl = data.webUrl;
+  var dl = data['@microsoft.graph.downloadUrl'] || data['@content.downloadUrl'];
+  var ext = (String(name).split('.').pop() || '').toLowerCase();
   var sch = _officeScheme(name);
-  if (sch) {
+  if (sch && webUrl) {
     // 例: ms-word:ofe|u|https://.../施工.docx  （ofe＝編集で開く）
     var a = document.createElement('a');
     a.href = sch + ':ofe|u|' + webUrl;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    document.body.appendChild(a); a.click(); a.remove();
     showSaveToast(true, '🖥 アプリで開いています…（初回は起動確認が出ます）');
-    return true;
+    return;
   }
-  window.open(webUrl, '_blank');
-  return false;
+  if (_isBrowserViewable(ext)) {
+    if (webUrl) window.open(webUrl, '_blank');
+    else showSaveToast(false, 'URLが取得できませんでした');
+    return;
+  }
+  // svg / dwg / dxf など：ブラウザからアプリを直接起動できないため本体をダウンロード
+  if (dl) {
+    var a2 = document.createElement('a');
+    a2.href = dl; a2.download = name;
+    document.body.appendChild(a2); a2.click(); a2.remove();
+    showSaveToast(true, '⬇ ダウンロードしました（PCの既定アプリで開いてください）');
+  } else if (webUrl) {
+    window.open(webUrl, '_blank');
+  } else {
+    showSaveToast(false, 'URLが取得できませんでした');
+  }
 }
 
 function openFolderFile(filePath) {
   getToken().then(function(resp) {
     var encoded = filePath.split('/').map(encodeURIComponent).join('/');
-    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded;
+    var url = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded
+            + '?$select=webUrl,name,@microsoft.graph.downloadUrl';
     return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
   }).then(function(r) { return r.json(); })
   .then(function(data) {
-    var webUrl = data.webUrl;
-    if (webUrl) _openWithDesktopApp(webUrl, filePath.split('/').pop());
+    if (data && (data.webUrl || data['@microsoft.graph.downloadUrl'])) _openWithDesktopApp(data, filePath.split('/').pop());
     else showSaveToast(false, 'URLが取得できませんでした');
   }).catch(function(e) { showSaveToast(false, 'エラー: ' + e.message); });
 }

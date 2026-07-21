@@ -96,6 +96,9 @@ if (is_dir($CASES_DIR)) {
     $c['_groups'] = collect_groups($cp, $d);
     $c['_prog']   = load_progress($cp);
     $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告のみ完了扱い
+    // NEWラベル：初回登録から7日以内（.createdが無い旧案件はcase.jsonの更新時刻で代用）
+    $cts = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : @filemtime($jsonPath);
+    $c['_new'] = ($cts && (time() - $cts) < 7*86400);
     if ($c['_eff'] === 'open') $openCount[$type]++;
     $cases[$type][] = $c;
   }
@@ -139,6 +142,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
 
   echo '<article class="card" data-st="'.h($status).'">';
   echo '<div class="head">';
+  if (!empty($c['_new'])) echo '<span class="newbadge">🆕 NEW</span>';
   if ($isNok) {
     // 納骨：タイトル＝納骨日・時間・状態、改行して お寺　墓名
     echo '<div class="srow">';
@@ -342,6 +346,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .chip { font-size:11px; padding:2px 9px; border-radius:20px; background:var(--surface-2); border:1px solid var(--line); color:var(--muted); }
   .chip.state { color:var(--iron); background:color-mix(in srgb,var(--iron) 10%,transparent); border-color:color-mix(in srgb,var(--iron) 30%,transparent); font-weight:700; }
   .srow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .newbadge { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:11px; letter-spacing:.04em; margin-bottom:8px; }
   .pill { font-size:11.5px; font-weight:700; padding:3px 11px; border-radius:20px; }
   .pill.done { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
   .due { font-size:12.5px; color:var(--muted); }

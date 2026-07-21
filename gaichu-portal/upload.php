@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>8, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>9, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -240,6 +240,10 @@ if (!is_array($caseData)) fail('invalid case json');
 
 if (!is_dir($CASES_DIR) && !@mkdir($CASES_DIR, 0755, true)) fail('cannot create cases dir', 500);
 
+// 初回登録日時（NEWラベル用）は再公開でも引き継ぐ。既存の .created を退避。
+$createdTs = '';
+if (is_file($caseDir.'/.created')) $createdTs = trim(file_get_contents($caseDir.'/.created'));
+
 // いったん全消し → 作り直し（片方向なので毎回まるごと差し替え）
 rrmdir($caseDir);
 clearstatcache();
@@ -251,6 +255,10 @@ foreach (glob($caseDir.'/*') as $g) { is_dir($g) ? rrmdir($g) : @unlink($g); }
 
 // case.json 書き込み
 file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_UNICODE));
+
+// 初回登録日時を記録（既存を引き継ぎ、無ければ現在時刻）
+if ($createdTs === '' || !ctype_digit($createdTs)) $createdTs = (string)time();
+file_put_contents($caseDir.'/.created', $createdTs);
 
 // ファイル保存
 $saved = 0; $skipped = array();

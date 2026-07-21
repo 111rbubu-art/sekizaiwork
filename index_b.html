@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.293';
+var APP_VERSION = 'v1.9.294';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16656,7 +16656,8 @@ function _gaichuUpdateBtn(){
   var types=_gaichuTypesFor(mode);
   var labelOf={kouji:'工事',nok:'納骨',chokoku:'彫刻',tsuikou:'追工'};
   var refId=(d['id']||d['ID']);
-  var pub=[]; var names={}; var byType={}; var newAny=false; var syncedTypes=[];
+  var pub=[]; var names={}; var byType={}; var newAny=false; var syncedTypes=[]; var pendingSync=[];
+  var COMPFIELD={kouji:'ConstructionCompletionDate',chokoku:'CompletionDate',tsuikou:'CompletionDate_tui'};
   var checks=types.map(function(type){
     var tid=_gaichuId(d,type);
     var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','status'); fd.append('id',tid);
@@ -16667,6 +16668,11 @@ function _gaichuUpdateBtn(){
         // 報告（報告/写真＋コメント）が既読数より多ければ新着
         var rep=(res.files||[]).filter(function(p){return p.indexOf('報告/')===0;}).length + (Array.isArray(res.comments)?res.comments.length:0);
         if(rep>0 && rep > _gaichuSeenCount(tid)) newAny=true;
+        // 完了報告があり、対応する完了日が空なら同期候補に
+        var cf=COMPFIELD[type];
+        if(res.progress && res.progress.done && res.progress.date && cf && !String(d[cf]||'').trim() && !_gaichuDeclinedHas(tid+'|'+res.progress.date)){
+          pendingSync.push({type:type, date:res.progress.date, tid:tid});
+        }
         // 同期チェック：アプリの現在値とポータルのcase.jsonが違えば自動更新
         var local=_gaichuBuildCase(d,type);
         if(!_gaichuCaseEq(local, res.case)){
@@ -16685,6 +16691,28 @@ function _gaichuUpdateBtn(){
     if(pub.length){ b.style.background='#2e7d32'; b.innerHTML='🌐 公開中（'+pub.join('・')+'）'+nb; }
     else { b.style.background='#8a5a2b'; b.innerHTML='🌐 外注公開'; }
     if(syncedTypes.length) showSaveToast(true,'外注ポータルを同期（'+syncedTypes.join('・')+'）');
+    // 完了報告の完了日をSPへ反映（確認あり・空欄のみ）
+    pendingSync.forEach(function(ps){
+      var cf=COMPFIELD[ps.type]; if(!cf || String(d[cf]||'').trim()) return;
+      if(confirm('外注から完了報告があります（'+_gaichuTypeLabel(ps.type)+'：'+ps.date+'）。\nアプリの'+(ps.type==='kouji'?'工事完了日':ps.type==='chokoku'?'彫刻完了日':'追工事完了日')+'に反映しますか？')){
+        _gaichuSyncCompletion(d, ps.type, ps.date);
+      } else { _gaichuDeclinedAdd(ps.tid+'|'+ps.date); }
+    });
+  });
+}
+// 完了報告の既読/却下管理（同じ完了日を却下したら再度聞かない）
+function _gaichuDeclinedHas(k){ try{ var o=JSON.parse(localStorage.getItem('gaichuDeclined')||'{}'); return !!o[k]; }catch(e){ return false; } }
+function _gaichuDeclinedAdd(k){ try{ var o=JSON.parse(localStorage.getItem('gaichuDeclined')||'{}'); o[k]=1; localStorage.setItem('gaichuDeclined',JSON.stringify(o)); }catch(e){} }
+// 完了報告の日付をSharePointの完了日フィールドへ反映
+function _gaichuSyncCompletion(d, type, date){
+  var COMPFIELD={kouji:'ConstructionCompletionDate',chokoku:'CompletionDate',tsuikou:'CompletionDate_tui'};
+  var f=COMPFIELD[type]; if(!f) return;
+  var listName=(type==='kouji')?'工事関連':'納骨・戒切';
+  var edits={}; edits[f]=date;
+  showSaveToast(null,'完了日を反映中…');
+  saveEditsToSP(d, edits, listName, function(ok,msg){
+    if(ok){ d[f]=date; if(currentItem){ currentItem[f]=date; } showSaveToast(true,_gaichuTypeLabel(type)+'の完了日に反映しました（'+date+'）'); }
+    else { showSaveToast(false,'反映失敗: '+msg); }
   });
 }
 // case.json（項目）が一致するか（updated等は無視）

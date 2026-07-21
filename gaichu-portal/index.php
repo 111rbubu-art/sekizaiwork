@@ -127,6 +127,10 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   $caseDir = $CASES_DIR . '/' . $c['_id'];
   $isNok = ($type === 'nok');
 
+  // 完了報告(progress.json)があれば完了扱い（完了タブへ）
+  $prog = load_progress($caseDir);
+  if ($prog && !empty($prog['done'])) $status = 'done';
+
   echo '<article class="card" data-st="'.h($status).'">';
   echo '<div class="head">';
   if ($isNok) {
@@ -215,7 +219,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   }
 
   // 完了報告（工事・彫刻のみ：外注先が完了日を登録）
-  if ($type === 'kouji' || $type === 'chokoku') render_progress($c['_id'], load_progress($caseDir));
+  if ($type === 'kouji' || $type === 'chokoku') render_progress($c['_id'], $prog);
 
   // 外注先からの報告（写真アップ＋コメント）
   render_report($c['_id'], $report, load_comments($caseDir), $IMG_EXT);
@@ -529,13 +533,19 @@ function render_report($id, $files, $comments, $IMG_EXT){
     var fd=new FormData(); fd.append('action','progress'); fd.append('case',id); fd.append('done',done?'1':'0'); if(done) fd.append('date',date);
     fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
       if(!res||!res.ok){ alert('保存失敗: '+((res&&res.error)||'')); return; }
-      var box=document.querySelector('.prog[data-case="'+id+'"] .pbody'); if(!box) return;
+      var prog=document.querySelector('.prog[data-case="'+id+'"]');
+      var box=prog?prog.querySelector('.pbody'):null; if(!box) return;
+      var card=prog.closest('.card');
       if(res.progress && res.progress.done){
         box.innerHTML='<span class="pdone">✅ 完了 '+_esc(res.progress.date)+'</span><button class="pundo" onclick="progSet(\''+id+'\',\'\',0)">取消</button>';
+        if(card) card.dataset.st='done';
       } else {
         var today=new Date().toISOString().slice(0,10);
         box.innerHTML='<input type="date" class="pdate" id="pg-'+id+'" value="'+today+'"><button class="pbtn" onclick="progSet(\''+id+'\',document.getElementById(\'pg-'+id+'\').value,1)">完了にする</button>';
+        if(card) card.dataset.st='open';
       }
+      // 現在のフィルタで表示/非表示を再適用（完了⇄未完タブへ移動）
+      var cur=document.querySelector('.seg button.on'); setFilter(cur?cur.dataset.f:'open');
     }).catch(function(){ alert('保存に失敗しました'); });
   }
 </script>

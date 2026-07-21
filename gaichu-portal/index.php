@@ -75,8 +75,9 @@ function load_progress($casePath){
   return is_array($j) ? $j : null;
 }
 
-// 案件を収集
+// 案件を収集（SP完了＝case.json status=done は非公開＝表示しない。データはアプリ側で確認可）
 $cases = array('kouji'=>array(), 'nok'=>array(), 'chokoku'=>array());
+$openCount = array('kouji'=>0, 'nok'=>0, 'chokoku'=>0); // 未完件数
 if (is_dir($CASES_DIR)) {
   $dirs = @scandir($CASES_DIR);
   if ($dirs) foreach ($dirs as $d) {
@@ -87,10 +88,15 @@ if (is_dir($CASES_DIR)) {
     if (!is_file($jsonPath)) continue;
     $c = json_decode(file_get_contents($jsonPath), true);
     if (!is_array($c)) continue;
+    // SP完了はポータル非公開（スキップ）
+    if (isset($c['status']) && $c['status']==='done') continue;
     $type = isset($c['type']) ? $c['type'] : 'kouji';
     if (!isset($cases[$type])) $type = 'kouji';
     $c['_id']     = $d;
     $c['_groups'] = collect_groups($cp, $d);
+    $c['_prog']   = load_progress($cp);
+    $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告のみ完了扱い
+    if ($c['_eff'] === 'open') $openCount[$type]++;
     $cases[$type][] = $c;
   }
 }
@@ -128,7 +134,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   $isNok = ($type === 'nok');
 
   // 完了報告(progress.json)があれば完了扱い（完了タブへ）
-  $prog = load_progress($caseDir);
+  $prog = isset($c['_prog']) ? $c['_prog'] : load_progress($caseDir);
   if ($prog && !empty($prog['done'])) $status = 'done';
 
   echo '<article class="card" data-st="'.h($status).'">';
@@ -419,9 +425,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
       <?php if ($loginName): ?><div class="login"><b><?php echo h($loginName); ?></b> ログイン中</div><?php endif; ?>
     </div>
     <div class="maintabs">
-      <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo count($cases['kouji']); ?></span></button>
-      <button class="maintab" data-t="nok" onclick="showTab('nok')">納骨 <span class="n tnum"><?php echo count($cases['nok']); ?></span></button>
-      <button class="maintab" data-t="chokoku" onclick="showTab('chokoku')">彫刻 <span class="n tnum"><?php echo count($cases['chokoku']); ?></span></button>
+      <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo $openCount['kouji']; ?></span></button>
+      <button class="maintab" data-t="nok" onclick="showTab('nok')">納骨 <span class="n tnum"><?php echo $openCount['nok']; ?></span></button>
+      <button class="maintab" data-t="chokoku" onclick="showTab('chokoku')">彫刻 <span class="n tnum"><?php echo $openCount['chokoku']; ?></span></button>
     </div>
   </div>
 

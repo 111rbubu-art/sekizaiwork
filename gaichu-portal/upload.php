@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>9, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>10, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -120,6 +120,14 @@ function list_case_files($dir, $base=''){
     else $out[] = $rel;
   }
   return $out;
+}
+
+// メモ系フィールドの署名（変化検知用）。note/伝言/蓋/目地/理由 が対象
+function _memo_sig($c){
+  if (!is_array($c)) return '';
+  $p = array();
+  foreach (array('note','message','futa','meji','reason') as $k) $p[] = isset($c[$k]) ? $c[$k] : '';
+  return implode("\x1f", $p);
 }
 
 // 許可する拡張子（実行系は拒否）
@@ -209,7 +217,10 @@ if ($action === 'updatecase') {
   $caseJson = isset($_POST['case']) ? $_POST['case'] : '';
   $caseData = json_decode($caseJson, true);
   if (!is_array($caseData)) fail('invalid case json');
+  $oldSig = is_file($caseDir.'/case.json') ? _memo_sig(json_decode(@file_get_contents($caseDir.'/case.json'), true)) : '';
   file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_UNICODE));
+  // メモが変わっていれば .memotime を更新（ポータルの New 判定用）
+  if (_memo_sig($caseData) !== $oldSig) file_put_contents($caseDir.'/.memotime', (string)time());
   out(array('ok'=>true, 'updated'=>$id));
 }
 
@@ -243,6 +254,9 @@ if (!is_dir($CASES_DIR) && !@mkdir($CASES_DIR, 0755, true)) fail('cannot create 
 // 初回登録日時（NEWラベル用）は再公開でも引き継ぐ。既存の .created を退避。
 $createdTs = '';
 if (is_file($caseDir.'/.created')) $createdTs = trim(file_get_contents($caseDir.'/.created'));
+// メモ変化検知用：旧case.jsonのメモ署名と既存の .memotime を退避（全消し前）
+$oldMemoSig = is_file($caseDir.'/case.json') ? _memo_sig(json_decode(@file_get_contents($caseDir.'/case.json'), true)) : null;
+$memoTs = (is_file($caseDir.'/.memotime')) ? trim(file_get_contents($caseDir.'/.memotime')) : '';
 
 // いったん全消し → 作り直し（片方向なので毎回まるごと差し替え）
 rrmdir($caseDir);
@@ -259,6 +273,15 @@ file_put_contents($caseDir.'/case.json', json_encode($caseData, JSON_UNESCAPED_U
 // 初回登録日時を記録（既存を引き継ぎ、無ければ現在時刻）
 if ($createdTs === '' || !ctype_digit($createdTs)) $createdTs = (string)time();
 file_put_contents($caseDir.'/.created', $createdTs);
+
+// メモ更新日時：メモが変わった（または初回でメモあり）なら現在時刻、変化なしなら引き継ぎ
+$newMemoSig = _memo_sig($caseData);
+if ($oldMemoSig === null) {
+  if ($newMemoSig !== _memo_sig(array())) $memoTs = (string)time(); // 初回公開でメモがあれば新着
+} else if ($newMemoSig !== $oldMemoSig) {
+  $memoTs = (string)time();
+}
+if ($memoTs !== '' && ctype_digit($memoTs)) file_put_contents($caseDir.'/.memotime', $memoTs);
 
 // ファイル保存
 $saved = 0; $skipped = array();

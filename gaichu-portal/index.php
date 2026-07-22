@@ -139,6 +139,9 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
 
   global $CASES_DIR;
   $caseDir = $CASES_DIR . '/' . $c['_id'];
+  // メモ（現場メモ・彫刻箇所・伝言等）がアプリから更新された直後（24時間以内）はNew
+  $memoTs   = is_file($caseDir.'/.memotime') ? intval(trim(@file_get_contents($caseDir.'/.memotime'))) : 0;
+  $memoNewB = ($memoTs && (time() - $memoTs) < 86400) ? ' <span class="rnew blink">New</span>' : '';
   $isNok = ($type === 'nok');
 
   // 完了報告(progress.json)があれば完了扱い（完了タブへ）
@@ -167,7 +170,8 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     if (!empty($c['meji']))    $rows[] = array('拝石目地', $c['meji']);
     if (count($rows)) {
       echo '<div class="info">';
-      foreach ($rows as $r) echo '<div class="irow"><span class="ilbl">'.h($r[0]).'</span><span class="ival">'.nl2br(h($r[1])).'</span></div>';
+      $ri = 0;
+      foreach ($rows as $r) { echo '<div class="irow"><span class="ilbl">'.h($r[0]).($ri===0?$memoNewB:'').'</span><span class="ival">'.nl2br(h($r[1])).'</span></div>'; $ri++; }
       echo '</div>';
     }
   } else {
@@ -191,7 +195,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
 
   // 彫刻箇所などのコメント
   if (!empty($c['note'])) {
-    echo '<div class="note"><div class="nlbl">'.h(isset($c['noteLabel'])?$c['noteLabel']:'メモ').'</div>';
+    echo '<div class="note"><div class="nlbl">'.h(isset($c['noteLabel'])?$c['noteLabel']:'メモ').$memoNewB.'</div>';
     echo '<div class="ntxt">'.nl2br(h($c['note'])).'</div></div>';
   }
 
@@ -213,8 +217,10 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
         echo '<div class="thumbs">';
         foreach ($imgs as $f) {
           $href = 'cases/'.urlseg($c['_id']).'/'.urlseg($f['rel']);
+          $fnew = ((@filemtime($caseDir.'/'.$f['rel']) ?: 0) && (time() - @filemtime($caseDir.'/'.$f['rel'])) < 86400);
           echo '<a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" '
-             . 'data-cap="'.h(pathinfo($f['name'], PATHINFO_FILENAME)).'" onclick="return openLightbox(this)"></a>';
+             . 'data-cap="'.h(pathinfo($f['name'], PATHINFO_FILENAME)).'" onclick="return openLightbox(this)">'
+             . ($fnew ? '<span class="filenew blink">New</span>' : '') . '</a>';
         }
         echo '</div>';
       }
@@ -223,8 +229,9 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
         foreach ($docs as $f) {
           $href = 'cases/'.urlseg($c['_id']).'/'.urlseg($f['rel']);
           $ico = (ext_of($f['name'])==='pdf') ? '📄' : '📎';
+          $fnew = ((@filemtime($caseDir.'/'.$f['rel']) ?: 0) && (time() - @filemtime($caseDir.'/'.$f['rel'])) < 86400);
           echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">'
-             . '<span class="ico">'.$ico.'</span> '.h($f['name']).'</a>';
+             . '<span class="ico">'.$ico.'</span> '.h($f['name']).($fnew ? ' <span class="rnew blink">New</span>' : '').'</a>';
         }
         echo '</div>';
       }
@@ -430,6 +437,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .rdel { position:absolute; top:2px; right:2px; background:rgba(255,255,255,.9); color:#c0392b; border:1px solid #e0b4ad; border-radius:6px; width:22px; height:20px; font-size:11px; line-height:1; cursor:pointer; padding:0; }
   .rnew { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:8px; font-weight:700; padding:1px 4px; border-radius:6px; letter-spacing:.02em; }
   .rthumb .rnew { position:absolute; top:2px; left:2px; }
+  .filenew { position:absolute; top:3px; left:3px; z-index:1; background:#e53935; color:#fff; font-family:var(--sans); font-size:8px; font-weight:700; padding:1px 5px; border-radius:6px; letter-spacing:.02em; }
   .clist { display:flex; flex-direction:column; gap:7px; margin:9px 0; }
   .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
   .cmt .cmeta { display:flex; gap:8px; align-items:center; font-size:11px; flex-wrap:wrap; }

@@ -78,6 +78,7 @@ function load_progress($casePath){
 // 案件を収集（SP完了＝case.json status=done は非公開＝表示しない。データはアプリ側で確認可）
 $cases = array('kouji'=>array(), 'nok'=>array(), 'chokoku'=>array());
 $openCount = array('kouji'=>0, 'nok'=>0, 'chokoku'=>0); // 未完件数
+$newToday  = array('kouji'=>0, 'nok'=>0, 'chokoku'=>0); // 登録1日目（点滅NEW）件数
 if (is_dir($CASES_DIR)) {
   $dirs = @scandir($CASES_DIR);
   if ($dirs) foreach ($dirs as $d) {
@@ -96,9 +97,13 @@ if (is_dir($CASES_DIR)) {
     $c['_groups'] = collect_groups($cp, $d);
     $c['_prog']   = load_progress($cp);
     $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告のみ完了扱い
-    // NEWラベル：初回登録から7日以内（.createdが無い旧案件はcase.jsonの更新時刻で代用）
-    $cts = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : @filemtime($jsonPath);
-    $c['_new'] = ($cts && (time() - $cts) < 7*86400);
+    // NEWラベル：初回登録から7日以内は静止、1日目（24時間以内）は点滅＋タブNEW
+    // （.createdが無い旧案件はcase.jsonの更新時刻で代用）
+    $cts  = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : @filemtime($jsonPath);
+    $age  = $cts ? (time() - $cts) : PHP_INT_MAX;
+    $c['_new']  = ($age < 7*86400);
+    $c['_new1'] = ($age < 1*86400);
+    if ($c['_new1']) $newToday[$type]++;
     if ($c['_eff'] === 'open') $openCount[$type]++;
     $cases[$type][] = $c;
   }
@@ -142,7 +147,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
 
   echo '<article class="card" data-st="'.h($status).'">';
   echo '<div class="head">';
-  if (!empty($c['_new'])) echo '<span class="newbadge">🆕 NEW</span>';
+  if (!empty($c['_new'])) echo '<span class="newbadge'.(!empty($c['_new1'])?' blink':'').'">🆕 NEW</span>';
   if ($isNok) {
     // 納骨：タイトル＝納骨日・時間・状態、改行して お寺　墓名
     echo '<div class="srow">';
@@ -347,6 +352,10 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .chip.state { color:var(--iron); background:color-mix(in srgb,var(--iron) 10%,transparent); border-color:color-mix(in srgb,var(--iron) 30%,transparent); font-weight:700; }
   .srow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .newbadge { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:11px; letter-spacing:.04em; margin-bottom:8px; }
+  .tabnew { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:8.5px; font-weight:700; padding:1px 5px; border-radius:8px; letter-spacing:.03em; margin-left:3px; vertical-align:top; }
+  @keyframes newblink { 0%,100%{opacity:1;} 50%{opacity:.25;} }
+  .blink { animation:newblink 1s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .blink { animation:none; } }
   .pill { font-size:11.5px; font-weight:700; padding:3px 11px; border-radius:20px; }
   .pill.done { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
   .due { font-size:12.5px; color:var(--muted); }
@@ -430,9 +439,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
       <?php if ($loginName): ?><div class="login"><b><?php echo h($loginName); ?></b> ログイン中</div><?php endif; ?>
     </div>
     <div class="maintabs">
-      <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo $openCount['kouji']; ?></span></button>
-      <button class="maintab" data-t="nok" onclick="showTab('nok')">納骨 <span class="n tnum"><?php echo $openCount['nok']; ?></span></button>
-      <button class="maintab" data-t="chokoku" onclick="showTab('chokoku')">彫刻 <span class="n tnum"><?php echo $openCount['chokoku']; ?></span></button>
+      <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo $openCount['kouji']; ?></span><?php if ($newToday['kouji']): ?><span class="tabnew blink">NEW</span><?php endif; ?></button>
+      <button class="maintab" data-t="nok" onclick="showTab('nok')">納骨 <span class="n tnum"><?php echo $openCount['nok']; ?></span><?php if ($newToday['nok']): ?><span class="tabnew blink">NEW</span><?php endif; ?></button>
+      <button class="maintab" data-t="chokoku" onclick="showTab('chokoku')">彫刻 <span class="n tnum"><?php echo $openCount['chokoku']; ?></span><?php if ($newToday['chokoku']): ?><span class="tabnew blink">NEW</span><?php endif; ?></button>
     </div>
   </div>
 

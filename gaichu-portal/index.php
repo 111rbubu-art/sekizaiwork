@@ -260,18 +260,32 @@ function render_progress($id, $prog){
   }
   echo '</span></div>';
 }
+// 報告写真/コメントの「新着」判定：アップロード（または投稿）から24時間以内
+function _rep_is_new_ts($ts){ return $ts && (time() - $ts) < 86400; }
+// コメントの 'at'（"Y-m-d H:i" ／末尾に"（編集）"が付く場合あり）を時刻に変換
+function _rep_comment_ts($at){
+  if (!$at) return 0;
+  $s = trim(preg_replace('/（.*$/u', '', $at)); // "（編集）" 等を除去
+  $t = strtotime($s);
+  return $t ? $t : 0;
+}
 // 報告セクション（外注先が投稿・写真/コメント）
 function render_report($id, $files, $comments, $IMG_EXT){
+  global $CASES_DIR;
+  $caseDir = $CASES_DIR . '/' . $id;
   echo '<div class="report" data-case="'.h($id).'">';
   echo '<div class="rlbl">📮 報告（→庄司石材）</div>';
   echo '<div class="rphotos">';
   foreach ($files as $f) {
     $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']);
+    $isNew = _rep_is_new_ts(@filemtime($caseDir.'/'.$f['rel']));
+    $newB = $isNew ? '<span class="rnew blink">New</span>' : '';
     if (in_array(ext_of($f['name']), $IMG_EXT, true)) {
       echo '<div class="rthumb"><a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" data-cap="'.h($f['name']).'" onclick="return openLightbox(this)"></a>'
+         . $newB
          . '<button class="rdel" title="削除" onclick="repDel(\''.h($id).'\',\''.h($f['rel']).'\')">🗑</button></div>';
     } else {
-      echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">📎 '.h($f['name']).'</a>';
+      echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">📎 '.h($f['name']).' '.$newB.'</a>';
     }
   }
   echo '</div>';
@@ -280,7 +294,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
     $nm = isset($cm['name']) ? $cm['name'] : '';
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
-    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><span>'.h($at).'</span>'
+    $cNew = _rep_is_new_ts(_rep_comment_ts($at)) ? '<span class="rnew blink">New</span>' : '';
+    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><span>'.h($at).' '.$cNew.'</span>'
        . '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button>'
        . '<button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span></div>'
        . '<p>'.nl2br(h($tx)).'</p></div>';
@@ -413,6 +428,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .rthumb { position:relative; }
   .rthumb .thumb { width:76px; height:58px; }
   .rdel { position:absolute; top:2px; right:2px; background:rgba(255,255,255,.9); color:#c0392b; border:1px solid #e0b4ad; border-radius:6px; width:22px; height:20px; font-size:11px; line-height:1; cursor:pointer; padding:0; }
+  .rnew { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:8px; font-weight:700; padding:1px 4px; border-radius:6px; letter-spacing:.02em; }
+  .rthumb .rnew { position:absolute; top:2px; left:2px; }
   .clist { display:flex; flex-direction:column; gap:7px; margin:9px 0; }
   .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
   .cmt .cmeta { display:flex; gap:8px; align-items:center; font-size:11px; flex-wrap:wrap; }

@@ -5856,7 +5856,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.302';
+var APP_VERSION = 'v1.9.303';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16731,13 +16731,32 @@ function _gaichuSeenAll(){ try{ return JSON.parse(localStorage.getItem('gaichuSe
 function _gaichuSeenCount(id){ var o=_gaichuSeenAll(); return o[id]||0; }
 function _gaichuMarkSeen(id, count){ var o=_gaichuSeenAll(); if(o[id]!==count){ o[id]=count; try{ localStorage.setItem('gaichuSeen',JSON.stringify(o)); }catch(e){} } var b=document.getElementById('gaichu-pub-btn'); if(b){ var nb=b.querySelector('span'); if(nb && /🆕/.test(nb.textContent)) nb.remove(); } _gaichuMarkListNew(); }
 // 一覧リストの新着表示：全公開案件の報告件数を取得して、行(data-item-id)に🆕バッジ
-var _gaichuRepMap=null, _gaichuRepAtMap=null;
+var _gaichuRepMap=null;
+// 未読報告を最初に検知した時刻を端末ローカルに記録（アプリのみで24時間判定するため）
+// 形式: { 区分ID: { count:件数, ts:検知UNIX秒 } }
+function _gaichuFirstAll(){ try{ return JSON.parse(localStorage.getItem('gaichuRepFirst')||'{}')||{}; }catch(e){ return {}; } }
+function _gaichuFirstSave(o){ try{ localStorage.setItem('gaichuRepFirst',JSON.stringify(o)); }catch(e){} }
+// サマリ取得のたびに、未読状態の開始時刻を更新（新着が増えたらリセット、既読になったら削除）
+function _gaichuUpdateFirstSeen(){
+  if(!_gaichuRepMap) return;
+  var o=_gaichuFirstAll(), now=Math.floor(Date.now()/1000), changed=false;
+  Object.keys(_gaichuRepMap).forEach(function(cid){
+    var rep=_gaichuRepMap[cid]||0, seen=_gaichuSeenCount(cid);
+    if(rep>0 && rep>seen){
+      if(!o[cid] || (o[cid].count||0) < rep){ o[cid]={count:rep, ts:now}; changed=true; } // 初回 or 報告が増えた→計測開始
+    } else if(o[cid]){ delete o[cid]; changed=true; } // 既読/新着なし→削除
+  });
+  // 公開が消えた区分の掃除
+  Object.keys(o).forEach(function(cid){ if(!Object.prototype.hasOwnProperty.call(_gaichuRepMap,cid)){ delete o[cid]; changed=true; } });
+  if(changed) _gaichuFirstSave(o);
+}
+function _gaichuFirstTs(cid){ var o=_gaichuFirstAll(); return (o[cid] && o[cid].ts) ? o[cid].ts : 0; }
 function _gaichuLoadSummary(){
   var cfg=_gaichuCfg(); if(!cfg.url||!cfg.secret) return Promise.resolve();
   var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','summary');
   return _gaichuPost(cfg.url,fd).then(function(res){
-    _gaichuRepMap={}; _gaichuRepAtMap={};
-    if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; _gaichuRepAtMap[x.id]=x.repAt||0; });
+    _gaichuRepMap={}; if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; });
+    _gaichuUpdateFirstSeen();
   }).catch(function(){});
 }
 function _gaichuMarkListNew(){
@@ -16754,8 +16773,8 @@ function _gaichuMarkListNew(){
     else { if(has('n-'+rid)) chips.push(['公開中（納骨）','#2e7d32']); if(has('c-'+rid)) chips.push(['公開中（彫刻）','#6a3ea5']); if(has('t-'+rid)) chips.push(['公開中（追工）','#c2691c']); }
     var published=chips.length>0;
     var isNew=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; return rep>0 && rep>_gaichuSeenCount(cid); });
-    // 未読報告があり、かつ最新報告から24時間以内なら「新着（HOT）」
-    var hot=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=(_gaichuRepAtMap&&_gaichuRepAtMap[cid])||0; return rep>0 && rep>_gaichuSeenCount(cid) && at && (nowSec-at)<HOT; });
+    // 未読報告があり、かつ検知から24時間以内なら「新着（HOT）」（端末ローカルで判定）
+    var hot=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (nowSec-at)<HOT; });
     var ex=row.querySelector('.gp-listtag');
     if(!published && !isNew){ if(ex) ex.remove(); return; }
     var html='';

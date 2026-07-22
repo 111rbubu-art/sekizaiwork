@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>11, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>10, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -80,14 +80,14 @@ if ($action === 'summary') {
       if ($d === '.' || $d === '..' || substr($d,0,1)==='.') continue;
       $cd = $CASES_DIR.'/'.$d;
       if (!is_file($cd.'/case.json')) continue;
-      $rep = 0; $repAt = 0;
+      $rep = 0;
       $rdir = $cd.'/報告';
       if (is_dir($rdir)) foreach (scandir($rdir) as $f) {
-        if ($f !== '.' && $f !== '..' && substr($f,0,1) !== '.' && is_file($rdir.'/'.$f)) { $rep++; $mt=@filemtime($rdir.'/'.$f); if($mt>$repAt)$repAt=$mt; }
+        if ($f !== '.' && $f !== '..' && substr($f,0,1) !== '.' && is_file($rdir.'/'.$f)) $rep++;
       }
       $cm = is_file($cd.'/comments.json') ? json_decode(file_get_contents($cd.'/comments.json'), true) : array();
-      if (is_array($cm)) { $rep += count($cm); foreach($cm as $one){ if(isset($one['at'])){ $t=strtotime(preg_replace('/（.*$/u','',$one['at'])); if($t && $t>$repAt) $repAt=$t; } } }
-      $out[] = array('id'=>$d, 'rep'=>$rep, 'repAt'=>$repAt);
+      if (is_array($cm)) $rep += count($cm);
+      $out[] = array('id'=>$d, 'rep'=>$rep);
     }
   }
   out(array('ok'=>true, 'cases'=>$out));

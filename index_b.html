@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.305';
+var APP_VERSION = 'v1.9.306';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16662,7 +16662,7 @@ function _gaichuUpdateBtn(){
   var types=_gaichuTypesFor(mode);
   var labelOf={kouji:'工事',nok:'納骨',chokoku:'彫刻',tsuikou:'追工'};
   var refId=(d['id']||d['ID']);
-  var pub=[]; var names={}; var byType={}; var newAny=false; var syncedTypes=[]; var pendingSync=[];
+  var pub=[]; var names={}; var byType={}; var newAny=false; var doneAny=false; var syncedTypes=[]; var pendingSync=[];
   var COMPFIELD={kouji:'ConstructionCompletionDate',chokoku:'CompletionDate',tsuikou:'CompletionDate_tui'};
   var checks=types.map(function(type){
     var tid=_gaichuId(d,type);
@@ -16674,10 +16674,15 @@ function _gaichuUpdateBtn(){
         // 報告（報告/写真＋コメント）が既読数より多ければ新着
         var rep=(res.files||[]).filter(function(p){return p.indexOf('報告/')===0;}).length + (Array.isArray(res.comments)?res.comments.length:0);
         if(rep>0 && rep > _gaichuSeenCount(tid)) newAny=true;
-        // 完了報告があり、対応する完了日が空なら同期候補に
+        // 完了報告の検知：反映済み/却下済みは既読、未反映なら通知＋同期候補
         var cf=COMPFIELD[type];
-        if(res.progress && res.progress.done && res.progress.date && cf && !String(d[cf]||'').trim() && !_gaichuDeclinedHas(tid+'|'+res.progress.date)){
-          pendingSync.push({type:type, date:res.progress.date, tid:tid});
+        if(res.progress && res.progress.done && res.progress.date){
+          if((cf && String(d[cf]||'').trim()) || _gaichuDeclinedHas(tid+'|'+res.progress.date)){
+            _gaichuMarkDoneSeen(tid, res.progress.date);
+          } else {
+            doneAny=true;
+            if(cf) pendingSync.push({type:type, date:res.progress.date, tid:tid});
+          }
         }
         // 同期チェック：アプリの現在値とポータルのcase.jsonが違えば自動更新
         var local=_gaichuBuildCase(d,type);
@@ -16693,7 +16698,8 @@ function _gaichuUpdateBtn(){
     _gaichuPubNames=names; _gaichuPubFiles=byType; _gaichuPubTypes=Object.keys(byType); _gaichuMarkPublished();
     var b=document.getElementById('gaichu-pub-btn');
     if(!b) return;
-    var nb = newAny ? ' <span style="background:#e53935;color:#fff;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700">🆕報告</span>' : '';
+    var nb = (newAny ? ' <span style="background:#e53935;color:#fff;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700">🆕報告</span>' : '')
+           + (doneAny ? ' <span style="background:#1a7a3a;color:#fff;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700">🏁完了報告</span>' : '');
     if(pub.length){ b.style.background='#2e7d32'; b.innerHTML='🌐 公開中（'+pub.join('・')+'）'+nb; }
     else { b.style.background='#8a5a2b'; b.innerHTML='🌐 外注公開'; }
     if(syncedTypes.length) showSaveToast(true,'外注ポータルを同期（'+syncedTypes.join('・')+'）');
@@ -16703,6 +16709,7 @@ function _gaichuUpdateBtn(){
       if(confirm('外注から完了報告があります（'+_gaichuTypeLabel(ps.type)+'：'+ps.date+'）。\nアプリの'+(ps.type==='kouji'?'工事完了日':ps.type==='chokoku'?'彫刻完了日':'追工事完了日')+'に反映しますか？')){
         _gaichuSyncCompletion(d, ps.type, ps.date);
       } else { _gaichuDeclinedAdd(ps.tid+'|'+ps.date); }
+      _gaichuMarkDoneSeen(ps.tid, ps.date); // 確認した＝既読（🏁バッジを消す）
     });
   });
 }
@@ -16759,24 +16766,57 @@ function _gaichuUpdateFirstSeen(){
   if(changed) _gaichuFirstSave(o);
 }
 function _gaichuFirstTs(cid){ var o=_gaichuFirstAll(); return (o[cid] && o[cid].ts) ? o[cid].ts : 0; }
+// ===== 完了報告の通知管理（アプリのみ・端末ローカル）=====
+var _gaichuDoneMap=null; // { 区分ID: {done:bool, date:str} }
+function _gaichuDoneSeenAll(){ try{ return JSON.parse(localStorage.getItem('gaichuDoneSeen')||'{}')||{}; }catch(e){ return {}; } }
+function _gaichuDoneSeenDate(cid){ var o=_gaichuDoneSeenAll(); return o[cid]||''; }
+function _gaichuMarkDoneSeen(cid, date){ var o=_gaichuDoneSeenAll(); if(o[cid]!==date){ o[cid]=date; try{ localStorage.setItem('gaichuDoneSeen',JSON.stringify(o)); }catch(e){} try{ _gaichuMarkListNew(); }catch(e){} } }
+function _gaichuDoneUnread(cid){ if(!_gaichuDoneMap) return false; var m=_gaichuDoneMap[cid]; return !!(m && m.done && m.date && _gaichuDoneSeenDate(cid)!==m.date); }
+// 完了の初検知時刻（24時間の上位表示用）
+function _gaichuDoneFirstAll(){ try{ return JSON.parse(localStorage.getItem('gaichuDoneFirst')||'{}')||{}; }catch(e){ return {}; } }
+function _gaichuDoneFirstSave(o){ try{ localStorage.setItem('gaichuDoneFirst',JSON.stringify(o)); }catch(e){} }
+function _gaichuUpdateDoneFirst(){
+  if(!_gaichuDoneMap) return;
+  var o=_gaichuDoneFirstAll(), now=Math.floor(Date.now()/1000), changed=false;
+  Object.keys(_gaichuDoneMap).forEach(function(cid){
+    if(_gaichuDoneUnread(cid)){ var dt=_gaichuDoneMap[cid].date; if(!o[cid] || o[cid].date!==dt){ o[cid]={date:dt, ts:now}; changed=true; } }
+    else if(o[cid]){ delete o[cid]; changed=true; }
+  });
+  Object.keys(o).forEach(function(cid){ if(!Object.prototype.hasOwnProperty.call(_gaichuDoneMap,cid)){ delete o[cid]; changed=true; } });
+  if(changed) _gaichuDoneFirstSave(o);
+}
+function _gaichuDoneFirstTs(cid){ var o=_gaichuDoneFirstAll(); return (o[cid] && o[cid].ts) ? o[cid].ts : 0; }
+function _gaichuDoneHot(cid){ var at=_gaichuDoneFirstTs(cid); return _gaichuDoneUnread(cid) && at && (Math.floor(Date.now()/1000)-at)<24*3600; }
 // アイテム→ポータル区分ID（工事: k-／納骨: n-,c-,t-）
 function _gaichuItemPortalIds(d, mode){ var rid=d&&d['id']; if(!rid) return []; return (mode==='kouji')?['k-'+rid]:['n-'+rid,'c-'+rid,'t-'+rid]; }
-// このアイテムに未読報告があり、検知から24時間以内か（トップ画面/一覧の上位表示用）
+// このアイテムに未読の報告/完了があり、検知から24時間以内か（トップ画面/一覧の上位表示用）
 function _gaichuItemHot(d, mode){
-  if(!_gaichuRepMap) return false;
+  if(!_gaichuRepMap && !_gaichuDoneMap) return false;
   var now=Math.floor(Date.now()/1000);
-  return _gaichuItemPortalIds(d,mode).some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600; });
+  return _gaichuItemPortalIds(d,mode).some(function(cid){
+    var rep=(_gaichuRepMap&&_gaichuRepMap[cid])||0; var at=_gaichuFirstTs(cid);
+    var repHot = rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600;
+    return repHot || _gaichuDoneHot(cid);
+  });
 }
 // 新着報告→新規登録→その他 の順に並べる比較関数を返す
 function _reportFirstCmp(mode){ return function(a,b){ var ha=_gaichuItemHot(a,mode)?0:1, hb=_gaichuItemHot(b,mode)?0:1; if(ha!==hb) return ha-hb; return _newFirstCmp(a,b); }; }
-// トップ画面用の🆕報告バッジ（新着24時間のみ）
-function _gaichuMenuRepBadge(d, mode){ return _gaichuItemHot(d,mode) ? '<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🆕報告</span>' : ''; }
+// トップ画面用のバッジ（新着24時間のみ）：🆕報告／🏁完了報告
+function _gaichuMenuRepBadge(d, mode){
+  var ids=_gaichuItemPortalIds(d,mode), now=Math.floor(Date.now()/1000), html='';
+  if(ids.some(function(cid){ var rep=(_gaichuRepMap&&_gaichuRepMap[cid])||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600; }))
+    html+='<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🆕報告</span>';
+  if(ids.some(_gaichuDoneHot))
+    html+='<span style="background:#1a7a3a;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🏁完了報告</span>';
+  return html;
+}
 function _gaichuLoadSummary(){
   var cfg=_gaichuCfg(); if(!cfg.url||!cfg.secret) return Promise.resolve();
   var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','summary');
   return _gaichuPost(cfg.url,fd).then(function(res){
-    _gaichuRepMap={}; if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; });
-    _gaichuUpdateFirstSeen();
+    _gaichuRepMap={}; _gaichuDoneMap={};
+    if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; _gaichuDoneMap[x.id]={done:!!x.done, date:x.cdate||''}; });
+    _gaichuUpdateFirstSeen(); _gaichuUpdateDoneFirst();
   }).catch(function(){});
 }
 function _gaichuMarkListNew(){
@@ -16795,17 +16835,22 @@ function _gaichuMarkListNew(){
     var isNew=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; return rep>0 && rep>_gaichuSeenCount(cid); });
     // 未読報告があり、かつ検知から24時間以内なら「新着（HOT）」（端末ローカルで判定）
     var hot=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (nowSec-at)<HOT; });
+    var doneNew=ids.some(_gaichuDoneUnread);   // 未読の完了報告
+    var doneHot=ids.some(_gaichuDoneHot);      // 24時間以内の完了報告
     var ex=row.querySelector('.gp-listtag');
-    if(!published && !isNew){ if(ex) ex.remove(); return; }
+    if(!published && !isNew && !doneNew){ if(ex) ex.remove(); return; }
     var html='';
     chips.forEach(function(cp){ html+='<span style="background:'+cp[1]+';color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:8px;line-height:1.5">'+cp[0]+'</span>'; });
     if(isNew){
       var fs=hot?'18px':'9px', pad=hot?'4px 12px':'2px 6px', br=hot?'11px':'8px';
       html+='<span style="background:#e53935;color:#fff;font-size:'+fs+';font-weight:700;padding:'+pad+';border-radius:'+br+';line-height:1.4;box-shadow:0 1px 3px rgba(0,0,0,.3)">🆕報告</span>';
     }
+    if(doneNew){
+      html+='<span style="background:#1a7a3a;color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:8px;line-height:1.5;box-shadow:0 1px 3px rgba(0,0,0,.3)">🏁完了報告</span>';
+    }
     if(!ex){ ex=document.createElement('div'); ex.className='gp-listtag'; }
     ex.innerHTML=html;
-    if(hot) hotRows.push(row);
+    if(hot || doneHot) hotRows.push(row);
     // 工事：右上バッジ列（納期/契約）の中に差し込んで重なりを防ぐ。無ければ絶対配置にフォールバック
     var host=(mode==='kouji') ? row.querySelector('.gp-rightcol') : null;
     if(host){

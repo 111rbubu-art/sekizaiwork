@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>10, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>11, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -87,7 +87,11 @@ if ($action === 'summary') {
       }
       $cm = is_file($cd.'/comments.json') ? json_decode(file_get_contents($cd.'/comments.json'), true) : array();
       if (is_array($cm)) $rep += count($cm);
-      $out[] = array('id'=>$d, 'rep'=>$rep);
+      // 完了報告（progress.json）: 完了フラグと完了日（アプリの🏁完了報告バッジ用）
+      $pg = is_file($cd.'/progress.json') ? json_decode(file_get_contents($cd.'/progress.json'), true) : null;
+      $done = ($pg && !empty($pg['done']));
+      $cdate = ($done && isset($pg['date'])) ? $pg['date'] : '';
+      $out[] = array('id'=>$d, 'rep'=>$rep, 'done'=>$done, 'cdate'=>$cdate);
     }
   }
   out(array('ok'=>true, 'cases'=>$out));

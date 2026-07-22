@@ -1302,6 +1302,8 @@ function _menuSearchRenderInCard(q, ql) {
 
 function loadMenuNauchi() {
   if (!_loginSurname) initTantoFilter();
+  // 外注報告サマリが未取得なら1回だけ取得して再描画（トップ画面でも新着報告を上位表示するため）
+  if (_gaichuRepMap===null){ var _gc=_gaichuCfg(); if(_gc.url&&_gc.secret){ _gaichuLoadSummary().then(function(){ var ms=document.getElementById('menu-screen'); if(ms && !ms.classList.contains('hidden')) loadMenuNauchi(); }); } }
   var cacheNok = _menuSearchCache['noukotsu'] || [];
   var cacheKouji = _menuSearchCache['kouji'] || [];
 
@@ -1310,13 +1312,14 @@ function loadMenuNauchi() {
   if (nokDiv) {
     var nokItems = cacheNok.filter(function(d){
       if (d['_x524a__x9664_'] === true) return false;
+      if (_gaichuItemHot(d,'noukotsu')) return true; // 🆕新着報告は最上位で表示
       if (_isNewItem(d)) return true; // 🆕新規は社内連絡が無くても表示
       if (!d['InternalCommunication']) return false;
       if (_tantoFilterOn && _loginSurname && !d['InternalCommunication'].includes(_loginSurname)) return false;
       return true;
     });
-    // 🆕新規登録を上位に、新規どうしは新しい順
-    nokItems.sort(_newFirstCmp);
+    // 🆕新着報告→新規登録→その他 の順
+    nokItems.sort(_reportFirstCmp('noukotsu'));
     var nokBadge = document.getElementById('menu-badge-nok');
     if (nokBadge) { if(nokItems.length>0){nokBadge.textContent=nokItems.length+'件';nokBadge.style.display='';}else{nokBadge.style.display='none';} }
     if (nokItems.length > 0) {
@@ -1332,6 +1335,7 @@ function loadMenuNauchi() {
           'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
           'onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
           '<div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:4px;margin-bottom:2px">' +
+            _gaichuMenuRepBadge(d,'noukotsu') +
             _newBadgeHtml(d) +
             '<span style="font-size:13px;font-weight:700;color:#1a2535">' + kakeDisp + '</span>' +
             '<span style="font-size:11px;color:#555">' + name + '</span>' +
@@ -1353,13 +1357,14 @@ function loadMenuNauchi() {
   if (koujiDiv) {
     var koujiItems = cacheKouji.filter(function(d){
       if (d['endinfo']) return false;
+      if (_gaichuItemHot(d,'kouji')) return true; // 🆕新着報告は最上位で表示
       if (_isNewItem(d)) return true; // 🆕新規は社内連絡が無くても表示
       if (!d['InternalCommunication']) return false;
       if (_tantoFilterOn && _loginSurname && !d['InternalCommunication'].includes(_loginSurname)) return false;
       return true;
     });
-    // 🆕新規登録を上位に、新規どうしは新しい順
-    koujiItems.sort(_newFirstCmp);
+    // 🆕新着報告→新規登録→その他 の順
+    koujiItems.sort(_reportFirstCmp('kouji'));
     var kBadge = document.getElementById('menu-badge-kouji');
     if (kBadge) { if(koujiItems.length>0){kBadge.textContent=koujiItems.length+'件';kBadge.style.display='';}else{kBadge.style.display='none';} }
     // 描画後に高さ揃え
@@ -1376,6 +1381,7 @@ function loadMenuNauchi() {
           'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
           'onmouseover="this.style.background=\'#f5f8ff\'" onmouseout="this.style.background=\'\'">' +
           '<div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:4px;margin-bottom:2px">' +
+            _gaichuMenuRepBadge(d,'kouji') +
             _newBadgeHtml(d) +
             '<span style="font-size:13px;font-weight:700;color:#1a2535">' + kakeDisp + '</span>' +
             '<span style="font-size:11px;color:#555">' + name + '</span>' +
@@ -5856,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.303';
+var APP_VERSION = 'v1.9.304';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16751,6 +16757,18 @@ function _gaichuUpdateFirstSeen(){
   if(changed) _gaichuFirstSave(o);
 }
 function _gaichuFirstTs(cid){ var o=_gaichuFirstAll(); return (o[cid] && o[cid].ts) ? o[cid].ts : 0; }
+// アイテム→ポータル区分ID（工事: k-／納骨: n-,c-,t-）
+function _gaichuItemPortalIds(d, mode){ var rid=d&&d['id']; if(!rid) return []; return (mode==='kouji')?['k-'+rid]:['n-'+rid,'c-'+rid,'t-'+rid]; }
+// このアイテムに未読報告があり、検知から24時間以内か（トップ画面/一覧の上位表示用）
+function _gaichuItemHot(d, mode){
+  if(!_gaichuRepMap) return false;
+  var now=Math.floor(Date.now()/1000);
+  return _gaichuItemPortalIds(d,mode).some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600; });
+}
+// 新着報告→新規登録→その他 の順に並べる比較関数を返す
+function _reportFirstCmp(mode){ return function(a,b){ var ha=_gaichuItemHot(a,mode)?0:1, hb=_gaichuItemHot(b,mode)?0:1; if(ha!==hb) return ha-hb; return _newFirstCmp(a,b); }; }
+// トップ画面用の🆕報告バッジ（新着24時間のみ）
+function _gaichuMenuRepBadge(d, mode){ return _gaichuItemHot(d,mode) ? '<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🆕報告</span>' : ''; }
 function _gaichuLoadSummary(){
   var cfg=_gaichuCfg(); if(!cfg.url||!cfg.secret) return Promise.resolve();
   var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','summary');

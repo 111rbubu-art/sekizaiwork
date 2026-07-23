@@ -97,13 +97,16 @@ if (is_dir($CASES_DIR)) {
     $c['_groups'] = collect_groups($cp, $d);
     $c['_prog']   = load_progress($cp);
     $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告のみ完了扱い
-    // NEWラベル：初回登録から7日以内は静止、1日目（24時間以内）は点滅＋タブNEW
-    // （.createdが無い旧案件はcase.jsonの更新時刻で代用）
-    $cts  = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : @filemtime($jsonPath);
+    // NEWラベル：初回登録(.created)から7日以内は静止、1日目（24時間以内）は点滅＋タブNEW
+    // （.createdが無い旧案件は判定しない＝updatecaseでの誤再点灯を防止。updatecase側で.createdを補完）
+    $cts  = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : 0;
     $age  = $cts ? (time() - $cts) : PHP_INT_MAX;
-    $c['_new']  = ($age < 7*86400);
-    $c['_new1'] = ($age < 1*86400);
+    $c['_new']  = ($cts && $age < 7*86400);
+    $c['_new1'] = ($cts && $age < 1*86400);
     if ($c['_new1']) $newToday[$type]++;
+    // 状態更新New（.statetimeから24時間）
+    $sts = is_file($cp.'/.statetime') ? intval(trim(file_get_contents($cp.'/.statetime'))) : 0;
+    $c['_stateNew'] = ($sts && (time() - $sts) < 86400);
     if ($c['_eff'] === 'open') $openCount[$type]++;
     $cases[$type][] = $c;
   }
@@ -158,7 +161,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo '<span class="due"><span class="tag">納骨日</span> <b class="tnum">'.h(!empty($c['date'])?$c['date']:'—').'</b>';
     if (!empty($c['time'])) echo ' <b class="tnum">'.h($c['time']).'</b>';
     echo '</span>';
-    if (!empty($c['state'])) echo '<span class="chip state">'.h($c['state']).'</span>';
+    if (!empty($c['state'])) echo '<span class="chip state">'.h($c['state']).'</span>'.(!empty($c['_stateNew'])?'<span class="rnew blink">New</span>':'');
     echo '</div>';
     echo '<div class="subttl">';
     if ($temple !== '') echo '<span class="temple">'.h($temple).'</span>　';
@@ -181,7 +184,7 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
     echo h($head).'</h2>';
     echo '<div class="chips">';
     if (!empty($c['category'])) echo '<span class="chip">'.h($c['category']).'</span>';
-    if (!empty($c['workStatus'])) echo '<span class="chip work">'.h($c['workStatus']).'</span>';
+    if (!empty($c['workStatus'])) echo '<span class="chip work">'.h($c['workStatus']).'</span>'.(!empty($c['_stateNew'])?'<span class="rnew blink">New</span>':'');
     echo '</div>';
     echo '<div class="srow">';
     if ($status === 'done') echo '<span class="pill done">完了</span>';

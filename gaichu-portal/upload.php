@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>13, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>14, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -70,6 +70,29 @@ if ($action === 'list') {
     }
   }
   out(array('ok'=>true, 'cases'=>$ids));
+}
+
+// ---- listall: 公開中の全案件の詳細（case/ファイル/コメント/完了）をまとめて返す（アプリの公開まとめ用）----
+if ($action === 'listall') {
+  $out = array();
+  if (is_dir($CASES_DIR)) {
+    foreach (scandir($CASES_DIR) as $d) {
+      if ($d === '.' || $d === '..' || substr($d,0,1)==='.') continue;
+      $cd = $CASES_DIR.'/'.$d;
+      if (!is_file($cd.'/case.json')) continue;
+      $c  = json_decode(file_get_contents($cd.'/case.json'), true);
+      if (!is_array($c)) continue;
+      $cm = is_file($cd.'/comments.json') ? json_decode(file_get_contents($cd.'/comments.json'), true) : array();
+      $pg = is_file($cd.'/progress.json') ? json_decode(file_get_contents($cd.'/progress.json'), true) : null;
+      $out[] = array(
+        'id'=>$d, 'case'=>$c,
+        'files'=>list_case_files($cd),
+        'comments'=>(is_array($cm)?$cm:array()),
+        'progress'=>(is_array($pg)?$pg:null)
+      );
+    }
+  }
+  out(array('ok'=>true, 'cases'=>$out));
 }
 
 // ---- summary: 公開中の全案件の報告件数（報告写真＋コメント）一覧（一覧リストの新着表示用）----

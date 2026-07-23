@@ -1,4 +1,4 @@
-var CACHE = 'sekizai-v5';
+var CACHE = 'sekizai-v6';
 var FILES = ['./', './index.html', './index_b.html', './manifest.json'];
 
 self.addEventListener('install', function(e) {
@@ -34,10 +34,14 @@ self.addEventListener('fetch', function(e) {
   try { url = new URL(req.url); } catch (err) { return; }
   if (url.origin !== self.location.origin) return;
 
+  // HTML/ナビゲーションは HTTPキャッシュを回避して常に最新を取得（GitHub Pagesのmax-age対策）
+  var isDoc = req.mode === 'navigate' || /\.html($|\?)/.test(url.pathname) || url.pathname === '/' || /\/$/.test(url.pathname);
+  var netReq = isDoc ? new Request(req, { cache: 'reload' }) : req;
+
   // 同一オリジンのみ: ネットワーク優先 → 失敗時のみキャッシュにフォールバック。
   // 必ず有効な Response を返す（undefinedを返さない）。
   e.respondWith(
-    fetch(req).catch(function() {
+    fetch(netReq).catch(function() {
       return caches.match(req).then(function(cached) {
         if (cached) return cached;
         return caches.match('./index.html').then(function(fallback) {

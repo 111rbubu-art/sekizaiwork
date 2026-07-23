@@ -5866,7 +5866,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.316';
+var APP_VERSION = 'v1.9.317';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11187,8 +11187,53 @@ function renderKoujiDataTab(d) {
   }
 
   // 写真・図面（default）
-  b.innerHTML = statusFilesHtml + subtabHtml + renderHakaSpecPhotosShell();
+  b.innerHTML = statusFilesHtml + subtabHtml + _koujiKanryoZoneHtml(itemId) + renderHakaSpecPhotosShell();
   setTimeout(function(){ renderHakaSpecPhotoList(d, _hakaSpecPhotoCat); }, 30);
+}
+
+// 「工事完了」写真の一括登録ゾーン（現場写真フォルダーへ 日付_工事完了_番号 で保存）
+function _koujiKanryoZoneHtml(itemId){
+  return '<div ondragover="event.preventDefault();this.style.background=\'#dbeeda\'" ondragleave="this.style.background=\'#eef7ee\'" ondrop="handleKoujiKanryoDrop(event)" '+
+    'style="margin-bottom:12px;border:2px dashed #2a6a2a;border-radius:10px;background:#eef7ee;padding:12px;display:flex;gap:10px;align-items:center">'+
+    '<div style="flex:1;font-size:12.5px;color:#2a6a2a;line-height:1.4"><b>🏁 工事完了 写真を登録</b><br><span style="font-size:11px;color:#4a7a4a">「現場写真」フォルダーへ、<b>日付_工事完了_番号</b> の名前で保存します</span></div>'+
+    '<button type="button" onclick="document.getElementById(\'kouji-kanryo-file-'+itemId+'\').click()" style="flex-shrink:0;background:#2a6a2a;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">＋ 登録</button>'+
+    '<input type="file" id="kouji-kanryo-file-'+itemId+'" multiple accept="image/*,application/pdf" capture="environment" style="display:none" onchange="handleKoujiKanryoInput(this)">'+
+  '</div>';
+}
+function handleKoujiKanryoInput(input){ var files=Array.prototype.slice.call(input.files); if(files.length) uploadKoujiKanryoFiles(files); input.value=''; }
+function handleKoujiKanryoDrop(e){ e.preventDefault(); e.currentTarget.style.background='#eef7ee'; var files=(e.dataTransfer&&e.dataTransfer.files)?Array.prototype.slice.call(e.dataTransfer.files):[]; if(files.length) uploadKoujiKanryoFiles(files); }
+// 現場写真フォルダーへ 日付_工事完了_連番 で保存
+function uploadKoujiKanryoFiles(files){
+  if(!currentItem){ showSaveToast(false,'工事が選択されていません'); return; }
+  var d=currentItem; var fp=d['Folder_Pass']||d['FolderPass']||'';
+  if(!fp){ showSaveToast(false,'Folder_Pass がありません'); return; }
+  var targetPath = fp + '/' + _hakaSpecCatSubPath('現場写真'); // 工事仕様/現場写真
+  var t=new Date(); var ymd=''+t.getFullYear()+('0'+(t.getMonth()+1)).slice(-2)+('0'+t.getDate()).slice(-2);
+  var prefix = ymd + '_工事完了_';
+  var _token='';
+  showSaveToast(null,'工事完了写真を登録中…');
+  ensureHakaSpecFolder(d,'現場写真').then(function(){ return getToken(); }).then(function(resp){
+    _token=resp.accessToken;
+    var enc=targetPath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/children?$select=name&$top=999',{headers:{Authorization:'Bearer '+_token}})
+      .then(function(r){ return r.ok?r.json():{value:[]}; }).catch(function(){ return {value:[]}; });
+  }).then(function(listing){
+    var n=0; (listing.value||[]).forEach(function(it){ if(it.name && it.name.indexOf(prefix)===0) n++; });
+    return files.reduce(function(chain,file){
+      return chain.then(function(){
+        n++;
+        var ext=(String(file.name).split('.').pop()||'jpg').toLowerCase();
+        var saveName=prefix+('0'+n).slice(-2)+'.'+ext;
+        var enc=targetPath.split('/').map(encodeURIComponent).join('/');
+        return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+'/'+encodeURIComponent(saveName)+':/content',{
+          method:'PUT',headers:{Authorization:'Bearer '+_token,'Content-Type':file.type||'application/octet-stream'},body:file
+        }).then(function(r){ if(!r.ok) return r.text().then(function(tx){throw new Error(saveName+': '+tx.substring(0,120));}); });
+      });
+    }, Promise.resolve());
+  }).then(function(){
+    showSaveToast(true, files.length+'件を「工事完了」として現場写真に登録しました');
+    setTimeout(function(){ if(document.getElementById('haka-spec-photo-area')){ _hakaSpecPhotoCat='現場写真'; renderHakaSpecPhotoList(currentItem,'現場写真'); } }, 800);
+  }).catch(function(e){ showSaveToast(false,'登録エラー: '+(e.message||e)); });
 }
 
 function switchKoujiDataSubtab(name) {

@@ -90,7 +90,7 @@ if ($action === 'comment') {
   if ($text === '') fail('empty text');
   if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
   $c = load_comments($caseDir);
-  $c[] = array('name'=>poster_name(), 'at'=>date('Y-m-d H:i'), 'text'=>$text);
+  $c[] = array('name'=>poster_name(), 'at'=>date('Y-m-d H:i'), 'text'=>$text, 'side'=>'gaichu');
   file_put_contents($caseDir.'/comments.json', json_encode($c, JSON_UNESCAPED_UNICODE));
   out(array('ok'=>true));
 }
@@ -101,6 +101,7 @@ if ($action === 'editcomment') {
   $text = trim(isset($_POST['text']) ? $_POST['text'] : '');
   $c = load_comments($caseDir);
   if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  if (isset($c[$idx]['side']) && $c[$idx]['side'] === 'shoji') fail('庄司石材の投稿は編集できません'); // 相手の投稿は不可
   if ($text === '') fail('empty text');
   if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
   $c[$idx]['text'] = $text;
@@ -114,6 +115,7 @@ if ($action === 'delcomment') {
   $idx = isset($_POST['idx']) ? intval($_POST['idx']) : -1;
   $c = load_comments($caseDir);
   if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  if (isset($c[$idx]['side']) && $c[$idx]['side'] === 'shoji') fail('庄司石材の投稿は削除できません'); // 相手の投稿は不可
   array_splice($c, $idx, 1);
   file_put_contents($caseDir.'/comments.json', json_encode(array_values($c), JSON_UNESCAPED_UNICODE));
   out(array('ok'=>true));

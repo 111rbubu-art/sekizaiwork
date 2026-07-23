@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>11, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','summary','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>12, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -213,6 +213,44 @@ if ($action === 'comments') {
   $p = $caseDir.'/comments.json';
   $c = is_file($p) ? json_decode(file_get_contents($p), true) : array();
   out(array('ok'=>true, 'comments'=>is_array($c)?$c:array()));
+}
+
+// ---- 庄司側チャット：comments.json への投稿/編集/削除（side=shoji のみ操作可）----
+function _gp_load_comments($caseDir){ $p=$caseDir.'/comments.json'; $j=is_file($p)?json_decode(file_get_contents($p),true):array(); return is_array($j)?$j:array(); }
+function _gp_save_comments($caseDir,$c){ file_put_contents($caseDir.'/comments.json', json_encode(array_values($c), JSON_UNESCAPED_UNICODE)); }
+if ($action === 'addcomment') {
+  if (!is_dir($caseDir)) fail('case not found', 404);
+  $text = trim(isset($_POST['text']) ? $_POST['text'] : '');
+  if ($text === '') fail('empty text');
+  if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
+  $c = _gp_load_comments($caseDir);
+  $c[] = array('name'=>'庄司石材', 'at'=>date('Y-m-d H:i'), 'text'=>$text, 'side'=>'shoji');
+  _gp_save_comments($caseDir, $c);
+  out(array('ok'=>true, 'comments'=>$c));
+}
+if ($action === 'editcomment') {
+  if (!is_dir($caseDir)) fail('case not found', 404);
+  $idx = isset($_POST['idx']) ? intval($_POST['idx']) : -1;
+  $text = trim(isset($_POST['text']) ? $_POST['text'] : '');
+  $c = _gp_load_comments($caseDir);
+  if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  if (!isset($c[$idx]['side']) || $c[$idx]['side'] !== 'shoji') fail('not editable'); // 庄司の投稿のみ
+  if ($text === '') fail('empty text');
+  if (mb_strlen($text) > 2000) $text = mb_substr($text, 0, 2000);
+  $c[$idx]['text'] = $text;
+  $c[$idx]['at']   = date('Y-m-d H:i') . '（編集）';
+  _gp_save_comments($caseDir, $c);
+  out(array('ok'=>true, 'comments'=>$c));
+}
+if ($action === 'delcomment') {
+  if (!is_dir($caseDir)) fail('case not found', 404);
+  $idx = isset($_POST['idx']) ? intval($_POST['idx']) : -1;
+  $c = _gp_load_comments($caseDir);
+  if ($idx < 0 || $idx >= count($c)) fail('index out of range');
+  if (!isset($c[$idx]['side']) || $c[$idx]['side'] !== 'shoji') fail('not deletable'); // 庄司の投稿のみ
+  array_splice($c, $idx, 1);
+  _gp_save_comments($caseDir, $c);
+  out(array('ok'=>true, 'comments'=>$c));
 }
 
 // ---- updatecase: 既存案件の case.json だけ差し替え（ファイルは触らない）----

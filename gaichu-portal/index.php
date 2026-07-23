@@ -281,7 +281,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   global $CASES_DIR;
   $caseDir = $CASES_DIR . '/' . $id;
   echo '<div class="report" data-case="'.h($id).'">';
-  echo '<div class="rlbl">📮 報告（→庄司石材）</div>';
+  echo '<div class="rlbl">📮 やりとり（庄司石材）</div>';
   echo '<div class="rphotos">';
   foreach ($files as $f) {
     $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']);
@@ -296,16 +296,19 @@ function render_report($id, $files, $comments, $IMG_EXT){
     }
   }
   echo '</div>';
+  $total = count($comments); $showFrom = ($total > 2) ? $total - 2 : 0;
   echo '<div class="clist">';
+  if ($total > 2) echo '<button type="button" class="cmore" onclick="chatMore(this)">▼ これまでのやり取りを表示（残り'.($total-2).'件）</button>';
   foreach ($comments as $i => $cm) {
-    $nm = isset($cm['name']) ? $cm['name'] : '';
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
+    $mine = !(isset($cm['side']) && $cm['side']==='shoji'); // ポータル＝外注視点：side未指定/gaichu＝自分（右）
     $cNew = _rep_is_new_ts(_rep_comment_ts($at)) ? '<span class="rnew blink">New</span>' : '';
-    echo '<div class="cmt" data-idx="'.$i.'"><div class="cmeta"><span>'.h($at).' '.$cNew.'</span>'
-       . '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button>'
-       . '<button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span></div>'
-       . '<p>'.nl2br(h($tx)).'</p></div>';
+    $cls = 'cmt '.($mine?'me':'them').($i < $showFrom ? ' old hide' : '');
+    echo '<div class="'.$cls.'" data-idx="'.$i.'">';
+    echo '<div class="cmeta"><span class="cwho">'.($mine?'自分':'庄司石材').'</span><span>'.h($at).' '.$cNew.'</span>';
+    if ($mine) echo '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button><button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span>';
+    echo '</div><div class="bubble">'.nl2br(h($tx)).'</div></div>';
   }
   echo '</div>';
   echo '<div class="radd">'
@@ -438,15 +441,20 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .rnew { display:inline-block; background:#e53935; color:#fff; font-family:var(--sans); font-size:8px; font-weight:700; padding:1px 4px; border-radius:6px; letter-spacing:.02em; }
   .rthumb .rnew { position:absolute; top:2px; left:2px; }
   .filenew { position:absolute; top:3px; left:3px; z-index:1; background:#e53935; color:#fff; font-family:var(--sans); font-size:8px; font-weight:700; padding:1px 5px; border-radius:6px; letter-spacing:.02em; }
-  .clist { display:flex; flex-direction:column; gap:7px; margin:9px 0; }
-  .cmt { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
-  .cmt .cmeta { display:flex; gap:8px; align-items:center; font-size:11px; flex-wrap:wrap; }
-  .cmt .cmeta b { font-size:12px; } .cmt .cmeta span { color:var(--faint); }
-  .cmt .cact { margin-left:auto; display:flex; gap:6px; }
-  .cmt .cact button { background:var(--surface); border:1px solid var(--line); border-radius:7px; cursor:pointer; font-size:11px; font-weight:700; padding:4px 9px; color:var(--muted); font-family:var(--sans); line-height:1.4; }
-  .cmt .cact .cedit:active { border-color:var(--accent); color:var(--accent); }
-  .cmt .cact .cdel { color:var(--iron); border-color:color-mix(in srgb,var(--iron) 35%,var(--line)); }
-  .cmt p { margin:3px 0 0; font-size:13px; white-space:pre-wrap; }
+  .hide { display:none !important; }
+  .clist { display:flex; flex-direction:column; gap:8px; margin:9px 0; }
+  .cmore { align-self:center; font-size:11px; font-weight:700; color:var(--accent); background:var(--accent-soft); border:1px solid color-mix(in srgb,var(--accent) 24%,transparent); border-radius:20px; padding:4px 14px; cursor:pointer; font-family:var(--sans); }
+  .cmt { display:flex; flex-direction:column; max-width:85%; }
+  .cmt.them { align-self:flex-start; align-items:flex-start; }
+  .cmt.me { align-self:flex-end; align-items:flex-end; }
+  .cmt .cmeta { display:flex; gap:6px; align-items:center; font-size:10px; color:var(--faint); margin:0 3px 2px; flex-wrap:wrap; }
+  .cmt .cwho { font-weight:700; color:var(--muted); }
+  .cmt .cact { display:flex; gap:8px; }
+  .cmt .cact button { background:none; border:none; cursor:pointer; font-size:11px; color:var(--muted); font-family:var(--sans); padding:0; }
+  .cmt .cact .cdel { color:var(--iron); }
+  .cmt .bubble { font-size:13px; line-height:1.55; padding:8px 11px; border-radius:14px; white-space:pre-wrap; }
+  .cmt.them .bubble { background:var(--surface-2); border:1px solid var(--line); border-top-left-radius:4px; }
+  .cmt.me .bubble { background:color-mix(in srgb,var(--green) 15%,var(--surface)); border:1px solid color-mix(in srgb,var(--green) 34%,transparent); border-top-right-radius:4px; }
   .radd { display:flex; gap:7px; align-items:flex-end; margin-top:8px; }
   .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700; cursor:pointer; }
   .rcinput { flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-size:14px; color:var(--ink); font-family:var(--sans); line-height:1.55; resize:vertical; min-height:42px; max-height:200px; overflow-y:auto; }
@@ -524,13 +532,17 @@ function render_report($id, $files, $comments, $IMG_EXT){
         if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
         return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
       }).join('');
-      cl.innerHTML=(res.comments||[]).map(function(cm,i){
-        return '<div class="cmt" data-idx="'+i+'"><div class="cmeta"><span>'+_esc(cm.at)+'</span>'+
-          '<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button>'+
-          '<button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span></div><p>'+_esc(cm.text)+'</p></div>';
+      var cms=res.comments||[]; var total=cms.length; var showFrom=total>2?total-2:0;
+      var more=total>2?'<button type="button" class="cmore" onclick="chatMore(this)">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
+      cl.innerHTML=more+cms.map(function(cm,i){
+        var mine=!(cm.side==='shoji');
+        var cls='cmt '+(mine?'me':'them')+(i<showFrom?' old hide':'');
+        var acts=mine?'<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button><button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span>':'';
+        return '<div class="'+cls+'" data-idx="'+i+'"><div class="cmeta"><span class="cwho">'+(mine?'自分':'庄司石材')+'</span><span>'+_esc(cm.at)+'</span>'+acts+'</div><div class="bubble">'+_esc(cm.text)+'</div></div>';
       }).join('');
     }).catch(function(){});
   }
+  function chatMore(btn){ var cl=btn.parentNode; var exp=cl.classList.toggle('expanded'); cl.querySelectorAll('.old').forEach(function(m){ m.classList.toggle('hide',!exp); }); var n=cl.querySelectorAll('.old').length; btn.textContent=exp?'▲ 折りたたむ':'▼ これまでのやり取りを表示（残り'+n+'件）'; }
   function repGrow(t){ t.style.height='auto'; t.style.height=Math.min(t.scrollHeight,200)+'px'; }
   function repComment(id){
     var inp=document.getElementById('rc-'+id); var t=(inp.value||'').trim(); if(!t) return;
@@ -540,7 +552,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
     }).catch(function(){ alert('送信に失敗しました'); });
   }
   function repEditComment(id, idx){
-    var box=document.querySelector('.report[data-case="'+id+'"] .cmt[data-idx="'+idx+'"] p');
+    var box=document.querySelector('.report[data-case="'+id+'"] .cmt[data-idx="'+idx+'"] .bubble');
     var cur=box?box.textContent:'';
     var t=prompt('コメントを編集', cur); if(t===null) return; t=t.trim(); if(!t) return;
     var fd=new FormData(); fd.append('action','editcomment'); fd.append('case',id); fd.append('idx',idx); fd.append('text',t);

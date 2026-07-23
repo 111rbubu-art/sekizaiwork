@@ -96,7 +96,9 @@ if (is_dir($CASES_DIR)) {
     $c['_id']     = $d;
     $c['_groups'] = collect_groups($cp, $d);
     $c['_prog']   = load_progress($cp);
-    $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告のみ完了扱い
+    $c['_eff']    = ($c['_prog'] && !empty($c['_prog']['done'])) ? 'done' : 'open'; // 完了報告→完了
+    // 納骨は納骨日が過ぎたら完了扱い（完了タブへ）
+    if ($c['_eff']==='open' && $type==='nok' && !empty($c['sortDate']) && $c['sortDate'] < date('Y-m-d')) $c['_eff']='done';
     // NEWラベル：初回登録(.created)から7日以内は静止、1日目（24時間以内）は点滅＋タブNEW
     // （.createdが無い旧案件は判定しない＝updatecaseでの誤再点灯を防止。updatecase側で.createdを補完）
     $cts  = is_file($cp.'/.created') ? intval(trim(file_get_contents($cp.'/.created'))) : 0;
@@ -150,6 +152,8 @@ function render_card($c, $GROUP_ORDER, $IMG_EXT){
   // 完了報告(progress.json)があれば完了扱い（完了タブへ）
   $prog = isset($c['_prog']) ? $c['_prog'] : load_progress($caseDir);
   if ($prog && !empty($prog['done'])) $status = 'done';
+  // 納骨は納骨日が過ぎたら完了扱い（完了タブへ）
+  if ($status !== 'done' && $isNok && !empty($c['sortDate']) && $c['sortDate'] < date('Y-m-d')) $status = 'done';
 
   echo '<article class="card" data-st="'.h($status).'">';
   echo '<div class="head">';

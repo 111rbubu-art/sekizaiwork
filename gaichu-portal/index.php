@@ -26,6 +26,8 @@
  */
 
 mb_internal_encoding('UTF-8');
+// このファイル(index.php)のバージョン。画面下部に表示するので、更新時はここを上げること。
+$PORTAL_VER = 'v1.0.3';
 $BASE      = __DIR__;
 $CASES_DIR = $BASE . '/cases';
 $IMG_EXT   = array('jpg','jpeg','png','gif','webp','bmp','heic','heif');
@@ -430,6 +432,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .updated { margin-left:auto; font-size:11px; color:var(--faint); }
   .empty { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:26px 16px; text-align:center; color:var(--muted); font-size:13.5px; margin-top:16px; box-shadow:var(--shadow); }
   footer { text-align:center; color:var(--faint); font-size:11px; margin-top:22px; }
+  footer .ver { display:block; margin-top:3px; font-size:10px; opacity:.75; letter-spacing:.04em; }
   .hidden { display:none; }
 
   #lightbox { display:none; position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.82); align-items:center; justify-content:center; padding:16px; }
@@ -521,7 +524,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
     </div>
     <?php endforeach; ?>
 
-    <footer>庄司石材 外注ポータル — 閲覧専用</footer>
+    <footer>庄司石材 外注ポータル — 閲覧専用<span class="ver"><?php echo h($PORTAL_VER); ?> (<?php echo date('Y/m/d H:i', @filemtime(__FILE__)); ?>)</span></footer>
   </div>
 </div>
 

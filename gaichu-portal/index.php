@@ -372,6 +372,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .seg { display:inline-flex; background:var(--surface); border:1px solid var(--line); border-radius:22px; padding:3px; }
   .seg button { border:none; background:transparent; color:var(--muted); font-size:14px; font-weight:700; padding:8px 24px; border-radius:20px; cursor:pointer; font-family:var(--sans); }
   .seg button.on { background:var(--accent); color:#fff; }
+  .seg button .segn { display:inline-block; min-width:18px; padding:0 5px; margin-left:3px; border-radius:11px; background:color-mix(in srgb,var(--muted) 18%,transparent); color:var(--muted); font-size:11px; font-weight:800; line-height:17px; text-align:center; vertical-align:middle; }
+  .seg button.on .segn { background:rgba(255,255,255,.28); color:#fff; }
 
   .jobs { display:flex; flex-direction:column; gap:14px; margin-top:6px; }
   .card { background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
@@ -487,8 +489,8 @@ function render_report($id, $files, $comments, $IMG_EXT){
 
   <div class="pad">
     <div class="toolbar">
-      <div class="seg"><button class="on" data-f="open" onclick="setFilter('open')">未完</button><button data-f="done" onclick="setFilter('done')">完了</button></div>
-      <button class="reload" onclick="location.reload()" title="最新に更新">🔄 更新</button>
+      <div class="seg"><button class="on" data-f="open" onclick="setFilter('open')">未完 <span class="segn" data-c="open">0</span></button><button data-f="done" onclick="setFilter('done')">完了 <span class="segn" data-c="done">0</span></button></div>
+      <button class="reload" onclick="reloadKeep()" title="最新に更新">🔄 更新</button>
     </div>
 
     <?php foreach (array('kouji','nok','chokoku') as $tab): ?>
@@ -510,13 +512,41 @@ function render_report($id, $files, $comments, $IMG_EXT){
 <div id="lightbox" onclick="this.classList.remove('show')"><div class="lb-img"></div><div class="lb-cap">タップで閉じる</div></div>
 
 <script>
+  function curTab(){ var b=document.querySelector('.maintab.on'); return b?b.dataset.t:'kouji'; }
+  function updateSegCounts(){
+    var list=document.getElementById('list-'+curTab()); if(!list) return;
+    var o=0,d=0;
+    list.querySelectorAll('.card').forEach(function(c){ if(c.dataset.st==='done') d++; else o++; });
+    var eo=document.querySelector('.segn[data-c="open"]'); if(eo) eo.textContent=o;
+    var ed=document.querySelector('.segn[data-c="done"]'); if(ed) ed.textContent=d;
+  }
   function showTab(t){
     document.querySelectorAll('.maintab').forEach(function(b){ b.classList.toggle('on', b.dataset.t===t); });
     ['kouji','nok','chokoku'].forEach(function(k){ document.getElementById('list-'+k).classList.toggle('hidden', k!==t); });
+    updateSegCounts();
   }
   function setFilter(s){
     document.querySelectorAll('.seg button').forEach(function(b){ b.classList.toggle('on', b.dataset.f===s); });
     document.querySelectorAll('.card').forEach(function(c){ c.classList.toggle('fhide', c.dataset.st!==s); });
+    updateSegCounts();
+  }
+  // 🔄 更新：今の表示位置（タブ・フィルタ・スクロール）を保ったまま再読込
+  function reloadKeep(){
+    try{
+      var cf=document.querySelector('.seg button.on');
+      sessionStorage.setItem('gpKeep', JSON.stringify({ tab:curTab(), filter:cf?cf.dataset.f:'open', y:window.scrollY||window.pageYOffset||0 }));
+    }catch(e){}
+    location.reload();
+  }
+  function restoreKeep(){
+    var st=null; try{ st=JSON.parse(sessionStorage.getItem('gpKeep')||'null'); sessionStorage.removeItem('gpKeep'); }catch(e){}
+    if(st){
+      if(st.tab) showTab(st.tab);
+      setFilter(st.filter||'open');
+      if(typeof st.y==='number') window.scrollTo(0, st.y);
+    } else {
+      setFilter('open');
+    }
   }
   function openLightbox(el){
     var lb=document.getElementById('lightbox'); var img=lb.querySelector('.lb-img');
@@ -524,7 +554,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
     lb.classList.add('show');
     return false;
   }
-  setFilter('open');
+  restoreKeep();
 
   // ===== 外注先からの報告 =====
   function _esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

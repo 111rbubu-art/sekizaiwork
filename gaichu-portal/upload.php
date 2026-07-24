@@ -205,6 +205,7 @@ if ($action === 'addfile') {
   $destDir = $caseDir . (count($segs) ? '/'.implode('/', $segs) : '');
   if (!is_dir($destDir) && !@mkdir($destDir, 0755, true)) fail('cannot create dir', 500);
   if (!@move_uploaded_file($_FILES['file']['tmp_name'], $destDir.'/'.$fname)) fail('cannot save file', 500);
+  @chmod($destDir.'/'.$fname, 0644); // 一時ファイルの権限を引き継ぐとWebで表示できない場合があるため
   out(array('ok'=>true, 'saved'=>$fname));
 }
 
@@ -388,7 +389,7 @@ if (isset($_FILES['files']) && is_array($_FILES['files']['tmp_name'])) {
     if (!in_array($ext, $ALLOW_EXT, true)) { $skipped[] = $rel; continue; }
     $destDir = $caseDir . (count($segs) ? '/'.implode('/', $segs) : '');
     if (!is_dir($destDir) && !@mkdir($destDir, 0755, true)) { $skipped[] = $rel; continue; }
-    if (@move_uploaded_file($tmp, $destDir.'/'.$fname)) $saved++; else $skipped[] = $rel;
+    if (@move_uploaded_file($tmp, $destDir.'/'.$fname)) { @chmod($destDir.'/'.$fname, 0644); $saved++; } else $skipped[] = $rel;
   }
 }
 

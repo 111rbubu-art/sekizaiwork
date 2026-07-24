@@ -26,8 +26,46 @@ function out($a){ echo json_encode($a, JSON_UNESCAPED_UNICODE); exit; }
 function fail($m,$c=400){ http_response_code($c); out(array('ok'=>false,'error'=>$m)); }
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
-$IMG_EXT   = array('jpg','jpeg','png','gif','webp','heic','heif');
+// post_max_size を超えると PHP は $_POST/$_FILES を丸ごと破棄する。
+// そのままだと「invalid case」という無関係なエラーになるので、先に分かりやすく返す。
+if (!count($_POST) && !count($_FILES) && isset($_SERVER['CONTENT_LENGTH']) && intval($_SERVER['CONTENT_LENGTH']) > 0) {
+  fail('ファイルが大きすぎます（サーバーの受信上限 '.ini_get('post_max_size').'）。写真を小さくするか、1枚ずつお試しください。', 413);
+}
+
+$IMG_EXT   = array('jpg','jpeg','png','gif','webp','bmp','heic','heif'); // ← index.php と揃える
 $ALLOW_EXT = array_merge($IMG_EXT, array('pdf'));
+// 拡張子が無い／珍しい場合に中身から判定するための対応表
+$MIME_EXT  = array('image/jpeg'=>'jpg','image/pjpeg'=>'jpg','image/png'=>'png','image/gif'=>'gif',
+                   'image/webp'=>'webp','image/bmp'=>'bmp','image/x-ms-bmp'=>'bmp',
+                   'image/heic'=>'heic','image/heif'=>'heif','application/pdf'=>'pdf');
+// アップロード失敗コードを日本語に
+function up_err_msg($e){
+  switch (intval($e)) {
+    case 1: return 'ファイルが大きすぎます（サーバー上限 '.ini_get('upload_max_filesize').'）';
+    case 2: return 'ファイルが大きすぎます';
+    case 3: return '通信が途中で切れました。もう一度お試しください';
+    case 4: return 'ファイルが選択されていません';
+    case 6: case 7: return 'サーバー側で保存できませんでした';
+    case 8: return 'サーバーの設定により中断されました';
+  }
+  return 'アップロードに失敗しました（コード '.$e.'）';
+}
+// 拡張子を決める：拡張子→ダメなら中身(MIME)から判定。'' なら不許可。
+function resolve_ext($orig, $tmp, $type, $ALLOW_EXT, $MIME_EXT){
+  $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
+  if ($ext === 'jfif' || $ext === 'jpe') $ext = 'jpg';   // Windows/Chrome が付ける別名
+  if ($ext === 'tif') $ext = 'tiff';
+  if ($ext !== '' && in_array($ext, $ALLOW_EXT, true)) return $ext;
+  $m = '';
+  if (function_exists('finfo_open')) {
+    $fi = @finfo_open(FILEINFO_MIME_TYPE);
+    if ($fi) { $m = @finfo_file($fi, $tmp); @finfo_close($fi); }
+  }
+  if (!$m) { $g = @getimagesize($tmp); if ($g && isset($g['mime'])) $m = $g['mime']; }
+  if (!$m) $m = $type;
+  $m = strtolower(trim((string)$m));
+  return isset($MIME_EXT[$m]) ? $MIME_EXT[$m] : '';
+}
 
 function valid_case($id){ return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $id); }
 function safe_name($s){ $s = str_replace(array("\0","/","\\","..",'"',"'"), '', $s); return trim(preg_replace('/\s+/u',' ',$s)); }
@@ -123,13 +161,14 @@ if ($action === 'delcomment') {
 
 // ---- upload（1枚ずつ）----
 if ($action === 'upload') {
-  if (!isset($_FILES['file']) || !isset($_FILES['file']['error']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK
-      || !is_uploaded_file($_FILES['file']['tmp_name'])) {
-    fail('upload error: '.(isset($_FILES['file']['error']) ? $_FILES['file']['error'] : 'no file'));
-  }
+  if (!isset($_FILES['file']) || !isset($_FILES['file']['error'])) fail('ファイルが送信されていません');
+  if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) fail(up_err_msg($_FILES['file']['error']));
+  if (!is_uploaded_file($_FILES['file']['tmp_name'])) fail('不正なアップロードです');
+  if (intval($_FILES['file']['size']) <= 0) fail('中身が空のファイルです');
   $orig = $_FILES['file']['name'];
-  $ext  = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
-  if (!in_array($ext, $ALLOW_EXT, true)) fail('extension not allowed: '.$ext);
+  $type = isset($_FILES['file']['type']) ? $_FILES['file']['type'] : '';
+  $ext  = resolve_ext($orig, $_FILES['file']['tmp_name'], $type, $ALLOW_EXT, $MIME_EXT);
+  if ($ext === '') fail('この形式のファイルは登録できません（写真かPDFをお選びください）');
   $name = poster_name(); // 元のファイル名は使わず、外注先名＋日付＋連番で命名
   $repDir = $caseDir.'/報告';
   if (!is_dir($repDir) && !@mkdir($repDir, 0755, true)) fail('cannot create 報告 dir', 500);
@@ -148,7 +187,8 @@ if ($action === 'upload') {
   // 万一の存在チェック（さらに前進）
   while (is_file($repDir.'/'.$fname)) { $seq++; $fname = $name.'_'.$ymd.'_'.str_pad($seq, 2, '0', STR_PAD_LEFT).'.'.$ext; }
   @file_put_contents($seqFile, (string)$seq);
-  if (!@move_uploaded_file($_FILES['file']['tmp_name'], $repDir.'/'.$fname)) fail('save failed', 500);
+  if (!@move_uploaded_file($_FILES['file']['tmp_name'], $repDir.'/'.$fname)) fail('サーバーに保存できませんでした', 500);
+  @chmod($repDir.'/'.$fname, 0644); // 一時ファイルの権限(0600等)を引き継ぐと Web で表示できないため
   out(array('ok'=>true, 'saved'=>$fname));
 }
 

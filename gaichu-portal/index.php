@@ -33,6 +33,20 @@ $IMG_EXT   = array('jpg','jpeg','png','gif','webp','bmp','heic','heif');
 $GROUP_ORDER = array('地図','図面','写真','資料');
 
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+// "8M" / "512K" 等の php.ini 表記をバイト数へ
+function ini_bytes($v){
+  $v = trim((string)$v); if ($v === '') return 0;
+  $n = (float)$v; $u = strtolower(substr($v, -1));
+  if ($u === 'g') $n *= 1073741824; else if ($u === 'm') $n *= 1048576; else if ($u === 'k') $n *= 1024;
+  return (int)$n;
+}
+// 1ファイルあたりの実効上限（upload_max_filesize と post_max_size の小さい方）
+function max_upload_bytes(){
+  $a = ini_bytes(ini_get('upload_max_filesize'));
+  $b = ini_bytes(ini_get('post_max_size'));
+  $m = ($a && $b) ? min($a, $b) : ($a ? $a : $b);
+  return $m ? (int)($m * 0.95) : 0; // 他フィールド分の余裕を見る
+}
 function urlseg($s){ return implode('/', array_map('rawurlencode', explode('/', $s))); }
 function ext_of($f){ return strtolower(pathinfo($f, PATHINFO_EXTENSION)); }
 function is_hidden($n){ return substr($n,0,1) === '.'; }
@@ -467,6 +481,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .cmt.me .bubble { background:color-mix(in srgb,var(--green) 15%,var(--surface)); border:1px solid color-mix(in srgb,var(--green) 34%,transparent); border-top-right-radius:4px; }
   .radd { display:flex; gap:7px; align-items:flex-end; margin-top:8px; }
   .raddphoto { flex-shrink:0; background:var(--accent-soft); color:var(--accent); border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700; cursor:pointer; }
+  .raddphoto.busy { opacity:.6; pointer-events:none; border-style:solid; }
   .rcinput { flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 11px; font-size:14px; color:var(--ink); font-family:var(--sans); line-height:1.55; resize:vertical; min-height:42px; max-height:200px; overflow-y:auto; }
   .rcsend { flex-shrink:0; background:var(--accent); color:#fff; border:none; border-radius:9px; padding:10px 16px; font-size:13px; font-weight:700; cursor:pointer; }
   .reload { margin-left:auto; background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:7px 14px; font-size:12.5px; font-weight:700; color:var(--accent); cursor:pointer; font-family:var(--sans); }
@@ -513,6 +528,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
 <div id="lightbox" onclick="this.classList.remove('show')"><div class="lb-img"></div><div class="lb-cap">タップで閉じる</div></div>
 
 <script>
+  var GP_MAXUP = <?php echo max_upload_bytes(); ?>; // 1ファイルあたりの上限（サーバー設定）
   function curTab(){ var b=document.querySelector('.maintab.on'); return b?b.dataset.t:'kouji'; }
   function updateSegCounts(){
     var list=document.getElementById('list-'+curTab()); if(!list) return;
@@ -606,15 +622,32 @@ function render_report($id, $files, $comments, $IMG_EXT){
     }).catch(function(){ alert('削除に失敗しました'); });
   }
   function repUpload(inp, id){
-    var files=inp.files; if(!files||!files.length) return; var arr=Array.prototype.slice.call(files); var i=0; var fail=[];
+    var files=inp.files; if(!files||!files.length) return;
+    var arr=Array.prototype.slice.call(files); var i=0, done=0, fail=[];
+    var lbl=inp.parentNode; var base=lbl?lbl.firstChild:null; var orig=base?base.nodeValue:'';
+    function setLbl(t){ if(base) base.nodeValue=t; }
+    if(lbl) lbl.classList.add('busy');           // 二重送信・多重タップ防止
+    inp.disabled=true;
     (function next(){
-      if(i>=arr.length){ inp.value=''; repRefresh(id); if(fail.length) alert('アップロードできなかったファイル:\n'+fail.join('\n')); return; }
+      if(i>=arr.length){
+        inp.disabled=false; inp.value=''; if(lbl) lbl.classList.remove('busy'); setLbl(orig);
+        repRefresh(id);
+        if(fail.length) alert('登録できなかったファイル:\n'+fail.join('\n'));
+        return;
+      }
       var f=arr[i++];
+      setLbl('送信中 '+(done+1)+'/'+arr.length+' …');
+      // サーバー上限を超えるものは送る前に弾く（送ってもPOSTごと捨てられ原因が分からなくなるため）
+      if(GP_MAXUP>0 && f.size>GP_MAXUP){
+        fail.push(f.name+'（サイズが大きすぎます '+Math.round(f.size/1048576*10)/10+'MB / 上限 '+Math.round(GP_MAXUP/1048576*10)/10+'MB）');
+        done++; next(); return;
+      }
+      if(f.size===0){ fail.push(f.name+'（中身が空です）'); done++; next(); return; }
       var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('file',f,f.name);
       fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
         if(!res||!res.ok) fail.push(f.name+'（'+((res&&res.error)||'エラー')+'）');
-        next();
-      }).catch(function(){ fail.push(f.name+'（通信エラー）'); next(); });
+        done++; next();
+      }).catch(function(){ fail.push(f.name+'（通信エラー）'); done++; next(); });
     })();
   }
   function repDel(id, rel){

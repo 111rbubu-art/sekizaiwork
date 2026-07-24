@@ -27,7 +27,24 @@
 
 mb_internal_encoding('UTF-8');
 // このファイル(index.php)のバージョン。画面下部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.0.3';
+$PORTAL_VER = 'v1.0.4';
+
+// 画面を古いまま表示させない（ブラウザに溜め込ませると、下部のバージョン表示も古いままになり
+// 「新しい版になったのか」を確認できなくなるため）
+if (!headers_sent()) {
+  header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+  header('Pragma: no-cache');
+}
+// サーバー上の版だけを直接確認する用： index.php?ver
+if (isset($_GET['ver'])) {
+  header('Content-Type: application/json; charset=UTF-8');
+  echo json_encode(array(
+    'version' => $PORTAL_VER,
+    'updated' => date('Y-m-d H:i:s', @filemtime(__FILE__)),
+    'now'     => date('Y-m-d H:i:s')
+  ), JSON_UNESCAPED_UNICODE);
+  exit;
+}
 $BASE      = __DIR__;
 $CASES_DIR = $BASE . '/cases';
 $IMG_EXT   = array('jpg','jpeg','png','gif','webp','bmp','heic','heif');

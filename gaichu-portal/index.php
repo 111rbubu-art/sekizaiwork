@@ -43,7 +43,7 @@ function collect_groups($casePath, $caseId){
   $root = array();
   $items = @scandir($casePath);
   if ($items) foreach ($items as $n) {
-    if (in_array($n, array('.','..','case.json','comments.json'), true) || is_hidden($n)) continue;
+    if (in_array($n, array('.','..','case.json','comments.json','progress.json'), true) || is_hidden($n)) continue;
     $p = $casePath . '/' . $n;
     if (is_file($p)) { $root[] = array('name'=>$n, 'rel'=>$n); }
     else if (is_dir($p)) {

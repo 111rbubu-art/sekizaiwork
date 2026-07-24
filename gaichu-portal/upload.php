@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>14, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>15, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -141,7 +141,7 @@ function list_case_files($dir, $base=''){
   $out = array();
   if (!is_dir($dir)) return $out;
   foreach (scandir($dir) as $f) {
-    if ($f === '.' || $f === '..' || $f === 'case.json' || $f === 'comments.json' || substr($f,0,1)==='.') continue;
+    if ($f === '.' || $f === '..' || $f === 'case.json' || $f === 'comments.json' || $f === 'progress.json' || substr($f,0,1)==='.') continue;
     $p = $dir.'/'.$f; $rel = ($base==='') ? $f : $base.'/'.$f;
     if (is_dir($p)) $out = array_merge($out, list_case_files($p, $rel));
     else $out[] = $rel;

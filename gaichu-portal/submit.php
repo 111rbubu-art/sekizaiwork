@@ -42,7 +42,7 @@ function list_report($caseDir, $IMG_EXT){
       if ($f === '.' || $f === '..' || substr($f,0,1)==='.') continue;
       if (is_file($dir.'/'.$f)) {
         $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
-        $out[] = array('rel'=>'報告/'.$f, 'name'=>$f, 'img'=>in_array($ext,$IMG_EXT,true));
+        $out[] = array('rel'=>'報告/'.$f, 'name'=>$f, 'img'=>in_array($ext,$IMG_EXT,true), 'mt'=>@filemtime($dir.'/'.$f));
       }
     }
   }

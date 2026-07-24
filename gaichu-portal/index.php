@@ -291,8 +291,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
   echo '<div class="rlbl">📮 やりとり（庄司石材）</div>';
   echo '<div class="rphotos">';
   foreach ($files as $f) {
-    $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']);
-    $isNew = _rep_is_new_ts(@filemtime($caseDir.'/'.$f['rel']));
+    $mt = @filemtime($caseDir.'/'.$f['rel']);
+    $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']).'?v='.($mt?:0); // 更新時刻でキャッシュ回避（削除写真の復活防止）
+    $isNew = _rep_is_new_ts($mt);
     $newB = $isNew ? '<span class="rnew blink">New</span>' : '';
     if (in_array(ext_of($f['name']), $IMG_EXT, true)) {
       echo '<div class="rthumb"><a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" data-cap="'.h($f['name']).'" onclick="return openLightbox(this)"></a>'
@@ -565,7 +566,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
       var box=document.querySelector('.report[data-case="'+id+'"]'); if(!box) return;
       var ph=box.querySelector('.rphotos'); var cl=box.querySelector('.clist');
       ph.innerHTML=(res.photos||[]).map(function(f){
-        var href='cases/'+encodeURIComponent(id)+'/'+f.rel.split('/').map(encodeURIComponent).join('/');
+        var href='cases/'+encodeURIComponent(id)+'/'+f.rel.split('/').map(encodeURIComponent).join('/')+'?v='+(f.mt||0);
         if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
         return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
       }).join('');

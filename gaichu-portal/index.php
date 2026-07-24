@@ -27,7 +27,7 @@
 
 mb_internal_encoding('UTF-8');
 // このファイル(index.php)のバージョン。画面下部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.0.4';
+$PORTAL_VER = 'v1.0.5';
 
 // 画面を古いまま表示させない（ブラウザに溜め込ませると、下部のバージョン表示も古いままになり
 // 「新しい版になったのか」を確認できなくなるため）
@@ -395,6 +395,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .seal { width:32px; height:32px; border-radius:7px; background:var(--iron); color:#fff; font-family:var(--serif); font-size:17px; display:grid; place-items:center; box-shadow:inset 0 0 0 1px rgba(255,255,255,.18); flex-shrink:0; }
   .brand b { font-family:var(--serif); font-size:16px; }
   .login { margin-left:auto; font-size:13px; color:var(--muted); }
+  /* バージョン表示：一番上の行の右端（スクロール不要で版を確認できるように） */
+  .topver { margin-left:auto; flex-shrink:0; font-size:10.5px; font-weight:700; letter-spacing:.03em; color:var(--faint); background:var(--surface-2); border:1px solid var(--line); border-radius:20px; padding:2px 8px; white-space:nowrap; }
+  .login + .topver { margin-left:8px; } /* ログイン表示があるときはその右隣に寄せる */
   .login b { color:var(--ink); font-family:var(--serif); font-weight:600; }
 
   .maintabs { display:flex; background:var(--surface); border-bottom:1px solid var(--line); position:sticky; top:54px; z-index:19; }
@@ -515,6 +518,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
       <div class="seal">庄</div>
       <div class="brand"><b>庄司石材</b></div>
       <?php if ($loginName): ?><div class="login"><b><?php echo h($loginName); ?></b> ログイン中</div><?php endif; ?>
+      <div class="topver" title="index.php <?php echo h($PORTAL_VER); ?>（更新 <?php echo date('Y/m/d H:i', @filemtime(__FILE__)); ?>）"><?php echo h($PORTAL_VER); ?></div>
     </div>
     <div class="maintabs">
       <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo $openCount['kouji']; ?></span><?php if ($newToday['kouji']): ?><span class="tabnew blink">NEW</span><?php endif; ?></button>

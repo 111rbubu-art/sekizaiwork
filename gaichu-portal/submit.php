@@ -134,9 +134,20 @@ if ($action === 'upload') {
   $repDir = $caseDir.'/報告';
   if (!is_dir($repDir) && !@mkdir($repDir, 0755, true)) fail('cannot create 報告 dir', 500);
   // ファイル名：<名前>_<YYYYMMDD>_<2桁連番>
-  $ymd = date('Ymd'); $prefix = $name.'_'.$ymd.'_';
-  $n = 0; foreach (scandir($repDir) as $f) { if (strpos($f, $prefix) === 0) $n++; }
-  $fname = $prefix . str_pad($n+1, 2, '0', STR_PAD_LEFT) . '.' . $ext;
+  // 連番は「単調増加のカウンター(.repseq)」を使い、削除しても番号を再利用しない。
+  // （件数ベースだと削除後に既存名と衝突して上書き＝過去写真の復活/未反映が起きるため）
+  $ymd = date('Ymd');
+  $seqFile = $caseDir.'/.repseq';
+  $seq = is_file($seqFile) ? intval(trim(@file_get_contents($seqFile))) : 0;
+  // 既存ファイルの最大連番とも整合（.repseq が無い/低い場合の保険）
+  foreach (scandir($repDir) as $f) {
+    if (preg_match('/_(\d+)\.[^.]+$/', $f, $mm)) { $v = intval($mm[1]); if ($v > $seq) $seq = $v; }
+  }
+  $seq++;
+  $fname = $name.'_'.$ymd.'_'.str_pad($seq, 2, '0', STR_PAD_LEFT).'.'.$ext;
+  // 万一の存在チェック（さらに前進）
+  while (is_file($repDir.'/'.$fname)) { $seq++; $fname = $name.'_'.$ymd.'_'.str_pad($seq, 2, '0', STR_PAD_LEFT).'.'.$ext; }
+  @file_put_contents($seqFile, (string)$seq);
   if (!@move_uploaded_file($_FILES['file']['tmp_name'], $repDir.'/'.$fname)) fail('save failed', 500);
   out(array('ok'=>true, 'saved'=>$fname));
 }

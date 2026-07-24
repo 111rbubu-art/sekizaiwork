@@ -575,12 +575,15 @@ function render_report($id, $files, $comments, $IMG_EXT){
     }).catch(function(){ alert('削除に失敗しました'); });
   }
   function repUpload(inp, id){
-    var files=inp.files; if(!files||!files.length) return; var arr=Array.prototype.slice.call(files); var i=0;
+    var files=inp.files; if(!files||!files.length) return; var arr=Array.prototype.slice.call(files); var i=0; var fail=[];
     (function next(){
-      if(i>=arr.length){ inp.value=''; repRefresh(id); return; }
-      var f=arr[i++]; if(!/^image\//.test(f.type)){ next(); return; }
+      if(i>=arr.length){ inp.value=''; repRefresh(id); if(fail.length) alert('アップロードできなかったファイル:\n'+fail.join('\n')); return; }
+      var f=arr[i++];
       var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('file',f,f.name);
-      fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(){ next(); }).catch(function(){ next(); });
+      fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+        if(!res||!res.ok) fail.push(f.name+'（'+((res&&res.error)||'エラー')+'）');
+        next();
+      }).catch(function(){ fail.push(f.name+'（通信エラー）'); next(); });
     })();
   }
   function repDel(id, rel){

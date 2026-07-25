@@ -5866,7 +5866,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.324';
+var APP_VERSION = 'v1.9.325';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -17236,7 +17236,7 @@ function _gaichuLoadCard(type){
         '<div style="padding:12px 14px;display:flex;flex-direction:column;gap:13px">'+
           '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">案件情報</div>'+_gaichuInfoHtml(type,c)+'<div style="margin-top:8px">'+_gaichuMemoBlockHtml(type,c)+'</div></div>'+
           '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">共有ファイル　<span style="color:#a7adb8;font-weight:400">'+shared.length+' 件</span></div>'+_gaichuCardFilesHtml(type, shared)+'</div>'+
-          '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">やりとり'+((reports.length||comments.length)?'　<span style="color:#3a6ea5;font-weight:700">写真'+reports.length+'・コメント'+comments.length+'</span>':'')+'</div>'+_gaichuReportPhotosHtml(type, reports)+_gaichuChatHtml(type, comments)+'</div>'+
+          '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">やりとり'+((reports.length||comments.length)?'　<span style="color:#3a6ea5;font-weight:700">写真'+reports.length+'・コメント'+comments.length+'</span>':'')+'</div>'+_gaichuTlHtml(_gaichuTlCtx('mgr',id,type), reports, comments, res.ftimes||{})+'</div>'+
           progLine+
           '<div style="display:flex;gap:8px">'+
             '<button onclick="_gaichuUpdateOne(\''+type+'\')" title="項目（お寺名/日付/状態）だけ反映" style="font-size:12px;font-weight:600;padding:9px 12px;background:#eef1f6;color:#33507e;border:none;border-radius:9px;cursor:pointer;font-family:inherit">🔄 項目更新</button>'+
@@ -17305,25 +17305,181 @@ function _gaichuMemoSave(type){
     } else showSaveToast(false,'保存失敗: '+msg);
   });
 }
-// チャット（外注コメント＋庄司の返信）。庄司視点：shoji＝自分（右）
-function _gaichuChatHtml(type, comments){
-  var total=comments.length, showFrom=total>2?total-2:0;
+// ===== やりとり：写真とコメントを時系列で1本に（まとめて送られた写真は1つのかたまり）=====
+// 公開中ウインドウ（mgr）と外注公開まとめ（sum）で共通。庄司視点：shoji＝自分（右）
+var GAICHU_TL_GAP = 600; // 秒。これ以内に届いた写真を「まとめて送られた分」とみなす
+var _gaichuTlGroups = {}; // グループキー → {scope,id,type,files:[…]}
+
+function _gaichuTlCtx(scope, id, type){
+  if(scope==='sum') return { scope:'sum', id:id, type:type, chatId:'gsum-chat-'+id, replyId:'gsum-reply-'+id,
+    editFn:"_gaichuSumChatEdit('"+id+"',", delFn:"_gaichuSumChatDel('"+id+"',", sendFn:"_gaichuSumChatSend('"+id+"')", gk:id };
+  return { scope:'mgr', id:id, type:type, chatId:'gp-chat-'+type, replyId:'gp-reply-'+type,
+    editFn:"_gaichuChatEdit('"+type+"',", delFn:"_gaichuChatDel('"+type+"',", sendFn:"_gaichuChatSend('"+type+"')", gk:type };
+}
+// 送信時刻。ftimes（upload.php v16以降）が無い場合はファイル名の日付で代用
+function _gaichuTlTs(path, ftimes){
+  if(ftimes && ftimes[path]) return +ftimes[path];
+  var m=_gaichuBase(path).match(/_(\d{4})(\d{2})(\d{2})_(\d+)\./);
+  if(m) return new Date(+m[1], +m[2]-1, +m[3]).getTime()/1000;
+  return 0;
+}
+function _gaichuCmTs(cm){
+  if(cm && cm.ts) return +cm.ts;
+  var s=String((cm&&cm.at)||'').replace(/（.*$/,'').trim().replace(/-/g,'/');
+  var t=s?Date.parse(s):NaN; return isNaN(t)?0:t/1000;
+}
+function _gaichuTlFmt(ts){
+  if(!ts) return '';
+  var d=new Date(ts*1000); function z(n){ return (n<10?'0':'')+n; }
+  return (d.getMonth()+1)+'/'+d.getDate()+' '+z(d.getHours())+':'+z(d.getMinutes());
+}
+function _gaichuTlBuild(reports, comments, ftimes){
+  var ps=(reports||[]).map(function(p){ return {p:p, ts:_gaichuTlTs(p,ftimes)}; })
+    .sort(function(a,b){ return (a.ts-b.ts)||(a.p<b.p?-1:1); });
+  var groups=[], cur=null;
+  ps.forEach(function(x){
+    if(!cur || (x.ts-cur.ts)>GAICHU_TL_GAP){ if(cur) groups.push(cur); cur={ts:x.ts, files:[]}; }
+    cur.files.push(x.p); cur.ts=x.ts;
+  });
+  if(cur) groups.push(cur);
+  var tl=groups.map(function(g){ return {t:'p', ts:g.ts, files:g.files}; });
+  (comments||[]).forEach(function(cm,i){ tl.push({t:'c', ts:_gaichuCmTs(cm), cm:cm, i:i}); });
+  tl.sort(function(a,b){ if(a.ts===b.ts) return (a.t===b.t)?0:(a.t==='p'?-1:1); return a.ts-b.ts; });
+  return tl;
+}
+// SP保存済みの記録（端末内）。実際の重複はSPの一覧照合で最終判定する
+function _gaichuSavedMap(){ try{ return JSON.parse(localStorage.getItem('gaichuSpSaved')||'{}'); }catch(e){ return {}; } }
+function _gaichuIsSaved(id,p){ return !!_gaichuSavedMap()[id+'|'+p]; }
+function _gaichuMarkSavedPaths(id,paths){
+  var m=_gaichuSavedMap(); paths.forEach(function(p){ m[id+'|'+p]=Date.now(); });
+  try{ localStorage.setItem('gaichuSpSaved', JSON.stringify(m)); }catch(e){}
+}
+function _gaichuTlHtml(ctx, reports, comments, ftimes){
+  var tl=_gaichuTlBuild(reports, comments, ftimes);
+  var total=tl.length, showFrom=total>2?total-2:0;
   var more=total>2?'<button onclick="_gaichuChatMore(this)" style="align-self:center;font-size:11px;font-weight:700;color:#33507e;background:#eaf0f8;border:1px solid #c9d6ea;border-radius:20px;padding:4px 13px;cursor:pointer;font-family:inherit">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
-  var rows=comments.map(function(cm,i){
-    var mine=(cm.side==='shoji'); var old=(i<showFrom);
-    var align=mine?'flex-end':'flex-start';
-    var bub=mine?'background:#e6f4ea;border:1px solid #b7dcc4;color:#1f5a34;border-top-right-radius:4px':'background:#f1f3f6;color:#2b2f36;border-top-left-radius:4px';
-    var acts=mine?'<div style="display:flex;gap:9px;margin:3px 3px 0"><button onclick="_gaichuChatEdit(\''+type+'\','+i+')" style="font-size:10.5px;color:#8a94a6;background:none;border:none;cursor:pointer;padding:0">✏ 編集</button><button onclick="_gaichuChatDel(\''+type+'\','+i+')" style="font-size:10.5px;color:#c0392b;background:none;border:none;cursor:pointer;padding:0">🗑 削除</button></div>':'';
-    return '<div class="gp-msg'+(old?' gp-old':'')+'" data-idx="'+i+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:85%;align-self:'+align+';align-items:'+align+'">'+
-      '<div style="font-size:9.5px;color:#a7adb8;margin:0 3px 2px">'+(mine?'庄司石材':'外注先')+'　'+_gaichuEsc(cm.at||'')+'</div>'+
-      '<div class="gp-bub" style="font-size:12.5px;line-height:1.5;padding:8px 11px;border-radius:13px;white-space:pre-wrap;'+bub+'">'+_gaichuEsc(cm.text||'')+'</div>'+acts+
+  var rows=tl.map(function(it,n){
+    return (it.t==='p') ? _gaichuTlPhotoHtml(ctx,it,n<showFrom) : _gaichuTlCmtHtml(ctx,it,n<showFrom);
+  }).join('');
+  return '<div class="gp-chat" id="'+ctx.chatId+'" style="display:flex;flex-direction:column;gap:9px;margin-top:6px">'+more+rows+'</div>'+
+    '<div style="display:flex;gap:7px;align-items:flex-end;margin-top:7px">'+
+      '<textarea id="'+ctx.replyId+'" rows="1" placeholder="返信を入力（外注ポータルに表示されます）" style="flex:1;box-sizing:border-box;font-family:inherit;font-size:12.5px;border:1px solid #e0e3e8;border-radius:10px;padding:8px 10px;background:#f7f8fa;color:#1c1f26;resize:vertical;min-height:38px"></textarea>'+
+      '<button onclick="'+ctx.sendFn+'" style="flex-shrink:0;font-size:12px;font-weight:700;color:#fff;background:#1f5a34;border:none;border-radius:9px;padding:9px 14px;cursor:pointer;font-family:inherit">送信</button>'+
+    '</div>';
+}
+function _gaichuTlCmtHtml(ctx, it, old){
+  var cm=it.cm, i=it.i, mine=(cm.side==='shoji');
+  var align=mine?'flex-end':'flex-start';
+  var bub=mine?'background:#e6f4ea;border:1px solid #b7dcc4;color:#1f5a34;border-top-right-radius:4px':'background:#f1f3f6;color:#2b2f36;border-top-left-radius:4px';
+  var acts=mine?'<div style="display:flex;gap:9px;margin:3px 3px 0"><button onclick="'+ctx.editFn+i+')" style="font-size:10.5px;color:#8a94a6;background:none;border:none;cursor:pointer;padding:0">✏ 編集</button><button onclick="'+ctx.delFn+i+')" style="font-size:10.5px;color:#c0392b;background:none;border:none;cursor:pointer;padding:0">🗑 削除</button></div>':'';
+  return '<div class="gp-msg'+(old?' gp-old':'')+'" data-idx="'+i+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:85%;align-self:'+align+';align-items:'+align+'">'+
+    '<div style="font-size:9.5px;color:#a7adb8;margin:0 3px 2px">'+(mine?'庄司石材':'外注先')+'　'+_gaichuEsc(cm.at||'')+'</div>'+
+    '<div class="gp-bub" style="font-size:12.5px;line-height:1.5;padding:8px 11px;border-radius:13px;white-space:pre-wrap;'+bub+'">'+_gaichuEsc(cm.text||'')+'</div>'+acts+
+  '</div>';
+}
+// 写真のかたまり＝外注先の投稿（左）。かたまりごとに「まとめてSPへ保存」
+function _gaichuTlPhotoHtml(ctx, it, old){
+  var gkey=ctx.scope+'|'+ctx.gk+'|'+it.ts;
+  _gaichuTlGroups[gkey]={scope:ctx.scope, id:ctx.id, type:ctx.type, files:it.files};
+  var unsaved=it.files.filter(function(p){ return !_gaichuIsSaved(ctx.id,p); });
+  var dests=_gaichuSaveDests(ctx.type), col=_gaichuTypeColor(ctx.type);
+  var menu=dests.map(function(dst){ return '<button onclick="_gaichuTlBulkSave(\''+gkey+'\',\''+_gaichuEsc(dst.sub)+'\',this)" style="display:block;width:100%;text-align:left;font-size:11.5px;color:#1c1f26;background:none;border:none;padding:8px 10px;cursor:pointer;font-family:inherit">'+dst.label+'</button>'; }).join('');
+  var saveRow = unsaved.length
+    ? '<div class="gp-saverow" style="position:relative;margin-top:6px">'+
+        '<button onclick="_gaichuTlSaveClick(\''+gkey+'\',this)" style="width:100%;font-size:11px;font-weight:700;color:#fff;background:'+col+';border:none;border-radius:7px;padding:6px 8px;cursor:pointer;font-family:inherit">⬇ この'+unsaved.length+'枚をまとめてSPへ保存'+(dests.length>1?' ▾':'')+'</button>'+
+        '<div class="gp-savemenu" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 3px);z-index:5;background:#fff;border:1px solid #e0e3e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.16);overflow:hidden">'+menu+'</div>'+
+      '</div>'
+    : '<div class="gp-saverow" style="margin-top:6px;text-align:center"><span style="display:inline-block;font-size:10px;font-weight:700;color:#2e7d32;background:#e6f4ea;border-radius:6px;padding:3px 9px">✅ SP保存済</span></div>';
+  var thumbs=it.files.map(function(p){
+    var sv=_gaichuIsSaved(ctx.id,p);
+    return '<div style="position:relative">'+
+      '<div class="gp-th" data-path="'+_gaichuEsc(p)+'" title="タップで拡大" style="width:84px;height:64px;border-radius:6px;border:1px solid #ddd;background:#f2f2f2 no-repeat center/cover;cursor:zoom-in"></div>'+
+      (sv?'<span style="position:absolute;top:2px;left:2px;font-size:9px;background:rgba(255,255,255,.92);color:#2e7d32;border-radius:5px;padding:1px 4px;font-weight:700">✅</span>':'')+
     '</div>';
   }).join('');
-  return '<div class="gp-chat" id="gp-chat-'+type+'" style="display:flex;flex-direction:column;gap:9px;margin-top:6px">'+more+rows+'</div>'+
-    '<div style="display:flex;gap:7px;align-items:flex-end;margin-top:7px">'+
-      '<textarea id="gp-reply-'+type+'" rows="1" placeholder="返信を入力（外注ポータルに表示されます）" style="flex:1;box-sizing:border-box;font-family:inherit;font-size:12.5px;border:1px solid #e0e3e8;border-radius:10px;padding:8px 10px;background:#f7f8fa;color:#1c1f26;resize:vertical;min-height:38px"></textarea>'+
-      '<button onclick="_gaichuChatSend(\''+type+'\')" style="flex-shrink:0;font-size:12px;font-weight:700;color:#fff;background:#1f5a34;border:none;border-radius:9px;padding:9px 14px;cursor:pointer;font-family:inherit">送信</button>'+
-    '</div>';
+  return '<div class="gp-msg'+(old?' gp-old':'')+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:92%;align-self:flex-start;align-items:flex-start">'+
+    '<div style="font-size:9.5px;color:#a7adb8;margin:0 3px 2px">外注先　'+_gaichuEsc(_gaichuTlFmt(it.ts))+'　<b style="color:#3a6ea5">写真'+it.files.length+'枚</b></div>'+
+    '<div style="padding:7px;border-radius:13px;border-top-left-radius:4px;background:#f1f3f6;border:1px solid #e4e7ec">'+
+      '<div style="display:flex;flex-wrap:wrap;gap:6px">'+thumbs+'</div>'+saveRow+
+    '</div>'+
+  '</div>';
+}
+// 保存先が1つ（工事）なら即実行、2つ（納骨・彫刻・追工）ならメニューを開く
+function _gaichuTlSaveClick(gkey, btn){
+  var g=_gaichuTlGroups[gkey]; if(!g) return;
+  var dests=_gaichuSaveDests(g.type);
+  if(dests.length===1) _gaichuTlBulkSave(gkey, dests[0].sub, btn);
+  else _gaichuToggleSaveMenu(btn);
+}
+// SPのフォルダー内のファイル名一覧（重複保存の判定用）。フォルダー未作成なら空
+function _gaichuSpChildNames(dirPath){
+  return getToken().then(function(resp){
+    var enc=dirPath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/children?$select=name&$top=999',{headers:{Authorization:'Bearer '+resp.accessToken}});
+  }).then(function(r){ if(r.status===404) return {value:[]}; if(!r.ok) throw new Error('保存先の確認に失敗 '+r.status); return r.json(); })
+   .then(function(j){ var s={}; (j.value||[]).forEach(function(x){ s[x.name]=1; }); return s; });
+}
+function _gaichuSpName(portalPath){
+  var bn=_gaichuBase(portalPath), mt=bn.match(/^(.+)_(\d{8})_(\d+)\.(\w+)$/);
+  return mt?(mt[2]+'_'+mt[1]+'_'+mt[3]+'.'+mt[4]):bn; // YYYYMMDD_外注先_連番
+}
+function _gaichuTlBase(g){
+  if(g.scope==='mgr'){
+    var base=_gaichuPhotoBase(g.type);
+    return base?Promise.resolve(base):Promise.reject(new Error('保存先フォルダー（Folder_Pass）が未設定です'));
+  }
+  return _gaichuResolveSpItem(g.id).then(function(r){
+    var d=r.item; var base=(g.type==='kouji')?(d['Folder_Pass']||d['FolderPass']||''):(d['FolderPass']||d['Folder_Pass']||'');
+    if(!base) throw new Error('保存先フォルダー（Folder_Pass）が未設定です');
+    return base;
+  });
+}
+function _gaichuPutOne(id, dir, portalPath){
+  var cfg=_gaichuCfg(), target=dir+'/'+_gaichuSpName(portalPath);
+  var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','getfile'); fd.append('id',id); fd.append('path',portalPath);
+  return fetch(cfg.url,{method:'POST',body:fd}).then(function(r){ if(!r.ok) throw new Error('取得 '+r.status); return r.blob(); })
+    .then(function(blob){ return getToken().then(function(resp){
+      var enc=target.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content',{method:'PUT',headers:{Authorization:'Bearer '+resp.accessToken,'Content-Type':blob.type||'application/octet-stream'},body:blob});
+    }); })
+    .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error(t.substring(0,120)); }); });
+}
+// かたまりを一括保存（1枚ずつ順番に／既にSPにある同名はスキップ／失敗しても最後まで）
+function _gaichuTlBulkSave(gkey, sub, btn){
+  var g=_gaichuTlGroups[gkey]; if(!g) return;
+  var row=btn.closest('.gp-saverow'); var mn=row?row.querySelector('.gp-savemenu'):null; if(mn) mn.style.display='none';
+  var b=row?row.querySelector('button'):btn;
+  var targets=g.files.filter(function(p){ return !_gaichuIsSaved(g.id,p); });
+  if(!targets.length){ showSaveToast(true,'すべて保存済みです'); return; }
+  function setTxt(t){ if(b){ b.textContent=t; b.disabled=true; b.style.opacity='.75'; b.style.cursor='default'; } }
+  function reset(t){ if(b){ b.textContent=t; b.disabled=false; b.style.opacity='1'; b.style.cursor='pointer'; } }
+  setTxt('保存先を確認中…');
+  _gaichuTlBase(g).then(function(base){
+    var dir=base.replace(/\/+$/,'')+'/'+sub;
+    return _gaichuSpChildNames(dir).then(function(exist){
+      var saved=[], skipped=[], failed=[], i=0;
+      (function next(){
+        if(i>=targets.length){
+          if(saved.length||skipped.length) _gaichuMarkSavedPaths(g.id, saved.concat(skipped));
+          var msg=saved.length+'件を'+sub+'へ保存しました'
+            +(skipped.length?'（'+skipped.length+'件は保存済のためスキップ）':'')
+            +(failed.length?'／失敗 '+failed.length+'件':'');
+          showSaveToast(failed.length?false:true, msg);
+          if(row){
+            row.innerHTML = failed.length
+              ? '<button onclick="_gaichuTlSaveClick(\''+gkey+'\',this)" style="width:100%;font-size:11px;font-weight:700;color:#fff;background:#c0392b;border:none;border-radius:7px;padding:6px 8px;cursor:pointer;font-family:inherit">⬇ 失敗した'+failed.length+'枚を再試行</button>'
+              : '<div style="text-align:center"><span style="display:inline-block;font-size:10px;font-weight:700;color:#2e7d32;background:#e6f4ea;border-radius:6px;padding:3px 9px">✅ SP保存済</span></div>';
+          }
+          return;
+        }
+        var p=targets[i++];
+        if(exist[_gaichuSpName(p)]){ skipped.push(p); setTxt('確認中 '+i+'/'+targets.length+' …'); next(); return; }
+        setTxt('保存中 '+i+'/'+targets.length+' …');
+        _gaichuPutOne(g.id, dir, p).then(function(){ saved.push(p); next(); })
+          .catch(function(){ failed.push(p); next(); });
+      })();
+    });
+  }).catch(function(e){ showSaveToast(false,'保存失敗: '+(e.message||e)); reset('⬇ 再試行'); });
 }
 function _gaichuChatMore(btn){ var c=btn.parentNode; var exp=c.classList.toggle('gp-exp'); c.querySelectorAll('.gp-old').forEach(function(m){ m.style.display=exp?'flex':'none'; }); var n=c.querySelectorAll('.gp-old').length; btn.textContent=exp?'▲ 折りたたむ':'▼ これまでのやり取りを表示（残り'+n+'件）'; }
 function _gaichuChatSend(type){
@@ -17351,42 +17507,7 @@ function _gaichuSaveDests(type){
   return [{label:'① 写真 へ保存', sub:'写真'},{label:'② 工事完了写真 へ保存', sub:'工事完了写真'}];
 }
 function _gaichuPhotoBase(type){ var d=currentItem; return (type==='kouji') ? (d['Folder_Pass']||d['FolderPass']||'') : (d['FolderPass']||d['Folder_Pass']||''); }
-function _gaichuReportPhotosHtml(type, reports){
-  if(!reports.length) return '';
-  var dests=_gaichuSaveDests(type), col=_gaichuTypeColor(type);
-  return '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 4px">'+reports.map(function(p){
-    var menu=dests.map(function(dst){ return '<button onclick="_gaichuSavePhotoToSP(\''+type+'\',\''+_gaichuEsc(p)+'\',\''+_gaichuEsc(dst.sub)+'\',this)" style="display:block;width:100%;text-align:left;font-size:11.5px;color:#1c1f26;background:none;border:none;padding:8px 10px;cursor:pointer;font-family:inherit">'+dst.label+'</button>'; }).join('');
-    return '<div class="gp-photo" style="width:92px">'+
-      '<div class="gp-th" data-path="'+_gaichuEsc(p)+'" title="タップで拡大" style="width:92px;height:70px;border-radius:7px;border:1px solid #ddd;background:#f2f2f2 no-repeat center/cover;cursor:zoom-in"></div>'+
-      '<div class="gp-saverow" style="position:relative;margin-top:3px">'+
-        '<button onclick="_gaichuToggleSaveMenu(this)" style="width:100%;font-size:10px;font-weight:700;color:#fff;background:'+col+';border:none;border-radius:6px;padding:4px;cursor:pointer;font-family:inherit">⬇ SPへ保存'+(dests.length>1?' ▾':'')+'</button>'+
-        '<div class="gp-savemenu" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 3px);z-index:5;background:#fff;border:1px solid #e0e3e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.16);overflow:hidden">'+menu+'</div>'+
-      '</div>'+
-    '</div>';
-  }).join('')+'</div>';
-}
 function _gaichuToggleSaveMenu(btn){ var mn=btn.nextElementSibling; var open=(mn.style.display==='block'); document.querySelectorAll('.gp-savemenu').forEach(function(x){ x.style.display='none'; }); mn.style.display=open?'none':'block'; }
-function _gaichuSavePhotoToSP(type, portalPath, sub, btn){
-  var d=currentItem; var cfg=_gaichuCfg(); if(!cfg.url||!cfg.secret) return;
-  var base=_gaichuPhotoBase(type);
-  if(!base){ showSaveToast(false,'保存先フォルダー（Folder_Pass）が未設定です'); return; }
-  var bn=_gaichuBase(portalPath);
-  var mt=bn.match(/^(.+)_(\d{8})_(\d+)\.(\w+)$/);
-  var name = mt ? (mt[2]+'_'+mt[1]+'_'+mt[3]+'.'+mt[4]) : bn; // YYYYMMDD_外注先_連番
-  var target = base.replace(/\/+$/,'') + '/' + sub + '/' + name;
-  showSaveToast(null,'SharePointへ保存中… '+name);
-  var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','getfile'); fd.append('id',_gaichuId(d,type)); fd.append('path',portalPath);
-  fetch(cfg.url,{method:'POST',body:fd}).then(function(r){ if(!r.ok) throw new Error('取得 '+r.status); return r.blob(); })
-  .then(function(blob){
-    return getToken().then(function(resp){
-      var enc=target.split('/').map(encodeURIComponent).join('/');
-      return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content',{method:'PUT',headers:{Authorization:'Bearer '+resp.accessToken,'Content-Type':blob.type||'application/octet-stream'},body:blob});
-    });
-  }).then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error(t.substring(0,120)); });
-    showSaveToast(true,'SharePointへ保存しました：'+name);
-    if(btn){ var sr=btn.closest('.gp-saverow'); if(sr) sr.innerHTML='<span style="display:inline-block;font-size:9.5px;font-weight:700;color:#2e7d32;background:#e6f4ea;border-radius:6px;padding:3px 7px">✅ 保存済</span>'; }
-  }).catch(function(e){ showSaveToast(false,'保存失敗: '+(e.message||e)); });
-}
 function _gaichuCardFilesHtml(type, files){
   if(!files.length) return '<div style="color:#999;font-size:11px">登録ファイルなし</div>';
   var isImg=function(n){ return /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(n); };
@@ -17493,39 +17614,6 @@ function _gaichuSumFilesHtml(id, type, files){
   }
   return html;
 }
-function _gaichuSumPhotosHtml(id, type, reports){
-  if(!reports.length) return '';
-  var dests=_gaichuSaveDests(type), col=_gaichuTypeColor(type);
-  return '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 4px">'+reports.map(function(p){
-    var menu=dests.map(function(dst){ return '<button onclick="_gaichuSumSavePhoto(\''+id+'\',\''+type+'\',\''+_gaichuEsc(p)+'\',\''+_gaichuEsc(dst.sub)+'\',this)" style="display:block;width:100%;text-align:left;font-size:11.5px;color:#1c1f26;background:none;border:none;padding:8px 10px;cursor:pointer;font-family:inherit">'+dst.label+'</button>'; }).join('');
-    return '<div class="gp-photo" style="width:88px">'+
-      '<div class="gp-th" data-path="'+_gaichuEsc(p)+'" style="width:88px;height:66px;border-radius:7px;border:1px solid #ddd;background:#f2f2f2 no-repeat center/cover;cursor:zoom-in"></div>'+
-      '<div class="gp-saverow" style="position:relative;margin-top:3px">'+
-        '<button onclick="_gaichuToggleSaveMenu(this)" style="width:100%;font-size:10px;font-weight:700;color:#fff;background:'+col+';border:none;border-radius:6px;padding:4px;cursor:pointer;font-family:inherit">⬇ SPへ保存'+(dests.length>1?' ▾':'')+'</button>'+
-        '<div class="gp-savemenu" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 3px);z-index:5;background:#fff;border:1px solid #e0e3e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.16);overflow:hidden">'+menu+'</div>'+
-      '</div>'+
-    '</div>';
-  }).join('')+'</div>';
-}
-function _gaichuSumChatHtml(id, comments){
-  var total=comments.length, showFrom=total>2?total-2:0;
-  var more=total>2?'<button onclick="_gaichuChatMore(this)" style="align-self:center;font-size:11px;font-weight:700;color:#33507e;background:#eaf0f8;border:1px solid #c9d6ea;border-radius:20px;padding:4px 13px;cursor:pointer;font-family:inherit">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
-  var rows=comments.map(function(cm,i){
-    var mine=(cm.side==='shoji'); var old=(i<showFrom);
-    var align=mine?'flex-end':'flex-start';
-    var bub=mine?'background:#e6f4ea;border:1px solid #b7dcc4;color:#1f5a34;border-top-right-radius:4px':'background:#f1f3f6;color:#2b2f36;border-top-left-radius:4px';
-    var acts=mine?'<div style="display:flex;gap:9px;margin:3px 3px 0"><button onclick="_gaichuSumChatEdit(\''+id+'\','+i+')" style="font-size:10.5px;color:#8a94a6;background:none;border:none;cursor:pointer;padding:0">✏ 編集</button><button onclick="_gaichuSumChatDel(\''+id+'\','+i+')" style="font-size:10.5px;color:#c0392b;background:none;border:none;cursor:pointer;padding:0">🗑 削除</button></div>':'';
-    return '<div class="gp-msg'+(old?' gp-old':'')+'" data-idx="'+i+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:85%;align-self:'+align+';align-items:'+align+'">'+
-      '<div style="font-size:9.5px;color:#a7adb8;margin:0 3px 2px">'+(mine?'庄司石材':'外注先')+'　'+_gaichuEsc(cm.at||'')+'</div>'+
-      '<div class="gp-bub" style="font-size:12.5px;line-height:1.5;padding:8px 11px;border-radius:13px;white-space:pre-wrap;'+bub+'">'+_gaichuEsc(cm.text||'')+'</div>'+acts+
-    '</div>';
-  }).join('');
-  return '<div class="gp-chat" id="gsum-chat-'+id+'" style="display:flex;flex-direction:column;gap:9px;margin-top:6px">'+more+rows+'</div>'+
-    '<div style="display:flex;gap:7px;align-items:flex-end;margin-top:7px">'+
-      '<textarea id="gsum-reply-'+id+'" rows="1" placeholder="返信を入力（外注ポータルに表示されます）" style="flex:1;box-sizing:border-box;font-family:inherit;font-size:12.5px;border:1px solid #e0e3e8;border-radius:10px;padding:8px 10px;background:#f7f8fa;color:#1c1f26;resize:vertical;min-height:38px"></textarea>'+
-      '<button onclick="_gaichuSumChatSend(\''+id+'\')" style="flex-shrink:0;font-size:12px;font-weight:700;color:#fff;background:#1f5a34;border:none;border-radius:9px;padding:9px 14px;cursor:pointer;font-family:inherit">送信</button>'+
-    '</div>';
-}
 function _gaichuSummaryCardHtml(entry){
   var id=entry.id, c=entry.case||{}, type=_gaichuTypeFromId(id);
   var files=entry.files||[], comments=entry.comments||[], prog=entry.progress||null;
@@ -17556,7 +17644,7 @@ function _gaichuSummaryCardHtml(entry){
     '<div style="padding:12px 13px;display:flex;flex-direction:column;gap:13px">'+
       '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">案件情報</div>'+_gaichuInfoHtml(type,c)+(memo?'<div style="margin-top:8px">'+memo+'</div>':'')+'</div>'+
       (shared.length?'<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">共有ファイル　<span style="color:#a7adb8;font-weight:400">'+shared.length+' 件</span></div>'+_gaichuSumFilesHtml(id,type,shared)+'</div>':'')+
-      '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">やりとり'+((reports.length||comments.length)?'　<span style="color:#3a6ea5;font-weight:700">写真'+reports.length+'・コメント'+comments.length+'</span>':'')+'</div>'+_gaichuSumPhotosHtml(id,type,reports)+_gaichuSumChatHtml(id,comments)+'</div>'+
+      '<div><div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#8a94a6;margin-bottom:6px">やりとり'+((reports.length||comments.length)?'　<span style="color:#3a6ea5;font-weight:700">写真'+reports.length+'・コメント'+comments.length+'</span>':'')+'</div>'+_gaichuTlHtml(_gaichuTlCtx('sum',id,type), reports, comments, entry.ftimes||{})+'</div>'+
       doneLine+
       '<div style="display:flex"><button onclick="_gaichuSumUnpublish(\''+id+'\',\''+type+'\')" style="margin-left:auto;font-size:12px;font-weight:600;color:#c0392b;background:#fff;border:1px solid #e6c3bd;border-radius:9px;padding:8px 12px;cursor:pointer;font-family:inherit">公開を外す</button></div>'+
     '</div>'+
@@ -17759,24 +17847,6 @@ function _gaichuSumOpenDetail(id){
       var st=document.getElementById('save-toast'); if(st) st.style.opacity='0'; // 「詳細を開いています」を消す
     }, 800);
   }).catch(function(e){ showSaveToast(false,'詳細の取得に失敗: '+(e.message||e)); });
-}
-function _gaichuSavePhotoBlob(id, base, sub, portalPath, btn){
-  var cfg=_gaichuCfg();
-  var bn=_gaichuBase(portalPath); var mt=bn.match(/^(.+)_(\d{8})_(\d+)\.(\w+)$/);
-  var name=mt?(mt[2]+'_'+mt[1]+'_'+mt[3]+'.'+mt[4]):bn;
-  var target=base.replace(/\/+$/,'')+'/'+sub+'/'+name;
-  var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','getfile'); fd.append('id',id); fd.append('path',portalPath);
-  return fetch(cfg.url,{method:'POST',body:fd}).then(function(r){ if(!r.ok) throw new Error('取得 '+r.status); return r.blob(); })
-    .then(function(blob){ return getToken().then(function(resp){ var enc=target.split('/').map(encodeURIComponent).join('/'); return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content',{method:'PUT',headers:{Authorization:'Bearer '+resp.accessToken,'Content-Type':blob.type||'application/octet-stream'},body:blob}); }); })
-    .then(function(r){ if(!r.ok) return r.text().then(function(t){throw new Error(t.substring(0,120));}); showSaveToast(true,'SharePointへ保存しました：'+name); if(btn){ var sr=btn.closest('.gp-saverow'); if(sr) sr.innerHTML='<span style="display:inline-block;font-size:9.5px;font-weight:700;color:#2e7d32;background:#e6f4ea;border-radius:6px;padding:3px 7px">✅ 保存済</span>'; } });
-}
-function _gaichuSumSavePhoto(id, type, path, sub, btn){
-  showSaveToast(null,'SharePointへ保存中…');
-  _gaichuResolveSpItem(id).then(function(r){
-    var d=r.item; var base=(type==='kouji')?(d['Folder_Pass']||d['FolderPass']||''):(d['FolderPass']||d['Folder_Pass']||'');
-    if(!base) throw new Error('保存先フォルダー（Folder_Pass）が未設定です');
-    return _gaichuSavePhotoBlob(id, base, sub, path, btn);
-  }).catch(function(e){ showSaveToast(false,'保存失敗: '+(e.message||e)); });
 }
 function _gaichuSetStatus(msg, kind){
   var el=document.getElementById('gp-status'); if(!el) return;

@@ -92,6 +92,19 @@ function load_comments($caseDir){
   $j = json_decode(file_get_contents($p), true);
   return is_array($j) ? $j : array();
 }
+// コメントの 'at'（"Y-m-d H:i"／末尾に"（編集）"が付く場合あり）を UNIX秒 に
+function cm_ts($at){
+  if (!$at) return 0;
+  $s = trim(preg_replace('/（.*$/u', '', $at));
+  $t = $s ? strtotime($s) : 0;
+  return $t ? $t : 0;
+}
+// 写真とコメントを時系列に1本化するため、コメントにも ts を付けて返す
+function comments_ts($cm){
+  if (!is_array($cm)) return array();
+  foreach ($cm as $i => $c) $cm[$i]['ts'] = cm_ts(isset($c['at']) ? $c['at'] : '');
+  return $cm;
+}
 function load_progress($caseDir){
   $p = $caseDir.'/progress.json';
   if (!is_file($p)) return null;
@@ -107,7 +120,7 @@ if (!is_dir($caseDir)) fail('case not found', 404);
 
 // ---- list ----
 if ($action === 'list') {
-  out(array('ok'=>true, 'photos'=>list_report($caseDir,$IMG_EXT), 'comments'=>load_comments($caseDir), 'progress'=>load_progress($caseDir)));
+  out(array('ok'=>true, 'photos'=>list_report($caseDir,$IMG_EXT), 'comments'=>comments_ts(load_comments($caseDir)), 'progress'=>load_progress($caseDir)));
 }
 
 // ---- progress（完了報告：外注先が完了日を登録／取消）----

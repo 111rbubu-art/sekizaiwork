@@ -27,7 +27,7 @@
 
 mb_internal_encoding('UTF-8');
 // このファイル(index.php)のバージョン。画面下部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.0.5';
+$PORTAL_VER = 'v1.1.0';
 
 // 画面を古いまま表示させない（ブラウザに溜め込ませると、下部のバージョン表示も古いままになり
 // 「新しい版になったのか」を確認できなくなるため）
@@ -316,37 +316,83 @@ function _rep_comment_ts($at){
   $t = strtotime($s);
   return $t ? $t : 0;
 }
-// 報告セクション（外注先が投稿・写真/コメント）
+// 同じタイミングで送られた写真を1つのかたまりにまとめる（既定10分以内）
+define('REP_GROUP_GAP', 600);
+function group_report_photos($caseDir, $files){
+  $items = array();
+  foreach ($files as $f) {
+    $mt = @filemtime($caseDir.'/'.$f['rel']);
+    if (!$mt) $mt = 0;
+    $f['mt'] = $mt; $items[] = $f;
+  }
+  usort($items, function($a,$b){
+    if ($a['mt'] === $b['mt']) return strcmp($a['name'], $b['name']);
+    return ($a['mt'] < $b['mt']) ? -1 : 1;
+  });
+  $groups = array(); $cur = null;
+  foreach ($items as $f) {
+    if ($cur === null || ($f['mt'] - $cur['ts']) > REP_GROUP_GAP) {
+      if ($cur !== null) $groups[] = $cur;
+      $cur = array('ts'=>$f['mt'], 'files'=>array());
+    }
+    $cur['files'][] = $f;
+    $cur['ts'] = $f['mt']; // かたまり内の最後の時刻を基準に連結
+  }
+  if ($cur !== null) $groups[] = $cur;
+  return $groups;
+}
+// 報告セクション（やりとり：写真とコメントを時系列で1本に）
 function render_report($id, $files, $comments, $IMG_EXT){
   global $CASES_DIR;
   $caseDir = $CASES_DIR . '/' . $id;
   echo '<div class="report" data-case="'.h($id).'">';
   echo '<div class="rlbl">📮 やりとり（庄司石材）</div>';
-  echo '<div class="rphotos">';
-  foreach ($files as $f) {
-    $mt = @filemtime($caseDir.'/'.$f['rel']);
-    $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']).'?v='.($mt?:0); // 更新時刻でキャッシュ回避（削除写真の復活防止）
-    $isNew = _rep_is_new_ts($mt);
-    $newB = $isNew ? '<span class="rnew blink">New</span>' : '';
-    if (in_array(ext_of($f['name']), $IMG_EXT, true)) {
-      echo '<div class="rthumb"><a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" data-cap="'.h($f['name']).'" onclick="return openLightbox(this)"></a>'
-         . $newB
-         . '<button class="rdel" title="削除" onclick="repDel(\''.h($id).'\',\''.h($f['rel']).'\')">🗑</button></div>';
-    } else {
-      echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">📎 '.h($f['name']).' '.$newB.'</a>';
-    }
+
+  // 写真グループとコメントを1本の時系列に並べる
+  $tl = array();
+  foreach (group_report_photos($caseDir, $files) as $g) {
+    $tl[] = array('t'=>'p', 'ts'=>$g['ts'], 'files'=>$g['files']);
   }
-  echo '</div>';
-  $total = count($comments); $showFrom = ($total > 2) ? $total - 2 : 0;
+  foreach ($comments as $i => $cm) {
+    $tl[] = array('t'=>'c', 'ts'=>_rep_comment_ts(isset($cm['at'])?$cm['at']:''), 'cm'=>$cm, 'i'=>$i);
+  }
+  usort($tl, function($a,$b){
+    if ($a['ts'] === $b['ts']) return ($a['t'] === $b['t']) ? 0 : ($a['t']==='p' ? -1 : 1);
+    return ($a['ts'] < $b['ts']) ? -1 : 1;
+  });
+
+  $total = count($tl); $showFrom = ($total > 2) ? $total - 2 : 0;
   echo '<div class="clist">';
   if ($total > 2) echo '<button type="button" class="cmore" onclick="chatMore(this)">▼ これまでのやり取りを表示（残り'.($total-2).'件）</button>';
-  foreach ($comments as $i => $cm) {
+  foreach ($tl as $n => $it) {
+    $old = ($n < $showFrom) ? ' old hide' : '';
+    if ($it['t'] === 'p') {
+      // 写真のかたまり＝自分（外注先）の投稿として右側に
+      $isNew = _rep_is_new_ts($it['ts']);
+      $cnt   = count($it['files']);
+      echo '<div class="cmt me'.$old.'">';
+      echo '<div class="cmeta"><span class="cwho">自分</span><span>'.h($it['ts'] ? date('Y-m-d H:i', $it['ts']) : '').' '
+         . ($isNew ? '<span class="rnew blink">New</span>' : '').'</span>'
+         . '<span class="cnum">写真'.$cnt.'枚</span></div>';
+      echo '<div class="pbub">';
+      foreach ($it['files'] as $f) {
+        $href = 'cases/'.urlseg($id).'/'.urlseg($f['rel']).'?v='.($f['mt']?:0); // 更新時刻でキャッシュ回避
+        if (in_array(ext_of($f['name']), $IMG_EXT, true)) {
+          echo '<div class="rthumb"><a class="thumb" href="'.h($href).'" style="background-image:url('.h($href).')" data-cap="'.h($f['name']).'" onclick="return openLightbox(this)"></a>'
+             . '<button class="rdel" title="削除" onclick="repDel(\''.h($id).'\',\''.h($f['rel']).'\')">🗑</button></div>';
+        } else {
+          echo '<a class="file" href="'.h($href).'" target="_blank" rel="noopener">📎 '.h($f['name']).'</a>';
+        }
+      }
+      echo '</div></div>';
+      continue;
+    }
+    $cm = $it['cm']; $i = $it['i'];
     $at = isset($cm['at']) ? $cm['at'] : '';
     $tx = isset($cm['text']) ? $cm['text'] : '';
     $mine = !(isset($cm['side']) && $cm['side']==='shoji'); // ポータル＝外注視点：side未指定/gaichu＝自分（右）
-    $cNew = _rep_is_new_ts(_rep_comment_ts($at)) ? '<span class="rnew blink">New</span>' : '';
-    $cls = 'cmt '.($mine?'me':'them').($i < $showFrom ? ' old hide' : '');
-    echo '<div class="'.$cls.'" data-idx="'.$i.'">';
+    $cNew = _rep_is_new_ts($it['ts']) ? '<span class="rnew blink">New</span>' : '';
+    echo '<div class="cmt '.($mine?'me':'them').$old.'" data-idx="'.$i.'">';
     echo '<div class="cmeta"><span class="cwho">'.($mine?'自分':'庄司石材').'</span><span>'.h($at).' '.$cNew.'</span>';
     if ($mine) echo '<span class="cact"><button class="cedit" onclick="repEditComment(\''.h($id).'\','.$i.')">✏ 編集</button><button class="cdel" onclick="repDelComment(\''.h($id).'\','.$i.')">🗑 削除</button></span>';
     echo '</div><div class="bubble">'.nl2br(h($tx)).'</div></div>';
@@ -482,6 +528,10 @@ function render_report($id, $files, $comments, $IMG_EXT){
   .report { border-top:1px solid var(--line); padding:11px 15px; background:color-mix(in srgb,var(--accent) 5%,var(--surface)); }
   .rlbl { font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--accent); margin-bottom:8px; }
   .rphotos { display:flex; flex-wrap:wrap; gap:8px; }
+  /* チャット内の写真バブル（まとめて送られた分が1つのかたまり） */
+  .pbub { display:flex; flex-wrap:wrap; gap:6px; padding:7px; border-radius:14px; border-top-right-radius:4px; background:color-mix(in srgb,var(--green) 12%,var(--surface)); border:1px solid color-mix(in srgb,var(--green) 32%,transparent); max-width:100%; }
+  .cmt.them .pbub { border-top-right-radius:14px; border-top-left-radius:4px; background:var(--surface-2); border-color:var(--line); }
+  .cmt .cnum { font-weight:700; color:var(--accent); }
   .rthumb { position:relative; }
   .rthumb .thumb { width:76px; height:58px; }
   .rdel { position:absolute; top:2px; right:2px; background:rgba(255,255,255,.9); color:#c0392b; border:1px solid #e0b4ad; border-radius:6px; width:22px; height:20px; font-size:11px; line-height:1; cursor:pointer; padding:0; }
@@ -599,25 +649,49 @@ function render_report($id, $files, $comments, $IMG_EXT){
 
   // ===== 外注先からの報告 =====
   function _esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  var REP_GAP=600; // 秒。これ以内に届いた写真は「まとめて送られた分」として1つにする
+  function _fmtTs(ts){
+    if(!ts) return '';
+    var d=new Date(ts*1000); function z(n){ return (n<10?'0':'')+n; }
+    return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes());
+  }
+  function _isNewTs(ts){ return !!ts && (Date.now()/1000 - ts) < 86400; }
+  // 写真とコメントを時系列で1本に組み立てる（PHP側 render_report と同じ並び）
+  function buildTimeline(id, photos, comments){
+    var ps=photos.slice().sort(function(a,b){ var x=(a.mt||0)-(b.mt||0); return x?x:(a.name<b.name?-1:1); });
+    var groups=[], cur=null;
+    ps.forEach(function(f){
+      if(!cur || ((f.mt||0)-cur.ts)>REP_GAP){ if(cur) groups.push(cur); cur={ts:(f.mt||0),files:[]}; }
+      cur.files.push(f); cur.ts=(f.mt||0);
+    });
+    if(cur) groups.push(cur);
+    var tl=groups.map(function(g){ return {t:'p',ts:g.ts,files:g.files}; });
+    comments.forEach(function(cm,i){ tl.push({t:'c',ts:(cm.ts||0),cm:cm,i:i}); });
+    tl.sort(function(a,b){ if(a.ts===b.ts) return (a.t===b.t)?0:(a.t==='p'?-1:1); return a.ts-b.ts; });
+    var total=tl.length, showFrom=total>2?total-2:0;
+    var more=total>2?'<button type="button" class="cmore" onclick="chatMore(this)">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
+    return more+tl.map(function(it,n){
+      var old=(n<showFrom)?' old hide':'';
+      if(it.t==='p'){
+        var thumbs=it.files.map(function(f){
+          var href='cases/'+encodeURIComponent(id)+'/'+f.rel.split('/').map(encodeURIComponent).join('/')+'?v='+(f.mt||0);
+          if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
+          return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
+        }).join('');
+        return '<div class="cmt me'+old+'"><div class="cmeta"><span class="cwho">自分</span><span>'+_esc(_fmtTs(it.ts))+' '+(_isNewTs(it.ts)?'<span class="rnew blink">New</span>':'')+'</span><span class="cnum">写真'+it.files.length+'枚</span></div><div class="pbub">'+thumbs+'</div></div>';
+      }
+      var cm=it.cm, i=it.i, mine=!(cm.side==='shoji');
+      var acts=mine?'<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button><button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span>':'';
+      return '<div class="cmt '+(mine?'me':'them')+old+'" data-idx="'+i+'"><div class="cmeta"><span class="cwho">'+(mine?'自分':'庄司石材')+'</span><span>'+_esc(cm.at)+' '+(_isNewTs(cm.ts)?'<span class="rnew blink">New</span>':'')+'</span>'+acts+'</div><div class="bubble">'+_esc(cm.text)+'</div></div>';
+    }).join('');
+  }
   function repRefresh(id){
     var fd=new FormData(); fd.append('action','list'); fd.append('case',id);
     return fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
       if(!res||!res.ok) return;
       var box=document.querySelector('.report[data-case="'+id+'"]'); if(!box) return;
-      var ph=box.querySelector('.rphotos'); var cl=box.querySelector('.clist');
-      ph.innerHTML=(res.photos||[]).map(function(f){
-        var href='cases/'+encodeURIComponent(id)+'/'+f.rel.split('/').map(encodeURIComponent).join('/')+'?v='+(f.mt||0);
-        if(f.img) return '<div class="rthumb"><a class="thumb" href="'+href+'" style="background-image:url('+href+')" onclick="return openLightbox(this)"></a><button class="rdel" title="削除" onclick="repDel(\''+id+'\',\''+f.rel.replace(/'/g,"\\'")+'\')">🗑</button></div>';
-        return '<a class="file" href="'+href+'" target="_blank" rel="noopener">📎 '+_esc(f.name)+'</a>';
-      }).join('');
-      var cms=res.comments||[]; var total=cms.length; var showFrom=total>2?total-2:0;
-      var more=total>2?'<button type="button" class="cmore" onclick="chatMore(this)">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
-      cl.innerHTML=more+cms.map(function(cm,i){
-        var mine=!(cm.side==='shoji');
-        var cls='cmt '+(mine?'me':'them')+(i<showFrom?' old hide':'');
-        var acts=mine?'<span class="cact"><button class="cedit" onclick="repEditComment(\''+id+'\','+i+')">✏ 編集</button><button class="cdel" onclick="repDelComment(\''+id+'\','+i+')">🗑 削除</button></span>':'';
-        return '<div class="'+cls+'" data-idx="'+i+'"><div class="cmeta"><span class="cwho">'+(mine?'自分':'庄司石材')+'</span><span>'+_esc(cm.at)+'</span>'+acts+'</div><div class="bubble">'+_esc(cm.text)+'</div></div>';
-      }).join('');
+      var cl=box.querySelector('.clist');
+      cl.innerHTML=buildTimeline(id, res.photos||[], res.comments||[]);
     }).catch(function(){});
   }
   function chatMore(btn){ var cl=btn.parentNode; var exp=cl.classList.toggle('expanded'); cl.querySelectorAll('.old').forEach(function(m){ m.classList.toggle('hide',!exp); }); var n=cl.querySelectorAll('.old').length; btn.textContent=exp?'▲ 折りたたむ':'▼ これまでのやり取りを表示（残り'+n+'件）'; }

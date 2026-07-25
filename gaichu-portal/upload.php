@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>15, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>16, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -87,7 +87,8 @@ if ($action === 'listall') {
       $out[] = array(
         'id'=>$d, 'case'=>$c,
         'files'=>list_case_files($cd),
-        'comments'=>(is_array($cm)?$cm:array()),
+        'ftimes'=>list_case_times($cd),
+        'comments'=>comments_with_ts($cm),
         'progress'=>(is_array($pg)?$pg:null)
       );
     }
@@ -147,6 +148,30 @@ function list_case_files($dir, $base=''){
     else $out[] = $rel;
   }
   return $out;
+}
+// 同じ一覧の「相対パス => 更新時刻(UNIX秒)」。アプリ側で“まとめて送られた分”を
+// 時系列のかたまりとして表示するために使う（files とは別項目なので既存処理に影響しない）。
+function list_case_times($dir, $base=''){
+  $out = array();
+  if (!is_dir($dir)) return $out;
+  foreach (scandir($dir) as $f) {
+    if ($f === '.' || $f === '..' || $f === 'case.json' || $f === 'comments.json' || $f === 'progress.json' || substr($f,0,1)==='.') continue;
+    $p = $dir.'/'.$f; $rel = ($base==='') ? $f : $base.'/'.$f;
+    if (is_dir($p)) $out = $out + list_case_times($p, $rel);
+    else $out[$rel] = @filemtime($p);
+  }
+  return $out;
+}
+// コメントに送信時刻(UNIX秒)を付ける（'at' は "Y-m-d H:i"、末尾に"（編集）"が付く場合あり）
+function comments_with_ts($cm){
+  if (!is_array($cm)) return array();
+  foreach ($cm as $i => $c) {
+    $at = isset($c['at']) ? $c['at'] : '';
+    $s  = trim(preg_replace('/（.*$/u', '', $at));
+    $t  = $s ? strtotime($s) : 0;
+    $cm[$i]['ts'] = $t ? $t : 0;
+  }
+  return $cm;
 }
 
 // メモ系フィールドの署名（変化検知用）。note/伝言/蓋/目地/理由 が対象
@@ -216,7 +241,8 @@ if ($action === 'status') {
   $cm = is_file($caseDir.'/comments.json') ? json_decode(file_get_contents($caseDir.'/comments.json'), true) : array();
   $pg = is_file($caseDir.'/progress.json') ? json_decode(file_get_contents($caseDir.'/progress.json'), true) : null;
   out(array('ok'=>true, 'published'=>true, 'case'=>(is_array($c)?$c:null),
-            'files'=>list_case_files($caseDir), 'comments'=>(is_array($cm)?$cm:array()),
+            'files'=>list_case_files($caseDir), 'ftimes'=>list_case_times($caseDir),
+            'comments'=>comments_with_ts($cm),
             'progress'=>(is_array($pg)?$pg:null)));
 }
 

@@ -5866,7 +5866,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.326';
+var APP_VERSION = 'v1.9.327';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -17309,6 +17309,8 @@ function _gaichuMemoSave(type){
 // 公開中ウインドウ（mgr）と外注公開まとめ（sum）で共通。庄司視点：shoji＝自分（右）
 var GAICHU_TL_GAP = 600; // 秒。これ以内に届いた写真を「まとめて送られた分」とみなす
 var _gaichuTlGroups = {}; // グループキー → {scope,id,type,files:[…]}
+// 「✅保存済」を一時的に解除したかたまり（メモリだけに持つので、保存しなければ再読み込みで元に戻る）
+var _gaichuTlUnmarked = {};
 
 function _gaichuTlCtx(scope, id, type){
   if(scope==='sum') return { scope:'sum', id:id, type:type, chatId:'gsum-chat-'+id, replyId:'gsum-reply-'+id,
@@ -17381,13 +17383,14 @@ function _gaichuTlCmtHtml(ctx, it, old){
 function _gaichuTlPhotoHtml(ctx, it, old){
   var gkey=ctx.scope+'|'+ctx.gk+'|'+it.ts;
   _gaichuTlGroups[gkey]={scope:ctx.scope, id:ctx.id, type:ctx.type, files:it.files};
+  var um=!!_gaichuTlUnmarked[gkey]; // 一時解除中は保存済でも保存ボタンを出す
   var unsaved=it.files.filter(function(p){ return !_gaichuIsSaved(ctx.id,p); });
   var saveRow='<div class="gp-saverow" style="position:relative;margin-top:6px">'+
-    (unsaved.length ? _gaichuTlSaveBtnHtml(gkey, unsaved.length) : _gaichuTlSavedHtml(gkey))+'</div>';
+    ((um||unsaved.length) ? _gaichuTlSaveBtnHtml(gkey, um?it.files.length:unsaved.length) : _gaichuTlSavedHtml(gkey))+'</div>';
   var thumbs=it.files.map(function(p){
     return '<div style="position:relative">'+
       '<div class="gp-th" data-path="'+_gaichuEsc(p)+'" title="タップで拡大" style="width:84px;height:64px;border-radius:6px;border:1px solid #ddd;background:#f2f2f2 no-repeat center/cover;cursor:zoom-in"></div>'+
-      (_gaichuIsSaved(ctx.id,p)?_gaichuTlMarkHtml():'')+
+      ((!um && _gaichuIsSaved(ctx.id,p))?_gaichuTlMarkHtml():'')+
     '</div>';
   }).join('');
   return '<div class="gp-msg'+(old?' gp-old':'')+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:92%;align-self:flex-start;align-items:flex-start">'+
@@ -17410,15 +17413,15 @@ function _gaichuTlSaveBtnHtml(gkey, n){
 function _gaichuTlSavedHtml(gkey){
   return '<div style="text-align:center"><button onclick="_gaichuTlUnmark(\''+gkey+'\',this)" title="もう一度保存できる状態に戻します（SPで削除した場合など）" style="font-size:10px;font-weight:700;color:#2e7d32;background:#e6f4ea;border:1px solid #b7dcc4;border-radius:6px;padding:3px 9px;cursor:pointer;font-family:inherit">✅ SP保存済（押すと再保存）</button></div>';
 }
+// 保存済の記録は消さず、この表示だけ一時的に「保存ボタン」に戻す。
+// 実際に保存すれば✅に戻り、保存しないまま再読み込みすると✅表示に復帰する。
 function _gaichuTlUnmark(gkey, el){
   var g=_gaichuTlGroups[gkey]; if(!g) return;
-  var m=_gaichuSavedMap();
-  g.files.forEach(function(p){ delete m[g.id+'|'+p]; });
-  try{ localStorage.setItem('gaichuSpSaved', JSON.stringify(m)); }catch(e){}
+  _gaichuTlUnmarked[gkey]=1;
   var row=el.closest('.gp-saverow'); if(row) row.innerHTML=_gaichuTlSaveBtnHtml(gkey, g.files.length);
   var msg=row?row.closest('.gp-msg'):null;
   if(msg) msg.querySelectorAll('.gp-svmark').forEach(function(x){ x.remove(); });
-  showSaveToast(true,'もう一度保存できる状態に戻しました（'+g.files.length+'枚）');
+  showSaveToast(true,'再保存できる状態にしました（保存しなければ再読み込みで「保存済」に戻ります）');
 }
 // 保存先が1つ（工事）なら即実行、2つ（納骨・彫刻・追工）ならメニューを開く
 function _gaichuTlSaveClick(gkey, btn){
@@ -17465,7 +17468,8 @@ function _gaichuTlBulkSave(gkey, sub, btn){
   var g=_gaichuTlGroups[gkey]; if(!g) return;
   var row=btn.closest('.gp-saverow'); var mn=row?row.querySelector('.gp-savemenu'):null; if(mn) mn.style.display='none';
   var b=row?row.querySelector('button'):btn;
-  var targets=g.files.filter(function(p){ return !_gaichuIsSaved(g.id,p); });
+  // 一時解除中は全部を対象にする（SPで消した分だけがSP照合で実際に再保存される）
+  var targets=_gaichuTlUnmarked[gkey] ? g.files.slice() : g.files.filter(function(p){ return !_gaichuIsSaved(g.id,p); });
   if(!targets.length){ showSaveToast(true,'すべて保存済みです'); return; }
   function setTxt(t){ if(b){ b.textContent=t; b.disabled=true; b.style.opacity='.75'; b.style.cursor='default'; } }
   function reset(t){ if(b){ b.textContent=t; b.disabled=false; b.style.opacity='1'; b.style.cursor='pointer'; } }
@@ -17478,6 +17482,7 @@ function _gaichuTlBulkSave(gkey, sub, btn){
         if(i>=targets.length){
           var done=saved.concat(skipped);
           if(done.length) _gaichuMarkSavedPaths(g.id, done);
+          if(!failed.length) delete _gaichuTlUnmarked[gkey]; // 保存できたので一時解除を終了
           var msg=saved.length+'件を'+sub+'へ保存しました'
             +(skipped.length?'（'+skipped.length+'件は保存済のためスキップ）':'')
             +(failed.length?'／失敗 '+failed.length+'件':'');

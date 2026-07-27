@@ -18,6 +18,7 @@
  */
 
 mb_internal_encoding('UTF-8');
+$SUBMIT_VER = 3; // このファイルの版（index.php が読み取って画面に表示する）
 $BASE = __DIR__;
 $CASES_DIR = $BASE . '/cases';
 

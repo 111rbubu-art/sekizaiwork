@@ -26,10 +26,31 @@
  */
 
 mb_internal_encoding('UTF-8');
-// このファイル(index.php)のバージョン。画面下部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.1.0';
+// このファイル(index.php)のバージョン。画面上部に表示するので、更新時はここを上げること。
+$PORTAL_VER = 'v1.1.1';
+// この index.php が前提にしている同居スクリプトの版。下回っていたら画面で知らせる
+$NEED_UPLOAD_VER = 17;
+$NEED_SUBMIT_VER = 3;
 
-// 画面を古いまま表示させない（ブラウザに溜め込ませると、下部のバージョン表示も古いままになり
+// 同じフォルダーの upload.php / submit.php の版を読み取る（上げ忘れの確認用）
+// 戻り値: null=ファイルが無い ／ 0=版の記載が無い旧版 ／ 数値=その版
+function script_ver($file, $pattern){
+  $p = __DIR__ . '/' . $file;
+  if (!is_file($p)) return null;
+  $s = @file_get_contents($p, false, null, 0, 60000);
+  return (is_string($s) && preg_match($pattern, $s, $m)) ? intval($m[1]) : 0;
+}
+function upload_ver(){ return script_ver('upload.php', "/'version'\\s*=>\\s*(\\d+)/"); }
+function submit_ver(){ return script_ver('submit.php', '/\\$SUBMIT_VER\\s*=\\s*(\\d+)/'); }
+function ver_ok($v, $need){ return ($v !== null && $v >= $need); }
+// 表示用の文字列（例: "upload v17" / "upload v16 ⚠" / "upload 旧版 ⚠" / "upload なし ⚠"）
+function ver_label($name, $v, $need){
+  if ($v === null) return $name.' なし ⚠';
+  if ($v === 0)    return $name.' 旧版 ⚠';
+  return $name.' v'.$v.($v < $need ? ' ⚠' : '');
+}
+
+// 画面を古いまま表示させない（ブラウザに溜め込ませると、バージョン表示も古いままになり
 // 「新しい版になったのか」を確認できなくなるため）
 if (!headers_sent()) {
   header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -38,10 +59,18 @@ if (!headers_sent()) {
 // サーバー上の版だけを直接確認する用： index.php?ver
 if (isset($_GET['ver'])) {
   header('Content-Type: application/json; charset=UTF-8');
+  $uv = upload_ver(); $sv = submit_ver();
   echo json_encode(array(
-    'version' => $PORTAL_VER,
-    'updated' => date('Y-m-d H:i:s', @filemtime(__FILE__)),
-    'now'     => date('Y-m-d H:i:s')
+    'version'        => $PORTAL_VER,
+    'updated'        => date('Y-m-d H:i:s', @filemtime(__FILE__)),
+    'upload'         => $uv,
+    'upload_need'    => $NEED_UPLOAD_VER,
+    'upload_updated' => is_file(__DIR__.'/upload.php') ? date('Y-m-d H:i:s', @filemtime(__DIR__.'/upload.php')) : null,
+    'submit'         => $sv,
+    'submit_need'    => $NEED_SUBMIT_VER,
+    'submit_updated' => is_file(__DIR__.'/submit.php') ? date('Y-m-d H:i:s', @filemtime(__DIR__.'/submit.php')) : null,
+    'all_ok'         => (ver_ok($uv,$NEED_UPLOAD_VER) && ver_ok($sv,$NEED_SUBMIT_VER)),
+    'now'            => date('Y-m-d H:i:s')
   ), JSON_UNESCAPED_UNICODE);
   exit;
 }
@@ -444,6 +473,7 @@ function render_report($id, $files, $comments, $IMG_EXT){
   /* バージョン表示：一番上の行の右端（スクロール不要で版を確認できるように） */
   .topver { margin-left:auto; flex-shrink:0; font-size:10.5px; font-weight:700; letter-spacing:.03em; color:var(--faint); background:var(--surface-2); border:1px solid var(--line); border-radius:20px; padding:2px 8px; white-space:nowrap; }
   .login + .topver { margin-left:8px; } /* ログイン表示があるときはその右隣に寄せる */
+  .topver.warn { color:#b3450f; background:color-mix(in srgb,#e2711d 16%,var(--surface)); border-color:color-mix(in srgb,#e2711d 45%,transparent); }
   .login b { color:var(--ink); font-family:var(--serif); font-weight:600; }
 
   .maintabs { display:flex; background:var(--surface); border-bottom:1px solid var(--line); position:sticky; top:54px; z-index:19; }
@@ -568,7 +598,18 @@ function render_report($id, $files, $comments, $IMG_EXT){
       <div class="seal">庄</div>
       <div class="brand"><b>庄司石材</b></div>
       <?php if ($loginName): ?><div class="login"><b><?php echo h($loginName); ?></b> ログイン中</div><?php endif; ?>
-      <div class="topver" title="index.php <?php echo h($PORTAL_VER); ?>（更新 <?php echo date('Y/m/d H:i', @filemtime(__FILE__)); ?>）"><?php echo h($PORTAL_VER); ?></div>
+      <?php
+        $uv = upload_ver(); $sv = submit_ver();
+        $allOk = ver_ok($uv, $NEED_UPLOAD_VER) && ver_ok($sv, $NEED_SUBMIT_VER);
+        $tip = 'index.php '.$PORTAL_VER.'（更新 '.date('Y/m/d H:i', @filemtime(__FILE__)).'）'
+             . "\n" . ver_label('upload.php', $uv, $NEED_UPLOAD_VER) . '（必要 v'.$NEED_UPLOAD_VER.'）'
+             . "\n" . ver_label('submit.php', $sv, $NEED_SUBMIT_VER) . '（必要 v'.$NEED_SUBMIT_VER.'）'
+             . ($allOk ? "\n3ファイルとも最新です" : "\n⚠ 更新されていないファイルがあります");
+      ?>
+      <div class="topver<?php echo $allOk ? '' : ' warn'; ?>" title="<?php echo h($tip); ?>"><?php
+        echo h($PORTAL_VER);
+        if (!$allOk) echo ' ⚠';
+      ?></div>
     </div>
     <div class="maintabs">
       <button class="maintab on" data-t="kouji" onclick="showTab('kouji')">工事 <span class="n tnum"><?php echo $openCount['kouji']; ?></span><?php if ($newToday['kouji']): ?><span class="tabnew blink">NEW</span><?php endif; ?></button>
@@ -595,7 +636,9 @@ function render_report($id, $files, $comments, $IMG_EXT){
     </div>
     <?php endforeach; ?>
 
-    <footer>庄司石材 外注ポータル — 閲覧専用<span class="ver"><?php echo h($PORTAL_VER); ?> (<?php echo date('Y/m/d H:i', @filemtime(__FILE__)); ?>)</span></footer>
+    <footer>庄司石材 外注ポータル — 閲覧専用<span class="ver">index <?php echo h($PORTAL_VER); ?> (<?php echo date('Y/m/d H:i', @filemtime(__FILE__)); ?>)　/　<?php
+      echo h(ver_label('upload', $uv, $NEED_UPLOAD_VER)); ?>　/　<?php
+      echo h(ver_label('submit', $sv, $NEED_SUBMIT_VER)); ?></span></footer>
   </div>
 </div>
 

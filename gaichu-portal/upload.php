@@ -42,7 +42,7 @@ function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
 // GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>16, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>17, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
 
 $BASE      = __DIR__;
@@ -109,8 +109,11 @@ if ($action === 'summary') {
       if (is_dir($rdir)) foreach (scandir($rdir) as $f) {
         if ($f !== '.' && $f !== '..' && substr($f,0,1) !== '.' && is_file($rdir.'/'.$f)) $rep++;
       }
+      // 報告に数えるのは外注先の投稿だけ（庄司石材＝side:shoji の返信は数えない）
       $cm = is_file($cd.'/comments.json') ? json_decode(file_get_contents($cd.'/comments.json'), true) : array();
-      if (is_array($cm)) $rep += count($cm);
+      if (is_array($cm)) foreach ($cm as $one) {
+        if (!is_array($one) || !isset($one['side']) || $one['side'] !== 'shoji') $rep++;
+      }
       // 完了報告（progress.json）: 完了フラグと完了日（アプリの🏁完了報告バッジ用）
       $pg = is_file($cd.'/progress.json') ? json_decode(file_get_contents($cd.'/progress.json'), true) : null;
       $done = ($pg && !empty($pg['done']));

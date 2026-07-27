@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.329';
+var APP_VERSION = 'v1.9.330';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -16729,8 +16729,8 @@ function _gaichuUpdateBtn(){
       if(res && res.ok && res.published){
         pub.push(labelOf[type]); byType[type]={};
         (res.files||[]).forEach(function(p){ var b=_gaichuBase(p); names[b]=true; byType[type][b]=true; });
-        // 報告（報告/写真＋コメント）が既読数より多ければ新着
-        var rep=(res.files||[]).filter(function(p){return p.indexOf('報告/')===0;}).length + (Array.isArray(res.comments)?res.comments.length:0);
+        // 報告（外注先の写真＋外注先のコメント）が既読数より多ければ新着。庄司の返信は数えない
+        var rep=_gaichuRepCount(res.files, res.comments);
         if(_gaichuReportShow(tid, rep)) newAny=true;
         // 完了報告の検知：反映済み/却下済みは既読、未反映なら通知＋同期候補
         var cf=COMPFIELD[type];
@@ -16800,22 +16800,40 @@ var _gaichuPubNames = {};
 var _gaichuPubTypes = [];
 var _gaichuPubFiles = {};
 // 報告の既読管理（端末ごと）：区分ID→既読済みの報告件数／既読時刻
+// 報告の件数＝外注先からの写真＋外注先のコメントのみ。
+// 庄司石材（自分）の返信は「報告」ではないので数えない。
+function _gaichuRepCount(files, comments){
+  var ph=(files||[]).filter(function(p){ return String(p).indexOf('報告/')===0; }).length;
+  var cm=(comments||[]).filter(function(c){ return !(c && c.side==='shoji'); }).length;
+  return ph+cm;
+}
 function _gaichuSeenAll(){ try{ return JSON.parse(localStorage.getItem('gaichuSeen')||'{}')||{}; }catch(e){ return {}; } }
-function _gaichuSeenCount(id){ var o=_gaichuSeenAll(); return o[id]||0; }
+function _gaichuSeenCount(id, cur){
+  var o=_gaichuSeenAll(); var v=o[id]||0;
+  // 数え方の変更（庄司の返信を除外）で記録が現在値を上回った場合は下げる。
+  // そのままだと新しい報告が来ても件数が追いつかず、バッジが出なくなるため。
+  if(typeof cur==='number' && v>cur){ o[id]=cur; try{ localStorage.setItem('gaichuSeen',JSON.stringify(o)); }catch(e){} return cur; }
+  return v;
+}
 function _gaichuSeenAtAll(){ try{ return JSON.parse(localStorage.getItem('gaichuSeenAt')||'{}')||{}; }catch(e){ return {}; } }
 function _gaichuSeenAt(id){ var o=_gaichuSeenAtAll(); return o[id]||0; }
+// 「どれが新しい報告か」の基準時刻＝新着を検知した時点での前回既読時刻
+function _gaichuRepBaseAll(){ try{ return JSON.parse(localStorage.getItem('gaichuRepBase')||'{}')||{}; }catch(e){ return {}; } }
+function _gaichuRepBase(id){ var o=_gaichuRepBaseAll(); return o[id]||0; }
 function _gaichuMarkSeen(id, count){
   var o=_gaichuSeenAll();
   if(o[id]!==count){
     o[id]=count; try{ localStorage.setItem('gaichuSeen',JSON.stringify(o)); }catch(e){}
-    var a=_gaichuSeenAtAll(); a[id]=Math.floor(Date.now()/1000); try{ localStorage.setItem('gaichuSeenAt',JSON.stringify(a)); }catch(e){} // 既読時刻を記録（24時間後に消灯）
+    var a=_gaichuSeenAtAll();
+    var b=_gaichuRepBaseAll(); b[id]=a[id]||0; try{ localStorage.setItem('gaichuRepBase',JSON.stringify(b)); }catch(e){} // 直前の既読時刻＝新着の基準
+    a[id]=Math.floor(Date.now()/1000); try{ localStorage.setItem('gaichuSeenAt',JSON.stringify(a)); }catch(e){} // 既読時刻を記録（24時間後に消灯）
   }
   _gaichuMarkListNew();
 }
 // 🆕報告ラベルの表示条件：未読、または「既読後24時間以内」
 function _gaichuReportShow(id, rep){
   if(!(rep>0)) return false;
-  if(rep > _gaichuSeenCount(id)) return true;        // 未読
+  if(rep > _gaichuSeenCount(id, rep)) return true;   // 未読
   var at=_gaichuSeenAt(id);
   return !!(at && (Math.floor(Date.now()/1000)-at) < 24*3600); // 既読後24時間
 }
@@ -17227,7 +17245,7 @@ function _gaichuLoadCard(type){
       var shared=files.filter(function(p){ return p.indexOf('報告/')!==0; });
       var reports=files.filter(function(p){ return p.indexOf('報告/')===0; });
       var comments=Array.isArray(res.comments)?res.comments:[];
-      _gaichuMarkSeen(id, reports.length+comments.length);
+      _gaichuMarkSeen(id, _gaichuRepCount(files, comments));
       var progLine=(res.progress && res.progress.done)?'<div style="color:#2e7d32;font-size:12px;font-weight:700;background:color-mix(in srgb,#2e7d32 9%,transparent);border-radius:8px;padding:7px 10px">🏁 外注の完了報告：'+_gaichuEsc(res.progress.date||'')+'</div>':'';
       col.style.borderColor='#c7dccd';
       col.innerHTML=_gaichuColHead(type,'on')+
@@ -17368,6 +17386,7 @@ function _gaichuMarkSavedPaths(id,paths){
   try{ localStorage.setItem('gaichuSpSaved', JSON.stringify(m)); }catch(e){}
 }
 function _gaichuTlHtml(ctx, reports, comments, ftimes){
+  ctx.repBase=_gaichuRepBase(ctx.id); // これより後に届いた外注先の投稿に「報告」ラベルを付ける
   var tl=_gaichuTlBuild(reports, comments, ftimes);
   var total=tl.length, showFrom=total>2?total-2:0;
   var more=total>2?'<button onclick="_gaichuChatMore(this)" style="align-self:center;font-size:11px;font-weight:700;color:#33507e;background:#eaf0f8;border:1px solid #c9d6ea;border-radius:20px;padding:4px 13px;cursor:pointer;font-family:inherit">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
@@ -17380,13 +17399,18 @@ function _gaichuTlHtml(ctx, reports, comments, ftimes){
       '<button onclick="'+ctx.sendFn+'" style="flex-shrink:0;font-size:12px;font-weight:700;color:#fff;background:#1f5a34;border:none;border-radius:9px;padding:9px 14px;cursor:pointer;font-family:inherit">送信</button>'+
     '</div>';
 }
+// 前回見たあとに届いた外注先の投稿につける「報告」ラベル
+function _gaichuRepTagHtml(ctx, ts){
+  return (ts && ts > (ctx.repBase||0))
+    ? '<span style="background:#e53935;color:#fff;border-radius:8px;padding:1px 7px;font-size:9.5px;font-weight:700;margin-left:4px">🆕報告</span>' : '';
+}
 function _gaichuTlCmtHtml(ctx, it, old){
   var cm=it.cm, i=it.i, mine=(cm.side==='shoji');
   var align=mine?'flex-end':'flex-start';
   var bub=mine?'background:#e6f4ea;border:1px solid #b7dcc4;color:#1f5a34;border-top-right-radius:4px':'background:#f1f3f6;color:#2b2f36;border-top-left-radius:4px';
   var acts=mine?'<div style="display:flex;gap:9px;margin:3px 3px 0"><button onclick="'+ctx.editFn+i+')" style="font-size:10.5px;color:#4a5361;background:none;border:none;cursor:pointer;padding:0">✏ 編集</button><button onclick="'+ctx.delFn+i+')" style="font-size:10.5px;color:#c0392b;background:none;border:none;cursor:pointer;padding:0">🗑 削除</button></div>':'';
   return '<div class="gp-msg'+(old?' gp-old':'')+'" data-idx="'+i+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:85%;align-self:'+align+';align-items:'+align+'">'+
-    '<div style="font-size:9.5px;color:#6b7280;margin:0 3px 2px">'+(mine?'庄司石材':'外注先')+'　'+_gaichuEsc(cm.at||'')+'</div>'+
+    '<div style="font-size:9.5px;color:#6b7280;margin:0 3px 2px">'+(mine?'庄司石材':'外注先')+'　'+_gaichuEsc(cm.at||'')+(mine?'':_gaichuRepTagHtml(ctx,it.ts))+'</div>'+
     '<div class="gp-bub" style="font-size:12.5px;line-height:1.5;padding:8px 11px;border-radius:13px;white-space:pre-wrap;'+bub+'">'+_gaichuEsc(cm.text||'')+'</div>'+acts+
   '</div>';
 }
@@ -17405,7 +17429,7 @@ function _gaichuTlPhotoHtml(ctx, it, old){
     '</div>';
   }).join('');
   return '<div class="gp-msg'+(old?' gp-old':'')+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:92%;align-self:flex-start;align-items:flex-start">'+
-    '<div style="font-size:9.5px;color:#6b7280;margin:0 3px 2px">外注先　'+_gaichuEsc(_gaichuTlFmt(it.ts))+'　<b style="color:#3a6ea5">写真'+it.files.length+'枚</b></div>'+
+    '<div style="font-size:9.5px;color:#6b7280;margin:0 3px 2px">外注先　'+_gaichuEsc(_gaichuTlFmt(it.ts))+'　<b style="color:#3a6ea5">写真'+it.files.length+'枚</b>'+_gaichuRepTagHtml(ctx,it.ts)+'</div>'+
     '<div style="padding:7px;border-radius:13px;border-top-left-radius:4px;background:#f1f3f6;border:1px solid #e4e7ec">'+
       '<div style="display:flex;flex-wrap:wrap;gap:6px">'+thumbs+'</div>'+saveRow+
     '</div>'+
@@ -17659,7 +17683,7 @@ function _gaichuSummaryCardHtml(entry){
   var shared=files.filter(function(p){ return p.indexOf('報告/')!==0; });
   var reports=files.filter(function(p){ return p.indexOf('報告/')===0; });
   var col=_gaichuTypeColor(type), lbl=_gaichuTypeLabel(type);
-  var repN=reports.length+comments.length;
+  var repN=_gaichuRepCount(files, comments); // 庄司の返信は報告に数えない
   var isRep=_gaichuReportShow(id, repN);
   var doneUnread=prog && prog.done && prog.date && _gaichuDoneSeenDate(id)!==prog.date;
   var badges='';

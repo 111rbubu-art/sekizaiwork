@@ -27,9 +27,9 @@
 
 mb_internal_encoding('UTF-8');
 // このファイル(index.php)のバージョン。画面上部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.1.1';
+$PORTAL_VER = 'v1.2.0';
 // この index.php が前提にしている同居スクリプトの版。下回っていたら画面で知らせる
-$NEED_UPLOAD_VER = 17;
+$NEED_UPLOAD_VER = 18;
 $NEED_SUBMIT_VER = 3;
 
 // 同じフォルダーの upload.php / submit.php の版を読み取る（上げ忘れの確認用）
@@ -762,6 +762,37 @@ function render_report($id, $files, $comments, $IMG_EXT){
       if(res&&res.ok) repRefresh(id); else alert('削除失敗: '+((res&&res.error)||''));
     }).catch(function(){ alert('削除に失敗しました'); });
   }
+  function _mb(n){ return Math.round(n/1048576*10)/10; }
+  // 上限を超える写真は長辺と画質を段階的に落として縮小する。無理なら理由を返す
+  function prepUpload(file, cb, setLbl, no, total){
+    if(!(GP_MAXUP>0) || file.size<=GP_MAXUP) { cb(file); return; }
+    if(!/^image\//.test(file.type||'') && !/\.(jpe?g|png|webp|bmp|heic|heif)$/i.test(file.name||'')){
+      cb(null, 'サイズが大きすぎます '+_mb(file.size)+'MB / 上限 '+_mb(GP_MAXUP)+'MB（写真以外は自動縮小できません）'); return;
+    }
+    if(setLbl) setLbl('縮小中 '+no+'/'+total+' …');
+    var mime = /\.png$/i.test(file.name||'') ? 'image/png' : 'image/jpeg';
+    var url=URL.createObjectURL(file), img=new Image();
+    img.onload=function(){
+      var steps=[[2560,.85],[2048,.82],[1600,.78],[1280,.72],[1024,.68],[800,.6]], k=0;
+      (function step(){
+        if(k>=steps.length){ URL.revokeObjectURL(url); cb(null,'縮小しても上限 '+_mb(GP_MAXUP)+'MB を下回りませんでした'); return; }
+        var maxDim=steps[k][0], q=steps[k][1]; k++;
+        var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+        var r=Math.min(1, maxDim/Math.max(w,h));
+        var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
+        var c=document.createElement('canvas'); c.width=cw; c.height=ch;
+        var ctx=c.getContext('2d');
+        ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); // 透過→JPEGで黒くならないように
+        ctx.drawImage(img,0,0,cw,ch);
+        c.toBlob(function(nb){
+          if(nb && nb.size<=GP_MAXUP){ URL.revokeObjectURL(url); cb(nb); return; }
+          step();
+        }, mime, q);
+      })();
+    };
+    img.onerror=function(){ URL.revokeObjectURL(url); cb(null,'画像を読み込めませんでした'); };
+    img.src=url;
+  }
   function repUpload(inp, id){
     var files=inp.files; if(!files||!files.length) return;
     var arr=Array.prototype.slice.call(files); var i=0, done=0, fail=[];
@@ -778,17 +809,17 @@ function render_report($id, $files, $comments, $IMG_EXT){
       }
       var f=arr[i++];
       setLbl('送信中 '+(done+1)+'/'+arr.length+' …');
-      // サーバー上限を超えるものは送る前に弾く（送ってもPOSTごと捨てられ原因が分からなくなるため）
-      if(GP_MAXUP>0 && f.size>GP_MAXUP){
-        fail.push(f.name+'（サイズが大きすぎます '+Math.round(f.size/1048576*10)/10+'MB / 上限 '+Math.round(GP_MAXUP/1048576*10)/10+'MB）');
-        done++; next(); return;
-      }
       if(f.size===0){ fail.push(f.name+'（中身が空です）'); done++; next(); return; }
-      var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('file',f,f.name);
-      fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
-        if(!res||!res.ok) fail.push(f.name+'（'+((res&&res.error)||'エラー')+'）');
-        done++; next();
-      }).catch(function(){ fail.push(f.name+'（通信エラー）'); done++; next(); });
+      // サーバー上限を超える写真は自動で縮小してから送る
+      // （そのまま送るとPOSTごと捨てられ、原因の分からないエラーになるため）
+      prepUpload(f, function(sendFile, err){
+        if(err){ fail.push(f.name+'（'+err+'）'); done++; next(); return; }
+        var fd=new FormData(); fd.append('action','upload'); fd.append('case',id); fd.append('file',sendFile,f.name);
+        fetch('submit.php',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+          if(!res||!res.ok) fail.push(f.name+'（'+((res&&res.error)||'エラー')+'）');
+          done++; next();
+        }).catch(function(){ fail.push(f.name+'（通信エラー）'); done++; next(); });
+      }, setLbl, done+1, arr.length);
     })();
   }
   function repDel(id, rel){

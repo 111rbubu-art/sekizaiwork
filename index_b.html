@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.334';
+var APP_VERSION = 'v1.9.335';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18032,10 +18032,12 @@ function _gaichuDoPublish(){
         return _gaichuFetchBlob(f,gTok,sTok)
           .catch(function(e){ throw new Error('取得失敗['+(f.source==='sp'?'SP添付':'ドライブ')+']: '+(e.message||e)); })
           .then(function(b){
-            var fd=new FormData();
-            fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id);
-            fd.append('path', x.group+'/'+f.name); fd.append('file', b, f.name);
-            return _gaichuPost(cfg.url, fd).catch(function(e){ throw new Error('さくら送信失敗: '+(e.message||e)); });
+            return _gaichuCheckSize(b, f.name).then(function(){
+              var fd=new FormData();
+              fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id);
+              fd.append('path', x.group+'/'+f.name); fd.append('file', b, f.name);
+              return _gaichuPost(cfg.url, fd).catch(function(e){ throw new Error('さくら送信失敗: '+(e.message||e)); });
+            });
           })
           .then(function(r){ if(r && r.ok) okCount++; else failNames.push(f.name+'（'+((r&&r.error)||'失敗')+'）'); return step(i+1); })
           .catch(function(e){ failNames.push(f.name+'（'+(e.message||e)+'）'); return step(i+1); });
@@ -18187,13 +18189,33 @@ function _gaichuFileToType(op, type, fileName, src){
       return _gaichuFetchBlob(sel.file,gTok,sTok).then(function(blob){ return {blob:blob, group:sel.group}; });
     });
   }).then(function(fb){
-    var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id); fd.append('path',fb.group+'/'+fileName); fd.append('file',fb.blob,fileName);
-    return _gaichuPost(cfg.url,fd);
+    return _gaichuCheckSize(fb.blob, fileName).then(function(){
+      var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id); fd.append('path',fb.group+'/'+fileName); fd.append('file',fb.blob,fileName);
+      return _gaichuPost(cfg.url,fd);
+    });
   }).then(function(r){
     if(r&&r.ok){ showSaveToast(true,label+'に公開しました: '+fileName); _gaichuUpdateBtn(); }
     else if(r&&/not initialized/i.test(r.error||'')){ showSaveToast(false,label+'は未公開です。先に案件を「🌐 外注公開」してください'); }
     else { showSaveToast(false,'公開失敗: '+((r&&r.error)||'不明')); }
   }).catch(function(e){ showSaveToast(false,'公開失敗: '+(e.message||e)); });
+}
+// さくら側の1ファイル上限を取得（upload.php にGETするだけ・合言葉不要）。一度取ったら保持する
+var _gaichuMaxUp = null;
+function _gaichuMaxUpload(){
+  if (_gaichuMaxUp !== null) return Promise.resolve(_gaichuMaxUp);
+  var cfg=_gaichuCfg(); if(!cfg.url) return Promise.resolve(0);
+  return fetch(cfg.url, {method:'GET'}).then(function(r){ return r.json(); })
+    .then(function(j){ _gaichuMaxUp = (j && j.limits && j.limits.max_per_file_bytes) ? j.limits.max_per_file_bytes : 0; return _gaichuMaxUp; })
+    .catch(function(){ _gaichuMaxUp = 0; return 0; });
+}
+// 送信前にサイズを確認。超えていれば送らずに理由を出す
+// （送ってもサーバー側でPOSTごと捨てられ「unauthorized」等の無関係なエラーになるため）
+function _gaichuCheckSize(blob, fileName){
+  return _gaichuMaxUpload().then(function(max){
+    if (!max || !blob || blob.size <= max) return;
+    var mb=function(n){ return Math.round(n/1048576*10)/10; };
+    throw new Error(fileName+' は '+mb(blob.size)+'MB あり、外注ポータルの上限（約'+mb(max)+'MB）を超えています。画像を縮小してから公開してください');
+  });
 }
 // 項目（case.json）だけ更新（ファイルは触らない）
 function _gaichuUpdateOnly(){

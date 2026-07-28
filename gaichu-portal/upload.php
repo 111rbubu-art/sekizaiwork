@@ -41,9 +41,49 @@ header('Content-Type: application/json; charset=UTF-8');
 function out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function fail($msg, $code=400){ http_response_code($code); out(array('ok'=>false,'error'=>$msg)); }
 
-// GETでアクセスされたら版情報を返す（設置バージョン確認用・合言葉不要）
-if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>17, 'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
+// php.ini の "8M" 表記をバイト数へ
+function _ini_bytes($v){
+  $v = trim((string)$v); if ($v === '') return 0;
+  $n = (float)$v; $u = strtolower(substr($v, -1));
+  if ($u === 'g') $n *= 1073741824; else if ($u === 'm') $n *= 1048576; else if ($u === 'k') $n *= 1024;
+  return (int)$n;
+}
+// 1ファイルあたりの実効上限（upload_max_filesize と post_max_size の小さい方に余裕を見る）
+function max_upload_bytes(){
+  $a = _ini_bytes(ini_get('upload_max_filesize'));
+  $b = _ini_bytes(ini_get('post_max_size'));
+  $m = ($a && $b) ? min($a, $b) : ($a ? $a : $b);
+  return $m ? (int)($m * 0.95) : 0;
+}
+// アップロード失敗コードを日本語に
+function up_err_msg($e){
+  switch (intval($e)) {
+    case 1: return 'ファイルが大きすぎます（サーバー上限 '.ini_get('upload_max_filesize').'）';
+    case 2: return 'ファイルが大きすぎます';
+    case 3: return '通信が途中で切れました。もう一度お試しください';
+    case 4: return 'ファイルが選択されていません';
+    case 6: case 7: return 'サーバー側で保存できませんでした';
+    case 8: return 'サーバーの設定により中断されました';
+  }
+  return 'アップロードに失敗しました（コード '.$e.'）';
+}
+
+// GETでアクセスされたら版情報＋サーバーの上限を返す（設置確認・不具合調査用・合言葉不要）
+if ($_SERVER['REQUEST_METHOD'] === 'GET') out(array('ok'=>true, 'service'=>'gaichu-upload', 'version'=>18,
+  'limits'=>array(
+    'upload_max_filesize' => ini_get('upload_max_filesize'),
+    'post_max_size'       => ini_get('post_max_size'),
+    'max_per_file_bytes'  => max_upload_bytes(),
+    'max_per_file_mb'     => round(max_upload_bytes()/1048576, 1)
+  ),
+  'actions'=>array('push','addfile','updatecase','delfile','getfile','status','comments','addcomment','editcomment','delcomment','summary','listall','unpublish','list')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('POST only', 405);
+
+// post_max_size を超えると PHP は $_POST/$_FILES を丸ごと捨てる。
+// そのままだと合言葉が空になり「unauthorized」という無関係なエラーになるので、先に返す。
+if (!count($_POST) && !count($_FILES) && isset($_SERVER['CONTENT_LENGTH']) && intval($_SERVER['CONTENT_LENGTH']) > 0) {
+  fail('ファイルが大きすぎます（サーバーの受信上限 '.ini_get('post_max_size').'／1ファイル約'.round(max_upload_bytes()/1048576,1).'MBまで）', 413);
+}
 
 $BASE      = __DIR__;
 $CASES_DIR = $BASE . '/cases';
@@ -221,8 +261,8 @@ if ($action === 'addfile') {
   if (!is_dir($caseDir)) fail('case not initialized (push first)');
   if (!isset($_FILES['file']) || !isset($_FILES['file']['error']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK
       || !is_uploaded_file($_FILES['file']['tmp_name'])) {
-    $e = isset($_FILES['file']['error']) ? $_FILES['file']['error'] : 'no file';
-    fail('upload error: '.$e); // 1=ini上限, 2=フォーム上限, 3=一部, 4=無し …
+    $e = isset($_FILES['file']['error']) ? $_FILES['file']['error'] : 4;
+    fail(up_err_msg($e));
   }
   $rel  = (isset($_POST['path']) && $_POST['path'] !== '') ? $_POST['path'] : $_FILES['file']['name'];
   $segs = safe_relpath($rel);

@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.333';
+var APP_VERSION = 'v1.9.334';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9200,7 +9200,7 @@ function createKoujiFolder(item) {
                 })
                 .then(function() {
                   showSaveToast(true, 'フォルダー作成・テンプレートコピー完了');
-                  redraw(d);
+                  _redrawDetail(d);
                 });
             });
         });
@@ -9344,6 +9344,70 @@ function _odCopyFolderContents(token, srcPath, destId) {
 }
 
 // フォルダーリネーム／移動（データ保存後に自動呼び出し）
+// 詳細画面を今のタブのまま描き直す。
+// ※ここから下のフォルダー処理はトップレベル関数なので、保存処理の中だけにある
+//   ローカルの redraw() は使えない（呼ぶと ReferenceError になり、成功しても
+//   「フォルダー名更新エラー」と表示されてしまう）。
+function _redrawDetail(d) {
+  try {
+    if (!d) return;
+    if (currentListMode === 'kouji') showKoujiTab(currentTab, d);
+    else showTab(currentTab, d);
+  } catch (e) { console.warn('詳細の再描画に失敗:', e); }
+}
+// 納骨・戒切：フォルダー名に関わる項目が変わったら、SharePointのフォルダー名・場所・
+// リストの FolderPass／資料URL を追随させる（工事関連の _renameKoujiFolder と同じ流れ）
+function _renameNokFolder(d, oldFolderPass) {
+  var newFolderPath = buildNokFolderPath(d);
+  if (!oldFolderPass || newFolderPath === oldFolderPass) return;
+  var newFolderName  = newFolderPath.split('/').pop();
+  var newParentPath  = newFolderPath.substring(0, newFolderPath.lastIndexOf('/'));
+  var oldParentPath  = oldFolderPass.substring(0, oldFolderPass.lastIndexOf('/'));
+  showSaveToast(null, 'フォルダー名を更新中...');
+  getToken().then(function(resp) {
+    var token = resp.accessToken;
+    var encodedOldPath = oldFolderPass.split('/').map(encodeURIComponent).join('/');
+    var patchBody = { name: newFolderName };
+    if (newParentPath !== oldParentPath) {
+      patchBody.parentReference = { path: '/drives/' + DRIVE_ID + '/root:' + newParentPath.split('/').map(encodeURIComponent).join('/') };
+    }
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedOldPath + ':', {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(patchBody)
+    })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(e) { throw new Error(e.error ? e.error.message : r.status); });
+      return r.json();
+    })
+    .then(function(folderData) {
+      var itemId = d['id'];
+      return _createFolderSharingLink(folderData.id, token)
+        .catch(function() { return null; })
+        .then(function(sharingUrl) {
+          var displayUrl = sharingUrl || folderData.webUrl;
+          return _saveFolderFieldsNok(itemId, displayUrl, newFolderPath, token)
+            .then(function() {
+              var link = { Url: displayUrl, Description: newFolderName };
+              d['_x8cc7__x6599_'] = link;
+              d['FolderPass'] = newFolderPath;
+              if (currentItem && currentItem['id'] === itemId) {
+                currentItem['_x8cc7__x6599_'] = link;
+                currentItem['FolderPass'] = newFolderPath;
+              }
+              ['noukotsu','noukotsu_all'].forEach(function(ckey) {
+                var arr = _menuSearchCache[ckey];
+                if (!Array.isArray(arr)) return;
+                var idx = arr.findIndex(function(x){ return x['id'] === itemId; });
+                if (idx >= 0) { arr[idx]['_x8cc7__x6599_'] = link; arr[idx]['FolderPass'] = newFolderPath; idbSet(ckey, arr).catch(function(){}); }
+              });
+              showSaveToast(true, 'フォルダー名を更新しました');
+              _redrawDetail(d);
+            });
+        });
+    });
+  }).catch(function(e) { showSaveToast(false, 'フォルダー名更新エラー: ' + e.message); });
+}
 function _renameKoujiFolder(d, oldFolderPass) {
   var newFolderPath = buildKoujiFolderPath(d);
   if (!oldFolderPass || newFolderPath === oldFolderPass) return;
@@ -9386,7 +9450,7 @@ function _renameKoujiFolder(d, oldFolderPass) {
                 if (idx >= 0) { arr[idx]['Folder_URL'] = displayUrl; arr[idx]['Folder_Pass'] = newFolderPath; idbSet(ckey, arr).catch(function(){}); }
               });
               showSaveToast(true, 'フォルダー名を更新しました');
-              redraw(d);
+              _redrawDetail(d);
             });
         });
     });
@@ -23425,12 +23489,23 @@ function toggleEditMode(d, tabIdx) {
             }
           });
           redraw(currentItem);
-          // 工事関連：フォルダー名に影響するフィールドが変更された場合はリネーム
+          // フォルダー名に影響する項目が変わったら、SPのフォルダー名・場所・リンクを追随させる。
+          // 変更キーは edits（納骨は「お寺」等の表示名）と savedBody（内部名）の両方を見る。
+          var _chgKeys = {};
+          Object.keys(edits || {}).forEach(function(k){ _chgKeys[k] = 1; });
+          Object.keys(savedBody || {}).forEach(function(k){ _chgKeys[k] = 1; });
           if (LIST_NAME === '工事関連') {
             var _folderFields = ['Temples','ReceptionDay','Customers','HakaName','Cus_ID','category','ConstructionContents'];
             var _oldPass = d['Folder_Pass'] || '';
-            if (_oldPass && _folderFields.some(function(f){ return edits.hasOwnProperty(f); })) {
+            if (_oldPass && _folderFields.some(function(f){ return _chgKeys[f]; })) {
               _renameKoujiFolder(d, _oldPass);
+            }
+          } else if (LIST_NAME === '納骨・戒切') {
+            // buildNokFolderPath が使う項目：お寺／依頼日／顧客名／お墓の名義／Cus_ID／分類
+            var _nokFolderFields = ['_x304a__x5bfa_','RequestDate','_x9867__x5ba2__x540d_','_x304a__x5893__x306e__x540d__x7f','Cus_ID','_x5206__x985e_'];
+            var _oldNokPass = d['FolderPass'] || '';
+            if (_oldNokPass && _nokFolderFields.some(function(f){ return _chgKeys[f]; })) {
+              _renameNokFolder(d, _oldNokPass);
             }
           }
           // トップ画面の社内連絡を再描画

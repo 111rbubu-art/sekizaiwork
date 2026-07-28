@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.335';
+var APP_VERSION = 'v1.9.336';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -18032,10 +18032,10 @@ function _gaichuDoPublish(){
         return _gaichuFetchBlob(f,gTok,sTok)
           .catch(function(e){ throw new Error('取得失敗['+(f.source==='sp'?'SP添付':'ドライブ')+']: '+(e.message||e)); })
           .then(function(b){
-            return _gaichuCheckSize(b, f.name).then(function(){
+            return _gaichuPrepareBlob(b, f.name).then(function(sendBlob){
               var fd=new FormData();
               fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id);
-              fd.append('path', x.group+'/'+f.name); fd.append('file', b, f.name);
+              fd.append('path', x.group+'/'+f.name); fd.append('file', sendBlob, f.name);
               return _gaichuPost(cfg.url, fd).catch(function(e){ throw new Error('さくら送信失敗: '+(e.message||e)); });
             });
           })
@@ -18189,8 +18189,8 @@ function _gaichuFileToType(op, type, fileName, src){
       return _gaichuFetchBlob(sel.file,gTok,sTok).then(function(blob){ return {blob:blob, group:sel.group}; });
     });
   }).then(function(fb){
-    return _gaichuCheckSize(fb.blob, fileName).then(function(){
-      var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id); fd.append('path',fb.group+'/'+fileName); fd.append('file',fb.blob,fileName);
+    return _gaichuPrepareBlob(fb.blob, fileName).then(function(sendBlob){
+      var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','addfile'); fd.append('id',id); fd.append('path',fb.group+'/'+fileName); fd.append('file',sendBlob,fileName);
       return _gaichuPost(cfg.url,fd);
     });
   }).then(function(r){
@@ -18208,13 +18208,50 @@ function _gaichuMaxUpload(){
     .then(function(j){ _gaichuMaxUp = (j && j.limits && j.limits.max_per_file_bytes) ? j.limits.max_per_file_bytes : 0; return _gaichuMaxUp; })
     .catch(function(){ _gaichuMaxUp = 0; return 0; });
 }
-// 送信前にサイズを確認。超えていれば送らずに理由を出す
-// （送ってもサーバー側でPOSTごと捨てられ「unauthorized」等の無関係なエラーになるため）
-function _gaichuCheckSize(blob, fileName){
+function _gaichuMB(n){ return Math.round(n/1048576*10)/10; }
+// 画像を上限以下に縮小する（長辺と画質を段階的に落とす）。縮小できなければ null
+function _gaichuShrinkImage(blob, maxBytes, mime){
+  return new Promise(function(resolve){
+    var url=URL.createObjectURL(blob), img=new Image();
+    img.onload=function(){
+      var steps=[[2560,.85],[2048,.82],[1600,.78],[1280,.72],[1024,.68],[800,.6]];
+      var i=0;
+      (function step(){
+        if(i>=steps.length){ URL.revokeObjectURL(url); resolve(null); return; }
+        var maxDim=steps[i][0], q=steps[i][1]; i++;
+        var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+        var r=Math.min(1, maxDim/Math.max(w,h));
+        var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
+        var c=document.createElement('canvas'); c.width=cw; c.height=ch;
+        var ctx=c.getContext('2d');
+        ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch);        // 透過PNG→JPEG時に黒くならないように
+        ctx.drawImage(img,0,0,cw,ch);
+        c.toBlob(function(nb){
+          if(nb && nb.size<=maxBytes){ URL.revokeObjectURL(url); resolve(nb); return; }
+          step();
+        }, mime, q);
+      })();
+    };
+    img.onerror=function(){ URL.revokeObjectURL(url); resolve(null); };
+    img.src=url;
+  });
+}
+// 送信用のデータを用意する。上限を超える画像は自動で縮小し、無理なら理由を出す
+// （そのまま送るとサーバー側でPOSTごと捨てられ「unauthorized」等の無関係なエラーになる）
+// ※縮小されるのは外注ポータルへ送るコピーだけで、SharePointの原本は変更しません
+function _gaichuPrepareBlob(blob, fileName){
   return _gaichuMaxUpload().then(function(max){
-    if (!max || !blob || blob.size <= max) return;
-    var mb=function(n){ return Math.round(n/1048576*10)/10; };
-    throw new Error(fileName+' は '+mb(blob.size)+'MB あり、外注ポータルの上限（約'+mb(max)+'MB）を超えています。画像を縮小してから公開してください');
+    if (!max || !blob || blob.size <= max) return blob;
+    if (!/\.(jpe?g|png|webp|bmp)$/i.test(fileName||'')) {
+      throw new Error(fileName+' は '+_gaichuMB(blob.size)+'MB あり、上限（約'+_gaichuMB(max)+'MB）を超えています。画像以外は自動縮小できません');
+    }
+    var mime = /\.png$/i.test(fileName) ? 'image/png' : 'image/jpeg';
+    showSaveToast(null, fileName+' を縮小しています…（'+_gaichuMB(blob.size)+'MB）');
+    return _gaichuShrinkImage(blob, max, mime).then(function(nb){
+      if (!nb) throw new Error(fileName+' を上限（約'+_gaichuMB(max)+'MB）まで縮小できませんでした');
+      showSaveToast(null, fileName+' を '+_gaichuMB(blob.size)+'MB → '+_gaichuMB(nb.size)+'MB に縮小しました');
+      return nb;
+    });
   });
 }
 // 項目（case.json）だけ更新（ファイルは触らない）

@@ -5862,7 +5862,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.341';
+var APP_VERSION = 'v1.9.342';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -19443,19 +19443,46 @@ function _openFallbackBar(name, dl, webUrl, protoUrl) {
   };
   document.getElementById('ofb-close').onclick = close;
 }
-function _openWithDesktopApp(data, name) {
+// ドライブ直下のWeb URL（例 https://xxx.sharepoint.com/Shared%20Documents）。一度取得したら保持
+var _spDriveRootUrl = null;
+function _spDriveRoot() {
+  if (_spDriveRootUrl !== null) return Promise.resolve(_spDriveRootUrl);
+  return getToken().then(function(resp) {
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root?$select=webUrl',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r){ return r.json(); }).then(function(j) {
+    _spDriveRootUrl = (j && j.webUrl) ? String(j.webUrl).replace(/\/+$/, '') : '';
+    return _spDriveRootUrl;
+  }).catch(function(){ _spDriveRootUrl = ''; return ''; });
+}
+// Officeプロトコルに渡す「ファイル本体の直URL」を作る。
+// ※Graphの webUrl は Office文書だと閲覧ページ（_layouts/15/Doc.aspx?sourcedoc=…）を返すことがあり、
+//   これを ms-excel:ofe|u| に渡すと Office が「コマンドを認識できない」と言って開けない。
+//   SharePoint画面の「デスクトップアプリで開く」と同じく、直URLを渡す必要がある。
+function _spDirectFileUrl(filePath, webUrl) {
+  if (!filePath) return Promise.resolve(webUrl || '');
+  return _spDriveRoot().then(function(root) {
+    if (!root) return webUrl || '';
+    var enc = String(filePath).split('/').filter(function(s){ return s !== ''; })
+      .map(encodeURIComponent).join('/');
+    return root + '/' + enc;
+  });
+}
+function _openWithDesktopApp(data, name, filePath) {
   var webUrl = data.webUrl;
   var dl = data['@microsoft.graph.downloadUrl'] || data['@content.downloadUrl'];
   var ext = (String(name).split('.').pop() || '').toLowerCase();
   var sch = _officeScheme(name);
-  if (sch && webUrl) {
+  if (sch && (webUrl || filePath)) {
     // 例: ms-word:ofe|u|https://.../施工.docx  （ofe＝編集で開く）
-    var proto = sch + ':ofe|u|' + webUrl;
-    var a = document.createElement('a');
-    a.href = proto;
-    document.body.appendChild(a); a.click(); a.remove();
-    showSaveToast(true, '🖥 アプリで開いています…（初回は起動確認が出ます）');
-    _openFallbackBar(name, dl, webUrl, proto); // 起動できない環境向けの逃げ道＋調査用
+    _spDirectFileUrl(filePath, webUrl).then(function(u) {
+      var proto = sch + ':ofe|u|' + u;
+      var a = document.createElement('a');
+      a.href = proto;
+      document.body.appendChild(a); a.click(); a.remove();
+      showSaveToast(true, '🖥 アプリで開いています…（初回は起動確認が出ます）');
+      _openFallbackBar(name, dl, webUrl, proto); // 起動できない環境向けの逃げ道＋調査用
+    });
     return;
   }
   if (_isBrowserViewable(ext)) {
@@ -19484,7 +19511,7 @@ function openFolderFile(filePath) {
     return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
   }).then(function(r) { return r.json(); })
   .then(function(data) {
-    if (data && (data.webUrl || data['@microsoft.graph.downloadUrl'])) _openWithDesktopApp(data, filePath.split('/').pop());
+    if (data && (data.webUrl || data['@microsoft.graph.downloadUrl'])) _openWithDesktopApp(data, filePath.split('/').pop(), filePath);
     else showSaveToast(false, 'URLが取得できませんでした');
   }).catch(function(e) { showSaveToast(false, 'エラー: ' + e.message); });
 }

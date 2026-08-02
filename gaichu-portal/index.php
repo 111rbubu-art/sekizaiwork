@@ -27,7 +27,7 @@
 
 mb_internal_encoding('UTF-8');
 // このファイル(index.php)のバージョン。画面上部に表示するので、更新時はここを上げること。
-$PORTAL_VER = 'v1.2.1';
+$PORTAL_VER = 'v1.2.2';
 // この index.php が前提にしている同居スクリプトの版。下回っていたら画面で知らせる
 $NEED_UPLOAD_VER = 18;
 $NEED_SUBMIT_VER = 3;
@@ -782,28 +782,53 @@ function render_report($id, $files, $comments, $IMG_EXT){
     if(!isImg){ giveUp('サイズが大きすぎます '+_mb(file.size)+'MB / 上限 '+_mb(GP_MAXUP)+'MB（写真以外は自動縮小できません）'); return; }
     if(setLbl) setLbl('縮小中 '+no+'/'+total+' …');
     var mime = /\.png$/i.test(file.name||'') ? 'image/png' : 'image/jpeg';
-    var url=URL.createObjectURL(file), img=new Image();
-    img.onload=function(){
-      var steps=[[2560,.85],[2048,.82],[1600,.78],[1280,.72],[1024,.68],[800,.6]], k=0;
+    var steps=[[2560,.85],[2048,.82],[1600,.78],[1280,.72],[1024,.68],[800,.6]], k=0;
+    // 描画元を用意する。createImageBitmap があれば「読み込みながら縮小」できるので、
+    // iPhoneのcanvas画素数制限（超高画素の写真で真っ白になる）を回避できる。
+    function makeSource(maxDim){
+      if(window.createImageBitmap){
+        return createImageBitmap(file).then(function(bmp){
+          var r=Math.min(1, maxDim/Math.max(bmp.width,bmp.height));
+          var cw=Math.max(1,Math.round(bmp.width*r)), ch=Math.max(1,Math.round(bmp.height*r));
+          return createImageBitmap(file,{resizeWidth:cw,resizeHeight:ch,resizeQuality:'high'})
+            .then(function(small){ bmp.close&&bmp.close(); return small; })
+            .catch(function(){ return bmp; }); // リサイズ指定に未対応なら等倍のまま使う
+        });
+      }
+      return Promise.reject();
+    }
+    function drawAndTry(srcImg, maxDim, q){
+      var w=srcImg.width||srcImg.naturalWidth, h=srcImg.height||srcImg.naturalHeight;
+      var r=Math.min(1, maxDim/Math.max(w,h));
+      var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
+      var c=document.createElement('canvas'); c.width=cw; c.height=ch;
+      var ctx=c.getContext('2d');
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); // 透過→JPEGで黒くならないように
+      ctx.drawImage(srcImg,0,0,cw,ch);
+      return new Promise(function(res){ c.toBlob(res, mime, q); });
+    }
+    function runSteps(getSrc){
       (function step(){
-        if(k>=steps.length){ URL.revokeObjectURL(url); giveUp('縮小しても上限 '+_mb(GP_MAXUP)+'MB を下回りませんでした'); return; }
+        if(k>=steps.length){ giveUp('縮小しても上限 '+_mb(GP_MAXUP)+'MB を下回りませんでした'); return; }
         var maxDim=steps[k][0], q=steps[k][1]; k++;
-        var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
-        var r=Math.min(1, maxDim/Math.max(w,h));
-        var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
-        var c=document.createElement('canvas'); c.width=cw; c.height=ch;
-        var ctx=c.getContext('2d');
-        ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); // 透過→JPEGで黒くならないように
-        ctx.drawImage(img,0,0,cw,ch);
-        c.toBlob(function(nb){
-          if(nb && nb.size<=lim){ URL.revokeObjectURL(url); cb(nb); return; }
-          step();
-        }, mime, q);
+        getSrc(maxDim).then(function(srcImg){
+          return drawAndTry(srcImg, maxDim, q).then(function(nb){
+            if(nb && nb.size<=lim){ cb(nb); return; }
+            step();
+          });
+        }).catch(function(){ step(); });
       })();
-    };
-    // iPhoneのHEIC等で読めない場合も、サーバー上限内ならそのまま送ってみる
-    img.onerror=function(){ URL.revokeObjectURL(url); giveUp('画像を読み込めませんでした'); };
-    img.src=url;
+    }
+    makeSource(steps[0][0]).then(function(){
+      runSteps(function(maxDim){ return makeSource(maxDim); });
+    }).catch(function(){
+      // createImageBitmap が使えない場合は従来どおり <img> で読む
+      var url=URL.createObjectURL(file), img=new Image();
+      img.onload=function(){ runSteps(function(){ return Promise.resolve(img); }); };
+      // iPhoneのHEIC等で読めない場合も、サーバー上限内ならそのまま送ってみる
+      img.onerror=function(){ URL.revokeObjectURL(url); giveUp('画像を読み込めませんでした'); };
+      img.src=url;
+    });
   }
   // 送信（携帯回線の一時的な切断に備えて1回だけ再試行する）
   function repSend(fd, tries){

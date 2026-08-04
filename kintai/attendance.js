@@ -2,8 +2,9 @@
    勤怠管理 — 労働時間の計算
 
    打刻ログから日ごとの労働時間・残業・深夜・休日労働を組み立てる。
-   時刻は必ず打刻ログの _createdAt（SharePoint がサーバ側で付けた時刻）を
-   使う。端末が送ってきた時刻は照合にのみ用いる。
+   時刻は打刻ログの _time を使う。通常は SharePoint がサーバ側で付けた時刻、
+   過去分の手入力や打刻漏れの訂正ではその手入力時刻になる。
+   端末が送ってきた時刻は照合にのみ用いる。
 
    丸めは行わず 1分単位で計算する。日々の切り捨ては労基法違反にあたる。
    ============================================================ */
@@ -72,7 +73,7 @@ function ktDayKindLabel(kind) {
 
 /* ── 1日の集計 ──────────────────────────────────────────── */
 
-/* punches … その勤務日の打刻（_createdAt 昇順）
+/* punches … その勤務日の打刻（_time 昇順）
    isOpen  … 今まさに勤務中の日。退勤がなくても打刻漏れとして扱わない */
 function ktComputeDay(ymd, punches, holidays, isOpen) {
   var kind = ktDayKind(ymd, holidays);
@@ -95,8 +96,8 @@ function ktComputeDay(ymd, punches, holidays, isOpen) {
 
   // 出勤・退勤は揃っていなくても、打刻されている方は必ず表示できるようにする
   d.attended = ins.length > 0;
-  if (ins.length)  d.clockIn  = ins[0]._createdAt;
-  if (outs.length) d.clockOut = outs[outs.length - 1]._createdAt;
+  if (ins.length)  d.clockIn  = ins[0]._time;
+  if (outs.length) d.clockOut = outs[outs.length - 1]._time;
 
   // 片方だけ打刻されている日は打刻漏れ。両方ない日は単に出勤していない日なので警告しない。
   // 勤務中の日はまだ退勤していないだけなので警告しない。
@@ -115,8 +116,8 @@ function ktComputeDay(ymd, punches, holidays, isOpen) {
   var breaks = [];
   var n = Math.min(bStart.length, bEnd.length);
   for (var i = 0; i < n; i++) {
-    var s = new Date(bStart[i]._createdAt).getTime();
-    var e = new Date(bEnd[i]._createdAt).getTime();
+    var s = new Date(bStart[i]._time).getTime();
+    var e = new Date(bEnd[i]._time).getTime();
     if (e > s) breaks.push([s, e]);
   }
   if (bStart.length > bEnd.length) d.alerts.push('休憩終了の打刻がありません');
@@ -155,11 +156,11 @@ function ktGroupByDate(punches) {
   var map = {};
   (punches || []).forEach(function (p) {
     if (p.Voided === true) return;               // 取り消された打刻は集計しない
-    var k = p.WorkDate || ktYmd(p._createdAt);
+    var k = p.WorkDate || ktYmd(p._time);
     (map[k] = map[k] || []).push(p);
   });
   Object.keys(map).forEach(function (k) {
-    map[k].sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); });
+    map[k].sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
   });
   return map;
 }

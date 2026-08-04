@@ -63,7 +63,11 @@ function ktList(listKey, filter) {
 
 /* Graph の応答を扱いやすい形にほぐす。
    createdDateTime と createdBy は SharePoint がサーバ側で付ける値で、
-   クライアントからは書き換えられない。これを打刻時刻と本人の「正」とする。 */
+   クライアントからは書き換えられない。これを記録の「正」とする。
+
+   _createdAt … 行が作られたサーバ時刻。改ざん不可。
+   _time      … 勤怠の計算に使う時刻。手入力(ManualTime)があればそちら。
+   _manual    … 手入力かどうか。画面に印を出し、要確認の対象にする。 */
 function ktShape(items) {
   return items.map(function (it) {
     var f = it.fields || {};
@@ -73,6 +77,9 @@ function ktShape(items) {
     o._createdAt = it.createdDateTime;                                  // サーバ時刻（UTC）
     o._createdBy = ((it.createdBy && it.createdBy.user &&
                     (it.createdBy.user.email || it.createdBy.user.displayName)) || '').toLowerCase();
+    var manual   = f.ManualTime ? ktJstToIso(f.ManualTime) : null;
+    o._manual    = !!manual;
+    o._time      = manual || it.createdDateTime;
     return o;
   });
 }

@@ -113,3 +113,36 @@ function ktEsc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+/* 'YYYY-MM-DDTHH:MM'（日本時間）→ ISO文字列（UTC）
+   手入力した時刻を、サーバ時刻と同じ土俵で扱えるようにする。 */
+function ktJstToIso(s) {
+  var m = String(s || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - KT_JST_OFFSET_MS).toISOString();
+}
+
+/* 'YYYY-MM-DD' と 'HH:MM' から手入力用の文字列をつくる */
+function ktMakeManual(ymd, hm) {
+  var m = String(hm || '').match(/^(\d{1,2})[:：](\d{1,2})$/);
+  if (!m || !ymd) return null;
+  return ymd + 'T' + ktPad(+m[1]) + ':' + ktPad(+m[2]);
+}
+
+/* 'H:MM' や '8時30分' などを 'HH:MM' に正規化する。無効なら null */
+function ktNormalizeHm(s) {
+  s = String(s == null ? '' : s).trim()
+       .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+       .replace(/[時：]/g, ':').replace(/分$/, '');
+  var m = s.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) {
+    // 「830」「0830」のような入力も受け付ける
+    var d = s.match(/^(\d{3,4})$/);
+    if (!d) return null;
+    var v = d[1].padStart(4, '0');
+    m = [null, v.slice(0, 2), v.slice(2)];
+  }
+  var h = +m[1], mi = +m[2];
+  if (h > 47 || mi > 59) return null;
+  return ktPad(h) + ':' + ktPad(mi);
+}

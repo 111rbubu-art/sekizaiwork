@@ -206,6 +206,18 @@ function ktFilterAlerts(alerts, emp) {
   });
 }
 
+/* 代休の状況。発生は打刻から算出するので、期限より長めの期間を見る */
+function ktCompFor(emp) {
+  if (!emp) return null;
+  var t = ktToday();
+  // 期限切れの分も少し見せたいので、期限の期間＋半年ぶんをさかのぼる
+  var from = ktYmdAddMonths(t, -(KT_COMP.expireMonths + 6));
+  var ps = KT.punches.filter(function (p) { return p.Title === emp.Title; });
+  var rs = KT.requests.filter(function (r) { return r.EmpNo === emp.Title; });
+  var days = ktComputeRange(from, t, ps, KT.holidays, ktWorkDateNow());
+  return ktCompState(emp, days, rs, t);
+}
+
 /* その日に承認済みの有給があれば種別を返す */
 function ktLeaveOn(ymd, empNo) {
   var no = empNo || (KT.emp ? KT.emp.Title : '');
@@ -393,6 +405,32 @@ function ktViewPunch() {
   // 有給
   h += ktLeaveSummaryCard();
 
+  // 代休
+  h += ktCompSummaryCard();
+
+  return h;
+}
+
+/* 代休の残と期限。発生がなければ何も出さない。 */
+function ktCompSummaryCard() {
+  if (!KT.emp) return '';
+  var cs = ktCompFor(KT.emp);
+  if (!cs || (!cs.earnedDays && !cs.takenDays)) return '';
+
+  var h = '<div class="card"><h2>代休</h2>';
+  h += '<div class="row"><span class="k">残日数</span><span class="v" style="font-size:1.3rem">' +
+       cs.balanceDays + '日</span></div>';
+  h += '<div class="row"><span class="k">これまでの発生</span><span class="v">' + cs.earnedDays + '日</span></div>';
+  h += '<div class="row"><span class="k">取得済み</span><span class="v">' + cs.takenDays + '日</span></div>';
+  if (cs.expiringSoon.length) {
+    var e = cs.expiringSoon[0];
+    h += '<div class="alert">' + ktEsc(e.date) + 'の休日出勤ぶんが ' + ktEsc(e.expireDate) +
+         ' で期限切れになります（残り' + ktYmdDiffDays(e.expireDate, ktToday()) + '日）</div>';
+  }
+  if (cs.expiredDays) {
+    h += '<div class="alert cau">期限切れになった代休：' + cs.expiredDays + '日</div>';
+  }
+  h += '</div>';
   return h;
 }
 
@@ -524,20 +562,29 @@ function ktViewLeave() {
   if (st.expiredDays) h += '<div class="muted">これまでに失効した日数：' + st.expiredDays + '日</div>';
   h += '</div>';
 
+  // 代休
+  h += ktCompDetailCard();
+
   // 申請
-  h += '<div class="card"><h2>有給を申請する</h2>';
+  var cs0 = ktCompFor(KT.emp);
+  var canComp = cs0 && cs0.balanceDays > 0;
+  h += '<div class="card"><h2>休みを申請する</h2>';
   h += '<label class="f" for="lv-date">取得する日</label><input type="date" id="lv-date" value="' + ktToday() + '">';
   h += '<label class="f" for="lv-type">種別</label><select id="lv-type">' +
-       '<option>全日</option><option>午前半休</option><option>午後半休</option><option>時間単位</option></select>';
+       '<option>全日</option><option>午前半休</option><option>午後半休</option><option>時間単位</option>' +
+       (canComp ? '<option>代休</option>' : '') + '</select>';
   h += '<div id="lv-hours-wrap" class="hide"><label class="f" for="lv-hours">時間数</label>' +
        '<input type="number" id="lv-hours" min="1" max="8" step="1" value="1"></div>';
   h += '<label class="f" for="lv-note">備考（任意）</label><input type="text" id="lv-note" placeholder="記入は任意です">';
   h += '<div class="btnrow"><button class="btn" id="lv-submit">申請する</button></div>';
+  if (!canComp && cs0 && cs0.earnedDays) {
+    h += '<p class="muted" style="margin-top:.5rem">代休の残がないため、種別に代休は出ません。</p>';
+  }
   h += '</div>';
 
   // 申請一覧
   var reqs = ktMyRequests().slice().sort(function (a, b) { return ktYmdDiffDays(b.LeaveDate, a.LeaveDate); });
-  h += '<div class="card"><h2>申請の履歴</h2><div class="tw"><table><thead><tr>' +
+  h += '<div class="card"><h2>申請の履歴（有給・代休）</h2><div class="tw"><table><thead><tr>' +
        '<th>取得日</th><th>種別</th><th>日数</th><th>状態</th><th></th></tr></thead><tbody>';
   if (!reqs.length) h += '<tr><td colspan="5" class="muted">申請はありません</td></tr>';
   reqs.forEach(function (r) {
@@ -557,17 +604,66 @@ function ktViewLeave() {
   return h;
 }
 
+/* 代休の発生と消化の内訳 */
+function ktCompDetailCard() {
+  var cs = ktCompFor(KT.emp);
+  if (!cs || (!cs.earnedDays && !cs.takenDays)) {
+    return '<div class="card"><h2>代休</h2><div class="muted">' +
+           '休日に出勤した記録がないため、代休は発生していません。</div></div>';
+  }
+  var h = '<div class="card"><h2>代休</h2>';
+  h += '<div class="row"><span class="k">残日数</span><span class="v" style="font-size:1.3rem">' +
+       cs.balanceDays + '日</span></div>';
+  h += '<div class="sep"></div>';
+  h += '<div class="tw"><table><thead><tr><th>休日出勤した日</th><th>区分</th><th>労働</th>' +
+       '<th>発生</th><th>消化</th><th>期限</th></tr></thead><tbody>';
+  cs.earned.slice().reverse().forEach(function (e) {
+    var dead = ktYmdDiffDays(ktToday(), e.expireDate) >= 0;
+    var soon = !dead && ktYmdDiffDays(e.expireDate, ktToday()) <= KT_COMP.alertDays;
+    h += '<tr' + (dead ? ' class="hol"' : '') + '>';
+    h += '<td>' + ktEsc(ktYmdLabel(e.date)) + '</td>';
+    h += '<td><span class="badge cau">' + ktEsc(e.kindLabel) + '</span></td>';
+    h += '<td class="n">' + ktMinToHm(e.workMin) + '</td>';
+    h += '<td class="n">' + e.days + '</td>';
+    h += '<td class="n">' + (Math.round(e.used * 10) / 10) + '</td>';
+    h += '<td>' + ktEsc(e.expireDate) +
+         (dead ? ' <span class="badge no">期限切れ</span>'
+               : soon ? ' <span class="badge no">期限間近</span>' : '') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  if (cs.overDays) {
+    h += '<div class="alert">発生していない代休が' + cs.overDays + '日ぶん取得されています。' +
+         '管理者に確認してください。</div>';
+  }
+  h += '<div class="alert cau">代休を取っても、休日出勤の<b>割増賃金は別途支払われます</b>' +
+       '（法定休日35%、所定休日は週40時間を超えた分25%）。代休で相殺されるのは通常の賃金部分だけです。</div>';
+  h += '</div>';
+  return h;
+}
+
 function ktSubmitLeave() {
   var date = $('lv-date').value;
   var type = $('lv-type').value;
   var hours = +($('lv-hours') ? $('lv-hours').value : 0);
   if (!date) { ktToast('取得する日を選んでください', true); return; }
 
-  var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
   var days = ktRequestDays({ LeaveType: type, Hours: hours }, KT.emp);
-  if (days > st.balanceDays - st.pendingDays + 1e-9) {
-    ktToast('残日数が足りません（残 ' + st.balanceDays + '日・申請中 ' + st.pendingDays + '日）', true);
-    return;
+
+  if (type === '代休') {
+    var cs = ktCompFor(KT.emp);
+    var pendComp = ktMyRequests().filter(function (r) {
+      return r.Status === '申請中' && r.LeaveType === '代休';
+    }).reduce(function (a, r) { return a + (+r.Days || 1); }, 0);
+    if (days > cs.balanceDays - pendComp + 1e-9) {
+      ktToast('代休の残がありません（残 ' + cs.balanceDays + '日・申請中 ' + pendComp + '日）', true);
+      return;
+    }
+  } else {
+    var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
+    if (days > st.balanceDays - st.pendingDays + 1e-9) {
+      ktToast('有給の残日数が足りません（残 ' + st.balanceDays + '日・申請中 ' + st.pendingDays + '日）', true);
+      return;
+    }
   }
   var fields = {
     Title:     KT.emp.Title + '_' + date,
@@ -679,6 +775,32 @@ function ktViewAdmin() {
   });
   h += '</tbody></table></div></div>';
 
+  // 代休の状況
+  h += '<div class="card"><h2>代休の状況</h2>';
+  h += '<div class="tw"><table><thead><tr><th>社員</th><th>発生</th><th>取得</th><th>残</th>' +
+       '<th>期限切れ</th><th>次の期限</th></tr></thead><tbody>';
+  var anyComp = false;
+  actives.forEach(function (e) {
+    var cs = ktCompFor(e);
+    if (!cs || (!cs.earnedDays && !cs.takenDays)) return;
+    anyComp = true;
+    var soon = cs.expiringSoon.length;
+    h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
+    h += '<td class="n">' + cs.earnedDays + '</td>';
+    h += '<td class="n">' + cs.takenDays + '</td>';
+    h += '<td class="n">' + cs.balanceDays + '</td>';
+    h += '<td class="n">' + (cs.expiredDays || '—') + '</td>';
+    h += '<td>' + (cs.nextExpire
+      ? ktEsc(cs.nextExpire.expireDate) + (soon ? ' <span class="badge no">間近</span>' : '')
+      : '—') + '</td></tr>';
+  });
+  if (!anyComp) h += '<tr><td colspan="6" class="muted">休日出勤の記録がありません</td></tr>';
+  h += '</tbody></table></div>';
+  h += '<p class="muted" style="margin-top:.5rem">代休を取得しても、休日出勤の割増賃金' +
+       '（法定休日35%／所定休日は週40時間超で25%）は別途支払いが必要です。' +
+       '事前に休日と労働日を入れ替える「振替休日」にすれば割増は不要になります。</p>';
+  h += '</div>';
+
   // 有給の状況
   h += '<div class="card"><h2>有給の状況と年5日義務</h2><div class="tw"><table><thead><tr>' +
        '<th>社員</th><th>残</th><th>次の失効</th><th>義務の期限</th><th>取得</th><th>状態</th></tr></thead><tbody>';
@@ -711,10 +833,13 @@ function ktExportCsv() {
   var mr = ktMonthRange(KT.adminYm);
   var rows = [['社員番号', '氏名', '日付', '曜日', '日区分', '出勤', '退勤', '休憩分',
                '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所',
-               '手入力', '備考']];
+               '手入力', '代休発生', '備考']];
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()).forEach(function (d) {
+    var rangeDays = ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow());
+    var comp = {};
+    ktCompEarned(rangeDays).forEach(function (c) { comp[c.date] = c.days; });
+    rangeDays.forEach(function (d) {
       if (!d.punches.length) return;
       var ins  = d.punches.filter(function (p) { return p.PunchType === '出勤'; })[0];
       var outs = d.punches.filter(function (p) { return p.PunchType === '退勤'; });
@@ -726,6 +851,7 @@ function ktExportCsv() {
         d.nightMin, d.legalHolidayMin,
         ins ? (ins.SiteName || '') : '', out ? (out.SiteName || '') : '',
         d.punches.some(function (p) { return p._manual; }) ? '手入力' : '',
+        (comp[d.date] || ''),
         ktFilterAlerts(d.alerts, e).join('／')
       ]);
     });

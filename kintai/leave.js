@@ -67,6 +67,7 @@ function ktBuildGrants(emp, grantRecords, today) {
 /* 申請1件が何日分にあたるか */
 function ktRequestDays(req, emp) {
   if (req.Days != null) return +req.Days;
+  if (req.LeaveType === '代休') return 1;
   if (req.LeaveType === '全日') return 1;
   if (req.LeaveType === '午前半休' || req.LeaveType === '午後半休') return 0.5;
   if (req.LeaveType === '時間単位') {
@@ -76,10 +77,15 @@ function ktRequestDays(req, emp) {
   return 1;
 }
 
+/* 年休として数える申請か（代休は年休の残日数から引かない） */
+function ktIsPaidLeave(r) {
+  return KT_LEAVE_PAID_TYPES.indexOf(r.LeaveType || '全日') >= 0;
+}
+
 /* 承認済みの取得を古い付与分から順に割り当てる */
 function ktAllocate(grants, requests, emp) {
   var approved = (requests || [])
-    .filter(function (r) { return r.Status === '承認'; })
+    .filter(function (r) { return r.Status === '承認' && ktIsPaidLeave(r); })
     .sort(function (a, b) { return ktYmdDiffDays(a.LeaveDate, b.LeaveDate); });
 
   var short = [];
@@ -101,7 +107,7 @@ function ktAllocate(grants, requests, emp) {
     if (need > 1e-9) short.push({ req: r, shortDays: need });
   });
 
-  (requests || []).filter(function (r) { return r.Status === '申請中'; })
+  (requests || []).filter(function (r) { return r.Status === '申請中' && ktIsPaidLeave(r); })
     .forEach(function (r) {
       var d = ktRequestDays(r, emp);
       var alive = grants.filter(function (g) {
@@ -124,6 +130,7 @@ function ktObligation(grant, requests, emp, today) {
   var taken = 0;
   (requests || []).forEach(function (r) {
     if (r.Status !== '承認') return;
+    if (!ktIsPaidLeave(r)) return;               // 代休は年休ではないので算入しない
     if (r.LeaveType === '時間単位') return;      // 義務日数には算入しない
     if (ktYmdDiffDays(r.LeaveDate, from) < 0) return;
     if (ktYmdDiffDays(r.LeaveDate, to) >= 0) return;
@@ -171,5 +178,87 @@ function ktLeaveState(emp, grantRecords, requests, today) {
     current:     current,
     obligation:  current ? ktObligation(current, requests, emp, t) : null,
     shortages:   shortages
+  };
+}
+
+/* ============================================================
+   代休（休日出勤の振り替え）
+
+   休日に働いた分だけ代休が発生し、別の日を休むことで消化する。
+   発生は打刻から自動で算出し、取得は有給申請リストに
+   LeaveType='代休' として記録する（新しいリストは不要）。
+
+   ★ 代休を取得しても、休日出勤の割増賃金は別途支払う必要がある。
+     詳しくは config.js の KT_COMP を参照。
+   ============================================================ */
+
+/* 休日労働から発生した代休の一覧をつくる */
+function ktCompEarned(days) {
+  var out = [];
+  (days || []).forEach(function (d) {
+    if (!d.kind || !d.workMin) return;              // 平日、または労働のない日
+    var n = d.workMin >= KT_COMP.fullDayMin ? 1
+          : d.workMin >= KT_COMP.halfDayMin ? 0.5 : 0;
+    if (!n) return;
+    out.push({
+      date:       d.date,
+      kind:       d.kind,
+      kindLabel:  d.kindLabel,
+      workMin:    d.workMin,
+      days:       n,
+      expireDate: ktYmdAddMonths(d.date, KT_COMP.expireMonths),
+      used:       0
+    });
+  });
+  return out;                                        // 日付順（ktComputeRange の順）
+}
+
+/* 代休の取得（承認済みのみ） */
+function ktCompTaken(requests) {
+  return (requests || [])
+    .filter(function (r) { return r.Status === '承認' && r.LeaveType === '代休'; })
+    .sort(function (a, b) { return ktYmdDiffDays(a.LeaveDate, b.LeaveDate); });
+}
+
+/* 代休の状況をまとめる。取得は古い発生分から消化する（失効を減らすため） */
+function ktCompState(emp, days, requests, today) {
+  var t = today || ktToday();
+  var earned = ktCompEarned(days);
+  var taken  = ktCompTaken(requests);
+
+  var over = 0;                                      // 発生分を超えて取得した日数
+  taken.forEach(function (r) {
+    var need = +r.Days || 1;
+    for (var i = 0; i < earned.length && need > 1e-9; i++) {
+      var e = earned[i];
+      if (ktYmdDiffDays(r.LeaveDate, e.date) < 0) continue;   // 発生前には使えない
+      var avail = e.days - e.used;
+      if (avail <= 0) continue;
+      var use = Math.min(avail, need);
+      e.used += use; need -= use;
+    }
+    if (need > 1e-9) over += need;
+  });
+
+  var alive = earned.filter(function (e) { return ktYmdDiffDays(t, e.expireDate) < 0; });
+  var expired = earned.filter(function (e) { return ktYmdDiffDays(t, e.expireDate) >= 0; })
+                      .reduce(function (a, e) { return a + (e.days - e.used); }, 0);
+  var balance = alive.reduce(function (a, e) { return a + (e.days - e.used); }, 0);
+
+  // 期限が近く、まだ残っている発生分
+  var soon = alive.filter(function (e) {
+    return e.days - e.used > 0 && ktYmdDiffDays(e.expireDate, t) <= KT_COMP.alertDays;
+  });
+
+  return {
+    earned:       earned,
+    earnedDays:   Math.round(earned.reduce(function (a, e) { return a + e.days; }, 0) * 10) / 10,
+    takenDays:    Math.round(taken.reduce(function (a, r) { return a + (+r.Days || 1); }, 0) * 10) / 10,
+    balanceDays:  Math.round(balance * 10) / 10,
+    expiredDays:  Math.round(expired * 10) / 10,
+    overDays:     Math.round(over * 10) / 10,
+    nextExpire:   soon.length ? soon[0] : (alive.filter(function (e) { return e.days - e.used > 0; })[0] || null),
+    expiringSoon: soon,
+    taken:        taken
   };
 }

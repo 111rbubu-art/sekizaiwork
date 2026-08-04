@@ -32,6 +32,15 @@ function ktBuzz(ms) {
    打刻ログは書き換えない設計のため、フラグは保存せず毎回導出する。 */
 function ktEvalReview(p, prev) {
   var reasons = [];
+
+  // 手入力は管理者が意図して登録したもの。位置情報も端末時刻も無いのが当然なので
+  // 検査の対象にしない（「手入力」の印だけを出す）。
+  if (p._manual) {
+    p.ReviewReasons = [];
+    p.NeedsReview = false;
+    return p;
+  }
+
   if (p.ClientTime && p._createdAt) {
     var drift = Math.round((new Date(p.ClientTime) - new Date(p._createdAt)) / 1000);
     p.TimeDriftSec = drift;
@@ -49,7 +58,7 @@ function ktEvalReview(p, prev) {
     }
   }
   var travel = ktCheckTravel(prev, { lat: p.Lat, lon: p.Lon },
-                             prev && prev._createdAt, p._createdAt);
+                             prev && prev._time, p._time);
   if (travel) reasons.push(travel);
 
   p.ReviewReasons = reasons;
@@ -59,7 +68,7 @@ function ktEvalReview(p, prev) {
 
 function ktAnnotate(punches) {
   var byEmp = {};
-  punches.slice().sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); })
+  punches.slice().sort(function (a, b) { return new Date(a._time) - new Date(b._time); })
     .forEach(function (p) {
       var k = p.Title || '';
       ktEvalReview(p, byEmp[k]);
@@ -140,7 +149,7 @@ function ktLoadPunches() {
 function ktConsentOf(empNo) {
   if (!empNo) return null;
   var rows = KT.consents.filter(function (c) { return c.Title === empNo; })
-    .sort(function (a, b) { return new Date(b._createdAt) - new Date(a._createdAt); });
+    .sort(function (a, b) { return new Date(b._time) - new Date(a._time); });
   if (!rows.length) return null;
   return rows[0].PunchType === '位置情報同意';
 }
@@ -177,6 +186,26 @@ function ktEmpOf(no) {
   return KT.employees.filter(function (e) { return e.Title === no; })[0] || {};
 }
 
+/* 有給の対象者か。役員は労基法上の労働者ではないため対象外。
+   入社日が未登録の場合も、付与日を決められないので対象外として扱う。 */
+function ktIsOfficer(emp) { return (emp || {}).EmpType === '役員'; }
+function ktLeaveTarget(emp) {
+  emp = emp || {};
+  return !ktIsOfficer(emp) && /^\d{4}-\d{2}-\d{2}$/.test(emp.HireDate || '');
+}
+function ktLeaveOffReason(emp) {
+  if (ktIsOfficer(emp)) return '役員のため対象外';
+  return '入社日が未登録のため計算できません';
+}
+
+/* 役員には労基法の労働時間規制が適用されないので、その由来の警告は出さない */
+function ktFilterAlerts(alerts, emp) {
+  if (!ktIsOfficer(emp)) return alerts;
+  return (alerts || []).filter(function (a) {
+    return !/休憩が|法定休日に労働|所定休日に労働/.test(a);
+  });
+}
+
 /* その日に承認済みの有給があれば種別を返す */
 function ktLeaveOn(ymd, empNo) {
   var no = empNo || (KT.emp ? KT.emp.Title : '');
@@ -196,7 +225,7 @@ function ktWorkDateNow() {
 function ktTodayPunches() {
   var wd = ktWorkDateNow();
   return ktMyPunches().filter(function (p) { return p.WorkDate === wd && p.Voided !== true; })
-    .sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); });
+    .sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
 }
 
 /* 現在の状態 … 'off'（未出勤）/'in'（勤務中）/'break'（休憩中）/'done'（退勤済） */
@@ -219,7 +248,7 @@ function ktPunch(type) {
   // 同じ種類の打刻が短時間に重なっていないか
   var recent = ktTodayPunches().filter(function (p) {
     return p.PunchType === type &&
-           (Date.now() - new Date(p._createdAt)) < KT_PUNCH.dedupeMin * 60000;
+           (Date.now() - new Date(p._time)) < KT_PUNCH.dedupeMin * 60000;
   });
   if (recent.length) { ktToast(type + 'は既に記録されています'); return; }
 
@@ -253,7 +282,7 @@ function ktPunch(type) {
 
     return ktCreate('punches', fields).then(function (saved) {
       ktBuzz(80);
-      ktToast(ktHm(saved._createdAt) + ' ' + type +
+      ktToast(ktHm(saved._time) + ' ' + type +
               (site.name && site.name !== '位置なし' ? '／' + site.name : ''));
       return ktLoadPunches();
     }).catch(function (e) {
@@ -299,7 +328,7 @@ function ktViewPunch() {
   if (st === 'off') {
     h += '<span class="big">--:--</span><span class="s">' + stateTxt + '</span>';
   } else {
-    var shown = st === 'done' ? day.clockOut : (lastAny ? lastAny._createdAt : null);
+    var shown = st === 'done' ? day.clockOut : (lastAny ? lastAny._time : null);
     h += '<span class="big">' + (shown ? ktHm(shown) : '--:--') +
          ' <span style="font-size:.95rem;font-family:var(--font)">' + stateTxt + '</span></span>';
     if (placeTxt) {
@@ -335,8 +364,9 @@ function ktViewPunch() {
     h += '<div class="card"><h2>今日の打刻</h2>';
     ps.forEach(function (p) {
       h += '<div class="row"><span class="k">' + ktEsc(p.PunchType) +
+           (p._manual ? ' <span class="badge cau">手入力</span>' : '') +
            (p.NeedsReview ? ' <span class="badge no">要確認</span>' : '') + '</span>';
-      h += '<span class="v">' + ktHm(p._createdAt) + '　<span class="muted">' +
+      h += '<span class="v">' + ktHm(p._time) + '　<span class="muted">' +
            ktEsc(p.SiteName || '') + '</span></span></div>';
     });
     if (day.workMin) {
@@ -344,7 +374,7 @@ function ktViewPunch() {
       h += '<div class="row"><span class="k">労働時間</span><span class="v">' + ktMinToHm(day.workMin) + '</span></div>';
       if (day.breakMin) h += '<div class="row"><span class="k">休憩</span><span class="v">' + day.breakMin + '分</span></div>';
     }
-    day.alerts.forEach(function (a) { h += '<div class="alert cau">' + ktEsc(a) + '</div>'; });
+    ktFilterAlerts(day.alerts, KT.emp).forEach(function (a) { h += '<div class="alert cau">' + ktEsc(a) + '</div>'; });
     h += '</div>';
   }
 
@@ -368,6 +398,10 @@ function ktViewPunch() {
 
 function ktLeaveSummaryCard() {
   if (!KT.emp) return '';
+  if (!ktLeaveTarget(KT.emp)) {
+    return '<div class="card"><h2>有給休暇</h2><div class="muted">' +
+           ktEsc(ktLeaveOffReason(KT.emp)) + '</div></div>';
+  }
   var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
   var h = '<div class="card"><h2>有給休暇</h2>';
   h += '<div class="row"><span class="k">残日数</span><span class="v" style="font-size:1.3rem">' +
@@ -443,8 +477,12 @@ function ktDayTable(days, showPlace) {
       b += lv ? '<span class="badge ok">' + ktEsc(lv) + '</span> '
               : '<span class="badge cau">未打刻</span> ';
     }
+    if (d.punches.some(function (p) { return p._manual; })) {
+      b += '<span class="badge cau">手入力</span> ';
+    }
     if (d.review)             b += '<span class="badge no">要確認</span> ';
-    if (d.alerts.length)      b += '<span class="badge no" title="' + ktEsc(d.alerts.join('／')) + '">!</span>';
+    var al = ktFilterAlerts(d.alerts, KT.emp);
+    if (al.length)            b += '<span class="badge no" title="' + ktEsc(al.join('／')) + '">!</span>';
     h += '<td>' + b + '</td></tr>';
   });
   if (!any) h += '<tr><td colspan="8" class="muted">記録がありません</td></tr>';
@@ -456,6 +494,15 @@ function ktDayTable(days, showPlace) {
 
 function ktViewLeave() {
   if (!KT.emp) return '<div class="card muted">社員マスタに登録がありません。</div>';
+  if (!ktLeaveTarget(KT.emp)) {
+    return '<div class="card"><h2>有給休暇</h2><p>' + ktEsc(ktLeaveOffReason(KT.emp)) + '</p>' +
+      (ktIsOfficer(KT.emp)
+        ? '<p class="muted">役員は労働基準法上の労働者にあたらないため、年次有給休暇の付与対象ではありません。' +
+          '打刻と労働時間の記録はこれまでどおり残ります。</p>'
+        : '<p class="muted">社員マスタの <code>HireDate</code> に入社日を ' +
+          '<code>2019-04-01</code> の形式で登録すると、付与日数が自動で計算されます。</p>') +
+      '</div>';
+  }
   var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
   var h = ktLeaveSummaryCard();
 
@@ -553,7 +600,7 @@ function ktViewAdmin() {
   actives.forEach(function (e) {
     var ps = KT.punches.filter(function (p) {
       return p.Title === e.Title && p.WorkDate === KT.adminDate && p.Voided !== true;
-    }).sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); });
+    }).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
     var d = ktComputeDay(KT.adminDate, ps, KT.holidays, KT.adminDate === ktWorkDateNow());
     var ins  = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
     var outs = ps.filter(function (p) { return p.PunchType === '退勤'; });
@@ -567,21 +614,25 @@ function ktViewAdmin() {
     h += '<td class="n">' + ((d.dailyOtMin + d.weeklyOtMin) ? ktMinToHm(d.dailyOtMin + d.weeklyOtMin) : '—') + '</td>';
     h += '<td>' + ktEsc(ins ? (ins.SiteName || '') : '') + '</td>';
     h += '<td>' + ktEsc(out ? (out.SiteName || '') : '') + '</td>';
-    h += '<td>' + (d.alerts.length ? '<span class="badge no" title="' + ktEsc(d.alerts.join('／')) + '">!</span>' : '') + '</td>';
+    var al = ktFilterAlerts(d.alerts, e);
+    var mk = d.punches.some(function (p) { return p._manual; })
+      ? '<span class="badge cau">手入力</span> ' : '';
+    h += '<td>' + mk + (al.length ? '<span class="badge no" title="' + ktEsc(al.join('／')) + '">!</span>' : '') + '</td>';
     h += '</tr>';
   });
   h += '</tbody></table></div></div>';
 
   // 要確認の打刻
   var review = KT.punches.filter(function (p) { return p.NeedsReview && p.Voided !== true; })
-    .sort(function (a, b) { return new Date(b._createdAt) - new Date(a._createdAt); }).slice(0, 40);
+    .sort(function (a, b) { return new Date(b._time) - new Date(a._time); }).slice(0, 40);
   h += '<div class="card"><h2>要確認の打刻（' + review.length + '件）</h2><div class="tw"><table><thead><tr>' +
        '<th>日時</th><th>社員</th><th>種別</th><th>場所</th><th>理由</th><th></th></tr></thead><tbody>';
   if (!review.length) h += '<tr><td colspan="6" class="muted">ありません</td></tr>';
   review.forEach(function (p) {
-    h += '<tr><td>' + ktEsc(ktYmdLabel(p.WorkDate)) + ' ' + ktHm(p._createdAt) + '</td>';
+    h += '<tr><td>' + ktEsc(ktYmdLabel(p.WorkDate)) + ' ' + ktHm(p._time) + '</td>';
     h += '<td>' + ktEsc((ktEmpOf(p.Title).EmpName) || p.Title) + '</td>';
-    h += '<td>' + ktEsc(p.PunchType) + '</td>';
+    h += '<td>' + ktEsc(p.PunchType) +
+         (p._manual ? ' <span class="badge cau">手入力</span>' : '') + '</td>';
     h += '<td>' + ktEsc(p.SiteName || '') +
          (p.Lat != null ? ' <a href="https://www.google.com/maps?q=' + p.Lat + ',' + p.Lon +
                           '" target="_blank" rel="noopener">地図</a>' : '') + '</td>';
@@ -609,7 +660,8 @@ function ktViewAdmin() {
     h += '<td class="n">' + s.workDays + '日</td></tr>';
   });
   h += '</tbody></table></div>';
-  h += '<div class="btnrow"><button class="btn" id="ad-csv">CSVを書き出す</button></div>';
+  h += '<div class="btnrow"><button class="btn" id="ad-csv">CSVを書き出す</button>' +
+       '<button class="btn ghost" id="ad-import">過去の勤怠を入力する</button></div>';
   h += '</div>';
 
   // 有給の承認
@@ -633,6 +685,11 @@ function ktViewAdmin() {
   actives.forEach(function (e) {
     var gs = KT.grants.filter(function (g) { return g.EmpNo === e.Title; });
     var rs = KT.requests.filter(function (r) { return r.EmpNo === e.Title; });
+    if (!ktLeaveTarget(e)) {
+      h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>' +
+           '<td colspan="5" class="muted">' + ktEsc(ktLeaveOffReason(e)) + '</td></tr>';
+      return;
+    }
     var s = ktLeaveState(e, gs, rs, ktToday());
     var ob = s.obligation;
     var bcls = !ob ? '' : ob.level === 'done' ? 'ok' : ob.level === 'urgent' ? 'no' : 'cau';
@@ -653,7 +710,8 @@ function ktViewAdmin() {
 function ktExportCsv() {
   var mr = ktMonthRange(KT.adminYm);
   var rows = [['社員番号', '氏名', '日付', '曜日', '日区分', '出勤', '退勤', '休憩分',
-               '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所', '備考']];
+               '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所',
+               '手入力', '備考']];
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
     ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()).forEach(function (d) {
@@ -667,7 +725,8 @@ function ktExportCsv() {
         d.breakMin, d.workMin, d.innerMin, d.dailyOtMin + d.weeklyOtMin,
         d.nightMin, d.legalHolidayMin,
         ins ? (ins.SiteName || '') : '', out ? (out.SiteName || '') : '',
-        d.alerts.join('／')
+        d.punches.some(function (p) { return p._manual; }) ? '手入力' : '',
+        ktFilterAlerts(d.alerts, e).join('／')
       ]);
     });
   });
@@ -724,6 +783,7 @@ function ktBind() {
   if ($('ad-next'))   $('ad-next').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01',  1)); ktRender(); };
   if ($('ad-date'))   $('ad-date').onchange  = function () { KT.adminDate = this.value; ktRender(); };
   if ($('ad-csv'))    $('ad-csv').onclick    = ktExportCsv;
+  if ($('ad-import')) $('ad-import').onclick = function () { location.href = './import.html'; };
 
   if ($('lv-type')) {
     $('lv-type').onchange = function () {

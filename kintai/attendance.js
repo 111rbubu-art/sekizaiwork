@@ -72,14 +72,16 @@ function ktDayKindLabel(kind) {
 
 /* ── 1日の集計 ──────────────────────────────────────────── */
 
-/* punches … その勤務日の打刻（_createdAt 昇順） */
-function ktComputeDay(ymd, punches, holidays) {
+/* punches … その勤務日の打刻（_createdAt 昇順）
+   isOpen  … 今まさに勤務中の日。退勤がなくても打刻漏れとして扱わない */
+function ktComputeDay(ymd, punches, holidays, isOpen) {
   var kind = ktDayKind(ymd, holidays);
   var d = {
     date: ymd, kind: kind, kindLabel: ktDayKindLabel(kind),
     punches: punches, clockIn: null, clockOut: null,
     breakMin: 0, workMin: 0, innerMin: 0, dailyOtMin: 0, weeklyOtMin: 0,
     nightMin: 0, legalHolidayMin: 0,
+    attended: false, inProgress: false,
     alerts: [], review: false
   };
   if (!punches || !punches.length) return d;
@@ -91,13 +93,19 @@ function ktComputeDay(ymd, punches, holidays) {
 
   d.review = punches.some(function (p) { return p.NeedsReview === true; });
 
-  // 片方だけ打刻されている日は打刻漏れ。両方ない日は単に出勤していない日なので警告しない。
-  if (!ins.length && outs.length)  d.alerts.push('出勤の打刻がありません');
-  if (ins.length  && !outs.length) d.alerts.push('退勤の打刻がありません');
-  if (!ins.length || !outs.length) return d;
+  // 出勤・退勤は揃っていなくても、打刻されている方は必ず表示できるようにする
+  d.attended = ins.length > 0;
+  if (ins.length)  d.clockIn  = ins[0]._createdAt;
+  if (outs.length) d.clockOut = outs[outs.length - 1]._createdAt;
 
-  d.clockIn  = ins[0]._createdAt;
-  d.clockOut = outs[outs.length - 1]._createdAt;
+  // 片方だけ打刻されている日は打刻漏れ。両方ない日は単に出勤していない日なので警告しない。
+  // 勤務中の日はまだ退勤していないだけなので警告しない。
+  if (!ins.length && outs.length)  d.alerts.push('出勤の打刻がありません');
+  if (ins.length  && !outs.length) {
+    if (isOpen) d.inProgress = true;
+    else        d.alerts.push('退勤の打刻がありません');
+  }
+  if (!ins.length || !outs.length) return d;
 
   var inMs  = new Date(d.clockIn).getTime();
   var outMs = new Date(d.clockOut).getTime();
@@ -156,12 +164,13 @@ function ktGroupByDate(punches) {
   return map;
 }
 
-/* 期間内の各日を計算し、週40時間超の時間外を上乗せする */
-function ktComputeRange(from, to, punches, holidays) {
+/* 期間内の各日を計算し、週40時間超の時間外を上乗せする
+   openDate … 今まさに勤務中の日（あれば） */
+function ktComputeRange(from, to, punches, holidays, openDate) {
   var byDate = ktGroupByDate(punches);
   var days = [], d = from;
   for (var guard = 0; guard < 400 && ktYmdDiffDays(d, to) <= 0; guard++) {
-    days.push(ktComputeDay(d, byDate[d] || [], holidays));
+    days.push(ktComputeDay(d, byDate[d] || [], holidays, d === openDate));
     d = ktYmdAddDays(d, 1);
   }
 
@@ -197,7 +206,8 @@ function ktSummarize(days) {
     s.otMin           += d.dailyOtMin + d.weeklyOtMin;
     s.nightMin        += d.nightMin;
     s.legalHolidayMin += d.legalHolidayMin;
-    if (d.workMin > 0) {
+    // 出勤の打刻がある日を出勤日数に数える（勤務中でまだ退勤していない日も含める）
+    if (d.attended) {
       s.workDays++;
       if (d.kind === 'legal')   s.legalHolidayDays++;
       if (d.kind === 'company') s.companyHolidayDays++;

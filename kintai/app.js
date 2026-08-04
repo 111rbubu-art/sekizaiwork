@@ -757,7 +757,8 @@ function ktViewAdmin() {
   });
   h += '</tbody></table></div>';
   h += '<div class="btnrow"><button class="btn" id="ad-csv">CSVを書き出す</button>' +
-       '<button class="btn ghost" id="ad-import">過去の勤怠を入力する</button></div>';
+       '<button class="btn ghost" id="ad-import">過去の勤怠を入力する</button>' +
+       '<button class="btn ghost" id="ad-holidays">会社の休日を設定する</button></div>';
   h += '</div>';
 
   // 有給の承認
@@ -910,6 +911,7 @@ function ktBind() {
   if ($('ad-date'))   $('ad-date').onchange  = function () { KT.adminDate = this.value; ktRender(); };
   if ($('ad-csv'))    $('ad-csv').onclick    = ktExportCsv;
   if ($('ad-import')) $('ad-import').onclick = function () { location.href = './import.html'; };
+  if ($('ad-holidays')) $('ad-holidays').onclick = function () { location.href = './holidays.html'; };
 
   if ($('lv-type')) {
     $('lv-type').onchange = function () {

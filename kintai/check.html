@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>勤怠 — 設定の点検</title>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<style>
+:root{
+  --ground:#ECEDEA;--panel:#F8F9F7;--ink:#191D1E;--ink2:#4A5251;--stone:#6B7371;
+  --hair:#C9CDC8;--hair2:#DCDFDA;--accent:#2F5645;--accent-soft:#DFE9E3;--accent-txt:#2F5645;
+  --signal:#A63D2C;--signal-soft:#F6E4E0;--amber:#8A6716;--amber-soft:#F3EBD8;
+  --font:"Hiragino Sans","Yu Gothic",YuGothic,"Noto Sans JP",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#131716;--panel:#1C2120;--ink:#E4E9E6;--ink2:#B2B9B6;--stone:#8B9390;
+  --hair:#333B39;--hair2:#262D2B;--accent:#6FA189;--accent-soft:#21302A;--accent-txt:#8FBFA7;
+  --signal:#D5806D;--signal-soft:#32211E;--amber:#C6A15C;--amber-soft:#2C2718;color-scheme:dark;}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.75;
+     -webkit-font-smoothing:antialiased}
+.wrap{max-width:46rem;margin:0 auto;padding:2rem 1rem 5rem}
+h1{font-size:1.35rem;letter-spacing:.1em;margin-bottom:.3rem}
+.sub{color:var(--stone);font-size:.86rem;margin-bottom:1.5rem}
+button{font-family:inherit;font-size:.95rem;cursor:pointer;background:var(--accent);
+       color:var(--ground);border:none;border-radius:6px;padding:.7rem 1.2rem;font-weight:700}
+button.ghost{background:transparent;border:1px solid var(--hair);color:var(--ink2);font-weight:400}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.card{background:var(--panel);border:1px solid var(--hair);border-radius:8px;padding:1rem 1.1rem;margin:.8rem 0}
+.card h2{font-size:1rem;display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem}
+.mark{font-size:1.1rem;line-height:1}
+.ok{color:var(--accent-txt)}.ng{color:var(--signal)}.wa{color:var(--amber)}
+.note{font-size:.86rem;color:var(--ink2);margin-top:.35rem}
+.list{margin:.5rem 0 0;padding-left:0;list-style:none;font-size:.86rem}
+.list li{display:grid;grid-template-columns:1.2rem 1fr;gap:.35rem;padding:.15rem 0}
+code{font-family:var(--mono);font-size:.85em;background:var(--ground);padding:.1em .4em;border-radius:3px}
+.bad{background:var(--signal-soft);border-radius:5px;padding:.6rem .75rem;margin-top:.5rem;font-size:.86rem}
+.warn{background:var(--amber-soft);border-radius:5px;padding:.6rem .75rem;margin-top:.5rem;font-size:.86rem}
+.good{background:var(--accent-soft);border-radius:5px;padding:.6rem .75rem;margin-top:.5rem;font-size:.86rem}
+.tot{font-size:1.05rem;font-weight:700;padding:1rem 1.1rem;border-radius:8px;margin-bottom:1rem}
+.tot.ok{background:var(--accent-soft);color:var(--accent-txt)}
+.tot.ng{background:var(--signal-soft);color:var(--signal)}
+.foot{color:var(--stone);font-size:.78rem;margin-top:2rem}
+a{color:var(--accent-txt)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>設定の点検</h1>
+  <p class="sub">SharePoint のリストと列がアプリの想定どおりに作られているかを調べます。データは一切書き換えません。</p>
+  <div id="out"><button id="go">Microsoft 365 でログインして点検する</button></div>
+  <p class="foot">このページは点検専用です。打刻は <a href="./">こちら</a>。</p>
+</div>
+
+<script src="./config.js"></script>
+<script src="./util.js"></script>
+<script src="./auth.js"></script>
+<script src="./graph.js"></script>
+<script>
+/* 各リストに必要な列。req=必須、opt=あると望ましい */
+var SPEC = [
+  { key:'employees', label:'社員マスタ',
+    req:['Title','EmpName','UserPrincipalName','HireDate','IsAdmin','Active'],
+    opt:['EmpType','WeeklyDays','WeeklyHours','WorkStart','WorkEnd','BreakMin'],
+    choices:{ EmpType:['正社員','パート','アルバイト'] } },
+  { key:'punches', label:'打刻ログ',
+    req:['Title','PunchType','WorkDate','ClientTime','Lat','Lon','AccuracyM',
+         'LocationStatus','SiteName','Reviewed'],
+    opt:['LocationSource','SiteDistM','UserAgent','AdminNote','Voided','VoidReason'],
+    choices:{ PunchType:['出勤','退勤','休憩開始','休憩終了','位置情報同意','位置情報不同意'] } },
+  { key:'sites', label:'現場マスタ',
+    req:['Title','Lat','Lon','RadiusM','Active'], opt:['SiteType'],
+    choices:{ SiteType:['事業所','現場','取引先'] } },
+  { key:'grants', label:'有給の付与',
+    req:['EmpNo','GrantDate'], opt:['GrantDays','AttendRate','Note'], choices:{} },
+  { key:'requests', label:'有給の申請',
+    req:['Title','EmpNo','LeaveDate','LeaveType','Days','Status','ApprovedBy','ApprovedDate'],
+    opt:['Hours','Reason'],
+    choices:{ LeaveType:['全日','午前半休','午後半休','時間単位'],
+              Status:['申請中','承認','却下','取消'] } },
+  { key:'holidays', label:'休日の例外',
+    req:['Title','HolidayDate','HolidayType'], opt:[],
+    choices:{ HolidayType:['法定休日','所定休日','平日'] } }
+];
+
+var out = document.getElementById('out');
+function esc(s){ return ktEsc(s); }
+function card(mark, cls, title, body){
+  return '<div class="card"><h2><span class="mark ' + cls + '">' + mark + '</span>' +
+         esc(title) + '</h2>' + (body || '') + '</div>';
+}
+
+document.getElementById('go').onclick = function(){ ktLogin(); };
+
+ktInitAuth(run, function(){}, function(e){
+  out.innerHTML = '<div class="bad">ログインエラー：' + esc(e.message) + '</div>';
+});
+
+function run(){
+  out.innerHTML = '<p class="sub">点検しています…</p>';
+  var html = '', ngCount = 0, waCount = 0;
+
+  var jobs = SPEC.map(function(s){
+    return ktApi(KT_LIST[s.key] + '/columns')
+      .then(function(r){ return { s:s, cols:r.value || [] }; })
+      .catch(function(e){ return { s:s, err:e }; });
+  });
+
+  Promise.all(jobs).then(function(results){
+    results.forEach(function(r){
+      var s = r.s, listName = KT_LIST[s.key];
+      if (r.err){
+        ngCount++;
+        html += card('✕','ng', s.label + '（' + listName + '）',
+          '<div class="bad">リストが見つからないか、読み取りの権限がありません。<br>' +
+          'エラー：' + esc(r.err.message) + '<br><br>' +
+          'リスト名が <code>' + esc(listName) + '</code> と<b>完全に一致</b>しているか確認してください' +
+          '（大文字・小文字も区別されます）。</div>');
+        return;
+      }
+      var have = {};
+      r.cols.forEach(function(c){ have[c.name] = c; });
+
+      var missReq = s.req.filter(function(n){ return !have[n]; });
+      var missOpt = s.opt.filter(function(n){ return !have[n]; });
+
+      // 選択肢の中身も確認する
+      var badChoice = [];
+      Object.keys(s.choices).forEach(function(col){
+        var c = have[col];
+        if (!c || !c.choice || !c.choice.choices) return;
+        var lack = s.choices[col].filter(function(v){ return c.choice.choices.indexOf(v) < 0; });
+        if (lack.length) badChoice.push({ col:col, lack:lack });
+      });
+
+      var body = '';
+      if (missReq.length){
+        ngCount++;
+        body += '<div class="bad"><b>足りない列（必須）</b><ul class="list">' +
+          missReq.map(function(n){
+            return '<li><span class="ng">✕</span><span><code>' + esc(n) + '</code></span></li>';
+          }).join('') +
+          '</ul>この列を追加してください。名前は<b>半角英数字で完全に一致</b>させる必要があります。</div>';
+      }
+      if (badChoice.length){
+        waCount++;
+        body += '<div class="warn"><b>選択肢が足りません</b><ul class="list">' +
+          badChoice.map(function(b){
+            // li は grid なので、本文は必ず1つの要素にまとめる（分かれると列が崩れる）
+            return '<li><span class="wa">△</span><span><code>' + esc(b.col) + '</code> に ' +
+                   b.lack.map(function(v){ return '<code>' + esc(v) + '</code>'; }).join('、') +
+                   ' を追加</span></li>';
+          }).join('') + '</ul></div>';
+      }
+      if (missOpt.length){
+        body += '<div class="warn"><b>任意の列が未作成</b>（なくても動きます）：' +
+          missOpt.map(function(n){ return '<code>' + esc(n) + '</code>'; }).join('、') + '</div>';
+      }
+      if (!missReq.length && !badChoice.length && !missOpt.length){
+        body += '<div class="good">必要な列がすべて揃っています。</div>';
+      }
+      var mark = missReq.length ? '✕' : (badChoice.length || missOpt.length) ? '△' : '✓';
+      var cls  = missReq.length ? 'ng' : (badChoice.length || missOpt.length) ? 'wa' : 'ok';
+      html += card(mark, cls, s.label + '（' + listName + '）', body);
+    });
+
+    return checkData().then(function(data){
+      var dataHtml = data.html;
+      ngCount += data.ng;
+      var head;
+      if (ngCount) {
+        head = '<div class="tot ng">修正が必要な箇所が ' + ngCount + ' 件あります</div>';
+      } else if (waCount) {
+        head = '<div class="tot ok">必須の設定はすべて揃っています（任意の項目に不足あり）</div>';
+      } else {
+        head = '<div class="tot ok">すべて問題ありません。打刻を始められます。</div>';
+      }
+      out.innerHTML = head + html + dataHtml +
+        '<div style="margin-top:1.2rem;display:flex;gap:.5rem;flex-wrap:wrap">' +
+        '<button onclick="location.reload()">もう一度点検する</button>' +
+        '<button class="ghost" onclick="location.href=\'./\'">打刻画面へ</button></div>';
+    });
+  }).catch(function(e){
+    out.innerHTML = '<div class="bad">点検に失敗しました：' + esc(e.message) + '</div>';
+  });
+}
+
+/* 登録された中身も確認する。{html, ng} を返す */
+function checkData(){
+  return Promise.all([
+    ktList('employees').catch(function(){ return null; }),
+    ktList('sites').catch(function(){ return null; })
+  ]).then(function(r){
+    var emps = r[0], sites = r[1], html = '', ng = 0;
+    if (!emps) return { html:'', ng:0 };
+
+    var me = ktUserName();
+    var mine = emps.filter(function(e){
+      return String(e.UserPrincipalName || '').toLowerCase() === me;
+    })[0];
+    var actives = emps.filter(function(e){ return e.Active === true; });
+    var admins  = emps.filter(function(e){ return e.IsAdmin === true; });
+    var noHire  = emps.filter(function(e){ return !/^\d{4}-\d{2}-\d{2}$/.test(e.HireDate || ''); });
+
+    var body = '<div class="note">登録されている社員：' + emps.length + '名' +
+               '（在籍中 ' + actives.length + '名／管理者 ' + admins.length + '名）</div>';
+
+    if (!mine){
+      body += '<div class="bad"><b>ログイン中のあなたが社員マスタにいません。</b><br>' +
+        'いまログインしているのは <code>' + esc(me) + '</code> です。<br>' +
+        'この文字列を、どなたかの <code>UserPrincipalName</code> 列に<b>そのまま</b>入れてください。</div>';
+    } else {
+      body += '<div class="good">あなた（<code>' + esc(me) + '</code>）は「' +
+        esc(mine.EmpName || mine.Title) + '」として登録されています。' +
+        (mine.IsAdmin === true ? '管理者権限あり。' : '') + '</div>';
+    }
+    if (!actives.length){
+      body += '<div class="bad"><b><code>Active</code> が「はい」の社員が1人もいません。</b><br>' +
+        '各社員の <code>Active</code> を「はい」にしてください。列を作るとき既定値が「いいえ」に' +
+        'なっていると、全員が一覧から消えます。</div>';
+    }
+    if (!admins.length){
+      body += '<div class="bad"><b>管理者が1人もいません。</b>' +
+        '社長の行の <code>IsAdmin</code> を「はい」にしてください。管理タブが出ません。</div>';
+    }
+    if (noHire.length){
+      body += '<div class="bad"><b>入社日の書き方が違う社員がいます</b>（' +
+        noHire.map(function(e){ return esc(e.EmpName || e.Title); }).join('、') + '）。<br>' +
+        '<code>2019-04-01</code> のように<b>半角で年-月-日</b>と入れてください。' +
+        'ここが正しくないと有給が計算できません。</div>';
+    }
+    var empNg = !mine || !actives.length || !admins.length || noHire.length;
+    if (empNg) ng++;
+    html += card(empNg ? '✕' : '✓', empNg ? 'ng' : 'ok', '社員の登録内容', body);
+
+    if (sites){
+      var live = sites.filter(function(s){ return s.Active === true; });
+      var badGeo = sites.filter(function(s){ return s.Lat == null || s.Lon == null; });
+      var sb = '<div class="note">登録されている地点：' + sites.length + '件（有効 ' + live.length + '件）</div>';
+      if (!sites.length){
+        sb += '<div class="warn">まだ1件も登録されていません。打刻はできますが、場所がすべて' +
+              '「事業所外」と判定され、要確認の印がつきます。<b>本社だけでも登録してください。</b></div>';
+      } else if (badGeo.length){
+        ng++;
+        sb += '<div class="bad">緯度・経度が空の地点があります（' +
+              badGeo.map(function(s){ return esc(s.Title); }).join('、') + '）。</div>';
+      } else if (!live.length){
+        ng++;
+        sb += '<div class="bad"><code>Active</code> が「はい」の地点がありません。</div>';
+      } else {
+        sb += '<div class="good">' + live.map(function(s){
+          return esc(s.Title) + '（半径' + (s.RadiusM || KT_GEO.defaultRadiusM) + 'm）';
+        }).join('、') + '</div>';
+      }
+      html += card(sites.length && live.length && !badGeo.length ? '✓' : '△',
+                   sites.length && live.length && !badGeo.length ? 'ok' : 'wa',
+                   '現場の登録内容', sb);
+    }
+    return { html:html, ng:ng };
+  });
+}
+</script>
+</body>
+</html>

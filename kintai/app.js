@@ -1,0 +1,851 @@
+/* ============================================================
+   勤怠管理 — 画面と操作
+   ============================================================ */
+
+var KT = {
+  emp: null, employees: [], sites: [], holidays: [],
+  punches: [], consents: [], grants: [], requests: [],
+  consent: null,                                 // true=同意 / false=不同意 / null=未回答
+  isAdmin: false, tab: 'punch',
+  histYm: ktYm(ktToday()), adminYm: ktYm(ktToday()), adminDate: ktToday(),
+  busy: false
+};
+
+/* ── 小物 ──────────────────────────────────────────────── */
+
+function $(id) { return document.getElementById(id); }
+
+var _toastTimer = null;
+function ktToast(msg, isErr) {
+  var t = $('toast');
+  t.textContent = msg;
+  t.className = isErr ? 'err' : '';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function () { t.className = 'hide'; }, isErr ? 6000 : 3000);
+}
+
+function ktBuzz(ms) {
+  if (navigator.vibrate) { try { navigator.vibrate(ms || 60); } catch (e) {} }
+}
+
+/* ── 打刻の要確認判定（読み出し時に計算する） ─────────────
+   打刻ログは書き換えない設計のため、フラグは保存せず毎回導出する。 */
+function ktEvalReview(p, prev) {
+  var reasons = [];
+  if (p.ClientTime && p._createdAt) {
+    var drift = Math.round((new Date(p.ClientTime) - new Date(p._createdAt)) / 1000);
+    p.TimeDriftSec = drift;
+    if (Math.abs(drift) >= KT_PUNCH.driftAlertSec) {
+      reasons.push('端末の時刻が' + Math.round(Math.abs(drift) / 60) + '分ずれています');
+    }
+  }
+  if (p.LocationStatus && p.LocationStatus !== '取得成功') {
+    reasons.push('位置情報' + p.LocationStatus);
+  } else {
+    // 事業所外と測位精度は別々の問題なので、両方あてはまれば両方出す
+    if (p.SiteName === '事業所外') reasons.push('事業所外で打刻');
+    if (+p.AccuracyM > KT_GEO.poorAccuracyM) {
+      reasons.push('測位精度が粗い（' + p.AccuracyM + 'm）');
+    }
+  }
+  var travel = ktCheckTravel(prev, { lat: p.Lat, lon: p.Lon },
+                             prev && prev._createdAt, p._createdAt);
+  if (travel) reasons.push(travel);
+
+  p.ReviewReasons = reasons;
+  p.NeedsReview = reasons.length > 0 && p.Reviewed !== true;
+  return p;
+}
+
+function ktAnnotate(punches) {
+  var byEmp = {};
+  punches.slice().sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); })
+    .forEach(function (p) {
+      var k = p.Title || '';
+      ktEvalReview(p, byEmp[k]);
+      if (p.Lat != null) byEmp[k] = p;
+    });
+  return punches;
+}
+
+/* ── オフラインの保留キュー ─────────────────────────────── */
+
+var KT_QKEY = 'kt_queue_v1';
+
+function ktQueue() {
+  try { return JSON.parse(localStorage.getItem(KT_QKEY) || '[]'); } catch (e) { return []; }
+}
+function ktQueueSave(q) { localStorage.setItem(KT_QKEY, JSON.stringify(q)); }
+function ktQueuePush(fields) { var q = ktQueue(); q.push(fields); ktQueueSave(q); }
+
+function ktQueueFlush() {
+  var q = ktQueue();
+  if (!q.length) return Promise.resolve(0);
+  var sent = 0;
+  return q.reduce(function (chain, f) {
+    return chain.then(function () {
+      return ktCreate('punches', f).then(function () { sent++; })
+        .catch(function () { throw new Error('stop'); });
+    });
+  }, Promise.resolve()).catch(function () {})
+    .then(function () {
+      ktQueueSave(q.slice(sent));
+      return sent;
+    });
+}
+
+/* ── データ読み込み ─────────────────────────────────────── */
+
+function ktLoadMasters() {
+  return Promise.all([
+    ktList('employees'),
+    ktList('sites').catch(function () { return []; }),
+    ktList('holidays').catch(function () { return []; })
+  ]).then(function (r) {
+    KT.employees = r[0];
+    KT.sites     = r[1];
+    KT.holidays  = r[2];
+
+    var me = ktUserName();
+    KT.emp = KT.employees.filter(function (e) {
+      return String(e.UserPrincipalName || '').toLowerCase() === me;
+    })[0] || null;
+    KT.isAdmin = !!(KT.emp && KT.emp.IsAdmin === true);
+  });
+}
+
+/* 位置情報の同意も打刻ログに記録する。
+   打刻ログは追記専用でサーバが時刻と本人を押すため、同意の記録先として最も確実。
+   （社員マスタを本人が編集できるようにすると、入社日まで書き換えられてしまう） */
+var KT_CONSENT_TYPES = ['位置情報同意', '位置情報不同意'];
+
+/* 打刻は直近13か月分だけ読む（月次と有給の集計に十分）。
+   同意の記録は期間に関わらず必要なので別途すべて読む。 */
+function ktLoadPunches() {
+  var from = ktYmdAddMonths(ktToday(), -13);
+  return ktList('punches').then(function (rows) {
+    ktAnnotate(rows);
+    KT.consents = rows.filter(function (p) {
+      return KT_CONSENT_TYPES.indexOf(p.PunchType) >= 0;
+    });
+    KT.punches = rows.filter(function (p) {
+      return KT_CONSENT_TYPES.indexOf(p.PunchType) < 0 &&
+             ktYmdDiffDays(p.WorkDate || from, from) >= 0;
+    });
+    KT.consent = ktConsentOf(KT.emp ? KT.emp.Title : null);
+  });
+}
+
+/* その社員の最新の同意状況 */
+function ktConsentOf(empNo) {
+  if (!empNo) return null;
+  var rows = KT.consents.filter(function (c) { return c.Title === empNo; })
+    .sort(function (a, b) { return new Date(b._createdAt) - new Date(a._createdAt); });
+  if (!rows.length) return null;
+  return rows[0].PunchType === '位置情報同意';
+}
+
+function ktLoadLeave() {
+  return Promise.all([
+    ktList('grants').catch(function () { return []; }),
+    ktList('requests').catch(function () { return []; })
+  ]).then(function (r) { KT.grants = r[0]; KT.requests = r[1]; });
+}
+
+function ktReload() {
+  return ktQueueFlush().then(function (sent) {
+    if (sent) ktToast(sent + '件の保留していた打刻を送信しました');
+    return Promise.all([ktLoadPunches(), ktLoadLeave()]);
+  }).then(ktRender);
+}
+
+/* ── 絞り込み ──────────────────────────────────────────── */
+
+function ktMyPunches() {
+  if (!KT.emp) return [];
+  return KT.punches.filter(function (p) { return p.Title === KT.emp.Title; });
+}
+function ktMyRequests() {
+  if (!KT.emp) return [];
+  return KT.requests.filter(function (r) { return r.EmpNo === KT.emp.Title; });
+}
+function ktMyGrants() {
+  if (!KT.emp) return [];
+  return KT.grants.filter(function (g) { return g.EmpNo === KT.emp.Title; });
+}
+function ktEmpOf(no) {
+  return KT.employees.filter(function (e) { return e.Title === no; })[0] || {};
+}
+
+/* その日に承認済みの有給があれば種別を返す */
+function ktLeaveOn(ymd, empNo) {
+  var no = empNo || (KT.emp ? KT.emp.Title : '');
+  var r = KT.requests.filter(function (x) {
+    return x.EmpNo === no && x.LeaveDate === ymd && x.Status === '承認';
+  })[0];
+  return r ? (r.LeaveType || '有給') : '';
+}
+
+/* 今日の勤務日（深夜勤務は前日扱い） */
+function ktWorkDateNow() {
+  var now = new Date();
+  var h = ktJst(now).getUTCHours();
+  return h < KT_PUNCH.dayStartHour ? ktYmdAddDays(ktYmd(now), -1) : ktYmd(now);
+}
+
+function ktTodayPunches() {
+  var wd = ktWorkDateNow();
+  return ktMyPunches().filter(function (p) { return p.WorkDate === wd && p.Voided !== true; })
+    .sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); });
+}
+
+/* 現在の状態 … 'off'（未出勤）/'in'（勤務中）/'break'（休憩中）/'done'（退勤済） */
+function ktCurrentState() {
+  var ps = ktTodayPunches();
+  if (!ps.length) return 'off';
+  var last = ps[ps.length - 1].PunchType;
+  if (last === '出勤' || last === '休憩終了') return 'in';
+  if (last === '休憩開始') return 'break';
+  if (last === '退勤') return 'done';
+  return 'off';
+}
+
+/* ── 打刻 ──────────────────────────────────────────────── */
+
+function ktPunch(type) {
+  if (KT.busy) return;
+  if (!KT.emp) { ktToast('社員マスタに登録がありません', true); return; }
+
+  // 同じ種類の打刻が短時間に重なっていないか
+  var recent = ktTodayPunches().filter(function (p) {
+    return p.PunchType === type &&
+           (Date.now() - new Date(p._createdAt)) < KT_PUNCH.dedupeMin * 60000;
+  });
+  if (recent.length) { ktToast(type + 'は既に記録されています'); return; }
+
+  KT.busy = true;
+  ktRender();
+  ktToast('位置を確認しています…');
+
+  var clientTime = new Date().toISOString();
+  var wd = ktWorkDateNow();
+
+  var locPromise = (KT.consent === false)
+    ? Promise.resolve({ status: '同意なし' })
+    : ktGetLocation();
+
+  locPromise.then(function (loc) {
+    var site = ktJudgeSite(loc, KT.sites);
+    var fields = {
+      Title:          KT.emp.Title,
+      PunchType:      type,
+      WorkDate:       wd,
+      ClientTime:     clientTime,
+      LocationStatus: loc.status,
+      LocationSource: loc.source || '',
+      SiteName:       site.name,
+      UserAgent:      (navigator.userAgent || '').slice(0, 250)
+    };
+    if (loc.lat != null) {
+      fields.Lat = loc.lat; fields.Lon = loc.lon; fields.AccuracyM = loc.accuracy;
+    }
+    if (site.dist != null) fields.SiteDistM = site.dist;
+
+    return ktCreate('punches', fields).then(function (saved) {
+      ktBuzz(80);
+      ktToast(ktHm(saved._createdAt) + ' ' + type +
+              (site.name && site.name !== '位置なし' ? '／' + site.name : ''));
+      return ktLoadPunches();
+    }).catch(function (e) {
+      // 送信できなければ端末に保留し、次回オンライン時に自動送信する
+      ktQueuePush(fields);
+      ktBuzz([40, 60, 40]);
+      ktToast(type + 'を保留しました（電波が戻り次第、自動で送信します）', true);
+    });
+  }).then(function () {
+    KT.busy = false; ktRender();
+  }).catch(function (e) {
+    KT.busy = false; ktRender();
+    ktToast('打刻に失敗しました：' + e.message, true);
+  });
+}
+
+/* ── 画面：打刻 ────────────────────────────────────────── */
+
+function ktViewPunch() {
+  var wd = ktWorkDateNow();
+  var ps = ktTodayPunches();
+  var st = ktCurrentState();
+  var day = ktComputeDay(wd, ps, KT.holidays, st === 'in' || st === 'break');
+  var kind = ktDayKind(wd, KT.holidays);
+
+  var lastIn = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
+  var lastAny = ps[ps.length - 1];
+
+  var stateTxt = { off: '未出勤', in: '勤務中', break: '休憩中', done: '退勤済み' }[st];
+  var placeP = lastAny || lastIn;
+  var placeTxt = '', placeWarn = false;
+  if (placeP) {
+    placeTxt = placeP.SiteName || '';
+    placeWarn = (placeP.SiteName === '事業所外' || placeP.SiteName === '位置なし');
+  }
+
+  var h = '';
+
+  h += '<div class="card">';
+  h += '<div class="state">';
+  h += '<span class="d">' + ktEsc(ktYmdLabelFull(wd)) +
+       (kind ? ' <span class="badge cau">' + ktDayKindLabel(kind) + '</span>' : '') + '</span>';
+  if (st === 'off') {
+    h += '<span class="big">--:--</span><span class="s">' + stateTxt + '</span>';
+  } else {
+    var shown = st === 'done' ? day.clockOut : (lastAny ? lastAny._createdAt : null);
+    h += '<span class="big">' + (shown ? ktHm(shown) : '--:--') +
+         ' <span style="font-size:.95rem;font-family:var(--font)">' + stateTxt + '</span></span>';
+    if (placeTxt) {
+      h += '<span class="place' + (placeWarn ? ' warn' : '') + '">' + ktEsc(placeTxt) + '</span>';
+    }
+  }
+  h += '</div>';
+
+  // 主ボタンは「いま押せるもの」だけを出す
+  if (st === 'off' || st === 'done') {
+    h += '<button class="punch" data-punch="出勤"' + (KT.busy ? ' disabled' : '') + '>出勤</button>';
+  } else if (st === 'break') {
+    h += '<button class="punch" data-punch="休憩終了"' + (KT.busy ? ' disabled' : '') + '>休憩終了</button>';
+  } else {
+    h += '<button class="punch out" data-punch="退勤"' + (KT.busy ? ' disabled' : '') + '>退勤</button>';
+  }
+
+  h += '<div class="subrow">';
+  h += '<button data-punch="休憩開始"' + (st === 'in' && !KT.busy ? '' : ' disabled') + '>休憩開始</button>';
+  h += '<button data-punch="休憩終了"' + (st === 'break' && !KT.busy ? '' : ' disabled') + '>休憩終了</button>';
+  h += '</div>';
+
+  if (st === 'break') {
+    h += '<div class="btnrow"><button class="btn ghost" data-punch="退勤" style="flex:1">休憩のまま退勤する</button></div>';
+  }
+
+  var q = ktQueue();
+  if (q.length) h += '<div class="alert cau">送信待ちの打刻が' + q.length + '件あります。電波が戻ると自動で送信されます。</div>';
+  h += '</div>';
+
+  // 今日の打刻
+  if (ps.length) {
+    h += '<div class="card"><h2>今日の打刻</h2>';
+    ps.forEach(function (p) {
+      h += '<div class="row"><span class="k">' + ktEsc(p.PunchType) +
+           (p.NeedsReview ? ' <span class="badge no">要確認</span>' : '') + '</span>';
+      h += '<span class="v">' + ktHm(p._createdAt) + '　<span class="muted">' +
+           ktEsc(p.SiteName || '') + '</span></span></div>';
+    });
+    if (day.workMin) {
+      h += '<div class="sep"></div>';
+      h += '<div class="row"><span class="k">労働時間</span><span class="v">' + ktMinToHm(day.workMin) + '</span></div>';
+      if (day.breakMin) h += '<div class="row"><span class="k">休憩</span><span class="v">' + day.breakMin + '分</span></div>';
+    }
+    day.alerts.forEach(function (a) { h += '<div class="alert cau">' + ktEsc(a) + '</div>'; });
+    h += '</div>';
+  }
+
+  // 今月
+  var mr = ktMonthRange(ktYm(wd));
+  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow());
+  var sum = ktSummarize(days);
+  h += '<div class="card"><h2>今月（' + (+ktYm(wd).split('-')[1]) + '月）</h2>';
+  h += '<div class="row"><span class="k">勤務時間</span><span class="v">' + ktMinToHm(sum.workMin) + '</span></div>';
+  h += '<div class="row"><span class="k">うち時間外</span><span class="v">' + ktMinToHm(sum.otMin) + '</span></div>';
+  if (sum.nightMin) h += '<div class="row"><span class="k">うち深夜</span><span class="v">' + ktMinToHm(sum.nightMin) + '</span></div>';
+  if (sum.legalHolidayMin) h += '<div class="row"><span class="k">法定休日労働</span><span class="v">' + ktMinToHm(sum.legalHolidayMin) + '</span></div>';
+  h += '<div class="row"><span class="k">出勤日数</span><span class="v">' + sum.workDays + '日</span></div>';
+  h += '</div>';
+
+  // 有給
+  h += ktLeaveSummaryCard();
+
+  return h;
+}
+
+function ktLeaveSummaryCard() {
+  if (!KT.emp) return '';
+  var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
+  var h = '<div class="card"><h2>有給休暇</h2>';
+  h += '<div class="row"><span class="k">残日数</span><span class="v" style="font-size:1.3rem">' +
+       st.balanceDays + '日</span></div>';
+  if (st.pendingDays) h += '<div class="row"><span class="k">申請中</span><span class="v">' + st.pendingDays + '日</span></div>';
+  if (st.nextExpire) {
+    h += '<div class="row"><span class="k">次の失効</span><span class="v">' +
+         ktEsc(st.nextExpire.expireDate) + '</span></div>';
+  }
+  var ob = st.obligation;
+  if (ob && ob.level && ob.level !== 'done') {
+    var cls = ob.level === 'urgent' ? 'alert' : 'alert cau';
+    h += '<div class="' + cls + '">今年度あと' + ob.remain + '日の取得が必要です（期限 ' +
+         ktEsc(ob.to) + '／残り' + ob.deadlineDays + '日）</div>';
+  } else if (ob && ob.level === 'done') {
+    h += '<div class="alert ok">年5日の取得義務は達成しています（' + ob.taken + '日）</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+/* ── 画面：履歴 ────────────────────────────────────────── */
+
+function ktViewHist() {
+  var mr = ktMonthRange(KT.histYm);
+  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow());
+  var sum = ktSummarize(days);
+
+  var h = '<div class="card">';
+  h += '<div class="btnrow" style="margin:0 0 .6rem;align-items:center">';
+  h += '<button class="btn ghost" id="hist-prev">前月</button>';
+  h += '<span style="flex:1;text-align:center;font-weight:700">' + ktEsc(KT.histYm) + '</span>';
+  h += '<button class="btn ghost" id="hist-next">翌月</button></div>';
+  h += '<div class="row"><span class="k">勤務時間</span><span class="v">' + ktMinToHm(sum.workMin) + '</span></div>';
+  h += '<div class="row"><span class="k">時間外</span><span class="v">' + ktMinToHm(sum.otMin) + '</span></div>';
+  h += '<div class="row"><span class="k">深夜</span><span class="v">' + ktMinToHm(sum.nightMin) + '</span></div>';
+  h += '<div class="row"><span class="k">法定休日労働</span><span class="v">' + ktMinToHm(sum.legalHolidayMin) + '</span></div>';
+  h += '<div class="row"><span class="k">出勤日数</span><span class="v">' + sum.workDays + '日</span></div>';
+  h += '</div>';
+
+  h += '<div class="card"><h2>日ごとの記録</h2>' + ktDayTable(days, true) + '</div>';
+  return h;
+}
+
+function ktDayTable(days, showPlace) {
+  var h = '<div class="tw"><table><thead><tr>';
+  h += '<th>日</th><th>出勤</th><th>退勤</th><th>休憩</th><th>労働</th><th>時間外</th>';
+  if (showPlace) h += '<th>場所</th>';
+  h += '<th></th></tr></thead><tbody>';
+  var any = false;
+  var today = ktToday();
+  days.forEach(function (d) {
+    // 休みで打刻がない日と、これから来る日は省く。平日の打刻漏れは残して見せる。
+    if (!d.punches.length && (d.kind || ktYmdDiffDays(d.date, today) > 0)) return;
+    any = true;
+    var cls = d.review ? 'rev' : (d.kind ? 'hol' : '');
+    h += '<tr class="' + cls + '">';
+    h += '<td>' + ktEsc(ktYmdLabel(d.date)) + '</td>';
+    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
+    h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
+    h += '<td class="n">' + (d.breakMin || 0) + '</td>';
+    h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';
+    h += '<td class="n">' + ((d.dailyOtMin + d.weeklyOtMin) ? ktMinToHm(d.dailyOtMin + d.weeklyOtMin) : '—') + '</td>';
+    if (showPlace) {
+      var pl = d.punches.length ? (d.punches[0].SiteName || '') : '';
+      h += '<td>' + ktEsc(pl) + '</td>';
+    }
+    var b = '';
+    if (d.kind === 'legal')   b += '<span class="badge cau">法定休日</span> ';
+    if (d.kind === 'company') b += '<span class="badge cau">所定休日</span> ';
+    if (!d.punches.length) {
+      var lv = ktLeaveOn(d.date);
+      b += lv ? '<span class="badge ok">' + ktEsc(lv) + '</span> '
+              : '<span class="badge cau">未打刻</span> ';
+    }
+    if (d.review)             b += '<span class="badge no">要確認</span> ';
+    if (d.alerts.length)      b += '<span class="badge no" title="' + ktEsc(d.alerts.join('／')) + '">!</span>';
+    h += '<td>' + b + '</td></tr>';
+  });
+  if (!any) h += '<tr><td colspan="8" class="muted">記録がありません</td></tr>';
+  h += '</tbody></table></div>';
+  return h;
+}
+
+/* ── 画面：有給 ────────────────────────────────────────── */
+
+function ktViewLeave() {
+  if (!KT.emp) return '<div class="card muted">社員マスタに登録がありません。</div>';
+  var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
+  var h = ktLeaveSummaryCard();
+
+  // 付与の内訳
+  h += '<div class="card"><h2>付与の内訳</h2><div class="tw"><table><thead><tr>' +
+       '<th>付与日</th><th>失効日</th><th>付与</th><th>消化</th><th>残</th></tr></thead><tbody>';
+  if (!st.grants.length) {
+    h += '<tr><td colspan="5" class="muted">まだ付与がありません（入社6か月後が初回）</td></tr>';
+  }
+  st.grants.slice().reverse().forEach(function (g) {
+    var dead = ktYmdDiffDays(ktToday(), g.expireDate) >= 0;
+    h += '<tr' + (dead ? ' class="hol"' : '') + '>';
+    h += '<td>' + ktEsc(g.grantDate) + '</td><td>' + ktEsc(g.expireDate) +
+         (dead ? ' <span class="badge no">失効</span>' : '') + '</td>';
+    h += '<td class="n">' + g.days + '</td><td class="n">' + (Math.round(g.used * 10) / 10) + '</td>';
+    h += '<td class="n">' + (Math.round((g.days - g.used) * 10) / 10) + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  if (st.expiredDays) h += '<div class="muted">これまでに失効した日数：' + st.expiredDays + '日</div>';
+  h += '</div>';
+
+  // 申請
+  h += '<div class="card"><h2>有給を申請する</h2>';
+  h += '<label class="f" for="lv-date">取得する日</label><input type="date" id="lv-date" value="' + ktToday() + '">';
+  h += '<label class="f" for="lv-type">種別</label><select id="lv-type">' +
+       '<option>全日</option><option>午前半休</option><option>午後半休</option><option>時間単位</option></select>';
+  h += '<div id="lv-hours-wrap" class="hide"><label class="f" for="lv-hours">時間数</label>' +
+       '<input type="number" id="lv-hours" min="1" max="8" step="1" value="1"></div>';
+  h += '<label class="f" for="lv-note">備考（任意）</label><input type="text" id="lv-note" placeholder="記入は任意です">';
+  h += '<div class="btnrow"><button class="btn" id="lv-submit">申請する</button></div>';
+  h += '</div>';
+
+  // 申請一覧
+  var reqs = ktMyRequests().slice().sort(function (a, b) { return ktYmdDiffDays(b.LeaveDate, a.LeaveDate); });
+  h += '<div class="card"><h2>申請の履歴</h2><div class="tw"><table><thead><tr>' +
+       '<th>取得日</th><th>種別</th><th>日数</th><th>状態</th><th></th></tr></thead><tbody>';
+  if (!reqs.length) h += '<tr><td colspan="5" class="muted">申請はありません</td></tr>';
+  reqs.forEach(function (r) {
+    var bcls = r.Status === '承認' ? 'ok' : r.Status === '却下' ? 'no' : 'cau';
+    h += '<tr><td>' + ktEsc(ktYmdLabel(r.LeaveDate)) + '</td><td>' + ktEsc(r.LeaveType || '') + '</td>';
+    h += '<td class="n">' + ktRequestDays(r, KT.emp) + '</td>';
+    h += '<td><span class="badge ' + bcls + '">' + ktEsc(r.Status || '') + '</span></td>';
+    h += '<td>' + (r.Status === '申請中'
+      ? '<button class="btn ghost" data-cancel="' + r._id + '" style="padding:.2rem .5rem;font-size:.75rem">取消</button>' : '') + '</td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+
+  if (st.shortages.length) {
+    h += '<div class="alert">残日数を超えて承認されている申請があります（' +
+         st.shortages.map(function (s) { return ktEsc(s.req.LeaveDate); }).join('、') + '）</div>';
+  }
+  return h;
+}
+
+function ktSubmitLeave() {
+  var date = $('lv-date').value;
+  var type = $('lv-type').value;
+  var hours = +($('lv-hours') ? $('lv-hours').value : 0);
+  if (!date) { ktToast('取得する日を選んでください', true); return; }
+
+  var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
+  var days = ktRequestDays({ LeaveType: type, Hours: hours }, KT.emp);
+  if (days > st.balanceDays - st.pendingDays + 1e-9) {
+    ktToast('残日数が足りません（残 ' + st.balanceDays + '日・申請中 ' + st.pendingDays + '日）', true);
+    return;
+  }
+  var fields = {
+    Title:     KT.emp.Title + '_' + date,
+    EmpNo:     KT.emp.Title,
+    LeaveDate: date,
+    LeaveType: type,
+    Days:      days,
+    Status:    '申請中',
+    Reason:    $('lv-note').value || ''
+  };
+  if (type === '時間単位') fields.Hours = hours;
+
+  ktCreate('requests', fields).then(function () {
+    ktToast('申請しました');
+    return ktLoadLeave();
+  }).then(ktRender).catch(function (e) { ktToast('申請に失敗しました：' + e.message, true); });
+}
+
+/* ── 画面：管理 ────────────────────────────────────────── */
+
+function ktViewAdmin() {
+  var h = '';
+
+  // 日次一覧
+  h += '<div class="card"><h2>日ごとの一覧</h2>';
+  h += '<label class="f" for="ad-date">日付</label><input type="date" id="ad-date" value="' + KT.adminDate + '">';
+  h += '<div class="tw"><table><thead><tr><th>社員</th><th>出勤</th><th>退勤</th><th>休憩</th>' +
+       '<th>労働</th><th>時間外</th><th>出勤場所</th><th>退勤場所</th><th></th></tr></thead><tbody>';
+  var actives = KT.employees.filter(function (e) { return e.Active !== false; });
+  actives.forEach(function (e) {
+    var ps = KT.punches.filter(function (p) {
+      return p.Title === e.Title && p.WorkDate === KT.adminDate && p.Voided !== true;
+    }).sort(function (a, b) { return new Date(a._createdAt) - new Date(b._createdAt); });
+    var d = ktComputeDay(KT.adminDate, ps, KT.holidays, KT.adminDate === ktWorkDateNow());
+    var ins  = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
+    var outs = ps.filter(function (p) { return p.PunchType === '退勤'; });
+    var out  = outs[outs.length - 1];
+    h += '<tr class="' + (d.review ? 'rev' : '') + '">';
+    h += '<td>' + ktEsc(e.EmpName || e.Title) + '</td>';
+    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
+    h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
+    h += '<td class="n">' + (d.breakMin || 0) + '</td>';
+    h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';
+    h += '<td class="n">' + ((d.dailyOtMin + d.weeklyOtMin) ? ktMinToHm(d.dailyOtMin + d.weeklyOtMin) : '—') + '</td>';
+    h += '<td>' + ktEsc(ins ? (ins.SiteName || '') : '') + '</td>';
+    h += '<td>' + ktEsc(out ? (out.SiteName || '') : '') + '</td>';
+    h += '<td>' + (d.alerts.length ? '<span class="badge no" title="' + ktEsc(d.alerts.join('／')) + '">!</span>' : '') + '</td>';
+    h += '</tr>';
+  });
+  h += '</tbody></table></div></div>';
+
+  // 要確認の打刻
+  var review = KT.punches.filter(function (p) { return p.NeedsReview && p.Voided !== true; })
+    .sort(function (a, b) { return new Date(b._createdAt) - new Date(a._createdAt); }).slice(0, 40);
+  h += '<div class="card"><h2>要確認の打刻（' + review.length + '件）</h2><div class="tw"><table><thead><tr>' +
+       '<th>日時</th><th>社員</th><th>種別</th><th>場所</th><th>理由</th><th></th></tr></thead><tbody>';
+  if (!review.length) h += '<tr><td colspan="6" class="muted">ありません</td></tr>';
+  review.forEach(function (p) {
+    h += '<tr><td>' + ktEsc(ktYmdLabel(p.WorkDate)) + ' ' + ktHm(p._createdAt) + '</td>';
+    h += '<td>' + ktEsc((ktEmpOf(p.Title).EmpName) || p.Title) + '</td>';
+    h += '<td>' + ktEsc(p.PunchType) + '</td>';
+    h += '<td>' + ktEsc(p.SiteName || '') +
+         (p.Lat != null ? ' <a href="https://www.google.com/maps?q=' + p.Lat + ',' + p.Lon +
+                          '" target="_blank" rel="noopener">地図</a>' : '') + '</td>';
+    h += '<td style="white-space:normal">' + ktEsc((p.ReviewReasons || []).join('／')) + '</td>';
+    h += '<td><button class="btn ghost" data-ok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">確認済</button></td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+
+  // 月次集計
+  h += '<div class="card"><h2>月次集計</h2>';
+  h += '<div class="btnrow" style="margin:0 0 .6rem;align-items:center">';
+  h += '<button class="btn ghost" id="ad-prev">前月</button>';
+  h += '<span style="flex:1;text-align:center;font-weight:700">' + ktEsc(KT.adminYm) + '</span>';
+  h += '<button class="btn ghost" id="ad-next">翌月</button></div>';
+  h += '<div class="tw"><table><thead><tr><th>社員</th><th>勤務</th><th>時間外</th><th>60h超</th>' +
+       '<th>深夜</th><th>法定休日</th><th>出勤</th></tr></thead><tbody>';
+  var mr = ktMonthRange(KT.adminYm);
+  actives.forEach(function (e) {
+    var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
+    var s = ktSummarize(ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
+    h += '<td class="n">' + ktMinToHm(s.workMin) + '</td><td class="n">' + ktMinToHm(s.otMin) + '</td>';
+    h += '<td class="n">' + (s.ot60Min ? ktMinToHm(s.ot60Min) : '—') + '</td>';
+    h += '<td class="n">' + ktMinToHm(s.nightMin) + '</td><td class="n">' + ktMinToHm(s.legalHolidayMin) + '</td>';
+    h += '<td class="n">' + s.workDays + '日</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  h += '<div class="btnrow"><button class="btn" id="ad-csv">CSVを書き出す</button></div>';
+  h += '</div>';
+
+  // 有給の承認
+  var pend = KT.requests.filter(function (r) { return r.Status === '申請中'; })
+    .sort(function (a, b) { return ktYmdDiffDays(a.LeaveDate, b.LeaveDate); });
+  h += '<div class="card"><h2>有給の承認待ち（' + pend.length + '件）</h2><div class="tw"><table><thead><tr>' +
+       '<th>社員</th><th>取得日</th><th>種別</th><th>日数</th><th></th></tr></thead><tbody>';
+  if (!pend.length) h += '<tr><td colspan="5" class="muted">ありません</td></tr>';
+  pend.forEach(function (r) {
+    h += '<tr><td>' + ktEsc((ktEmpOf(r.EmpNo).EmpName) || r.EmpNo) + '</td>';
+    h += '<td>' + ktEsc(ktYmdLabel(r.LeaveDate)) + '</td><td>' + ktEsc(r.LeaveType || '') + '</td>';
+    h += '<td class="n">' + ktRequestDays(r, ktEmpOf(r.EmpNo)) + '</td>';
+    h += '<td><button class="btn" data-approve="' + r._id + '" style="padding:.2rem .55rem;font-size:.75rem">承認</button> ' +
+         '<button class="btn ghost" data-reject="' + r._id + '" style="padding:.2rem .55rem;font-size:.75rem">却下</button></td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+
+  // 有給の状況
+  h += '<div class="card"><h2>有給の状況と年5日義務</h2><div class="tw"><table><thead><tr>' +
+       '<th>社員</th><th>残</th><th>次の失効</th><th>義務の期限</th><th>取得</th><th>状態</th></tr></thead><tbody>';
+  actives.forEach(function (e) {
+    var gs = KT.grants.filter(function (g) { return g.EmpNo === e.Title; });
+    var rs = KT.requests.filter(function (r) { return r.EmpNo === e.Title; });
+    var s = ktLeaveState(e, gs, rs, ktToday());
+    var ob = s.obligation;
+    var bcls = !ob ? '' : ob.level === 'done' ? 'ok' : ob.level === 'urgent' ? 'no' : 'cau';
+    var btxt = !ob ? '対象外' : ob.level === 'done' ? '達成' : 'あと' + ob.remain + '日';
+    h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
+    h += '<td class="n">' + s.balanceDays + '</td>';
+    h += '<td>' + ktEsc(s.nextExpire ? s.nextExpire.expireDate : '—') + '</td>';
+    h += '<td>' + ktEsc(ob ? ob.to : '—') + '</td>';
+    h += '<td class="n">' + (ob ? ob.taken : '—') + '</td>';
+    h += '<td>' + (bcls ? '<span class="badge ' + bcls + '">' + btxt + '</span>' : btxt) + '</td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+
+  return h;
+}
+
+/* CSV（給与ソフト取り込み用） */
+function ktExportCsv() {
+  var mr = ktMonthRange(KT.adminYm);
+  var rows = [['社員番号', '氏名', '日付', '曜日', '日区分', '出勤', '退勤', '休憩分',
+               '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所', '備考']];
+  KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
+    var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
+    ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()).forEach(function (d) {
+      if (!d.punches.length) return;
+      var ins  = d.punches.filter(function (p) { return p.PunchType === '出勤'; })[0];
+      var outs = d.punches.filter(function (p) { return p.PunchType === '退勤'; });
+      var out  = outs[outs.length - 1];
+      rows.push([
+        e.Title, e.EmpName || '', d.date, KT_WD[ktYmdWeekday(d.date)], d.kindLabel,
+        d.clockIn ? ktHm(d.clockIn) : '', d.clockOut ? ktHm(d.clockOut) : '',
+        d.breakMin, d.workMin, d.innerMin, d.dailyOtMin + d.weeklyOtMin,
+        d.nightMin, d.legalHolidayMin,
+        ins ? (ins.SiteName || '') : '', out ? (out.SiteName || '') : '',
+        d.alerts.join('／')
+      ]);
+    });
+  });
+  var csv = rows.map(function (r) {
+    return r.map(function (c) { return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"'; }).join(',');
+  }).join('\r\n');
+
+  // Excel が文字化けしないよう BOM を付ける
+  var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '勤怠_' + KT.adminYm + '.csv';
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+}
+
+/* ── 描画と操作の割り当て ──────────────────────────────── */
+
+function ktRender() {
+  $('ver').textContent = KINTAI_VERSION;
+  $('hd-who').textContent = KT.emp ? (KT.emp.EmpName || KT.emp.Title) : ktUserName();
+
+  var adminTab = document.querySelector('[data-tab="admin"]');
+  adminTab.classList.toggle('hide', !KT.isAdmin);
+
+  ['punch', 'hist', 'leave', 'admin'].forEach(function (t) {
+    $('v-' + t).classList.toggle('hide', KT.tab !== t);
+  });
+  document.querySelectorAll('#tabs button').forEach(function (b) {
+    if (KT.tab === b.dataset.tab) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+
+  if (KT.tab === 'punch') $('v-punch').innerHTML = ktViewPunch();
+  if (KT.tab === 'hist')  $('v-hist').innerHTML  = ktViewHist();
+  if (KT.tab === 'leave') $('v-leave').innerHTML = ktViewLeave();
+  if (KT.tab === 'admin') $('v-admin').innerHTML = KT.isAdmin ? ktViewAdmin() : '';
+
+  ktBind();
+}
+
+function ktBind() {
+  document.querySelectorAll('[data-punch]').forEach(function (b) {
+    b.onclick = function () {
+      b.disabled = true;
+      setTimeout(function () { ktRender(); }, KT_PUNCH.lockMs);
+      ktPunch(b.dataset.punch);
+    };
+  });
+
+  if ($('hist-prev')) $('hist-prev').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01', -1)); ktRender(); };
+  if ($('hist-next')) $('hist-next').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01',  1)); ktRender(); };
+  if ($('ad-prev'))   $('ad-prev').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01', -1)); ktRender(); };
+  if ($('ad-next'))   $('ad-next').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01',  1)); ktRender(); };
+  if ($('ad-date'))   $('ad-date').onchange  = function () { KT.adminDate = this.value; ktRender(); };
+  if ($('ad-csv'))    $('ad-csv').onclick    = ktExportCsv;
+
+  if ($('lv-type')) {
+    $('lv-type').onchange = function () {
+      $('lv-hours-wrap').classList.toggle('hide', this.value !== '時間単位');
+    };
+  }
+  if ($('lv-submit')) $('lv-submit').onclick = ktSubmitLeave;
+
+  document.querySelectorAll('[data-cancel]').forEach(function (b) {
+    b.onclick = function () {
+      ktUpdate('requests', b.dataset.cancel, { Status: '取消' })
+        .then(ktLoadLeave).then(ktRender)
+        .catch(function (e) { ktToast('取消に失敗しました：' + e.message, true); });
+    };
+  });
+  document.querySelectorAll('[data-approve]').forEach(function (b) {
+    b.onclick = function () { ktDecide(b.dataset.approve, '承認'); };
+  });
+  document.querySelectorAll('[data-reject]').forEach(function (b) {
+    b.onclick = function () { ktDecide(b.dataset.reject, '却下'); };
+  });
+  document.querySelectorAll('[data-ok]').forEach(function (b) {
+    b.onclick = function () {
+      ktUpdate('punches', b.dataset.ok, { Reviewed: true })
+        .then(ktLoadPunches).then(ktRender)
+        .catch(function (e) { ktToast('更新に失敗しました：' + e.message, true); });
+    };
+  });
+}
+
+function ktDecide(id, status) {
+  ktUpdate('requests', id, {
+    Status: status,
+    ApprovedBy: KT.emp ? (KT.emp.EmpName || KT.emp.Title) : ktUserName(),
+    ApprovedDate: ktToday()
+  }).then(ktLoadLeave).then(ktRender)
+    .then(function () { ktToast(status + 'しました'); })
+    .catch(function (e) { ktToast('更新に失敗しました：' + e.message, true); });
+}
+
+/* ── 起動 ──────────────────────────────────────────────── */
+
+function ktStart() {
+  $('login').classList.add('hide');
+  ktLoadMasters().then(function () {
+    if (!KT.emp) {
+      $('app').classList.remove('hide');
+      $('v-punch').innerHTML =
+        '<div class="card"><div class="alert">社員マスタ（' + KT_LIST.employees + '）に ' +
+        ktEsc(ktUserName()) + ' の登録がありません。管理者に登録を依頼してください。</div></div>';
+      return;
+    }
+    return ktQueueFlush()
+      .then(function () { return Promise.all([ktLoadPunches(), ktLoadLeave()]); })
+      .then(function () {
+        // 位置情報について一度も回答していなければ説明画面を出す
+        if (KT.consent === null) {
+          $('consent-screen').classList.remove('hide');
+          return;
+        }
+        $('app').classList.remove('hide');
+        ktRender();
+      });
+  }).catch(function (e) {
+    $('login').classList.remove('hide');
+    $('login-err').textContent = '読み込みに失敗しました：' + e.message;
+    $('login-err').classList.remove('hide');
+  });
+}
+
+/* 同意も打刻ログに1行として残す（サーバ時刻と本人が自動で記録される） */
+function ktSaveConsent(agreed) {
+  $('consent-ok').disabled = true;
+  $('consent-skip').disabled = true;
+
+  ktCreate('punches', {
+    Title:      KT.emp.Title,
+    PunchType:  agreed ? '位置情報同意' : '位置情報不同意',
+    WorkDate:   ktToday(),
+    ClientTime: new Date().toISOString(),
+    UserAgent:  (navigator.userAgent || '').slice(0, 250)
+  }).then(function () {
+    KT.consent = agreed;
+    $('consent-screen').classList.add('hide');
+    $('app').classList.remove('hide');
+    if (agreed && navigator.geolocation) {
+      // ここでブラウザの許可ダイアログが一度だけ出る。以降は打刻時に自動で取得される。
+      navigator.geolocation.getCurrentPosition(function () {}, function () {}, { timeout: 10000 });
+    }
+    return ktReload();
+  }).catch(function (e) {
+    $('consent-ok').disabled = false;
+    $('consent-skip').disabled = false;
+    ktToast('記録に失敗しました：' + e.message, true);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  $('ver').textContent = KINTAI_VERSION;
+
+  $('login-btn').onclick   = ktLogin;
+  $('hd-logout').onclick   = ktLogout;
+  $('hd-reload').onclick   = function () { ktToast('読み込み中…'); ktReload(); };
+  $('consent-ok').onclick  = function () { ktSaveConsent(true); };
+  $('consent-skip').onclick = function () { ktSaveConsent(false); };
+
+  document.querySelectorAll('#tabs button').forEach(function (b) {
+    b.onclick = function () { KT.tab = b.dataset.tab; ktRender(); };
+  });
+
+  window.addEventListener('online', function () {
+    ktQueueFlush().then(function (n) { if (n) { ktToast(n + '件の打刻を送信しました'); ktReload(); } });
+  });
+
+  ktInitAuth(ktStart, function () {
+    $('login').classList.remove('hide');
+  }, function (e) {
+    $('login-err').textContent = 'ログインエラー：' + e.message;
+    $('login-err').classList.remove('hide');
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(function () {});
+  }
+});

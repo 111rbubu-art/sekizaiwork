@@ -141,35 +141,56 @@ function start(){
   });
 }
 
-/* 選んだ社員の打刻を読み込み、表を組み立てる */
+/* 選んだ社員の打刻と有給を読み込み、表を組み立てる */
 function loadMonth(){
   render(true);
-  ktList('punches').then(function(rows){
-    IM.punches = rows.filter(function(p){
+  Promise.all([
+    ktList('punches'),
+    ktList('requests').catch(function(){ return []; })
+  ]).then(function(r){
+    IM.punches = r[0].filter(function(p){
       return p.Title === IM.empNo && p.Voided !== true &&
              ['出勤','退勤','休憩開始','休憩終了'].indexOf(p.PunchType) >= 0;
+    });
+    IM.requests = r[1].filter(function(x){
+      return x.EmpNo === IM.empNo && x.Status === '承認';
     });
     buildRows();
     render(false);
   }).catch(function(e){
-    IM.punches = []; buildRows(); render(false);
-    note('bad', '打刻の読み込みに失敗しました：' + e.message);
+    IM.punches = []; IM.requests = []; buildRows(); render(false);
+    note('bad', '読み込みに失敗しました：' + e.message);
   });
+}
+
+/* 選んでいる社員 */
+function curEmp(){
+  return IM.emps.filter(function(e){ return e.Title === IM.empNo; })[0] || {};
+}
+/* 有給を登録できる相手か（役員・入社日なしは対象外） */
+function leaveOk(){
+  var e = curEmp();
+  return e.EmpType !== '役員' && /^\d{4}-\d{2}-\d{2}$/.test(e.HireDate || '');
 }
 
 function buildRows(){
   var mr = ktMonthRange(IM.ym);
-  var have = {};
+  var have = {}, lv = {};
   IM.punches.forEach(function(p){ if (p.WorkDate) have[p.WorkDate] = true; });
+  IM.requests.forEach(function(r){ if (r.LeaveDate) lv[r.LeaveDate] = r.LeaveType || '全日'; });
 
   IM.rows = [];
   for (var d = mr.from; ktYmdDiffDays(d, mr.to) <= 0; d = ktYmdAddDays(d, 1)){
     var kind = ktDayKind(d, IM.holidays);
+    var future = ktYmdDiffDays(d, ktToday()) > 0;
+    var done = !!have[d];
     IM.rows.push({
-      date: d, kind: kind,
-      future: ktYmdDiffDays(d, ktToday()) > 0,
-      done: !!have[d],
-      inHm: '', outHm: '', brMin: ''
+      date: d, kind: kind, future: future, done: done,
+      leaveDone: lv[d] || '',
+      inHm: '', outHm: '',
+      // 休憩はほぼ毎日60分なので、はじめから入れておく（休日出勤の日も同じ）
+      brMin: (done || future) ? '' : '60',
+      leave: ''
     });
   }
 }
@@ -222,15 +243,22 @@ function render(loading){
   // Excel からの貼り付け
   h += '<div class="card"><h2>Excel などから貼り付け</h2>';
   h += '<textarea id="paste" placeholder="1行に「日付　出勤　退勤　休憩分」の順で貼り付けてください&#10;' +
-       '例：&#10;2026-07-01\t08:00\t17:30\t60&#10;7/2\t8:00\t17:00&#10;7/3,08:15,18:00,60"></textarea>';
+       '例：&#10;2026-07-01\t08:00\t17:30\t60&#10;7/2\t8:00\t17:00&#10;7/3,08:15,18:00,60&#10;7/10\t有給"></textarea>';
   h += '<div class="btnrow"><button class="ghost" id="do-paste">貼り付けた内容を表に反映する</button></div>';
   h += '<p class="sub" style="margin:.7rem 0 0">' +
-       'タブ区切り（Excelからのコピー）でもカンマ区切りでも読み取れます。休憩分は省略できます。</p>';
+       'タブ区切り（Excelからのコピー）でもカンマ区切りでも読み取れます。休憩分は省略できます。<br>' +
+       '日付の次を「有給」とすると、その日は有給として登録します（例：<code>7/10\t有給</code>）。</p>';
   h += '</div>';
 
   // 日ごとの表
   h += '<div class="card"><h2>日ごとの入力</h2><div id="note"></div>';
-  h += '<div class="tw"><table><thead><tr><th>日</th><th>区分</th><th>出勤</th><th>退勤</th>' +
+  if (!leaveOk()){
+    h += '<div class="msg warn">' + esc(curEmp().EmpName || '') +
+         ' さんは有給の対象外のため、有給の欄は使えません。' +
+         (curEmp().EmpType === '役員' ? '（役員のため）'
+                                      : '（社員マスタの <code>HireDate</code> が未登録です）') + '</div>';
+  }
+  h += '<div class="tw"><table><thead><tr><th>日</th><th>区分</th><th>有給</th><th>出勤</th><th>退勤</th>' +
        '<th>休憩<br>（分）</th><th>労働</th><th></th></tr></thead><tbody id="tb">';
   h += rowsHtml();
   h += '</tbody></table></div>';
@@ -254,22 +282,36 @@ function render(loading){
   updateCount();
 }
 
+var LEAVE_TYPES = ['全日', '午前半休', '午後半休'];
+
 function rowsHtml(){
+  var canLeave = leaveOk();
   return IM.rows.map(function(r, i){
     var cls = [];
     if (r.kind) cls.push('hol');
-    if (r.done) cls.push('done');
+    if (r.done || r.leaveDone) cls.push('done');
     var label = r.kind === 'legal' ? '<span class="badge cau">法定休日</span>'
               : r.kind === 'company' ? '<span class="badge cau">所定休日</span>' : '';
-    var dis = (r.done || r.future) ? ' disabled' : '';
-    var st  = r.done ? '<span class="badge ok">登録済</span>'
+    var locked = r.done || r.future || r.leaveDone;
+    // 全日の有給を選んだ日は、出退勤の入力欄を閉じる
+    var timeDis = (locked || r.leave === '全日') ? ' disabled' : '';
+    var lvDis   = (locked || !canLeave) ? ' disabled' : '';
+    var st  = r.leaveDone ? '<span class="badge ok">有給 登録済</span>'
+            : r.done ? '<span class="badge ok">登録済</span>'
             : r.future ? '<span class="badge">—</span>' : '';
+
+    var opts = '<option value="">—</option>' + LEAVE_TYPES.map(function(t){
+      return '<option' + (r.leave === t ? ' selected' : '') + '>' + t + '</option>';
+    }).join('');
+
     return '<tr class="' + cls.join(' ') + '" data-i="' + i + '">' +
       '<td>' + esc(ktYmdLabel(r.date)) + '</td>' +
       '<td>' + label + '</td>' +
-      '<td><input data-k="inHm"  data-i="' + i + '" value="' + esc(r.inHm)  + '" inputmode="numeric" placeholder="8:00"' + dis + '></td>' +
-      '<td><input data-k="outHm" data-i="' + i + '" value="' + esc(r.outHm) + '" inputmode="numeric" placeholder="17:00"' + dis + '></td>' +
-      '<td><input class="br" data-k="brMin" data-i="' + i + '" value="' + esc(r.brMin) + '" inputmode="numeric" placeholder="60"' + dis + '></td>' +
+      '<td><select class="lv" data-k="leave" data-i="' + i + '"' + lvDis + '>' +
+        (r.leaveDone ? '<option>' + esc(r.leaveDone) + '</option>' : opts) + '</select></td>' +
+      '<td><input data-k="inHm"  data-i="' + i + '" value="' + esc(r.inHm)  + '" inputmode="numeric" placeholder="8:00"' + timeDis + '></td>' +
+      '<td><input data-k="outHm" data-i="' + i + '" value="' + esc(r.outHm) + '" inputmode="numeric" placeholder="17:00"' + timeDis + '></td>' +
+      '<td><input class="br" data-k="brMin" data-i="' + i + '" value="' + esc(r.brMin) + '" inputmode="numeric" placeholder="60"' + timeDis + '></td>' +
       '<td class="work" data-i="' + i + '"></td>' +
       '<td>' + st + '</td></tr>';
   }).join('');
@@ -277,7 +319,8 @@ function rowsHtml(){
 
 /* 1日分の入力を検証し、打刻の時刻に変換する */
 function parseRow(r){
-  if (r.done || r.future) return null;
+  if (r.done || r.future || r.leaveDone) return null;
+  if (r.leave === '全日') return null;              // 全日の有給は打刻をつくらない
   var i = ktNormalizeHm(r.inHm), o = ktNormalizeHm(r.outHm);
   if (!r.inHm && !r.outHm) return null;                    // 未入力の日
   if (!i || !o) return { err: true };
@@ -305,20 +348,27 @@ function manualOf(date, min){
 }
 
 function updateCount(){
-  var n = 0, bad = 0;
+  var n = 0, bad = 0, lv = 0;
   IM.rows.forEach(function(r, i){
-    var p = parseRow(r);
     var cell = document.querySelector('.work[data-i="' + i + '"]');
-    if (!p){ if (cell) cell.textContent = ''; return; }
+    if (r.leave && !r.leaveDone && !r.done && !r.future) lv++;
+    var p = parseRow(r);
+    if (!p){
+      if (cell) cell.innerHTML = (r.leave === '全日') ? '<span class="badge ok">有給</span>' : '';
+      return;
+    }
     if (p.err){ bad++; if (cell) cell.innerHTML = '<span class="badge no">時刻が不正</span>'; return; }
     n++;
     if (cell) cell.textContent = ktMinToHm(p.workMin);
   });
+  var parts = [];
+  if (n)  parts.push('勤務 ' + n + '日');
+  if (lv) parts.push('有給 ' + lv + '日');
   var c = $('cnt');
-  if (c) c.textContent = bad ? (n + '日ぶん登録できます（' + bad + '日は時刻が読み取れません）')
-                             : (n ? n + '日ぶん登録します' : '入力された日がありません');
+  if (c) c.textContent = (parts.length ? parts.join('／') + ' を登録します' : '入力された日がありません') +
+                         (bad ? '（' + bad + '日は時刻が読み取れません）' : '');
   var s = $('save');
-  if (s) s.disabled = !n || IM.busy;
+  if (s) s.disabled = (!n && !lv) || IM.busy;
 }
 
 function bindTop(){
@@ -355,6 +405,16 @@ function bindRowInputs(){
       updateCount();
     };
   });
+  document.querySelectorAll('#tb select').forEach(function(el){
+    el.onchange = function(){
+      var r = IM.rows[+el.dataset.i];
+      r.leave = el.value;
+      // 全日の有給にしたら勤務時間は消す。半休なら残す。
+      if (r.leave === '全日'){ r.inHm = ''; r.outHm = ''; r.brMin = ''; }
+      else if (!r.brMin && !r.kind) r.brMin = '60';
+      redrawBody();
+    };
+  });
 }
 
 function fill(includeHolidays){
@@ -384,7 +444,7 @@ function doPaste(){
   var ok = 0, ng = [], skip = 0;
   lines.forEach(function(line, ln){
     var c = line.split(/\t|,|\s{2,}/).map(function(x){ return x.trim(); }).filter(function(x){ return x !== ''; });
-    if (c.length < 3){ ng.push(ln + 1); return; }
+    if (c.length < 2){ ng.push(ln + 1); return; }
 
     // 日付は 2026-07-01 / 2026/7/1 / 7/1 / 1 のいずれでも受ける
     var d = null, s = c[0].replace(/[０-９]/g, function(ch){ return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); });
@@ -395,9 +455,19 @@ function doPaste(){
     if (d == null || byDate[d] == null){ ng.push(ln + 1); return; }
 
     var r = IM.rows[byDate[d]];
-    if (r.done || r.future){ skip++; return; }
-    r.inHm = c[1]; r.outHm = c[2]; r.brMin = c[3] != null ? String(+c[3] || 0) : '';
-    ok++;
+    if (r.done || r.future || r.leaveDone){ skip++; return; }
+
+    // 2列目が「有給」なら有給として扱う（全日・午前半休・午後半休）
+    if (/^(有給|有休|全休|年休)$/.test(c[1])) { r.leave = '全日'; r.inHm = r.outHm = r.brMin = ''; ok++; return; }
+    if (/^午前半休$/.test(c[1]) || /^午後半休$/.test(c[1])) { r.leave = c[1]; ok++; }
+    else if (c.length < 3){ ng.push(ln + 1); return; }
+
+    if (c.length >= 3){
+      r.inHm = c[1 + (r.leave ? 1 : 0)]; r.outHm = c[2 + (r.leave ? 1 : 0)];
+      var b = c[3 + (r.leave ? 1 : 0)];
+      r.brMin = b != null ? String(+b || 0) : '60';
+      if (!r.leave) ok++;
+    }
   });
 
   redrawBody();
@@ -409,9 +479,24 @@ function doPaste(){
 }
 
 /* 登録 */
+var IMPORT_MARK = '過去分の登録';
+
 function save(){
   if (IM.busy) return;
-  var jobs = [];
+  var jobs = [], leaveJobs = [];
+  var emp = curEmp();
+  IM.rows.forEach(function(r){
+    // 有給は打刻ではなく、承認済みの有給申請として登録する
+    if (r.leave && !r.leaveDone && !r.done && !r.future){
+      var days = r.leave === '全日' ? 1 : 0.5;
+      leaveJobs.push({
+        Title: IM.empNo + '_' + r.date, EmpNo: IM.empNo,
+        LeaveDate: r.date, LeaveType: r.leave, Days: days,
+        Status: '承認', Reason: IMPORT_MARK,
+        ApprovedBy: IM.admin.EmpName || IM.admin.Title, ApprovedDate: ktToday()
+      });
+    }
+  });
   IM.rows.forEach(function(r){
     var p = parseRow(r);
     if (!p || p.err) return;
@@ -430,7 +515,7 @@ function save(){
     if (p.bsMin != null){ jobs.push(row('休憩開始', p.bsMin)); jobs.push(row('休憩終了', p.beMin)); }
     jobs.push(row('退勤', p.outMin));
   });
-  if (!jobs.length) return;
+  if (!jobs.length && !leaveJobs.length) return;
 
   IM.busy = true;
   IM.result = null;
@@ -438,11 +523,12 @@ function save(){
   $('bar').classList.remove('hide');
   $('result').innerHTML = '';
 
+  var total = jobs.length + leaveJobs.length;
   var done = 0, failed = 0;
   function tick(){
     done++;
-    $('bar').firstElementChild.style.width = Math.round(done / jobs.length * 100) + '%';
-    $('cnt').textContent = done + ' / ' + jobs.length + ' 件';
+    $('bar').firstElementChild.style.width = Math.round(done / total * 100) + '%';
+    $('cnt').textContent = done + ' / ' + total + ' 件';
   }
 
   // 3件ずつ並行で送る（一気に投げるとSharePoint側で詰まるため）
@@ -454,17 +540,30 @@ function save(){
       .catch(function(){ failed++; })
       .then(function(){ tick(); return worker(); });
   }
-  Promise.all([worker(), worker(), worker()]).then(function(){
+  // 有給は件数が少ないので順に送る
+  function leaveWorker(){
+    return leaveJobs.reduce(function(chain, f){
+      return chain.then(function(){
+        return ktCreate('requests', f)
+          .catch(function(){ failed++; })
+          .then(tick);
+      });
+    }, Promise.resolve());
+  }
+  Promise.all([worker(), worker(), worker(), leaveWorker()]).then(function(){
     IM.busy = false;
     $('bar').classList.add('hide');
     var days = jobs.filter(function(j){ return j.PunchType === '出勤'; }).length;
+    var made = [];
+    if (days) made.push('勤務 ' + days + '日');
+    if (leaveJobs.length) made.push('有給 ' + leaveJobs.length + '日');
     // 結果は状態に持たせる（このあと表を読み直して再描画するため）
     IM.result = failed
-      ? { cls:'warn', html:'<b>' + (jobs.length - failed) + '件を登録しました。' +
+      ? { cls:'warn', html:'<b>' + (total - failed) + '件を登録しました。' +
           failed + '件は失敗しました。</b><br>もう一度［この内容で登録する］を押すと、' +
           '登録済みの日は飛ばして残りだけ登録できます。' }
-      : { cls:'good', html:'<b>' + days + '日ぶん（' + jobs.length + '件）を登録しました。</b><br>' +
-          '<a href="./">打刻画面</a> の履歴・管理タブで確認できます。' };
+      : { cls:'good', html:'<b>' + made.join('／') + '（' + total + '件）を登録しました。</b><br>' +
+          '<a href="./">打刻画面</a> の履歴・有給・管理タブで確認できます。' };
     loadMonth();
   });
 }
@@ -472,18 +571,25 @@ function save(){
 /* この月の手入力だけを取り消す（実際の打刻は消さない） */
 function undo(){
   var mr = ktMonthRange(IM.ym);
-  var targets = IM.punches.filter(function(p){
-    return p._manual && ktYmdDiffDays(p.WorkDate, mr.from) >= 0 &&
-           ktYmdDiffDays(p.WorkDate, mr.to) <= 0;
+  var inMonth = function(d){
+    return ktYmdDiffDays(d, mr.from) >= 0 && ktYmdDiffDays(d, mr.to) <= 0;
+  };
+  var targets = IM.punches.filter(function(p){ return p._manual && inMonth(p.WorkDate); });
+  // 過去分としてこの画面から登録した有給だけを対象にする
+  var lvTargets = IM.requests.filter(function(r){
+    return r.Reason === IMPORT_MARK && inMonth(r.LeaveDate);
   });
-  if (!targets.length){
+  if (!targets.length && !lvTargets.length){
     IM.result = { cls:'warn', html:'この月に手入力の記録はありません。' };
     render(false);
     return;
   }
-  var name = (IM.emps.filter(function(e){ return e.Title === IM.empNo; })[0] || {}).EmpName || IM.empNo;
-  if (!window.confirm(name + ' さんの ' + IM.ym + ' に手入力した ' + targets.length +
-                      '件を取り消します。よろしいですか？')) return;
+  var name = curEmp().EmpName || IM.empNo;
+  var what = [];
+  if (targets.length)   what.push('打刻 ' + targets.length + '件');
+  if (lvTargets.length) what.push('有給 ' + lvTargets.length + '日');
+  if (!window.confirm(name + ' さんの ' + IM.ym + ' に手入力した ' + what.join('と') +
+                      'を取り消します。よろしいですか？')) return;
 
   $('undo').disabled = true;
   var failed = 0;
@@ -493,9 +599,16 @@ function undo(){
         .catch(function(){ failed++; });
     });
   }, Promise.resolve()).then(function(){
+    return lvTargets.reduce(function(chain, r){
+      return chain.then(function(){
+        return ktUpdate('requests', r._id, { Status: '取消' }).catch(function(){ failed++; });
+      });
+    }, Promise.resolve());
+  }).then(function(){
+    var n = targets.length + lvTargets.length;
     IM.result = failed
-      ? { cls:'warn', html:(targets.length - failed) + '件を取り消しました（' + failed + '件は失敗）。' }
-      : { cls:'good', html:targets.length + '件を取り消しました。同じ月をもう一度入力できます。' };
+      ? { cls:'warn', html:(n - failed) + '件を取り消しました（' + failed + '件は失敗）。' }
+      : { cls:'good', html:n + '件を取り消しました。同じ月をもう一度入力できます。' };
     loadMonth();
   });
 }

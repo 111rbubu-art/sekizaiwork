@@ -170,7 +170,9 @@ function ktGroupByDate(punches) {
 function ktComputeRange(from, to, punches, holidays, openDate) {
   var byDate = ktGroupByDate(punches);
   var days = [], d = from;
-  for (var guard = 0; guard < 400 && ktYmdDiffDays(d, to) <= 0; guard++) {
+  // guard は日付が壊れていたときの暴走止め。通常は to に達して抜ける。
+  // 代休は期限を含めて1年以上さかのぼるので、月単位より広い範囲を許す。
+  for (var guard = 0; guard < 3660 && ktYmdDiffDays(d, to) <= 0; guard++) {
     days.push(ktComputeDay(d, byDate[d] || [], holidays, d === openDate));
     d = ktYmdAddDays(d, 1);
   }

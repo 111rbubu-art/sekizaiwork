@@ -254,7 +254,7 @@ function render(loading){
   h += '<div class="card"><h2>日ごとの入力</h2><div id="note"></div>';
   if (!leaveOk()){
     h += '<div class="msg warn">' + esc(curEmp().EmpName || '') +
-         ' さんは有給の対象外のため、有給の欄は使えません。' +
+         ' さんは有給の対象外です（代休は登録できます）。' +
          (curEmp().EmpType === '役員' ? '（役員のため）'
                                       : '（社員マスタの <code>HireDate</code> が未登録です）') + '</div>';
   }
@@ -282,7 +282,8 @@ function render(loading){
   updateCount();
 }
 
-var LEAVE_TYPES = ['全日', '午前半休', '午後半休'];
+var LEAVE_TYPES = ['全日', '午前半休', '午後半休'];   // 有給（対象者のみ）
+var COMP_TYPE   = '代休';                            // 代休（全員が対象）
 
 function rowsHtml(){
   var canLeave = leaveOk();
@@ -294,13 +295,15 @@ function rowsHtml(){
               : r.kind === 'company' ? '<span class="badge cau">所定休日</span>' : '';
     var locked = r.done || r.future || r.leaveDone;
     // 全日の有給を選んだ日は、出退勤の入力欄を閉じる
-    var timeDis = (locked || r.leave === '全日') ? ' disabled' : '';
-    var lvDis   = (locked || !canLeave) ? ' disabled' : '';
+    var timeDis = (locked || r.leave === '全日' || r.leave === COMP_TYPE) ? ' disabled' : '';
+    var lvDis   = locked ? ' disabled' : '';
     var st  = r.leaveDone ? '<span class="badge ok">有給 登録済</span>'
             : r.done ? '<span class="badge ok">登録済</span>'
             : r.future ? '<span class="badge">—</span>' : '';
 
-    var opts = '<option value="">—</option>' + LEAVE_TYPES.map(function(t){
+    // 有給は対象者のみ、代休は誰でも選べる
+    var choices = (canLeave ? LEAVE_TYPES : []).concat([COMP_TYPE]);
+    var opts = '<option value="">—</option>' + choices.map(function(t){
       return '<option' + (r.leave === t ? ' selected' : '') + '>' + t + '</option>';
     }).join('');
 
@@ -320,7 +323,8 @@ function rowsHtml(){
 /* 1日分の入力を検証し、打刻の時刻に変換する */
 function parseRow(r){
   if (r.done || r.future || r.leaveDone) return null;
-  if (r.leave === '全日') return null;              // 全日の有給は打刻をつくらない
+  // 丸1日休む種別は打刻をつくらない
+  if (r.leave === '全日' || r.leave === COMP_TYPE) return null;
   var i = ktNormalizeHm(r.inHm), o = ktNormalizeHm(r.outHm);
   if (!r.inHm && !r.outHm) return null;                    // 未入力の日
   if (!i || !o) return { err: true };
@@ -348,13 +352,16 @@ function manualOf(date, min){
 }
 
 function updateCount(){
-  var n = 0, bad = 0, lv = 0;
+  var n = 0, bad = 0, lv = 0, cp = 0;
   IM.rows.forEach(function(r, i){
     var cell = document.querySelector('.work[data-i="' + i + '"]');
-    if (r.leave && !r.leaveDone && !r.done && !r.future) lv++;
+    if (r.leave && !r.leaveDone && !r.done && !r.future) {
+      if (r.leave === COMP_TYPE) cp++; else lv++;
+    }
     var p = parseRow(r);
     if (!p){
-      if (cell) cell.innerHTML = (r.leave === '全日') ? '<span class="badge ok">有給</span>' : '';
+      if (cell) cell.innerHTML = (r.leave === '全日') ? '<span class="badge ok">有給</span>'
+                              : (r.leave === COMP_TYPE) ? '<span class="badge ok">代休</span>' : '';
       return;
     }
     if (p.err){ bad++; if (cell) cell.innerHTML = '<span class="badge no">時刻が不正</span>'; return; }
@@ -364,11 +371,12 @@ function updateCount(){
   var parts = [];
   if (n)  parts.push('勤務 ' + n + '日');
   if (lv) parts.push('有給 ' + lv + '日');
+  if (cp) parts.push('代休 ' + cp + '日');
   var c = $('cnt');
   if (c) c.textContent = (parts.length ? parts.join('／') + ' を登録します' : '入力された日がありません') +
                          (bad ? '（' + bad + '日は時刻が読み取れません）' : '');
   var s = $('save');
-  if (s) s.disabled = (!n && !lv) || IM.busy;
+  if (s) s.disabled = (!n && !lv && !cp) || IM.busy;
 }
 
 function bindTop(){
@@ -410,7 +418,7 @@ function bindRowInputs(){
       var r = IM.rows[+el.dataset.i];
       r.leave = el.value;
       // 全日の有給にしたら勤務時間は消す。半休なら残す。
-      if (r.leave === '全日'){ r.inHm = ''; r.outHm = ''; r.brMin = ''; }
+      if (r.leave === '全日' || r.leave === COMP_TYPE){ r.inHm = ''; r.outHm = ''; r.brMin = ''; }
       else if (!r.brMin && !r.kind) r.brMin = '60';
       redrawBody();
     };
@@ -458,6 +466,7 @@ function doPaste(){
     if (r.done || r.future || r.leaveDone){ skip++; return; }
 
     // 2列目が「有給」なら有給として扱う（全日・午前半休・午後半休）
+    if (/^(代休|振替休)$/.test(c[1])) { r.leave = COMP_TYPE; r.inHm = r.outHm = r.brMin = ''; ok++; return; }
     if (/^(有給|有休|全休|年休)$/.test(c[1])) { r.leave = '全日'; r.inHm = r.outHm = r.brMin = ''; ok++; return; }
     if (/^午前半休$/.test(c[1]) || /^午後半休$/.test(c[1])) { r.leave = c[1]; ok++; }
     else if (c.length < 3){ ng.push(ln + 1); return; }
@@ -488,7 +497,7 @@ function save(){
   IM.rows.forEach(function(r){
     // 有給は打刻ではなく、承認済みの有給申請として登録する
     if (r.leave && !r.leaveDone && !r.done && !r.future){
-      var days = r.leave === '全日' ? 1 : 0.5;
+      var days = (r.leave === '全日' || r.leave === COMP_TYPE) ? 1 : 0.5;
       leaveJobs.push({
         Title: IM.empNo + '_' + r.date, EmpNo: IM.empNo,
         LeaveDate: r.date, LeaveType: r.leave, Days: days,
@@ -556,7 +565,10 @@ function save(){
     var days = jobs.filter(function(j){ return j.PunchType === '出勤'; }).length;
     var made = [];
     if (days) made.push('勤務 ' + days + '日');
-    if (leaveJobs.length) made.push('有給 ' + leaveJobs.length + '日');
+    var lvN = leaveJobs.filter(function(j){ return j.LeaveType !== COMP_TYPE; }).length;
+    var cpN = leaveJobs.length - lvN;
+    if (lvN) made.push('有給 ' + lvN + '日');
+    if (cpN) made.push('代休 ' + cpN + '日');
     // 結果は状態に持たせる（このあと表を読み直して再描画するため）
     IM.result = failed
       ? { cls:'warn', html:'<b>' + (total - failed) + '件を登録しました。' +

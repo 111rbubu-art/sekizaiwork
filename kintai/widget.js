@@ -23,6 +23,7 @@
 
 var KTW = {
   root: null, emp: null, sites: [], punches: [],
+  pending: 0,                                    // 取消を申請中の打刻の件数
   ready: false, busy: false, msg: null
 };
 
@@ -100,13 +101,71 @@ function ktwUserName() {
   return '';
 }
 
+/* 打刻の取消申請。決まりごとは app.js と同じ。
+   ウィジェット単体で動く必要があるので、ここにも同じ形で置いている。 */
+var KTW_CANCEL_STATUS = '打刻取消申請';
+var KTW_CANCEL_MARK   = '取消対象#';
+
+function ktwCancelTargetId(c) {
+  var m = new RegExp(KTW_CANCEL_MARK + '([^／\\s]+)').exec(String((c || {}).AdminNote || ''));
+  return m ? m[1] : '';
+}
+
 function ktwLoadPunches() {
   var wd = ktwWorkDate();
   return ktList('punches', "fields/WorkDate eq '" + wd + "'").then(function (rows) {
-    KTW.punches = rows.filter(function (p) {
-      return p.Title === KTW.emp.Title && p.WorkDate === wd && p.Voided !== true &&
+    var mine = rows.filter(function (p) {
+      return p.Title === KTW.emp.Title && p.WorkDate === wd;
+    });
+
+    // 未処理の取消申請がある打刻は、勤怠アプリと同じく無かったものとして扱う
+    var pending = {};
+    mine.forEach(function (p) {
+      if (p.LocationStatus !== KTW_CANCEL_STATUS || p.Reviewed === true) return;
+      var id = ktwCancelTargetId(p);
+      if (id) pending[id] = true;
+    });
+    KTW.pending = Object.keys(pending).length;
+
+    KTW.punches = mine.filter(function (p) {
+      return p.Voided !== true && !pending[p._id] &&
              ['出勤', '退勤', '休憩開始', '休憩終了'].indexOf(p.PunchType) >= 0;
     }).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
+  });
+}
+
+/* 直前の打刻の取消を申請する。対象は書き換えず、申請の行を1件足すだけ。 */
+function ktwRequestVoid(punchId) {
+  var p = KTW.punches.filter(function (x) { return x._id === punchId; })[0];
+  if (!p || KTW.busy) return;
+
+  var why = window.prompt(
+    ktHm(p._time) + ' の「' + p.PunchType + '」を取り消すよう申請します。\n理由を書いてください。',
+    '誤って押した');
+  if (why === null) return;
+
+  KTW.busy = true;
+  KTW.msg = { text: '申請しています…' };
+  ktwDraw();
+
+  ktCreate('punches', {
+    Title:          KTW.emp.Title,
+    PunchType:      p.PunchType,
+    WorkDate:       p.WorkDate,
+    ManualTime:     ktYmd(p._time) + 'T' + ktHm(p._time),
+    ClientTime:     new Date().toISOString(),
+    LocationStatus: KTW_CANCEL_STATUS,
+    Voided:         true,
+    VoidReason:     '取消の申請',
+    AdminNote:      KTW_CANCEL_MARK + p._id + '／' + (String(why).trim() || '誤って押した'),
+    UserAgent:      (navigator.userAgent || '').slice(0, 250)
+  }).then(function () {
+    KTW.msg = { text: '取消を申請しました。管理者の確認をお待ちください' };
+    return ktwLoadPunches();
+  }).catch(function (e) {
+    KTW.msg = { text: '申請に失敗しました：' + e.message, err: true };
+  }).then(function () {
+    KTW.busy = false; ktwDraw();
   });
 }
 
@@ -166,7 +225,17 @@ function ktwDraw() {
   if (KTW.punches.length) {
     h += '<div class="ktw-log">' + KTW.punches.map(function (p) {
       return ktEsc(p.PunchType) + ' ' + ktHm(p._time);
-    }).join('　／　') + '</div>';
+    }).join('　／　');
+    // 押し間違いはすぐ気づくので、直前の打刻にだけ取消を出す
+    if (last && (Date.now() - new Date(last._time)) < KT_PUNCH.undoMin * 60000) {
+      h += ' <button type="button" class="ktw-undo" data-ktwundo="' + last._id + '"' +
+           (KTW.busy ? ' disabled' : '') + '>取消</button>';
+    }
+    h += '</div>';
+  }
+  if (KTW.pending) {
+    h += '<div class="ktw-line ktw-warn">取消を申請中の打刻が' + KTW.pending +
+         '件あります。管理者が確認するまで集計から外れます。</div>';
   }
 
   var q = ktwQueue();
@@ -187,6 +256,9 @@ function ktwBind() {
   KTW.root.querySelectorAll('[data-ktw]').forEach(function (b) {
     b.onclick = function () { ktwPunch(b.getAttribute('data-ktw')); };
   });
+  KTW.root.querySelectorAll('[data-ktwundo]').forEach(function (b) {
+    b.onclick = function () { ktwRequestVoid(b.getAttribute('data-ktwundo')); };
+  });
 }
 
 /* ── 打刻 ────────────────────────────────────────────────── */
@@ -199,6 +271,16 @@ function ktwPunch(type) {
            (Date.now() - new Date(p._time)) < KT_PUNCH.dedupeMin * 60000;
   });
   if (recent.length) { KTW.msg = { text: type + 'は既に記録されています' }; ktwDraw(); return; }
+
+  // 押し間違いで多いのは、出勤してすぐの退勤。経過時間を見せて一度だけ確かめる。
+  if (type === '退勤' && KT_PUNCH.confirmOutMin > 0) {
+    var ins = KTW.punches.filter(function (p) { return p.PunchType === '出勤'; });
+    if (ins.length) {
+      var el = Math.round((Date.now() - new Date(ins[0]._time)) / 60000);
+      if (el >= 0 && el < KT_PUNCH.confirmOutMin &&
+          !window.confirm('出勤からまだ' + el + '分です。退勤にしますか？')) return;
+    }
+  }
 
   KTW.busy = true;
   KTW.msg = { text: '位置を確認しています…' };
@@ -274,12 +356,16 @@ function ktwStyle() {
     '.ktw-main.ktw-out{background:#A63D2C}',
     '.ktw-main:disabled{opacity:.45;cursor:default}',
     '.ktw-log{margin-top:8px;color:#6B7371;font-size:12px}',
+    '.ktw-undo{border:1px solid #C9CDC8;background:transparent;color:#6B7371;',
+    '  border-radius:4px;padding:1px 7px;font-size:11px;cursor:pointer;font-family:inherit}',
+    '.ktw-undo:disabled{opacity:.45;cursor:default}',
     '.ktw-line{margin-top:8px;font-size:13px}',
     '.ktw-ok{color:#2F5645}',
     '.ktw-warn{color:#A63D2C}',
     '@media (prefers-color-scheme:dark){',
     '  .ktw{color:#E4E9E6;background:#1C2120;border-color:#333B39}',
     '  .ktw-state,.ktw-log{color:#8B9390}',
+    '  .ktw-undo{border-color:#333B39;color:#8B9390}',
     '  .ktw-site,.ktw-ok{color:#8FBFA7}',
     '  .ktw-main{background:#6FA189;color:#0E1211}',
     '  .ktw-main.ktw-out{background:#D5806D;color:#0E1211}',

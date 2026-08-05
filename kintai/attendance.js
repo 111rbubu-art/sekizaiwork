@@ -156,6 +156,7 @@ function ktGroupByDate(punches) {
   var map = {};
   (punches || []).forEach(function (p) {
     if (p.Voided === true) return;               // 取り消された打刻は集計しない
+    if (p.CancelPending === true) return;        // 本人が取消を申請中の打刻も外す
     var k = p.WorkDate || ktYmd(p._time);
     (map[k] = map[k] || []).push(p);
   });

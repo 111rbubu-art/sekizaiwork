@@ -6,9 +6,11 @@ var KT = {
   emp: null, employees: [], sites: [], holidays: [],
   punches: [], consents: [], grants: [], requests: [],
   consent: null,                                 // true=同意 / false=不同意 / null=未回答
+  cancels: [],                                   // 打刻の取消申請
   isAdmin: false, tab: 'punch',
-  showBreak: false, showFix: false,        // 休憩の打刻・打刻漏れ申請の開閉
+  showBreak: false, showFix: false,        // 休憩の打刻・訂正欄の開閉
   histYm: ktYm(ktToday()), adminYm: ktYm(ktToday()), adminDate: ktToday(),
+  fixDate: ktToday(),                            // 訂正欄で見ている日
   busy: false
 };
 
@@ -37,6 +39,12 @@ function ktEvalReview(p, prev) {
   // 手入力は位置情報も端末時刻も無いのが当然なので、それを理由に警告しない。
   // ただし本人が後から出した打刻漏れの申請は、管理者が確認するまで要確認にする。
   if (p._manual) {
+    if (p.LocationStatus === KT_CANCEL_STATUS) {
+      var why = ktCancelReason(p);
+      p.ReviewReasons = ['打刻の取消申請' + (why ? '（' + why + '）' : '')];
+      p.NeedsReview = p.Reviewed !== true;
+      return p;
+    }
     var isFix = p.LocationStatus === KT_FIX_STATUS;
     p.ReviewReasons = isFix
       ? ['打刻漏れの申請' + (p.AdminNote ? '（' + p.AdminNote + '）' : '')]
@@ -135,6 +143,38 @@ var KT_CONSENT_TYPES = ['位置情報同意', '位置情報不同意'];
 /* 本人が後から申請した打刻の目印（LocationStatus に入れる） */
 var KT_FIX_STATUS = '打刻漏れ申請';
 
+/* ── 打刻の取消申請 ──────────────────────────────────────
+   誤って押した打刻を、本人が「これは間違いです」と申し出るための行。
+
+   打刻ログは追記専用なので、本人は自分の打刻を書き換えられない。
+   そこで「取消してほしい」という1行を新しく追加し、管理者がそれを見て
+   対象の打刻に Voided を立てる。押した記録も、取り消した記録も両方残る。
+
+   取消申請の行そのものは Voided=true で作る。勤怠の集計には一切入らず、
+   LocationStatus と AdminNote だけが意味を持つ。
+   AdminNote は「取消対象#<対象の項目ID>／<理由>」の形で入れる。
+   SharePoint 側に列を足さずに、対象と理由の両方を残すための決まりごと。
+   ------------------------------------------------------------ */
+var KT_CANCEL_STATUS = '打刻取消申請';
+var KT_CANCEL_MARK   = '取消対象#';
+
+function ktCancelTargetId(c) {
+  var m = new RegExp(KT_CANCEL_MARK + '([^／\\s]+)').exec(String((c || {}).AdminNote || ''));
+  return m ? m[1] : '';
+}
+function ktCancelReason(c) {
+  var s = String((c || {}).AdminNote || '');
+  var i = s.indexOf('／');
+  return i >= 0 ? s.slice(i + 1) : '';
+}
+
+/* 集計に入れてよい打刻。取消済みと、取消を申請中のものを外す。 */
+function ktActive(ps) {
+  return (ps || []).filter(function (p) {
+    return p.Voided !== true && p.CancelPending !== true;
+  });
+}
+
 /* 打刻は直近13か月分だけ読む（月次と有給の集計に十分）。
    同意の記録は期間に関わらず必要なので別途すべて読む。 */
 function ktLoadPunches() {
@@ -144,11 +184,31 @@ function ktLoadPunches() {
     KT.consents = rows.filter(function (p) {
       return KT_CONSENT_TYPES.indexOf(p.PunchType) >= 0;
     });
+    KT.cancels = rows.filter(function (p) {
+      return p.LocationStatus === KT_CANCEL_STATUS;
+    }).sort(function (a, b) { return new Date(b._createdAt) - new Date(a._createdAt); });
     KT.punches = rows.filter(function (p) {
       return KT_CONSENT_TYPES.indexOf(p.PunchType) < 0 &&
+             p.LocationStatus !== KT_CANCEL_STATUS &&
              ktYmdDiffDays(p.WorkDate || from, from) >= 0;
     });
+    ktMarkCancelPending();
     KT.consent = ktConsentOf(KT.emp ? KT.emp.Title : null);
+  });
+}
+
+/* 未処理の取消申請がある打刻に印をつける。
+   打刻ログは書き換えない設計なので、読み出すたびにここで導出する。 */
+function ktMarkCancelPending() {
+  var pending = {};
+  KT.cancels.forEach(function (c) {
+    if (c.Reviewed === true) return;
+    var id = ktCancelTargetId(c);
+    if (id) pending[id] = c;
+  });
+  KT.punches.forEach(function (p) {
+    p.CancelPending = !!pending[p._id];
+    p.CancelReq     = pending[p._id] || null;
   });
 }
 
@@ -247,9 +307,11 @@ function ktTodayPunches() {
     .sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
 }
 
-/* 現在の状態 … 'off'（未出勤）/'in'（勤務中）/'break'（休憩中）/'done'（退勤済） */
+/* 現在の状態 … 'off'（未出勤）/'in'（勤務中）/'break'（休憩中）/'done'（退勤済）
+   取消を申請中の打刻は無かったものとして状態を決める。
+   間違って押した退勤を申請すれば、余計な出勤を押し直さずに勤務中へ戻れる。 */
 function ktCurrentState() {
-  var ps = ktTodayPunches();
+  var ps = ktActive(ktTodayPunches());
   if (!ps.length) return 'off';
   var last = ps[ps.length - 1].PunchType;
   if (last === '出勤' || last === '休憩終了') return 'in';
@@ -270,6 +332,16 @@ function ktPunch(type) {
            (Date.now() - new Date(p._time)) < KT_PUNCH.dedupeMin * 60000;
   });
   if (recent.length) { ktToast(type + 'は既に記録されています'); return; }
+
+  // 押し間違いで多いのは、出勤してすぐの退勤。経過時間を見せて一度だけ確かめる。
+  if (type === '退勤' && KT_PUNCH.confirmOutMin > 0) {
+    var ins = ktActive(ktTodayPunches()).filter(function (p) { return p.PunchType === '出勤'; });
+    if (ins.length) {
+      var el = Math.round((Date.now() - new Date(ins[0]._time)) / 60000);
+      if (el >= 0 && el < KT_PUNCH.confirmOutMin &&
+          !window.confirm('出勤からまだ' + el + '分です。退勤にしますか？')) return;
+    }
+  }
 
   KT.busy = true;
   ktRender();
@@ -322,13 +394,14 @@ function ktPunch(type) {
 
 function ktViewPunch() {
   var wd = ktWorkDateNow();
-  var ps = ktTodayPunches();
+  var ps = ktTodayPunches();                     // 表示用（取消申請中も見せる）
+  var live = ktActive(ps);                       // 集計用
   var st = ktCurrentState();
-  var day = ktComputeDay(wd, ps, KT.holidays, st === 'in' || st === 'break');
+  var day = ktComputeDay(wd, live, KT.holidays, st === 'in' || st === 'break');
   var kind = ktDayKind(wd, KT.holidays);
 
-  var lastIn = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
-  var lastAny = ps[ps.length - 1];
+  var lastIn = live.filter(function (p) { return p.PunchType === '出勤'; })[0];
+  var lastAny = live[live.length - 1];
 
   var stateTxt = { off: '未出勤', in: '勤務中', break: '休憩中', done: '退勤済み' }[st];
   var placeP = lastAny || lastIn;
@@ -382,7 +455,7 @@ function ktViewPunch() {
 
   var q = ktQueue();
   if (q.length) h += '<div class="alert cau">送信待ちの打刻が' + q.length + '件あります。電波が戻ると自動で送信されます。</div>';
-  h += '<button class="more" id="tg-fix">打刻を忘れたときは</button>';
+  h += '<button class="more" id="tg-fix">打刻をまちがえたとき・忘れたときは</button>';
   if (KT.showFix) h += ktFixForm();
   h += '</div>';
 
@@ -392,9 +465,10 @@ function ktViewPunch() {
     ps.forEach(function (p) {
       h += '<div class="row"><span class="k">' + ktEsc(p.PunchType) +
            (p._manual ? ' <span class="badge cau">手入力</span>' : '') +
-           (p.NeedsReview ? ' <span class="badge no">要確認</span>' : '') + '</span>';
+           (p.CancelPending ? ' <span class="badge no">取消申請中</span>'
+            : p.NeedsReview ? ' <span class="badge no">要確認</span>' : '') + '</span>';
       h += '<span class="v">' + ktHm(p._time) + '　<span class="muted">' +
-           ktEsc(p.SiteName || '') + '</span></span></div>';
+           ktEsc(p.SiteName || '') + '</span>' + ktVoidBtn(p) + '</span></div>';
     });
     if (day.workMin) {
       h += '<div class="sep"></div>';
@@ -453,8 +527,73 @@ function ktCompSummaryCard() {
    本人が後から時刻を申請する。打刻ログに ManualTime 付きで1行追加し、
    LocationStatus を「打刻漏れ申請」にして、管理者の確認待ちにする。
    サーバが作成日時と本人を自動で記録するので、いつ誰が申請したかは残る。 */
+/* 本人が押せる［取消］。管理者のように直接消すのではなく、申請を1件足す。
+   すでに申請中のものと、管理者が取り消し済みのものには出さない。 */
+function ktVoidBtn(p) {
+  if (!KT.emp || p.Title !== KT.emp.Title) return '';
+  if (p.Voided === true || p.CancelPending) return '';
+  return ' <button class="btn ghost" data-reqvoid="' + p._id +
+         '" style="padding:.1rem .5rem;font-size:.72rem;font-weight:400">取消</button>';
+}
+
+/* 誤って押した打刻の取消を申請する。
+   打刻ログは追記専用なので、対象を書き換えず申請の行を1件足すだけ。 */
+function ktRequestVoid(punchId) {
+  var p = KT.punches.filter(function (x) { return x._id === punchId; })[0];
+  if (!p || !KT.emp) return;
+  if (p.Title !== KT.emp.Title) { ktToast('自分の打刻だけ申請できます', true); return; }
+  if (p.Voided === true || p.CancelPending) return;
+
+  var why = window.prompt(
+    ktYmdLabel(p.WorkDate) + ' ' + ktHm(p._time) + ' の「' + p.PunchType +
+    '」を取り消すよう申請します。\n理由を書いてください。', '誤って押した');
+  if (why === null) return;
+
+  ktCreate('punches', {
+    Title:          KT.emp.Title,
+    PunchType:      p.PunchType,
+    WorkDate:       p.WorkDate,
+    ManualTime:     ktYmd(p._time) + 'T' + ktHm(p._time),
+    ClientTime:     new Date().toISOString(),
+    LocationStatus: KT_CANCEL_STATUS,
+    Voided:         true,                        // 申請の行そのものは勤怠に数えない
+    VoidReason:     '取消の申請',
+    AdminNote:      KT_CANCEL_MARK + p._id + '／' + (String(why).trim() || '誤って押した'),
+    UserAgent:      (navigator.userAgent || '').slice(0, 250)
+  }).then(function () {
+    ktToast('取消を申請しました。管理者の確認をお待ちください');
+    return ktLoadPunches();
+  }).then(ktRender)
+    .catch(function (e) { ktToast('申請に失敗しました：' + e.message, true); });
+}
+
 function ktFixForm() {
   var h = '<div class="fixbox">';
+
+  // ① まちがえた打刻を取り消す（押し間違いはこちらのほうが多い）
+  h += '<p class="muted" style="font-weight:700;color:var(--ink2)">まちがえて押した打刻を取り消す</p>';
+  h += '<p class="muted">取り消したい打刻の［取消］を押してください。' +
+       '管理者が確認するまでは「取消申請中」となり、その間は勤怠の集計から外れます。</p>';
+  h += '<label class="f" for="fx-vdate">日付</label>' +
+       '<input type="date" id="fx-vdate" value="' + KT.fixDate + '" max="' + ktToday() + '">';
+  var list = ktMyPunches().filter(function (x) {
+    return x.WorkDate === KT.fixDate && x.Voided !== true;
+  }).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
+  if (!list.length) {
+    h += '<p class="muted" style="margin-top:.4rem">この日の打刻はありません。</p>';
+  }
+  list.forEach(function (p) {
+    h += '<div class="row"><span class="k">' + ktEsc(p.PunchType) + ' ' + ktHm(p._time) +
+         (p._manual ? ' <span class="badge cau">手入力</span>' : '') + '</span>';
+    h += '<span class="v">' +
+         (p.CancelPending ? '<span class="badge no">取消申請中</span>' : ktVoidBtn(p)) +
+         '</span></div>';
+  });
+
+  h += '<div class="sep"></div>';
+
+  // ② 押し忘れた打刻を申請する
+  h += '<p class="muted" style="font-weight:700;color:var(--ink2)">押し忘れた打刻を申請する</p>';
   h += '<p class="muted" style="margin-bottom:.4rem">' +
        '押し忘れた打刻を後から申請できます。管理者が確認するまで「要確認」の印がつきます。</p>';
   h += '<label class="f" for="fx-date">日付</label>' +
@@ -775,9 +914,9 @@ function ktViewAdmin() {
        '<th>労働</th><th>時間外</th><th>出勤場所</th><th>退勤場所</th><th></th></tr></thead><tbody>';
   var actives = KT.employees.filter(function (e) { return e.Active !== false; });
   actives.forEach(function (e) {
-    var ps = KT.punches.filter(function (p) {
-      return p.Title === e.Title && p.WorkDate === KT.adminDate && p.Voided !== true;
-    }).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
+    var ps = ktActive(KT.punches.filter(function (p) {
+      return p.Title === e.Title && p.WorkDate === KT.adminDate;
+    })).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
     var d = ktComputeDay(KT.adminDate, ps, KT.holidays, KT.adminDate === ktWorkDateNow());
     var ins  = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
     var outs = ps.filter(function (p) { return p.PunchType === '退勤'; });
@@ -799,26 +938,60 @@ function ktViewAdmin() {
   });
   h += '</tbody></table></div></div>';
 
-  // 要確認の打刻
+  // その日の打刻を1件ずつ取り消す（誤って押した打刻の後始末）
+  var dayPs = KT.punches.filter(function (p) { return p.WorkDate === KT.adminDate; })
+    .sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
+  h += '<div class="card"><h2>' + ktEsc(ktYmdLabel(KT.adminDate)) +
+       ' の打刻（1件ずつ取り消せます）</h2><div class="tw"><table><thead><tr>' +
+       '<th>社員</th><th>種別</th><th>時刻</th><th>場所</th><th>状態</th><th></th></tr></thead><tbody>';
+  if (!dayPs.length) h += '<tr><td colspan="6" class="muted">打刻がありません</td></tr>';
+  dayPs.forEach(function (p) {
+    var mark = p.Voided === true    ? '<span class="badge cau">取消済</span>'
+             : p.CancelPending      ? '<span class="badge no">取消申請中</span>'
+             : p._manual            ? '<span class="badge cau">手入力</span>' : '';
+    h += '<tr class="' + (p.Voided === true ? 'hol' : '') + '">';
+    h += '<td>' + ktEsc((ktEmpOf(p.Title).EmpName) || p.Title) + '</td>';
+    h += '<td>' + ktEsc(p.PunchType) + '</td>';
+    h += '<td class="n">' + ktHm(p._time) + '</td>';
+    h += '<td>' + ktEsc(p.SiteName || '') + '</td>';
+    h += '<td>' + mark + (p.Voided === true && p.VoidReason
+          ? ' <span class="muted">' + ktEsc(p.VoidReason) + '</span>' : '') + '</td>';
+    h += '<td>' + (p.Voided === true ? '' :
+         '<button class="btn ghost" data-void="' + p._id +
+         '" style="padding:.2rem .5rem;font-size:.75rem">取消</button>') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  h += '<p class="muted" style="margin-top:.5rem">取り消しても行は消えません。' +
+       '「取消済」として残り、集計から外れるだけです。</p></div>';
+
+  // 要確認の打刻（本人からの取消申請もここに並ぶ）
   var review = KT.punches.filter(function (p) { return p.NeedsReview && p.Voided !== true; })
+    .concat(KT.cancels.filter(function (p) { return p.NeedsReview; }))
     .sort(function (a, b) { return new Date(b._time) - new Date(a._time); }).slice(0, 40);
   h += '<div class="card"><h2>要確認の打刻（' + review.length + '件）</h2><div class="tw"><table><thead><tr>' +
        '<th>日時</th><th>社員</th><th>種別</th><th>場所</th><th>理由</th><th></th></tr></thead><tbody>';
   if (!review.length) h += '<tr><td colspan="6" class="muted">ありません</td></tr>';
   review.forEach(function (p) {
+    var isCan = p.LocationStatus === KT_CANCEL_STATUS;
     h += '<tr><td>' + ktEsc(ktYmdLabel(p.WorkDate)) + ' ' + ktHm(p._time) + '</td>';
     h += '<td>' + ktEsc((ktEmpOf(p.Title).EmpName) || p.Title) + '</td>';
     h += '<td>' + ktEsc(p.PunchType) +
-         (p.LocationStatus === KT_FIX_STATUS ? ' <span class="badge no">申請</span>'
+         (isCan ? ' <span class="badge no">取消申請</span>'
+          : p.LocationStatus === KT_FIX_STATUS ? ' <span class="badge no">申請</span>'
           : p._manual ? ' <span class="badge cau">手入力</span>' : '') +
          (p.ManualTime ? '<br><span class="muted">' + ktEsc(String(p.ManualTime).replace('T', ' ')) + '</span>' : '') +
          '</td>';
     h += '<td>' + ktEsc(p.SiteName || '') +
          (p.Lat != null ? ' <a href="https://www.google.com/maps?q=' + p.Lat + ',' + p.Lon +
                           '" target="_blank" rel="noopener">地図</a>' : '') + '</td>';
-    h += '<td style="white-space:normal">' + ktEsc((p.ReviewReasons || []).join('／')) + '</td>';
-    h += '<td><button class="btn ghost" data-ok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">確認済</button> ' +
-         '<button class="btn ghost" data-void="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">取消</button></td></tr>';
+    h += '<td style="white-space:normal;min-width:11rem">' +
+         ktEsc((p.ReviewReasons || []).join('／')) + '</td>';
+    h += '<td>' + (isCan
+      ? '<button class="btn" data-canok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">取消を実行</button> ' +
+        '<button class="btn ghost" data-canng="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">却下</button>'
+      : '<button class="btn ghost" data-ok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">確認済</button> ' +
+        '<button class="btn ghost" data-void="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">取消</button>') +
+      '</td></tr>';
   });
   h += '</tbody></table></div></div>';
 
@@ -965,6 +1138,10 @@ function ktRender() {
   var adminTab = document.querySelector('[data-tab="admin"]');
   adminTab.classList.toggle('hide', !KT.isAdmin);
 
+  // 管理の表は列が多いので、その画面のときだけ横幅を広げる
+  var wrap = document.querySelector('main.wrap');
+  if (wrap) wrap.classList.toggle('wide', KT.tab === 'admin');
+
   ['punch', 'hist', 'leave', 'admin'].forEach(function (t) {
     $('v-' + t).classList.toggle('hide', KT.tab !== t);
   });
@@ -997,6 +1174,17 @@ function ktBind() {
     KT.showFix = !KT.showFix; ktRender();
   };
   if ($('fx-send')) $('fx-send').onclick = ktSubmitFix;
+  if ($('fx-vdate')) $('fx-vdate').onchange = function () { KT.fixDate = this.value; ktRender(); };
+
+  document.querySelectorAll('[data-reqvoid]').forEach(function (b) {
+    b.onclick = function () { ktRequestVoid(b.dataset.reqvoid); };
+  });
+  document.querySelectorAll('[data-canok]').forEach(function (b) {
+    b.onclick = function () { ktApplyCancel(b.dataset.canok); };
+  });
+  document.querySelectorAll('[data-canng]').forEach(function (b) {
+    b.onclick = function () { ktRejectCancel(b.dataset.canng); };
+  });
 
   if ($('hist-prev')) $('hist-prev').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01', -1)); ktRender(); };
   if ($('hist-next')) $('hist-next').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01',  1)); ktRender(); };
@@ -1043,6 +1231,42 @@ function ktBind() {
         .catch(function (e) { ktToast('更新に失敗しました：' + e.message, true); });
     };
   });
+}
+
+/* 取消申請を認める。対象の打刻に Voided を立て、申請の行を処理済みにする。
+   どちらの行も消さないので、押した記録と取り消した記録が両方残る。 */
+function ktApplyCancel(reqId) {
+  var c = KT.cancels.filter(function (x) { return x._id === reqId; })[0];
+  if (!c) return;
+  // 対象が実在するときだけ書き換える。見つからない申請は処理済みにするだけ。
+  var tid = ktCancelTargetId(c);
+  if (tid && !KT.punches.some(function (p) { return p._id === tid; })) tid = '';
+  var who = (ktEmpOf(c.Title).EmpName) || c.Title;
+  if (!window.confirm(who + 'さんの ' + ktYmdLabel(c.WorkDate) + ' ' + ktHm(c._time) +
+                      ' の「' + c.PunchType + '」を取り消します。よろしいですか？')) return;
+
+  var why = ktCancelReason(c);
+  var first = tid
+    ? ktUpdate('punches', tid, {
+        Voided: true,
+        VoidReason: '本人の申請により取消' + (why ? '（' + why + '）' : '')
+      })
+    : Promise.resolve();
+
+  first.then(function () { return ktUpdate('punches', reqId, { Reviewed: true }); })
+    .then(ktLoadPunches).then(ktRender)
+    .then(function () {
+      ktToast(tid ? '取り消しました' : '対象の打刻が見つかりませんでした');
+    })
+    .catch(function (e) { ktToast('取消に失敗しました：' + e.message, true); });
+}
+
+/* 取消申請を認めない。対象の打刻はそのまま残る。 */
+function ktRejectCancel(reqId) {
+  ktUpdate('punches', reqId, { Reviewed: true, VoidReason: '取消申請を却下' })
+    .then(ktLoadPunches).then(ktRender)
+    .then(function () { ktToast('却下しました'); })
+    .catch(function (e) { ktToast('更新に失敗しました：' + e.message, true); });
 }
 
 function ktDecide(id, status) {

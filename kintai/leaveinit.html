@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>勤怠 — 移行前の有給の登録</title>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<style>
+:root{
+  --ground:#ECEDEA;--panel:#F8F9F7;--panel2:#E3E5E1;--ink:#191D1E;--ink2:#4A5251;--stone:#6B7371;
+  --hair:#C9CDC8;--hair2:#DCDFDA;--accent:#2F5645;--accent-soft:#DFE9E3;--accent-txt:#2F5645;
+  --signal:#A63D2C;--signal-soft:#F6E4E0;--amber:#8A6716;--amber-soft:#F3EBD8;
+  --font:"Hiragino Sans","Yu Gothic",YuGothic,"Noto Sans JP",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#131716;--panel:#1C2120;--panel2:#252B29;--ink:#E4E9E6;--ink2:#B2B9B6;--stone:#8B9390;
+  --hair:#333B39;--hair2:#262D2B;--accent:#6FA189;--accent-soft:#21302A;--accent-txt:#8FBFA7;
+  --signal:#D5806D;--signal-soft:#32211E;--amber:#C6A15C;--amber-soft:#2C2718;color-scheme:dark;}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.7;
+     -webkit-font-smoothing:antialiased}
+.wrap{max-width:46rem;margin:0 auto;padding:2rem 1rem 6rem}
+h1{font-size:1.35rem;letter-spacing:.08em}
+.sub{color:var(--stone);font-size:.86rem;margin-bottom:1.4rem}
+.nav{margin-bottom:1rem}
+.back{display:inline-block;border:1px solid var(--hair);border-radius:6px;padding:.45rem .9rem;
+  font-size:.88rem;color:var(--ink2);text-decoration:none;background:var(--panel)}
+.back:hover{border-color:var(--accent);color:var(--accent-txt)}
+.card{background:var(--panel);border:1px solid var(--hair);border-radius:8px;padding:1rem 1.1rem;margin:.9rem 0}
+.card h2{font-size:.8rem;letter-spacing:.1em;color:var(--stone);font-weight:700;margin-bottom:.7rem}
+button{font-family:inherit;font-size:.92rem;cursor:pointer;background:var(--accent);
+       color:var(--ground);border:none;border-radius:6px;padding:.6rem 1.1rem;font-weight:700}
+button.ghost{background:transparent;border:1px solid var(--hair);color:var(--ink2);font-weight:400}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+label.f{display:block;font-size:.78rem;color:var(--stone);margin:.5rem 0 .2rem}
+input{font-family:inherit;font-size:.95rem;padding:.45rem .55rem;background:var(--ground);
+  color:var(--ink);border:1px solid var(--hair);border-radius:5px;width:100%}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+input.day{width:5.5rem;text-align:center;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.btnrow{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.9rem;align-items:center}
+.emp{border-top:1px solid var(--hair2);padding:.9rem 0}
+.emp:first-of-type{border-top:none}
+.emp .nm{font-weight:700}
+.emp .meta{color:var(--stone);font-size:.82rem}
+.emp .in{display:flex;align-items:center;gap:.5rem;margin-top:.5rem;flex-wrap:wrap}
+.prev{background:var(--ground);border:1px solid var(--hair2);border-radius:5px;
+  padding:.5rem .65rem;margin-top:.5rem;font-size:.83rem;color:var(--ink2)}
+.prev b{color:var(--ink)}
+.prev .ln{display:flex;justify-content:space-between;gap:1rem;font-variant-numeric:tabular-nums}
+.msg{border-radius:5px;padding:.6rem .75rem;margin-top:.6rem;font-size:.87rem}
+.msg.bad{background:var(--signal-soft);color:var(--signal)}
+.msg.warn{background:var(--amber-soft);color:var(--amber)}
+.msg.good{background:var(--accent-soft);color:var(--accent-txt)}
+.foot{color:var(--stone);font-size:.78rem;margin-top:2rem}
+a{color:var(--accent-txt)}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="nav"><a class="back" href="./">← 勤怠にもどる</a></div>
+  <h1>移行前の有給の登録</h1>
+  <p class="sub">
+    このシステムを使い始める前の有給の残日数を登録します。
+    入社日からの自動計算だけでは、過去に取得した分が反映されず残日数が多く出てしまうためです。管理者専用です。
+  </p>
+  <div id="gate"><button id="go">Microsoft 365 でログイン</button></div>
+  <div id="main" class="hide"></div>
+  <p class="foot">打刻画面は <a href="./">こちら</a> ／ 過去の勤怠の入力は <a href="./import.html">こちら</a>。</p>
+</div>
+
+<script src="./config.js"></script>
+<script src="./util.js"></script>
+<script src="./auth.js"></script>
+<script src="./graph.js"></script>
+<script src="./attendance.js"></script>
+<script src="./leave.js"></script>
+<script>
+var LI = { emps: [], grants: [], date: ktToday(), bal: {}, busy: false, result: null };
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return ktEsc(s); }
+
+document.getElementById('go').onclick = function(){ ktLogin(); };
+
+ktInitAuth(start, function(){}, function(e){
+  $('gate').innerHTML = '<div class="msg bad">ログインエラー：' + esc(e.message) + '</div>';
+});
+
+function start(){
+  $('gate').innerHTML = '<p class="sub">読み込んでいます…</p>';
+  ktList('employees').then(function(emps){
+    LI.emps = emps;
+    var me = ktUserName();
+    var mine = emps.filter(function(e){
+      return String(e.UserPrincipalName || '').toLowerCase() === me;
+    })[0];
+    if (!mine || mine.IsAdmin !== true){
+      $('gate').innerHTML = '<div class="msg bad"><b>この画面は管理者のみ使えます。</b><br>' +
+        'ログイン中のアカウント：<code>' + esc(me) + '</code></div>';
+      return;
+    }
+    $('gate').classList.add('hide');
+    $('main').classList.remove('hide');
+    load();
+  }).catch(function(e){
+    $('gate').innerHTML = '<div class="msg bad">読み込みに失敗しました：' + esc(e.message) + '</div>';
+  });
+}
+
+function load(){
+  render(true);
+  ktList('grants').then(function(rows){
+    LI.grants = rows;
+    // 既に登録済みなら、その内容から残日数を復元して初期表示にする
+    targets().forEach(function(e){
+      if (LI.bal[e.Title] != null) return;
+      var mine = LI.grants.filter(function(g){ return g.EmpNo === e.Title; });
+      if (!mine.length) return;
+      var st = ktLeaveState(e, mine, [], LI.date);
+      LI.bal[e.Title] = String(st.balanceDays);
+    });
+    render(false);
+  }).catch(function(e){
+    LI.grants = []; render(false);
+    LI.result = { cls:'bad', html:'付与の読み込みに失敗しました：' + esc(e.message) };
+  });
+}
+
+/* 有給の対象になる社員だけを扱う */
+function targets(){
+  return LI.emps.filter(function(e){
+    return e.Active === true && e.EmpType !== '役員' &&
+           /^\d{4}-\d{2}-\d{2}$/.test(e.HireDate || '');
+  });
+}
+
+function render(loading){
+  var h = '';
+
+  h += '<div class="card"><h2>いつの時点の残日数か</h2>';
+  h += '<label class="f" for="dt">移行日（この日の残日数を入れます）</label>' +
+       '<input type="date" id="dt" value="' + esc(LI.date) + '" max="' + ktToday() + '">';
+  h += '<p class="sub" style="margin:.6rem 0 0">' +
+       'このシステムで打刻を始める日、または給与の締め日の翌日などを指定してください。<br>' +
+       '<b>移行日より後に取得した有給は、このアプリの申請から差し引かれます。</b></p>';
+  h += '</div>';
+
+  h += '<div class="card"><h2>社員ごとの残日数</h2><div id="note">' +
+       (LI.result ? '<div class="msg ' + LI.result.cls + '">' + LI.result.html + '</div>' : '') + '</div>';
+
+  if (loading){
+    h += '<p class="sub">読み込んでいます…</p></div>';
+    $('main').innerHTML = h; bind(); return;
+  }
+
+  var list = targets();
+  if (!list.length){
+    h += '<div class="msg warn">対象になる社員がいません。' +
+         '社員マスタで <code>Active</code> が「はい」、<code>EmpType</code> が役員以外、' +
+         '<code>HireDate</code> が入っている方が対象です。</div>';
+  }
+
+  list.forEach(function(e){
+    var val = LI.bal[e.Title] != null ? LI.bal[e.Title] : '';
+    h += '<div class="emp">';
+    h += '<div class="nm">' + esc(e.EmpName || e.Title) + '</div>';
+    h += '<div class="meta">入社 ' + esc(e.HireDate) + '</div>';
+    h += '<div class="in"><label class="f" style="margin:0" for="b-' + esc(e.Title) + '">移行日の残日数</label>' +
+         '<input class="day" id="b-' + esc(e.Title) + '" data-emp="' + esc(e.Title) + '" ' +
+         'inputmode="decimal" value="' + esc(val) + '" placeholder="0"> 日</div>';
+    h += '<div class="prev" id="p-' + esc(e.Title) + '"></div>';
+    h += '</div>';
+  });
+
+  h += '<div class="btnrow"><button id="save"' + (list.length ? '' : ' disabled') + '>この内容で登録する</button></div>';
+  h += '</div>';
+
+  h += '<div class="card"><h2>登録すると何が起きるか</h2>' +
+    '<p class="sub" style="margin:0">' +
+    '入力した残日数になるよう、有給の付与レコードを調整します。' +
+    '古い付与から使われる決まりなので、<b>残っている日数は新しい付与分から順に割り当てます</b>' +
+    '（失効日がいちばん後ろになり、従業員に有利です）。<br><br>' +
+    '移行日より後の付与は、これまでどおり入社日から自動で計算されます。' +
+    '何度でも入力し直せます。</p></div>';
+
+  h += '<div class="card"><h2>年5日の取得義務について</h2>' +
+    '<p class="sub" style="margin:0">' +
+    'この画面で登録するのは<b>残日数だけ</b>です。移行前に取得した日は記録されないため、' +
+    '年5日の取得義務の進捗は<b>移行日以降の取得だけ</b>で数えます。<br>' +
+    '移行前の取得も数えたい場合は、' +
+    '<a href="./import.html">過去の勤怠の入力</a>から実際の取得日を有給として登録してください' +
+    '（その場合、残日数はその分も引かれた後の値を入れてください）。</p></div>';
+
+  $('main').innerHTML = h;
+  bind();
+  list.forEach(function(e){ preview(e); });
+}
+
+/* 入力した残日数がどの付与に割り当てられるかを見せる */
+function preview(e){
+  var el = $('p-' + e.Title);
+  if (!el) return;
+  var raw = LI.bal[e.Title];
+  if (raw === '' || raw == null){ el.innerHTML = '<span style="color:var(--stone)">残日数を入れると内訳が出ます</span>'; return; }
+  var bal = +raw;
+  if (isNaN(bal) || bal < 0){ el.innerHTML = '<span style="color:var(--signal)">数字で入れてください</span>'; return; }
+
+  var r = ktInitGrantRows(e, bal, LI.date);
+  if (!r.rows.length){
+    el.innerHTML = '<span style="color:var(--signal)">' + esc(LI.date) +
+      ' 時点で有効な付与がありません（入社6か月後が初回付与です）。移行日をご確認ください。</span>';
+    return;
+  }
+  var h = r.rows.map(function(x){
+    return '<div class="ln"><span>' + esc(x.grantDate) + ' 付与ぶん' +
+           '<span style="color:var(--stone)">（失効 ' + esc(x.expireDate) + '）</span></span>' +
+           '<b>' + x.days + ' 日</b></div>';
+  }).join('');
+  if (r.overflow){
+    h += '<div style="color:var(--signal);margin-top:.3rem">' +
+         '有効な付与に収まらない ' + r.overflow + ' 日は登録できません' +
+         '（法律上の上限は ' + (bal - r.overflow) + ' 日です）。</div>';
+  }
+  el.innerHTML = h;
+}
+
+function bind(){
+  if ($('dt')) $('dt').onchange = function(){
+    LI.date = this.value || ktToday(); LI.result = null; load();
+  };
+  document.querySelectorAll('[data-emp]').forEach(function(el){
+    el.oninput = function(){
+      LI.bal[el.dataset.emp] = el.value;
+      var e = targets().filter(function(x){ return x.Title === el.dataset.emp; })[0];
+      if (e) preview(e);
+    };
+  });
+  if ($('save')) $('save').onclick = save;
+}
+
+function save(){
+  if (LI.busy) return;
+  var jobs = [], skipped = [];
+
+  targets().forEach(function(e){
+    var raw = LI.bal[e.Title];
+    if (raw === '' || raw == null) { skipped.push(e.EmpName || e.Title); return; }
+    var bal = +raw;
+    if (isNaN(bal) || bal < 0) { skipped.push(e.EmpName || e.Title); return; }
+
+    var r = ktInitGrantRows(e, bal, LI.date);
+    r.rows.forEach(function(x){
+      // 同じ社員・同じ付与日のレコードがあれば上書きする
+      var ex = LI.grants.filter(function(g){
+        return g.EmpNo === e.Title && g.GrantDate === x.grantDate;
+      })[0];
+      jobs.push({
+        id: ex ? ex._id : null,
+        fields: {
+          Title:     e.Title + '_' + x.grantDate,
+          EmpNo:     e.Title,
+          GrantDate: x.grantDate,
+          GrantDays: x.days,
+          Note:      '移行前の残日数から設定（' + LI.date + ' 時点 ' + bal + '日）'
+        }
+      });
+    });
+  });
+
+  if (!jobs.length){
+    LI.result = { cls:'warn', html:'登録する内容がありません。残日数を入れてください。' };
+    render(false); return;
+  }
+
+  LI.busy = true;
+  $('save').disabled = true;
+  var done = 0, errs = [];
+  function tick(){
+    done++;
+    var n = $('note');
+    if (n) n.innerHTML = '<div class="msg warn">登録しています… ' + done + ' / ' + jobs.length + ' 件</div>';
+  }
+
+  jobs.reduce(function(chain, j){
+    return chain.then(function(){
+      var p = j.id ? ktUpdate('grants', j.id, j.fields) : ktCreate('grants', j.fields);
+      return p.catch(function(e){ errs.push(j.fields.GrantDate + '：' + e.message); }).then(tick);
+    });
+  }, Promise.resolve()).then(function(){
+    LI.busy = false;
+    LI.result = errs.length
+      ? { cls:'bad', html:'<b>' + (jobs.length - errs.length) + '件を登録しました。' +
+          errs.length + '件は失敗しました。</b><br>' + esc(errs.slice(0, 3).join(' ／ ')) }
+      : { cls:'good', html:'<b>登録しました。</b>打刻画面の「有給」タブで残日数を確認できます。' +
+          (skipped.length ? '<br>未入力のため飛ばした社員：' + esc(skipped.join('、')) : '') };
+    load();
+  });
+}
+</script>
+</body>
+</html>

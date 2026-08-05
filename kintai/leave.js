@@ -275,16 +275,30 @@ function ktCompState(emp, days, requests, today) {
    ============================================================ */
 
 /* 移行日時点の残日数から、付与レコードに入れる日数を求める。
+
+   priorLeaves … 移行前に取得した有給 [{date, days}]（任意）
+     取得日を登録すると、その分が付与から差し引かれる。入力された残日数を
+     そのとおりにするため、差し引かれる分をあらかじめ付与に足しておく。
+
    戻り値 rows … [{grantDate, days, legalDays, expireDate}]（古い順）
-          overflow … 生きている付与に収まらなかった日数 */
-function ktInitGrantRows(emp, balance, migrateDate) {
+          overflow … 生きている付与に収まらなかった日数
+          addBack  … 過去の取得として足し戻した日数 */
+function ktInitGrantRows(emp, balance, migrateDate, priorLeaves) {
   var grants = ktBuildGrants(emp, [], migrateDate);      // 法定どおりの付与
   var alive = grants.filter(function (g) {
     return ktYmdDiffDays(migrateDate, g.expireDate) < 0;
   });
-  if (!alive.length) return { rows: [], overflow: +balance || 0, alive: 0 };
+  if (!alive.length) {
+    return { rows: [], overflow: +balance || 0, alive: 0, addBack: 0 };
+  }
 
-  var rest = Math.max(0, +balance || 0), rows = [];
+  // 生きている付与から引かれる取得だけを足し戻す（それ以前の取得は今の残に影響しない）
+  var first = alive[0].grantDate;
+  var addBack = (priorLeaves || []).filter(function (l) {
+    return ktYmdDiffDays(l.date, first) >= 0 && ktYmdDiffDays(l.date, migrateDate) < 0;
+  }).reduce(function (a, l) { return a + (+l.days || 0); }, 0);
+
+  var rest = Math.max(0, (+balance || 0) + addBack), rows = [];
   // 新しい付与から埋める
   for (var i = alive.length - 1; i >= 0; i--) {
     var g = alive[i];
@@ -297,5 +311,10 @@ function ktInitGrantRows(emp, balance, migrateDate) {
     });
     rest -= put;
   }
-  return { rows: rows, overflow: Math.round(rest * 10) / 10, alive: alive.length };
+  return {
+    rows: rows,
+    overflow: Math.round(rest * 10) / 10,
+    alive: alive.length,
+    addBack: Math.round(addBack * 10) / 10
+  };
 }

@@ -4,8 +4,25 @@
 
 var KT_GRAPH = 'https://graph.microsoft.com/v1.0/sites/' + KT_SITE_ID + '/lists/';
 
+/* トークンの取得元。
+   勤怠アプリ単体では auth.js の ktGetToken を使う。
+   既存アプリに打刻ウィジェットを埋め込むときは、そのアプリの getToken を
+   ここに差し込む。MSAL を二重に初期化しないための仕組み。 */
+var KT_TOKEN_PROVIDER = null;
+
+function ktApiToken() {
+  if (typeof KT_TOKEN_PROVIDER === 'function') {
+    return Promise.resolve(KT_TOKEN_PROVIDER()).then(function (t) {
+      // MSAL の応答（.accessToken）でも、文字列そのものでも受け付ける
+      return (t && t.accessToken) ? t.accessToken : t;
+    });
+  }
+  if (typeof ktGetToken === 'function') return ktGetToken();
+  return Promise.reject(new Error('トークンの取得方法が設定されていません'));
+}
+
 function ktApi(path, opts) {
-  return ktGetToken().then(function (token) {
+  return ktApiToken().then(function (token) {
     var o = opts || {};
     var headers = {
       Authorization: 'Bearer ' + token,

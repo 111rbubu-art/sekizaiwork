@@ -5,7 +5,7 @@
    localStorage の保留キュー（app.js）で扱う。
    ============================================================ */
 
-var KT_CACHE = 'kintai-v0.6.1';
+var KT_CACHE = 'kintai-v0.7.0';
 
 var KT_SHELL = [
   './',
@@ -22,6 +22,7 @@ var KT_SHELL = [
   './attendance.js',
   './leave.js',
   './app.js',
+  './widget.js',
   './manifest.json'
 ];
 

@@ -262,3 +262,40 @@ function ktCompState(emp, days, requests, today) {
     taken:        taken
   };
 }
+
+/* ============================================================
+   このシステムに切り替える前の有給（移行時の残日数）
+
+   入社日から自動計算するだけでは、過去に取得した分が反映されず
+   残日数が多く出てしまう。移行日時点の残日数を入力してもらい、
+   その値になるよう付与レコードを調整する。
+
+   古い付与から消化される（FIFO）ため、残っているのは新しい付与分。
+   したがって残日数は新しい付与から順に割り当てるのが実態に合う。
+   ============================================================ */
+
+/* 移行日時点の残日数から、付与レコードに入れる日数を求める。
+   戻り値 rows … [{grantDate, days, legalDays, expireDate}]（古い順）
+          overflow … 生きている付与に収まらなかった日数 */
+function ktInitGrantRows(emp, balance, migrateDate) {
+  var grants = ktBuildGrants(emp, [], migrateDate);      // 法定どおりの付与
+  var alive = grants.filter(function (g) {
+    return ktYmdDiffDays(migrateDate, g.expireDate) < 0;
+  });
+  if (!alive.length) return { rows: [], overflow: +balance || 0, alive: 0 };
+
+  var rest = Math.max(0, +balance || 0), rows = [];
+  // 新しい付与から埋める
+  for (var i = alive.length - 1; i >= 0; i--) {
+    var g = alive[i];
+    var put = Math.min(g.days, rest);
+    rows.unshift({
+      grantDate:  g.grantDate,
+      expireDate: g.expireDate,
+      legalDays:  g.days,
+      days:       Math.round(put * 10) / 10
+    });
+    rest -= put;
+  }
+  return { rows: rows, overflow: Math.round(rest * 10) / 10, alive: alive.length };
+}

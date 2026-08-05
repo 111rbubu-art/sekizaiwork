@@ -7,6 +7,7 @@ var KT = {
   punches: [], consents: [], grants: [], requests: [],
   consent: null,                                 // true=同意 / false=不同意 / null=未回答
   isAdmin: false, tab: 'punch',
+  showBreak: false, showFix: false,        // 休憩の打刻・打刻漏れ申請の開閉
   histYm: ktYm(ktToday()), adminYm: ktYm(ktToday()), adminDate: ktToday(),
   busy: false
 };
@@ -33,11 +34,14 @@ function ktBuzz(ms) {
 function ktEvalReview(p, prev) {
   var reasons = [];
 
-  // 手入力は管理者が意図して登録したもの。位置情報も端末時刻も無いのが当然なので
-  // 検査の対象にしない（「手入力」の印だけを出す）。
+  // 手入力は位置情報も端末時刻も無いのが当然なので、それを理由に警告しない。
+  // ただし本人が後から出した打刻漏れの申請は、管理者が確認するまで要確認にする。
   if (p._manual) {
-    p.ReviewReasons = [];
-    p.NeedsReview = false;
+    var isFix = p.LocationStatus === KT_FIX_STATUS;
+    p.ReviewReasons = isFix
+      ? ['打刻漏れの申請' + (p.AdminNote ? '（' + p.AdminNote + '）' : '')]
+      : [];
+    p.NeedsReview = isFix && p.Reviewed !== true;
     return p;
   }
 
@@ -127,6 +131,9 @@ function ktLoadMasters() {
    打刻ログは追記専用でサーバが時刻と本人を押すため、同意の記録先として最も確実。
    （社員マスタを本人が編集できるようにすると、入社日まで書き換えられてしまう） */
 var KT_CONSENT_TYPES = ['位置情報同意', '位置情報不同意'];
+
+/* 本人が後から申請した打刻の目印（LocationStatus に入れる） */
+var KT_FIX_STATUS = '打刻漏れ申請';
 
 /* 打刻は直近13か月分だけ読む（月次と有給の集計に十分）。
    同意の記録は期間に関わらず必要なので別途すべて読む。 */
@@ -358,17 +365,25 @@ function ktViewPunch() {
     h += '<button class="punch out" data-punch="退勤"' + (KT.busy ? ' disabled' : '') + '>退勤</button>';
   }
 
-  h += '<div class="subrow">';
-  h += '<button data-punch="休憩開始"' + (st === 'in' && !KT.busy ? '' : ' disabled') + '>休憩開始</button>';
-  h += '<button data-punch="休憩終了"' + (st === 'break' && !KT.busy ? '' : ' disabled') + '>休憩終了</button>';
-  h += '</div>';
-
-  if (st === 'break') {
-    h += '<div class="btnrow"><button class="btn ghost" data-punch="退勤" style="flex:1">休憩のまま退勤する</button></div>';
+  // 休憩の打刻はふだん使わないので、押したときだけ出す。
+  // ただし休憩中は必ず見えるようにする（終了を押せないと困るため）
+  var openBreak = KT.showBreak || st === 'break';
+  h += '<button class="more" id="tg-break">' +
+       (openBreak ? '休憩の打刻を隠す' : '休憩の打刻') + '</button>';
+  if (openBreak) {
+    h += '<div class="subrow">';
+    h += '<button data-punch="休憩開始"' + (st === 'in' && !KT.busy ? '' : ' disabled') + '>休憩開始</button>';
+    h += '<button data-punch="休憩終了"' + (st === 'break' && !KT.busy ? '' : ' disabled') + '>休憩終了</button>';
+    h += '</div>';
+    if (st === 'break') {
+      h += '<div class="btnrow"><button class="btn ghost" data-punch="退勤" style="flex:1">休憩のまま退勤する</button></div>';
+    }
   }
 
   var q = ktQueue();
   if (q.length) h += '<div class="alert cau">送信待ちの打刻が' + q.length + '件あります。電波が戻ると自動で送信されます。</div>';
+  h += '<button class="more" id="tg-fix">打刻を忘れたときは</button>';
+  if (KT.showFix) h += ktFixForm();
   h += '</div>';
 
   // 今日の打刻
@@ -432,6 +447,67 @@ function ktCompSummaryCard() {
   }
   h += '</div>';
   return h;
+}
+
+/* ── 打刻漏れの申請 ────────────────────────────────────────
+   本人が後から時刻を申請する。打刻ログに ManualTime 付きで1行追加し、
+   LocationStatus を「打刻漏れ申請」にして、管理者の確認待ちにする。
+   サーバが作成日時と本人を自動で記録するので、いつ誰が申請したかは残る。 */
+function ktFixForm() {
+  var h = '<div class="fixbox">';
+  h += '<p class="muted" style="margin-bottom:.4rem">' +
+       '押し忘れた打刻を後から申請できます。管理者が確認するまで「要確認」の印がつきます。</p>';
+  h += '<label class="f" for="fx-date">日付</label>' +
+       '<input type="date" id="fx-date" value="' + ktWorkDateNow() + '" max="' + ktToday() + '">';
+  h += '<label class="f" for="fx-type">種別</label><select id="fx-type">' +
+       '<option selected>退勤</option><option>出勤</option>' +
+       '<option>休憩開始</option><option>休憩終了</option></select>';
+  h += '<label class="f" for="fx-time">時刻</label>' +
+       '<input type="text" id="fx-time" inputmode="numeric" placeholder="17:30">';
+  h += '<label class="f" for="fx-why">理由</label>' +
+       '<input type="text" id="fx-why" placeholder="例：退勤の押し忘れ">';
+  h += '<div class="btnrow"><button class="btn" id="fx-send">申請する</button></div>';
+  h += '</div>';
+  return h;
+}
+
+function ktSubmitFix() {
+  if (!KT.emp) return;
+  var date = $('fx-date').value;
+  var type = $('fx-type').value;
+  var hm   = ktNormalizeHm($('fx-time').value);
+  var why  = ($('fx-why').value || '').trim();
+
+  if (!date) { ktToast('日付を選んでください', true); return; }
+  if (!hm)   { ktToast('時刻を 17:30 のように入れてください', true); return; }
+  if (ktYmdDiffDays(date, ktToday()) > 0) { ktToast('未来の日付は申請できません', true); return; }
+
+  var dup = ktMyPunches().filter(function (p) {
+    return p.WorkDate === date && p.PunchType === type && p.Voided !== true;
+  });
+  if (dup.length && !window.confirm(
+        ktYmdLabel(date) + ' の' + type + 'は既に ' + ktHm(dup[0]._time) +
+        ' で記録されています。それでも申請しますか？')) return;
+
+  $('fx-send').disabled = true;
+  ktCreate('punches', {
+    Title:          KT.emp.Title,
+    PunchType:      type,
+    WorkDate:       date,
+    ManualTime:     date + 'T' + hm,
+    ClientTime:     new Date().toISOString(),
+    LocationStatus: '打刻漏れ申請',
+    SiteName:       '',
+    AdminNote:      why,
+    UserAgent:      (navigator.userAgent || '').slice(0, 250)
+  }).then(function () {
+    ktToast(ktYmdLabel(date) + ' ' + hm + ' の' + type + 'を申請しました');
+    KT.showFix = false;
+    return ktReload();
+  }).catch(function (e) {
+    if ($('fx-send')) $('fx-send').disabled = false;
+    ktToast('申請に失敗しました：' + e.message, true);
+  });
 }
 
 function ktLeaveSummaryCard() {
@@ -532,17 +608,21 @@ function ktDayTable(days, showPlace) {
 
 function ktViewLeave() {
   if (!KT.emp) return '<div class="card muted">社員マスタに登録がありません。</div>';
-  if (!ktLeaveTarget(KT.emp)) {
-    return '<div class="card"><h2>有給休暇</h2><p>' + ktEsc(ktLeaveOffReason(KT.emp)) + '</p>' +
+  // 対象外の方にも画面は見せる（内容の確認ができるように）。申請だけを閉じる。
+  var target = ktLeaveTarget(KT.emp);
+  var head = '';
+  if (!target) {
+    head = '<div class="card"><h2>有給休暇</h2><div class="alert cau">' +
+      ktEsc(ktLeaveOffReason(KT.emp)) + '。以下は確認用の表示です。</div>' +
       (ktIsOfficer(KT.emp)
         ? '<p class="muted">役員は労働基準法上の労働者にあたらないため、年次有給休暇の付与対象ではありません。' +
-          '打刻と労働時間の記録はこれまでどおり残ります。</p>'
+          '打刻・労働時間・代休の記録はこれまでどおり有効です。</p>'
         : '<p class="muted">社員マスタの <code>HireDate</code> に入社日を ' +
           '<code>2019-04-01</code> の形式で登録すると、付与日数が自動で計算されます。</p>') +
       '</div>';
   }
   var st = ktLeaveState(KT.emp, ktMyGrants(), ktMyRequests(), ktToday());
-  var h = ktLeaveSummaryCard();
+  var h = head + (target ? ktLeaveSummaryCard() : '');
 
   // 付与の内訳
   h += '<div class="card"><h2>付与の内訳</h2><div class="tw"><table><thead><tr>' +
@@ -568,10 +648,11 @@ function ktViewLeave() {
   // 申請
   var cs0 = ktCompFor(KT.emp);
   var canComp = cs0 && cs0.balanceDays > 0;
+  if (!target && !canComp) return h;             // 申請できるものが何もない
   h += '<div class="card"><h2>休みを申請する</h2>';
   h += '<label class="f" for="lv-date">取得する日</label><input type="date" id="lv-date" value="' + ktToday() + '">';
   h += '<label class="f" for="lv-type">種別</label><select id="lv-type">' +
-       '<option>全日</option><option>午前半休</option><option>午後半休</option><option>時間単位</option>' +
+       (target ? '<option>全日</option><option>午前半休</option><option>午後半休</option><option>時間単位</option>' : '') +
        (canComp ? '<option>代休</option>' : '') + '</select>';
   h += '<div id="lv-hours-wrap" class="hide"><label class="f" for="lv-hours">時間数</label>' +
        '<input type="number" id="lv-hours" min="1" max="8" step="1" value="1"></div>';
@@ -728,12 +809,16 @@ function ktViewAdmin() {
     h += '<tr><td>' + ktEsc(ktYmdLabel(p.WorkDate)) + ' ' + ktHm(p._time) + '</td>';
     h += '<td>' + ktEsc((ktEmpOf(p.Title).EmpName) || p.Title) + '</td>';
     h += '<td>' + ktEsc(p.PunchType) +
-         (p._manual ? ' <span class="badge cau">手入力</span>' : '') + '</td>';
+         (p.LocationStatus === KT_FIX_STATUS ? ' <span class="badge no">申請</span>'
+          : p._manual ? ' <span class="badge cau">手入力</span>' : '') +
+         (p.ManualTime ? '<br><span class="muted">' + ktEsc(String(p.ManualTime).replace('T', ' ')) + '</span>' : '') +
+         '</td>';
     h += '<td>' + ktEsc(p.SiteName || '') +
          (p.Lat != null ? ' <a href="https://www.google.com/maps?q=' + p.Lat + ',' + p.Lon +
                           '" target="_blank" rel="noopener">地図</a>' : '') + '</td>';
     h += '<td style="white-space:normal">' + ktEsc((p.ReviewReasons || []).join('／')) + '</td>';
-    h += '<td><button class="btn ghost" data-ok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">確認済</button></td></tr>';
+    h += '<td><button class="btn ghost" data-ok="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">確認済</button> ' +
+         '<button class="btn ghost" data-void="' + p._id + '" style="padding:.2rem .5rem;font-size:.75rem">取消</button></td></tr>';
   });
   h += '</tbody></table></div></div>';
 
@@ -904,6 +989,14 @@ function ktBind() {
     };
   });
 
+  if ($('tg-break')) $('tg-break').onclick = function () {
+    KT.showBreak = !KT.showBreak; ktRender();
+  };
+  if ($('tg-fix')) $('tg-fix').onclick = function () {
+    KT.showFix = !KT.showFix; ktRender();
+  };
+  if ($('fx-send')) $('fx-send').onclick = ktSubmitFix;
+
   if ($('hist-prev')) $('hist-prev').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01', -1)); ktRender(); };
   if ($('hist-next')) $('hist-next').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01',  1)); ktRender(); };
   if ($('ad-prev'))   $('ad-prev').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01', -1)); ktRender(); };
@@ -932,6 +1025,14 @@ function ktBind() {
   });
   document.querySelectorAll('[data-reject]').forEach(function (b) {
     b.onclick = function () { ktDecide(b.dataset.reject, '却下'); };
+  });
+  document.querySelectorAll('[data-void]').forEach(function (b) {
+    b.onclick = function () {
+      if (!window.confirm('この打刻を取り消します。よろしいですか？')) return;
+      ktUpdate('punches', b.dataset.void, { Voided: true, VoidReason: '管理者が取消' })
+        .then(ktLoadPunches).then(ktRender)
+        .catch(function (e) { ktToast('取消に失敗しました：' + e.message, true); });
+    };
   });
   document.querySelectorAll('[data-ok]').forEach(function (b) {
     b.onclick = function () {

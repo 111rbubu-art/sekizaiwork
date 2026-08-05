@@ -33,7 +33,6 @@ function ktWidgetInit(opt) {
   var el = typeof opt.el === 'string' ? document.querySelector(opt.el) : opt.el;
   if (!el) { return; }
   KTW.root = el;
-  KTW.appUrl = opt.appUrl || './kintai/';
 
   // 既存アプリのトークンを使う（MSAL を二重に初期化しない）
   if (typeof opt.getToken === 'function') KT_TOKEN_PROVIDER = opt.getToken;
@@ -45,6 +44,7 @@ function ktWidgetInit(opt) {
 
 function ktwLoad() {
   var me = ktwUserName();
+  return ktwFlush().then(function () {
   return Promise.all([
     ktList('employees'),
     ktList('sites').catch(function () { return []; })
@@ -67,6 +67,24 @@ function ktwLoad() {
   }).catch(function (e) {
     ktwRender('<div class="ktw-line ktw-warn">勤怠の読み込みに失敗しました：' +
       ktEsc(e.message) + '</div>');
+  });
+  });
+}
+
+/* 保留していた打刻を送る。順番を崩さないよう1件ずつ送り、
+   失敗したらそこで止めて残りは次の機会に回す。 */
+function ktwFlush() {
+  var q = ktwQueue();
+  if (!q.length) return Promise.resolve(0);
+  var sent = 0;
+  return q.reduce(function (chain, f) {
+    return chain.then(function () {
+      return ktCreate('punches', f).then(function () { sent++; })
+        .catch(function () { throw new Error('stop'); });
+    });
+  }, Promise.resolve()).catch(function () {}).then(function () {
+    localStorage.setItem('kt_queue_v1', JSON.stringify(q.slice(sent)));
+    return sent;
   });
 }
 
@@ -129,7 +147,6 @@ function ktwDraw() {
             ? ' ktw-warn' : '') + '">' + ktEsc(last.SiteName) + '</span>';
     }
   }
-  h += '<a class="ktw-link" href="' + ktEsc(KTW.appUrl) + '" target="_blank" rel="noopener">勤怠を開く</a>';
   h += '</div>';
 
   h += '<div class="ktw-btns">';
@@ -155,7 +172,7 @@ function ktwDraw() {
   var q = ktwQueue();
   if (q.length) {
     h += '<div class="ktw-line ktw-warn">送信待ちの打刻が' + q.length +
-         '件あります。勤怠アプリを開くと送信されます。</div>';
+         '件あります。通信が戻ると自動で送信されます。</div>';
   }
   if (KTW.msg) {
     h += '<div class="ktw-line ' + (KTW.msg.err ? 'ktw-warn' : 'ktw-ok') + '">' +
@@ -215,7 +232,7 @@ function ktwPunch(type) {
     }).catch(function () {
       // 送信できなければ勤怠アプリと同じ保留キューに入れる
       ktwQueuePush(fields);
-      KTW.msg = { text: type + 'を保留しました（勤怠アプリを開くと送信されます）', err: true };
+      KTW.msg = { text: type + 'を保留しました（通信が戻ると自動で送信されます）', err: true };
     });
   }).then(function () {
     KTW.busy = false; ktwDraw();
@@ -250,7 +267,6 @@ function ktwStyle() {
     '.ktw-state{color:#6B7371;font-size:13px}',
     '.ktw-time{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px}',
     '.ktw-site{color:#2F5645;font-size:13px}',
-    '.ktw-link{margin-left:auto;font-size:12px;color:#2F5645;text-decoration:underline}',
     '.ktw-btns{display:flex;gap:8px;align-items:stretch}',
     '.ktw-main{flex:1;border:none;border-radius:7px;background:#2F5645;color:#fff;',
     '  font-size:19px;font-weight:700;letter-spacing:.25em;text-indent:.25em;',
@@ -264,7 +280,7 @@ function ktwStyle() {
     '@media (prefers-color-scheme:dark){',
     '  .ktw{color:#E4E9E6;background:#1C2120;border-color:#333B39}',
     '  .ktw-state,.ktw-log{color:#8B9390}',
-    '  .ktw-site,.ktw-link,.ktw-ok{color:#8FBFA7}',
+    '  .ktw-site,.ktw-ok{color:#8FBFA7}',
     '  .ktw-main{background:#6FA189;color:#0E1211}',
     '  .ktw-main.ktw-out{background:#D5806D;color:#0E1211}',
     '  .ktw-warn{color:#D5806D}}'

@@ -45,6 +45,13 @@ input.day{width:5.5rem;text-align:center;font-family:var(--mono);font-variant-nu
 .emp .nm{font-weight:700}
 .emp .meta{color:var(--stone);font-size:.82rem}
 .emp .in{display:flex;align-items:center;gap:.5rem;margin-top:.5rem;flex-wrap:wrap}
+.pri{margin-top:.3rem}
+.chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.4rem}
+.chip{display:inline-flex;align-items:center;gap:.3rem;background:var(--accent-soft);
+  color:var(--accent-txt);border-radius:14px;padding:.15rem .3rem .15rem .6rem;font-size:.8rem}
+.chip button{background:none;border:none;color:var(--accent-txt);font-size:.9rem;
+  line-height:1;padding:0 .25rem;cursor:pointer;font-weight:700}
+.chip button:hover{color:var(--signal)}
 .prev{background:var(--ground);border:1px solid var(--hair2);border-radius:5px;
   padding:.5rem .65rem;margin-top:.5rem;font-size:.83rem;color:var(--ink2)}
 .prev b{color:var(--ink)}
@@ -78,7 +85,13 @@ a{color:var(--accent-txt)}
 <script src="./attendance.js"></script>
 <script src="./leave.js"></script>
 <script>
-var LI = { emps: [], grants: [], date: ktToday(), bal: {}, busy: false, result: null };
+var LI = { emps: [], grants: [], requests: [], date: ktToday(),
+           bal: {}, prior: {}, busy: false, result: null };
+
+/* 移行前に取得した有給の目印 */
+var PRIOR_MARK = '移行前の取得';
+var PRIOR_TYPES = ['全日', '午前半休', '午後半休'];
+function priorDays(type){ return type === '全日' ? 1 : 0.5; }
 
 function $(id){ return document.getElementById(id); }
 function esc(s){ return ktEsc(s); }
@@ -112,22 +125,46 @@ function start(){
 
 function load(){
   render(true);
-  ktList('grants').then(function(rows){
-    LI.grants = rows;
+  Promise.all([
+    ktList('grants'),
+    ktList('requests').catch(function(){ return []; })
+  ]).then(function(r){
+    LI.grants = r[0];
+    LI.requests = r[1];
+
+    // 登録済みの「移行前の取得」を読み込む
+    LI.prior = {};
+    LI.requests.filter(function(x){
+      return x.Reason === PRIOR_MARK && x.Status === '承認';
+    }).forEach(function(x){
+      (LI.prior[x.EmpNo] = LI.prior[x.EmpNo] || []).push({
+        _id: x._id, date: x.LeaveDate,
+        type: x.LeaveType || '全日',
+        days: +x.Days || priorDays(x.LeaveType || '全日')
+      });
+    });
+    Object.keys(LI.prior).forEach(function(k){
+      LI.prior[k].sort(function(a, b){ return ktYmdDiffDays(a.date, b.date); });
+    });
+
     // 既に登録済みなら、その内容から残日数を復元して初期表示にする
     targets().forEach(function(e){
       if (LI.bal[e.Title] != null) return;
       var mine = LI.grants.filter(function(g){ return g.EmpNo === e.Title; });
       if (!mine.length) return;
-      var st = ktLeaveState(e, mine, [], LI.date);
+      var st = ktLeaveState(e, mine, LI.requests.filter(function(x){
+        return x.EmpNo === e.Title;
+      }), LI.date);
       LI.bal[e.Title] = String(st.balanceDays);
     });
     render(false);
   }).catch(function(e){
-    LI.grants = []; render(false);
-    LI.result = { cls:'bad', html:'付与の読み込みに失敗しました：' + esc(e.message) };
+    LI.grants = []; LI.requests = []; render(false);
+    LI.result = { cls:'bad', html:'読み込みに失敗しました：' + esc(e.message) };
   });
 }
+
+function priorOf(no){ return LI.prior[no] || (LI.prior[no] = []); }
 
 /* 有給の対象になる社員だけを扱う */
 function targets(){
@@ -171,6 +208,28 @@ function render(loading){
     h += '<div class="in"><label class="f" style="margin:0" for="b-' + esc(e.Title) + '">移行日の残日数</label>' +
          '<input class="day" id="b-' + esc(e.Title) + '" data-emp="' + esc(e.Title) + '" ' +
          'inputmode="decimal" value="' + esc(val) + '" placeholder="0"> 日</div>';
+
+    // 移行前に取得した日（任意）
+    var pl = priorOf(e.Title);
+    h += '<div class="pri">';
+    h += '<div class="f" style="margin:.6rem 0 .2rem">移行前に取得した日（任意）</div>';
+    h += '<div class="chips">' + (pl.length
+      ? pl.map(function(x, i){
+          // 年をまたぐので年つきで出す
+          return '<span class="chip">' + esc(x.date.replace(/-/g, '/')) +
+                 '（' + KT_WD[ktYmdWeekday(x.date)] + '）' +
+                 (x.type !== '全日' ? ' ' + esc(x.type) : '') +
+                 '<button type="button" data-rm="' + esc(e.Title) + '|' + i + '">×</button></span>';
+        }).join('')
+      : '<span style="color:var(--stone);font-size:.83rem">まだありません</span>') + '</div>';
+    h += '<div class="in">' +
+      '<input type="date" class="pdate" data-pd="' + esc(e.Title) + '" max="' + esc(LI.date) + '" style="width:9.5rem">' +
+      '<select class="ptype" data-pt="' + esc(e.Title) + '" style="width:7rem">' +
+        PRIOR_TYPES.map(function(t){ return '<option>' + t + '</option>'; }).join('') + '</select>' +
+      '<button class="ghost" data-padd="' + esc(e.Title) + '" style="padding:.35rem .8rem;font-size:.85rem">追加</button>' +
+      '</div>';
+    h += '</div>';
+
     h += '<div class="prev" id="p-' + esc(e.Title) + '"></div>';
     h += '</div>';
   });
@@ -186,13 +245,13 @@ function render(loading){
     '移行日より後の付与は、これまでどおり入社日から自動で計算されます。' +
     '何度でも入力し直せます。</p></div>';
 
-  h += '<div class="card"><h2>年5日の取得義務について</h2>' +
+  h += '<div class="card"><h2>移行前に取得した日について</h2>' +
     '<p class="sub" style="margin:0">' +
-    'この画面で登録するのは<b>残日数だけ</b>です。移行前に取得した日は記録されないため、' +
-    '年5日の取得義務の進捗は<b>移行日以降の取得だけ</b>で数えます。<br>' +
-    '移行前の取得も数えたい場合は、' +
-    '<a href="./import.html">過去の勤怠の入力</a>から実際の取得日を有給として登録してください' +
-    '（その場合、残日数はその分も引かれた後の値を入れてください）。</p></div>';
+    '入力は<b>任意</b>です。入れると<b>年5日の取得義務</b>の進捗に数えられ、履歴にも有給として出ます。<br><br>' +
+    '<b>残日数は取得日を差し引いた後の値</b>（いまの残り）を入れてください。' +
+    '取得日を足しても残日数は変わりません。差し引かれる分はあらかじめ付与に足しておくためです。<br><br>' +
+    '入れない場合は残日数だけが正しくなり、年5日の義務は移行日以降の取得だけで数えます。' +
+    '実態より多めに出ますが、多く取らせる分に法令違反はありません。</p></div>';
 
   $('main').innerHTML = h;
   bind();
@@ -208,7 +267,7 @@ function preview(e){
   var bal = +raw;
   if (isNaN(bal) || bal < 0){ el.innerHTML = '<span style="color:var(--signal)">数字で入れてください</span>'; return; }
 
-  var r = ktInitGrantRows(e, bal, LI.date);
+  var r = ktInitGrantRows(e, bal, LI.date, priorOf(e.Title));
   if (!r.rows.length){
     el.innerHTML = '<span style="color:var(--signal)">' + esc(LI.date) +
       ' 時点で有効な付与がありません（入社6か月後が初回付与です）。移行日をご確認ください。</span>';
@@ -219,10 +278,15 @@ function preview(e){
            '<span style="color:var(--stone)">（失効 ' + esc(x.expireDate) + '）</span></span>' +
            '<b>' + x.days + ' 日</b></div>';
   }).join('');
+  if (r.addBack){
+    h += '<div class="ln" style="border-top:1px solid var(--hair2);margin-top:.3rem;padding-top:.3rem">' +
+         '<span>移行前に取得した分（付与に足し戻し）</span><b>＋' + r.addBack + ' 日</b></div>' +
+         '<div class="ln"><span>登録後の残日数</span><b>' + bal + ' 日</b></div>';
+  }
   if (r.overflow){
     h += '<div style="color:var(--signal);margin-top:.3rem">' +
-         '有効な付与に収まらない ' + r.overflow + ' 日は登録できません' +
-         '（法律上の上限は ' + (bal - r.overflow) + ' 日です）。</div>';
+         '有効な付与に収まらない ' + r.overflow + ' 日があります' +
+         '（残日数と取得日の合計が法律上の上限を超えています）。</div>';
   }
   el.innerHTML = h;
 }
@@ -238,12 +302,60 @@ function bind(){
       if (e) preview(e);
     };
   });
+
+  document.querySelectorAll('[data-padd]').forEach(function(b){
+    b.onclick = function(){
+      var no = b.dataset.padd;
+      var d  = document.querySelector('[data-pd="' + no + '"]').value;
+      var tp = document.querySelector('[data-pt="' + no + '"]').value;
+      if (!d){ flash(no, '日付を選んでください'); return; }
+      if (ktYmdDiffDays(d, LI.date) >= 0){ flash(no, '移行日より前の日を選んでください'); return; }
+      var list = priorOf(no);
+      if (list.some(function(x){ return x.date === d; })){ flash(no, 'その日は既に入っています'); return; }
+      list.push({ date: d, type: tp, days: priorDays(tp) });
+      list.sort(function(a, c){ return ktYmdDiffDays(a.date, c.date); });
+      render(false);
+    };
+  });
+
+  document.querySelectorAll('[data-rm]').forEach(function(b){
+    b.onclick = function(){
+      var p = b.dataset.rm.split('|');
+      var list = priorOf(p[0]);
+      var gone = list.splice(+p[1], 1)[0];
+      if (gone && gone._id) (LI.removed = LI.removed || []).push(gone._id);
+      render(false);
+    };
+  });
   if ($('save')) $('save').onclick = save;
+}
+
+function flash(no, msg){
+  var el = $('p-' + no);
+  if (el) el.innerHTML = '<span style="color:var(--signal)">' + esc(msg) + '</span>';
 }
 
 function save(){
   if (LI.busy) return;
-  var jobs = [], skipped = [];
+  var jobs = [], skipped = [], leaveJobs = [];
+
+  // 追加された取得日を登録し、消された分は削除する
+  targets().forEach(function(e){
+    priorOf(e.Title).forEach(function(x){
+      if (x._id) return;                       // 既に登録済み
+      leaveJobs.push({ create: {
+        Title:     e.Title + '_' + x.date,
+        EmpNo:     e.Title,
+        LeaveDate: x.date,
+        LeaveType: x.type,
+        Days:      x.days,
+        Status:    '承認',
+        Reason:    PRIOR_MARK,
+        ApprovedDate: ktToday()
+      }});
+    });
+  });
+  (LI.removed || []).forEach(function(id){ leaveJobs.push({ del: id }); });
 
   targets().forEach(function(e){
     var raw = LI.bal[e.Title];
@@ -251,7 +363,7 @@ function save(){
     var bal = +raw;
     if (isNaN(bal) || bal < 0) { skipped.push(e.EmpName || e.Title); return; }
 
-    var r = ktInitGrantRows(e, bal, LI.date);
+    var r = ktInitGrantRows(e, bal, LI.date, priorOf(e.Title));
     r.rows.forEach(function(x){
       // 同じ社員・同じ付与日のレコードがあれば上書きする
       var ex = LI.grants.filter(function(g){
@@ -270,29 +382,43 @@ function save(){
     });
   });
 
-  if (!jobs.length){
+  if (!jobs.length && !leaveJobs.length){
     LI.result = { cls:'warn', html:'登録する内容がありません。残日数を入れてください。' };
     render(false); return;
   }
 
   LI.busy = true;
+  LI.removed = [];
+  LI.result = null;                            // 前回の結果は消してから始める
   $('save').disabled = true;
+  var n0 = $('note');
+  if (n0) n0.innerHTML = '<div class="msg warn">登録しています…</div>';
   var done = 0, errs = [];
   function tick(){
     done++;
     var n = $('note');
-    if (n) n.innerHTML = '<div class="msg warn">登録しています… ' + done + ' / ' + jobs.length + ' 件</div>';
+    if (n) n.innerHTML = '<div class="msg warn">登録しています… ' + done + ' / ' + total + ' 件</div>';
   }
 
-  jobs.reduce(function(chain, j){
+  var total = jobs.length + leaveJobs.length;
+  leaveJobs.reduce(function(chain, j){
     return chain.then(function(){
-      var p = j.id ? ktUpdate('grants', j.id, j.fields) : ktCreate('grants', j.fields);
-      return p.catch(function(e){ errs.push(j.fields.GrantDate + '：' + e.message); }).then(tick);
+      var p = j.del ? ktDelete('requests', j.del) : ktCreate('requests', j.create);
+      return p.catch(function(e){
+        errs.push((j.del ? '取得日の削除' : j.create.LeaveDate) + '：' + e.message);
+      }).then(tick);
     });
   }, Promise.resolve()).then(function(){
+    return jobs.reduce(function(chain, j){
+      return chain.then(function(){
+        var p = j.id ? ktUpdate('grants', j.id, j.fields) : ktCreate('grants', j.fields);
+        return p.catch(function(e){ errs.push(j.fields.GrantDate + '：' + e.message); }).then(tick);
+      });
+    }, Promise.resolve());
+  }).then(function(){
     LI.busy = false;
     LI.result = errs.length
-      ? { cls:'bad', html:'<b>' + (jobs.length - errs.length) + '件を登録しました。' +
+      ? { cls:'bad', html:'<b>' + (total - errs.length) + '件を登録しました。' +
           errs.length + '件は失敗しました。</b><br>' + esc(errs.slice(0, 3).join(' ／ ')) }
       : { cls:'good', html:'<b>登録しました。</b>打刻画面の「有給」タブで残日数を確認できます。' +
           (skipped.length ? '<br>未入力のため飛ばした社員：' + esc(skipped.join('、')) : '') };

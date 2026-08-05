@@ -21,15 +21,21 @@ function ktApi(path, opts) {
       headers: headers,
       body:    o.body ? JSON.stringify(o.body) : undefined
     }).then(function (res) {
-      if (res.status === 204) return null;
-      return res.json().then(function (json) {
+      // 本文を持たない応答（DELETE の 204 など）をそのまま成功として返す。
+      // 本文を JSON として読もうとすると、空のときに失敗扱いになってしまう。
+      if (res.status === 204 || res.status === 205) return null;
+
+      return res.text().then(function (txt) {
+        var json = null;
+        if (txt) { try { json = JSON.parse(txt); } catch (e) { /* JSON以外の本文 */ } }
         if (!res.ok) {
-          var msg = (json && json.error && json.error.message) || ('HTTP ' + res.status);
+          var msg = (json && json.error && json.error.message) ||
+                    (txt || '').slice(0, 200) || ('HTTP ' + res.status);
           var err = new Error(msg);
           err.status = res.status;
           throw err;
         }
-        return json;
+        return json;                       // 本文が空なら null（削除の成功など）
       });
     });
   });

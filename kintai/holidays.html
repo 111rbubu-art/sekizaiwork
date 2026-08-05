@@ -372,18 +372,23 @@ function addJp(){
 function save(items, after){
   if (HL.busy) return;
   HL.busy = true;
-  note('warn', '登録しています… 0 / ' + items.length);
-  var done = 0, failed = 0;
+  ['add','jp-add','del-year'].forEach(function(id){ if ($(id)) $(id).disabled = true; });
+  note('warn', '登録しています… 0 / ' + items.length + ' 件');
+  var done = 0, errMsgs = [];
   items.reduce(function(chain, f){
     return chain.then(function(){
-      return ktCreate('holidays', f).catch(function(){ failed++; })
-        .then(function(){ done++; note('warn', '登録しています… ' + done + ' / ' + items.length); });
+      return ktCreate('holidays', f)
+        .catch(function(e){ errMsgs.push(f.HolidayDate + '：' + e.message); })
+        .then(function(){ done++; note('warn', '登録しています… ' + done + ' / ' + items.length + ' 件'); });
     });
   }, Promise.resolve()).then(function(){
     HL.busy = false;
     if (after) after();
-    HL.result = failed
-      ? { cls:'warn', html:(items.length - failed) + '日を登録しました（' + failed + '日は失敗）。' }
+    HL.result = errMsgs.length
+      ? { cls:'bad', html:'<b>' + (items.length - errMsgs.length) + '日を登録しました。' +
+          errMsgs.length + '日は登録できませんでした。</b><br>' +
+          esc(errMsgs.slice(0, 3).join(' ／ ')) +
+          (errMsgs.length > 3 ? ' ほか' + (errMsgs.length - 3) + '件' : '') }
       : { cls:'good', html:items.length + '日を登録しました。' };
     load();
   });
@@ -393,27 +398,50 @@ function delOne(id){
   var r = HL.list.filter(function(x){ return x._id === id; })[0];
   if (!r) return;
   if (!window.confirm(r.HolidayDate + '（' + esc(r.Title || '') + '）を削除します。よろしいですか？')) return;
+  var btn = document.querySelector('[data-del="' + id + '"]');
+  if (btn) { btn.disabled = true; btn.textContent = '削除中'; }
   ktDelete('holidays', id).then(function(){
     HL.result = { cls:'good', html:r.HolidayDate + ' を削除しました。' };
     load();
   }).catch(function(e){
-    HL.result = { cls:'bad', html:'削除に失敗しました：' + esc(e.message) };
-    render(false);
+    HL.result = { cls:'bad', html:r.HolidayDate + ' を削除できませんでした：' + esc(e.message) };
+    load();
   });
 }
 
 function delYear(){
+  if (HL.busy) return;
   var rows = HL.list.filter(function(r){ return r.HolidayDate.slice(0, 4) === String(HL.year); });
   if (!rows.length) return;
   if (!window.confirm(HL.year + '年の登録 ' + rows.length + '件をすべて削除します。よろしいですか？')) return;
-  var failed = 0;
-  rows.reduce(function(chain, r){
-    return chain.then(function(){
-      return ktDelete('holidays', r._id).catch(function(){ failed++; });
-    });
-  }, Promise.resolve()).then(function(){
-    HL.result = failed
-      ? { cls:'warn', html:(rows.length - failed) + '件を削除しました（' + failed + '件は失敗）。' }
+
+  HL.busy = true;
+  var btn = $('del-year');
+  if (btn) { btn.disabled = true; btn.textContent = '削除しています…'; }
+
+  var done = 0, errMsgs = [];
+  function tick(){
+    done++;
+    note('warn', '削除しています… ' + done + ' / ' + rows.length + ' 件');
+  }
+
+  // 3件ずつ並行で送る。1件ずつだと件数が多いときに待ち時間が長くなる。
+  var idx = 0;
+  function worker(){
+    if (idx >= rows.length) return Promise.resolve();
+    var r = rows[idx++];
+    return ktDelete('holidays', r._id)
+      .catch(function(e){ errMsgs.push(r.HolidayDate + '：' + e.message); })
+      .then(function(){ tick(); return worker(); });
+  }
+
+  Promise.all([worker(), worker(), worker()]).then(function(){
+    HL.busy = false;
+    HL.result = errMsgs.length
+      ? { cls:'bad', html:'<b>' + (rows.length - errMsgs.length) + '件を削除しました。' +
+          errMsgs.length + '件は削除できませんでした。</b><br>' +
+          esc(errMsgs.slice(0, 3).join(' ／ ')) +
+          (errMsgs.length > 3 ? ' ほか' + (errMsgs.length - 3) + '件' : '') }
       : { cls:'good', html:rows.length + '件を削除しました。' };
     load();
   });

@@ -5889,7 +5889,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.359';
+var APP_VERSION = 'v1.9.360';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -17525,15 +17525,66 @@ function _gaichuTlBuild(reports, comments, ftimes){
   tl.sort(function(a,b){ if(a.ts===b.ts) return (a.t===b.t)?0:(a.t==='p'?-1:1); return a.ts-b.ts; });
   return tl;
 }
-// SP保存済みの記録（端末内）。実際の重複はSPの一覧照合で最終判定する
-function _gaichuSavedMap(){ try{ return JSON.parse(localStorage.getItem('gaichuSpSaved')||'{}'); }catch(e){ return {}; } }
-function _gaichuIsSaved(id,p){ return !!_gaichuSavedMap()[id+'|'+p]; }
+// SP保存済みの判定は SharePoint の保存先フォルダーを直接見て行う。
+// 端末に記録しないので、誰が保存しても全員の画面で同じ表示になる。
+var _gaichuSpSaved = {};     // 区分ID → { ポータル上のパス: true }
+var _gaichuSpSavedBusy = {}; // 取得中フラグ（同じ案件を何度も取りに行かない）
+function _gaichuIsSaved(id,p){ return !!(_gaichuSpSaved[id] && _gaichuSpSaved[id][p]); }
 function _gaichuMarkSavedPaths(id,paths){
-  var m=_gaichuSavedMap(); paths.forEach(function(p){ m[id+'|'+p]=Date.now(); });
-  try{ localStorage.setItem('gaichuSpSaved', JSON.stringify(m)); }catch(e){}
+  if(!_gaichuSpSaved[id]) _gaichuSpSaved[id]={};
+  paths.forEach(function(p){ _gaichuSpSaved[id][p]=true; });
+}
+// SPの保存先フォルダーを読み、どの写真が保存済みかを判定して画面に反映する
+function _gaichuLoadSavedFromSP(ctx, files){
+  var id=ctx.id;
+  if(!files || !files.length || _gaichuSpSavedBusy[id]) return;
+  _gaichuSpSavedBusy[id]=1;
+  var dests=_gaichuSaveDests(ctx.type);
+  var subs={}; dests.forEach(function(d){ subs[d.sub]=1; });
+  _gaichuTlBase({scope:ctx.scope, id:id, type:ctx.type}).then(function(base){
+    var root=String(base).replace(/\/+$/,'');
+    return Promise.all(Object.keys(subs).map(function(sub){
+      return _gaichuSpChildNames(root+'/'+sub)
+        .then(function(names){ return {sub:sub, names:names}; })
+        .catch(function(){ return {sub:sub, names:{}}; });
+    }));
+  }).then(function(res){
+    var map={};
+    files.forEach(function(p){
+      // 保存名は種別（完成/現場/参考）で変わるため、どれか1つでも実在すれば「保存済」
+      var hit=res.some(function(r){
+        return dests.some(function(d){ return d.sub===r.sub && r.names[_gaichuSpName(p, d.tag)]; });
+      });
+      if(hit) map[p]=true;
+    });
+    _gaichuSpSaved[id]=map;
+    _gaichuRefreshSavedMarks(id);
+  }).catch(function(){}).then(function(){ delete _gaichuSpSavedBusy[id]; });
+}
+// 取得結果を画面に反映（カード全体を作り直さず、該当部分だけ更新）
+function _gaichuRefreshSavedMarks(id){
+  document.querySelectorAll('.gp-msg[data-gkey]').forEach(function(msg){
+    var gkey=msg.getAttribute('data-gkey'); var g=_gaichuTlGroups[gkey];
+    if(!g || g.id!==id) return;
+    var um=!!_gaichuTlUnmarked[gkey];
+    msg.querySelectorAll('.gp-th').forEach(function(th){
+      var p=th.getAttribute('data-path');
+      var mark=th.parentNode.querySelector('.gp-svmark');
+      var on=!um && _gaichuIsSaved(id,p);
+      if(on && !mark) th.insertAdjacentHTML('afterend', _gaichuTlMarkHtml());
+      if(!on && mark) mark.remove();
+    });
+    var row=msg.querySelector('.gp-saverow'); if(!row) return;
+    var unsaved=g.files.filter(function(p){ return !_gaichuIsSaved(id,p); });
+    row.innerHTML = (um||unsaved.length)
+      ? _gaichuTlSaveBtnHtml(gkey, um?g.files.length:unsaved.length)
+      : _gaichuTlSavedHtml(gkey);
+  });
 }
 function _gaichuTlHtml(ctx, reports, comments, ftimes){
   ctx.repBase=_gaichuRepBase(ctx.id); // これより後に届いた外注先の投稿に「報告」ラベルを付ける
+  // SPを見て保存済みを判定（結果が返り次第 ✅ を反映。誰が保存しても全員に見える）
+  setTimeout(function(){ _gaichuLoadSavedFromSP(ctx, reports); }, 0);
   var tl=_gaichuTlBuild(reports, comments, ftimes);
   var total=tl.length, showFrom=total>2?total-2:0;
   var more=total>2?'<button onclick="_gaichuChatMore(this)" style="align-self:center;font-size:11px;font-weight:700;color:#33507e;background:#eaf0f8;border:1px solid #c9d6ea;border-radius:20px;padding:4px 13px;cursor:pointer;font-family:inherit">▼ これまでのやり取りを表示（残り'+(total-2)+'件）</button>':'';
@@ -17575,7 +17626,7 @@ function _gaichuTlPhotoHtml(ctx, it, old){
       ((!um && _gaichuIsSaved(ctx.id,p))?_gaichuTlMarkHtml():'')+
     '</div>';
   }).join('');
-  return '<div class="gp-msg'+(old?' gp-old':'')+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:92%;align-self:flex-start;align-items:flex-start">'+
+  return '<div class="gp-msg'+(old?' gp-old':'')+'" data-gkey="'+gkey+'" style="display:'+(old?'none':'flex')+';flex-direction:column;max-width:92%;align-self:flex-start;align-items:flex-start">'+
     '<div style="font-size:9.5px;color:#6b7280;margin:0 3px 2px">外注先　'+_gaichuEsc(_gaichuTlFmt(it.ts))+'　<b style="color:#3a6ea5">写真'+it.files.length+'枚</b>'+_gaichuRepTagHtml(ctx,it.ts)+'</div>'+
     '<div style="padding:7px;border-radius:13px;border-top-left-radius:4px;background:#f1f3f6;border:1px solid #e4e7ec">'+
       '<div style="display:flex;flex-wrap:wrap;gap:6px">'+thumbs+'</div>'+saveRow+

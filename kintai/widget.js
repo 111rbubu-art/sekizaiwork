@@ -327,14 +327,10 @@ function ktwPunch(type) {
   });
   if (recent.length) { KTW.msg = { text: type + 'は既に記録されています' }; ktwDraw(); return; }
 
-  // 押し間違いで多いのは、出勤してすぐの退勤。経過時間を見せて一度だけ確かめる。
-  if (type === '退勤' && KT_PUNCH.confirmOutMin > 0) {
-    var ins = KTW.punches.filter(function (p) { return p.PunchType === '出勤'; });
-    if (ins.length) {
-      var el = Math.round((Date.now() - new Date(ins[0]._time)) / 60000);
-      if (el >= 0 && el < KT_PUNCH.confirmOutMin &&
-          !window.confirm('出勤からまだ' + el + '分です。退勤にしますか？')) return;
-    }
+  // 出勤してすぐの退勤・定時前の退勤は押し間違いが多いので、一度だけ確かめる
+  if (type === '退勤') {
+    var why = ktEarlyOutReason(KTW.punches);
+    if (why && !window.confirm(why + '\n退勤にしますか？')) return;
   }
 
   KTW.busy = true;

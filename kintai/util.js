@@ -146,3 +146,58 @@ function ktNormalizeHm(s) {
   if (h > 47 || mi > 59) return null;
   return ktPad(h) + ':' + ktPad(mi);
 }
+
+/* ============================================================
+   退勤の押し間違い対策
+
+   出勤してすぐの退勤と、定時より前の退勤は押し間違いが多いので、
+   一度だけ確かめる。確かめたい理由の文言を返す（無ければ空文字）。
+   打刻の画面（app.js）と打刻ウィジェット（widget.js）の両方から使う。
+   ============================================================ */
+
+/* 定時（KT_PUNCH.closingTime）を0時からの分数にする。未設定なら null */
+function ktClosingMinutes() {
+  var hm = ktNormalizeHm(KT_PUNCH.closingTime);
+  if (!hm) return null;
+  var m = hm.split(':');
+  return (+m[0]) * 60 + (+m[1]);
+}
+
+/* punches … その勤務日の有効な打刻（時刻順）。now … 判定時刻（省略時は現在） */
+function ktEarlyOutReason(punches, now) {
+  var reasons = [];
+  now = now || new Date();
+
+  var ins = (punches || []).filter(function (p) { return p.PunchType === '出勤'; });
+  var elapsed = ins.length ? Math.round((now - new Date(ins[0]._time)) / 60000) : null;
+
+  // ① 出勤してすぐの退勤
+  if (elapsed != null && KT_PUNCH.confirmOutMin > 0 &&
+      elapsed >= 0 && elapsed < KT_PUNCH.confirmOutMin) {
+    reasons.push('出勤からまだ' + elapsed + '分です。');
+  }
+
+  // ② 定時より前の退勤
+  var close = ktClosingMinutes();
+  if (close != null) {
+    var jst = ktJst(now);
+    var cur = jst.getUTCHours() * 60 + jst.getUTCMinutes();
+    // 日付をまたいだ勤務（早朝の退勤）は、定時より前でも当たり前なので確かめない
+    var overnight = cur < KT_PUNCH.dayStartHour * 60;
+    // 実働8時間＋休憩1時間を過ぎていれば、定時前でも十分働いているので確かめない
+    var worked = elapsed != null && elapsed >= KT_WORK.dailyLegalMin + 60;
+    if (cur < close && !overnight && !worked) {
+      reasons.push('定時（' + ktNormalizeHm(KT_PUNCH.closingTime) + '）まであと' +
+                   ktMinutesText(close - cur) + 'です。');
+    }
+  }
+  return reasons.join('\n');
+}
+
+/* 90 → 「1時間30分」、45 → 「45分」 */
+function ktMinutesText(min) {
+  var h = Math.floor(min / 60), m = min % 60;
+  if (h && m) return h + '時間' + m + '分';
+  if (h) return h + '時間';
+  return m + '分';
+}

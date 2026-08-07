@@ -612,7 +612,7 @@ body.force-sp #panel-resizer { display: none !important; }
         <div class="menu-search-sticky">
           <div style="display:flex;gap:8px;align-items:center">
             <div style="flex:1;position:relative">
-              <input id="menu-search" type="text" placeholder="🔍 顧客名・電話番号で検索..."
+              <input id="menu-search" type="text" placeholder="🔍 顧客名・〇〇家墓・電話番号で検索..."
                 oninput="menuSearchInput(this);document.getElementById('menu-search-clear').style.display=this.value?'flex':'none'"
                 style="width:100%;padding:12px 36px 12px 16px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;"
                 onfocus="this.style.borderColor='rgba(255,255,255,0.5)'"
@@ -931,6 +931,39 @@ function toggleTantoFilter() {
   loadMenuNauchi();
 }
 
+// 「〇〇家墓」での検索。内部名がリストごとに違う
+//   工事関連 / 顧客リスト … HakaName
+//   納骨リスト           … _x304a__x5893__x306e__x540d__x7f（お墓の名義）
+// 「庄司」だけ入っている場合と「庄司家」まで入っている場合があるため、
+// 「庄司家」と入力されたときは家を補った形でも照合する。
+function _msHakaHit(d, kind, ql) {
+  if (!ql) return false;
+  var v = String((kind === 'noukotsu')
+    ? (d['_x304a__x5893__x306e__x540d__x7f'] || '')
+    : (d['HakaName'] || '')).replace(/\s/g, '');
+  if (!v) return false;
+  if (v.indexOf(ql) >= 0) return true;
+  if (ql.indexOf('家') > 0 && v.indexOf('家') < 0) return (v + '家墓').indexOf(ql) >= 0;
+  return false;
+}
+// 表示用の墓名。「庄司」→「庄司家墓」、「庄司家」→「庄司家墓」
+function _msHakaLabel(d, kind) {
+  var v = String((kind === 'noukotsu')
+    ? (d['_x304a__x5893__x306e__x540d__x7f'] || '')
+    : (d['HakaName'] || '')).trim();
+  if (!v) return '';
+  if (/墓$/.test(v)) return v;
+  return /家$/.test(v) ? (v + '墓') : (v + '家墓');
+}
+// 顧客名ではなく墓名で当たったときは、どこが当たったか分かるよう副見出しに墓名を出す
+function _msHakaSub(d, kind, ql, fallback) {
+  var nm = String((kind === 'noukotsu') ? (d['_x9867__x5ba2__x540d_'] || d['Title'] || '')
+         : (kind === 'kouji')           ? (d['Customers'] || d['Title'] || '')
+         :                                (d['CusName'] || '')).replace(/\s/g, '');
+  if (ql && nm.indexOf(ql) < 0 && _msHakaHit(d, kind, ql)) return '⛰ ' + _msHakaLabel(d, kind);
+  return fallback;
+}
+
 function menuSearchId(val) {
   // ID検索欄：入力と同時に名前検索欄をクリア
   var q = (val || '').trim();
@@ -1175,14 +1208,14 @@ function _menuSearchRenderInCard(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   });
   // 工事フィルター
   var koujiResults = cacheKouji.filter(function(d) {
     var name  = (d['Customers'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   });
 
   // 納骨カード内に表示
@@ -1198,7 +1231,7 @@ function _menuSearchRenderInCard(q, ql) {
         var tel    = d['_x96fb__x8a71__x756a__x53f7_'] || '';
 
         var nauchi = d['InternalCommunication'] || '';
-        var sub    = isTelSearch && tel ? tel : temple;
+        var sub    = _msHakaSub(d,'noukotsu',ql, isTelSearch && tel ? tel : temple);
         var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
         return '<div onclick="menuNauchiSelect(\'noukotsu\',' + dJson + ')" ' +
           'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
@@ -1237,7 +1270,7 @@ function _menuSearchRenderInCard(q, ql) {
         var statusLabel = endinfo || '進行中';
         var statusColor = endinfo === '完了' ? '#4caf50' : endinfo ? '#888' : '#c07000';
         var nauchi  = d['InternalCommunication'] || '';
-        var sub     = isTelSearch && tel ? tel : temple;
+        var sub     = _msHakaSub(d,'kouji',ql, isTelSearch && tel ? tel : temple);
         var dJson   = JSON.stringify(d).replace(/"/g,'&quot;');
         return '<div onclick="menuNauchiSelect(\'kouji\',' + dJson + ')" ' +
           'style="padding:8px 12px;border-bottom:0.5px solid #f0f0f0;cursor:pointer" ' +
@@ -1272,7 +1305,7 @@ function _menuSearchRenderInCard(q, ql) {
       var name  = (d['CusName']||'').replace(/\s/g,'');
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : '';
-      return name.includes(ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
     });
     if (items.length > 0) { cusResultsByGroup[g] = items; cusTotal += items.length; }
   });
@@ -1301,7 +1334,7 @@ function _menuSearchRenderInCard(q, ql) {
            var cusno = d['CusNumber'] ? ' No.' + d['CusNumber'] : '';
            var tel   = d['telephonenumber'] || '';
            var spId  = d['ID'] ? String(d['ID']) : '';
-           var sub   = isIdSearch ? 'ID: ' + spId : (isTelSearch && tel ? tel : cusno);
+           var sub   = isIdSearch ? 'ID: ' + spId : _msHakaSub(d,'customer',ql, isTelSearch && tel ? tel : cusno);
            // 霊園＆共同墓地(8)・他寺院等(10)はお寺名も表示
            var templeChip = ((g === 8 || g === 10) && d['Temple'])
              ? '<span style="font-size:10px;background:#e8eaf6;color:#3949ab;border-radius:8px;padding:1px 7px;font-weight:600;flex-shrink:0">⛩ ' + d['Temple'] + '</span>'
@@ -1659,14 +1692,14 @@ function _menuSearchRender(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (name.includes(ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.noukotsu.push(d);
+    if (name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.noukotsu.push(d);
   });
   // 工事関連
   (_menuSearchCache['kouji'] || []).forEach(function(d) {
     var name  = (d['Customers'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (name.includes(ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.kouji.push(d);
+    if (name.includes(ql) || _msHakaHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.kouji.push(d);
   });
 
   // 顧客リスト検索（グループごと10件）
@@ -1677,7 +1710,7 @@ function _menuSearchRender(q, ql) {
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : (d['id'] ? String(d['id']) : ''); // SPのID番号
       var isIdMatch = isIdSearch && spId === ql;
-      return name.includes(ql) || (isTelSearch && tel.includes(ql)) || isIdMatch;
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || isIdMatch;
     });
     // IDヒットを先頭に移動
     if (isIdSearch) {
@@ -1713,7 +1746,7 @@ function _menuSearchRender(q, ql) {
       var temple = d['_x304a__x5bfa_'] || '';
       var tel    = d['_x96fb__x8a71__x756a__x53f7_'] || '';
 
-      var sub    = isTelSearch && tel ? tel : temple;
+      var sub    = _msHakaSub(d,'noukotsu',ql, isTelSearch && tel ? tel : temple);
       var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
       html += '<div onclick="menuSearchSelect(\'noukotsu\',' + dJson + ')" style="padding:9px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06)" onmouseover="this.style.background=\'rgba(255,255,255,0.07)\'" onmouseout="this.style.background=\'\'">' +
         '<div><div style="font-size:13px;font-weight:500;color:#fff">' + hlText(name, isIdSearch ? '' : ql) + '</div>' +
@@ -1732,7 +1765,7 @@ function _menuSearchRender(q, ql) {
       var endinfo = d['endinfo'] || '';
       var statusLabel = endinfo || '進行中';
       var statusColor = endinfo === '完了' ? '#4caf50' : endinfo ? 'rgba(255,255,255,0.5)' : 'rgba(255,200,100,0.8)';
-      var sub    = isTelSearch && tel ? tel : temple;
+      var sub    = _msHakaSub(d,'kouji',ql, isTelSearch && tel ? tel : temple);
       var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
       html += '<div onclick="menuSearchSelect(\'kouji\',' + dJson + ')" style="padding:9px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06)" onmouseover="this.style.background=\'rgba(255,255,255,0.07)\'" onmouseout="this.style.background=\'\'">' +
         '<div><div style="font-size:13px;font-weight:500;color:#fff">' + hlText(name, isIdSearch ? '' : ql) + '</div>' +
@@ -1779,7 +1812,7 @@ function _menuSearchRender(q, ql) {
         var cusno = d['CusNumber'] ? ' No.' + d['CusNumber'] : '';
         var tel   = d['telephonenumber'] || '';
         var spId  = d['ID'] ? String(d['ID']) : String(d['id'] || '');
-        var sub   = isIdSearch ? 'ID: ' + spId : (isTelSearch && tel ? tel : cusno);
+        var sub   = isIdSearch ? 'ID: ' + spId : _msHakaSub(d,'customer',ql, isTelSearch && tel ? tel : cusno);
         // 霊園＆共同墓地(8)・他寺院等(10)はお寺名も表示
         var templeChip = ((g === 8 || g === 10) && d['Temple'])
           ? '<span style="font-size:10px;background:rgba(255,255,255,0.18);border-radius:8px;padding:1px 7px;color:rgba(255,255,255,0.92);font-weight:600;flex-shrink:0">⛩ ' + d['Temple'] + '</span>'
@@ -5889,7 +5922,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.360';
+var APP_VERSION = 'v1.9.361';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

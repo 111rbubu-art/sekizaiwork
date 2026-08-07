@@ -24,7 +24,10 @@
 var KTW = {
   root: null, emp: null, sites: [], punches: [],
   pending: 0,                                    // 取消を申請中の打刻の件数
-  ready: false, busy: false, msg: null
+  ready: false, busy: false, msg: null,
+  workDate: '',                                  // いま表示している勤務日
+  lastLoad: 0,                                   // 最後に一覧を取り直した時刻
+  loading: false, watching: false
 };
 
 /* ── 起動 ────────────────────────────────────────────────── */
@@ -65,6 +68,7 @@ function ktwLoad() {
     if (!KTW.emp) return;
     KTW.ready = true;
     ktwDraw();
+    ktwWatch();
   }).catch(function (e) {
     ktwRender('<div class="ktw-line ktw-warn">勤怠の読み込みに失敗しました：' +
       ktEsc(e.message) + '</div>');
@@ -131,7 +135,58 @@ function ktwLoadPunches() {
       return p.Voided !== true && !pending[p._id] &&
              ['出勤', '退勤', '休憩開始', '休憩終了'].indexOf(p.PunchType) >= 0;
     }).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
+    KTW.workDate = wd;
+    KTW.lastLoad = Date.now();
   });
+}
+
+/* 送信できた打刻を手元の一覧にも入れる。
+   SharePoint の一覧に出てくるまで少し遅れることがあり、
+   取り直した結果だけを信じると、押した直後の表示が前のままになる。 */
+function ktwAdd(p) {
+  if (!p || !p._id) return;
+  var dup = KTW.punches.filter(function (x) { return x._id === p._id; }).length;
+  if (dup) return;
+  KTW.punches = KTW.punches.concat([p]).sort(function (a, b) {
+    return new Date(a._time) - new Date(b._time);
+  });
+}
+
+/* 画面に戻ったとき・勤務日が変わったときに、開き直さなくても最新の状態にする。
+   退勤したまま画面を開きっぱなしで翌朝出社しても、［出勤］が押せる状態になる。 */
+var KTW_REFRESH_MIN_MS = 30000;   // 続けて開き直したときに取りに行きすぎないための間隔
+
+function ktwWatch() {
+  if (KTW.watching) return;
+  KTW.watching = true;
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') ktwRefresh(false);
+  });
+  window.addEventListener('focus',  function () { ktwRefresh(false); });
+  window.addEventListener('online', function () { ktwRefresh(true); });
+
+  // 画面を開いたままでも日付の変わり目に気づけるよう、1分ごとに勤務日だけ見る
+  setInterval(function () {
+    if (ktwWorkDate() !== KTW.workDate) ktwRefresh(true);
+  }, 60000);
+}
+
+function ktwRefresh(force) {
+  if (!KTW.ready || KTW.busy || KTW.loading) return;
+  var dayChanged = ktwWorkDate() !== KTW.workDate;
+  if (!force && !dayChanged && (Date.now() - KTW.lastLoad) < KTW_REFRESH_MIN_MS) return;
+
+  if (dayChanged) {
+    // 日付が変わったら前の日の打刻は出さない（すぐ［出勤］が押せる状態にする）
+    KTW.punches = []; KTW.pending = 0; KTW.msg = null;
+    KTW.workDate = ktwWorkDate();
+    ktwDraw();
+  }
+  KTW.loading = true;
+  ktwFlush().then(function () { return ktwLoadPunches(); })
+    .catch(function () {})
+    .then(function () { KTW.loading = false; ktwDraw(); });
 }
 
 /* 直前の打刻の取消を申請する。対象は書き換えず、申請の行を1件足すだけ。 */
@@ -306,12 +361,16 @@ function ktwPunch(type) {
     }
     if (site.dist != null) fields.SiteDistM = site.dist;
 
+    // 失敗時の処理は then の第2引数に置く。こうしないと、送信は成功したのに
+    // そのあとの取り直しが失敗しただけで保留キューに積まれ、二重に打刻されてしまう。
     return ktCreate('punches', fields).then(function (saved) {
       if (navigator.vibrate) { try { navigator.vibrate(80); } catch (e) {} }
       KTW.msg = { text: ktHm(saved._time) + ' ' + type +
                         (site.name && site.name !== '位置なし' ? '／' + site.name : '') };
-      return ktwLoadPunches();
-    }).catch(function () {
+      ktwAdd(saved);                       // 押した内容をその場で反映（ボタンがすぐ切り替わる）
+      return ktwLoadPunches().catch(function () {})
+        .then(function () { ktwAdd(saved); });   // 一覧にまだ出ていなければ入れ直す
+    }, function () {
       // 送信できなければ勤怠アプリと同じ保留キューに入れる
       ktwQueuePush(fields);
       KTW.msg = { text: type + 'を保留しました（通信が戻ると自動で送信されます）', err: true };

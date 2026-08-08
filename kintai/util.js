@@ -201,3 +201,52 @@ function ktMinutesText(min) {
   if (h) return h + '時間';
   return m + '分';
 }
+
+/* ============================================================
+   給与の締め期間（KT_PAY）
+
+   26日締め・翌月払いなら、締め月 '2026-08' の期間は 7/27〜8/26 で、
+   支払いは 2026年9月。締め日が月末を超える設定（31日など）のときは、
+   その月の末日に丸める。
+   ============================================================ */
+
+/* その月の締め日 'YYYY-MM-DD' */
+function ktPayCloseDate(ym) {
+  var p = String(ym).split('-');
+  var last = new Date(Date.UTC(+p[0], +p[1], 0)).getUTCDate();
+  return ktYm(ym) + '-' + ktPad(Math.min(KT_PAY.closingDay, last));
+}
+
+/* 締め月 ym の給与期間。from/to は集計する日付の範囲 */
+function ktPayRange(ym) {
+  ym = ktYm(ym);
+  var prevYm = ktYm(ktYmdAddMonths(ym + '-01', -1));
+  var from   = ktYmdAddDays(ktPayCloseDate(prevYm), 1);
+  var to     = ktPayCloseDate(ym);
+  var payYm  = ktYm(ktYmdAddMonths(ym + '-01', KT_PAY.payMonthLag));
+  return { closeYm: ym, payYm: payYm, from: from, to: to };
+}
+
+/* 「2026年9月支給分（7/27〜8/26）」 */
+function ktPayLabel(ym) {
+  var r = ktPayRange(ym);
+  var p = r.payYm.split('-');
+  return p[0] + '年' + (+p[1]) + '月支給分（' + ktMdLabel(r.from) + '〜' + ktMdLabel(r.to) + '）';
+}
+
+/* 'YYYY-MM-DD' → '7/27' */
+function ktMdLabel(s) {
+  var p = String(s || '').split('-');
+  return p.length < 3 ? (s || '') : (+p[1]) + '/' + (+p[2]);
+}
+
+/* 分 → 給与ソフト向けの小数時間（'7.50'）。1分単位の集計値を丸めずに割るだけ */
+function ktMinToDec(min) {
+  return (Math.max(0, Math.round(min || 0)) / 60).toFixed(2);
+}
+
+/* ファイル名用「2026年9月支給分」 */
+function ktPayFileTag(ym) {
+  var p = ktPayRange(ym).payYm.split('-');
+  return p[0] + '年' + (+p[1]) + '月支給分';
+}

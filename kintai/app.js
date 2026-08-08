@@ -1006,26 +1006,48 @@ function ktViewAdmin() {
   });
   h += '</tbody></table></div></div>';
 
-  // 月次集計
-  h += '<div class="card"><h2>月次集計</h2>';
-  h += '<div class="btnrow" style="margin:0 0 .6rem;align-items:center">';
-  h += '<button class="btn ghost" id="ad-prev">前月</button>';
-  h += '<span style="flex:1;text-align:center;font-weight:700">' + ktEsc(KT.adminYm) + '</span>';
-  h += '<button class="btn ghost" id="ad-next">翌月</button></div>';
-  h += '<div class="tw"><table><thead><tr><th>社員</th><th>勤務</th><th>時間外</th><th>60h超</th>' +
-       '<th>深夜</th><th>法定休日</th><th>出勤</th></tr></thead><tbody>';
-  var mr = ktMonthRange(KT.adminYm);
+  // 月次集計（給与の締め期間ごと。暦月ではない）
+  var mr = ktPayRange(KT.adminYm);
+  h += '<div class="card"><h2>月次集計（給与）</h2>';
+  h += '<div class="btnrow" style="margin:0 0 .3rem;align-items:center">';
+  h += '<button class="btn ghost" id="ad-prev">前の期間</button>';
+  h += '<span style="flex:1;text-align:center;font-weight:700">' + ktEsc(ktPayLabel(KT.adminYm)) + '</span>';
+  h += '<button class="btn ghost" id="ad-next">次の期間</button></div>';
+  h += '<p class="muted" style="margin:0 0 .6rem">' + KT_PAY.closingDay + '日締め・' +
+       (KT_PAY.payMonthLag === 1 ? '翌月' : KT_PAY.payMonthLag + 'か月後') + '払い。' +
+       ktYmdLabelFull(mr.from) + ' 〜 ' + ktYmdLabelFull(mr.to) + ' の勤務です。' +
+       '（）内は給与ソフト用の小数時間。</p>';
+  h += '<div class="tw"><table><thead><tr><th>社員</th><th>勤務</th>' +
+       '<th>時間外<br><span class="sub">25%</span></th>' +
+       '<th>深夜<br><span class="sub">+25%</span></th>' +
+       '<th>法定休日<br><span class="sub">35%</span></th>' +
+       '<th>出勤</th><th>要確認</th></tr></thead><tbody>';
+
+  var totals = { workMin: 0, otMin: 0, nightMin: 0, legalHolidayMin: 0, workDays: 0, reviewDays: 0 };
+  var cell = function (min) {
+    return '<td class="n">' + ktMinToHm(min) +
+           '<br><span class="sub">' + ktMinToDec(min) + '</span></td>';
+  };
   actives.forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    var s = ktSummarize(ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    var s = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    Object.keys(totals).forEach(function (k) { totals[k] += s[k]; });
     h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
-    h += '<td class="n">' + ktMinToHm(s.workMin) + '</td><td class="n">' + ktMinToHm(s.otMin) + '</td>';
-    h += '<td class="n">' + (s.ot60Min ? ktMinToHm(s.ot60Min) : '—') + '</td>';
-    h += '<td class="n">' + ktMinToHm(s.nightMin) + '</td><td class="n">' + ktMinToHm(s.legalHolidayMin) + '</td>';
-    h += '<td class="n">' + s.workDays + '日</td></tr>';
+    h += cell(s.workMin) + cell(s.otMin) + cell(s.nightMin) + cell(s.legalHolidayMin);
+    h += '<td class="n">' + s.workDays + '日</td>';
+    h += '<td class="n">' + (s.reviewDays ? s.reviewDays + '日' : '—') + '</td></tr>';
   });
+  h += '<tr style="font-weight:700"><td>合計</td>';
+  h += cell(totals.workMin) + cell(totals.otMin) + cell(totals.nightMin) + cell(totals.legalHolidayMin);
+  h += '<td class="n">' + totals.workDays + '日</td>';
+  h += '<td class="n">' + (totals.reviewDays ? totals.reviewDays + '日' : '—') + '</td></tr>';
   h += '</tbody></table></div>';
-  h += '<div class="btnrow"><button class="btn" id="ad-csv">CSVを書き出す</button>' +
+  if (totals.reviewDays) {
+    h += '<div class="alert cau">要確認の日が残っています。給与を確定する前に、' +
+         '上の「要確認の打刻」で内容を確かめてください。</div>';
+  }
+  h += '<div class="btnrow"><button class="btn" id="ad-sumcsv">給与用の集計CSV</button>' +
+       '<button class="btn ghost" id="ad-csv">日ごとのCSV</button>' +
        '<button class="btn ghost" id="ad-import">過去の勤怠を入力する</button>' +
        '<button class="btn ghost" id="ad-holidays">会社の休日を設定する</button>' +
        '<button class="btn ghost" id="ad-leaveinit">移行前の有給を登録する</button></div>';
@@ -1099,15 +1121,15 @@ function ktViewAdmin() {
   return h;
 }
 
-/* CSV（給与ソフト取り込み用） */
+/* 日ごとのCSV（給与期間ぶん） */
 function ktExportCsv() {
-  var mr = ktMonthRange(KT.adminYm);
+  var mr = ktPayRange(KT.adminYm);
   var rows = [['社員番号', '氏名', '日付', '曜日', '日区分', '出勤', '退勤', '休憩分',
                '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所',
                '手入力', '代休発生', '備考']];
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    var rangeDays = ktComputeRange(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow());
+    var rangeDays = ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow());
     var comp = {};
     ktCompEarned(rangeDays).forEach(function (c) { comp[c.date] = c.days; });
     rangeDays.forEach(function (d) {
@@ -1127,6 +1149,34 @@ function ktExportCsv() {
       ]);
     });
   });
+  ktDownloadCsv(rows, '勤怠_' + ktPayFileTag(KT.adminYm) + '_日別.csv');
+}
+
+/* 給与用の集計CSV。1人1行で、その給与期間の合計だけを出す。 */
+function ktExportSummaryCsv() {
+  var mr = ktPayRange(KT.adminYm);
+  var rows = [['社員番号', '氏名', '支給月', '締め期間開始', '締め期間終了',
+               '出勤日数', '勤務時間', '勤務時間(小数)', '法定内時間', '法定内(小数)',
+               '時間外時間', '時間外(小数)', '深夜時間', '深夜(小数)',
+               '法定休日時間', '法定休日(小数)', '要確認日数']];
+  KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
+    var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
+    var s  = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    rows.push([
+      e.Title, e.EmpName || '', mr.payYm, mr.from, mr.to,
+      s.workDays,
+      ktMinToHm(s.workMin),        ktMinToDec(s.workMin),
+      ktMinToHm(s.innerMin),       ktMinToDec(s.innerMin),
+      ktMinToHm(s.otMin),          ktMinToDec(s.otMin),
+      ktMinToHm(s.nightMin),       ktMinToDec(s.nightMin),
+      ktMinToHm(s.legalHolidayMin), ktMinToDec(s.legalHolidayMin),
+      s.reviewDays
+    ]);
+  });
+  ktDownloadCsv(rows, '勤怠_' + ktPayFileTag(KT.adminYm) + '_集計.csv');
+}
+
+function ktDownloadCsv(rows, filename) {
   var csv = rows.map(function (r) {
     return r.map(function (c) { return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"'; }).join(',');
   }).join('\r\n');
@@ -1135,7 +1185,7 @@ function ktExportCsv() {
   var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = '勤怠_' + KT.adminYm + '.csv';
+  a.download = filename;
   a.click();
   setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
 }
@@ -1199,6 +1249,7 @@ function ktBind() {
 
   if ($('hist-prev')) $('hist-prev').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01', -1)); ktRender(); };
   if ($('hist-next')) $('hist-next').onclick = function () { KT.histYm = ktYm(ktYmdAddMonths(KT.histYm + '-01',  1)); ktRender(); };
+  if ($('ad-sumcsv')) $('ad-sumcsv').onclick = ktExportSummaryCsv;
   if ($('ad-prev'))   $('ad-prev').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01', -1)); ktRender(); };
   if ($('ad-next'))   $('ad-next').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01',  1)); ktRender(); };
   if ($('ad-date'))   $('ad-date').onchange  = function () { KT.adminDate = this.value; ktRender(); };

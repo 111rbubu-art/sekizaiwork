@@ -223,3 +223,15 @@ function ktSummarize(days) {
   s.ot60Min = Math.max(0, s.otMin - 60 * 60);
   return s;
 }
+
+/* 期間ちょうどの日々を返す。
+   週40時間超の振り替えは週単位で決まるので、前後を週の切れ目まで広げて
+   計算してから、期間の分だけ取り出す。こうしないと、給与期間のように
+   月の途中で区切る場合に、境目の週の時間外がずれる。 */
+function ktComputeRangeExact(from, to, punches, holidays, openDate) {
+  var wFrom = ktWeekStart(from);
+  var wTo   = ktYmdAddDays(ktWeekStart(to), 6);
+  return ktComputeRange(wFrom, wTo, punches, holidays, openDate).filter(function (d) {
+    return ktYmdDiffDays(d.date, from) >= 0 && ktYmdDiffDays(d.date, to) <= 0;
+  });
+}

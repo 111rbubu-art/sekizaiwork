@@ -264,7 +264,10 @@ function ktwDraw() {
   h += '</div>';
 
   h += '<div class="ktw-btns">';
-  if (st === 'off' || st === 'done') {
+  if (st === 'done' && KT_PUNCH.lockAfterOut) {
+    // 退勤の直後に出勤を押してしまう事故を防ぐ。日付が変われば押せるようになる
+    h += '<button type="button" class="ktw-main" disabled>出勤</button>';
+  } else if (st === 'off' || st === 'done') {
     h += '<button type="button" class="ktw-main" data-ktw="出勤"' +
          (KTW.busy ? ' disabled' : '') + '>出勤</button>';
   } else if (st === 'break') {
@@ -287,6 +290,10 @@ function ktwDraw() {
            (KTW.busy ? ' disabled' : '') + '>取消</button>';
     }
     h += '</div>';
+  }
+  if (st === 'done' && KT_PUNCH.lockAfterOut) {
+    h += '<div class="ktw-line">本日は退勤済みです。次の出勤は日付が変わってから押せます。' +
+         '押し間違いなら［取消］から申請してください。</div>';
   }
   if (KTW.pending) {
     h += '<div class="ktw-line ktw-warn">取消を申請中の打刻が' + KTW.pending +
@@ -320,6 +327,11 @@ function ktwBind() {
 
 function ktwPunch(type) {
   if (KTW.busy || !KTW.emp) return;
+
+  if (type === '出勤' && KT_PUNCH.lockAfterOut && ktwState() === 'done') {
+    KTW.msg = { text: '本日は退勤済みです。次の出勤は日付が変わってから押せます' };
+    ktwDraw(); return;
+  }
 
   var recent = KTW.punches.filter(function (p) {
     return p.PunchType === type &&

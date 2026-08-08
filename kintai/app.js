@@ -333,6 +333,11 @@ function ktPunch(type) {
   });
   if (recent.length) { ktToast(type + 'は既に記録されています'); return; }
 
+  if (type === '出勤' && KT_PUNCH.lockAfterOut && ktCurrentState() === 'done') {
+    ktToast('本日は退勤済みです。次の出勤は日付が変わってから押せます');
+    return;
+  }
+
   // 出勤してすぐの退勤・定時前の退勤は押し間違いが多いので、一度だけ確かめる
   if (type === '退勤') {
     var why = ktEarlyOutReason(ktActive(ktTodayPunches()));
@@ -426,7 +431,12 @@ function ktViewPunch() {
   h += '</div>';
 
   // 主ボタンは「いま押せるもの」だけを出す
-  if (st === 'off' || st === 'done') {
+  if (st === 'done' && KT_PUNCH.lockAfterOut) {
+    // 退勤の直後に出勤を押してしまう事故を防ぐ。日付が変われば押せるようになる
+    h += '<button class="punch" disabled>出勤</button>';
+    h += '<div class="alert cau">本日は退勤済みです。次の出勤は日付が変わってから押せます。' +
+         '押し間違いなら下の［打刻をまちがえたとき・忘れたときは］から取り消してください。</div>';
+  } else if (st === 'off' || st === 'done') {
     h += '<button class="punch" data-punch="出勤"' + (KT.busy ? ' disabled' : '') + '>出勤</button>';
   } else if (st === 'break') {
     h += '<button class="punch" data-punch="休憩終了"' + (KT.busy ? ' disabled' : '') + '>休憩終了</button>';

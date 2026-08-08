@@ -200,11 +200,16 @@ function ktLoadPunches() {
 /* 未処理の取消申請がある打刻に印をつける。
    打刻ログは書き換えない設計なので、読み出すたびにここで導出する。 */
 function ktMarkCancelPending() {
+  // 対象の打刻が既に取り消されている申請は、処理済みの印が付いていなくても
+  // 済んだものとみなす（管理者が SharePoint で直接取り消した場合など）
+  var alive = {};
+  KT.punches.forEach(function (p) { if (p.Voided !== true) alive[p._id] = true; });
+
   var pending = {};
   KT.cancels.forEach(function (c) {
     if (c.Reviewed === true) return;
     var id = ktCancelTargetId(c);
-    if (id) pending[id] = c;
+    if (id && alive[id]) pending[id] = c;
   });
   KT.punches.forEach(function (p) {
     p.CancelPending = !!pending[p._id];

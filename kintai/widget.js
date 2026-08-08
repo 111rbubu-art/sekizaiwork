@@ -122,12 +122,19 @@ function ktwLoadPunches() {
       return p.Title === KTW.emp.Title && p.WorkDate === wd;
     });
 
-    // 未処理の取消申請がある打刻は、勤怠アプリと同じく無かったものとして扱う
+    // 未処理の取消申請がある打刻は、勤怠アプリと同じく無かったものとして扱う。
+    // ただし対象の打刻が既に取り消されているなら、申請の行に処理済みの印が
+    // 付いていなくても済んだものとみなす。管理者が SharePoint で直接取り消した
+    // 場合など、印が付かないことがあり、いつまでも「申請中」と出てしまうため。
+    var alive = {};
+    mine.forEach(function (p) {
+      if (p.Voided !== true && p.LocationStatus !== KTW_CANCEL_STATUS) alive[p._id] = true;
+    });
     var pending = {};
     mine.forEach(function (p) {
       if (p.LocationStatus !== KTW_CANCEL_STATUS || p.Reviewed === true) return;
       var id = ktwCancelTargetId(p);
-      if (id) pending[id] = true;
+      if (id && alive[id]) pending[id] = true;
     });
     KTW.pending = Object.keys(pending).length;
 
@@ -281,9 +288,10 @@ function ktwDraw() {
   h += '</div>';
 
   if (KTW.punches.length) {
+    // 1件ずつを塊にして、「退／勤」のように途中で折り返さないようにする
     h += '<div class="ktw-log">' + KTW.punches.map(function (p) {
-      return ktEsc(p.PunchType) + ' ' + ktHm(p._time);
-    }).join('　／　');
+      return '<span class="ktw-logi">' + ktEsc(p.PunchType) + ' ' + ktHm(p._time) + '</span>';
+    }).join('<span class="ktw-logs">／</span>');
     // 押し間違いはすぐ気づくので、直前の打刻にだけ取消を出す
     if (last && (Date.now() - new Date(last._time)) < KT_PUNCH.undoMin * 60000) {
       h += ' <button type="button" class="ktw-undo" data-ktwundo="' + last._id + '"' +
@@ -292,8 +300,7 @@ function ktwDraw() {
     h += '</div>';
   }
   if (st === 'done' && KT_PUNCH.lockAfterOut) {
-    h += '<div class="ktw-line">本日は退勤済みです。次の出勤は日付が変わってから押せます。' +
-         '押し間違いなら［取消］から申請してください。</div>';
+    h += '<div class="ktw-line">本日は退勤済みです。次の出勤は日付が変わってから押せます。</div>';
   }
   if (KTW.pending) {
     h += '<div class="ktw-line ktw-warn">取消を申請中の打刻が' + KTW.pending +
@@ -423,6 +430,8 @@ function ktwStyle() {
     '.ktw-main.ktw-out{background:#A63D2C}',
     '.ktw-main:disabled{opacity:.45;cursor:default}',
     '.ktw-log{margin-top:8px;color:#6B7371;font-size:12px}',
+    '.ktw-logi{white-space:nowrap}',
+    '.ktw-logs{opacity:.5;margin:0 6px}',
     '.ktw-undo{border:1px solid #C9CDC8;background:transparent;color:#6B7371;',
     '  border-radius:4px;padding:1px 7px;font-size:11px;cursor:pointer;font-family:inherit}',
     '.ktw-undo:disabled{opacity:.45;cursor:default}',

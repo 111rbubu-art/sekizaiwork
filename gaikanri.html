@@ -43,7 +43,10 @@
   #modal { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.45); align-items: center; justify-content: center; padding: 16px; }
   #modal.show { display: flex; }
   .modal-box { background: #fff; border-radius: 12px; width: 100%; max-width: 520px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
-  .modal-hd { padding: 12px 16px; background: #1a2535; color: #fff; font-size: 15px; font-weight: 700; display: flex; align-items: center; }
+  .modal-hd { padding: 12px 16px; background: #1a2535; color: #fff; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px;
+              cursor: move; user-select: none; touch-action: none; }
+  .modal-hd .grip { opacity: .55; font-size: 13px; letter-spacing: 1px; cursor: move; }
+  .modal-box.moved { box-shadow: 0 14px 48px rgba(0,0,0,.42); }
   .modal-hd button { margin-left: auto; background: rgba(255,255,255,.2); color: #fff; border: none; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 16px; }
   .modal-body { padding: 14px 16px; overflow-y: auto; }
   .fld { margin-bottom: 12px; }
@@ -89,7 +92,9 @@
   <!-- Add/Edit modal -->
   <div id="modal">
     <div class="modal-box">
-      <div class="modal-hd"><span id="modal-title">新規追加</span><button onclick="closeForm()">✕</button></div>
+      <div class="modal-hd" id="modal-hd" title="ここをつまむと動かせます">
+        <span class="grip">⠿</span><span id="modal-title">新規追加</span>
+        <button onclick="closeForm()" title="閉じる">✕</button></div>
       <div class="modal-body" id="modal-fields"></div>
       <div class="modal-ft">
         <button class="btn-cancel" onclick="closeForm()">キャンセル</button>
@@ -512,6 +517,51 @@ function populateNoukotsuSuggest() {
 function populateChokokuSuggest() {
   _nokCandidates(_refMonth(), filterValue, 'CompletionDate', 'Editor0', document.getElementById('chokoku-suggest'), '彫刻を選ぶ', '彫刻');
 }
+
+// 納骨リストの追加工事分。日付は「追工事完了日」、無ければ「追契約日」で見る。
+// 追加分の外注費が入っていれば、委託料にもそれを入れる。
+var TUI_DONE = 'CompletionDate_tui';   // 追工事完了日
+var TUI_CONTRACT = 'IssueDate_tui';    // 追契約日
+function _hasTsuiko(k) {
+  return !!(k['addition'] || k['tui_ContractMoney'] || k['tui_OutsourcingCosts'] ||
+            k['Estimate_tui'] || k[TUI_CONTRACT] || k[TUI_DONE]);
+}
+function populateTsuikoSuggest() {
+  var sel = document.getElementById('tsuiko-suggest');
+  if (!sel) return;
+  var ym = _refMonth();
+  if (!ym) { sel.innerHTML = '<option value="">月を選択してください</option>'; return; }
+  sel.innerHTML = '<option value="">読み込み中…</option>';
+  fetchAllNoukotsu().then(function (items) {
+    var seen = {}, list = [];
+    items.forEach(function (k) {
+      if (!_hasTsuiko(k)) return;
+      var dts = parseSpDate(k[TUI_DONE]);
+      if (dts == null) dts = parseSpDate(k[TUI_CONTRACT]);
+      if (dts == null || ymOf(dts) !== ym) return;
+      if (filterValue && String(k['personincharge'] == null ? '' : k['personincharge']).indexOf(filterValue) < 0) return;
+      var t = String(k[NOK_CUS] == null ? '' : k[NOK_CUS]).trim();
+      if (t === '') return;
+      var temple = String(k[NOK_TEMPLE] == null ? '' : k[NOK_TEMPLE]).trim();
+      var val = t + (temple ? '（' + temple + '）' : '') + '追加工事';
+      if (seen[val]) return;
+      seen[val] = 1;
+      var amt = Number(String(k['tui_OutsourcingCosts'] == null ? '' : k['tui_OutsourcingCosts']).replace(/[,\s¥￥]/g, ''));
+      list.push({ value: val, date: msToSlash(dts), amt: (isFinite(amt) && amt > 0) ? amt : '',
+                  what: String(k['addition'] == null ? '' : k['addition']).trim() });
+    });
+    list.sort(function (a, b) { return a.value.localeCompare(b.value, 'ja'); });
+    var h = '<option value="">— 追加工事を選ぶ（' + list.length + '件）—</option>';
+    list.forEach(function (o) {
+      var label = o.value + (o.what ? '｜' + o.what : '');
+      h += '<option value="' + escapeHtml(o.value) + '" data-date="' + o.date + '" data-amt="' + o.amt + '">' +
+           escapeHtml(label) + '</option>';
+    });
+    sel.innerHTML = h;
+  }).catch(function (e) {
+    sel.innerHTML = '<option value="">取得失敗: ' + escapeHtml(e.message) + '</option>';
+  });
+}
 // 日付(YYYY/MM/DD)を GaiListsの日付欄(dateColIndex)へ反映（カレンダー側も同期）
 function _setDate(slash) {
   if (!slash) return;
@@ -528,7 +578,18 @@ function _setDate(slash) {
 function _pickDate(sel) { var o = sel.options[sel.selectedIndex]; return o ? (o.getAttribute('data-date') || '') : ''; }
 function onNoukotsuPick(sel) { if (!sel.value) return; _setTitle(sel.value); setAmount(15000); _setDate(_pickDate(sel)); }
 function onChokokuPick(sel) { if (!sel.value) return; _setTitle(sel.value); setAmount(13000); _setDate(_pickDate(sel)); }
-function repopulateRefs() { populateKoujiSuggest(); populateNoukotsuSuggest(); populateChokokuSuggest(); }
+function onTsuikoPick(sel) {
+  if (!sel.value) return;
+  _setTitle(sel.value);
+  _setDate(_pickDate(sel));
+  // 追加分の外注費が登録されていればそれを入れる。無ければ委託料は触らない
+  var o = sel.options[sel.selectedIndex];
+  var amt = o ? Number(o.getAttribute('data-amt')) : 0;
+  if (amt > 0) setAmount(amt);
+}
+function repopulateRefs() {
+  populateKoujiSuggest(); populateNoukotsuSuggest(); populateChokokuSuggest(); populateTsuikoSuggest();
+}
 
 function clearForm() { openForm(-1); }
 
@@ -699,6 +760,7 @@ function openForm(ri) {
       '<div class="ref-row"><span class="ref-lbl">工事</span><select id="kouji-suggest" onchange="onKoujiPick(this.value)"><option value="">読み込み中…</option></select></div>' +
       '<div class="ref-row"><span class="ref-lbl">納骨</span><select id="nok-suggest" onchange="onNoukotsuPick(this)"><option value="">読み込み中…</option></select></div>' +
       '<div class="ref-row"><span class="ref-lbl">彫刻</span><select id="chokoku-suggest" onchange="onChokokuPick(this)"><option value="">読み込み中…</option></select></div>' +
+      '<div class="ref-row"><span class="ref-lbl">追工</span><select id="tsuiko-suggest" onchange="onTsuikoPick(this)"><option value="">読み込み中…</option></select></div>' +
       '</div></div>';
   }
   COLUMNS.forEach(function (col, ci) {
@@ -731,6 +793,7 @@ function openForm(ri) {
     f += '<div class="fld"><label>' + escapeHtml(col) + ' ' + tag + '</label>' + input + '</div>';
   });
   document.getElementById('modal-fields').innerHTML = f;
+  _modalDragReset();
   document.getElementById('modal').classList.add('show');
   if (showSuggest) repopulateRefs();
 }
@@ -811,8 +874,79 @@ function deleteRow(ri) {
     .catch(function (e) { toast('削除エラー: ' + e.message, true); });
 }
 
+// ---------- 追加・編集ウインドウの移動 ----------
+// 後ろの一覧を見ながら入力したいことがあるので、見出しをつまんで動かせるようにする。
+// 動かした量だけを覚えておき、開き直すと元の位置（中央）に戻す。
+var _mdOff = { x: 0, y: 0 };
+var _mdDrag = null;      // つまんでいる間の情報
+var _mdMoved = false;    // 直前の操作が「移動」だったか（背景クリックでの閉じ動作を止めるため）
+
+function _modalBox() { return document.querySelector('.modal-box'); }
+
+function _modalDragReset() {
+  _mdOff = { x: 0, y: 0 };
+  var b = _modalBox();
+  if (b) { b.style.transform = ''; b.classList.remove('moved'); }
+}
+
+function _modalDragStart(e) {
+  if (e.button != null && e.button !== 0) return;   // 右クリックなどは無視
+  if (e.target.closest('button')) return;           // ✕ ボタンは対象外
+  var b = _modalBox();
+  if (!b) return;
+  var r = b.getBoundingClientRect();
+  _mdDrag = {
+    px: e.clientX, py: e.clientY,
+    ox: _mdOff.x,  oy: _mdOff.y,
+    // いま動かしている分を除いた、本来の位置と大きさ
+    left: r.left - _mdOff.x, top: r.top - _mdOff.y, w: r.width, h: r.height,
+    box: b
+  };
+  _mdMoved = false;
+  if (e.pointerId != null && e.currentTarget.setPointerCapture) {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  e.preventDefault();
+}
+
+function _modalDragMove(e) {
+  if (!_mdDrag) return;
+  var dx = e.clientX - _mdDrag.px, dy = e.clientY - _mdDrag.py;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) _mdMoved = true;
+
+  // 画面の外に出しきってしまうと戻せなくなるので、見出しが残る範囲に収める
+  var keep = 80;   // 横は最低これだけ画面に残す
+  var hdH  = 44;   // 見出しのおおよその高さ
+  var x = _mdDrag.ox + dx, y = _mdDrag.oy + dy;
+  x = Math.max(keep - _mdDrag.left - _mdDrag.w, Math.min(window.innerWidth  - keep - _mdDrag.left, x));
+  y = Math.max(-_mdDrag.top, Math.min(window.innerHeight - hdH - _mdDrag.top, y));
+
+  _mdOff.x = x; _mdOff.y = y;
+  _mdDrag.box.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+  _mdDrag.box.classList.toggle('moved', !!(x || y));
+}
+
+function _modalDragEnd() { _mdDrag = null; }
+
 // ---------- 初期化 ----------
-document.getElementById('modal').addEventListener('click', function (e) { if (e.target === this) closeForm(); });
+(function () {
+  var hd = document.getElementById('modal-hd');
+  if (hd && window.PointerEvent) {
+    hd.addEventListener('pointerdown', _modalDragStart);
+    hd.addEventListener('pointermove', _modalDragMove);
+    hd.addEventListener('pointerup', _modalDragEnd);
+    hd.addEventListener('pointercancel', _modalDragEnd);
+    hd.addEventListener('dblclick', function (e) {          // 見出しの二度押しで中央へ戻す
+      if (e.target.closest('button')) return;
+      _modalDragReset();
+    });
+  }
+})();
+document.getElementById('modal').addEventListener('click', function (e) {
+  // つまんで動かした直後に背景で指を離した場合は、閉じないようにする
+  if (_mdMoved) { _mdMoved = false; return; }
+  if (e.target === this) closeForm();
+});
 loadGai();
 </script>
 </body>

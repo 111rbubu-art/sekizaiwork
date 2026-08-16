@@ -4692,6 +4692,86 @@ function callClaudeAPI(cfg, system, user, onChunk, onDone, images) {
   }).catch(function(e){ onDone(e); });
 }
 
+/* ===== ローカルLLM（Ollama）への呼び出し =====
+   OpenAI互換の /v1/chat/completions では、モデルの「思考（thinking）」を止められない。
+   思考部分はアプリ側で捨てているのに（_stripThinkTags）、生成には時間がかかるため、
+   「1+1は？」のような質問でも100トークン以上を無駄に作っていた。
+   Ollama 本来の /api/chat なら think:false で思考を止められるので、体感が大きく変わる。
+   think に対応しない相手（古いOllama・他のOpenAI互換サーバー）なら、自動で従来方式へ戻す。 */
+// 一度うまくいった方式を覚えておく: 'think' / 'native' / 'compat'
+// （覚えておかないと、対応していないサーバーで毎回むだな試行が1回増える）
+var _ollamaMode = (function () {
+  try { return localStorage.getItem('ai_ollama_mode') || null; } catch (e) { return null; }
+})();
+function _setOllamaMode(m) {
+  if (_ollamaMode === m) return;
+  _ollamaMode = m;
+  try { localStorage.setItem('ai_ollama_mode', m); } catch (e) {}
+}
+
+// OpenAI形式の messages を Ollama ネイティブ形式へ（画像は images:[base64] に移す）
+function _ollamaNativeMessages(messages) {
+  return (messages || []).map(function (m) {
+    if (!Array.isArray(m.content)) return { role: m.role, content: String(m.content == null ? '' : m.content) };
+    var text = [], imgs = [];
+    m.content.forEach(function (p) {
+      if (!p) return;
+      if (p.type === 'text') text.push(p.text || '');
+      else if (p.type === 'image_url') {
+        var u = (p.image_url && p.image_url.url) || '';
+        var i = u.indexOf('base64,');
+        imgs.push(i >= 0 ? u.slice(i + 7) : u);
+      }
+    });
+    var o = { role: m.role, content: text.join('\n') };
+    if (imgs.length) o.images = imgs;
+    return o;
+  });
+}
+
+function _ollamaFetch(cfg, messages, stream, mode) {
+  var base = cfg.endpoint || 'http://localhost:11434';
+  var body;
+  if (mode === 'compat') {
+    body = { model: cfg.model || 'llama3', stream: stream, messages: messages };
+    return fetch(base + '/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+  }
+  body = { model: cfg.model || 'llama3', stream: stream, messages: _ollamaNativeMessages(messages) };
+  if (mode === 'think') body.think = false;   // ← これが速さの本体
+  return fetch(base + '/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+}
+
+// 使える方式を順に試し、成功した Response と方式名を返す
+function _ollamaTry(cfg, messages, stream, cb) {
+  var order = ['think', 'native', 'compat'];
+  if (_ollamaMode) {
+    order = [_ollamaMode].concat(order.filter(function (m) { return m !== _ollamaMode; }));
+  }
+  var i = 0;
+  function next() {
+    var mode = order[i];
+    _ollamaFetch(cfg, messages, stream, mode).then(function (r) {
+      if (r.ok) { _setOllamaMode(mode); cb(null, r, mode); return; }
+      if (i < order.length - 1) {   // この方式は使えない。中身は読み捨てて次を試す
+        try { r.text().then(function () {}, function () {}); } catch (e) {}
+        i++; next(); return;
+      }
+      r.text().then(
+        function (t) { cb(new Error('LLM API ' + r.status + ': ' + t)); },
+        function ()  { cb(new Error('LLM API ' + r.status)); }
+      );
+    }).catch(function (e) {
+      if (i < order.length - 1) { i++; next(); return; }
+      cb(e);
+    });
+  }
+  next();
+}
+
 function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
   var userContent = user;
   if (images && images.length > 0) {
@@ -4700,16 +4780,9 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
     });
     if (user) userContent.push({ type: 'text', text: user });
   }
-  fetch((cfg.endpoint || 'http://localhost:11434') + '/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: cfg.model || 'llama3',
-      stream: true,
-      messages: [{ role:'system', content:system }, { role:'user', content:userContent }]
-    })
-  }).then(function(r) {
-    if (!r.ok) { r.text().then(function(t){ onDone(new Error('LLM API ' + r.status + ': ' + t)); }); return; }
+  var messages = [{ role:'system', content:system }, { role:'user', content:userContent }];
+  _ollamaTry(cfg, messages, true, function(err, r, mode) {
+    if (err) { onDone(err); return; }
     var reader = r.body.getReader();
     var decoder = new TextDecoder();
     var buf = '';
@@ -4720,20 +4793,30 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
         var lines = buf.split('\n');
         buf = lines.pop();
         lines.forEach(function(line) {
-          if (!line.startsWith('data:')) return;
-          var data = line.slice(5).trim();
-          if (data === '[DONE]') return;
-          try {
-            var obj = JSON.parse(data);
-            var delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
-            if (delta && delta.content) onChunk(delta.content);
-          } catch(e) {}
+          var t = line.trim();
+          if (!t) return;
+          if (mode === 'compat') {
+            if (t.indexOf('data:') !== 0) return;
+            var data = t.slice(5).trim();
+            if (data === '[DONE]') return;
+            try {
+              var obj = JSON.parse(data);
+              var delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+              if (delta && delta.content) onChunk(delta.content);
+            } catch(e) {}
+          } else {
+            // ネイティブ /api/chat は1行1JSON（NDJSON）で返る
+            try {
+              var o = JSON.parse(t);
+              if (o && o.message && o.message.content) onChunk(o.message.content);
+            } catch(e) {}
+          }
         });
         pump();
       }).catch(function(e){ onDone(e); });
     }
     pump();
-  }).catch(function(e){ onDone(e); });
+  });
 }
 
 // ===== AI業務データ検索（ツール実行型 / ReActループ・ローカルLLM向け） =====
@@ -4937,20 +5020,25 @@ function _parseAiAction(text) {
   return _extractToolJson(text);
 }
 
-// Ollama(OpenAI互換) 非ストリーミング1ターン呼び出し
+// Ollama 非ストリーミング1ターン呼び出し（思考を止められる方式を優先する）
 function _ollamaChatOnce(cfg, messages, cb) {
-  fetch((cfg.endpoint || 'http://localhost:11434') + '/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: cfg.model || 'llama3', stream: false, messages: messages })
-  }).then(function(r) {
-    if (!r.ok) { r.text().then(function(t){ cb(new Error('LLM API ' + r.status + ': ' + t)); }); return; }
+  _ollamaTry(cfg, messages, false, function(err, r, mode) {
+    if (err) { cb(err); return; }
     r.json().then(function(j) {
-      var txt = (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+      var txt = mode === 'compat'
+        ? ((j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '')
+        : ((j && j.message && j.message.content) || '');
       cb(null, txt);
     }).catch(function(e){ cb(e); });
-  }).catch(function(e){ cb(e); });
+  });
 }
+
+// 検索中の状況。チャット画面（別ウィンドウ）がこれを読んで「⏳ …」に表示する。
+var _aiAgentStatus = '';
+var _AI_TOOL_LABEL = {
+  search_customer: '顧客リストを検索中…',
+  search_price:    '価格表を検索中…'
+};
 
 // ReActループ本体。callAI と同じ (system,user,onChunk,onDone,images) シグネチャ
 function runAIDataAgent(baseSystem, user, onChunk, onDone, images) {
@@ -4963,14 +5051,18 @@ function runAIDataAgent(baseSystem, user, onChunk, onDone, images) {
       if (user) userContent.push({ type: 'text', text: user });
     }
     var msgs = [{ role: 'system', content: sys }, { role: 'user', content: userContent }];
-    var MAX = 5, step = 0;
+    // 1往復ごとにLLMを呼ぶので、上限を下げるほど最悪の待ち時間が短くなる。
+    // 実際の質問はほぼ「検索1回＋回答」で済むため、検索2回までを上限にする。
+    var MAX = 3, step = 0;
+    _aiAgentStatus = '考え中…';
     function loop() {
       step++;
       _ollamaChatOnce(cfg, msgs, function(err, text) {
-        if (err) { onDone(err); return; }
+        if (err) { _aiAgentStatus = ''; onDone(err); return; }
         var clean = _stripThinkTags(text);
         var action = _parseAiAction(clean);
         if (action && step < MAX) {
+          _aiAgentStatus = _AI_TOOL_LABEL[action.tool] || 'データを検索中…';
           var obs;
           try { obs = _execAiTool(action.tool, action.args || {}); }
           catch (e) { obs = { error: String((e && e.message) || e) }; }
@@ -4984,8 +5076,10 @@ function runAIDataAgent(baseSystem, user, onChunk, onDone, images) {
           }
           msgs.push({ role: 'assistant', content: text });
           msgs.push({ role: 'user', content: '```observation\n' + JSON.stringify(obs) + '\n```\nこの結果をもとに回答するか、必要なら別のツールを呼んでください。' });
+          _aiAgentStatus = '検索結果から回答を作成中…';
           loop();
         } else {
+          _aiAgentStatus = '';
           var ans = clean;
           if (action) { // 上限到達でまだツールを呼ぼうとした場合はactionを除去
             ans = clean.replace(/```[\s\S]*?```/g, '').trim();
@@ -4998,7 +5092,7 @@ function runAIDataAgent(baseSystem, user, onChunk, onDone, images) {
       });
     }
     loop();
-  }).catch(function(e) { onDone(e); });
+  }).catch(function(e) { _aiAgentStatus = ''; onDone(e); });
 }
 
 // チャット画面からモデルだけ切り替える
@@ -5229,10 +5323,12 @@ function openAIChat() {
   'var userPrompt=ctx?(ctx+"\\n\\n【ユーザー】\\n"+histEntry):msg;' +
   'var sys="あなたは石材店スタッフを補助する日本語AIアシスタントです。簡潔・丁寧に回答してください。";' +
   'var full="",firstChunk=true;' +
+  // 返事を待っている間、親ウィンドウ側の進み具合（顧客リストを検索中… など）を表示する
+  'var _st=setInterval(function(){if(!firstChunk)return;var s="";try{s=window.opener&&window.opener._aiAgentStatus;}catch(e){}aiDiv.textContent="⏳ "+(s||"考え中…");},400);' +
   'try{' +
     'window.opener.callAIChat(sys,userPrompt,' +
       'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;var disp=_stripThink(full);aiDiv.textContent=disp||"⏳ 考え中…";var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
-      'function(err){snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);_renderLinks(clean,aiDiv);_hist.push({role:"assistant",content:clean});' +
+      'function(err){clearInterval(_st);snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);_renderLinks(clean,aiDiv);_hist.push({role:"assistant",content:clean});' +
       'var _imgP=window.opener&&window.opener._aiImagePromise;' +
       'if(_imgP){window.opener._aiImagePromise=null;_imgP.then(function(imgs){' +
         'if(!imgs||!imgs.length)return;' +
@@ -5255,7 +5351,7 @@ function openAIChat() {
       '}inp.focus();},' +
       'allImgs' +
     ');' +
-  '}catch(ex){snd.disabled=false;snd.textContent="送信";aiDiv.textContent="❌ 呼び出しエラー: "+(ex.message||ex);aiDiv.classList.add("me");_hist.pop();}' +
+  '}catch(ex){clearInterval(_st);snd.disabled=false;snd.textContent="送信";aiDiv.textContent="❌ 呼び出しエラー: "+(ex.message||ex);aiDiv.classList.add("me");_hist.pop();}' +
 '}' +
 'document.addEventListener("keydown",function(e){if(e.target&&e.target.id==="inp"&&e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();_send();}});' +
 'function _switchModel(m){try{if(window.opener&&window.opener._setAiModel)window.opener._setAiModel(m);}catch(e){}}' +
@@ -5948,7 +6044,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.379';
+var APP_VERSION = 'v1.9.380';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

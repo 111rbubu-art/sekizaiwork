@@ -4827,10 +4827,11 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
    行が途中で切れて見出しと値がばらばらになり、数字どうしの区別もつかないため。
    そこでこのアプリでは、表はAIに「道具」として渡し、普通のキーワード検索で直接引く。
 
-   ★ 表を増やすときは、この配列にブロックを1つ足すだけでよい。
-     listId … SharePointリストのID       search … 検索対象にする列（内部名）
-     facets … 「分類」として絞り込みに使う列  row … AIに返す1行の形（表示名と値） */
-var AI_TABLES = [
+   下は「標準で用意してある資料」。ここに無いものは設定画面の
+   「📚 AIが参照する資料」から SharePointリストを選んで追加できる。
+     search … 検索対象にする列（内部名）  facets … 「分類」として絞り込みに使う列
+     row    … AIに返す1行の形（表示名と値） */
+var AI_TABLE_DEFS = [
   {
     key:   'part',
     label: '部材価格',                    // observation に出る見出し
@@ -4882,9 +4883,345 @@ var AI_TABLES = [
 
 var _aiTableCache = {};   // key → SharePointから読んだ行（AI検索専用）
 
+/* ===== どの資料をAIに参照させるか（設定画面から変更できる） =====
+   localStorage の ai_tables_v1 に持ち、SP_UI_KEYS 経由でSharePointに共有される。
+   標準の資料は「参照する／しない」を切り替えられ、検索対象の列も変えられる。
+   追加した資料は削除できる。 */
+var AI_TABLES_KEY = 'ai_tables_v1';
+
+// SharePointが自動で持っている列。追加した資料の中身を見せるとき、ここは省く。
+var _AI_SYS_COLS = ['id','ID','ContentType','Modified','Created','AuthorLookupId','EditorLookupId',
+  '_UIVersionString','Attachments','Edit','LinkTitleNoMenu','LinkTitle','ItemChildCount',
+  'FolderChildCount','_ComplianceFlags','_ComplianceTag','_ComplianceTagWrittenTime',
+  '_ComplianceTagUserId','AppAuthorLookupId','AppEditorLookupId','@odata.etag','_x0040_odata_x002e_etag'];
+
+function _aiLoadTableCfg() {
+  try { var v = JSON.parse(localStorage.getItem(AI_TABLES_KEY)); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+}
+function _aiSaveTableCfg(cfg) {
+  localStorage.setItem(AI_TABLES_KEY, JSON.stringify(cfg || []));
+  _aiTableCache = {};                                   // 中身を読み直させる
+  if (typeof saveSettingsToSP === 'function') saveSettingsToSP();
+}
+
+function _aiFetchListItems(listId) {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return getToken().then(function (resp) {
+    return fetchAllPages(
+      'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items?$expand=fields&$top=500',
+      resp.accessToken
+    );
+  });
+}
+
+// 追加した資料は、列の表示名をそのまま使ってAIに渡す
+function _aiGenericTable(c) {
+  var cols = c.cols || {};                              // 内部名 → 表示名
+  return {
+    key: c.key, label: c.name, name: c.name, custom: true, listId: c.listId,
+    typeWords: new RegExp(String(c.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
+    fetch:  function () { return _aiFetchListItems(c.listId); },
+    search: c.search || ['Title'],
+    facets: c.facets || [],
+    row: function (it) {
+      var o = { id: it.id };
+      Object.keys(it).forEach(function (k) {
+        if (_AI_SYS_COLS.indexOf(k) >= 0) return;
+        var v = it[k];
+        if (v == null || v === '' || typeof v === 'object') return;
+        o[cols[k] || k] = v;
+      });
+      return o;
+    }
+  };
+}
+
+// 設定を反映した一覧。onlyEnabled=false なら「参照しない」ものも含む（設定画面用）
+function _aiTables(onlyEnabled) {
+  if (onlyEnabled === undefined) onlyEnabled = true;
+  var cfg = _aiLoadTableCfg();
+  var byKey = {};
+  cfg.forEach(function (c) { byKey[c.key] = c; });
+  var out = [];
+  AI_TABLE_DEFS.forEach(function (def) {
+    var c = byKey[def.key] || {};
+    if (c.deleted) return;
+    var t = Object.create(def);
+    t.enabled = (c.enabled === undefined) ? true : !!c.enabled;
+    if (c.name)   t.name   = c.name;
+    if (c.search) t.search = c.search;
+    if (c.facets) t.facets = c.facets;
+    t.builtin = true;
+    if (!onlyEnabled || t.enabled) out.push(t);
+  });
+  cfg.forEach(function (c) {
+    if (!c.custom || c.deleted) return;
+    var t = _aiGenericTable(c);
+    t.enabled = (c.enabled === undefined) ? true : !!c.enabled;
+    if (!onlyEnabled || t.enabled) out.push(t);
+  });
+  return out;
+}
+
+/* ===== 設定画面「📚 AIが参照する資料」 ===== */
+var _aiTblLists = null;      // SharePointのリスト一覧（選択肢用）
+var _aiTblCols  = [];        // いま編集中の資料の列
+var _aiTblEditKey = '';      // 編集中のキー（''なら新規）
+
+function _aiTblMsg(text, ok) {
+  var el = document.getElementById('ai-tbl-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = ok === false ? '#c00' : '#2a7a2a';
+  el.style.display = text ? '' : 'none';
+}
+
+function renderAiTablesCard() {
+  var box = document.getElementById('ai-tables-list');
+  if (!box) return;
+  var tables = _aiTables(false);
+  if (!tables.length) {
+    box.innerHTML = '<div style="font-size:12px;color:#888;padding:10px 0">参照する資料がありません。「➕ 資料を追加」から登録してください。</div>';
+    return;
+  }
+  box.innerHTML = tables.map(function (t) {
+    var n = _aiTableCache[t.key] ? _aiTableCache[t.key].length : null;
+    var cnt = n == null ? '<span style="color:#aaa">未読込</span>' : (n + '件');
+    var cols = (t.search || []).map(function (c) { return _aiColLabel(t, c); }).join('・') || '—';
+    return '<div style="border:1px solid ' + (t.enabled ? '#d6c5ef' : '#e5e5e5') + ';border-radius:8px;padding:10px;margin-bottom:8px;background:' + (t.enabled ? '#fff' : '#fafafa') + '">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+        '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#4a2a7a;cursor:pointer">' +
+          '<input type="checkbox" ' + (t.enabled ? 'checked' : '') + ' onchange="_aiTblToggle(\'' + t.key + '\',this.checked)">参照する</label>' +
+        '<span style="font-size:13px;font-weight:700;color:' + (t.enabled ? '#1a2535' : '#aaa') + '">' + _esc(t.name) + '</span>' +
+        '<span style="font-size:11px;color:#888">' + cnt + '</span>' +
+        (t.builtin ? '<span style="font-size:10px;color:#888;background:#f0f0f0;border-radius:4px;padding:1px 6px">標準</span>' : '') +
+        '<span style="flex:1"></span>' +
+        '<button onclick="_aiTblOpenForm(\'' + t.key + '\')" style="padding:4px 10px;background:#f0f0f0;color:#555;border:none;border-radius:5px;cursor:pointer;font-size:11px;font-family:inherit">✏️ 変更</button>' +
+        '<button onclick="_aiTblDelete(\'' + t.key + '\')" style="padding:4px 10px;background:#fdeaea;color:#c00;border:none;border-radius:5px;cursor:pointer;font-size:11px;font-family:inherit">🗑️ 削除</button>' +
+      '</div>' +
+      '<div style="font-size:11px;color:#888;margin-top:6px">検索する列: <span style="color:#555">' + _esc(cols) + '</span></div>' +
+    '</div>';
+  }).join('');
+}
+
+// 内部名を、分かる範囲で表示名に置き換える
+function _aiColLabel(t, col) {
+  var cfg = _aiLoadTableCfg().filter(function (c) { return c.key === t.key; })[0];
+  if (cfg && cfg.cols && cfg.cols[col]) return cfg.cols[col];
+  return _AI_BUILTIN_COL_LABEL[col] || col;
+}
+var _AI_BUILTIN_COL_LABEL = {
+  Title:'品名／名称', choice:'カテゴリ', choice_x2461_:'選択②', choice3:'選択③',
+  note:'備考', note0:'備考(仕入外注用)', cost:'価格',
+  made:'産地', country:'国', color:'色', name:'吸水率', Features:'特徴', comment:'品質'
+};
+
+function _aiTblToggle(key, on) {
+  var cfg = _aiLoadTableCfg();
+  var row = cfg.filter(function (c) { return c.key === key; })[0];
+  if (!row) { row = { key: key }; cfg.push(row); }
+  row.enabled = !!on;
+  _aiSaveTableCfg(cfg);
+  renderAiTablesCard();
+  _aiTblMsg(on ? '参照するようにしました' : '参照しないようにしました');
+}
+
+function _aiTblDelete(key) {
+  var t = _aiTables(false).filter(function (x) { return x.key === key; })[0];
+  if (!t) return;
+  var msg = t.builtin
+    ? '「' + t.name + '」を一覧から削除します。\n標準の資料なので、「↩️ 標準に戻す」でいつでも復活できます。\n\n削除しますか？'
+    : '「' + t.name + '」を一覧から削除します。\nSharePointのリスト自体は消えません。\n\n削除しますか？';
+  if (!window.confirm(msg)) return;
+  var cfg = _aiLoadTableCfg();
+  var row = cfg.filter(function (c) { return c.key === key; })[0];
+  if (!row) { row = { key: key }; cfg.push(row); }
+  row.deleted = true;
+  _aiSaveTableCfg(cfg);
+  renderAiTablesCard();
+  _aiTblMsg('削除しました');
+}
+
+function _aiTblResetDefaults() {
+  if (!window.confirm('標準の資料（部材・工事の価格表／石材の価格表）を元の状態に戻します。\n追加した資料はそのまま残ります。\n\nよろしいですか？')) return;
+  var cfg = _aiLoadTableCfg().filter(function (c) { return c.custom; });
+  _aiSaveTableCfg(cfg);
+  renderAiTablesCard();
+  _aiTblMsg('標準の資料を元に戻しました');
+}
+
+function _aiTblReload() {
+  _aiTableCache = {};
+  _aiTblMsg('⏳ 読み直しています…');
+  _ensureAiData().then(function () {
+    renderAiTablesCard();
+    _aiTblMsg('最新の中身を読み込みました');
+  }).catch(function (e) { _aiTblMsg('読み込みに失敗しました: ' + (e.message || e), false); });
+}
+
+// SharePointのリスト一覧
+function _aiTblLoadLists() {
+  if (_aiTblLists) return Promise.resolve(_aiTblLists);
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return getToken().then(function (r) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists?$select=id,name,displayName,list&$top=200',
+      { headers: { Authorization: 'Bearer ' + r.accessToken } });
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    _aiTblLists = (j.value || []).filter(function (l) {
+      return l.list && l.list.template === 'genericList' && !l.list.hidden;
+    }).map(function (l) { return { id: l.id, name: l.displayName || l.name }; })
+      .sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
+    return _aiTblLists;
+  });
+}
+
+// 選んだリストの列
+function _aiTblLoadCols(listId) {
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return getToken().then(function (r) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/columns?$select=name,displayName,hidden,readOnly',
+      { headers: { Authorization: 'Bearer ' + r.accessToken } });
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    return (j.value || []).filter(function (c) {
+      return !c.hidden && !c.readOnly && _AI_SYS_COLS.indexOf(c.name) < 0;
+    }).map(function (c) { return { name: c.name, label: c.displayName || c.name }; });
+  });
+}
+
+function _aiTblOpenForm(key) {
+  _aiTblEditKey = key || '';
+  var form  = document.getElementById('ai-tbl-form');
+  var title = document.getElementById('ai-tbl-form-title');
+  var sel   = document.getElementById('ai-tbl-list');
+  var nameEl = document.getElementById('ai-tbl-name');
+  if (!form) return;
+  form.style.display = '';
+  _aiTblFormMsg('');
+  var t   = key ? _aiTables(false).filter(function (x) { return x.key === key; })[0] : null;
+  var cfg = key ? _aiLoadTableCfg().filter(function (c) { return c.key === key; })[0] : null;
+  if (title) title.textContent = t ? ('「' + t.name + '」を変更') : '資料を追加';
+  if (nameEl) nameEl.value = t ? t.name : '';
+
+  if (t && t.builtin) {
+    // 標準の資料はリストが決まっているので、選び直しはさせない
+    if (sel) { sel.innerHTML = '<option>' + _esc(t.name) + '（標準・変更できません）</option>'; sel.disabled = true; }
+    _aiTblCols = (t.search || []).concat(t.facets || []).filter(function (v, i, a) { return a.indexOf(v) === i; })
+      .map(function (c) { return { name: c, label: _AI_BUILTIN_COL_LABEL[c] || c }; });
+    _aiTblRenderCols(t.search || [], (t.facets || [])[0] || '');
+    return;
+  }
+  if (sel) sel.disabled = false;
+  // 前に開いていた資料の列が残らないように、いったん空にする
+  _aiTblCols = [];
+  _aiTblRenderCols([], '');
+  var colBox = document.getElementById('ai-tbl-cols');
+  if (colBox && !cfg) colBox.textContent = 'リストを選ぶと列が表示されます';
+  _aiTblLoadLists().then(function (lists) {
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— リストを選んでください —</option>' + lists.map(function (l) {
+      return '<option value="' + l.id + '">' + _esc(l.name) + '</option>';
+    }).join('');
+    if (cfg && cfg.listId) { sel.value = cfg.listId; _aiTblPickList(cfg.search || [], (cfg.facets || [])[0] || ''); }
+  }).catch(function (e) {
+    if (sel) sel.innerHTML = '<option value="">読み込み失敗</option>';
+    _aiTblFormMsg('リスト一覧を取得できませんでした: ' + (e.message || e));
+  });
+}
+
+function _aiTblPickList(preSearch, preFacet) {
+  var sel = document.getElementById('ai-tbl-list');
+  var box = document.getElementById('ai-tbl-cols');
+  if (!sel || !sel.value) { if (box) box.textContent = 'リストを選ぶと列が表示されます'; return; }
+  if (box) box.textContent = '⏳ 列を読み込み中…';
+  var nameEl = document.getElementById('ai-tbl-name');
+  if (nameEl && !nameEl.value) {
+    var opt = sel.options[sel.selectedIndex];
+    nameEl.value = opt ? opt.textContent : '';
+  }
+  _aiTblLoadCols(sel.value).then(function (cols) {
+    _aiTblCols = cols;
+    // 何も指定がなければ、文字が入りそうな列を初期選択にする
+    var pre = preSearch && preSearch.length ? preSearch
+            : cols.slice(0, 5).map(function (c) { return c.name; });
+    _aiTblRenderCols(pre, preFacet || '');
+  }).catch(function (e) {
+    if (box) box.textContent = '列を取得できませんでした: ' + (e.message || e);
+  });
+}
+
+function _aiTblRenderCols(checked, facet) {
+  var box = document.getElementById('ai-tbl-cols');
+  var fs  = document.getElementById('ai-tbl-facet');
+  if (box) {
+    box.innerHTML = _aiTblCols.length
+      ? _aiTblCols.map(function (c) {
+          var on = (checked || []).indexOf(c.name) >= 0;
+          return '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">' +
+            '<input type="checkbox" class="ai-tbl-col" value="' + _esc(c.name) + '" ' + (on ? 'checked' : '') + '>' +
+            '<span>' + _esc(c.label) + '</span>' +
+            '<span style="color:#bbb;font-size:10px">' + _esc(c.name) + '</span></label>';
+        }).join('')
+      : '選べる列がありません';
+  }
+  if (fs) {
+    fs.innerHTML = '<option value="">（なし）</option>' + _aiTblCols.map(function (c) {
+      return '<option value="' + _esc(c.name) + '"' + (c.name === facet ? ' selected' : '') + '>' + _esc(c.label) + '</option>';
+    }).join('');
+  }
+}
+
+function _aiTblFormMsg(text) {
+  var el = document.getElementById('ai-tbl-form-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? '' : 'none';
+}
+
+function _aiTblCloseForm() {
+  var form = document.getElementById('ai-tbl-form');
+  if (form) form.style.display = 'none';
+  _aiTblEditKey = '';
+}
+
+function _aiTblSaveForm() {
+  var sel    = document.getElementById('ai-tbl-list');
+  var nameEl = document.getElementById('ai-tbl-name');
+  var fs     = document.getElementById('ai-tbl-facet');
+  var name   = (nameEl && nameEl.value || '').trim();
+  var search = [].slice.call(document.querySelectorAll('.ai-tbl-col:checked')).map(function (c) { return c.value; });
+  var cfg = _aiLoadTableCfg();
+  var editing = _aiTblEditKey;
+  var builtin = editing && AI_TABLE_DEFS.some(function (d) { return d.key === editing; });
+  var listId  = builtin ? '' : (sel && sel.value || '');
+  if (!name)               { _aiTblFormMsg('呼び名を入力してください。'); return; }
+  if (!builtin && !listId) { _aiTblFormMsg('SharePointのリストを選んでください。'); return; }
+  if (!search.length)      { _aiTblFormMsg('検索する列を1つ以上選んでください。'); return; }
+
+  var key = editing || ('t' + Date.now());
+  var row = cfg.filter(function (c) { return c.key === key; })[0];
+  if (!row) { row = { key: key }; cfg.push(row); }
+  row.name   = name;
+  row.search = search;
+  row.facets = (fs && fs.value) ? [fs.value] : [];
+  row.deleted = false;
+  if (row.enabled === undefined) row.enabled = true;
+  if (!builtin) {
+    row.custom = true;
+    row.listId = listId;
+    var cols = {};
+    _aiTblCols.forEach(function (c) { cols[c.name] = c.label; });
+    row.cols = cols;
+  }
+  _aiSaveTableCfg(cfg);
+  _aiTblCloseForm();
+  renderAiTablesCard();
+  _aiTblMsg('保存しました。次のチャットから反映されます');
+}
+
 function _ensureAiData() {
   var jobs = [];
-  AI_TABLES.forEach(function (t) {
+  _aiTables().forEach(function (t) {
     if (_aiTableCache[t.key]) return;
     jobs.push(t.fetch()
       .then(function (items) { _aiTableCache[t.key] = items || []; })
@@ -4967,7 +5304,7 @@ function _aiSearchTable(t, terms, category, limit) {
 // AIに教える「分類」の実際の値。実データから作るので、存在しない分類を指定させずに済む。
 function _aiTableFacetHints() {
   var lines = [];
-  AI_TABLES.forEach(function (t) {
+  _aiTables().forEach(function (t) {
     var items = _aiTableCache[t.key] || [];
     var col = (t.facets || [])[0];
     if (!col) return;
@@ -5026,8 +5363,9 @@ function _aiSearchPrice(args) {
   if (!kw && !cat) return { error: 'keyword（検索語）が空です。品名・産地・色・寺院名など、表に載っている言葉を指定してください。' };
   var terms = _aiTerms(kw);
   var type  = String((args && (args.type || args.table)) || '').trim();
-  var targets = AI_TABLES.filter(function (t) { return type && t.typeWords.test(type); });
-  if (!targets.length) targets = AI_TABLES;   // 種類の指定がなければ全部の表を見る
+  var tables  = _aiTables();
+  var targets = tables.filter(function (t) { return type && t.typeWords.test(type); });
+  if (!targets.length) targets = tables;   // 種類の指定がなければ全部の資料を見る
 
   var out = { keyword: kw };
   if (cat) out.分類 = cat;
@@ -5795,6 +6133,9 @@ function openSettingsPage() {
   el = document.getElementById('ai-endpoint'); if(el) el.value = aiCfg.endpoint || 'http://localhost:11434';
   _aiToggleEndpoint();
   el = document.getElementById('ai-test-result'); if(el) el.style.display = 'none';
+  _aiTblCloseForm();
+  _aiTblMsg('');
+  renderAiTablesCard();
   document.getElementById('settings-screen').classList.remove('hidden');
   var verEl = document.getElementById('settings-ver');
   if (verEl) verEl.textContent = APP_VERSION || '';
@@ -6154,7 +6495,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.381';
+var APP_VERSION = 'v1.9.382';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22514,7 +22855,8 @@ var SP_UI_KEYS = [
   'nok_chk_sp_v1','nok_chk_sm_v1','nok_chk_lg_v1',
   'nk_rcpt_v1','nk_rcpt_vis_v1','nk_fmap_v1',
   'kj_rcpt_v2','kj_rcpt_vis_v2','kj_fmap_v1',
-  'folder_cfg_v1'
+  'folder_cfg_v1',
+  'ai_tables_v1'      // AIが参照する資料（全社員で共通）
 ];
 var _spUiSaveTimer = null;
 function loadSettingsFromSP(){
@@ -26849,6 +27191,50 @@ function openImageViewer(imgs, startIdx) {
         <div style="display:grid;grid-template-columns:32px 1fr;gap:4px;padding:4px 0;border-bottom:1px solid #f0f0f0"><span style="color:#888;font-weight:600">9</span><span>久我山墓地</span></div>
         <div style="display:grid;grid-template-columns:32px 1fr;gap:4px;padding:4px 0"><span style="color:#888;font-weight:600">10</span><span>他</span></div>
       </div>
+    </div>
+
+    <!-- AIが参照する資料 -->
+    <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#4a2a7a;margin-bottom:10px;display:flex;align-items:center;gap:6px">📚 AIが参照する資料</div>
+      <div style="background:#f3eefb;border:1px solid #d6c5ef;border-radius:6px;padding:7px 10px;font-size:11px;color:#4a2a7a;line-height:1.6;margin-bottom:10px">
+        ℹ️ AIチャットで質問したとき、AIがここに登録された<b>SharePointのリスト</b>をキーワード検索して答えます。<br>
+        「参照する」を外した資料は検索されません。この設定は<b>SharePointで全社員に共有</b>されます。
+      </div>
+      <div id="ai-tables-list"></div>
+      <div id="ai-tbl-form" style="display:none;border:1px solid #d6c5ef;border-radius:8px;padding:12px;margin-top:10px;background:#faf7ff">
+        <div id="ai-tbl-form-title" style="font-size:12px;font-weight:700;color:#4a2a7a;margin-bottom:8px">資料を追加</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div>
+            <div style="font-size:11px;color:#888;margin-bottom:4px">SharePointのリスト</div>
+            <select id="ai-tbl-list" onchange="_aiTblPickList()" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+              <option value="">⏳ 読み込み中…</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#888;margin-bottom:4px">この資料の呼び名（AIへの説明に使われます）</div>
+            <input id="ai-tbl-name" type="text" placeholder="例）社内ルール表" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit">
+          </div>
+          <div>
+            <div style="font-size:11px;color:#888;margin-bottom:4px">検索する列（チェックした列の文字が検索対象になります）</div>
+            <div id="ai-tbl-cols" style="max-height:170px;overflow:auto;border:1px solid #e5e5e5;border-radius:6px;padding:8px;background:#fff;font-size:12px">列を読み込むと表示されます</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#888;margin-bottom:4px">分類として使う列（任意・絞り込みに使います）</div>
+            <select id="ai-tbl-facet" style="width:100%;font-size:12px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-family:inherit"><option value="">（なし）</option></select>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="_aiTblSaveForm()" style="flex:1;padding:8px;background:#4a2a7a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">💾 保存</button>
+            <button onclick="_aiTblCloseForm()" style="padding:8px 14px;background:#f0f0f0;color:#555;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">キャンセル</button>
+          </div>
+          <div id="ai-tbl-form-msg" style="font-size:11px;color:#c00;display:none"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button onclick="_aiTblOpenForm('')" style="flex:1;min-width:130px;padding:8px;background:#4a2a7a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">➕ 資料を追加</button>
+        <button onclick="_aiTblReload()" style="padding:8px 12px;background:#f0f0f0;color:#555;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">🔄 中身を読み直す</button>
+        <button onclick="_aiTblResetDefaults()" style="padding:8px 12px;background:#f0f0f0;color:#555;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit">↩️ 標準に戻す</button>
+      </div>
+      <div id="ai-tbl-msg" style="font-size:11px;color:#2a7a2a;margin-top:8px;display:none"></div>
     </div>
 
     <!-- AI設定 -->

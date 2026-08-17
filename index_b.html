@@ -4822,22 +4822,74 @@ function callOpenAICompatAPI(cfg, system, user, onChunk, onDone, images) {
 // ===== AI業務データ検索（ツール実行型 / ReActループ・ローカルLLM向け） =====
 // Ollama(provider==='openai')選択時、顧客リスト・価格表(部材/石材)をローカル検索する
 // ツールをAIに与え、AIが必要に応じて検索を呼び出して回答する。
-// 価格表・石材のローカルキャッシュ（AI検索専用）
-var _aiPartPriceItems = null;
-var _aiStonePriceItems = null;
+/* ===== AIが検索できる表の登録 =====
+   表（価格表など）は、文章として意味の近さで探す方式（RAG／ベクトル検索）では正しく引けない。
+   行が途中で切れて見出しと値がばらばらになり、数字どうしの区別もつかないため。
+   そこでこのアプリでは、表はAIに「道具」として渡し、普通のキーワード検索で直接引く。
+
+   ★ 表を増やすときは、この配列にブロックを1つ足すだけでよい。
+     listId … SharePointリストのID       search … 検索対象にする列（内部名）
+     facets … 「分類」として絞り込みに使う列  row … AIに返す1行の形（表示名と値） */
+var AI_TABLES = [
+  {
+    key:   'part',
+    label: '部材価格',                    // observation に出る見出し
+    name:  '部材・工事の価格表',
+    typeWords: /部材|部品|工事|作業|サービス|part/i,
+    fetch:  function () { return _fetchPriceListItems(); },
+    search: ['Title', 'choice', 'choice_x2461_', 'choice3', 'note', 'note0'],
+    facets: ['choice', 'choice_x2461_', 'choice3'],
+    row: function (it) {
+      return {
+        id: it.id, 商品名: it.Title || '', カテゴリ: it.choice || '',
+        選択2: it.choice_x2461_ || '', 選択3: it.choice3 || '',
+        販売価格税抜: (it.cost != null && it.cost !== '') ? it.cost : null,
+        仕入先1: it.supplier || '', 仕入価格1: (it.PurchasePrice != null && it.PurchasePrice !== '') ? it.PurchasePrice : null,
+        仕入先2: it.supplier2 || '', 仕入価格2: (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') ? it.PurchasePrice2 : null,
+        備考: it.note || ''
+      };
+    }
+  },
+  {
+    key:   'stone',
+    label: '石材価格',
+    name:  '石材の価格表',
+    typeWords: /石材|石|stone/i,
+    fetch:  function () { return _fetchStonePriceListItems(); },
+    search: ['Title', 'made', 'country', 'color', 'name', 'Features', 'comment'],
+    facets: ['made', 'country', 'color'],
+    row: function (st) {
+      var _picPath = '';
+      try {
+        var _picData = typeof st.picture === 'string' ? JSON.parse(st.picture) : (st.picture || {});
+        if (_picData && _picData.serverRelativeUrl) _picPath = _picData.serverRelativeUrl;
+      } catch (e) {}
+      return {
+        id: st.id, 石材名: st.Title || '', 産地: st.made || '', 国: st.country || '', 色: st.color || '',
+        単価: (st.cost != null && st.cost !== '') ? st.cost : null,
+        吸水率: (st.name != null && st.name !== '') ? st.name : '',
+        石目画像パス: _picPath,
+        仕入先1: st.Supplier1 || '', 仕入価格1: (st.price1 != null && st.price1 !== '') ? st.price1 : null,
+        加工費込1: st.MachiningCostsIncluded1 ? true : false,
+        仕入先2: st.Supplier2 || '', 仕入価格2: (st.price2 != null && st.price2 !== '') ? st.price2 : null,
+        加工費込2: st.MachiningCostsIncluded2 ? true : false,
+        見積日: st.EstimateDay ? String(st.EstimateDay).slice(0, 10) : '',
+        特徴: st.Features || '', 品質: st.comment || ''
+      };
+    }
+  }
+];
+
+var _aiTableCache = {};   // key → SharePointから読んだ行（AI検索専用）
 
 function _ensureAiData() {
   var jobs = [];
-  if (!_aiPartPriceItems) {
-    jobs.push(_fetchPriceListItems()
-      .then(function(items){ _aiPartPriceItems = items || []; })
-      .catch(function(){ _aiPartPriceItems = _aiPartPriceItems || []; }));
-  }
-  if (!_aiStonePriceItems) {
-    jobs.push(_fetchStonePriceListItems()
-      .then(function(items){ _aiStonePriceItems = items || []; })
-      .catch(function(){ _aiStonePriceItems = _aiStonePriceItems || []; }));
-  }
+  AI_TABLES.forEach(function (t) {
+    if (_aiTableCache[t.key]) return;
+    jobs.push(t.fetch()
+      .then(function (items) { _aiTableCache[t.key] = items || []; })
+      .catch(function () { _aiTableCache[t.key] = _aiTableCache[t.key] || []; }));
+  });
   return Promise.all(jobs);
 }
 
@@ -4851,7 +4903,86 @@ function _aiCustomerList() {
   return out;
 }
 
-function _aiNorm(s) { return String(s == null ? '' : s).replace(/[\s　\-]/g, '').toLowerCase(); }
+// 表記のゆれを吸収する。全角英数→半角、カタカナ→ひらがな、空白・ハイフンは無視。
+// （「黒御影」と「クロミカゲ」、「Ａ寺」と「A寺」を同じものとして扱うため）
+function _aiNorm(s) {
+  return String(s == null ? '' : s)
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/[ァ-ヶ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); })
+    .replace(/[\s　\-－‐―]/g, '')
+    .toLowerCase();
+}
+
+/* 検索語を分解する。「A寺 納骨」のように複数の条件を空白で区切って渡せるようにし、
+   すべてに一致する行だけを拾う（これがないと「A寺の納骨費用」が0件になる）。
+   「費用」「代金」などの一般語は表に載っていないので、他の語があるときは落とす。 */
+var _AI_STOPWORDS = ['費用', '代金', '価格', '値段', '料金', '金額', '単価', 'いくら', '教えて', 'について'];
+function _aiTerms(s) {
+  var raw = String(s == null ? '' : s)
+    .split(/[\s　,、，･・\/／|｜]+/)
+    .map(function (t) { return _aiNorm(t); })
+    .filter(function (t) { return t.length > 0; });
+  var strong = raw.filter(function (t) {
+    return _AI_STOPWORDS.every(function (w) { return t !== _aiNorm(w); });
+  });
+  return strong.length ? strong : raw;
+}
+
+function _aiRowHay(it, fields) {
+  var s = '';
+  for (var i = 0; i < fields.length; i++) {
+    var v = it[fields[i]];
+    if (v != null && v !== '') s += String(v) + ' ';
+  }
+  return _aiNorm(s);
+}
+
+/* 1つの表を検索する。
+   すべての語に一致する行（完全一致）を優先し、0件のときだけ
+   「一致した語が多い順」の候補を返す。断定させないため、その旨を注記に入れる。 */
+function _aiSearchTable(t, terms, category, limit) {
+  var items = _aiTableCache[t.key] || [];
+  var ncat  = category ? _aiNorm(category) : '';
+  var exact = [], partial = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (ncat && _aiRowHay(it, t.facets || []).indexOf(ncat) === -1) continue;
+    var hay = _aiRowHay(it, t.search);
+    var hit = 0;
+    for (var k = 0; k < terms.length; k++) if (hay.indexOf(terms[k]) >= 0) hit++;
+    if (!terms.length || hit === terms.length) exact.push(it);
+    else if (hit > 0) partial.push({ it: it, hit: hit });
+  }
+  if (exact.length) {
+    return { rows: exact.slice(0, limit).map(t.row), total: exact.length, partial: false };
+  }
+  partial.sort(function (a, b) { return b.hit - a.hit; });
+  return {
+    rows: partial.slice(0, limit).map(function (p) { return t.row(p.it); }),
+    total: partial.length,
+    partial: partial.length > 0
+  };
+}
+
+// AIに教える「分類」の実際の値。実データから作るので、存在しない分類を指定させずに済む。
+function _aiTableFacetHints() {
+  var lines = [];
+  AI_TABLES.forEach(function (t) {
+    var items = _aiTableCache[t.key] || [];
+    var col = (t.facets || [])[0];
+    if (!col) return;
+    var seen = {}, vals = [];
+    for (var i = 0; i < items.length && vals.length < 40; i++) {
+      var v = items[i][col];
+      if (v == null || v === '') continue;
+      v = String(v).trim();
+      if (seen[v]) continue;
+      seen[v] = 1; vals.push(v);
+    }
+    if (vals.length) lines.push('   ・' + t.name + ' の分類: ' + vals.join('／'));
+  });
+  return lines;
+}
 
 function _aiSearchCustomer(args) {
   var q = String((args && (args.query || args.name || args.keyword)) || '').trim();
@@ -4890,64 +5021,33 @@ function _aiSearchCustomer(args) {
 }
 
 function _aiSearchPrice(args) {
-  var kw = String((args && (args.keyword || args.query || args.name)) || '').trim();
-  if (!kw) return { error: 'keyword（検索語）が空です。品名・規格・色などの一部を指定してください。' };
-  var type = String((args && args.type) || '').trim();
-  var nkw = _aiNorm(kw);
-  var wantStone = /石材|stone/i.test(type);
-  var wantPart  = /部材|部品|part|material/i.test(type);
-  if (!wantStone && !wantPart) { wantStone = true; wantPart = true; } // 未指定は両方
-  var out = { keyword: kw };
+  var kw  = String((args && (args.keyword || args.query || args.name)) || '').trim();
+  var cat = String((args && (args.category || args.分類)) || '').trim();
+  if (!kw && !cat) return { error: 'keyword（検索語）が空です。品名・産地・色・寺院名など、表に載っている言葉を指定してください。' };
+  var terms = _aiTerms(kw);
+  var type  = String((args && (args.type || args.table)) || '').trim();
+  var targets = AI_TABLES.filter(function (t) { return type && t.typeWords.test(type); });
+  if (!targets.length) targets = AI_TABLES;   // 種類の指定がなければ全部の表を見る
 
-  if (wantPart) {
-    var ap = _aiPartPriceItems || [];
-    var ph = [];
-    for (var i = 0; i < ap.length && ph.length < 10; i++) {
-      var it = ap[i];
-      var hay = [it.Title, it.choice, it.choice_x2461_, it.choice3, it.note, it.note0]
-        .map(function(x){ return x == null ? '' : String(x); }).join(' ');
-      if (_aiNorm(hay).indexOf(nkw) === -1) continue;
-      ph.push({
-        id: it.id, 商品名: it.Title || '', カテゴリ: it.choice || '',
-        選択2: it.choice_x2461_ || '', 選択3: it.choice3 || '',
-        販売価格税抜: (it.cost != null && it.cost !== '') ? it.cost : null,
-        仕入先1: it.supplier || '', 仕入価格1: (it.PurchasePrice != null && it.PurchasePrice !== '') ? it.PurchasePrice : null,
-        仕入先2: it.supplier2 || '', 仕入価格2: (it.PurchasePrice2 != null && it.PurchasePrice2 !== '') ? it.PurchasePrice2 : null,
-        備考: it.note || ''
-      });
-    }
-    out.部材価格 = ph;
+  var out = { keyword: kw };
+  if (cat) out.分類 = cat;
+  var shown = 0, anyRows = false, exactAny = false, guessed = false;
+  targets.forEach(function (t) {
+    var r = _aiSearchTable(t, terms, cat, 10);
+    out[t.label] = r.rows;
+    out[t.label + '_件数'] = r.total;
+    if (r.partial) { out[t.label + '_注記'] = '完全一致なし。条件の一部だけ一致した候補です。断定せず候補として伝えてください。'; guessed = true; }
+    else if (r.total > 0) exactAny = true;
+    if (r.total > 0) anyRows = true;
+    shown += r.rows.length;
+  });
+  out.count = shown;
+  if (!anyRows) {
+    out.note = '該当なし。検索語を減らすか、別の言い方（ひらがな／漢字／産地名）で再検索してください。'
+             + (terms.length > 1 ? '（今回は「' + terms.join('」と「') + '」の両方に一致する行を探しました）' : '');
+  } else if (!exactAny && guessed) {
+    out.note = '完全に条件を満たす行はありませんでした。下の候補は参考です。';
   }
-  if (wantStone) {
-    var as = _aiStonePriceItems || [];
-    var sh = [];
-    for (var k = 0; k < as.length && sh.length < 10; k++) {
-      var st = as[k];
-      var hay2 = [st.Title, st.made, st.country, st.color, st.name, st.Features, st.comment]
-        .map(function(x){ return x == null ? '' : String(x); }).join(' ');
-      if (_aiNorm(hay2).indexOf(nkw) === -1) continue;
-      var _picPath = '';
-      try {
-        var _picData = typeof st.picture === 'string' ? JSON.parse(st.picture) : (st.picture || {});
-        if (_picData && _picData.serverRelativeUrl) _picPath = _picData.serverRelativeUrl;
-      } catch(e) {}
-      sh.push({
-        id: st.id, 石材名: st.Title || '', 産地: st.made || '', 国: st.country || '', 色: st.color || '',
-        単価: (st.cost != null && st.cost !== '') ? st.cost : null,
-        吸水率: (st.name != null && st.name !== '') ? st.name : '',
-        石目画像パス: _picPath,
-        仕入先1: st.Supplier1 || '', 仕入価格1: (st.price1 != null && st.price1 !== '') ? st.price1 : null,
-        加工費込1: st.MachiningCostsIncluded1 ? true : false,
-        仕入先2: st.Supplier2 || '', 仕入価格2: (st.price2 != null && st.price2 !== '') ? st.price2 : null,
-        加工費込2: st.MachiningCostsIncluded2 ? true : false,
-        見積日: st.EstimateDay ? String(st.EstimateDay).slice(0, 10) : '', 特徴: st.Features || '', 品質: st.comment || ''
-      });
-    }
-    out.石材価格 = sh;
-  }
-  var total = (out.部材価格 ? out.部材価格.length : 0) + (out.石材価格 ? out.石材価格.length : 0);
-  out.count = total;
-  if (total === 0) out.note = '該当なし。別のキーワードや表記（ひらがな/漢字/型番）で再検索してください。';
   return out;
 }
 
@@ -4958,7 +5058,7 @@ function _execAiTool(name, args) {
 }
 
 function _aiToolSystemPrompt() {
-  return [
+  return [].concat([
     'あなたは庄司石材店の社内アシスタントです。社内のSharePointデータ（顧客リスト・価格表）を検索できます。',
     'ユーザーの質問に答えるためにデータが必要なときは、次の形式で「1回に1つだけ」ツールを呼び出してください。',
     'ツールを呼ぶターンでは説明文を書かず、次のブロックだけを出力します:',
@@ -4971,10 +5071,20 @@ function _aiToolSystemPrompt() {
     '   重要: query には顧客名・ふりがな・電話番号のみ入れてください。寺院名は temple パラメーターに分けて指定してください。',
     '   「光明院の小張さん」→ query:"小張" temple:"光明院" のように分けて指定します。',
     '   結果の totalCount が実際の合計件数です。「何人」「何件」と聞かれたら totalCount を答えてください。',
-    '2. search_price … 価格表を検索。args: {"keyword":"品名・規格・産地・色などの一部", "type":"部材" または "石材"（省略時は両方検索）}',
+    '2. search_price … 価格表を検索。args: {"keyword":"検索語（複数の条件は半角スペースで区切る）", "category":(任意)分類で絞る, "type":"部材" または "石材"（省略時は両方検索）}',
+    '   ★keyword には「表に載っている言葉」だけを入れます。品名・分類・産地・色・石材名・寺院名など。',
+    '   ★「費用」「代金」「値段」「いくら」などの一般語は入れないでください。表の項目名ではないため0件になります。',
+    '   ★条件が2つ以上あるときは、必ず半角スペースで区切って1回の検索にまとめます（すべてに一致する行を探します）。',
+    '     例）「A寺の納骨費用は？」    → {"tool":"search_price","args":{"keyword":"A寺 納骨"}}',
+    '     例）「黒御影石の彫刻費用は？」→ {"tool":"search_price","args":{"keyword":"黒御影 彫刻"}}',
+    '     例）「粉骨の代金は？」        → {"tool":"search_price","args":{"keyword":"粉骨"}}',
+    '   0件だったときは、語を1つ減らして（例:「A寺 納骨」→「納骨」）もう一度だけ検索してください。',
+    '   結果の「◯◯_件数」が該当の合計件数、明細は上位10件です。「◯◯_注記」が付いた結果は完全一致ではないので、',
+    '   断定せず「候補です」と伝えてください。',
     '   石材の検索結果には 石材名・産地・国・色・単価・吸水率・仕入先・仕入価格・特徴・品質 が含まれます。',
     '   吸水率・単価・特徴など石材の特性を聞かれたら、まず search_price で石材名を検索して結果から回答してください。',
-    '   「石目を見せて」「画像を表示して」などの要求があればsearch_priceで石材を検索してください。検索すると石目サンプル画像がチャット画面に自動表示されます。',
+    '   「石目を見せて」「画像を表示して」などの要求があればsearch_priceで石材を検索してください。検索すると石目サンプル画像がチャット画面に自動表示されます。'
+  ], _aiTableFacetHints(), [
     '',
     'ツールの実行結果は次の形式で observation として返されます:',
     '```observation',
@@ -4983,7 +5093,7 @@ function _aiToolSystemPrompt() {
     'observation を読み、さらに検索が必要なら別のツールを呼び、十分な情報が集まったら action ブロックを書かずに日本語で最終回答してください。',
     '価格・電話番号など、検索結果に無い情報は推測せず「データにありません」と答えてください。',
     '挨拶・一般的な質問・データ不要な質問にはツールを使わず直接答えてください。'
-  ].join('\n');
+  ]).join('\n');
 }
 
 function _stripThinkTags(t) { return String(t == null ? '' : t).replace(/<think>[\s\S]*?<\/think>/gi, '').trim(); }
@@ -6044,7 +6154,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.380';
+var APP_VERSION = 'v1.9.381';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

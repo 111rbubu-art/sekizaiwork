@@ -6495,7 +6495,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.385';
+var APP_VERSION = 'v1.9.386';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -12189,7 +12189,7 @@ function renderNokPhotoFiles(d, cat, items) {
       var isImgRow = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name||'');
       _spRegThumb(fpath, f.thumbnails); // クリック拡大は原本でなくサムネを使う
       return '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">' +
-        '<div onclick="spFileClick(\'' + jsStr(fpath) + '\',' + (isImgRow?'true':'false') + ')" ondblclick="spFileDbl(\'' + jsStr(fpath) + '\')" title="' + (isImgRow?'クリックで拡大表示／ダブルクリックで開く':'クリックで開く') + '" style="display:flex;align-items:center;gap:8px;flex:1;color:inherit;overflow:hidden;cursor:pointer">' +
+        '<div onclick="spFileClick(\'' + jsStr(fpath) + '\',' + (isImgRow?'true':'false') + ')" ondblclick="spFileDbl(\'' + jsStr(fpath) + '\')" title="' + ((isImgRow||hasThumb)?'クリックで拡大表示／ダブルクリックで開く':'クリックで開く') + '" style="display:flex;align-items:center;gap:8px;flex:1;color:inherit;overflow:hidden;cursor:pointer">' +
         '<span style="font-size:15px">' + (isPdf?'📄':'🖼') + '</span>' +
         '<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(f.name) + '</span>' +
         '</div>' +
@@ -12212,7 +12212,7 @@ function renderNokPhotoFiles(d, cat, items) {
     var isImgFile = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.name||'');
     _spRegThumb(fpath, f.thumbnails);
     return '<div style="border:1px solid #ddd;border-radius:6px;overflow:hidden;background:#fff;position:relative">' +
-      '<div onclick="spFileClick(\'' + jsStr(fpath) + '\',' + (isImgFile?'true':'false') + ')" ondblclick="spFileDbl(\'' + jsStr(fpath) + '\')" title="' + (isImgFile?'クリックで拡大表示／ダブルクリックで開く':'クリックで開く') + '" style="display:block;cursor:pointer">' + thumbHtml + '</div>' +
+      '<div onclick="spFileClick(\'' + jsStr(fpath) + '\',' + (isImgFile?'true':'false') + ')" ondblclick="spFileDbl(\'' + jsStr(fpath) + '\')" title="' + ((isImgFile||hasThumb)?'クリックで拡大表示／ダブルクリックで開く':'クリックで開く') + '" style="display:block;cursor:pointer">' + thumbHtml + '</div>' +
       '<div style="padding:4px 6px;font-size:10px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _esc(f.name) + '</div>' +
       '<button type="button" onclick="event.stopPropagation();_showNokPhotoItemMenu(event,\'' + jsStr(cat) + '\',\'' + jsStr(f.name) + '\',\'' + jsStr(fpath) + '\',' + (hasThumb?'true':'false') + ')" title="メニュー（コピー・削除など）" ' +
         'style="position:absolute;top:2px;right:2px;background:rgba(255,255,255,0.92);color:#444;border:1px solid #ccc;border-radius:6px;width:28px;height:24px;cursor:pointer;font-size:15px;line-height:1;padding:0;box-shadow:0 1px 2px rgba(0,0,0,0.2)">⋯</button>' +
@@ -19418,7 +19418,7 @@ function toggleKoujiEdit(d, tabIdx) {
     });
     // 保存
     var itemId = d['id'];
-    var edits = localEdits[itemId] || {};
+    var edits = _stripAmountCommas(localEdits[itemId] || {});
     if (Object.keys(edits).length > 0) {
       // boolean型フィールド（"true"/"false"文字列→boolean変換）
       var _koujiBoolFields = ['PickUp1', 'PickUp2'];
@@ -20743,10 +20743,12 @@ function spFileClick(fpath, isImg) {
   if (_spFileClickTimer) { clearTimeout(_spFileClickTimer); _spFileClickTimer = null; return; } // 2回目→dblclickに任せる
   _spFileClickTimer = setTimeout(function() {
     _spFileClickTimer = null;
-    if (!isImg) { openFolderFile(fpath); return; }   // 画像以外は拡大できないのでそのまま開く
     var tu = _spThumbMap[fpath];
-    if (tu) _previewFolderThumbLarge(tu, fpath.split('/').pop()); // 軽いサムネですぐ表示
-    else previewFolderImage(fpath);                               // サムネが無い場合のみ原本
+    // 画像でなくても、SharePointが見本の絵を作ってくれる形式（PDF・Word・Excel など）は
+    // シングルクリックで中身を確かめられるようにする。原本を開くのはダブルクリック。
+    if (tu) { _previewFolderThumbLarge(tu, fpath.split('/').pop()); return; }
+    if (isImg) { previewFolderImage(fpath); return; }  // 画像なのに見本が無いときだけ原本を出す
+    openFolderFile(fpath);                             // 見本を作れない形式はそのまま開く
   }, 250);
 }
 function spFileDbl(fpath) {
@@ -24107,7 +24109,24 @@ function parseDateToISO(val) {
   return '';
 }
 
-var AMOUNT_FIELDS = ['tui_ContractMoney','tui_OutsourcingCosts','MF_cloud_1','MF_cloud_2','MF_cloud_3','MF_cloud_4','ContractMoney','OutsourcingCosts'];
+/* 桁区切り（,）を付けて表示する項目。
+   編集中は数字だけを見せ、保存して閲覧に戻ると「1,234,567」の形になる。
+   保存時にカンマは取り除くので、SharePointには数字だけが入る（_stripAmountCommas）。 */
+var AMOUNT_FIELDS = ['tui_ContractMoney','tui_OutsourcingCosts','MF_cloud_1','MF_cloud_2','MF_cloud_3','MF_cloud_4','ContractMoney','OutsourcingCosts',
+  'ContractAmount','InvoiceAmount','PaymentValue','kh_kingaku'];
+
+// 保存前にカンマを外す。利用者が「1,234」と入力しても数字として保存されるようにする。
+function _stripAmountCommas(edits) {
+  if (!edits) return edits;
+  Object.keys(edits).forEach(function (f) {
+    if (AMOUNT_FIELDS.indexOf(f) < 0) return;
+    var v = edits[f];
+    if (typeof v !== 'string') return;
+    var s = v.replace(/[,，\s]/g, '');
+    if (/^-?\d+(\.\d+)?$/.test(s)) edits[f] = s;
+  });
+  return edits;
+}
 function fmtAmount(field, val) {
   if (!val) return val;
   if (AMOUNT_FIELDS.indexOf(field) < 0) return val;
@@ -24412,7 +24431,7 @@ function toggleEditMode(d, tabIdx) {
     // 保存モード：ローカル保存 + SP保存
     saveEditsToStorage();
     var itemId = d['id'] || d['Title'] || '';
-    var edits = localEdits[itemId] || {};
+    var edits = _stripAmountCommas(localEdits[itemId] || {});
     // 添付ファイルをListsフォルダーへ同期（フィールド変更有無に関わらず実行）
     var _syncIdMap = {'納骨・戒切':'3ae4bd1d-47b8-4300-aab5-6b828aa0e480','顧客リスト':'29524f89-0370-44ea-8d01-161f34e5a1ab','工事関連':KOUJI_LIST_ID};
     var _syncListId = _syncIdMap[LIST_NAME];

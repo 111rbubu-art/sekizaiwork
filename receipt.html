@@ -73,13 +73,16 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
 .rc-recv{font-size:10pt;margin-bottom:auto;letter-spacing:.08em}
 
 .rc-ft{display:flex;align-items:flex-end;gap:4mm}
-.rc-stamp-box{width:17mm;height:17mm;border:0.3mm solid #9c8546;font-size:6.5pt;color:#9c8546;
-              display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.3}
+.rc-stamp-box{width:19mm;height:19mm;border:0.3mm solid #9c8546;text-align:center;line-height:1.25;
+              display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1mm}
+.rc-stamp-cap{font-size:6.5pt;color:#9c8546}
+.rc-stamp-amt{font-size:8.5pt;font-weight:bold;color:#6d5c30}
 .rc-ft-sp{flex:1}
-.rc-issuer{font-size:8.5pt;line-height:1.5;position:relative;padding-right:19mm}
+.rc-issuer{font-size:8.5pt;line-height:1.5;position:relative;padding-right:26mm}
 .rc-date{font-size:9.5pt;margin-bottom:1.2mm}
 .rc-company{font-size:11pt;font-weight:bold;letter-spacing:.05em}
-.rc-seal{position:absolute;right:0;bottom:0;width:17mm;height:17mm;object-fit:contain}
+/* 社印は実物と同じ24mm角で刷る */
+.rc-seal{position:absolute;right:0;bottom:0;width:24mm;height:24mm;object-fit:fill}
 
 /* 画面上で直せる場所を分かるようにする（印刷には出ない） */
 [contenteditable]{cursor:text;border-radius:2px}
@@ -100,7 +103,7 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
 <body>
 
 <div class="tb">
-  <h1>🧾 領収書</h1><span class="ver">v1.1</span>
+  <h1>🧾 領収書</h1><span class="ver">v1.2</span>
   <span id="segWrap" class="seg" style="display:none"></span>
   <span class="lbl">敬称</span>
   <span class="seg">
@@ -111,7 +114,7 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
   <button onclick="resetAll()">↺ 元に戻す</button>
   <button class="pr" onclick="window.print()">🖨️ 印刷</button>
 </div>
-<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。</div>
+<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。No.は4桁で自動採番、収入印紙の額は金額から自動で出します。</div>
 
 <div class="sheet">
   <div class="rc">
@@ -154,7 +157,8 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
     <div class="rc-in">
       <div class="rc-hd">
         <div class="rc-ttl">領収書<span class="rc-ttl-u"></span></div>
-        <div class="rc-no">No. <span id="rcNo" contenteditable="true">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></div>
+        <div class="rc-no">No. <span id="rcNo" contenteditable="true"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"></span></div>
       </div>
 
       <div class="rc-to-wrap">
@@ -178,7 +182,10 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
       <div class="rc-recv">上記正に領収いたしました</div>
 
       <div class="rc-ft">
-        <div class="rc-stamp-box">収入印紙</div>
+        <div class="rc-stamp-box">
+          <span class="rc-stamp-cap">収入印紙</span>
+          <span class="rc-stamp-amt" id="rcStamp"></span>
+        </div>
         <div class="rc-ft-sp"></div>
         <div class="rc-issuer">
           <div class="rc-date"><span id="rcDate" contenteditable="true"
@@ -224,6 +231,28 @@ function comma(n){ return (n || 0).toLocaleString('ja-JP'); }
 /* 税込の金額から内消費税を出す。1円未満は切り捨て（税額は切り捨てが通例）。 */
 function innerTax(total){ return total > 0 ? Math.floor(total - total / 1.1) : 0; }
 
+/* 領収書に貼る収入印紙の金額（印紙税法 第17号文書＝売上代金の受取書）。
+   この用紙は消費税額を分けて書いているので、税抜の金額で判定する。
+   [その金額まで, 印紙の額] を上から見ていく。 */
+var STAMP_TAX = [
+  [1000000, 200], [2000000, 400], [3000000, 600], [5000000, 1000],
+  [10000000, 2000], [20000000, 4000], [30000000, 6000], [50000000, 10000],
+  [100000000, 20000], [200000000, 40000], [300000000, 60000]
+];
+function stampDuty(netAmount){
+  if (netAmount < 50000) return 0;   // 税抜5万円未満は非課税
+  for (var i = 0; i < STAMP_TAX.length; i++) if (netAmount <= STAMP_TAX[i][0]) return STAMP_TAX[i][1];
+  return 100000;                     // 3億円超（まず出ないが念のため）
+}
+function renderStamp(total){
+  var net = total - innerTax(total);          // 税抜の金額
+  var duty = stampDuty(net);
+  $('rcStamp').textContent = duty ? '¥' + comma(duty) : '不要';
+}
+
+/* No. は4桁で自動採番する（あとから書き換えられる） */
+function newReceiptNo(){ return String(1000 + Math.floor(Math.random() * 9000)); }
+
 function jpDate(iso){
   if (!iso) return '';
   var m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -233,11 +262,14 @@ function jpDate(iso){
 
 function render(){
   var v = cur();
+  if (!v.no) v.no = newReceiptNo();   // 種別ごとに別の番号を振る
+  $('rcNo').textContent   = v.no;
   $('rcName').textContent = DATA.name || '';
   $('rcAmt').textContent  = comma(v.amount);
   $('rcTax').textContent  = comma(innerTax(v.amount));
   $('rcNote').textContent = v.note || '';
   $('rcDate').textContent = jpDate(v.date);
+  renderStamp(v.amount);
   renderHonorific();
   // 種別が2つ以上あるときだけ切り替えボタンを出す（納骨リスト）
   var wrap = $('segWrap');
@@ -273,6 +305,7 @@ function saveEdits(){
   DATA.name = $('rcName').textContent.trim();
   v.amount  = num($('rcAmt').textContent);
   v.note    = $('rcNote').textContent.trim();
+  v.no      = $('rcNo').textContent.trim();
   var t = $('rcDate').textContent.trim();
   if (t) v.date = t;      // 和暦・自由入力もそのまま残す
 }
@@ -282,6 +315,7 @@ function onAmtEdit(){
   cur().amount = n;
   $('rcAmt').textContent = comma(n);
   $('rcTax').textContent = comma(innerTax(n));
+  renderStamp(n);
 }
 function onDateEdit(){
   var t = $('rcDate').textContent.trim();
@@ -301,7 +335,7 @@ function resetAll(){
   render();
 }
 
-['rcName', 'rcNote'].forEach(function (id) {
+['rcName', 'rcNote', 'rcNo'].forEach(function (id) {
   $(id).addEventListener('blur', saveEdits);
   $(id).addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); this.blur(); }

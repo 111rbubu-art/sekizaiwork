@@ -6498,7 +6498,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.401';
+var APP_VERSION = 'v1.9.402';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -24104,6 +24104,59 @@ function _normalizeTimeFields(edits) {
   return edits;
 }
 
+/* 時刻の欄に入れてよいのは「10:00」の形だけ。
+   本堂・墓前などの文字が混ざるとGoogleカレンダーに時刻として渡せないので、
+   その場で知らせて保存させない。場所や状況は「納骨時間状態」の欄へ。 */
+var TIME_FIELD_LABEL = { '_x7d0d__x9aa8__x6642__x9593_': '納骨時間' };
+
+function _timeFieldError(v) {
+  var t = _toHankakuTime(v == null ? '' : String(v));
+  if (!t) return '';                      // 空欄は今までどおり可（終日の予定になる）
+  var m = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return '「10:00」の形で入れてください。文字や記号は入れられません。';
+  if (parseInt(m[1], 10) > 23 || parseInt(m[2], 10) > 59) return '時刻として正しくありません。0:00〜23:59 で入れてください。';
+  return '';
+}
+
+// 保存しようとしている中に、形の違う時刻がないか探す
+function _findTimeFieldError(edits) {
+  if (!edits) return null;
+  for (var i = 0; i < TIME_FIELDS.length; i++) {
+    var f = TIME_FIELDS[i];
+    if (typeof edits[f] !== 'string') continue;
+    var msg = _timeFieldError(edits[f]);
+    if (msg) return { field: f, value: edits[f], msg: msg };
+  }
+  return null;
+}
+
+// 入力欄を赤くして、下に理由を出す
+function _markTimeFieldError(el, msg) {
+  if (!el) return;
+  el.style.borderColor = msg ? '#c0392b' : '';
+  el.style.background  = msg ? '#fff0ee' : '';
+  var id = 'time-err-' + (el.getAttribute('data-field') || '');
+  var box = document.getElementById(id);
+  if (!msg) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement('div');
+    box.id = id;
+    box.style.cssText = 'color:#c0392b;font-size:11px;margin-top:3px;line-height:1.5';
+    el.parentNode.appendChild(box);
+  }
+  box.textContent = '⚠ ' + msg + '（本堂・墓前などは「納骨時間状態」へ）';
+}
+
+// 保存を止めて、直してもらう欄へ戻す
+function _alertTimeFieldError(err) {
+  var label = TIME_FIELD_LABEL[err.field] || '時刻';
+  var el = document.querySelector('[data-field="' + err.field + '"]');
+  _markTimeFieldError(el, err.msg);
+  alert('【' + label + '】に「' + err.value + '」が入っています。\n\n' + err.msg +
+        '\n本堂・墓前などの場所や状況は「納骨時間状態」の欄へお願いします。\n\n保存していません。直してから、もう一度保存してください。');
+  if (el) { try { el.focus(); if (el.select) el.select(); } catch (e) {} }
+}
+
 function fmtAmount(field, val) {
   if (!val) return val;
   if (AMOUNT_FIELDS.indexOf(field) < 0) return val;
@@ -24242,15 +24295,17 @@ function bindEditInputs(itemId) {
       }
       setEdit(itemId, this.getAttribute('data-field'), val);
     });
-    // 時刻の項目は、入力欄から離れた時点で半角に直して画面にも反映する
+    // 時刻の項目は、入力欄から離れた時点で半角に直し、形が違えばその場で知らせる
     el.addEventListener('blur', function() {
       var f = this.getAttribute('data-field');
       if (TIME_FIELDS.indexOf(f) < 0 || typeof this.value !== 'string') return;
       var fixed = _toHankakuTime(this.value);
-      if (fixed === this.value) return;
-      this.value = fixed;
-      setEdit(itemId, f, fixed);
-      saveEditsToStorage();
+      if (fixed !== this.value) {
+        this.value = fixed;
+        setEdit(itemId, f, fixed);
+        saveEditsToStorage();
+      }
+      _markTimeFieldError(this, _timeFieldError(fixed));
     });
     el.addEventListener('change', function() {
       if (this.getAttribute('data-bool')) return; // bfldのチェックボックスはinline onchangeで処理済み
@@ -24433,6 +24488,13 @@ function toggleEditMode(d, tabIdx) {
     // 保存モード：ローカル保存 + SP保存
     saveEditsToStorage();
     var itemId = d['id'] || d['Title'] || '';
+    // 時刻の欄が「10:00」の形でなければ保存しない。編集のままにして直してもらう。
+    var _timeErr = _findTimeFieldError(localEdits[itemId] || {});
+    if (_timeErr) {
+      editMode = wasEdit;
+      _alertTimeFieldError(_timeErr);
+      return;
+    }
     var edits = _normalizeTimeFields(_stripAmountCommas(localEdits[itemId] || {}));
     // 添付ファイルをListsフォルダーへ同期（フィールド変更有無に関わらず実行）
     var _syncIdMap = {'納骨・戒切':'3ae4bd1d-47b8-4300-aab5-6b828aa0e480','顧客リスト':'29524f89-0370-44ea-8d01-161f34e5a1ab','工事関連':KOUJI_LIST_ID};

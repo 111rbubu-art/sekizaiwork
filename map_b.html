@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.18</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.19</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -714,11 +714,19 @@ function openViewerForPlot(plotName){
   // オーバーレイ
   var overlay = document.createElement('div');
   overlay.id = 'viewer-popup';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px;overscroll-behavior:contain';
   overlay.addEventListener('click', function(e){ if(e.target===overlay) closeViewerPopup(); });
 
   var panel = document.createElement('div');
-  panel.style.cssText = 'background:#fff;width:100%;max-width:400px;max-height:85vh;overflow-y:auto;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;flex-direction:column';
+  panel.style.cssText = 'background:#fff;width:100%;max-width:400px;max-height:85vh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;flex-direction:column';
+
+  /* 顧客情報の上で指を動かしたときに、後ろの地図まで動いてしまうのを止める。
+     中身が短くてスクロールできないときは、指の動きそのものを受け流さない。 */
+  overlay.addEventListener('touchmove', function(e){
+    if (e.touches && e.touches.length > 1) { e.preventDefault(); return; }   // 2本指の拡大縮小も止める
+    var canScroll = panel.scrollHeight > panel.clientHeight + 1;
+    if (!canScroll || !panel.contains(e.target)) e.preventDefault();
+  }, { passive: false });
 
   panel.innerHTML =
     '<div style="background:#1a2535;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;flex-shrink:0">' +
@@ -976,6 +984,7 @@ function loadPlotAttachments(f){
   var el = document.getElementById('vp-attach-list');
   if(!el) return;
   if(!spId){ el.textContent = 'ID不明'; return; }
+  el.innerHTML = '<span style="color:#888">📎 写真・書類を読み込み中...</span>';
 
   // まずlocalStorageから取得を試み、失敗したらMSAL非同期で取得
   var tokenSync = getSPToken(true);
@@ -984,9 +993,10 @@ function loadPlotAttachments(f){
     return;
   }
   // 初回ロード等でlocalStorageにまだトークンがない場合はMSAL経由で取得
-  if(typeof msalApp === 'undefined'){ el.textContent = '（ログイン後に表示）'; return; }
+  if(typeof msalApp === 'undefined'){ el.innerHTML = '<span style="color:#c00">（ログイン後に表示されます）</span>'; return; }
   var acct = msalApp.getAllAccounts()[0];
-  if(!acct){ el.textContent = '（ログイン後に表示）'; return; }
+  if(!acct){ el.innerHTML = '<span style="color:#c00">（ログイン後に表示されます）</span>'; return; }
+  el.innerHTML = '<span style="color:#888">🔑 ログイン情報を確認中...</span>';
   msalApp.acquireTokenSilent({
     scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
     account: acct
@@ -1000,22 +1010,64 @@ function loadPlotAttachments(f){
     }).then(function(resp){
       _doLoadPlotAttachments(spId, resp.accessToken, el);
     }).catch(function(e2){
-      el.textContent = '認証失敗: ' + e2.message;
+      _vpAttachMsg('<span style="color:#c00">ログインに失敗しました：' + e2.message + '</span>' + _vpReloadBtn());
     });
   });
 }
 
-function _doLoadPlotAttachments(spId, token, el){
+/* 添付欄に出す文字。読み込み中・エラーはここを通す */
+function _vpAttachMsg(html){
+  var el = document.getElementById('vp-attach-list');
+  if (el) el.innerHTML = html;
+}
+function _vpReloadBtn(){
+  return '<button onclick="vpReloadAttachments()" style="margin-left:8px;font-size:10px;padding:1px 8px;' +
+         'background:#eee;border:1px solid #ccc;border-radius:3px;cursor:pointer;font-family:inherit">🔄 読み直す</button>';
+}
+// 添付欄をもう一度読み込む（読み込み中の表示から始める）
+function vpReloadAttachments(){
+  if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+}
+// 期限切れなどでうまくいかなかったとき、トークンを取り直してもう一度だけ試す
+function _vpRetryAttachmentsWithFreshToken(spId){
+  _vpAttachMsg('<span style="color:#888">🔑 ログイン情報を取り直しています...</span>');
+  if (typeof msalApp === 'undefined') { _vpAttachMsg('<span style="color:#c00">ログインし直してください</span>' + _vpReloadBtn()); return; }
+  var acct = msalApp.getAllAccounts()[0];
+  if (!acct) { _vpAttachMsg('<span style="color:#c00">ログインし直してください</span>' + _vpReloadBtn()); return; }
+  var scopes = { scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: acct };
+  msalApp.acquireTokenSilent(scopes)
+    .then(function(resp){ _doLoadPlotAttachments(spId, resp.accessToken, null, true); })
+    .catch(function(){
+      msalApp.acquireTokenPopup(scopes)
+        .then(function(resp){ _doLoadPlotAttachments(spId, resp.accessToken, null, true); })
+        .catch(function(e){ _vpAttachMsg('<span style="color:#c00">ログインに失敗しました：' + e.message + '</span>' + _vpReloadBtn()); });
+    });
+}
+
+function _doLoadPlotAttachments(spId, token, el, retried){
+  _vpAttachMsg('<span style="color:#888">📎 写真・書類を読み込み中...</span>');
   var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items("+spId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
   fetch(listUrl, {
     headers: { 'Authorization': 'Bearer '+token, 'Accept': 'application/json;odata=verbose' }
   })
-  .then(function(r){ return r.json(); })
+  .then(function(r){
+    // 401/403 はトークンの期限切れ。1回だけ取り直して試す
+    if ((r.status === 401 || r.status === 403) && !retried) { _vpRetryAttachmentsWithFreshToken(spId); return null; }
+    if (!r.ok) throw new Error('SharePointの応答 ' + r.status);
+    return r.json();
+  })
   .then(function(d){
+    if (d === null) return;                       // トークンを取り直し中
     var el2 = document.getElementById('vp-attach-list');
     if(!el2) return;
-    var files = (d.d && d.d.results) ? d.d.results : (d.value || []);
-    if(files.length === 0){ el2.textContent = 'なし'; return; }
+    // 応答の形が想定どおりか確かめる。中身が読めないのに「なし」と出さないため
+    var files = (d && d.d && d.d.results) ? d.d.results : (d && d.value) ? d.value : null;
+    if (files === null) {
+      var em = (d && d.error && d.error.message) ||
+               (d && d['odata.error'] && d['odata.error'].message && d['odata.error'].message.value) || '';
+      throw new Error(em || '内容を読み取れませんでした');
+    }
+    if(files.length === 0){ el2.innerHTML = '<span style="color:#888">なし</span>' + _vpReloadBtn(); return; }
 
     var imgs = [], others = [];
     files.forEach(function(file){
@@ -1074,14 +1126,14 @@ function _doLoadPlotAttachments(spId, token, el){
       fetch(binUrl, { headers: { 'Authorization': 'Bearer '+token } })
       .then(function(r){ return r.ok ? r.blob() : null; })
       .then(function(blob){
-        if(blob) imgEl.src = URL.createObjectURL(blob);
+        if(blob) { imgEl.src = URL.createObjectURL(blob); return; }
+        imgEl.style.display = 'none';             // 読めなかった画像は隠す（白い枠を残さない）
       })
-      .catch(function(){});
+      .catch(function(){ imgEl.style.display = 'none'; });
     });
   })
   .catch(function(e){
-    var el2 = document.getElementById('vp-attach-list');
-    if(el2) el2.textContent = 'エラー: '+e.message;
+    _vpAttachMsg('<span style="color:#c00">読み込めませんでした：' + e.message + '</span>' + _vpReloadBtn());
   });
 }
 

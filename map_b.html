@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.17</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.18</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -959,7 +959,10 @@ function renderPlotCustomer(f){
     '<div id="vp-attach" style="margin-top:10px">' +
       '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px;display:flex;align-items:center;justify-content:space-between">' +
         '<span>添付ファイル</span>' +
+        '<span style="display:flex;gap:5px">' +
+        '<button id="vp-photo-btn" onclick="vpTakePhoto()" style="font-size:11px;font-weight:600;padding:4px 10px;background:#1a6a3a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">📷 写真を撮る</button>' +
         '<button id="vp-jpeg-btn" onclick="vpSaveMapJpeg()" style="font-size:10px;padding:2px 8px;background:#2a4a7a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">🗺️ 地図JPEG → 添付保存</button>' +
+        '</span>' +
       '</div>' +
       '<div id="vp-attach-list" style="font-size:11px;color:#888;padding:4px 0">読み込み中...</div>' +
     '</div>';
@@ -2390,6 +2393,124 @@ function changeFontScale(delta) {
 
 
 // ===== VPポップアップ：地図JPEG→顧客リスト添付保存 =====
+/* ===== 現地で写真を撮って、その区画の顧客へ添付する =====
+   顧客リストを検索しなくても、地図で区画を選んでそのまま撮って登録できるようにする。
+   カメラは端末の写真アプリを呼び出すだけなので、特別な許可設定はいらない。 */
+
+// カメラ（またはアルバム）を開く。入力欄は1つだけ作って使い回す。
+function vpTakePhoto() {
+  if (!window._vpCurrentCustomer) { alert('顧客データが取得できていません'); return; }
+  var inp = document.getElementById('vp-photo-input');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.type = 'file';
+    inp.id = 'vp-photo-input';
+    inp.accept = 'image/*';
+    inp.setAttribute('capture', 'environment');   // 端末の背面カメラを優先
+    inp.multiple = true;                          // まとめて何枚でも
+    inp.style.display = 'none';
+    inp.addEventListener('change', function () {
+      var files = [].slice.call(this.files || []);
+      this.value = '';                            // 同じ写真をもう一度選べるように空にする
+      if (files.length) vpUploadPhotos(files);
+    });
+    document.body.appendChild(inp);
+  }
+  inp.click();
+}
+
+/* 写真は大きすぎるので、長辺2000pxまで縮めてJPEGにする。
+   現地の電波でも上げられる大きさにし、SharePointも重くしないため。 */
+function _vpShrinkPhoto(file) {
+  return new Promise(function (resolve) {
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+      var max = 2000, sc = Math.min(1, max / Math.max(w, h));
+      var cw = Math.max(1, Math.round(w * sc)), ch = Math.max(1, Math.round(h * sc));
+      var cv = document.createElement('canvas');
+      cv.width = cw; cv.height = ch;
+      var ctx = cv.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cw, ch);
+      ctx.drawImage(img, 0, 0, cw, ch);
+      cv.toBlob(function (blob) { resolve(blob || file); }, 'image/jpeg', 0.85);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };  // 読めなければそのまま上げる
+    img.src = url;
+  });
+}
+
+// ファイル名に使えない文字を外す
+function _vpSafeName(s) { return String(s || '').replace(/[\\\/:\*\?"<>\|]/g, '_').trim(); }
+
+function vpUploadPhotos(files) {
+  var f = window._vpCurrentCustomer;
+  if (!f) { alert('顧客データが取得できていません'); return; }
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) { alert('トークンが取得できません。ビューアー（index_b.html）からログインして地図を開いてください。'); return; }
+
+  var btn = document.getElementById('vp-photo-btn');
+  var back = function () { if (btn) { btn.textContent = '📷 写真を撮る'; btn.disabled = false; } };
+  if (btn) { btn.disabled = true; }
+
+  var cusName  = _vpSafeName(f['CusName'] || f['Title'] || 'unknown');
+  var spItemId = f['id'];
+  var d = new Date();
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  var stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' +
+              pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  var siteUrl = 'https://shojisekizai.sharepoint.com/sites/stoneworks';
+  var ok = 0, ngList = [];
+
+  // 1枚ずつ順番に上げる（現地の電波でも詰まりにくいように）
+  return fetch(siteUrl + '/_api/contextinfo', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' }
+  })
+  .then(function (r) { return r.json(); })
+  .then(function (di) {
+    var digest = di.d.GetContextWebInformation.FormDigestValue;
+    return files.reduce(function (chain, file, i) {
+      return chain.then(function () {
+        if (btn) btn.textContent = '⏳ ' + (i + 1) + '/' + files.length + '枚目...';
+        return _vpShrinkPhoto(file).then(function (blob) {
+          var name = '写真_' + cusName + '_' + stamp + (files.length > 1 ? '_' + (i + 1) : '') + '.jpg';
+          var url = siteUrl + "/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')" +
+                    "/items(" + spItemId + ")/AttachmentFiles/add(FileName='" + encodeURIComponent(name) + "')";
+          return fetch(url, {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + token,
+              'Accept': 'application/json;odata=verbose',
+              'Content-Type': 'application/octet-stream',
+              'X-RequestDigest': digest
+            },
+            body: blob
+          }).then(function (r) {
+            if (r.ok || r.status === 201) { ok++; return; }
+            return r.json().then(function (e) {
+              ngList.push(name + '：' + ((e.error && e.error.message) ||
+                (e['odata.error'] && e['odata.error'].message && e['odata.error'].message.value) || r.status));
+            }, function () { ngList.push(name + '：' + r.status); });
+          });
+        });
+      });
+    }, Promise.resolve());
+  })
+  .then(function () {
+    back();
+    if (ok) showSPStatus('✅ ' + cusName + ' に写真を' + ok + '枚保存しました', 'ok');
+    if (ngList.length) showSPStatus('❌ 保存できませんでした\n' + ngList[0], 'err');
+    if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+  })
+  .catch(function (e) {
+    back();
+    showSPStatus('❌ エラー: ' + e.message, 'err');
+  });
+}
+
 function vpSaveMapJpeg() {
   var f = window._vpCurrentCustomer;
   if (!f) { alert('顧客データが取得できていません'); return; }

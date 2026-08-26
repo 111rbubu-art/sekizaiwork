@@ -243,10 +243,13 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.20</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.21</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
+    <div class="sep"></div>
+    <button class="btn out" id="cusMarkBtn" onclick="toggleCusMark()" title="顧客リストにある区画に印を付ける（端末に保存するので通信は初回だけ）">👥 顧客</button>
+    <span id="cusMarkInfo" style="font-size:10px;color:#888;white-space:nowrap"></span>
     <div class="sep"></div>
     <span style="font-size:12px;font-weight:500;">検索：</span>
     <input type="text" id="si" placeholder="契約者名" oninput="doSearch()"/>
@@ -601,6 +604,28 @@ function drawPlot(p,selected){
   ctx.font=`${isEx&&!selected?'bold ':''}${fs}px 'Noto Sans JP',sans-serif`;
   ctx.textAlign='center';ctx.textBaseline='middle';
   if(minS>10)wrapText(p.mapname||(p.status==='empty'?'空':''),x+w/2,y+h/2,w-4,fs*1.2);
+  drawPlotMark(p,x,y,w,h,minS);
+}
+
+/* 区画の右上に小さな●を打つ。
+   🔵＝顧客リストにある区画　🟢＝区画メモ（写真・メモ）がある区画
+   塗りの色は建物・通路・空き・検索一致で使っているので、そちらには触らない。 */
+function drawPlotMark(p,x,y,w,h,minS){
+  if(!_cusMarkOn || minS < 6) return;
+  var nm = p.mapname || '';
+  if(!nm) return;
+  var isCus  = _cusPlotSet  && _cusPlotSet.has(nm);
+  var isMemo = _memoPlotSet && _memoPlotSet.has(nm);
+  if(!isCus && !isMemo) return;
+  var r = Math.min(3.2, Math.max(1.4, minS*0.11));
+  var cx = x + w - r - 1.4, cy = y + r + 1.4;
+  function dot(color, px){
+    ctx.beginPath(); ctx.arc(px, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = color; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 0.5; ctx.stroke();
+  }
+  if(isCus)  dot('#1a5fd0', cx);
+  if(isMemo) dot('#1a8a3a', isCus ? cx - r*2.3 : cx);
 }
 function wrapText(text,cx,cy,maxW,lh){
   if(!text)return;
@@ -805,8 +830,11 @@ function loadPlotCustomerInfo(plotName) {
 
   getGraphToken().then(function(token) {
     var _allCustomers = [];
+    // 画面で使う項目だけを取る。全項目を取ると外では重いため。
+    var _CUS_FIELDS = 'CusName,Title,furigana,telephonenumber,Zipcode,address_1,address_2,' +
+      'sekitou_sekisyu,hame_sekisyu,sesyu_name,noukotu_bikou,KoujiLogJson,Temple,_x006d_ap1,_x006d_ap2';
     var firstUrl = 'https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+
-      '/items?$expand=fields&$filter=fields/Group eq '+groupId+'&$top=500';
+      '/items?$expand=fields($select='+_CUS_FIELDS+')&$filter=fields/Group eq '+groupId+'&$top=500';
 
     // 全体で20秒タイムアウト
     var _globalCtrl = new AbortController();
@@ -889,6 +917,152 @@ function renderPlotList(items, plotName) {
 function renderPlotCustomer_byIdx(idx) {
   var items = window._vpItems || [];
   if(items[idx]) renderPlotCustomer(items[idx].fields || items[idx]);
+}
+
+
+/* ===== 区画の印（顧客リストにあるか／区画メモがあるか） =====
+   外で使うので通信を増やさないことを最優先にする。
+   ・取ってくるのは「地図位置①」「区画名」の1列だけ
+   ・取った結果は端末に保存し、2回目からは通信ゼロで印が出る（圏外でも出る）
+   ・古くなったら「🔄更新」を押したときだけ取り直す。自動では取りに行かない */
+var _cusMarkOn = false;
+var _cusPlotSet = null;      // 顧客リストにある区画名
+var _memoPlotSet = null;     // 区画メモがある区画名
+var _cusMarkMeta = { date: '', cus: 0, memo: 0 };
+var _cusMarkBusy = false;
+
+function _cusMarkKey(){ return 'plotMarks_' + _templeId; }
+
+// 端末に保存してある印を読む
+function _cusMarkLoadCache(){
+  try {
+    var raw = localStorage.getItem(_cusMarkKey());
+    if (!raw) return false;
+    var o = JSON.parse(raw);
+    _cusPlotSet  = new Set(o.cus  || []);
+    _memoPlotSet = new Set(o.memo || []);
+    _cusMarkMeta = { date: o.date || '', cus: (o.cus||[]).length, memo: (o.memo||[]).length };
+    return true;
+  } catch (e) { return false; }
+}
+function _cusMarkSaveCache(){
+  try {
+    localStorage.setItem(_cusMarkKey(), JSON.stringify({
+      date: _cusMarkMeta.date,
+      cus: Array.from(_cusPlotSet || []),
+      memo: Array.from(_memoPlotSet || [])
+    }));
+  } catch (e) {}
+}
+
+function _cusMarkInfoText(){
+  var el = document.getElementById('cusMarkInfo');
+  if (!el) return;
+  if (!_cusMarkOn) { el.textContent = ''; return; }
+  if (_cusMarkBusy) { el.textContent = '取得中...'; return; }
+  if (!_cusPlotSet) { el.textContent = ''; return; }
+  var total = (typeof PLOTS !== 'undefined' && PLOTS) ? PLOTS.filter(function(p){ return p.mapname; }).length : 0;
+  el.innerHTML = '\u{1F535}' + _cusMarkMeta.cus + '件' +
+    (_cusMarkMeta.memo ? ' \u{1F7E2}' + _cusMarkMeta.memo + '件' : '') +
+    (total ? '／' + total + '区画' : '') +
+    (_cusMarkMeta.date ? '（' + _cusMarkMeta.date + '取得）' : '') +
+    ' <a href="javascript:void(0)" onclick="refreshCusMark()" style="color:#185fa5;text-decoration:none">\u{1F504}更新</a>';
+}
+
+function _cusMarkBtnState(){
+  var b = document.getElementById('cusMarkBtn');
+  if (b) b.className = _cusMarkOn ? 'btn' : 'btn out';
+}
+
+// ボタン：印の表示／非表示
+function toggleCusMark(){
+  _cusMarkOn = !_cusMarkOn;
+  _cusMarkBtnState();
+  if (_cusMarkOn && !_cusPlotSet) {
+    if (!_cusMarkLoadCache()) { refreshCusMark(); return; }   // 端末に無い初回だけ取りに行く
+  }
+  _cusMarkInfoText();
+  draw();
+}
+
+// 「🔄更新」：このときだけ通信する
+function refreshCusMark(){
+  if (_cusMarkBusy) return;
+  _cusMarkBusy = true;
+  _cusMarkOn = true;
+  _cusMarkBtnState();
+  _cusMarkInfoText();
+  return Promise.all([_fetchCusPlotNames(), _fetchMemoPlotNames()]).then(function (a) {
+    _cusPlotSet  = new Set(a[0]);
+    _memoPlotSet = new Set(a[1]);
+    var d = new Date();
+    _cusMarkMeta = { date: (d.getMonth()+1) + '/' + d.getDate(), cus: _cusPlotSet.size, memo: _memoPlotSet.size };
+    _cusMarkSaveCache();
+    _cusMarkBusy = false;
+    _cusMarkInfoText();
+    draw();
+    showSPStatus('✅ 顧客' + _cusMarkMeta.cus + '件・区画メモ' + _cusMarkMeta.memo + '件を取り込みました', 'ok');
+  }).catch(function (e) {
+    _cusMarkBusy = false;
+    _cusMarkLoadCache();          // 取れなくても、端末にある分は使う
+    _cusMarkInfoText();
+    draw();
+    showSPStatus('❌ 顧客情報を取れませんでした：' + e.message, 'err');
+  });
+}
+
+/* 顧客リストから「地図位置①」だけを取る。列を1つに絞ってあるので軽い。 */
+function _fetchCusPlotNames(){
+  var TG = { 'chouzenji':6,'gansen':1,'soshuji':2,'jikoji':3,'kugayama':9,'joiinzi':7,'amanuma':8,'fukujuin':5,'komyoin':4 };
+  var groupId = TG[_templeId] || 6;
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+  return getGraphToken().then(function (token) {
+    var names = [];
+    var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
+      '/items?$expand=fields($select=_x006d_ap1)&$filter=fields/Group eq ' + groupId + '&$top=999';
+    function next(u) {
+      return fetch(u, { headers: { Authorization: 'Bearer ' + token } })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (d) {
+          (d.value || []).forEach(function (i) {
+            var v = i.fields && i.fields['_x006d_ap1'];
+            if (v) names.push(String(v));
+          });
+          return d['@odata.nextLink'] ? next(d['@odata.nextLink']) : names;
+        });
+    }
+    return next(url);
+  });
+}
+
+/* 区画メモから、このお寺の区画名だけを取る。 */
+function _fetchMemoPlotNames(){
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) return Promise.resolve([]);
+  var flt = "TempleId eq '" + _spQuote(_templeId) + "'";
+  var url = SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '/items?$select=PlotName&$filter=' +
+            encodeURIComponent(flt) + '&$top=999';
+  return fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d) return [];
+      var rows = (d.d && d.d.results) || d.value || [];
+      return rows.map(function (x) { return String(x.PlotName || ''); }).filter(Boolean);
+    })
+    .catch(function () { return []; });      // 区画メモが取れなくても顧客の印は出す
+}
+
+// 区画メモを保存したら、印にもすぐ反映する（通信はしない）
+function _cusMarkAddMemo(plotName){
+  if (!plotName) return;
+  if (!_memoPlotSet) _memoPlotSet = new Set();
+  if (_memoPlotSet.has(plotName)) return;
+  _memoPlotSet.add(plotName);
+  _cusMarkMeta.memo = _memoPlotSet.size;
+  _cusMarkSaveCache();
+  _cusMarkInfoText();
+  if (_cusMarkOn) draw();
 }
 
 /* ===== 区画メモ =====
@@ -1094,6 +1268,7 @@ function vpPlotMemoSave(){
   go.then(function(item){
     window._vpPlotMemo.item = item;
     _vpAttachTarget = { seg: PLOT_LIST_SEG, itemId: item.Id, label: pm.plotName };
+    _cusMarkAddMemo(pm.plotName);
     return _plotMemoUpdate(item.Id, fields, token);
   }).then(function(){
     _pmState('✅ 保存しました', '#1a6a3a');
@@ -1115,6 +1290,7 @@ function vpPlotMemoPhoto(){
   go.then(function(item){
     window._vpPlotMemo.item = item;
     _vpAttachTarget = { seg: PLOT_LIST_SEG, itemId: item.Id, label: pm.plotName };
+    _cusMarkAddMemo(pm.plotName);
     if (btn) { btn.disabled = false; btn.textContent = '📷 写真を撮る（区画に記録）'; }
     vpTakePhoto();
   }).catch(function(e){

@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.21</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.22</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -773,6 +773,41 @@ function openViewerForPlot(plotName){
   loadPlotCustomerInfo(plotName);
 }
 
+/* Graphのトークンを取る。地図のいろいろな処理から使うので、外側に置く。
+   （以前は loadPlotCustomerInfo の中にあり、他からは呼べなかった） */
+function getGraphToken() {
+  // ① localStorageを直接スキャン（SPドメインを含まないトークン = Graphトークン）
+  var now = Date.now() / 1000;
+  try {
+    var lsKeys = Object.keys(localStorage);
+    for (var li = 0; li < lsKeys.length; li++) {
+      var lk = lsKeys[li];
+      if (lk.indexOf('accesstoken') < 0) continue;
+      var litem = JSON.parse(localStorage.getItem(lk));
+      if (!litem || !litem.secret) continue;
+      var lexp = litem.expiresOn || litem.extended_expires_on || '0';
+      var lexpTime = isNaN(lexp) ? new Date(lexp).getTime() / 1000 : Number(lexp);
+      if (lexpTime <= now + 60) continue;
+      var ltarget = (litem.target || '').toLowerCase();
+      // SPトークンを除外（targetにshojisekizai.sharepoint.comが含まれる）
+      if (ltarget.indexOf('shojisekizai.sharepoint.com') >= 0 || ltarget.length === 0) continue;
+      return Promise.resolve(litem.secret); // Graphトークン発見
+    }
+  } catch(e) {}
+  // ② キャッシュになければMSAL acquireTokenSilent（ポップアップなし・10秒タイムアウト）
+  var tokenPromise = initMapMsal().then(function(app) {
+    var accounts = app.getAllAccounts();
+    if (accounts.length === 0) return Promise.reject(new Error('未ログイン'));
+    return app.acquireTokenSilent({ scopes: _MAP_SCOPES, account: accounts[0] })
+      .then(function(r) { return r.accessToken; })
+      .catch(function() { return Promise.reject(new Error('セッション切れです。再ログインしてください')); });
+  });
+  var timeout = new Promise(function(_, rej) {
+    setTimeout(function() { rej(new Error('認証タイムアウト。再ログインしてください')); }, 10000);
+  });
+  return Promise.race([tokenPromise, timeout]);
+}
+
 function loadPlotCustomerInfo(plotName) {
   // viewer-popup内のvp-bodyを取得（サイドバーの同名IDと衝突しないよう限定）
   var overlay = document.getElementById('viewer-popup');
@@ -782,38 +817,6 @@ function loadPlotCustomerInfo(plotName) {
   // Graph API用トークン取得
   // getSPToken(false)はtarget内に'graph.microsoft.com'がないため常に失敗する。
   // そのためlocalStorageを直接スキャンし、SPトークン以外（=Graphトークン）を返す。
-  function getGraphToken() {
-    // ① localStorageを直接スキャン（SPドメインを含まないトークン = Graphトークン）
-    var now = Date.now() / 1000;
-    try {
-      var lsKeys = Object.keys(localStorage);
-      for (var li = 0; li < lsKeys.length; li++) {
-        var lk = lsKeys[li];
-        if (lk.indexOf('accesstoken') < 0) continue;
-        var litem = JSON.parse(localStorage.getItem(lk));
-        if (!litem || !litem.secret) continue;
-        var lexp = litem.expiresOn || litem.extended_expires_on || '0';
-        var lexpTime = isNaN(lexp) ? new Date(lexp).getTime() / 1000 : Number(lexp);
-        if (lexpTime <= now + 60) continue;
-        var ltarget = (litem.target || '').toLowerCase();
-        // SPトークンを除外（targetにshojisekizai.sharepoint.comが含まれる）
-        if (ltarget.indexOf('shojisekizai.sharepoint.com') >= 0 || ltarget.length === 0) continue;
-        return Promise.resolve(litem.secret); // Graphトークン発見
-      }
-    } catch(e) {}
-    // ② キャッシュになければMSAL acquireTokenSilent（ポップアップなし・10秒タイムアウト）
-    var tokenPromise = initMapMsal().then(function(app) {
-      var accounts = app.getAllAccounts();
-      if (accounts.length === 0) return Promise.reject(new Error('未ログイン'));
-      return app.acquireTokenSilent({ scopes: _MAP_SCOPES, account: accounts[0] })
-        .then(function(r) { return r.accessToken; })
-        .catch(function() { return Promise.reject(new Error('セッション切れです。再ログインしてください')); });
-    });
-    var timeout = new Promise(function(_, rej) {
-      setTimeout(function() { rej(new Error('認証タイムアウト。再ログインしてください')); }, 10000);
-    });
-    return Promise.race([tokenPromise, timeout]);
-  }
 
   // まずキャッシュチェック
   var TEMPLE_GROUP = { 'chouzenji': 6, 'gansen': 1, 'soshuji': 2, 'jikoji': 3, 'kugayama': 9, 'joiinzi': 7, 'amanuma': 8, 'fukujuin': 5, 'komyoin': 4 };
@@ -960,7 +963,11 @@ function _cusMarkInfoText(){
   if (!el) return;
   if (!_cusMarkOn) { el.textContent = ''; return; }
   if (_cusMarkBusy) { el.textContent = '取得中...'; return; }
-  if (!_cusPlotSet) { el.textContent = ''; return; }
+  if (!_cusPlotSet) {
+    el.innerHTML = '<span style="color:#c00">取得できていません</span>' +
+      ' <a href="javascript:void(0)" onclick="refreshCusMark()" style="color:#185fa5;text-decoration:none">🔄再試行</a>';
+    return;
+  }
   var total = (typeof PLOTS !== 'undefined' && PLOTS) ? PLOTS.filter(function(p){ return p.mapname; }).length : 0;
   el.innerHTML = '\u{1F535}' + _cusMarkMeta.cus + '件' +
     (_cusMarkMeta.memo ? ' \u{1F7E2}' + _cusMarkMeta.memo + '件' : '') +
@@ -992,7 +999,17 @@ function refreshCusMark(){
   _cusMarkOn = true;
   _cusMarkBtnState();
   _cusMarkInfoText();
-  return Promise.all([_fetchCusPlotNames(), _fetchMemoPlotNames()]).then(function (a) {
+  // どこかで止まっても「取得中...」のまま固まらないよう、必ず終わらせる
+  var giveUp = new Promise(function (_, rej) {
+    setTimeout(function () { rej(new Error('時間内に取得できませんでした')); }, 25000);
+  });
+  var work;
+  try {
+    work = Promise.all([_fetchCusPlotNames(), _fetchMemoPlotNames()]);
+  } catch (e) {
+    work = Promise.reject(e);           // 呼び出しでその場で失敗した場合も拾う
+  }
+  return Promise.race([work, giveUp]).then(function (a) {
     _cusPlotSet  = new Set(a[0]);
     _memoPlotSet = new Set(a[1]);
     var d = new Date();
@@ -1017,22 +1034,29 @@ function _fetchCusPlotNames(){
   var groupId = TG[_templeId] || 6;
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { ctrl.abort(); }, 20000);
   return getGraphToken().then(function (token) {
     var names = [];
     var url = 'https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId +
-      '/items?$expand=fields($select=_x006d_ap1)&$filter=fields/Group eq ' + groupId + '&$top=999';
+      '/items?$expand=fields($select=_x006d_ap1)&$filter=fields/Group eq ' + groupId + '&$top=500';
     function next(u) {
-      return fetch(u, { headers: { Authorization: 'Bearer ' + token } })
+      return fetch(u, { headers: { Authorization: 'Bearer ' + token }, signal: ctrl.signal })
         .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function (d) {
           (d.value || []).forEach(function (i) {
             var v = i.fields && i.fields['_x006d_ap1'];
             if (v) names.push(String(v));
           });
-          return d['@odata.nextLink'] ? next(d['@odata.nextLink']) : names;
+          if (d['@odata.nextLink']) return next(d['@odata.nextLink']);
+          clearTimeout(timer);
+          return names;
         });
     }
     return next(url);
+  }).catch(function (e) {
+    clearTimeout(timer);
+    throw new Error(e.name === 'AbortError' ? '通信が時間切れになりました' : e.message);
   });
 }
 
@@ -1043,7 +1067,9 @@ function _fetchMemoPlotNames(){
   var flt = "TempleId eq '" + _spQuote(_templeId) + "'";
   var url = SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '/items?$select=PlotName&$filter=' +
             encodeURIComponent(flt) + '&$top=999';
-  return fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' } })
+  var ctrl2 = new AbortController();
+  setTimeout(function () { ctrl2.abort(); }, 20000);
+  return fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' }, signal: ctrl2.signal })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
       if (!d) return [];

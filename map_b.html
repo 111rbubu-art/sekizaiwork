@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.19</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.20</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -861,7 +861,7 @@ function _findAndShowPlot(plotName) {
     return (f['_x006d_ap1'] || '') === plotName;
   });
   if(matched.length === 0){
-    body.innerHTML = renderPlotNoCustomer(plotName);
+    renderPlotNoCustomer(plotName);
   } else if(matched.length === 1){
     renderPlotCustomer(matched[0]);
   } else {
@@ -891,8 +891,236 @@ function renderPlotCustomer_byIdx(idx) {
   if(items[idx]) renderPlotCustomer(items[idx].fields || items[idx]);
 }
 
+/* ===== 区画メモ =====
+   顧客リストにまだ無い区画の写真とメモを、専用リスト「区画メモ」に残す。
+   お寺記号（TempleId）＋区画名（PlotName）の組で1件にまとめる。
+   区画を開いただけでは作らない。写真かメモを入れたときに初めて作る。 */
+var PLOT_MEMO_LIST_ID = '0db5ad27-d30b-44b7-890c-4c0a7dfe6369';
+var SP_SITE  = 'https://shojisekizai.sharepoint.com/sites/stoneworks';
+var CUS_LIST_SEG  = "lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')";
+var PLOT_LIST_SEG = "lists(guid'" + PLOT_MEMO_LIST_ID + "')";
+var TEMPLE_NAME_BY_ID = {
+  chouzenji:'長泉寺', gansen:'願泉寺', soshuji:'宗福寺', jikoji:'慈宏寺', kugayama:'久我山墓地',
+  joiinzi:'浄因寺', amanuma:'天沼共同', fukujuin:'福寿院', komyoin:'光明院'
+};
+var PLOT_STATUS_LIST = ['見込み', '要確認', '対応済み'];
+
+// いま添付を出している相手。顧客リストの顧客か、区画メモか。
+var _vpAttachTarget = null;      // { seg, itemId, label }
+var _plotMemoType = null;        // 区画メモリストの型名（作成時に必要）
+
+function _spQuote(v){ return String(v == null ? '' : v).replace(/'/g, "''"); }
+
+/* 日付だけの列に入れる形。時差でずれないよう、その日の0時（UTC）として送る。
+   日本時間の0時で送ると、SharePointからは前日として返ってくるため。 */
+function _spDateOnly(ymd){
+  var m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) {
+    var d = new Date(), pad = function(n){ return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T00:00:00Z';
+  }
+  return m[1] + '-' + m[2] + '-' + m[3] + 'T00:00:00Z';
+}
+
+// 書き込みに要る合言葉
+function _spDigest(token){
+  return fetch(SP_SITE + '/_api/contextinfo', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' }
+  }).then(function(r){ return r.json(); })
+    .then(function(d){ return d.d.GetContextWebInformation.FormDigestValue; });
+}
+
+// 区画メモリストの型名。リスト名を変えても壊れないよう、SharePointに聞く。
+function _plotMemoEntityType(token){
+  if (_plotMemoType) return Promise.resolve(_plotMemoType);
+  return fetch(SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '?$select=ListItemEntityTypeFullName', {
+    headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' }
+  }).then(function(r){
+    if (!r.ok) throw new Error('区画メモのリストが見つかりません（' + r.status + '）');
+    return r.json();
+  }).then(function(d){
+    _plotMemoType = (d.d && d.d.ListItemEntityTypeFullName) || 'SP.Data.PlotMemoListItem';
+    return _plotMemoType;
+  });
+}
+
+// お寺記号＋区画名で探す。無ければ null。
+function _plotMemoFind(templeId, plotName, token){
+  var flt = "TempleId eq '" + _spQuote(templeId) + "' and PlotName eq '" + _spQuote(plotName) + "'";
+  var url = SP_SITE + '/_api/web/' + PLOT_LIST_SEG +
+    '/items?$select=Id,Title,TempleId,Temple,PlotName,Memo,Status,LastCheck,CusID' +
+    '&$filter=' + encodeURIComponent(flt) + '&$top=1';
+  return fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose' } })
+    .then(function(r){
+      if (!r.ok) throw new Error('区画メモを読めません（' + r.status + '）');
+      return r.json();
+    })
+    .then(function(d){
+      var rows = (d.d && d.d.results) || d.value || [];
+      return rows.length ? rows[0] : null;
+    });
+}
+
+// 無ければ作る
+function _plotMemoEnsure(templeId, plotName, token){
+  return _plotMemoFind(templeId, plotName, token).then(function(item){
+    if (item) return item;
+    return Promise.all([_spDigest(token), _plotMemoEntityType(token)]).then(function(a){
+      var digest = a[0], type = a[1];
+      var tname = TEMPLE_NAME_BY_ID[templeId] || templeId;
+      var body = {
+        __metadata: { type: type },
+        Title: tname + ' ' + plotName,
+        TempleId: templeId,
+        Temple: tname,
+        PlotName: plotName,
+        Status: '見込み',
+        LastCheck: _spDateOnly('')
+      };
+      return fetch(SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '/items', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose',
+          'Content-Type': 'application/json;odata=verbose', 'X-RequestDigest': digest
+        },
+        body: JSON.stringify(body)
+      }).then(function(r){
+        if (!r.ok) return r.text().then(function(t){ throw new Error('区画メモを作れません（' + r.status + '）' + t.slice(0, 120)); });
+        return r.json();
+      }).then(function(d){ return (d.d || d); });
+    });
+  });
+}
+
+// メモ・状態などを書き換える
+function _plotMemoUpdate(itemId, fields, token){
+  return Promise.all([_spDigest(token), _plotMemoEntityType(token)]).then(function(a){
+    var body = { __metadata: { type: a[1] } };
+    Object.keys(fields).forEach(function(k){ body[k] = fields[k]; });
+    return fetch(SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '/items(' + itemId + ')', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose',
+        'Content-Type': 'application/json;odata=verbose', 'X-RequestDigest': a[0],
+        'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*'
+      },
+      body: JSON.stringify(body)
+    }).then(function(r){
+      if (!r.ok) throw new Error('保存できません（' + r.status + '）');
+    });
+  });
+}
+
+/* 顧客リストに無い区画の画面 */
 function renderPlotNoCustomer(plotName){
-  return '<div style="padding:8px 0;font-size:12px;color:#888;text-align:center">「'+plotName+'」に紐づく顧客データが見つかりません</div>';
+  var overlay = document.getElementById('viewer-popup');
+  var body = overlay ? overlay.querySelector('#vp-body') : document.getElementById('vp-body');
+  if (!body) return '';
+  window._vpCurrentCustomer = null;
+  window._vpPlotMemo = { templeId: _templeId, plotName: plotName, item: null };
+  _vpAttachTarget = null;
+
+  var opts = PLOT_STATUS_LIST.map(function(v){ return '<option value="' + v + '">' + v + '</option>'; }).join('');
+  body.innerHTML =
+    '<div style="background:#fff8e1;border:1px solid #e8d68a;border-radius:5px;padding:8px 10px;font-size:11px;color:#6a5000;margin-bottom:10px">' +
+      '「' + plotName + '」は顧客リストにありません。<br>写真とメモを<b>区画メモ</b>として残せます。' +
+    '</div>' +
+    '<button onclick="vpPlotMemoPhoto()" id="pm-photo-btn" style="width:100%;padding:12px;font-size:14px;font-weight:600;' +
+      'background:#1a6a3a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;margin-bottom:10px">' +
+      '📷 写真を撮る（区画に記録）</button>' +
+    '<div style="display:flex;gap:6px;margin-bottom:8px">' +
+      '<div style="flex:1"><div style="font-size:10px;color:#666;margin-bottom:2px">状態</div>' +
+        '<select id="pm-status" onchange="vpPlotMemoSave()" style="width:100%;padding:5px;font-size:12px;font-family:inherit;border:1px solid #ccc;border-radius:4px">' + opts + '</select></div>' +
+      '<div style="flex:1"><div style="font-size:10px;color:#666;margin-bottom:2px">最終確認日</div>' +
+        '<input id="pm-date" type="date" onchange="vpPlotMemoSave()" style="width:100%;padding:5px;font-size:12px;font-family:inherit;border:1px solid #ccc;border-radius:4px"></div>' +
+    '</div>' +
+    '<div style="font-size:10px;color:#666;margin-bottom:2px">メモ（撮った理由・気づいたこと）</div>' +
+    '<textarea id="pm-memo" onblur="vpPlotMemoSave()" rows="3" placeholder="例：墓石が傾いている／草が伸びている／〇〇家らしい" ' +
+      'style="width:100%;padding:6px;font-size:12px;font-family:inherit;border:1px solid #ccc;border-radius:4px;box-sizing:border-box"></textarea>' +
+    '<div id="pm-state" style="font-size:10px;color:#888;min-height:14px;padding:3px 0"></div>' +
+    '<div style="margin-top:6px">' +
+      '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">この区画の写真</div>' +
+      '<div id="vp-attach-list" style="font-size:11px;color:#888;padding:4px 0">📎 読み込み中...</div>' +
+    '</div>';
+
+  _plotMemoLoad();
+  return '';
+}
+
+function _pmState(msg, color){
+  var el = document.getElementById('pm-state');
+  if (el) { el.textContent = msg || ''; el.style.color = color || '#888'; }
+}
+
+// 既にある区画メモを読み込んで画面に反映する
+function _plotMemoLoad(){
+  var pm = window._vpPlotMemo;
+  if (!pm) return;
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) { _vpAttachMsg('<span style="color:#c00">（ログイン後に表示されます）</span>'); return; }
+  _plotMemoFind(pm.templeId, pm.plotName, token).then(function(item){
+    if (!window._vpPlotMemo || window._vpPlotMemo.plotName !== pm.plotName) return;   // 別の区画に移っていたら何もしない
+    window._vpPlotMemo.item = item;
+    if (!item) {
+      _vpAttachMsg('<span style="color:#888">まだ登録がありません</span>');
+      return;
+    }
+    var st = document.getElementById('pm-status'); if (st && item.Status) st.value = item.Status;
+    var mm = document.getElementById('pm-memo');   if (mm) mm.value = item.Memo || '';
+    var dt = document.getElementById('pm-date');
+    if (dt && item.LastCheck) dt.value = String(item.LastCheck).slice(0, 10);
+    _vpAttachTarget = { seg: PLOT_LIST_SEG, itemId: item.Id, label: pm.plotName };
+    _doLoadPlotAttachments(item.Id, token, null);
+  }).catch(function(e){
+    _vpAttachMsg('<span style="color:#c00">' + e.message + '</span>' + _vpReloadBtn());
+  });
+}
+
+// メモ・状態・日付を保存する。まだレコードが無ければここで作る。
+function vpPlotMemoSave(){
+  var pm = window._vpPlotMemo;
+  if (!pm) return;
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) { _pmState('ログインし直してください', '#c00'); return; }
+  var memo = (document.getElementById('pm-memo') || {}).value || '';
+  var status = (document.getElementById('pm-status') || {}).value || '見込み';
+  var date = (document.getElementById('pm-date') || {}).value || '';
+  _pmState('保存中...');
+  var fields = { Memo: memo, Status: status };
+  if (date) fields.LastCheck = _spDateOnly(date);
+
+  var go = pm.item ? Promise.resolve(pm.item) : _plotMemoEnsure(pm.templeId, pm.plotName, token);
+  go.then(function(item){
+    window._vpPlotMemo.item = item;
+    _vpAttachTarget = { seg: PLOT_LIST_SEG, itemId: item.Id, label: pm.plotName };
+    return _plotMemoUpdate(item.Id, fields, token);
+  }).then(function(){
+    _pmState('✅ 保存しました', '#1a6a3a');
+    setTimeout(function(){ _pmState(''); }, 2000);
+  }).catch(function(e){
+    _pmState('❌ ' + e.message, '#c00');
+  });
+}
+
+// 区画メモに写真を撮って付ける
+function vpPlotMemoPhoto(){
+  var pm = window._vpPlotMemo;
+  if (!pm) { alert('区画が選ばれていません'); return; }
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) { alert('トークンが取得できません。ビューアー（index_b.html）からログインして地図を開いてください。'); return; }
+  var btn = document.getElementById('pm-photo-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 準備中...'; }
+  var go = pm.item ? Promise.resolve(pm.item) : _plotMemoEnsure(pm.templeId, pm.plotName, token);
+  go.then(function(item){
+    window._vpPlotMemo.item = item;
+    _vpAttachTarget = { seg: PLOT_LIST_SEG, itemId: item.Id, label: pm.plotName };
+    if (btn) { btn.disabled = false; btn.textContent = '📷 写真を撮る（区画に記録）'; }
+    vpTakePhoto();
+  }).catch(function(e){
+    if (btn) { btn.disabled = false; btn.textContent = '📷 写真を撮る（区画に記録）'; }
+    alert('区画メモを用意できませんでした：' + e.message);
+  });
 }
 
 function renderPlotCustomer(f){
@@ -981,6 +1209,8 @@ function renderPlotCustomer(f){
 
 function loadPlotAttachments(f){
   var spId = f['id'] || null;
+  window._vpPlotMemo = null;                     // 顧客の画面なので区画メモは対象外
+  _vpAttachTarget = { seg: CUS_LIST_SEG, itemId: spId, label: (f['CusName'] || f['Title'] || '') };
   var el = document.getElementById('vp-attach-list');
   if(!el) return;
   if(!spId){ el.textContent = 'ID不明'; return; }
@@ -1026,6 +1256,7 @@ function _vpReloadBtn(){
 }
 // 添付欄をもう一度読み込む（読み込み中の表示から始める）
 function vpReloadAttachments(){
+  if (window._vpPlotMemo) { _plotMemoLoad(); return; }
   if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
 }
 // 期限切れなどでうまくいかなかったとき、トークンを取り直してもう一度だけ試す
@@ -1046,7 +1277,8 @@ function _vpRetryAttachmentsWithFreshToken(spId){
 
 function _doLoadPlotAttachments(spId, token, el, retried){
   _vpAttachMsg('<span style="color:#888">📎 写真・書類を読み込み中...</span>');
-  var listUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')/items("+spId+")/AttachmentFiles?$select=FileName,ServerRelativeUrl";
+  var seg = (_vpAttachTarget && _vpAttachTarget.seg) || CUS_LIST_SEG;
+  var listUrl = SP_SITE + '/_api/web/' + seg + '/items(' + spId + ')/AttachmentFiles?$select=FileName,ServerRelativeUrl';
   fetch(listUrl, {
     headers: { 'Authorization': 'Bearer '+token, 'Accept': 'application/json;odata=verbose' }
   })
@@ -2451,7 +2683,9 @@ function changeFontScale(delta) {
 
 // カメラ（またはアルバム）を開く。入力欄は1つだけ作って使い回す。
 function vpTakePhoto() {
-  if (!window._vpCurrentCustomer) { alert('顧客データが取得できていません'); return; }
+  if (!window._vpCurrentCustomer && !(_vpAttachTarget && _vpAttachTarget.itemId)) {
+    alert('顧客データが取得できていません'); return;
+  }
   var inp = document.getElementById('vp-photo-input');
   if (!inp) {
     inp = document.createElement('input');
@@ -2498,17 +2732,20 @@ function _vpShrinkPhoto(file) {
 function _vpSafeName(s) { return String(s || '').replace(/[\\\/:\*\?"<>\|]/g, '_').trim(); }
 
 function vpUploadPhotos(files) {
-  var f = window._vpCurrentCustomer;
-  if (!f) { alert('顧客データが取得できていません'); return; }
+  // 保存先は「いま開いている相手」。顧客リストの顧客か、区画メモか。
+  var target = _vpAttachTarget;
+  if (!target || !target.itemId) { alert('保存先が決まっていません'); return; }
   var token = getSPToken(true) || getSPToken(false) || getSPToken();
   if (!token) { alert('トークンが取得できません。ビューアー（index_b.html）からログインして地図を開いてください。'); return; }
 
-  var btn = document.getElementById('vp-photo-btn');
-  var back = function () { if (btn) { btn.textContent = '📷 写真を撮る'; btn.disabled = false; } };
+  var isPlot = !!window._vpPlotMemo;
+  var btn = document.getElementById(isPlot ? 'pm-photo-btn' : 'vp-photo-btn');
+  var label = isPlot ? '📷 写真を撮る（区画に記録）' : '📷 写真を撮る';
+  var back = function () { if (btn) { btn.textContent = label; btn.disabled = false; } };
   if (btn) { btn.disabled = true; }
 
-  var cusName  = _vpSafeName(f['CusName'] || f['Title'] || 'unknown');
-  var spItemId = f['id'];
+  var cusName  = _vpSafeName(target.label || 'unknown');
+  var spItemId = target.itemId;
   var d = new Date();
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' +
@@ -2529,7 +2766,7 @@ function vpUploadPhotos(files) {
         if (btn) btn.textContent = '⏳ ' + (i + 1) + '/' + files.length + '枚目...';
         return _vpShrinkPhoto(file).then(function (blob) {
           var name = '写真_' + cusName + '_' + stamp + (files.length > 1 ? '_' + (i + 1) : '') + '.jpg';
-          var url = siteUrl + "/_api/web/lists/getbytitle('%E9%A1%A7%E5%AE%A2%E3%83%AA%E3%82%B9%E3%83%88')" +
+          var url = siteUrl + '/_api/web/' + target.seg +
                     "/items(" + spItemId + ")/AttachmentFiles/add(FileName='" + encodeURIComponent(name) + "')";
           return fetch(url, {
             method: 'POST',
@@ -2555,7 +2792,7 @@ function vpUploadPhotos(files) {
     back();
     if (ok) showSPStatus('✅ ' + cusName + ' に写真を' + ok + '枚保存しました', 'ok');
     if (ngList.length) showSPStatus('❌ 保存できませんでした\n' + ngList[0], 'err');
-    if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+    vpReloadAttachments();
   })
   .catch(function (e) {
     back();
@@ -2642,7 +2879,7 @@ function vpSaveMapJpeg() {
       if (btn) { btn.textContent = '🗺️ 地図JPEG → 添付保存'; btn.disabled = false; }
       if (r.ok || r.status === 201) {
         showSPStatus('✅ 地図を保存しました: ' + fileName, 'ok');
-        if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+        vpReloadAttachments();
       } else {
         r.json().then(function(e){ showSPStatus('❌ 保存エラー: ' + ((e.error&&e.error.message)||(e['odata.error']&&e['odata.error'].message&&e['odata.error'].message.value)||r.status), 'err'); });
       }
@@ -2687,7 +2924,7 @@ function vpDeleteAttachment(encRelUrl, encFileName) {
   .then(function(r) {
     if (r.ok || r.status === 204 || r.status === 200) {
       showSPStatus('✅ 削除しました: ' + fileName, 'ok');
-      if (window._vpCurrentCustomer) loadPlotAttachments(window._vpCurrentCustomer);
+      vpReloadAttachments();
     } else {
       showSPStatus('❌ 削除エラー: ' + r.status, 'err');
     }

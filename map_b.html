@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.22</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.23</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -928,7 +928,7 @@ function renderPlotCustomer_byIdx(idx) {
    ・取ってくるのは「地図位置①」「区画名」の1列だけ
    ・取った結果は端末に保存し、2回目からは通信ゼロで印が出る（圏外でも出る）
    ・古くなったら「🔄更新」を押したときだけ取り直す。自動では取りに行かない */
-var _cusMarkOn = false;
+var _cusMarkOn = true;      // 既定で印を出す
 var _cusPlotSet = null;      // 顧客リストにある区画名
 var _memoPlotSet = null;     // 区画メモがある区画名
 var _cusMarkMeta = { date: '', cus: 0, memo: 0 };
@@ -958,6 +958,66 @@ function _cusMarkSaveCache(){
   } catch (e) {}
 }
 
+/* 印は SharePoint の「業務アプリ/お寺用マップ」に、地図データと並べて置く。
+   地図データ本体（data_お寺.json）とは別ファイルにする。
+   本体は区画の形の正本で、マップ編集で人が書き戻すため、混ぜると上書き事故になる。 */
+function _marksFileName(){ return 'marks_' + _templeId + '.json'; }
+function _marksUrl(){
+  return 'https://graph.microsoft.com/v1.0/drives/' + SP_DRIVE_ID +
+         '/root:/' + SP_FOLDER + '/' + encodeURIComponent(_marksFileName()) + ':/content';
+}
+
+// SharePointから印を読む。無ければ何もしない（端末の控えをそのまま使う）。
+function _cusMarkLoadFromSP(){
+  return getMapGraphToken().then(function (token) {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 8000);
+    return fetch(_marksUrl(), { headers: { Authorization: 'Bearer ' + token }, signal: ctrl.signal })
+      .then(function (r) { clearTimeout(timer); return r.ok ? r.json() : null; });
+  }).then(function (o) {
+    if (!o || !o.cus) return false;
+    _cusPlotSet  = new Set(o.cus  || []);
+    _memoPlotSet = new Set(o.memo || []);
+    _cusMarkMeta = { date: o.date || '', cus: (o.cus||[]).length, memo: (o.memo||[]).length };
+    _cusMarkSaveCache();          // 圏外用に端末にも控える
+    _cusMarkInfoText();
+    draw();
+    return true;
+  }).catch(function () { return false; });
+}
+
+// 印をSharePointへ書く。これで全員に行き渡る。
+function _cusMarkSaveToSP(){
+  var body = JSON.stringify({
+    savedAt: new Date().toISOString(),
+    date: _cusMarkMeta.date,
+    cus: Array.from(_cusPlotSet || []),
+    memo: Array.from(_memoPlotSet || [])
+  });
+  return getMapGraphToken().then(function (token) {
+    return fetch(_marksUrl(), {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: body
+    });
+  }).then(function (r) {
+    if (!(r.ok || r.status === 201)) throw new Error('HTTP ' + r.status);
+    return true;
+  });
+}
+
+/* 地図を開いたときに印を用意する。
+   まず端末の控えで即座に出し、そのあとSharePointの最新に入れ替える。
+   圏外なら端末の控えのまま。顧客リストへは取りに行かない（重いため）。 */
+function _cusMarkBoot(){
+  _cusMarkBtnState();
+  _cusMarkLoadCache();
+  _cusMarkInfoText();
+  draw();
+  if (typeof _isOfflineMode !== 'undefined' && _isOfflineMode) return;
+  _cusMarkLoadFromSP();
+}
+
 function _cusMarkInfoText(){
   var el = document.getElementById('cusMarkInfo');
   if (!el) return;
@@ -981,13 +1041,11 @@ function _cusMarkBtnState(){
   if (b) b.className = _cusMarkOn ? 'btn' : 'btn out';
 }
 
-// ボタン：印の表示／非表示
+// ボタン：印の表示／非表示（その場かぎり。次に開いたときはまた出る）
 function toggleCusMark(){
   _cusMarkOn = !_cusMarkOn;
   _cusMarkBtnState();
-  if (_cusMarkOn && !_cusPlotSet) {
-    if (!_cusMarkLoadCache()) { refreshCusMark(); return; }   // 端末に無い初回だけ取りに行く
-  }
+  if (_cusMarkOn && !_cusPlotSet) _cusMarkLoadCache();
   _cusMarkInfoText();
   draw();
 }
@@ -1018,7 +1076,13 @@ function refreshCusMark(){
     _cusMarkBusy = false;
     _cusMarkInfoText();
     draw();
-    showSPStatus('✅ 顧客' + _cusMarkMeta.cus + '件・区画メモ' + _cusMarkMeta.memo + '件を取り込みました', 'ok');
+    // SharePointにも置く。次からは全員が、取り込み操作なしで見られる。
+    return _cusMarkSaveToSP().then(function () {
+      showSPStatus('✅ 顧客' + _cusMarkMeta.cus + '件・区画メモ' + _cusMarkMeta.memo +
+                   '件を取り込み、全員に反映しました', 'ok');
+    }).catch(function (e) {
+      showSPStatus('⚠ 取り込みましたが、共有の保存に失敗しました（この端末では出ます）：' + e.message, 'err');
+    });
   }).catch(function (e) {
     _cusMarkBusy = false;
     _cusMarkLoadCache();          // 取れなくても、端末にある分は使う
@@ -1089,6 +1153,8 @@ function _cusMarkAddMemo(plotName){
   _cusMarkSaveCache();
   _cusMarkInfoText();
   if (_cusMarkOn) draw();
+  // 共有側にも足しておく（数KBなので現地でも負担にならない）。失敗しても画面には出ている。
+  if (_cusPlotSet) _cusMarkSaveToSP().catch(function () {});
 }
 
 /* ===== 区画メモ =====
@@ -3840,6 +3906,7 @@ if (_isOfflineMode) {
   setDataSource('init', null); // 読込前の初期状態
   loadFromSP(null); // 非同期でSPから最新データを読込
 }
+_cusMarkBoot();   // 区画の印（顧客・区画メモ）を用意する
 
 
 // エクスポートモード判定

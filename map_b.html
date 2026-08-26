@@ -243,7 +243,7 @@ if (_isOfflineMode) {
     <h1>⛩ 長泉寺　墓地マップ</h1>
     <span class="stats" id="st"></span>
     <span id="data-source-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;border:1px solid #ccc;background:#f0f0f0;color:#666;white-space:nowrap;" title="現在表示中のデータの読込元">データ確認中...</span>
-    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.23</span><span class="sv" id="sv">✓ 保存しました</span>
+    <span id="map-version-badge" style="font-size:10px;color:#aaa;white-space:nowrap;padding:2px 6px">map v1.24</span><span class="sv" id="sv">✓ 保存しました</span>
   </div>
   <div class="tb">
     <button class="btn out" onclick="goToViewer()" title="石材業務ビューアーを開く">📋 顧客情報</button>
@@ -763,7 +763,7 @@ function openViewerForPlot(plotName){
     '</div>' +
     '<div style="padding:10px 14px;border-top:1px solid #eee;display:flex;gap:8px;flex-shrink:0">' +
       '<button class="btn out" onclick="closeViewerPopup()" style="flex:1">閉じる</button>' +
-      '<button class="btn" onclick="window.open(VIEWER_URL+\'?map=\'+encodeURIComponent(\''+plotName+'\')+ \'&temple=\'+_templeId,\'sekizaiviewer\');closeViewerPopup();" style="flex:2">📱 詳細を開く</button>' +
+      '<button class="btn" id="vp-detail-btn" onclick="window.open(VIEWER_URL+\'?map=\'+encodeURIComponent(\''+plotName+'\')+ \'&temple=\'+_templeId,\'sekizaiviewer\');closeViewerPopup();" style="flex:2">📱 詳細を開く</button>' +
     '</div>';
 
   overlay.appendChild(panel);
@@ -1143,6 +1143,17 @@ function _fetchMemoPlotNames(){
     .catch(function () { return []; });      // 区画メモが取れなくても顧客の印は出す
 }
 
+// 区画メモを消したら、🟢 も消す（共有側にも反映する）
+function _cusMarkRemoveMemo(plotName){
+  if (!plotName || !_memoPlotSet || !_memoPlotSet.has(plotName)) return;
+  _memoPlotSet['delete'](plotName);
+  _cusMarkMeta.memo = _memoPlotSet.size;
+  _cusMarkSaveCache();
+  _cusMarkInfoText();
+  if (_cusMarkOn) draw();
+  if (_cusPlotSet) _cusMarkSaveToSP().catch(function () {});
+}
+
 // 区画メモを保存したら、印にもすぐ反映する（通信はしない）
 function _cusMarkAddMemo(plotName){
   if (!plotName) return;
@@ -1286,6 +1297,7 @@ function renderPlotNoCustomer(plotName){
   window._vpCurrentCustomer = null;
   window._vpPlotMemo = { templeId: _templeId, plotName: plotName, item: null };
   _vpAttachTarget = null;
+  _vpShowDetailBtn(false);        // 顧客リストへの行き先が無いので隠す
 
   var opts = PLOT_STATUS_LIST.map(function(v){ return '<option value="' + v + '">' + v + '</option>'; }).join('');
   body.innerHTML =
@@ -1305,6 +1317,10 @@ function renderPlotNoCustomer(plotName){
     '<textarea id="pm-memo" onblur="vpPlotMemoSave()" rows="3" placeholder="例：墓石が傾いている／草が伸びている／〇〇家らしい" ' +
       'style="width:100%;padding:6px;font-size:12px;font-family:inherit;border:1px solid #ccc;border-radius:4px;box-sizing:border-box"></textarea>' +
     '<div id="pm-state" style="font-size:10px;color:#888;min-height:14px;padding:3px 0"></div>' +
+    '<div id="pm-del-wrap" style="display:none;text-align:right;margin-bottom:4px">' +
+      '<button onclick="vpPlotMemoDelete()" style="font-size:10px;padding:3px 10px;background:#fff;color:#c0392b;' +
+      'border:1px solid #c0392b;border-radius:4px;cursor:pointer;font-family:inherit">🗑 この区画メモを削除</button>' +
+    '</div>' +
     '<div style="margin-top:6px">' +
       '<div style="font-size:10px;font-weight:600;color:#1a2535;margin-bottom:5px;background:#e8ecf0;padding:3px 8px;border-radius:3px">この区画の写真</div>' +
       '<div id="vp-attach-list" style="font-size:11px;color:#888;padding:4px 0">📎 読み込み中...</div>' +
@@ -1332,6 +1348,7 @@ function _plotMemoLoad(){
       _vpAttachMsg('<span style="color:#888">まだ登録がありません</span>');
       return;
     }
+    var dw = document.getElementById('pm-del-wrap'); if (dw) dw.style.display = '';
     var st = document.getElementById('pm-status'); if (st && item.Status) st.value = item.Status;
     var mm = document.getElementById('pm-memo');   if (mm) mm.value = item.Memo || '';
     var dt = document.getElementById('pm-date');
@@ -1363,10 +1380,45 @@ function vpPlotMemoSave(){
     _cusMarkAddMemo(pm.plotName);
     return _plotMemoUpdate(item.Id, fields, token);
   }).then(function(){
+    var dw = document.getElementById('pm-del-wrap'); if (dw) dw.style.display = '';
     _pmState('✅ 保存しました', '#1a6a3a');
     setTimeout(function(){ _pmState(''); }, 2000);
   }).catch(function(e){
     _pmState('❌ ' + e.message, '#c00');
+  });
+}
+
+/* 区画メモをまるごと消す。写真も一緒に消えるので、必ず確認してから。 */
+function vpPlotMemoDelete(){
+  var pm = window._vpPlotMemo;
+  if (!pm || !pm.item) { _pmState('まだ登録がありません', '#888'); return; }
+  if (!window.confirm('「' + pm.plotName + '」の区画メモを削除します。\n\n' +
+      'メモ・状態と、この区画に付けた写真もすべて消えます。\n元に戻せません。\n\nよろしいですか？')) return;
+  var token = getSPToken(true) || getSPToken(false) || getSPToken();
+  if (!token) { _pmState('ログインし直してください', '#c00'); return; }
+  _pmState('削除中...');
+  _spDigest(token).then(function (digest) {
+    return fetch(SP_SITE + '/_api/web/' + PLOT_LIST_SEG + '/items(' + pm.item.Id + ')', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token, 'Accept': 'application/json;odata=verbose',
+        'X-RequestDigest': digest, 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*'
+      }
+    });
+  }).then(function (r) {
+    if (!(r.ok || r.status === 200 || r.status === 204)) throw new Error('HTTP ' + r.status);
+    _cusMarkRemoveMemo(pm.plotName);        // 🟢 を消す（共有側にも反映）
+    window._vpPlotMemo.item = null;
+    _vpAttachTarget = null;
+    var mm = document.getElementById('pm-memo');   if (mm) mm.value = '';
+    var st = document.getElementById('pm-status'); if (st) st.value = '見込み';
+    var dt = document.getElementById('pm-date');   if (dt) dt.value = '';
+    var dw = document.getElementById('pm-del-wrap'); if (dw) dw.style.display = 'none';
+    _vpAttachMsg('<span style="color:#888">まだ登録がありません</span>');
+    _pmState('🗑 削除しました', '#1a6a3a');
+    showSPStatus('🗑 「' + pm.plotName + '」の区画メモを削除しました', 'ok');
+  }).catch(function (e) {
+    _pmState('❌ 削除できません：' + e.message, '#c00');
   });
 }
 
@@ -1391,8 +1443,16 @@ function vpPlotMemoPhoto(){
   });
 }
 
+/* 「📱 詳細を開く」は顧客リストの画面へ飛ぶボタン。
+   顧客がいない区画（区画メモ）では行き先が無いので隠す。 */
+function _vpShowDetailBtn(show){
+  var b = document.getElementById('vp-detail-btn');
+  if (b) b.style.display = show ? '' : 'none';
+}
+
 function renderPlotCustomer(f){
   window._vpCurrentCustomer = f;
+  _vpShowDetailBtn(true);
   var overlay = document.getElementById('viewer-popup');
   var body = overlay ? overlay.querySelector('#vp-body') : document.getElementById('vp-body');
   if(!body) return;

@@ -286,7 +286,7 @@ function ktCompFor(emp) {
   var from = ktYmdAddMonths(t, -(KT_COMP.expireMonths + 6));
   var ps = KT.punches.filter(function (p) { return p.Title === emp.Title; });
   var rs = KT.requests.filter(function (r) { return r.EmpNo === emp.Title; });
-  var days = ktComputeRange(from, t, ps, KT.holidays, ktWorkDateNow());
+  var days = ktComputeRange(from, t, ps, KT.holidays, ktWorkDateNow(), emp);
   return ktCompState(emp, days, rs, t);
 }
 
@@ -403,7 +403,7 @@ function ktViewPunch() {
   var ps = ktTodayPunches();                     // 表示用（取消申請中も見せる）
   var live = ktActive(ps);                       // 集計用
   var st = ktCurrentState();
-  var day = ktComputeDay(wd, live, KT.holidays, st === 'in' || st === 'break');
+  var day = ktComputeDay(wd, live, KT.holidays, st === 'in' || st === 'break', KT.emp);
   var kind = ktDayKind(wd, KT.holidays);
 
   var lastIn = live.filter(function (p) { return p.PunchType === '出勤'; })[0];
@@ -484,7 +484,10 @@ function ktViewPunch() {
     if (day.workMin) {
       h += '<div class="sep"></div>';
       h += '<div class="row"><span class="k">労働時間</span><span class="v">' + ktMinToHm(day.workMin) + '</span></div>';
-      if (day.breakMin) h += '<div class="row"><span class="k">休憩</span><span class="v">' + day.breakMin + '分</span></div>';
+      if (day.breakMin) {
+        h += '<div class="row"><span class="k">休憩</span><span class="v">' + day.breakMin + '分' +
+             (day.deemedBreakMin ? ' <span class="badge cau">みなし</span>' : '') + '</span></div>';
+      }
     }
     ktFilterAlerts(day.alerts, KT.emp).forEach(function (a) { h += '<div class="alert cau">' + ktEsc(a) + '</div>'; });
     h += '</div>';
@@ -492,7 +495,7 @@ function ktViewPunch() {
 
   // 今月
   var mr = ktMonthRange(ktYm(wd));
-  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow());
+  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow(), KT.emp);
   var sum = ktSummarize(days);
   h += '<div class="card"><h2>今月（' + (+ktYm(wd).split('-')[1]) + '月）</h2>';
   h += '<div class="row"><span class="k">勤務時間</span><span class="v">' + ktMinToHm(sum.workMin) + '</span></div>';
@@ -691,7 +694,7 @@ function ktLeaveSummaryCard() {
 
 function ktViewHist() {
   var mr = ktMonthRange(KT.histYm);
-  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow());
+  var days = ktComputeRange(mr.from, mr.to, ktMyPunches(), KT.holidays, ktWorkDateNow(), KT.emp);
   var sum = ktSummarize(days);
 
   var h = '<div class="card">';
@@ -706,8 +709,20 @@ function ktViewHist() {
   h += '<div class="row"><span class="k">出勤日数</span><span class="v">' + sum.workDays + '日</span></div>';
   h += '</div>';
 
-  h += '<div class="card"><h2>日ごとの記録</h2>' + ktDayTable(days, true) + '</div>';
+  h += '<div class="card"><h2>日ごとの記録</h2>' + ktDayTable(days, true) +
+       ktDeemedNote(days) + '</div>';
   return h;
+}
+
+/* 休憩の打刻がなく、所定の休憩を差し引いた日に付ける印 */
+function ktDeemedMark(d) {
+  return d.deemedBreakMin
+    ? '<span class="dm" title="休憩の打刻がないため所定の休憩を差し引いています">*</span>' : '';
+}
+function ktDeemedNote(days) {
+  return days.some(function (d) { return d.deemedBreakMin; })
+    ? '<p class="muted" style="margin-top:.4rem">* 休憩の打刻がない日は、所定の休憩を' +
+      '差し引いています（社員マスタの BreakMin、既定' + KT_BREAK.defaultMin + '分）。</p>' : '';
 }
 
 function ktDayTable(days, showPlace) {
@@ -726,7 +741,7 @@ function ktDayTable(days, showPlace) {
     h += '<td>' + ktEsc(ktYmdLabel(d.date)) + '</td>';
     h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
     h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
-    h += '<td class="n">' + (d.breakMin || 0) + '</td>';
+    h += '<td class="n">' + (d.breakMin || 0) + ktDeemedMark(d) + '</td>';
     h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';
     h += '<td class="n">' + ((d.dailyOtMin + d.weeklyOtMin) ? ktMinToHm(d.dailyOtMin + d.weeklyOtMin) : '—') + '</td>';
     if (showPlace) {
@@ -924,11 +939,13 @@ function ktViewAdmin() {
   h += '<div class="tw"><table><thead><tr><th>社員</th><th>出勤</th><th>退勤</th><th>休憩</th>' +
        '<th>労働</th><th>時間外</th><th>出勤場所</th><th>退勤場所</th><th></th></tr></thead><tbody>';
   var actives = KT.employees.filter(function (e) { return e.Active !== false; });
+  var dayRows = [];
   actives.forEach(function (e) {
     var ps = ktActive(KT.punches.filter(function (p) {
       return p.Title === e.Title && p.WorkDate === KT.adminDate;
     })).sort(function (a, b) { return new Date(a._time) - new Date(b._time); });
-    var d = ktComputeDay(KT.adminDate, ps, KT.holidays, KT.adminDate === ktWorkDateNow());
+    var d = ktComputeDay(KT.adminDate, ps, KT.holidays, KT.adminDate === ktWorkDateNow(), e);
+    dayRows.push(d);
     var ins  = ps.filter(function (p) { return p.PunchType === '出勤'; })[0];
     var outs = ps.filter(function (p) { return p.PunchType === '退勤'; });
     var out  = outs[outs.length - 1];
@@ -936,7 +953,7 @@ function ktViewAdmin() {
     h += '<td>' + ktEsc(e.EmpName || e.Title) + '</td>';
     h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
     h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
-    h += '<td class="n">' + (d.breakMin || 0) + '</td>';
+    h += '<td class="n">' + (d.breakMin || 0) + ktDeemedMark(d) + '</td>';
     h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';
     h += '<td class="n">' + ((d.dailyOtMin + d.weeklyOtMin) ? ktMinToHm(d.dailyOtMin + d.weeklyOtMin) : '—') + '</td>';
     h += '<td>' + ktEsc(ins ? (ins.SiteName || '') : '') + '</td>';
@@ -947,7 +964,7 @@ function ktViewAdmin() {
     h += '<td>' + mk + (al.length ? '<span class="badge no" title="' + ktEsc(al.join('／')) + '">!</span>' : '') + '</td>';
     h += '</tr>';
   });
-  h += '</tbody></table></div></div>';
+  h += '</tbody></table></div>' + ktDeemedNote(dayRows) + '</div>';
 
   // その日の打刻を1件ずつ取り消す（誤って押した打刻の後始末）
   var dayPs = KT.punches.filter(function (p) { return p.WorkDate === KT.adminDate; })
@@ -1030,7 +1047,7 @@ function ktViewAdmin() {
   };
   actives.forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    var s = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    var s = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow(), e));
     Object.keys(totals).forEach(function (k) { totals[k] += s[k]; });
     h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
     h += cell(s.workMin) + cell(s.otMin) + cell(s.nightMin) + cell(s.legalHolidayMin);
@@ -1125,11 +1142,11 @@ function ktViewAdmin() {
 function ktExportCsv() {
   var mr = ktPayRange(KT.adminYm);
   var rows = [['社員番号', '氏名', '日付', '曜日', '日区分', '出勤', '退勤', '休憩分',
-               '労働分', '法定内分', '時間外分', '深夜分', '法定休日分', '出勤場所', '退勤場所',
-               '手入力', '代休発生', '備考']];
+               'うちみなし休憩分', '労働分', '法定内分', '時間外分', '深夜分', '法定休日分',
+               '出勤場所', '退勤場所', '手入力', '代休発生', '備考']];
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    var rangeDays = ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow());
+    var rangeDays = ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow(), e);
     var comp = {};
     ktCompEarned(rangeDays).forEach(function (c) { comp[c.date] = c.days; });
     rangeDays.forEach(function (d) {
@@ -1140,7 +1157,8 @@ function ktExportCsv() {
       rows.push([
         e.Title, e.EmpName || '', d.date, KT_WD[ktYmdWeekday(d.date)], d.kindLabel,
         d.clockIn ? ktHm(d.clockIn) : '', d.clockOut ? ktHm(d.clockOut) : '',
-        d.breakMin, d.workMin, d.innerMin, d.dailyOtMin + d.weeklyOtMin,
+        d.breakMin, d.deemedBreakMin,
+        d.workMin, d.innerMin, d.dailyOtMin + d.weeklyOtMin,
         d.nightMin, d.legalHolidayMin,
         ins ? (ins.SiteName || '') : '', out ? (out.SiteName || '') : '',
         d.punches.some(function (p) { return p._manual; }) ? '手入力' : '',
@@ -1161,7 +1179,7 @@ function ktExportSummaryCsv() {
                '法定休日時間', '法定休日(小数)', '要確認日数']];
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
-    var s  = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow()));
+    var s  = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow(), e));
     rows.push([
       e.Title, e.EmpName || '', mr.payYm, mr.from, mr.to,
       s.workDays,

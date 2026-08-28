@@ -73,15 +73,24 @@ function ktDayKindLabel(kind) {
 
 /* ── 1日の集計 ──────────────────────────────────────────── */
 
+/* その社員のみなし休憩（分）。社員マスタの BreakMin が優先。
+   未設定なら KT_BREAK.defaultMin、0 が入っていればみなし休憩なし。 */
+function ktBreakMinOf(emp) {
+  var v = (emp || {}).BreakMin;
+  if (v == null || v === '') return KT_BREAK.defaultMin;
+  return Math.max(0, +v || 0);
+}
+
 /* punches … その勤務日の打刻（_time 昇順）
-   isOpen  … 今まさに勤務中の日。退勤がなくても打刻漏れとして扱わない */
-function ktComputeDay(ymd, punches, holidays, isOpen) {
+   isOpen  … 今まさに勤務中の日。退勤がなくても打刻漏れとして扱わない
+   emp     … 社員（みなし休憩の分数を決めるのに使う。省略可） */
+function ktComputeDay(ymd, punches, holidays, isOpen, emp) {
   var kind = ktDayKind(ymd, holidays);
   var d = {
     date: ymd, kind: kind, kindLabel: ktDayKindLabel(kind),
     punches: punches, clockIn: null, clockOut: null,
     breakMin: 0, workMin: 0, innerMin: 0, dailyOtMin: 0, weeklyOtMin: 0,
-    nightMin: 0, legalHolidayMin: 0,
+    nightMin: 0, legalHolidayMin: 0, deemedBreakMin: 0,
     attended: false, inProgress: false,
     alerts: [], review: false
   };
@@ -123,9 +132,23 @@ function ktComputeDay(ymd, punches, holidays, isOpen) {
   if (bStart.length > bEnd.length) d.alerts.push('休憩終了の打刻がありません');
 
   var work = ktSubtractIntervals([[inMs, outMs]], breaks);
+  var spanMin = Math.round((outMs - inMs) / 60000);
   d.workMin  = Math.round(work.reduce(function (a, iv) { return a + (iv[1] - iv[0]); }, 0) / 60000);
-  d.breakMin = Math.round((outMs - inMs) / 60000) - d.workMin;
-  d.nightMin = ktNightMinutes(work);
+
+  // 休憩の打刻が1つもない日は、所定の休憩を取ったものとして差し引く。
+  // 休憩ボタンはふだん使わないので、これがないと休憩0分になってしまう。
+  // 休憩の義務がない短い日（拘束6時間以下）には適用しない。
+  if (!bStart.length && !bEnd.length) {
+    var def = ktBreakMinOf(emp);
+    if (def > 0 && spanMin > KT_BREAK.minSpanMin) {
+      d.deemedBreakMin = Math.min(def, spanMin);
+      d.workMin -= d.deemedBreakMin;
+    }
+  }
+
+  d.breakMin = spanMin - d.workMin;
+  // 深夜は打刻された区間から数える。みなし休憩は昼の想定なので差し引かない。
+  d.nightMin = Math.min(d.workMin, ktNightMinutes(work));
 
   // 休憩が足りているか（労基法34条）
   for (var r = 0; r < KT_WORK.breakRule.length; r++) {
@@ -167,14 +190,15 @@ function ktGroupByDate(punches) {
 }
 
 /* 期間内の各日を計算し、週40時間超の時間外を上乗せする
-   openDate … 今まさに勤務中の日（あれば） */
-function ktComputeRange(from, to, punches, holidays, openDate) {
+   openDate … 今まさに勤務中の日（あれば）
+   emp      … 社員（みなし休憩の分数を決めるのに使う。省略可） */
+function ktComputeRange(from, to, punches, holidays, openDate, emp) {
   var byDate = ktGroupByDate(punches);
   var days = [], d = from;
   // guard は日付が壊れていたときの暴走止め。通常は to に達して抜ける。
   // 代休は期限を含めて1年以上さかのぼるので、月単位より広い範囲を許す。
   for (var guard = 0; guard < 3660 && ktYmdDiffDays(d, to) <= 0; guard++) {
-    days.push(ktComputeDay(d, byDate[d] || [], holidays, d === openDate));
+    days.push(ktComputeDay(d, byDate[d] || [], holidays, d === openDate, emp));
     d = ktYmdAddDays(d, 1);
   }
 
@@ -228,10 +252,10 @@ function ktSummarize(days) {
    週40時間超の振り替えは週単位で決まるので、前後を週の切れ目まで広げて
    計算してから、期間の分だけ取り出す。こうしないと、給与期間のように
    月の途中で区切る場合に、境目の週の時間外がずれる。 */
-function ktComputeRangeExact(from, to, punches, holidays, openDate) {
+function ktComputeRangeExact(from, to, punches, holidays, openDate, emp) {
   var wFrom = ktWeekStart(from);
   var wTo   = ktYmdAddDays(ktWeekStart(to), 6);
-  return ktComputeRange(wFrom, wTo, punches, holidays, openDate).filter(function (d) {
+  return ktComputeRange(wFrom, wTo, punches, holidays, openDate, emp).filter(function (d) {
     return ktYmdDiffDays(d.date, from) >= 0 && ktYmdDiffDays(d.date, to) <= 0;
   });
 }

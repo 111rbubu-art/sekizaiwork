@@ -6498,7 +6498,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.404';
+var APP_VERSION = 'v1.9.405';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11987,7 +11987,7 @@ function uploadKoujiKanryoFiles(files){
         var ext=(String(file.name).split('.').pop()||'jpg').toLowerCase();
         var saveName=prefix+('0'+n).slice(-2)+'.'+ext;
         var enc=targetPath.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+'/'+encodeURIComponent(saveName)+':/content',{
+        return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+'/'+encodeURIComponent(saveName)+':/content'+UPLOAD_NO_OVERWRITE,{
           method:'PUT',headers:{Authorization:'Bearer '+_token,'Content-Type':file.type||'application/octet-stream'},body:file
         }).then(function(r){ if(!r.ok) return r.text().then(function(tx){throw new Error(saveName+': '+tx.substring(0,120));}); });
       });
@@ -12324,7 +12324,7 @@ function uploadNokPhotoFiles(files, cat, customNames) {
         var saveName = _nokUniqueName(rawName, _existing);
         _existing[saveName.toLowerCase()] = true; // 同一バッチ内の重複も回避
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content' + UPLOAD_NO_OVERWRITE, {
           method:'PUT', headers:{'Authorization':'Bearer '+_token,'Content-Type':file.type||'application/octet-stream'}, body:file
         }).then(function(r){ if(!r.ok) return r.text().then(function(t){throw new Error(saveName+': '+t.substring(0,120));}); });
       });
@@ -12433,7 +12433,7 @@ function uploadTakuhonFiles(files) {
         var saveName = _nokUniqueName(base + ext, _existing);
         _existing[saveName.toLowerCase()] = true;
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content' + UPLOAD_NO_OVERWRITE, {
           method: 'PUT',
           headers: { Authorization: 'Bearer ' + _token, 'Content-Type': file.type || 'application/octet-stream' },
           body: file
@@ -13323,6 +13323,26 @@ function handleHakaSpecDrop(e, cat) {
   uploadHakaSpecFiles(files, cat);
 }
 
+/* iPhoneのカメラで撮ると、ファイル名がどれも「image.jpg」になる（Safariの仕様）。
+   そのまま上げると同じ名前で保存され、前に入れた写真が消えてしまう。
+   そこで、名前に意味が無いものだけ撮影日時の名前に付け替える。
+   「見積書.pdf」のような意味のある名前はそのまま残す。 */
+var GENERIC_FILE_NAMES = /^(image|photo|picture|写真|unknown|untitled)$/i;
+function _uploadSafeName(file, idx) {
+  var name = String((file && file.name) || '').trim();
+  var dot  = name.lastIndexOf('.');
+  var base = dot > 0 ? name.slice(0, dot) : name;
+  var ext  = dot > 0 ? name.slice(dot + 1).toLowerCase() : 'jpg';
+  if (name && !GENERIC_FILE_NAMES.test(base)) return name;
+  var t = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return '' + t.getFullYear() + p(t.getMonth() + 1) + p(t.getDate()) + '_' +
+         p(t.getHours()) + p(t.getMinutes()) + p(t.getSeconds()) +
+         (idx > 0 ? '_' + p(idx + 1) : '') + '.' + ext;
+}
+/* 同じ名前が既にあっても、上書きせずSharePoint側で別名にしてもらう。
+   置き換えたいときは、ファイル操作の「置き換え」を使う。 */
+var UPLOAD_NO_OVERWRITE = '?@microsoft.graph.conflictBehavior=rename';
+
 function handleHakaSpecFileInput(input, cat) {
   var files = Array.prototype.slice.call(input.files);
   if (files.length === 0) return;
@@ -13341,10 +13361,11 @@ function uploadHakaSpecFiles(files, cat) {
     return getToken();
   }).then(function(resp) {
     var token = resp.accessToken;
-    return files.reduce(function(chain, file) {
+    return files.reduce(function(chain, file, _fi) {
       return chain.then(function() {
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
-        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(file.name) + ':/content';
+        var saveName = _uploadSafeName(file, _fi);
+        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content' + UPLOAD_NO_OVERWRITE;
         return fetch(uploadUrl, {
           method: 'PUT',
           headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },
@@ -13407,7 +13428,7 @@ function doUploadKoujiCard(files, key, tag, cat) {
         var saveName = _nokUniqueName(sanitize(base) + ext, _existing);
         _existing[saveName.toLowerCase()] = true; // 同一バッチ内の重複も回避
         var enc = targetPath.split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content', {
+        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + '/' + encodeURIComponent(saveName) + ':/content' + UPLOAD_NO_OVERWRITE, {
           method: 'PUT',
           headers: { 'Authorization': 'Bearer ' + _token, 'Content-Type': file.type || 'application/octet-stream' },
           body: file
@@ -20090,10 +20111,11 @@ function uploadFilesToFolder(files, folderPath, containerEl) {
   var done = 0;
   getToken().then(function(resp) {
     var token = resp.accessToken;
-    return files.reduce(function(chain, file) {
+    return files.reduce(function(chain, file, _fi) {
       return chain.then(function() {
         var encodedPath = folderPath.split('/').map(encodeURIComponent).join('/');
-        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + '/' + encodeURIComponent(file.name) + ':/content';
+        var saveName = _uploadSafeName(file, _fi);
+        var uploadUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + '/' + encodeURIComponent(saveName) + ':/content' + UPLOAD_NO_OVERWRITE;
         return fetch(uploadUrl, {
           method: 'PUT',
           headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': file.type || 'application/octet-stream' },

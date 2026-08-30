@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v1.6</title>
+<title>彫刻原稿 v1.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -350,7 +350,7 @@
     <!-- ============ 左：メインメニュー ============ -->
     <div class="col" id="left">
       <div id="mainmenu">
-        <button class="mm on" data-m="sheet">シート</button>
+        <button class="mm on" data-m="sheet">ゴムシート</button>
         <button class="mm" data-m="tpl">テンプレート呼出<span class="n" id="nTpl">0</span></button>
         <div class="gap"></div>
         <button class="mm" data-m="rub">拓本解析<span class="n none" id="nRub">未取込</span></button>
@@ -367,7 +367,7 @@
     <div class="col" id="sub">
 
       <div class="pan on" id="panSheet">
-        <h3 class="sec">シート</h3>
+        <h3 class="sec">ゴムシート</h3>
         <div class="g2">
           <label class="f"><span>幅 mm</span><input type="number" id="shW" value="90" step="1"></label>
           <label class="f"><span>長さ mm</span><input type="number" id="shH" value="700" step="10"></label>
@@ -441,6 +441,20 @@
           <label class="f"><span>墓誌〇行目</span><input type="text" id="iBoshiLine" placeholder="3"></label>
         </div>
         <div class="m" id="iFromApp" style="display:none;">本体アプリの納骨リストから受け取りました。ここで直しても、納骨リストのデータは変わりません。</div>
+
+        <h3 class="sec">シートに入れる申し送り（赤）</h3>
+        <label class="chk" style="margin-bottom:6px;"><input type="checkbox" id="nOn" checked style="width:auto;"> シートに入れる</label>
+        <label class="f"><span>文面（空欄なら上の内容から自動）</span>
+          <textarea id="nText" rows="3" placeholder="納骨日：9/7　○○家（○○寺）　石塔、右面、7行目"
+            style="font-family:inherit;font-size:12.5px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);width:100%;resize:vertical;"></textarea></label>
+        <button class="mini" id="nAuto" style="width:100%;margin-bottom:8px;">いまの内容を文面に取り込む</button>
+        <div class="g3">
+          <label class="f"><span>左から mm</span><input type="number" id="nX" step="1"></label>
+          <label class="f"><span>上から mm</span><input type="number" id="nY" step="1"></label>
+          <label class="f"><span>大きさ mm</span><input type="number" id="nSize" step="0.5" min="1"></label>
+        </div>
+        <button class="mini" id="nHome" style="width:100%;">位置を既定に戻す（切れない縁の内側）</button>
+        <p class="hint" id="nInfo" style="margin-top:6px;"></p>
       </div>
 
     </div>
@@ -1252,7 +1266,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v1.6";
+var APP_VER = "v1.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1285,6 +1299,9 @@ var S = {
   sheet: { w: 90, h: 700, m: 10, ox: 0, oy: 0 },   /* ox,oy = 文字に対してシートをずらす量 mm */
   centers: [],   /* センターライン。x=中心 mm、w=行幅 mm、gl=所属する1行ガイドライン。最初は無し */
   info: { temple:"", family:"", date:"", chokokuBasho:"", sekitouPos:"", sekitouLine:"", boshiPos:"", boshiLine:"" },
+  /* シートに入れる申し送り。text が空なら確認情報から自動で作る。
+     x/y が null なら、切れない縁の内側に自動で置く。 */
+  note: { on:true, text:"", x:null, y:null, size:6 },
   demoDx: {},                        /* デモ表示だけのずらし量 mm。出力には効かない */
   demoRx: 0,                         /* デモでの拓本そのものの左右ずらし mm */
   groups: []                         /* 最初は無し */
@@ -1873,14 +1890,14 @@ function buildSVG(){
      例）納骨日：9/7　宇田川家（慈宏寺）　石塔、右面、7行目
      彫る内容ではなく、作業者への申し送り。赤の出力にだけ乗る。 */
   var note = "";
-  if (FONTS.length){
+  var N = noteCfg();
+  if (FONTS.length && N.on){
     var _ax = S.groups[0] ? S.groups[0].axes : {};
-    var lines = infoLines();
+    var lines = noteLines();
     if (lines.length){
-      var sz = 6.0, lh = sz * 1.35;
-      var y0 = H - 4 - lines.length * lh;
+      var pos = notePos(lines.length);
       lines.forEach(function(t, i){
-        note += hRunFit(t, 4, y0 + i * lh, sz, _ax, W - 8);
+        note += hRunFit(t, pos.x, pos.y + i * pos.lh, pos.size, _ax, pos.maxW);
       });
     }
   }
@@ -2000,6 +2017,34 @@ function shortDate(v){
   var m2 = String(v == null ? "" : v).match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
   if (m2) return (+m2[1]) + "/" + (+m2[2]);
   return String(v == null ? "" : v).trim();
+}
+/* 申し送りの設定。古い案件ファイルにも既定を入れて返す。 */
+function noteCfg(){
+  if (!S.note) S.note = {};
+  var n = S.note;
+  if (n.on === undefined) n.on = true;
+  if (n.size === undefined || !(num(n.size, 0) > 0)) n.size = 6;
+  if (n.text === undefined) n.text = "";
+  if (n.x === undefined) n.x = null;
+  if (n.y === undefined) n.y = null;
+  return n;
+}
+/* 実際に書く行。手で入れてあればそれを、無ければ確認情報から作る。 */
+function noteLines(){
+  var n = noteCfg();
+  var t = String(n.text == null ? "" : n.text).trim();
+  if (t) return t.split(/\r?\n/).filter(function(x){ return x.trim() !== ""; });
+  return infoLines();
+}
+/* 置き場所。指定が無ければ、切れない縁の内側の下寄せ。 */
+function notePos(nLines){
+  var n = noteCfg();
+  var W = num(S.sheet.w, 90), H = num(S.sheet.h, 700), m = num(S.sheet.m, 0);
+  var size = num(n.size, 6), lh = size * 1.35;
+  var x = (n.x === null || n.x === "" || !isFinite(num(n.x, NaN))) ? (m + 1) : num(n.x, m + 1);
+  var y = (n.y === null || n.y === "" || !isFinite(num(n.y, NaN)))
+        ? (H - m - 1 - nLines * lh) : num(n.y, 0);
+  return { x:x, y:y, size:size, lh:lh, maxW: Math.max(10, W - x - m) };
 }
 /* シートの下に入れる申し送り。長いときは行を分ける。 */
 function infoLines(){
@@ -2907,14 +2952,64 @@ function infoFill(){
   Object.keys(INFO_IDS).forEach(function(id){
     var e = $(id); if (e) e.value = S.info[INFO_IDS[id]] || "";
   });
+  if (typeof noteFill === "function") noteFill();
 }
 Object.keys(INFO_IDS).forEach(function(id){
   var e = $(id); if (!e) return;
   e.addEventListener("input", function(ev){
     S.info[INFO_IDS[id]] = ev.target.value;
     renderStage(); persist();
+    if (typeof noteFill === "function") noteFill();
   });
 });
+
+/* --- シートに入れる申し送りの操作 --- */
+function noteFill(){
+  var n = noteCfg(), lines = noteLines(), pos = notePos(lines.length || 1);
+  var e;
+  if ((e = $("nOn")))   e.checked = !!n.on;
+  if ((e = $("nText")) && document.activeElement !== e) e.value = n.text || "";
+  if ((e = $("nX")) && document.activeElement !== e)
+    e.value = (n.x === null || n.x === "") ? "" : n.x;
+  if ((e = $("nY")) && document.activeElement !== e)
+    e.value = (n.y === null || n.y === "") ? "" : n.y;
+  if ((e = $("nSize")) && document.activeElement !== e) e.value = num(n.size, 6);
+  if ((e = $("nX"))) e.placeholder = pos.x.toFixed(0);
+  if ((e = $("nY"))) e.placeholder = pos.y.toFixed(0);
+  if ((e = $("nInfo"))){
+    var H = num(S.sheet.h, 700), m = num(S.sheet.m, 0);
+    var bot = pos.y + (lines.length || 1) * pos.lh;
+    e.innerHTML = lines.length
+      ? ('いまの文面：' + esc(lines.join(" / ")) + '<br>置き場所 左 ' + pos.x.toFixed(0) +
+         ' mm ／ 上から ' + pos.y.toFixed(0) + '〜' + bot.toFixed(0) + ' mm' +
+         (bot > H - m || pos.y < m ? '<br><b style="color:var(--shu)">切れない縁（' + m +
+          ' mm）にかかっています。プロッターで出ないことがあります。</b>' : ''))
+      : '確認情報が空なので、いまは何も入りません。';
+  }
+}
+function noteSet(k, v){ noteCfg()[k] = v; renderStage(); persist(); noteFill(); }
+(function(){
+  var e;
+  if ((e = $("nOn")))   e.addEventListener("change", function(ev){ noteSet("on", !!ev.target.checked); });
+  if ((e = $("nText"))) e.addEventListener("input",  function(ev){ noteSet("text", ev.target.value); });
+  if ((e = $("nSize")))e.addEventListener("input",  function(ev){ noteSet("size", Math.max(1, num(ev.target.value, 6))); });
+  ["nX","nY"].forEach(function(id){
+    var el = $(id); if (!el) return;
+    el.addEventListener("input", function(ev){
+      var t = String(ev.target.value).trim();
+      noteSet(id === "nX" ? "x" : "y", t === "" ? null : num(t, 0));
+    });
+  });
+  if ((e = $("nAuto"))) e.addEventListener("click", function(){
+    noteSet("text", infoLines().join("\n"));
+    msg("いまの確認情報を文面にしました。");
+  });
+  if ((e = $("nHome"))) e.addEventListener("click", function(){
+    var n = noteCfg(); n.x = null; n.y = null;
+    renderStage(); persist(); noteFill();
+    msg("置き場所を既定に戻しました。");
+  });
+})();
 var MMPX = 96 / 25.4;              /* CSS の 1mm は 96/25.4 px */
 var Z = { sheet: 100, rub: 100, demo: 100 };  /* 表示倍率。100 = ペインに収まる大きさ */
 /* ペインに収まる倍率。表示倍率 100% ＝ 全体が見える大きさ。 */
@@ -3351,6 +3446,7 @@ async function restore(){
     }
   } catch(e){}
   S.rub = Object.assign({}, RUB_DEFAULT, S.rub || {});
+  S.note = Object.assign({ on:true, text:"", x:null, y:null, size:6 }, S.note || {});
   migrate();
   setView(S.view || "sheet"); setSub("sheet");
   $("shW").value = S.sheet.w; $("shH").value = S.sheet.h; $("shM").value = S.sheet.m;
@@ -3648,6 +3744,7 @@ function setSub(t){
   });
   if (t === "tpl") renderTpl();
   if (t === "font") fontPanel();
+  if (t === "info") noteFill();
   if (t === "sp") spPanel();
   var s = $("sub"); if (s) s.scrollTop = 0;
 }
@@ -4312,7 +4409,6 @@ async function saveDemoJPEG(){
    ---------------------------------------------------------------- */
 function renderDemo(){
   var st = $("demostage"), wrap = $("demowrap");
-  var demoRowLines = [];
   var mp = mmPerPx();
   var hintEl = wrap.querySelector(".demohint"); if (hintEl) hintEl.remove();
   if (!RUB.img || !mp){
@@ -4346,7 +4442,7 @@ function renderDemo(){
   var cy1 = iy + cr.y1 * mp, cy2 = iy + cr.y2 * mp;
   var cropping = $("dCrop").checked && !demoClean;
 
-  var glyphs = [], hits = [], colBox = {}, demoRows = [];
+  var glyphs = [], hits = [], colBox = {};
   if (FONTS.length){
     rows.forEach(function(r){
       var g = S.groups[r.gi];
@@ -4368,14 +4464,6 @@ function renderDemo(){
         var b = colBox[ci] || (colBox[ci] = { x1: 1e9, x2: -1e9, y1: 1e9, y2: -1e9 });
         b.x1 = Math.min(b.x1, tx - ww/2); b.x2 = Math.max(b.x2, tx + ww/2);
         b.y1 = Math.min(b.y1, cellTop);   b.y2 = Math.max(b.y2, cellTop + hh);
-        /* ガイドで出す、文字グループの上下の位置 */
-        var rb = demoRows[demoRows.length - 1];
-        if (!rb || rb.key !== r.gi + "/" + ci){
-          rb = { key: r.gi + "/" + ci, gi: r.gi, ci: ci, y1: cellTop, y2: cellTop + hh };
-          demoRows.push(rb);
-        }
-        rb.y1 = Math.min(rb.y1, cellTop);
-        rb.y2 = Math.max(rb.y2, cellTop + hh);
       });
     });
   }
@@ -4412,7 +4500,6 @@ function renderDemo(){
     /* 文字グループの上下に横線を引く。拓本の側まで伸ばして、
        拓本の彫り位置と見比べられるようにする。線の左右いっぱいは
        あとで viewBox が決まってから引くので、印だけ残しておく。 */
-    demoRowLines = demoRows.slice();
   }
 
   if (cropping){
@@ -4461,23 +4548,22 @@ function renderDemo(){
   vx -= pad2; vy -= pad2;
   var vw = (vx2 - vx) + pad2, vh = (vy2 - vy) + pad2;
 
-  /* 行の上下線。拓本解析で決めた行の切れ目をそのまま使い、
-     見えている幅いっぱい（拓本の上も）に引く。
-     まだ解析していないときは、組んだ文字グループの上下で代用する。 */
+  /* 行の上下線。拓本解析でつかんで動かす、あの色つきの線（グループの
+     上端・下端）と同じ位置に引く。デモでは赤で、見えている幅いっぱい
+     （拓本の上も）に伸ばす。 */
   if ($("dGuide").checked){
-    var ys = [], seenY = {};
-    if (A && A.groups && A.groups.length){
-      A.groups.forEach(function(gr){ ys.push(iy + gr.y0 * mp, iy + gr.y1 * mp); });
-    } else {
-      demoRowLines.forEach(function(rb){ ys.push(rb.y1, rb.y2); });
-    }
-    ys.forEach(function(y){
-      var k = y.toFixed(2);
-      if (seenY[k]) return;
-      seenY[k] = 1;
-      guides += '<line x1="' + vx.toFixed(3) + '" y1="' + y.toFixed(3) +
-        '" x2="' + (vx + vw).toFixed(3) + '" y2="' + y.toFixed(3) +
-        '" stroke="#DC2616" stroke-width="0.3" opacity="0.7"/>';
+    var seenY = {};
+    (S.groups || []).forEach(function(g){
+      if (srcGroup(g)) return;      /* コピーで紐づいた分は元と同じ位置 */
+      [gTop(g), gBot(g)].forEach(function(y){
+        if (!isFinite(y)) return;
+        var k = y.toFixed(2);
+        if (seenY[k]) return;
+        seenY[k] = 1;
+        guides += '<line x1="' + vx.toFixed(3) + '" y1="' + y.toFixed(3) +
+          '" x2="' + (vx + vw).toFixed(3) + '" y2="' + y.toFixed(3) +
+          '" stroke="#DC2616" stroke-width="0.3" opacity="0.7"/>';
+      });
     });
   }
 
@@ -5245,6 +5331,7 @@ function resetAll(){
   _pendingRubSrc = null;              /* 前回の続きの拓本も出さない */
   A = null; placing = null; rotMode = null; sel = 0; showDetail = false;
   S = { sheet:{ w:90, h:700, m:10, ox:0, oy:0 }, centers:[], info:{temple:"",family:"",date:"",chokokuBasho:"",sekitouPos:"",sekitouLine:"",boshiPos:"",boshiLine:""},
+        note:{ on:true, text:"", x:null, y:null, size:6 },
         demoDx:{}, demoRx:0, groups:[] };
   S.rub = Object.assign({}, RUB_DEFAULT, { centersPx:[], crop:null, pivot:null, off:{x:0,y:0} });
   try { idb().then(function(db){ db.transaction("kv","readwrite").objectStore("kv")["delete"]("rub"); }); } catch(e){}

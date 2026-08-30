@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v1.4</title>
+<title>彫刻原稿 v1.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -551,6 +551,10 @@
         <button class="mini" id="peRubR">拓本の位置を戻す</button>
         <label class="f" style="margin-top:4px;"><span>濃さ</span>
           <input type="range" id="peRubOp" min="0.15" max="1" step="0.05" value="0.5"></label>
+        <h3 class="sec">この字を残す</h3>
+        <button class="mini" id="peShare">この字を共有フォルダーに保存</button>
+        <p class="hint" style="margin-top:4px;">ほかの案件で同じ字が出たときに、
+          「フォント・作字」から呼び出せます。</p>
         <h3 class="sec">戻す</h3>
         <button class="mini" id="peUndo">1つ戻す</button>
         <button class="mini" id="peReset">元の字に戻す</button>
@@ -1656,7 +1660,10 @@ function adjOf(g, i){
            wmm: a && isFinite(a.wmm) && a.wmm > 0 ? a.wmm : 0,    /* 横の実寸 mm */
            hmm: a && isFinite(a.hmm) && a.hmm > 0 ? a.hmm : 0,    /* 縦の実寸 mm */
            f:   a && a.f !== null && a.f !== undefined ? a.f : null,
-           ax:  a && a.ax ? a.ax : null };
+           ax:  a && a.ax ? a.ax : null,
+           /* 作字（パス編集）した形。入っていないと、右クリックのメニューで
+              「作字をやめて元の字に戻す」が出てこない。 */
+           path: (a && a.path && a.path.contours && a.path.contours.length) ? a.path : null };
 }
 /* その文字に効く可変軸。グループの値に、文字ごとの上書きを重ねる。 */
 function axesOf(g, i){
@@ -1862,8 +1869,8 @@ function buildSVG(){
     var _ax = S.groups[0] ? S.groups[0].axes : {};
     var lines = infoLines();
     if (lines.length){
-      var sz = 4.0, lh = sz * 1.4;
-      var y0 = H - 3 - lines.length * lh;
+      var sz = 6.0, lh = sz * 1.35;
+      var y0 = H - 4 - lines.length * lh;
       lines.forEach(function(t, i){
         red.push(hRunFit(t, 4, y0 + i * lh, sz, _ax, W - 8));
       });
@@ -3001,7 +3008,10 @@ function openCharMenu(gi, ci, cx, cy){
     ' mm ／ 縦 ' + RB.h.toFixed(1) + ' mm。同じ値にすると調整なしに戻ります。</p>';
   h += '<button class="mini' + (A.path ? '' : ' primary') + '" id="mPath" style="width:100%;margin-bottom:8px;">' +
     (A.path ? '作字を編集し直す' : 'パスにして形を編集') + '</button>';
-  if (A.path) h += '<button class="mini" id="mPathDel" style="width:100%;margin-bottom:8px;">作字をやめて元の字に戻す</button>';
+  if (A.path){
+    h += '<button class="mini" id="mShare" style="width:100%;margin-bottom:6px;">この字を共有フォルダーに保存</button>';
+    h += '<button class="mini" id="mPathDel" style="width:100%;margin-bottom:8px;">作字をやめて元の字に戻す</button>';
+  }
   if (FC && Object.keys(FC.axes).length){
     Object.keys(FC.axes).forEach(function(k){
       var ai = FC.axes[k];
@@ -3067,6 +3077,7 @@ function openCharMenu(gi, ci, cx, cy){
     renderStage(); renderProps0(); persist();
   }
   mon("mPath","click",function(){ closeCharMenu(); openPathEditor(gi, ci); });
+  mon("mShare","click",function(){ closeCharMenu(); glyphLibPushOne(gi, ci); });
   mon("mPathDel","click",function(){
     setAdj(g, ci, "path", null);
     renderAll(); closeCharMenu(); msg("元のフォントの字に戻しました。");
@@ -4289,6 +4300,7 @@ async function saveDemoJPEG(){
    ---------------------------------------------------------------- */
 function renderDemo(){
   var st = $("demostage"), wrap = $("demowrap");
+  var demoRowLines = [];
   var mp = mmPerPx();
   var hintEl = wrap.querySelector(".demohint"); if (hintEl) hintEl.remove();
   if (!RUB.img || !mp){
@@ -4322,7 +4334,7 @@ function renderDemo(){
   var cy1 = iy + cr.y1 * mp, cy2 = iy + cr.y2 * mp;
   var cropping = $("dCrop").checked && !demoClean;
 
-  var glyphs = [], hits = [], colBox = {}, demoCells = [];
+  var glyphs = [], hits = [], colBox = {}, demoRows = [];
   if (FONTS.length){
     rows.forEach(function(r){
       var g = S.groups[r.gi];
@@ -4344,8 +4356,14 @@ function renderDemo(){
         var b = colBox[ci] || (colBox[ci] = { x1: 1e9, x2: -1e9, y1: 1e9, y2: -1e9 });
         b.x1 = Math.min(b.x1, tx - ww/2); b.x2 = Math.max(b.x2, tx + ww/2);
         b.y1 = Math.min(b.y1, cellTop);   b.y2 = Math.max(b.y2, cellTop + hh);
-        /* ガイドで出す、1字ぶんの上下の位置 */
-        demoCells.push({ ci: ci, x: tx, w: ww, y1: cellTop, y2: cellTop + hh });
+        /* ガイドで出す、文字グループの上下の位置 */
+        var rb = demoRows[demoRows.length - 1];
+        if (!rb || rb.key !== r.gi + "/" + ci){
+          rb = { key: r.gi + "/" + ci, gi: r.gi, ci: ci, y1: cellTop, y2: cellTop + hh };
+          demoRows.push(rb);
+        }
+        rb.y1 = Math.min(rb.y1, cellTop);
+        rb.y2 = Math.max(rb.y2, cellTop + hh);
       });
     });
   }
@@ -4379,20 +4397,10 @@ function renderDemo(){
           '" stroke="#DC2616" stroke-width="0.3" opacity="0.6"/>';
       });
     });
-    /* 1字ずつの高さが分かるように、字の上下に横線を引く。
-       同じ高さの線は1本にまとめる。 */
-    var seenY = {};
-    demoCells.forEach(function(cl){
-      var half = Math.max(cl.w, cenW(cl.ci)) / 2 + 1.5;
-      [cl.y1, cl.y2].forEach(function(y){
-        var k = cl.ci + "@" + y.toFixed(2);
-        if (seenY[k]) return;
-        seenY[k] = 1;
-        guides += '<line x1="' + (cl.x - half).toFixed(3) + '" y1="' + y.toFixed(3) +
-          '" x2="' + (cl.x + half).toFixed(3) + '" y2="' + y.toFixed(3) +
-          '" stroke="#DC2616" stroke-width="0.25" opacity="0.75"/>';
-      });
-    });
+    /* 文字グループの上下に横線を引く。拓本の側まで伸ばして、
+       拓本の彫り位置と見比べられるようにする。線の左右いっぱいは
+       あとで viewBox が決まってから引くので、印だけ残しておく。 */
+    demoRowLines = demoRows.slice();
   }
 
   if (cropping){
@@ -4440,6 +4448,21 @@ function renderDemo(){
   var pad2 = 8;
   vx -= pad2; vy -= pad2;
   var vw = (vx2 - vx) + pad2, vh = (vy2 - vy) + pad2;
+
+  /* 文字グループの上下線。拓本のところまで、見えている幅いっぱいに引く。 */
+  if (demoRowLines.length){
+    var seenY = {};
+    demoRowLines.forEach(function(rb){
+      [rb.y1, rb.y2].forEach(function(y){
+        var k = y.toFixed(2);
+        if (seenY[k]) return;
+        seenY[k] = 1;
+        guides += '<line x1="' + vx.toFixed(3) + '" y1="' + y.toFixed(3) +
+          '" x2="' + (vx + vw).toFixed(3) + '" y2="' + y.toFixed(3) +
+          '" stroke="#DC2616" stroke-width="0.3" opacity="0.7"/>';
+      });
+    });
+  }
 
   var sc2 = fitScale(vw * MMPX, vh * MMPX, "demowrap") * Z.demo / 100;
   var pw = Math.max(120, Math.round(vw * MMPX * sc2)), ph = Math.max(120, Math.round(vh * MMPX * sc2));
@@ -6172,6 +6195,13 @@ function peCut(A, B){
 Array.prototype.forEach.call(document.querySelectorAll("#pathEd .pt"), function(b){
   b.onclick = function(){ if (!PE) return; PE.tool = b.dataset.t; PE.sel = []; PE.selC = []; peRender(); };
 });
+/* 作字の画面から、この字だけ共有フォルダーへ。
+   まだ保存していない編集も、いまの形のまま残す。 */
+$("peShare").onclick = function(){
+  if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+  peCommit();                       /* いまの形をこの字に当てる */
+  glyphLibPushOne(PE.gi, PE.ci);
+};
 $("peUndo").onclick = function(){
   if (!PE || !PE.undo.length) return;
   PE.contours = JSON.parse(PE.undo.pop());
@@ -6229,9 +6259,10 @@ $("peUnion").onclick = function(){
   msg("重なりを 1 つにまとめました（曲線は細かい直線になります）。");
 };
 $("peCancel").onclick = closePathEditor;
-$("peOk").onclick = function(){
-  if (!PE) return;
-  var g = S.groups[PE.gi];
+/* いまいじっている形を、その文字に当てる。［決定］と［共有に保存］で使う。 */
+function peCommit(){
+  if (!PE) return false;
+  var g = S.groups[PE.gi]; if (!g) return false;
   if (!PE.contours.length){
     setAdj(g, PE.ci, "path", null);
   } else if (JSON.stringify(PE.contours) === PE.base && !num(PE.wpct, 0)) {
@@ -6240,6 +6271,11 @@ $("peOk").onclick = function(){
     setAdj(g, PE.ci, "path", { upem: PE.upem, contours: PE.contours,
                                axes: PE.axes, wpct: num(PE.wpct, 0) });
   }
+  return true;
+}
+$("peOk").onclick = function(){
+  if (!PE) return;
+  peCommit();
   closePathEditor();
   renderAll();
   msg("形を反映しました。");
@@ -7052,6 +7088,34 @@ async function glyphLibSave(){
 /* 一覧をまだ読んでいなければ読む */
 async function fontDirEnsure(){
   if (FDIR.items === null) await fontDirLoad();
+}
+/* 1字だけ共有に足す。作字の画面と、右クリックのメニューから使う。 */
+async function glyphLibPushOne(gi, ci){
+  try {
+    var g = S.groups[gi]; if (!g){ msg("その文字がありません。", true); return; }
+    var chars = splitChars(g.text), ch = chars[ci] || "";
+    var a = (g.adj || [])[ci];
+    if (!ch){ msg("その文字がありません。", true); return; }
+    if (!(a && a.path && a.path.contours && a.path.contours.length)){
+      msg("「" + ch + "」はまだ作字していません。パスにして形を編集してから保存してください。", true);
+      return;
+    }
+    if (!fontDirReady()){
+      msg("本体アプリの納骨リストから開くと、共有フォルダーに保存できます。", true);
+      return;
+    }
+    var F = FR(fontIdxOf(g, ci)), fname = (F && F.name) || "";
+    msg("「" + ch + "」を共有フォルダーに保存しています…", false, true);
+    await fontDirEnsure();
+    await glyphLibLoad();
+    var k = glyphKey(ch, fname), hit = -1;
+    FDIR.lib.items.forEach(function(y, i){ if (glyphKey(y.ch, y.font) === k) hit = i; });
+    var rec = { ch:ch, font:fname, upem:(F && F.upem) || 1000, path:a.path, at:new Date().toISOString() };
+    if (hit >= 0) FDIR.lib.items[hit] = rec; else FDIR.lib.items.push(rec);
+    await glyphLibSave();
+    msg("「" + ch + "」を共有フォルダーに" + (hit >= 0 ? "書き換えました。" : "保存しました。"));
+    fontPanel();
+  } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
 /* この案件の作字を共有に足す。同じ字・同じフォントなら差し替える。 */
 async function glyphLibPush(){

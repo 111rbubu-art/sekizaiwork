@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.9</title>
+<title>彫刻原稿 v1.0</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -6287,8 +6287,16 @@ async function graph(path, opt){
    ・ライブラリ（driveId）はそのまま使う
    ・工事フォルダーはパスから id を引き当てて、読み書きの起点にする
    ・確認情報（寺名・家名・彫刻する場所）を情報欄に入れる */
+/* 受け取ったパスを整える。前後の空白、末尾の "/"、"//" を直す。 */
+function spTidyPath(path){
+  var t = String(path == null ? "" : path).trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  if (!t) return "";
+  if (t.charAt(0) !== "/") t = "/" + t;
+  while (t.length > 1 && t.charAt(t.length - 1) === "/") t = t.slice(0, -1);
+  return t;
+}
 function spEncPath(path){
-  return String(path || "").split("/").map(encodeURIComponent).join("/");
+  return spTidyPath(path).split("/").map(encodeURIComponent).join("/");
 }
 function hoApplyInfo(){
   if (!HO || !HO.info) return;
@@ -6338,11 +6346,12 @@ async function spApplyHandoff(){
     if (!HO || !HO.driveId) throw new Error("ライブラリの情報を受け取れませんでした");
     SP.cfg.driveId   = HO.driveId;
     SP.cfg.driveName = HO.driveName || "ドキュメント";
-    SP.cfg.rootPath  = HO.folderPath || "";
-    if (HO.folderPath){
-      var it = await graph("/drives/" + SP.cfg.driveId + "/root:" + spEncPath(HO.folderPath));
+    var want = spTidyPath(HO.folderPath);
+    SP.cfg.rootPath = want;
+    if (want){
+      var it = await graph("/drives/" + SP.cfg.driveId + "/root:" + spEncPath(want));
       SP.cfg.folderId   = it.id;
-      SP.cfg.folderPath = HO.folderPath;
+      SP.cfg.folderPath = want;
     } else {
       SP.cfg.folderId = ""; SP.cfg.folderPath = "";
     }
@@ -6540,9 +6549,30 @@ function spName(suffix, ext){
   return base + (suffix || "") + "_" + stamp + ext;
 }
 /* 案件を保存 */
+/* 保存先（工事フォルダ）の id を確かめる。
+   起動時に引き当てそこねていても、ここでもう一度だけ試す。 */
+async function spNeedFolder(){
+  if (SP.cfg.folderId) return SP.cfg.folderId;
+  var want = spTidyPath(SP.cfg.rootPath || SP.cfg.folderPath ||
+                        (HO && HO.folderPath) || "");
+  if (!want){
+    msg("保存先が分かりません。本体アプリの納骨リストから開き直してください。", true);
+    return "";
+  }
+  try {
+    msg("保存先のフォルダーを探しています…（" + want + "）", false, true);
+    var it = await graph("/drives/" + SP.cfg.driveId + "/root:" + spEncPath(want));
+    SP.cfg.folderId = it.id; SP.cfg.folderPath = want;
+    spPanel(); renderMenuCounts();
+    return SP.cfg.folderId;
+  } catch(e){
+    msg("保存先「" + want + "」を開けませんでした：" + spErrText(e), true);
+    return "";
+  }
+}
 async function spSaveProject(){
   try {
-    if (!SP.cfg.folderId){ msg("先に作業フォルダを選んでください。", true); return; }
+    if (!(await spNeedFolder())) return;
     var name = spName("", ".json");
     var b = new Blob([JSON.stringify(projectJSON(), null, 2)], { type: "application/json" });
     var it = await spPut(name, b, "application/json");
@@ -6571,7 +6601,7 @@ async function spOpenRub(item){
 }
 /* 完成した原稿を保存（デモJPEG＋赤・黒のSVG） */
 async function spSaveOutput(){
-  if (!SP.cfg.folderId){ msg("先に作業フォルダを選んでください。", true); return; }
+  if (!(await spNeedFolder())) return;
   var base = spName("_原稿", "");
   try {
     var n = 0;
@@ -6633,7 +6663,12 @@ function spPanel(){
     ? '<div class="res"><div class="h"><span style="word-break:break-all;">' +
         esc(SP.cfg.folderPath) + '</span></div>' +
       '<div class="m">読み込みも保存も、ここが基準です。</div></div>'
-    : '<p class="hint" style="margin-top:0;">本体アプリからフォルダーを受け取れませんでした。下から選んでください。</p>';
+    : (SP.cfg.rootPath
+        ? '<div class="res"><div class="h"><span style="word-break:break-all;">' +
+            esc(SP.cfg.rootPath) + '</span></div>' +
+          '<div class="m" style="color:var(--shu);">この場所を開けませんでした。' +
+          'つづりが合っているか確かめるか、下から選び直してください。</div></div>'
+        : '<p class="hint" style="margin-top:0;">本体アプリからフォルダーを受け取れませんでした。下から選んでください。</p>');
   h += '<button class="mini" id="spPick" style="width:100%;"' +
     (SP.state === "ready" ? '' : ' disabled') + '>フォルダを選び直す</button>';
   if (SP.cfg.rootPath && SP.cfg.folderPath !== SP.cfg.rootPath)
@@ -6643,7 +6678,10 @@ function spPanel(){
   /* 出し入れ */
   var can  = SP.state === "ready" && !!SP.cfg.folderId;
   var canW = can;
-  h += '<h3 class="sec">出し入れ</h3>' +
+  h += '<h3 class="sec">出し入れ</h3>';
+  h += '<div class="m" style="word-break:break-all;">保存先：<b>' +
+    esc(SP.cfg.folderPath || SP.cfg.rootPath || "（未設定）") + '</b></div>';
+  h +=
     '<button class="mini" id="spSaveP" style="width:100%;"' + (canW ? '' : ' disabled') +
       '>案件をこのフォルダに保存</button>' +
     '<button class="mini" id="spOpenP" style="width:100%;margin-top:4px;"' + (can ? '' : ' disabled') +

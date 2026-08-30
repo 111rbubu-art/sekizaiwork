@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v2.1</title>
+<title>彫刻原稿 v2.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -238,7 +238,7 @@
   #rubstage .hit{cursor:ns-resize;}
   #rubstage .hitx{cursor:ew-resize;}
   #rubstage .spinhit{cursor:grab;}
-  #rubstage .vlhit{cursor:ew-resize;}
+  #rubstage .pivhit{cursor:move;}
   #rubOvWrap,#shOvWrap{position:sticky;top:0;height:0;z-index:14;overflow:visible;}
   #shOv{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;
     pointer-events:none;padding:6px 8px 0;}
@@ -1271,7 +1271,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v2.1";
+var APP_VER = "v2.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3601,8 +3601,8 @@ function rubOverlay(){
     /* 古い呼び方。いまは押したその場から回せる。 */
     rotMode = "spin";
   }
-  ov.innerHTML = '<span class="tag">緑の縦線に合わせて、つかんで回す　' +
-    num(S.rub.rot,0).toFixed(2) + '°　／　クリックで回転の中心</span>' +
+  ov.innerHTML = '<span class="tag">つかんで回す　' + num(S.rub.rot,0).toFixed(2) + '°</span>' +
+    '<span class="tag">◎ を動かすと緑の線も動く</span>' +
     (S.rub.pivot ? '<button class="mini" id="ovMid">中心を真ん中に戻す</button>' : '') +
     '<button class="mini primary" id="ovEnd">終了</button>';
   var mid = $("ovMid"), en = $("ovEnd");
@@ -4843,26 +4843,17 @@ function rubRender(){
 
 
   /* 回転のとき、傾きを見比べるための縦の基準線 */
+  /* 縦の基準線は、回転の中心をそのまま通す。線に触るところは作らない。
+     中心の印をつかんで動かせば、線も一緒に動く。 */
   var vline = "";
   if (rotMode){
-    var vx0 = num(r.vline, (r.bandL + r.bandR) / 2 || W/2);
-    /* 線そのものは触れないようにして、上端のつまみだけで動かす。
-       線の上を掴めるままだと、拓本を回すつもりの手が線を動かしてしまう。 */
-    /* つまみの大きさは画像に対する割合で決める。SVG ごと拡大縮小されるので、
-       画面上ではどの拓本でも同じくらいの大きさに見える。 */
-    var gw = W*0.12, gh = H*0.018;
-    vline = '<g><g pointer-events="none">' +
+    var vx0 = rotPivot().x;
+    vline = '<g pointer-events="none">' +
       '<line x1="' + vx0 + '" y1="0" x2="' + vx0 + '" y2="' + H +
       '" stroke="#137A52" stroke-width="' + (W*0.004) + '"/>' +
       '<line x1="' + vx0 + '" y1="0" x2="' + vx0 + '" y2="' + H +
       '" stroke="#fff" stroke-width="' + (W*0.0012) + '" stroke-dasharray="' + (H*0.01) + ' ' + (H*0.01) + '"/>' +
-      '<rect x="' + (vx0 - gw/2) + '" y="0" width="' + gw + '" height="' + gh +
-      '" rx="' + (gh*0.3) + '" fill="#137A52" opacity="0.9"/>' +
-      '<text x="' + vx0 + '" y="' + (gh*0.72) + '" text-anchor="middle" fill="#fff" font-size="' +
-      (gh*0.62) + '" font-weight="700">‹ ›</text>' +
-      '</g>' +
-      '<rect class="vlhit" x="' + (vx0 - gw*0.75) + '" y="0" width="' + (gw*1.5) +
-      '" height="' + (gh*1.5) + '" fill="transparent"/></g>';
+      '</g>';
   }
 
   var pvr = rotPivot(), ofr = rotOff();
@@ -4893,9 +4884,13 @@ function rubRender(){
     (rotMode ? '<g pointer-events="none">' + hits.join("") + '</g>' : hits.join("")) +
     (rotMode ? '<rect class="spinhit" x="' + (-GUT) + '" y="0" width="' + (W+GUT) +
       '" height="' + H + '" fill="transparent"/>' : '') +
-    vline + '</svg>';
+    vline +
+    /* 中心の印。つかんで動かすので、いちばん上に置く。 */
+    (rotMode ? '<circle class="pivhit" cx="' + pvr.x.toFixed(2) + '" cy="' + pvr.y.toFixed(2) +
+      '" r="' + (Math.max(W, H) * 0.012 * 2.6).toFixed(2) + '" fill="transparent"/>' : '') +
+    '</svg>';
   var svg = st.querySelector("svg");
-  bindVline(svg);
+  bindPivot(svg);
   rubOverlay();
   bindDrag(svg);
   st.style.cursor = placing ? "crosshair" : "";
@@ -4910,24 +4905,33 @@ function rubRender(){
   });
 }
 
-/* 傾きを見比べる縦の基準線。左右に動かして、彫刻の並びに重ねる。 */
-function bindVline(svg){
-  var el = svg.querySelector(".vlhit");
+/* 回転の中心をつかんで動かす。縦の基準線は中心を通るので、一緒に動く。 */
+function bindPivot(svg){
+  var el = svg.querySelector(".pivhit");
   if (!el) return;
   el.addEventListener("pointerdown", function(ev){
+    if (ev.button !== undefined && ev.button !== 0) return;
     ev.preventDefault(); ev.stopPropagation();
+    try { el.setPointerCapture(ev.pointerId); } catch(_){}
     var toPt = rubMapper(svg);
     function mv(e){
-      S.rub.vline = Math.max(0, Math.min(RUB.W, toPt(e).x));
+      var q = toPt(e);
+      S.rub.pivot = { x: Math.round(Math.max(0, Math.min(RUB.W, q.x))),
+                      y: Math.round(Math.max(0, Math.min(RUB.H, q.y))) };
       rubRender();
     }
     function up(){
+      try { el.releasePointerCapture(ev.pointerId); } catch(_){}
       window.removeEventListener("pointermove", mv);
       window.removeEventListener("pointerup", up);
-      persist();
+      window.removeEventListener("pointercancel", up);
+      rubPanel(); persist();
+      var pv = rotPivot();
+      msg("回転の中心を " + Math.round(pv.x) + ", " + Math.round(pv.y) + " に置きました。");
     }
     window.addEventListener("pointermove", mv);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   });
 }
 
@@ -4963,7 +4967,7 @@ function bindSpin(svg){
       var lab = $("rubRot") && $("rubRot").querySelector("b");
       if (lab) lab.textContent = S.rub.rot.toFixed(2) + "°";
       var tg = $("rubOv") && $("rubOv").querySelector(".tag");
-      if (tg) tg.textContent = "拓本をつかんで回す　" + S.rub.rot.toFixed(2) + "°";
+      if (tg) tg.textContent = "つかんで回す　" + S.rub.rot.toFixed(2) + "°";
     }
     function up(){
       try { hit.releasePointerCapture(ev.pointerId); } catch(_){}
@@ -5212,8 +5216,9 @@ function rubPanel(){
     h += '<p class="hint" style="margin-top:0;">' + (rotMode
       ? '拓本の上でつかんで動かすと回ります。クリックした場所が回転の中心になります。'
       : '拓本をつかんで回せるようにします。') + '</p>';
-    h += '<p class="hint">中心 ' + Math.round(pv.x) + ', ' + Math.round(pv.y) + ' px' +
-      (r.pivot ? '' : '（画像の中心）') + '</p>';
+    h += '<p class="hint">回転の中心 ' + Math.round(pv.x) + ', ' + Math.round(pv.y) + ' px' +
+      (r.pivot ? '' : '（画像の中心）') +
+      '<br>緑の縦線は、この中心を通ります。◎ をつかんで動かすと、線も一緒に動きます。</p>';
   }
   $("rubRot").innerHTML = h;
 

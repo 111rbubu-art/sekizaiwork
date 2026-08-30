@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.8</title>
+<title>彫刻原稿 v0.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -3341,20 +3341,19 @@ function rubOverlay(){
   var ov = $("rubOv"); if (!ov) return;
   if (!rotMode || !RUB.img){ ov.hidden = true; ov.innerHTML = ""; return; }
   ov.hidden = false;
-  if (rotMode === "pivot"){
-    ov.innerHTML = '<span class="tag">緑の縦線を彫刻の並びに合わせ、回転の中心をクリック</span>' +
-      '<button class="mini" id="ovEnd">終了</button>';
-  } else if (rotMode === "confirm"){
-    ov.innerHTML = '<span class="tag">この位置でよければ確定（違えば拓本を再クリック）</span>' +
-      '<button class="mini primary" id="ovOk">確定</button>' +
-      '<button class="mini" id="ovEnd">終了</button>';
-  } else {
-    ov.innerHTML = '<span class="tag">緑の縦線に合わせて、つかんで回す　' +
-      num(S.rub.rot,0).toFixed(2) + '°</span>' +
-      '<button class="mini primary" id="ovEnd">終了</button>';
+  if (rotMode === "pivot" || rotMode === "confirm"){
+    /* 古い呼び方。いまは押したその場から回せる。 */
+    rotMode = "spin";
   }
-  var ok = $("ovOk"), en = $("ovEnd");
-  if (ok) ok.onclick = function(){ rotMode = "spin"; rubPanel(); rubRender(); msg("拓本をつかんで回してください。"); };
+  ov.innerHTML = '<span class="tag">緑の縦線に合わせて、つかんで回す　' +
+    num(S.rub.rot,0).toFixed(2) + '°　／　クリックで回転の中心</span>' +
+    (S.rub.pivot ? '<button class="mini" id="ovMid">中心を真ん中に戻す</button>' : '') +
+    '<button class="mini primary" id="ovEnd">終了</button>';
+  var mid = $("ovMid"), en = $("ovEnd");
+  if (mid) mid.onclick = function(){
+    S.rub.pivot = null; rubPanel(); rubRender(); persist();
+    msg("回転の中心を画像の真ん中に戻しました。");
+  };
   if (en) en.onclick = endRot;
 }
 /* 回転の中心を置く。何度でもクリックし直せる。 */
@@ -4586,12 +4585,23 @@ function rubRender(){
   var vline = "";
   if (rotMode){
     var vx0 = num(r.vline, (r.bandL + r.bandR) / 2 || W/2);
-    vline = '<g><line x1="' + vx0 + '" y1="' + (-H*0.02) + '" x2="' + vx0 + '" y2="' + (H*1.02) +
+    /* 線そのものは触れないようにして、上端のつまみだけで動かす。
+       線の上を掴めるままだと、拓本を回すつもりの手が線を動かしてしまう。 */
+    /* つまみの大きさは画像に対する割合で決める。SVG ごと拡大縮小されるので、
+       画面上ではどの拓本でも同じくらいの大きさに見える。 */
+    var gw = W*0.12, gh = H*0.018;
+    vline = '<g><g pointer-events="none">' +
+      '<line x1="' + vx0 + '" y1="0" x2="' + vx0 + '" y2="' + H +
       '" stroke="#137A52" stroke-width="' + (W*0.004) + '"/>' +
-      '<line x1="' + vx0 + '" y1="' + (-H*0.02) + '" x2="' + vx0 + '" y2="' + (H*1.02) +
+      '<line x1="' + vx0 + '" y1="0" x2="' + vx0 + '" y2="' + H +
       '" stroke="#fff" stroke-width="' + (W*0.0012) + '" stroke-dasharray="' + (H*0.01) + ' ' + (H*0.01) + '"/>' +
-      '<rect class="vlhit" x="' + (vx0 - W*0.025) + '" y="' + (-H*0.02) + '" width="' + (W*0.05) +
-      '" height="' + (H*1.04) + '" fill="transparent"/></g>';
+      '<rect x="' + (vx0 - gw/2) + '" y="0" width="' + gw + '" height="' + gh +
+      '" rx="' + (gh*0.3) + '" fill="#137A52" opacity="0.9"/>' +
+      '<text x="' + vx0 + '" y="' + (gh*0.72) + '" text-anchor="middle" fill="#fff" font-size="' +
+      (gh*0.62) + '" font-weight="700">‹ ›</text>' +
+      '</g>' +
+      '<rect class="vlhit" x="' + (vx0 - gw*0.75) + '" y="0" width="' + (gw*1.5) +
+      '" height="' + (gh*1.5) + '" fill="transparent"/></g>';
   }
 
   var pvr = rotPivot(), ofr = rotOff();
@@ -4620,7 +4630,7 @@ function rubRender(){
     '<image href="' + r.src + '" x="0" y="0" width="' + W + '" height="' + H + '"' + rotAttr + '/>' +
     maskLayer + '<g pointer-events="none">' + o.join("") + '</g>' +
     (rotMode ? '<g pointer-events="none">' + hits.join("") + '</g>' : hits.join("")) +
-    (rotMode === "spin" ? '<rect class="spinhit" x="' + (-GUT) + '" y="0" width="' + (W+GUT) +
+    (rotMode ? '<rect class="spinhit" x="' + (-GUT) + '" y="0" width="' + (W+GUT) +
       '" height="' + H + '" fill="transparent"/>' : '') +
     vline + '</svg>';
   var svg = st.querySelector("svg");
@@ -4665,7 +4675,9 @@ function bindSpin(svg){
   var hit = svg.querySelector(".spinhit");
   if (!hit) return;
   hit.addEventListener("pointerdown", function(ev){
+    if (ev.button !== undefined && ev.button !== 0) return;   /* 左ボタンだけ */
     ev.preventDefault(); ev.stopPropagation();
+    try { hit.setPointerCapture(ev.pointerId); } catch(_){}
     var pv = rotPivot(), toPt = rubMapper(svg);
     var q0 = toPt(ev);
     var a0 = Math.atan2(q0.y - pv.y, q0.x - pv.x);
@@ -4693,8 +4705,10 @@ function bindSpin(svg){
       if (tg) tg.textContent = "拓本をつかんで回す　" + S.rub.rot.toFixed(2) + "°";
     }
     function up(){
+      try { hit.releasePointerCapture(ev.pointerId); } catch(_){}
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       if (moved){
         rebuildRub(); A = null;
         rubPanel(); rubRender(); renderStage(); persist();
@@ -4704,6 +4718,7 @@ function bindSpin(svg){
     }
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   });
 }
 
@@ -4931,8 +4946,11 @@ function rubPanel(){
       (r.flip180 ? "↻ 180° 反転中（もう一度で戻す）" : "↻ 180° 反転（上下が逆のとき）") + '</button>';
     h += '<label class="f"><span>角度　<b>' + (num(r.rot,0)).toFixed(2) + '°</b></span>' +
       '<input type="range" id="rRot" min="-15" max="15" step="0.05" value="' + num(r.rot,0) + '"></label>';
-    h += '<button class="mini' + (rotMode ? " primary" : "") + '" id="rPivot" style="width:100%;margin-bottom:8px;">' +
-      (rotMode ? "マウスで設定 中（拓本の画面で操作）" : "マウスで設定") + '</button>';
+    h += '<button class="mini' + (rotMode ? " primary" : "") + '" id="rPivot" style="width:100%;margin-bottom:4px;">' +
+      (rotMode ? "終了（いま マウスで回せます）" : "マウスで回す") + '</button>';
+    h += '<p class="hint" style="margin-top:0;">' + (rotMode
+      ? '拓本の上でつかんで動かすと回ります。クリックした場所が回転の中心になります。'
+      : '拓本をつかんで回せるようにします。') + '</p>';
     h += '<p class="hint">中心 ' + Math.round(pv.x) + ', ' + Math.round(pv.y) + ' px' +
       (r.pivot ? '' : '（画像の中心）') + '</p>';
   }
@@ -5018,8 +5036,10 @@ function bindRub(){
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
     if (view === "sheet") setView("both");
-    rotMode = "pivot"; rubPanel(); rubRender();
-    msg("緑の縦線を彫刻の並びに合わせてから、回転の中心をクリックしてください。");
+    /* 押したその場から、つかんで回せる。
+       クリックだけなら、その場所が回転の中心になる。 */
+    rotMode = "spin"; rubPanel(); rubRender();
+    msg("拓本をつかんで動かすと回ります。クリックすると、そこが回転の中心になります。");
   });
   on("rThr","input",function(e){ r.thresh = parseInt(e.target.value,10); A = null; RUB.mask = null; rubPanel(); rubRender(); persist(); });
   on("rThrAuto","click",function(){ r.thresh = null; A = null; RUB.mask = null; rubPanel(); rubRender(); persist(); });

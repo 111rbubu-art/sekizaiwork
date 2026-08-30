@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.4</title>
+<title>彫刻原稿 v0.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -3242,7 +3242,6 @@ async function restore(){
   setSheetOff(num(S.sheet.ox,0), num(S.sheet.oy,0));
   infoFill();
   renderCols(); rubPanel(); renderTpl(); renderMenuCounts();
-  spBoot();
   setView(S.view || "sheet");
   var c = await loadFontCache();
   if (c && c.length){
@@ -3252,8 +3251,11 @@ async function restore(){
       msg("前回のフォント " + c.length + " 件を復元しました。");
     } catch(e){}
   }
-  var img = await loadRubCache();
-  if (img) loadRubImageQuiet(img);
+  /* 前回の拓本は、案件を受け取るより先に用意しておく。
+     別の案件だった場合はここで捨てるので、前の拓本が残らない。 */
+  _pendingRubSrc = await loadRubCache();
+  spBoot();
+  if (_pendingRubSrc) loadRubImageQuiet(_pendingRubSrc);
 }
 function loadRubImageQuiet(src){
   var im = new Image();
@@ -3293,6 +3295,9 @@ $("btnSave").onclick = function(){
    11. 拓本 — 読込・較正・解析
    ============================================================ */
 var RUB = { img:null, canvas:null, data:null, W:0, H:0, mask:null };
+/* 前回の続きの拓本。読み込みは済んでいるが、まだ画面には出していないもの。
+   別の案件を受け取ったときに捨てられるよう、いったんここで持つ。 */
+var _pendingRubSrc = null;
 
 /* 回転を反映した解析用のビットマップを作り直す。
    表示側の画像にも同じ回転をかけるので、重ねた線とずれない。 */
@@ -3389,7 +3394,9 @@ function rebuildRub(){
   var cx = c.getContext("2d", { willReadFrequently:true });
   cx.fillStyle = S.rub.invert ? "#000" : "#fff";     /* 回転で空いた隅 */
   cx.fillRect(0, 0, W, H);
-  var rot = num(S.rub.rot, 0), off = rotOff();
+  /* flip180 … スキャナーに上下逆に置いたときの直し。
+     180°回しても縦横は変わらないので、同じ大きさのまま描ける。 */
+  var rot = num(S.rub.rot, 0) + (S.rub.flip180 ? 180 : 0), off = rotOff();
   if (rot || off.x || off.y){
     cx.save();
     cx.translate(off.x, off.y);
@@ -3401,6 +3408,34 @@ function rebuildRub(){
   RUB.W = W; RUB.H = H; RUB.canvas = c;
   try { RUB.data = cx.getImageData(0, 0, W, H); } catch(e){ RUB.data = null; }
   RUB.mask = null;
+}
+/* 拓本を 180° ひっくり返す。
+   スキャナーに上下逆に置いてしまったときの直し。角度の微調整（±15°）とは別。
+   上下左右が入れ替わるので、それまでに引いた範囲の線も一緒に裏返して、
+   位置の指定がずれないようにする。 */
+function rubFlip180(){
+  if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  var r = S.rub, W = RUB.W, H = RUB.H;
+  var mx = function(v){ return W - num(v, 0); };   /* 左右を裏返す */
+  var my = function(v){ return H - num(v, 0); };   /* 上下を裏返す */
+
+  r.flip180 = !r.flip180;
+  r.pivot = null; r.off = { x:0, y:0 };            /* 回転の中心は取り直す */
+
+  var t = r.calTop; r.calTop = my(r.calBot); r.calBot = my(t);
+  var l = r.bandL;  r.bandL  = mx(r.bandR);  r.bandR  = mx(l);
+  if (Array.isArray(r.centersPx))
+    r.centersPx = r.centersPx.map(function(v){ return (v == null) ? v : Math.round(mx(v)); });
+  if (r.crop){
+    var c = r.crop;
+    r.crop = { x1: mx(c.x2), y1: my(c.y2), x2: mx(c.x1), y2: my(c.y1) };
+  }
+
+  A = null; RUB.mask = null;
+  rebuildRub();
+  if (!RUB.data){ msg("回せませんでした。", true); return; }
+  rubPanel(); rubRender(); renderStage(); persist();
+  msg(r.flip180 ? "拓本を 180° 回しました。" : "拓本の向きを元に戻しました。");
 }
 var A = null;                       // 解析結果
 
@@ -4855,6 +4890,9 @@ function rubPanel(){
     h += "";
   } else {
     var pv = rotPivot();
+    /* スキャナーに上下逆に置いた拓本を直す。角度の微調整とは別に持つ。 */
+    h += '<button class="mini' + (r.flip180 ? " primary" : "") + '" id="rFlip" style="width:100%;margin-bottom:8px;">' +
+      (r.flip180 ? "↻ 180° 反転中（もう一度で戻す）" : "↻ 180° 反転（上下が逆のとき）") + '</button>';
     h += '<label class="f"><span>角度　<b>' + (num(r.rot,0)).toFixed(2) + '°</b></span>' +
       '<input type="range" id="rRot" min="-15" max="15" step="0.05" value="' + num(r.rot,0) + '"></label>';
     h += '<button class="mini' + (rotMode ? " primary" : "") + '" id="rPivot" style="width:100%;margin-bottom:8px;">' +
@@ -4940,6 +4978,7 @@ function bindRub(){
     rotT = setTimeout(function(){ rebuildRub(); A = null; rubPanel(); rubRender(); persist(); }, 180);
     rubRender();
   });
+  on("rFlip","click",rubFlip180);
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
     if (view === "sheet") setView("both");
@@ -5006,9 +5045,10 @@ function finishApply(t, quiet, gi){
   }
 }
 
-$("btnNew").onclick = function(){
-  if (!confirm("いまの内容（シート・ガイドライン・グループ・確認情報・拓本）を全部消して、まっさらから始めます。よろしいですか。")) return;
+/* 中身を全部まっさらにする（確認は呼ぶ側でする）。 */
+function resetAll(){
   RUB.img = null; RUB.canvas = null; RUB.data = null; RUB.mask = null; RUB.W = 0; RUB.H = 0;
+  _pendingRubSrc = null;              /* 前回の続きの拓本も出さない */
   A = null; placing = null; rotMode = null; sel = 0; showDetail = false;
   S = { sheet:{ w:90, h:700, m:10, ox:0, oy:0 }, centers:[], info:{temple:"",family:"",date:"",chokokuBasho:"",sekitouPos:"",sekitouLine:"",boshiPos:"",boshiLine:""},
         demoDx:{}, demoRx:0, groups:[] };
@@ -5019,6 +5059,16 @@ $("btnNew").onclick = function(){
   setSheetOff(0, 0);
   setView("sheet"); setSub("sheet");
   renderAll(); rubPanel(); renderMenuCounts();
+  persist();
+}
+/* 何か作りかけのものが残っているか */
+function hasWork(){
+  return !!(RUB.img || _pendingRubSrc || (S.groups || []).length || (S.centers || []).length ||
+            S.info.temple || S.info.family || S.info.date);
+}
+$("btnNew").onclick = function(){
+  if (!confirm("いまの内容（シート・ガイドライン・グループ・確認情報・拓本）を全部消して、まっさらから始めます。よろしいですか。")) return;
+  resetAll();
   msg("まっさらにしました。");
 };
 
@@ -6187,17 +6237,42 @@ function spEncPath(path){
 function hoApplyInfo(){
   if (!HO || !HO.info) return;
   var v = HO.info;
-  /* 同じ案件を開き直しただけなら、手で直した内容を消さない。
-     別の案件を受け取ったときだけ、まるごと入れ替える。 */
+  /* 受け取った案件のしるし。同じ案件を開き直しただけなら、手で直した内容も
+     作りかけの原稿もそのまま残す。別の案件なら、前の案件のものは持ち越さない。 */
   var sig = "";
-  try { sig = JSON.stringify(v); } catch(e){ sig = String(Math.random()); }
-  var changed = (S.info.hoSig !== sig);
+  try { sig = JSON.stringify(v) + "|" + (HO.folderPath || ""); } catch(e){ sig = String(Math.random()); }
   var note = $("iFromApp"); if (note) note.style.display = "";
-  if (!changed){ infoFill(); return; }
-  var put = function(k){ S.info[k] = (v[k] == null ? "" : String(v[k])).trim(); };
-  ["temple","family","chokokuBasho","sekitouPos","sekitouLine","boshiPos","boshiLine"].forEach(put);
+  if (S.info.hoSig === sig){ infoFill(); return; }
+
+  var first = !S.info.hoSig;            /* まだ一度も案件を受け取っていない */
+  if (!first && hasWork()){
+    var who = (v.family || "") + (v.temple ? "（" + v.temple + "）" : "");
+    var yes = confirm(
+      "別の案件" + (who ? "「" + who + "」" : "") + "を受け取りました。\n\n" +
+      "いま画面にある拓本と原稿は前の案件のものです。\n" +
+      "消して、新しい案件で始めますか？\n\n" +
+      "［OK］　　　消して新しく始める\n" +
+      "［キャンセル］今の内容を残す（前の案件の拓本が残ります）");
+    if (yes){
+      resetAll();
+    } else {
+      msg("前の案件の拓本と原稿が残っています。ご注意ください。", true, true);
+      applyHoFields(v, sig);
+      return;
+    }
+  } else if (!first){
+    /* 中身が無いので、黙って入れ替えてよい */
+    resetAll();
+  }
+  applyHoFields(v, sig);
+}
+/* 受け取った項目を確認情報に入れる */
+function applyHoFields(v, sig){
+  ["temple","family","chokokuBasho","sekitouPos","sekitouLine","boshiPos","boshiLine"]
+    .forEach(function(k){ S.info[k] = (v[k] == null ? "" : String(v[k])).trim(); });
   S.info.hoSig = sig;
   infoFill();
+  var note = $("iFromApp"); if (note) note.style.display = "";
   renderStage(); persist();
 }
 async function spApplyHandoff(){
@@ -6224,10 +6299,20 @@ async function spApplyHandoff(){
     msg("フォルダーを開けませんでした：" + SP.err, true);
   }
 }
-/* 本体アプリ側から「もう一度受け取って」と言われたときの入口。
-   作りかけの原稿は消さず、情報とフォルダーだけ入れ直す。 */
-window.__chokokuApplyHandoff = function(){
-  HO = hoRead();
+/* 本体アプリ側から「この案件に切り替えて」と言われたときの入口。
+   sessionStorage は窓ごとに別なので（開いた時点の写しが渡るだけ）、
+   すでに開いている窓に別の案件を渡すときは、中身を引数で受け取る。 */
+window.__chokokuApplyHandoff = function(payload){
+  var o = null;
+  if (payload){
+    try { o = (typeof payload === "string") ? JSON.parse(payload) : JSON.parse(JSON.stringify(payload)); }
+    catch(e){ o = null; }
+    /* この窓の sessionStorage にも控える。読み込み直しても同じ案件で開く。 */
+    if (o && o.from === "sekizaiwork"){
+      try { sessionStorage.setItem("chokokuGenkoHandoff", JSON.stringify(o)); } catch(e){}
+    }
+  }
+  HO = (o && o.from === "sekizaiwork") ? o : hoRead();
   if (!HO) return;
   hoApplyInfo();
   spApplyHandoff();

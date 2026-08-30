@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v1.1</title>
+<title>彫刻原稿 v1.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -6194,6 +6194,11 @@ function applyProject(o, name){
   $("shW").value = S.sheet.w; $("shH").value = S.sheet.h; $("shM").value = S.sheet.m;
   setSheetOff(num(S.sheet.ox,0), num(S.sheet.oy,0));
   infoFill();
+  /* 案件ファイルには拓本の画像も入っている。画面にも戻す。 */
+  _pendingRubSrc = null;
+  RUB.img = null; RUB.canvas = null; RUB.data = null; RUB.mask = null; RUB.W = 0; RUB.H = 0;
+  A = null;
+  if (S.rub && S.rub.src) loadRubImageQuiet(S.rub.src);
   renderAll();
   var cur = FONTS.map(function(F){ return F.name; }).join(",");
   if (o.fonts && o.fonts.join(",") !== cur)
@@ -6219,6 +6224,8 @@ var SP_KEY = "chokoku.sp.v1";
 
 /* --- 本体アプリからの受け取り ----------------------------------- */
 var HO = null;                 /* 受け取った内容。単体で開いたときは null */
+var _autoOpened  = false;      /* 起動してから一度、案件ファイルを見にいったか */
+var _caseChanged = false;      /* 別の案件を受け取って、中身を入れ替えたか */
 
 function hoRead(){
   try {
@@ -6326,37 +6333,34 @@ function hoApplyInfo(){
   if (!HO || !HO.info) return;
   var v = HO.info;
   /* 受け取った案件のしるし。同じ案件を開き直しただけなら、手で直した内容も
-     作りかけの原稿もそのまま残す。別の案件なら、前の案件のものは持ち越さない。 */
+     作りかけの原稿もそのまま残す。別の案件なら、前の案件のものは持ち越さない。
+     別の場所から開いて前の内容を続けて編集することは無いので、確認はしない。 */
   var sig = "";
-  try { sig = JSON.stringify(v) + "|" + (HO.folderPath || ""); } catch(e){ sig = String(Math.random()); }
+  try { sig = JSON.stringify(v) + "|" + spTidyPath(HO.folderPath); } catch(e){ sig = String(Math.random()); }
   var note = $("iFromApp"); if (note) note.style.display = "";
   if (S.info.hoSig === sig){ infoFill(); return; }
-
-  var first = !S.info.hoSig;            /* まだ一度も案件を受け取っていない */
-  if (!first && hasWork()){
-    var who = (v.family || "") + (v.temple ? "（" + v.temple + "）" : "");
-    var yes = confirm(
-      "別の案件" + (who ? "「" + who + "」" : "") + "を受け取りました。\n\n" +
-      "いま画面にある拓本と原稿は前の案件のものです。\n" +
-      "消して、新しい案件で始めますか？\n\n" +
-      "［OK］　　　消して新しく始める\n" +
-      "［キャンセル］今の内容を残す（前の案件の拓本が残ります）");
-    if (yes){
-      resetAll();
-    } else {
-      msg("前の案件の拓本と原稿が残っています。ご注意ください。", true, true);
-      applyHoFields(v, sig);
-      return;
-    }
-  } else if (!first){
-    /* 中身が無いので、黙って入れ替えてよい */
-    resetAll();
-  }
+  if (S.info.hoSig){ resetAll(); _caseChanged = true; }   /* 前の案件のものは残さない */
   applyHoFields(v, sig);
+}
+/* 案件ファイルを読み込んだあと、空いている項目だけ本体アプリの値で埋める。
+   ファイルの中で手直しした内容は消さない。 */
+function hoFillBlanks(){
+  if (!HO || !HO.info) return;
+  var v = HO.info, n = 0;
+  ["temple","family","date","chokokuBasho","sekitouPos","sekitouLine","boshiPos","boshiLine"]
+    .forEach(function(k){
+      var got = String(S.info[k] == null ? "" : S.info[k]).trim();
+      var want = String(v[k] == null ? "" : v[k]).trim();
+      if (!got && want){ S.info[k] = want; n++; }
+    });
+  try { S.info.hoSig = JSON.stringify(v) + "|" + spTidyPath(HO.folderPath); } catch(e){}
+  infoFill();
+  var note = $("iFromApp"); if (note) note.style.display = "";
+  if (n) persist();
 }
 /* 受け取った項目を確認情報に入れる */
 function applyHoFields(v, sig){
-  ["temple","family","chokokuBasho","sekitouPos","sekitouLine","boshiPos","boshiLine"]
+  ["temple","family","date","chokokuBasho","sekitouPos","sekitouLine","boshiPos","boshiLine"]
     .forEach(function(k){ S.info[k] = (v[k] == null ? "" : String(v[k])).trim(); });
   S.info.hoSig = sig;
   infoFill();
@@ -6382,6 +6386,12 @@ async function spApplyHandoff(){
     SP.state = "ready"; spPanel(); rubPanel(); fontPanel(); renderMenuCounts();
     FDIR.id = ""; FDIR.items = null;
     fontDirLoad();                       /* アプリ使用フォントの一覧を用意しておく */
+    /* 案件ファイルを見にいくのは、開いた直後と、別の案件に切り替わったときだけ。
+       同じ案件で開き直したときに、作りかけを保存前の中身で上書きしないため。 */
+    if (!_autoOpened || _caseChanged){
+      _autoOpened = true; _caseChanged = false;
+      await autoOpenCase();
+    }
     msg(SP.cfg.folderPath
       ? "本体アプリとつながりました。読み込み・保存先は「" + SP.cfg.folderPath + "」です。"
       : "本体アプリとつながりました。工事フォルダーは未設定なので、下で選んでください。");
@@ -6603,13 +6613,35 @@ async function spSaveProject(){
     msg("工事フォルダに保存しました（" + it.name + " / " + sizeText(b.size) + "）。");
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
-/* 案件を開く（一覧から選ぶ） */
-async function spOpenProject(item){
+/* 起動したときに、工事フォルダの中の案件ファイルを開く。
+   いちばん新しい .json をそのまま読み込む。前の続きから始められる。 */
+async function autoOpenCase(){
+  if (!SP.cfg.folderId) return false;
   try {
-    msg("案件を読み込んでいます…（" + item.name + "）", false, true);
+    var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + SP.cfg.folderId +
+      "/children?$top=200&$select=id,name,file,folder,lastModifiedDateTime");
+    var js = (r.value || []).filter(function(x){ return !x.folder && /\.json$/i.test(x.name); });
+    if (!js.length) return false;
+    js.sort(function(a, b){
+      return String(b.lastModifiedDateTime || "").localeCompare(String(a.lastModifiedDateTime || ""));
+    });
+    msg("この案件の続きを読み込んでいます…（" + js[0].name + "）", false, true);
+    await spOpenProject(js[0], true);
+    return true;
+  } catch(e){
+    /* 読めなくても、まっさらのまま使えればよい */
+    return false;
+  }
+}
+/* 案件を開く（一覧から選ぶ） */
+async function spOpenProject(item, auto){
+  try {
+    msg((auto ? "この案件の続きを読み込んでいます…（" : "案件を読み込んでいます…（") +
+        item.name + "）", false, true);
     var b = await spGetBlob(item.id, item.name);
     var o = JSON.parse(await b.text());
     applyProject(o, item.name);
+    hoFillBlanks();          /* 抜けている確認情報は本体アプリの値で埋める */
     spBrowseClose();
   } catch(e){ msg("開けませんでした：" + spErrText(e), true); }
 }

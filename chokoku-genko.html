@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.3</title>
+<title>彫刻原稿 v0.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1240,9 +1240,12 @@ function safeName(base, ext){
 }
 
 function $(id){ return document.getElementById(id); }
-function msg(t, isErr){
+/* sticky を立てると、次に msg を出すまで消えない。
+   読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
+function msg(t, isErr, sticky){
   var m = $("msg"); m.textContent = t; m.className = "show" + (isErr ? " err" : "");
-  clearTimeout(msg._t); msg._t = setTimeout(function(){ m.className = ""; }, 3200);
+  clearTimeout(msg._t);
+  if (!sticky) msg._t = setTimeout(function(){ m.className = ""; }, 3200);
 }
 function num(v, d){ var n = parseFloat(v); return isFinite(n) ? n : d; }
 function esc(s){ return String(s).replace(/[&<>"]/g, function(c){
@@ -6141,22 +6144,37 @@ async function spToken(){
 }
 
 /* --- Graph 呼び出し -------------------------------------------- */
+/* Graph を呼ぶ。通信が切れたときや一時的な混み合い（5xx・429）は取り直す。
+   書き込み（PUT/POST など）は二重に効くと困るので取り直さない。 */
 async function graph(path, opt){
   opt = opt || {};
-  var tok = await spToken();
-  var h = Object.assign({ Authorization: "Bearer " + tok }, opt.headers || {});
-  if (opt.json !== undefined){ h["Content-Type"] = "application/json"; opt.body = JSON.stringify(opt.json); }
-  var res = await fetch("https://graph.microsoft.com/v1.0" + path, {
-    method: opt.method || "GET", headers: h, body: opt.body
-  });
-  if (!res.ok){
-    var t = "";
-    try { var j = await res.json(); t = (j.error && (j.error.message || j.error.code)) || ""; } catch(e){}
-    throw new Error(res.status + " " + (t || res.statusText));
+  var method = opt.method || "GET";
+  var TRIES = (method === "GET") ? 3 : 1, last = null;
+  for (var i = 0; i < TRIES; i++){
+    try {
+      var tok = await spToken();
+      var h = Object.assign({ Authorization: "Bearer " + tok }, opt.headers || {});
+      var body = opt.body;
+      if (opt.json !== undefined){ h["Content-Type"] = "application/json"; body = JSON.stringify(opt.json); }
+      var res = await fetch("https://graph.microsoft.com/v1.0" + path,
+        { method: method, headers: h, body: body, cache: "no-store" });
+      if (res.ok){
+        if (opt.raw) return res;
+        if (res.status === 204) return null;
+        return await res.json();
+      }
+      var t = "";
+      try { var j = await res.json(); t = (j.error && (j.error.message || j.error.code)) || ""; } catch(e){}
+      var err = new Error(res.status + " " + (t || res.statusText));
+      if (res.status < 500 && res.status !== 429) throw Object.assign(err, { stop: true });
+      last = err;
+    } catch(e){
+      if (e && e.stop) throw e;
+      last = e;
+    }
+    if (i < TRIES - 1) await spSleep(600 * Math.pow(2, i));
   }
-  if (opt.raw) return res;
-  if (res.status === 204) return null;
-  return res.json();
+  throw last || new Error("通信できませんでした");
 }
 
 /* 本体アプリから受け取った内容を当てる。
@@ -6283,26 +6301,84 @@ function spFolderRef(){
 }
 
 /* --- 読み書き --------------------------------------------------- */
+/* 置く。同じ名前に上書きするだけなので、切れたら取り直してよい。 */
 async function spPut(name, blob, type){
   if (!SP.cfg.driveId) throw new Error("ライブラリが未設定です");
-  var tok = await spToken();
   var p = "https://graph.microsoft.com/v1.0/drives/" + SP.cfg.driveId + spFolderRef() +
     ":/" + encodeURIComponent(name) + ":/content";
-  var res = await fetch(p, { method: "PUT",
-    headers: { Authorization: "Bearer " + tok, "Content-Type": type || "application/octet-stream" },
-    body: blob });
-  if (!res.ok){
-    var t = ""; try { var j = await res.json(); t = j.error && j.error.message; } catch(e){}
-    throw new Error(res.status + " " + (t || res.statusText));
+  var TRIES = 3, last = null;
+  for (var i = 0; i < TRIES; i++){
+    try {
+      var tok = await spToken();
+      var res = await fetch(p, { method: "PUT",
+        headers: { Authorization: "Bearer " + tok, "Content-Type": type || "application/octet-stream" },
+        body: blob });
+      if (res.ok) return await res.json();
+      var t = ""; try { var j = await res.json(); t = j.error && j.error.message; } catch(e){}
+      var err = new Error(res.status + " " + (t || res.statusText));
+      if (res.status < 500 && res.status !== 429) throw Object.assign(err, { stop: true });
+      last = err;
+    } catch(e){
+      if (e && e.stop) throw e;
+      last = e;
+    }
+    if (i < TRIES - 1){
+      msg("保存の通信が切れました。やり直しています…（" + (i + 2) + "/" + TRIES + "）", true, true);
+      await spSleep(700 * Math.pow(2, i));
+    }
   }
-  return res.json();
+  throw last || new Error("保存できませんでした");
 }
-async function spGetBlob(itemId){
-  var tok = await spToken();
-  var res = await fetch("https://graph.microsoft.com/v1.0/drives/" + SP.cfg.driveId +
-    "/items/" + itemId + "/content", { headers: { Authorization: "Bearer " + tok } });
-  if (!res.ok) throw new Error(res.status + " " + res.statusText);
-  return res.blob();
+function spSleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+
+/* ファイルの中身を取ってくる。
+   ------------------------------------------------------------
+   SharePoint の実体は download.aspx へ飛ばされて配られる。この配信は
+   ときどき途中で切れる（ERR_CONNECTION_RESET）。写真のような大きい
+   ファイルほど当たりやすい。切れても中身が壊れているわけではないので、
+   少し待って取り直せばたいてい通る。
+   取り直しは2通りを交互に試す。
+     A: /items/{id}/content に鍵を付けて取りに行く（＝転送先へ飛ばされる）
+     B: 先に転送先のURLだけもらい、鍵なしでそこへ取りに行く
+   ときどき A だけ／B だけ通ることがあるので、両方回す。 */
+async function spGetBlob(itemId, label){
+  var TRIES = 5, last = null;
+  for (var i = 0; i < TRIES; i++){
+    var useDirect = (i % 2 === 1);          /* 2回目・4回目は B の方法 */
+    try {
+      var res;
+      if (useDirect){
+        var meta = await graph("/drives/" + SP.cfg.driveId + "/items/" + itemId +
+                               "?$select=id,name,size,@microsoft.graph.downloadUrl");
+        var du = meta && meta["@microsoft.graph.downloadUrl"];
+        if (!du) throw new Error("配信URLをもらえませんでした");
+        res = await fetch(du, { cache: "no-store" });
+      } else {
+        var tok = await spToken();
+        res = await fetch("https://graph.microsoft.com/v1.0/drives/" + SP.cfg.driveId +
+          "/items/" + itemId + "/content",
+          { headers: { Authorization: "Bearer " + tok }, cache: "no-store" });
+      }
+      if (res.ok){
+        var b = await res.blob();           /* ここでも途中で切れることがある */
+        if (b && b.size > 0) return b;
+        throw new Error("中身が空でした");
+      }
+      if (res.status === 404) throw Object.assign(new Error("404 ファイルが見つかりません"), { stop: true });
+      if (res.status === 401 || res.status === 403)
+        throw Object.assign(new Error(res.status + " 権限がありません"), { stop: true });
+      last = new Error(res.status + " " + res.statusText);
+    } catch(e){
+      if (e && e.stop) throw e;
+      last = e;
+    }
+    if (i < TRIES - 1){
+      msg((label ? label + "：" : "") + "通信が切れました。取り直しています…（" +
+          (i + 2) + "/" + TRIES + "）", true, true);
+      await spSleep(700 * Math.pow(2, i));   /* 0.7秒 → 1.4 → 2.8 → 5.6 */
+    }
+  }
+  throw last || new Error("読み込めませんでした");
 }
 function blobToDataURL(b){
   return new Promise(function(ok, ng){
@@ -6333,7 +6409,8 @@ async function spSaveProject(){
 /* 案件を開く（一覧から選ぶ） */
 async function spOpenProject(item){
   try {
-    var b = await spGetBlob(item.id);
+    msg("案件を読み込んでいます…（" + item.name + "）", false, true);
+    var b = await spGetBlob(item.id, item.name);
     var o = JSON.parse(await b.text());
     applyProject(o, item.name);
     spBrowseClose();
@@ -6342,8 +6419,8 @@ async function spOpenProject(item){
 /* 拓本を取り込む（SharePoint のフォルダーから選んだとき） */
 async function spOpenRub(item){
   try {
-    msg("拓本を読み込んでいます…（" + item.name + "）");
-    var b = await spGetBlob(item.id);
+    msg("拓本を読み込んでいます…（" + item.name + "）", false, true);
+    var b = await spGetBlob(item.id, item.name);
     var url = await blobToDataURL(b);
     spBrowseClose();
     loadRubImage(url, item.name || "");

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v2.2</title>
+<title>彫刻原稿 v2.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -481,7 +481,7 @@
           <button class="mini" id="dCropAll">全体に戻す</button>
           <button class="mini" id="dReset">位置を戻す</button>
           <button class="mini" id="dSave">JPEGで保存</button>
-          <span class="hint" style="margin:0;" id="dInfo">列を左右にドラッグして並びを確認</span>
+          <span class="hint" style="margin:0;" id="dInfo">文字をつかむと、その1行ガイドラインごと左右に動きます</span>
         </span>
         <span class="forSheet">
           <label class="chk"><input type="checkbox" id="vRed" checked style="width:auto;"> 赤（ペン）</label>
@@ -1271,7 +1271,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v2.2";
+var APP_VER = "v2.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1307,7 +1307,7 @@ var S = {
   /* シートに入れる申し送り。text が空なら確認情報から自動で作る。
      x/y が null なら、切れない縁の内側に自動で置く。 */
   note: { on:true, text:"", x:null, y:null, size:6 },
-  demoDx: {},                        /* デモ表示だけのずらし量 mm。出力には効かない */
+  demoDx: {},                        /* 確認資料での左右のずらし量 mm。1行ガイドラインごと。出力には効かない */
   demoRx: 0,                         /* デモでの拓本そのものの左右ずらし mm */
   groups: []                         /* 最初は無し */
 };
@@ -4482,7 +4482,8 @@ function renderDemo(){
   /* デモでは拓本そのものも左右に動かせる（表示だけ。シートには効かない） */
   var rdx = num(S.demoRx, 0);
   var ix = an.x - an.px * mp + rdx, iy = mmOf(0);
-  function demoX(ci){ return num(cenAt(ci).x, 45) + num((S.demoDx || {})[ci], 0); }
+  /* ずらし量は 1行ガイドライン単位。同じガイドラインのセンターラインは一緒に動く。 */
+  function demoX(ci){ return num(cenAt(ci).x, 45) + num((S.demoDx || {})[glOf(ci)], 0); }
   var iw = RUB.W * mp, ih = RUB.H * mp;
   var rt = rubRotDeg(), ofd = rotOff();
   var rr = (rt || ofd.x || ofd.y)
@@ -4586,7 +4587,7 @@ function renderDemo(){
   });
   demoCells.forEach(function(c){
     var pad = 0.8;
-    hits.push('<rect class="colhit" data-col="' + c.ci + '" x="' + (c.x - c.w/2 - pad).toFixed(3) +
+    hits.push('<rect class="colhit" data-gl="' + glOf(c.ci) + '" x="' + (c.x - c.w/2 - pad).toFixed(3) +
       '" y="' + (c.y1 - pad).toFixed(3) + '" width="' + (c.w + pad*2).toFixed(3) +
       '" height="' + (c.y2 - c.y1 + pad*2).toFixed(3) + '" fill="transparent"/>');
   });
@@ -4630,13 +4631,13 @@ function renderDemo(){
   var pw = Math.max(120, Math.round(vw * MMPX * sc2)), ph = Math.max(120, Math.round(vh * MMPX * sc2));
 
   var moved = Object.keys(S.demoDx || {}).filter(function(k){ return num(S.demoDx[k], 0) !== 0; });
-  var info = moved.map(function(k){ return glName(+k) + " " + (S.demoDx[k] > 0 ? "＋" : "−") +
+  var info = moved.map(function(k){ return "ガイドライン " + (+k + 1) + " " + (S.demoDx[k] > 0 ? "＋" : "−") +
         Math.abs(S.demoDx[k]).toFixed(1) + "mm"; });
   if (rdx) info.unshift("拓本 " + (rdx > 0 ? "＋" : "−") + Math.abs(rdx).toFixed(1) + "mm");
   
   $("dInfo").textContent = info.length
     ? info.join("　") + "（表示のみ）"
-    : "文字をつかんで左右に動かすと、並びを確かめられます";
+    : "文字をつかむと、その1行ガイドラインごと左右に動きます";
 
   st.style.width = pw + "px"; st.style.height = ph + "px";
   st.innerHTML =
@@ -4692,28 +4693,31 @@ function bindDemoDrag(svg){
       window.addEventListener("pointerup", up);
     });
   });
-  Array.prototype.forEach.call(svg.querySelectorAll("[data-col]"), function(el){
+  Array.prototype.forEach.call(svg.querySelectorAll("[data-gl]"), function(el){
     el.addEventListener("pointerdown", function(ev){
+      if (ev.button !== undefined && ev.button !== 0) return;
       ev.preventDefault(); ev.stopPropagation();
-      var ci = +el.dataset.col;
+      var gl = +el.dataset.gl;                 /* 1行ガイドラインの番号 */
       var box = svg.getBoundingClientRect();
       var vb = svg.getAttribute("viewBox").split(/\s+/).map(Number);
       var mmPerScreen = vb[2] / box.width;
-      var sx0 = ev.clientX, x0 = num((S.demoDx || {})[ci], 0);
+      var sx0 = ev.clientX, x0 = num((S.demoDx || {})[gl], 0);
       function move(e){
-        S.demoDx[ci] = +(x0 + (e.clientX - sx0) * mmPerScreen).toFixed(1);
+        S.demoDx[gl] = +(x0 + (e.clientX - sx0) * mmPerScreen).toFixed(1);
         renderDemo();
       }
       function up(){
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
-        var v = num(S.demoDx[ci], 0);
-        msg("センター " + glName(ci) + " をデモ上で " + (v >= 0 ? "＋" : "−") + Math.abs(v).toFixed(1) +
-            " mm ずらしました（シートには反映されません）。");
+        window.removeEventListener("pointercancel", up);
+        var v = num(S.demoDx[gl], 0);
+        msg("1行ガイドライン " + (gl + 1) + " をまとめて " + (v >= 0 ? "＋" : "−") +
+            Math.abs(v).toFixed(1) + " mm ずらしました（ゴムシートには反映されません）。");
         persist();
       }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
     });
   });
 }

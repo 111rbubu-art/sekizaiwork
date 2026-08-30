@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.5</title>
+<title>彫刻原稿 v0.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -356,6 +356,7 @@
         <button class="mm" data-m="group">文字編集<span class="n none" id="nGroup">なし</span></button>
         <div id="mmGl"></div>
         <div class="gap"></div>
+        <button class="mm" data-m="font">フォント・作字<span class="n none" id="nFont">未読込</span></button>
         <button class="mm" data-m="sp">SharePoint<span class="n none" id="nSP">未接続</span></button>
         <button class="mm" data-m="info">確認情報</button>
       </div>
@@ -418,6 +419,8 @@
         </div>
         <div id="props"></div>
       </div>
+
+      <div class="pan" id="panFont"></div>
 
       <div class="pan" id="panSP"></div>
 
@@ -560,6 +563,7 @@
   </div>
 </div>
 <input type="file" id="fFont" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
+<input type="file" id="fFontUp" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
 <input type="file" id="fJson" accept=".json" hidden>
 <input type="file" id="fRub" accept="image/*" hidden>
 
@@ -1364,6 +1368,8 @@ function useFont(bytes, name){
   saveFontCache(FONTS.map(function(F){ return { bytes: F.bytes, name: F.name }; }));
   renderFontBar();
   renderAll();
+  renderMenuCounts();
+  if (typeof fontPanel === "function") fontPanel();
   msg("フォントを読み込みました。" + (Object.keys(FONTS[i].axes).length ? "" : " 可変軸はありません。"));
 }
 
@@ -1380,7 +1386,16 @@ function renderFontBar(){
   });
 }
 
-$("btnFont").onclick = function(){ $("fFont").click(); };
+/* つながっていれば共有フォルダーの一覧を見せる。そうでなければ今までどおり
+   パソコンのファイル選択を出す。 */
+$("btnFont").onclick = function(){
+  if (typeof fontDirReady === "function" && fontDirReady()){
+    setSub("font");
+    if (FDIR.items === null) fontDirLoad();
+    return;
+  }
+  $("fFont").click();
+};
 $("fFont").onchange = async function(e){
   var fs = e.target.files;
   for (var i = 0; i < fs.length; i++){
@@ -1388,6 +1403,12 @@ $("fFont").onchange = async function(e){
     try { useFont(new Uint8Array(buf), fs[i].name); }
     catch(err){ msg("フォントを読めませんでした: " + err.message, true); }
   }
+  e.target.value = "";
+};
+/* 共有フォルダーへ入れるほうの入力 */
+$("fFontUp").onchange = async function(e){
+  var fs = e.target.files;
+  for (var i = 0; i < fs.length; i++) await fontDirPut(fs[i]);
   e.target.value = "";
 };
 
@@ -3504,7 +3525,7 @@ $("viewDemo").onclick  = function(){ setView("demo"); };
 /* --- メインメニュー（左）とサブメニュー（左2列目） --- */
 var subTab = "sheet";
 var PANEL = { sheet:"panSheet", tpl:"panTpl", rub:"panRub",
-              group:"panGroup", sp:"panSP", info:"panInfo" };
+              group:"panGroup", font:"panFont", sp:"panSP", info:"panInfo" };
 function setSub(t){
   if (t === "col" || t === "guide") t = "rub";      /* 旧い呼び名 */
   if (!PANEL[t]) t = "sheet";
@@ -3516,6 +3537,7 @@ function setSub(t){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
   if (t === "tpl") renderTpl();
+  if (t === "font") fontPanel();
   if (t === "sp") spPanel();
   var s = $("sub"); if (s) s.scrollTop = 0;
 }
@@ -3534,6 +3556,11 @@ function renderMenuCounts(){
   set("nTpl", tplList().length, "0");
   var e = $("nRub");
   if (e){ e.textContent = RUB.img ? "取込済" : "未取込"; e.className = "n" + (RUB.img ? "" : " none"); }
+  var fn = $("nFont");
+  if (fn){
+    fn.textContent = FONTS.length ? (FONTS.length + " 書体") : "未読込";
+    fn.className = "n" + (FONTS.length ? "" : " none");
+  }
   var sp = $("nSP");
   if (sp){
     var ok = (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.folderId;
@@ -6290,7 +6317,9 @@ async function spApplyHandoff(){
     } else {
       SP.cfg.folderId = ""; SP.cfg.folderPath = "";
     }
-    SP.state = "ready"; spPanel(); rubPanel(); renderMenuCounts();
+    SP.state = "ready"; spPanel(); rubPanel(); fontPanel(); renderMenuCounts();
+    FDIR.id = ""; FDIR.items = null;
+    fontDirLoad();                       /* アプリ使用フォントの一覧を用意しておく */
     msg(SP.cfg.folderPath
       ? "本体アプリとつながりました。読み込み・保存先は「" + SP.cfg.folderPath + "」です。"
       : "本体アプリとつながりました。工事フォルダーは未設定なので、下で選んでください。");
@@ -6661,6 +6690,264 @@ function spBrowseBind(box){
       if (SP.browse.pick === "json") spOpenProject({ id: id, name: nm });
       else if (SP.browse.pick === "image") spOpenRub({ id: id, name: nm });
     };
+  });
+}
+
+/* ============================================================
+   14. アプリ使用フォント（共有フォルダー）
+   ------------------------------------------------------------
+   ドキュメント ＞ 業務アプリ ＞ アプリ使用フォント
+   ここに、みんなで使うフォントと、このアプリで作った字（作字）を置く。
+   一人が入れれば全員が同じ字形で組める。
+   ============================================================ */
+var FONT_DIR   = "/業務アプリ/アプリ使用フォント";
+var GLYPH_FILE = "作字ライブラリ.json";
+var FDIR = { id: "", items: null, loading: false, err: "", lib: null, libId: "" };
+
+function fontDirReady(){ return (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.driveId; }
+function isFontName(n){ return /\.(ttf|otf|ttc|otc)$/i.test(String(n || "")); }
+
+/* 共有フォルダーの id を引き当てる。make を立てると、無いときは作る。 */
+async function fontDirId(make){
+  if (FDIR.id) return FDIR.id;
+  try {
+    var it = await graph("/drives/" + SP.cfg.driveId + "/root:" + spEncPath(FONT_DIR));
+    FDIR.id = it.id;
+    return FDIR.id;
+  } catch(e){
+    if (!make) throw e;
+  }
+  var parent = FONT_DIR.replace(/\/[^/]+$/, "");
+  var name   = FONT_DIR.split("/").pop();
+  var pid;
+  try {
+    var pp = await graph("/drives/" + SP.cfg.driveId + "/root:" + spEncPath(parent));
+    pid = pp.id;
+  } catch(e2){
+    throw new Error("SharePoint に「" + parent + "」が見つかりません");
+  }
+  var made = await graph("/drives/" + SP.cfg.driveId + "/items/" + pid + "/children",
+    { method: "POST", json: { name: name, folder: {}, "@microsoft.graph.conflictBehavior": "rename" } });
+  FDIR.id = made.id;
+  return FDIR.id;
+}
+
+async function fontDirLoad(){
+  if (!fontDirReady()){ FDIR.err = "本体アプリから開いてください"; fontPanel(); return; }
+  FDIR.loading = true; FDIR.err = ""; fontPanel();
+  try {
+    var id = await fontDirId(false);
+    var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + id +
+      "/children?$top=400&$select=id,name,size,file,folder,lastModifiedDateTime");
+    var all = (r.value || []).filter(function(x){ return !x.folder; });
+    FDIR.items = all.filter(function(x){ return isFontName(x.name); })
+      .sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
+    var lf = all.filter(function(x){ return x.name === GLYPH_FILE; })[0];
+    FDIR.libId = lf ? lf.id : "";
+  } catch(e){
+    FDIR.items = null; FDIR.err = spErrText(e);
+  }
+  FDIR.loading = false; fontPanel(); renderMenuCounts();
+}
+
+/* 共有フォルダーのフォントを読み込む */
+async function fontDirUse(item){
+  try {
+    if (FONTS.some(function(F){ return F.name === item.name; })){
+      msg("「" + item.name + "」はもう読み込んでいます。"); return;
+    }
+    msg("フォントを読み込んでいます…（" + item.name + "）", false, true);
+    var b = await spGetBlob(item.id, item.name);
+    var buf = await b.arrayBuffer();
+    useFont(new Uint8Array(buf), item.name);
+    fontPanel();
+  } catch(e){ msg("フォントを読めませんでした：" + spErrText(e), true); }
+}
+
+/* パソコンのフォントを共有フォルダーに入れる */
+async function fontDirPut(file){
+  try {
+    if (!file) return;
+    if (!isFontName(file.name)) throw new Error("フォントのファイル（ttf/otf/ttc/otc）を選んでください");
+    msg("共有フォルダーに入れています…（" + file.name + "）", false, true);
+    var id = await fontDirId(true);
+    await spPutIn(id, file.name, file, "font/ttf");
+    msg("「" + file.name + "」を共有フォルダーに入れました。");
+    FDIR.items = null;
+    await fontDirLoad();
+  } catch(e){ msg("入れられませんでした：" + spErrText(e), true); }
+}
+
+/* フォルダーを指定して置く。spPut は工事フォルダー基準なので、こちらは別に持つ。 */
+async function spPutIn(folderId, name, blob, type){
+  var p = "https://graph.microsoft.com/v1.0/drives/" + SP.cfg.driveId +
+    "/items/" + folderId + ":/" + encodeURIComponent(name) + ":/content";
+  var TRIES = 3, last = null;
+  for (var i = 0; i < TRIES; i++){
+    try {
+      var tok = await spToken();
+      var res = await fetch(p, { method: "PUT",
+        headers: { Authorization: "Bearer " + tok, "Content-Type": type || "application/octet-stream" },
+        body: blob });
+      if (res.ok) return await res.json();
+      var t = ""; try { var j = await res.json(); t = j.error && j.error.message; } catch(e){}
+      var err = new Error(res.status + " " + (t || res.statusText));
+      if (res.status < 500 && res.status !== 429) throw Object.assign(err, { stop: true });
+      last = err;
+    } catch(e){
+      if (e && e.stop) throw e;
+      last = e;
+    }
+    if (i < TRIES - 1){
+      msg("通信が切れました。やり直しています…（" + (i + 2) + "/" + TRIES + "）", true, true);
+      await spSleep(700 * Math.pow(2, i));
+    }
+  }
+  throw last || new Error("置けませんでした");
+}
+
+/* --- 作字ライブラリ ------------------------------------------- */
+/* この案件で作った字を拾い集める。1字＝1件。 */
+function glyphsInProject(){
+  var out = [];
+  (S.groups || []).forEach(function(g){
+    var chars = splitChars(g.text);
+    (g.adj || []).forEach(function(a, i){
+      if (!a || !a.path || !a.path.contours || !a.path.contours.length) return;
+      var F = FR(fontIdxOf(g, i));
+      out.push({ ch: chars[i] || "", font: (F && F.name) || "", upem: (F && F.upem) || 1000,
+                 path: a.path });
+    });
+  });
+  return out.filter(function(x){ return x.ch; });
+}
+function glyphKey(ch, font){ return ch + " " + (font || ""); }
+
+async function glyphLibLoad(){
+  if (!fontDirReady()) return null;
+  if (!FDIR.libId){ FDIR.lib = { v:1, items:[] }; return FDIR.lib; }
+  var b = await spGetBlob(FDIR.libId, GLYPH_FILE);
+  var o = JSON.parse(await b.text());
+  FDIR.lib = (o && Array.isArray(o.items)) ? o : { v:1, items:[] };
+  return FDIR.lib;
+}
+async function glyphLibSave(){
+  var id = await fontDirId(true);
+  var body = new Blob([JSON.stringify(FDIR.lib, null, 2)], { type: "application/json" });
+  var it = await spPutIn(id, GLYPH_FILE, body, "application/json");
+  FDIR.libId = it.id;
+}
+/* 一覧をまだ読んでいなければ読む */
+async function fontDirEnsure(){
+  if (FDIR.items === null) await fontDirLoad();
+}
+/* この案件の作字を共有に足す。同じ字・同じフォントなら差し替える。 */
+async function glyphLibPush(){
+  try {
+    var mine = glyphsInProject();
+    if (!mine.length){ msg("この案件には作字がありません。", true); return; }
+    msg("作字を共有フォルダーに保存しています…", false, true);
+    await fontDirEnsure();
+    await glyphLibLoad();
+    var now = new Date().toISOString(), added = 0, upd = 0;
+    mine.forEach(function(x){
+      var k = glyphKey(x.ch, x.font), hit = -1;
+      FDIR.lib.items.forEach(function(y, i){ if (glyphKey(y.ch, y.font) === k) hit = i; });
+      var rec = { ch:x.ch, font:x.font, upem:x.upem, path:x.path, at:now };
+      if (hit >= 0){ FDIR.lib.items[hit] = rec; upd++; } else { FDIR.lib.items.push(rec); added++; }
+    });
+    await glyphLibSave();
+    msg("作字を保存しました。新しく " + added + " 字、書き換え " + upd + " 字。");
+    fontPanel();
+  } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
+}
+/* 共有の作字を、この案件の同じ字に当てはめる */
+async function glyphLibApply(){
+  try {
+    msg("共有の作字を読んでいます…", false, true);
+    await fontDirEnsure();
+    await glyphLibLoad();
+    if (!FDIR.lib || !FDIR.lib.items.length){ msg("共有フォルダーに作字がありません。", true); return; }
+    var map = {};
+    FDIR.lib.items.forEach(function(y){ map[glyphKey(y.ch, y.font)] = y; });
+    var n = 0, skip = 0;
+    (S.groups || []).forEach(function(g){
+      var chars = splitChars(g.text);
+      chars.forEach(function(ch, i){
+        var a = (g.adj || [])[i];
+        if (a && a.path && a.path.contours && a.path.contours.length){ skip++; return; }
+        var F = FR(fontIdxOf(g, i));
+        var hit = map[glyphKey(ch, (F && F.name) || "")];
+        if (!hit) return;
+        setAdj(g, i, "path", hit.path);
+        n++;
+      });
+    });
+    if (!n){ msg("当てはまる作字はありませんでした。同じ字・同じフォントのものだけ入れます。", true); fontPanel(); return; }
+    renderAll(); persist(); fontPanel();
+    msg(n + " 字に共有の作字を当てはめました。" + (skip ? "すでに作字ずみの " + skip + " 字はそのままです。" : ""));
+  } catch(e){ msg("読めませんでした：" + spErrText(e), true); }
+}
+
+/* --- パネル ---------------------------------------------------- */
+function fontPanel(){
+  var box = $("panFont"); if (!box) return;
+  var h = '<h3 class="sec">読み込み済みフォント</h3>';
+  h += FONTS.length
+    ? '<div class="glist2">' + FONTS.map(function(F, i){
+        return '<div class="grow"><span class="gr">' + (i === curFont ? "●" : "・") + '</span>' +
+          '<span class="d">' + esc(F.name) + (Object.keys(F.axes).length ? " ◆" : "") + '</span></div>';
+      }).join("") + '</div>'
+    : '<p class="hint" style="margin-top:0;">まだ読み込んでいません。</p>';
+
+  h += '<h3 class="sec">アプリ使用フォント（共有）</h3>';
+  if (!fontDirReady()){
+    h += '<p class="hint" style="margin-top:0;">本体アプリの納骨リストから開くと、SharePoint の<br><b>' +
+      esc(FONT_DIR) + '</b><br>にあるフォントをそのまま読み込めます。</p>';
+  } else {
+    h += '<div class="m" style="word-break:break-all;">' + esc(FONT_DIR) + '</div>';
+    h += '<button class="mini" id="fdRel" style="width:100%;margin-bottom:6px;">🔄 一覧を読む</button>';
+    if (FDIR.err) h += '<div class="m" style="color:var(--shu);">' + esc(FDIR.err) + '</div>';
+    if (FDIR.loading) h += '<p class="hint" style="margin:0;">読み込んでいます…</p>';
+    else if (FDIR.items === null) h += '<p class="hint" style="margin:0;">「一覧を読む」を押してください。</p>';
+    else if (!FDIR.items.length) h += '<p class="hint" style="margin:0;">フォントがまだ入っていません。</p>';
+    else {
+      h += '<div class="glist2">' + FDIR.items.map(function(it){
+        var got = FONTS.some(function(F){ return F.name === it.name; });
+        return '<div class="grow fdIt" data-id="' + esc(it.id) + '" data-n="' + esc(it.name) + '">' +
+          '<span class="gr">' + (got ? "●" : "・") + '</span>' +
+          '<span class="d">' + esc(it.name) + '</span></div>';
+      }).join("") + '</div>';
+      h += '<p class="hint" style="margin-top:4px;">クリックで読み込みます。● は読み込みずみ。</p>';
+    }
+    h += '<button class="mini" id="fdPut" style="width:100%;margin-top:4px;">このパソコンのフォントを共有に入れる</button>';
+  }
+  h += '<button class="mini" id="fdLocal" style="width:100%;margin-top:4px;">このパソコンから読む（共有には入れない）</button>';
+
+  h += '<h3 class="sec">作字（このアプリで作った字）</h3>';
+  var mine = glyphsInProject();
+  h += '<p class="hint" style="margin-top:0;">この案件の作字：<b>' + mine.length + '</b> 字' +
+    (mine.length ? '（' + esc(mine.map(function(x){ return x.ch; }).join("")) + '）' : '') + '</p>';
+  if (fontDirReady()){
+    h += '<button class="mini" id="glPush" style="width:100%;"' + (mine.length ? '' : ' disabled') +
+      '>共有フォルダーに保存する</button>';
+    h += '<button class="mini" id="glPull" style="width:100%;margin-top:4px;">共有の作字を当てはめる</button>';
+    if (FDIR.lib)
+      h += '<p class="hint" style="margin-top:4px;">共有にある作字：<b>' + FDIR.lib.items.length + '</b> 字</p>';
+    h += '<p class="hint" style="margin-top:4px;">同じ字・同じフォントのものだけ入れます。すでに作字ずみの字は書き換えません。</p>';
+  } else {
+    h += '<p class="hint" style="margin-top:0;">本体アプリから開くと、作った字を共有フォルダーに残せます。</p>';
+  }
+
+  box.innerHTML = h;
+  var on = function(id, ev, fn){ var e = $(id); if (e) e.addEventListener(ev, fn); };
+  on("fdRel", "click", function(){ FDIR.id = ""; FDIR.items = null; fontDirLoad(); });
+  on("fdLocal", "click", function(){ $("fFont").click(); });
+  on("fdPut", "click", function(){ $("fFontUp").click(); });
+  on("glPush", "click", glyphLibPush);
+  on("glPull", "click", glyphLibApply);
+  Array.prototype.forEach.call(box.querySelectorAll(".fdIt"), function(e){
+    e.onclick = function(){ fontDirUse({ id: e.dataset.id, name: e.dataset.n }); };
   });
 }
 

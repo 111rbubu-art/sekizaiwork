@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v0.2</title>
+<title>彫刻原稿 v0.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -393,7 +393,9 @@
           <button class="mini" id="btnRubLoad">取り込み</button>
           <button class="mini" id="btnRubDel">拓本削除</button>
         </div>
+        <button class="mini" id="btnRubLocal" style="width:100%;margin-top:4px;">このパソコンから選ぶ</button>
         <div id="rubData"></div>
+        <div id="rubBrowse"></div>
 
         <h3 class="sec">② 回転</h3>
         <div id="rubRot"></div>
@@ -3573,7 +3575,16 @@ $("btnTplSave").onclick = function(){
   tplSave(list); renderTpl();
   msg("「" + nm + "」を" + (at >= 0 ? "上書き保存" : "保存") + "しました。");
 };
-$("btnRubLoad").onclick = function(){ $("fRub").click(); };
+/* ［取り込み］：本体アプリからもらった工事フォルダーの中の画像を選ぶ。
+   つながっていないときは、これまでどおりパソコンのファイル選択を出す。 */
+function rubCanUseSP(){
+  return (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.folderId;
+}
+$("btnRubLoad").onclick = function(){
+  if (rubCanUseSP()) spBrowseOpen("image", "rub");
+  else $("fRub").click();
+};
+$("btnRubLocal").onclick = function(){ $("fRub").click(); };
 $("btnRubDel").onclick = function(){
   if (!RUB.img) return;
   RUB.img = null; RUB.canvas = null; RUB.data = null; RUB.mask = null; RUB.W = 0; RUB.H = 0;
@@ -3686,7 +3697,7 @@ function lenFromDpi(){
 }
 
 /* --- 画像の取り込み --- */
-function loadRubImage(src){
+function loadRubImage(src, srcName){
   var im = new Image();
   im.onload = function(){
     RUB.img = im;
@@ -3700,6 +3711,7 @@ function loadRubImage(src){
     /* センターラインはガイドラインの本数だけ。無ければ作らない。 */
     r.centersPx = (S.centers || []).map(function(){ return Math.round((r.bandL + r.bandR) / 2); });
     r.src = src;
+    r.srcName = srcName || "";     /* どのファイルから取り込んだか。表示だけに使う */
     /* 画像に書かれている解像度を読む。長さ調整はここからの微調整になる。 */
     var dp = dpiFromDataURL(src);
     r.dpi = dp ? dp.x : 0;
@@ -3731,7 +3743,7 @@ async function loadRubCache(){
 function fileToRub(f){
   if (!f || !/^image\//.test(f.type)) return;
   var fr = new FileReader();
-  fr.onload = function(){ loadRubImage(fr.result); };
+  fr.onload = function(){ loadRubImage(fr.result, f.name || ""); };
   fr.readAsDataURL(f);
 }
 window.addEventListener("paste", function(e){
@@ -4808,8 +4820,13 @@ function rubPanel(){
   var h = "";
   if (!loaded){
     h += '<div id="drops" style="margin-top:8px;">画像をドロップ、またはクリックして選択</div>';
+    h += rubCanUseSP()
+      ? '<p class="hint" style="margin-top:6px;">［取り込み］を押すと、この案件のフォルダーの中から選べます。<br>' +
+        '<span style="word-break:break-all;">' + esc((SP.cfg && SP.cfg.folderPath) || "") + '</span></p>'
+      : '<p class="hint" style="margin-top:6px;">本体アプリの納骨リストから開くと、［取り込み］でその案件のフォルダーの中から選べます。</p>';
   } else {
-    h += '<p class="hint">' + RUB.W + ' × ' + RUB.H + ' px</p>';
+    h += '<p class="hint">' + RUB.W + ' × ' + RUB.H + ' px' +
+      (S.rub && S.rub.srcName ? '<br>' + esc(S.rub.srcName) : '') + '</p>';
   }
   $("rubData").innerHTML = h;
   if (!loaded){
@@ -4819,6 +4836,14 @@ function rubPanel(){
     dp.ondragleave = function(){ dp.className = ""; };
     dp.ondrop = function(e){ e.preventDefault(); dp.className = ""; fileToRub(e.dataTransfer.files[0]); };
   }
+  /* フォルダーの中を見る画面は、この拓本パネルの中に出す */
+  var rb = $("rubBrowse");
+  if (rb){
+    var br = (typeof SP !== "undefined") && SP.browse;
+    rb.innerHTML = (br && br.host === "rub") ? spBrowseHTML() : "";
+    if (rb.innerHTML) spBrowseBind(rb);
+  }
+  var lb = $("btnRubLocal"); if (lb) lb.style.display = rubCanUseSP() ? "" : "none";
   var del = $("btnRubDel"); if (del) del.disabled = !loaded;
 
   /* ---- ③ 回転 ---- */
@@ -6172,7 +6197,7 @@ async function spApplyHandoff(){
     } else {
       SP.cfg.folderId = ""; SP.cfg.folderPath = "";
     }
-    SP.state = "ready"; spPanel(); renderMenuCounts();
+    SP.state = "ready"; spPanel(); rubPanel(); renderMenuCounts();
     msg(SP.cfg.folderPath
       ? "本体アプリとつながりました。読み込み・保存先は「" + SP.cfg.folderPath + "」です。"
       : "本体アプリとつながりました。工事フォルダーは未設定なので、下で選んでください。");
@@ -6191,29 +6216,40 @@ window.__chokokuApplyHandoff = function(){
 };
 
 /* --- フォルダを見る -------------------------------------------- */
-function spBrowseOpen(pick){
-  if (!SP.cfg.driveId){ msg("先にサイトへ接続してください。", true); return; }
+/* ファイル選びの画面をどこに出すか。
+   "sp"  … SharePoint のパネルの中（従来どおり）
+   "rub" … 拓本パネルの中（①拓本データの［取り込み］から開いたとき） */
+function spBrowseRefresh(){
+  if (SP.browse && SP.browse.host === "rub") rubPanel();
+  else spPanel();
+}
+function spBrowseOpen(pick, host){
+  if (!SP.cfg.driveId){ msg("本体アプリから開き直してください。", true); return; }
   var stack = [{ id: "root", name: SP.cfg.driveName || "ライブラリ" }];
   /* ファイルを選ぶときは、工事フォルダの中から始める */
   if (pick && pick !== "folder" && SP.cfg.folderId && SP.cfg.folderId !== "root"){
-    var last = String(SP.cfg.folderPath || "").split(" / ").pop();
+    var last = String(SP.cfg.folderPath || "").split("/").pop();
     stack = [{ id: SP.cfg.folderId, name: last || "工事フォルダ" }];
   }
-  SP.browse = { stack: stack, items: [], loading: true, pick: pick || "folder" };
-  spPanel();
+  SP.browse = { stack: stack, items: [], loading: true, pick: pick || "folder", host: host || "sp" };
+  spBrowseRefresh();
   spBrowseLoad();
 }
-function spBrowseClose(){ SP.browse = null; spPanel(); }
+function spBrowseClose(){
+  var wasRub = !!(SP.browse && SP.browse.host === "rub");
+  SP.browse = null;
+  if (wasRub) rubPanel(); else spPanel();
+}
 async function spBrowseInto(id, name){
   if (!SP.browse) return;
   SP.browse.stack.push({ id: id, name: name });
-  SP.browse.loading = true; spPanel();
+  SP.browse.loading = true; spBrowseRefresh();
   await spBrowseLoad();
 }
 async function spBrowseUp(n){
   if (!SP.browse) return;
   SP.browse.stack = SP.browse.stack.slice(0, n + 1);
-  SP.browse.loading = true; spPanel();
+  SP.browse.loading = true; spBrowseRefresh();
   await spBrowseLoad();
 }
 async function spBrowseLoad(){
@@ -6231,7 +6267,7 @@ async function spBrowseLoad(){
   } catch(e){
     b.items = []; msg("フォルダを読めませんでした：" + spErrText(e), true);
   }
-  b.loading = false; spPanel();
+  b.loading = false; spBrowseRefresh();
 }
 function spUseFolder(){
   var b = SP.browse; if (!b) return;
@@ -6300,17 +6336,17 @@ async function spOpenProject(item){
     var b = await spGetBlob(item.id);
     var o = JSON.parse(await b.text());
     applyProject(o, item.name);
-    SP.browse = null; spPanel();
+    spBrowseClose();
   } catch(e){ msg("開けませんでした：" + spErrText(e), true); }
 }
-/* 拓本を取り込む */
+/* 拓本を取り込む（SharePoint のフォルダーから選んだとき） */
 async function spOpenRub(item){
   try {
-    msg("拓本を読み込んでいます…");
+    msg("拓本を読み込んでいます…（" + item.name + "）");
     var b = await spGetBlob(item.id);
     var url = await blobToDataURL(b);
-    SP.browse = null; spPanel();
-    loadRubImage(url);
+    spBrowseClose();
+    loadRubImage(url, item.name || "");
   } catch(e){ msg("読み込めませんでした：" + spErrText(e), true); }
 }
 /* 完成した原稿を保存（デモJPEG＋赤・黒のSVG） */
@@ -6446,7 +6482,11 @@ function spBind(){
   on("spRub", "click", function(){ spBrowseOpen("image"); });
   on("spOut", "click", spSaveOutput);
 
-  var box = $("panSP");
+  spBrowseBind($("panSP"));
+}
+/* ファイル選びの画面の中身をつなぐ。SharePoint パネルでも拓本パネルでも同じ。 */
+function spBrowseBind(box){
+  if (!box) return;
   Array.prototype.forEach.call(box.querySelectorAll(".spbX"), function(e){ e.onclick = spBrowseClose; });
   Array.prototype.forEach.call(box.querySelectorAll(".spbUse"), function(e){ e.onclick = spUseFolder; });
   Array.prototype.forEach.call(box.querySelectorAll(".spbUp"), function(e){

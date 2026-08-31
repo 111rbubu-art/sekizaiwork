@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v5.2</title>
+<title>彫刻原稿 v5.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -540,9 +540,8 @@
           <label class="chk"><input type="checkbox" id="dWhite" checked style="width:auto;"> 列を白地に</label>
           <label class="chk"><input type="checkbox" id="dCrop" style="width:auto;"> トリミング</label>
           <label class="chk"><input type="checkbox" id="dGuide" style="width:auto;"> ガイド</label>
-          <button class="mini" id="dCropAll">全体に戻す</button>
-          <button class="mini" id="dReset">位置を戻す</button>
           <button class="mini" id="dSave">JPEGで保存</button>
+          <button class="mini" id="dSaveLocal" title="このパソコンに保存する">⤓</button>
           <span class="hint" style="margin:0;" id="dInfo">文字をつかむと、その1行ガイドラインごと左右に動きます</span>
         </span>
         <span class="forSheet" id="shGl"></span>
@@ -1357,7 +1356,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v5.2";
+var APP_VER = "v5.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3850,12 +3849,11 @@ $("bothstage").addEventListener("contextmenu", function(e){
   openCharMenu(+t.dataset.gi, +t.dataset.ci, e.clientX, e.clientY);
 });
 $("dInv").addEventListener("change", renderDemo);
-$("dReset").onclick = function(){ S.demoDx = {}; S.demoRx = 0; renderDemo(); persist(); msg("確認資料の位置を戻しました。"); };
 $("dGuide").addEventListener("change", renderDemo);
 $("dWhite").addEventListener("change", renderDemo);
 $("dCrop").addEventListener("change", renderDemo);
-$("dCropAll").onclick = function(){ S.rub.crop = null; renderDemo(); persist(); msg("拓本を全体表示に戻しました。"); };
-$("dSave").onclick = function(){ saveDemoJPEG(); };
+$("dSave").onclick = function(){ saveDemoJPEG(false); };
+$("dSaveLocal").onclick = function(){ saveDemoJPEG(true); };
 $("vRed").addEventListener("change", renderStage);
 $("vBlk").addEventListener("change", renderStage);
 $("vFill").addEventListener("change", renderStage);
@@ -5229,18 +5227,56 @@ function demoJPEGBlob(){
     img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str);
   });
 }
-/* デモ画面をそのまま JPEG に保存する。 */
-async function saveDemoJPEG(){
-  if (!RUB.img || !mmPerPx()){ msg("拓本と実測長を先に入れてください。"); return; }
-  var r = await demoJPEGBlob();
-  if (!r){ msg("画像に書き出せませんでした。"); return; }
+/* 確認資料をそのまま JPEG に保存する。
+   ふだんは工事フォルダー（共有フォルダー）へ。
+   local を立てると、このパソコンに落とす（ボタンの右の ⤓）。 */
+/* 工事フォルダーに入れる名前。あとで探せるように家名をそのまま使う。
+   safeName は英数字以外を落としてしまうので、ここは自前で整える。 */
+function demoJPEGName(){
+  var fam = String(S.info.family == null ? "" : S.info.family)
+            .trim().replace(/[\\\/:*?"<>|]/g, "").replace(/\s+/g, "_");
+  var d = new Date(), z = function(n){ return (n < 10 ? "0" : "") + n; };
+  var stamp = d.getFullYear() + z(d.getMonth()+1) + z(d.getDate()) +
+              "-" + z(d.getHours()) + z(d.getMinutes());
+  return (fam ? fam + "-確認資料" : "確認資料") + "-" + stamp + ".jpg";
+}
+/* このパソコンに落とすときの名前。
+   ブラウザによっては、漢字の名前が落とされて「download」になってしまうので、
+   こちらはこれまでどおり英数字にする。 */
+function demoJPEGNameLocal(){
+  return safeName(S.info.family ? S.info.family + "-demo" : "chokoku-demo", ".jpg");
+}
+function saveDemoLocal(r){
   var url = URL.createObjectURL(r.blob);
   var a = document.createElement("a");
-  a.href = url;
-  a.download = safeName(S.info.family ? S.info.family + "-demo" : "chokoku-demo", ".jpg");
+  a.href = url; a.download = demoJPEGNameLocal();
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
-  msg("デモ画面を JPEG（" + r.w + "×" + r.h + "px）で保存しました。");
+  msg("このパソコンに JPEG（" + r.w + "×" + r.h + "px）で保存しました。");
+}
+async function saveDemoJPEG(local){
+  if (!RUB.img || !mmPerPx()){ msg("拓本と実測長を先に入れてください。"); return; }
+  var canSP = (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.driveId;
+  if (!local && !canSP){
+    msg("工事フォルダーにつながっていないので、このパソコンに保存します。", false, true);
+    local = true;
+  }
+  var r = await demoJPEGBlob();
+  if (!r){ msg("画像に書き出せませんでした。", true); return; }
+  if (local){ saveDemoLocal(r); return; }
+  try {
+    var fid = await spNeedFolder();
+    if (!fid){ saveDemoLocal(r); return; }
+    var nm = demoJPEGName();
+    msg("工事フォルダーに入れています…（" + nm + "）", false, true);
+    await spPutIn(fid, nm, r.blob, "image/jpeg");
+    msg("工事フォルダーに「" + nm + "」を入れました（" + r.w + "×" + r.h + "px）。");
+  } catch(e){
+    msg("工事フォルダーに入れられませんでした：" +
+        (typeof spErrText === "function" ? spErrText(e) : (e && e.message ? e.message : e)) +
+        "　このパソコンに保存します。", true, true);
+    saveDemoLocal(r);
+  }
 }
 
 /* --- デモ表示 ---------------------------------------------------
@@ -5277,7 +5313,9 @@ function renderDemo(){
   var inv = $("dInv").checked ? ' filter="url(#dinv)"' : '';
 
   /* トリミング範囲（拓本の画素座標）。未設定なら全体。 */
-  var cr = S.rub.crop;
+  /* トリミングのレ点を外しているときは、切らずに全部出す。
+     （v5.3 で［全体に戻す］のボタンを外したので、ここで戻せるようにする） */
+  var cr = $("dCrop").checked ? S.rub.crop : null;
   if (!cr) cr = { x1: 0, y1: 0, x2: RUB.W, y2: RUB.H };
   var cx1 = ix + cr.x1 * mp, cx2 = ix + cr.x2 * mp;
   var cy1 = iy + cr.y1 * mp, cy2 = iy + cr.y2 * mp;

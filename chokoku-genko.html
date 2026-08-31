@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v2.8</title>
+<title>彫刻原稿 v2.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1310,7 +1310,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v2.8";
+var APP_VER = "v2.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3981,7 +3981,7 @@ function setSub(t){
   Array.prototype.forEach.call(document.querySelectorAll("#mainmenu .mm"), function(b){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
-  if (t === "tpl") renderTpl();
+  if (t === "tpl"){ renderTpl(); tplLoadSP(); }
   if (t === "font") fontPanel();
   if (t === "info") noteFill();
   if (t === "sp") spPanel();
@@ -4017,22 +4017,91 @@ function renderMenuCounts(){
 /* 旧い呼び出しの受け皿 */
 function setTab(which){ setView(which === "rub" ? "rub" : "sheet"); setSub(which === "rub" ? "rub" : "sheet"); }
 
-/* --- テンプレート（シート寸法・1行ガイドライン・グループの構成） --- */
-function tplList(){
+/* --- テンプレート（シート寸法・1行ガイドライン・グループの構成） ---
+   置き場所は共有フォルダー。みんなで同じ構成を使えるようにする。
+   本体アプリから開いていないときだけ、このパソコンに置く。 */
+var TPL = { items: null, loading: false, err: "" };
+
+function tplLocal(){
   try { var a = JSON.parse(localStorage.getItem("chokoku.templates") || "[]");
         return Array.isArray(a) ? a : []; } catch(e){ return []; }
 }
-function tplSave(list){
+function tplLocalSave(list){
   try { localStorage.setItem("chokoku.templates", JSON.stringify(list)); } catch(e){}
+}
+function tplList(){ return TPL.items ? TPL.items : tplLocal(); }
+function tplOnSP(){ return !!(fontDirReady() && TPL.items); }
+
+/* 共有フォルダーから読む。このパソコンにだけあるものは、いちど引き上げる。 */
+async function tplLoadSP(force){
+  if (!fontDirReady()) return;
+  if (TPL.items && !force) return;
+  TPL.loading = true; TPL.err = ""; renderTpl();
+  try {
+    await fontDirEnsure();
+    if (!FDIR.tplId){
+      TPL.items = [];
+    } else {
+      var b = await spGetBlob(FDIR.tplId, TPL_FILE);
+      var o = JSON.parse(await b.text());
+      TPL.items = Array.isArray(o) ? o : ((o && Array.isArray(o.items)) ? o.items : []);
+    }
+    var loc = tplLocal();
+    if (loc.length){
+      var names = TPL.items.map(function(x){ return x.name; });
+      var add = loc.filter(function(x){ return names.indexOf(x.name) < 0; });
+      if (add.length){
+        TPL.items = TPL.items.concat(add);
+        await tplPush();
+        msg("このパソコンにあったテンプレート " + add.length + " 件を、共有フォルダーへ移しました。");
+      }
+      tplLocalSave([]);
+    }
+  } catch(e){ TPL.err = spErrText(e); }
+  TPL.loading = false; renderTpl(); renderMenuCounts();
+}
+async function tplPush(){
+  var id = await fontDirId(true);
+  var body = new Blob([JSON.stringify({ v:1, items: TPL.items || [] }, null, 2)],
+                      { type: "application/json" });
+  var it = await spPutIn(id, TPL_FILE, body, "application/json");
+  FDIR.tplId = it.id;
+}
+/* 保存する。つながっていれば共有フォルダー、そうでなければこのパソコン。 */
+async function tplStore(list, what){
+  if (fontDirReady()){
+    TPL.items = list; renderTpl();
+    try {
+      msg("共有フォルダーに保存しています…", false, true);
+      await tplPush();
+      msg(what + "共有フォルダーに保存しました。");
+    } catch(e){
+      msg("共有フォルダーに保存できませんでした：" + spErrText(e), true, true);
+    }
+  } else {
+    tplLocalSave(list); renderTpl();
+    msg(what + "このパソコンに保存しました。（本体アプリから開くと共有フォルダーに入ります）");
+  }
 }
 function renderTpl(){
   var box = $("tpllist"); if (!box) return;
   var list = tplList();
+  var head = '<p class="hint" style="margin-top:0;">置き場所：<b>' +
+    (fontDirReady() ? "共有フォルダー（" + esc(FONT_DIR) + "）" : "このパソコン") + '</b>' +
+    (fontDirReady() ? '　<button class="mini" id="tplRel">🔄 読み直す</button>' : '') + '</p>' +
+    (TPL.err ? '<div class="m" style="color:var(--shu);">' + esc(TPL.err) + '</div>' : '') +
+    (TPL.loading ? '<p class="hint" style="margin:0;">読み込んでいます…</p>' : '');
+  var wire = function(){
+    var rb = $("tplRel");
+    if (rb) rb.onclick = function(){ FDIR.id = ""; FDIR.items = null; TPL.items = null;
+                                     fontDirLoad().then(function(){ tplLoadSP(true); }); };
+  };
   if (!list.length){
-    box.innerHTML = '<p class="hint">まだテンプレートがありません。よく使う構成をつくったら、下から名前を付けて保存してください。</p>';
-    renderMenuCounts(); return;
+    box.innerHTML = head +
+      '<p class="hint">まだテンプレートがありません。よく使う構成をつくったら、下から名前を付けて保存してください。</p>';
+    wire(); renderMenuCounts(); return;
   }
-  box.innerHTML = list.map(function(t, i){
+  box.innerHTML = head + list.map(function(t, i){
     var d = t.data || {};
     return '<div class="tplitem"><span class="nm">' + esc(t.name) +
       '<span class="dt">' + (d.sheet ? d.sheet.w + "×" + d.sheet.h + " mm　" : "") +
@@ -4045,11 +4114,12 @@ function renderTpl(){
   });
   Array.prototype.forEach.call(box.querySelectorAll(".tplDel"), function(b){
     b.onclick = function(){
-      var l = tplList(), t = l[+b.dataset.i];
-      l.splice(+b.dataset.i, 1); tplSave(l); renderTpl();
-      msg("「" + (t ? t.name : "") + "」を削除しました。");
+      var l = tplList().slice(), t = l[+b.dataset.i];
+      l.splice(+b.dataset.i, 1);
+      tplStore(l, "「" + (t ? t.name : "") + "」を消して、");
     };
   });
+  wire();
   renderMenuCounts();
 }
 function tplApply(t){
@@ -4082,9 +4152,9 @@ $("btnTplSave").onclick = function(){
   };
   var at = list.map(function(x){ return x.name; }).indexOf(nm);
   var rec = { name: nm, savedAt: new Date().toISOString(), data: data };
+  list = list.slice();
   if (at >= 0) list[at] = rec; else list.push(rec);
-  tplSave(list); renderTpl();
-  msg("「" + nm + "」を" + (at >= 0 ? "上書き保存" : "保存") + "しました。");
+  tplStore(list, "「" + nm + "」を" + (at >= 0 ? "上書きして、" : ""));
 };
 /* ［取り込み］：本体アプリからもらった工事フォルダーの中の画像を選ぶ。
    つながっていないときは、これまでどおりパソコンのファイル選択を出す。 */
@@ -6842,7 +6912,9 @@ async function spApplyHandoff(){
     }
     SP.state = "ready"; spPanel(); rubPanel(); fontPanel(); renderMenuCounts();
     FDIR.id = ""; FDIR.items = null;
-    fontDirLoad();                       /* アプリ使用フォントの一覧を用意しておく */
+    /* アプリ使用フォントの一覧と、共有の作字・テンプレートを用意しておく */
+    TPL.items = null;
+    fontDirLoad().then(function(){ tplLoadSP(true); });
     /* 案件ファイルを見にいくのは、開いた直後と、別の案件に切り替わったときだけ。
        同じ案件で開き直したときに、作りかけを保存前の中身で上書きしないため。 */
     if (!_autoOpened || _caseChanged){
@@ -7307,7 +7379,18 @@ function spBrowseBind(box){
    ============================================================ */
 var FONT_DIR   = "/業務アプリ/アプリ使用フォント";
 var GLYPH_FILE = "作字ライブラリ.json";
-var FDIR = { id: "", items: null, loading: false, err: "", lib: null, libId: "" };
+var TPL_FILE  = "テンプレート.json";
+var FDIR = { id: "", items: null, loading: false, err: "", lib: null, libId: "", tplId: "" };
+
+/* 同じ名前かどうか。濁点の書き方（NFC / NFD）と大文字小文字の違いを吸収する。 */
+function sameName(a, b){
+  var f = function(x){
+    x = String(x == null ? "" : x);
+    try { x = x.normalize("NFC"); } catch(e){}
+    return x.toLowerCase();
+  };
+  return f(a) === f(b);
+}
 
 function fontDirReady(){ return (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.driveId; }
 function isFontName(n){ return /\.(ttf|otf|ttc|otc)$/i.test(String(n || "")); }
@@ -7347,8 +7430,12 @@ async function fontDirLoad(){
     var all = (r.value || []).filter(function(x){ return !x.folder; });
     FDIR.items = all.filter(function(x){ return isFontName(x.name); })
       .sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
-    var lf = all.filter(function(x){ return x.name === GLYPH_FILE; })[0];
+    var lf = all.filter(function(x){ return sameName(x.name, GLYPH_FILE); })[0];
     FDIR.libId = lf ? lf.id : "";
+    var tf = all.filter(function(x){ return sameName(x.name, TPL_FILE); })[0];
+    FDIR.tplId = tf ? tf.id : "";
+    /* 作字は、一覧といっしょに読んでおく。押さないと出てこないのは分かりにくい。 */
+    try { await glyphLibLoad(); } catch(e2){ FDIR.err = spErrText(e2); }
   } catch(e){
     FDIR.items = null; FDIR.err = spErrText(e);
   }
@@ -7428,6 +7515,10 @@ function glyphsInProject(){
   return out.filter(function(x){ return x.ch; });
 }
 function glyphKey(ch, font){ return ch + " " + (font || ""); }
+/* 同じ字か。異体字セレクタは外して、頭の1文字で見る。 */
+function sameGlyphCh(a, b){
+  return Array.from(String(a || ""))[0] === Array.from(String(b || ""))[0];
+}
 
 async function glyphLibLoad(){
   if (!fontDirReady()) return null;
@@ -7536,7 +7627,7 @@ function glibCandidates(bare, gi, ci){
     });
   });
   (((FDIR.lib || {}).items) || []).forEach(function(y){
-    if (!y || Array.from(String(y.ch || ""))[0] !== bare) return;
+    if (!y || !sameGlyphCh(y.ch, bare)) return;
     add({ font: y.font || "", path: y.path, where: "共有フォルダー" });
   });
   return out;
@@ -7718,11 +7809,15 @@ function fontPanel(){
   h += '<p class="hint" style="margin-top:0;">この案件の作字：<b>' + mine.length + '</b> 字' +
     (mine.length ? '（' + esc(mine.map(function(x){ return x.ch; }).join("")) + '）' : '') + '</p>';
   if (fontDirReady()){
+    /* 共有にある作字は、一覧を読んだときにいっしょに読んでいる。 */
+    var lib = (FDIR.lib && FDIR.lib.items) || [];
+    h += '<p class="hint" style="margin-top:0;">共有フォルダーの作字：<b>' + lib.length + '</b> 字' +
+      (lib.length ? '（' + esc(lib.map(function(x){ return Array.from(String(x.ch||""))[0] || ""; })
+                               .join("")) + '）' : '') +
+      (FDIR.lib ? '' : '<br>まだ読んでいません。「🔄 一覧を読む」を押してください。') + '</p>';
     h += '<button class="mini" id="glPush" style="width:100%;"' + (mine.length ? '' : ' disabled') +
       '>共有フォルダーに保存する</button>';
     h += '<button class="mini" id="glPull" style="width:100%;margin-top:4px;">共有の作字を当てはめる</button>';
-    if (FDIR.lib)
-      h += '<p class="hint" style="margin-top:4px;">共有にある作字：<b>' + FDIR.lib.items.length + '</b> 字</p>';
     h += '<p class="hint" style="margin-top:4px;">同じ字・同じフォントのものだけ入れます。すでに作字ずみの字は書き換えません。</p>';
   } else {
     h += '<p class="hint" style="margin-top:0;">本体アプリから開くと、作った字を共有フォルダーに残せます。</p>';

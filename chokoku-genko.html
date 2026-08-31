@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v4.0</title>
+<title>彫刻原稿 v4.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -119,6 +119,7 @@
     -webkit-user-select:none;user-select:none;}
   #bothstage svg{display:block;}
   #bothstage .bhit{cursor:ns-resize;}
+  #bothstage .bhitx{cursor:ew-resize;}
   #demowrap{min-height:0;overflow:auto;padding:20px 20px 72px;cursor:grab;overscroll-behavior:contain;}
   #demowrap.grabbing{cursor:grabbing;}
   #demostage{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.16);margin:0 auto;
@@ -559,7 +560,7 @@
           </label>
           <label class="chk"><input type="checkbox" id="bGuide" checked style="width:auto;"> ガイド</label>
           <label class="chk"><input type="checkbox" id="bInv" style="width:auto;"> 拓本を反転</label>
-          <span class="hint" style="margin:0;">ガイドラインを押すと選択　■ をつかむと線が動きます</span>
+          <span class="hint" style="margin:0;">ガイドラインを押すと選択　外の ■ をつかむと線が動きます</span>
         </span>
         <span hidden>
           <input type="checkbox" id="rShowChars"><input type="checkbox" id="rShowGroups"><input type="checkbox" id="rShowMask">
@@ -1352,7 +1353,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v4.0";
+var APP_VER = "v4.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5255,15 +5256,16 @@ function bothSelectGl(g){
   return false;
 }
 /* ガイドラインごとに左から詰め直したときの、センターラインの中心 X mm。
-   かたまりの幅は行幅の線で決める。行幅が入っていない列だけ文字幅で代える。 */
+   かたまりの幅は行幅の線で決める。ただし文字が行幅からはみ出しているときは
+   文字の幅で決める。そうしないと隣のガイドラインと文字が重なってしまう。 */
 function bothPack(rows){
   var half = {}, cx0 = {};
   rows.forEach(function(r){
     if (!r.chars.length) return;
     var g = S.groups[r.gi];
     var ci = Math.max(0, Math.min(S.centers.length - 1, num(g.col, 0)));
-    var w = cenW(ci);
-    var h = (w > 0 ? w : Math.max(4, r.w || 20)) / 2;
+    var h = Math.max(cenW(ci) / 2,
+                     Math.abs(num(g.dx, 0)) + Math.max(4, r.w || 20) / 2);
     if (!(half[ci] > h)) half[ci] = h;
     cx0[ci] = num(cenAt(ci).x, 45);
   });
@@ -5287,6 +5289,8 @@ function bothPack(rows){
   return { x: x, half: half, right: Math.max(0, cur) };
 }
 
+/* 並べて表示で、拓本の左はしがシートの何 mm にあるか。つまみの計算に使う。 */
+var bothRubX = null;
 function renderBoth(){
   var st = $("bothstage"), wrap = $("bothwrap");
   var hintEl = wrap.querySelector(".bothhint"); if (hintEl) hintEl.remove();
@@ -5341,9 +5345,11 @@ function renderBoth(){
   var mp = mmPerPx(), gap = bothGap();
   var zoneGap = Math.max(gap, 10);
   var img = "", ix = 0, iy = 0, iw = 0, ih = 0, hasRub = false;
+  bothRubX = null;
   if (RUB.img && mp){
     hasRub = true;
     ix = pk.right + zoneGap;
+    bothRubX = ix;
     iy = mmOf(0);
     iw = RUB.W * mp; ih = RUB.H * mp;
     var rt = rubRotDeg(), of = rotOff();
@@ -5382,13 +5388,22 @@ function renderBoth(){
   vx -= pad; vy -= pad;
   var vw = (vx2 - vx) + pad, vh = (vy2 - vy) + pad;
 
+  /* つまみの大きさは「画面で見た大きさ」で決める。mm で決めると、
+     細長い原稿では縮尺が小さくなり、数ピクセルになってつかめない。
+     拓本の画面と同じで、線の外の余白に出す。 */
+  var sc0 = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
+  var KN = 16 / (MMPX * (sc0 > 0 ? sc0 : 0.2));      /* 画面で 16px ぶんの mm */
+  var GUT = KN * 3.4;                                 /* 左右の余白 */
+  vx -= GUT; vw += GUT * 2;
+  var sc = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
+  KN = 16 / (MMPX * (sc > 0 ? sc : 0.2));
+  var gutL = vx, gutR = vx + vw - GUT;                /* 余白のはじまり */
+
   /* --- ガイド ---
      いま選んでいる 1行ガイドラインの線だけを出す。ほかのガイドラインの線は
      隠す。線が重なって、どれがどの行のものか分からなくなるため。 */
   var curGl = bothGl();
   var guides = "", glHit = "", hits = [];
-  /* つまみの大きさ mm。画面の大きさに関わらず、つかめる太さにする。 */
-  var KN = Math.max(2.2, vw * 0.012);
   if (showG){
     /* 校正文字：センターラインと行幅の線。選んでいるガイドラインの分だけ。 */
     (S.centers || []).forEach(function(c, ci){
@@ -5407,10 +5422,10 @@ function renderBoth(){
         });
       }
       /* 名前はどのガイドラインにも出す。ここを押して選べるようにするため。 */
-      guides += '<text x="' + x.toFixed(3) + '" y="' + (vy + 5).toFixed(3) +
-        '" fill="' + col + '" font-size="' + (on ? 4.6 : 4) + '" font-weight="700" ' +
-        'text-anchor="middle" opacity="' + (on ? 1 : 0.4) + '" pointer-events="none">' +
-        glName(ci) + '</text>';
+      guides += '<text x="' + x.toFixed(3) + '" y="' + (vy + KN*0.8).toFixed(3) +
+        '" fill="' + col + '" font-size="' + (KN * (on ? 0.9 : 0.75)).toFixed(2) +
+        '" font-weight="700" text-anchor="middle" opacity="' + (on ? 1 : 0.4) +
+        '" pointer-events="none">' + glName(ci) + '</text>';
     });
     /* 拓本：解析で決めたセンターラインと行幅。選んでいるガイドラインの分だけ。 */
     if (hasRub) (S.rub.centersPx || []).forEach(function(px, ci){
@@ -5427,9 +5442,18 @@ function renderBoth(){
           '" y2="' + (iy + ih).toFixed(3) + '" stroke="' + col +
           '" stroke-width="0.35" opacity="0.75"/>';
       });
-      guides += '<text x="' + (x + 2).toFixed(3) + '" y="' + (vy + 5).toFixed(3) +
-        '" fill="' + col + '" font-size="4.6" font-weight="700" pointer-events="none">' +
-        glName(ci) + '</text>';
+      guides += '<text text-anchor="middle" x="' + x.toFixed(3) + '" y="' + (vy + KN*0.8).toFixed(3) +
+        '" fill="' + col + '" font-size="' + (KN*0.8).toFixed(2) + '" font-weight="700" ' +
+        'pointer-events="none">' + glName(ci) + '</text>';
+      /* つまみ。左右につかむと、拓本の上のセンターラインが動く。
+         拓本の画面でつかむ線と同じもの（centersPx）。 */
+      guides += '<rect x="' + (x - KN/2).toFixed(3) + '" y="' + (iy - KN*1.4).toFixed(3) +
+        '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
+        '" fill="' + col + '" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
+        '" pointer-events="none"/>';
+      hits.push('<rect class="bhitx" data-k="cen:' + ci + '" x="' + (x - KN*0.7).toFixed(3) +
+        '" y="' + (iy - KN*2).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
+        '" height="' + (ih + KN*2).toFixed(3) + '" fill="transparent"/>');
     });
     /* 文字の長さの線（文字グループの上端・下端）。拓本解析でつかんで動かす、
        あの色つきの線と同じ位置。選んでいるガイドラインの分だけ、
@@ -5440,14 +5464,15 @@ function renderBoth(){
       var ci = Math.max(0, Math.min((S.centers || []).length - 1, num(g.col, 0)));
       if (glOf(ci) !== curGl) return;
       var col = GCOL[gi % GCOL.length];
-      /* つまみは行ごとに横へずらす。近い 2本を掴み分けられるようにするため。 */
-      var kx = vx + KN * (0.9 + (kOrd % 3) * 1.5);
+      /* つまみは左の余白に出す。上端と下端で横位置を変え、
+         行ごとにも少しずらす。近い線を掴み分けられるようにするため。 */
+      var kBase = gutL + KN * 0.75 + (kOrd % 2) * KN * 0.9;
       kOrd++;
-      [[gTop(g), "top"], [gBot(g), "bot"]].forEach(function(pair){
-        var y = pair[0], k = y.toFixed(2);
+      [[gTop(g), "top", 0], [gBot(g), "bot", KN * 1.5]].forEach(function(pair){
+        var y = pair[0], k = y.toFixed(2), kx = kBase + pair[2];
         if (!seenY[k]){
           seenY[k] = 1;
-          guides += '<line x1="' + vx.toFixed(3) + '" y1="' + k + '" x2="' + (vx+vw).toFixed(3) +
+          guides += '<line x1="' + kx.toFixed(3) + '" y1="' + k + '" x2="' + (vx+vw).toFixed(3) +
             '" y2="' + k + '" stroke="' + col + '" stroke-width="0.35" opacity="0.85"/>';
         }
         /* つかんで動かすためのつまみ。文字の長さ（行の上端・下端）を決める。 */
@@ -5455,20 +5480,20 @@ function renderBoth(){
           '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
           '" fill="' + col + '" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
           '" pointer-events="none"/>';
-        hits.push('<rect class="bhit" data-k="grp:' + gi + ':' + pair[1] + '" x="' + (kx - KN).toFixed(3) +
-          '" y="' + (y - KN*0.7).toFixed(3) + '" width="' + (KN*2).toFixed(3) +
+        hits.push('<rect class="bhit" data-k="grp:' + gi + ':' + pair[1] + '" x="' + (kx - KN*0.7).toFixed(3) +
+          '" y="' + (y - KN*0.7).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
           '" height="' + (KN*1.4).toFixed(3) + '" fill="transparent"/>');
       });
       /* 何行目かを、つまみの上に出す */
-      guides += '<text x="' + kx.toFixed(3) + '" y="' + (gTop(g) - KN*0.8).toFixed(3) +
-        '" fill="' + col + '" font-size="3.6" font-weight="700" text-anchor="middle" ' +
-        'pointer-events="none">' + (gi+1) + '</text>';
+      guides += '<text text-anchor="middle" x="' + kBase.toFixed(3) + '" y="' +
+        (gTop(g) - KN*0.75).toFixed(3) + '" fill="' + col + '" font-size="' + (KN*0.7).toFixed(2) +
+        '" font-weight="700" pointer-events="none">' + (gi+1) + '</text>';
     });
     /* 実測した文字全長を決める線（拓本解析の 頭／脚）。
        これは拓本ぜんぶに効くので、ガイドラインを選び直しても出したままにする。 */
     if (hasRub){
       var oy = num(S.rub.originY, autoOriginY());
-      var kx2 = ix + iw + KN;
+      var kx2 = gutR + KN * 0.9;
       [[oy, "頭", "orig"], [oy + num(S.rub.realLen, 0), "脚", "len"]].forEach(function(pair){
         if (!isFinite(pair[0])) return;
         guides += '<line x1="' + ix.toFixed(3) + '" y1="' + pair[0].toFixed(3) +
@@ -5478,11 +5503,11 @@ function renderBoth(){
           '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
           '" fill="#DC2616" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
           '" pointer-events="none"/>';
-        guides += '<text x="' + (kx2 + KN).toFixed(3) + '" y="' + (pair[0] + 1.4).toFixed(3) +
-          '" fill="#DC2616" font-size="4" font-weight="700" pointer-events="none">' +
-          pair[1] + '</text>';
-        hits.push('<rect class="bhit" data-k="' + pair[2] + '" x="' + (kx2 - KN).toFixed(3) +
-          '" y="' + (pair[0] - KN*0.7).toFixed(3) + '" width="' + (KN*3).toFixed(3) +
+        guides += '<text x="' + (kx2 + KN*0.85).toFixed(3) + '" y="' + (pair[0] + KN*0.28).toFixed(3) +
+          '" fill="#DC2616" font-size="' + (KN*0.75).toFixed(2) + '" font-weight="700" ' +
+          'pointer-events="none">' + pair[1] + '</text>';
+        hits.push('<rect class="bhit" data-k="' + pair[2] + '" x="' + (kx2 - KN*0.7).toFixed(3) +
+          '" y="' + (pair[0] - KN*0.7).toFixed(3) + '" width="' + (KN*2.4).toFixed(3) +
           '" height="' + (KN*1.4).toFixed(3) + '" fill="transparent"/>');
       });
     }
@@ -5530,9 +5555,13 @@ function renderBoth(){
     });
   });
 
-  var sc = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
   var pw = Math.max(120, Math.round(vw * MMPX * sc));
   var ph = Math.max(120, Math.round(vh * MMPX * sc));
+  /* つまみを置く余白。拓本の画面と同じで、うすい地色にして枠の外だと分かるようにする。 */
+  var gut = '<rect x="' + gutL.toFixed(3) + '" y="' + vy.toFixed(3) + '" width="' + GUT.toFixed(3) +
+    '" height="' + vh.toFixed(3) + '" fill="#EDF0F2"/>' +
+    '<rect x="' + gutR.toFixed(3) + '" y="' + vy.toFixed(3) + '" width="' + GUT.toFixed(3) +
+    '" height="' + vh.toFixed(3) + '" fill="#EDF0F2"/>';
   st.style.width = pw + "px"; st.style.height = ph + "px";
   st.innerHTML =
     '<svg width="' + pw + '" height="' + ph + '" viewBox="' + vx.toFixed(3) + ' ' + vy.toFixed(3) +
@@ -5542,6 +5571,7 @@ function renderBoth(){
       '</filter></defs>' +
       '<rect x="' + vx.toFixed(3) + '" y="' + vy.toFixed(3) + '" width="' + vw.toFixed(3) +
         '" height="' + vh.toFixed(3) + '" fill="#fff"/>' +
+      gut +
       img +
       guides +
       '<g fill="#111" stroke="none">' + glyphs.join("") + '</g>' +
@@ -5575,8 +5605,18 @@ function bindBothDrag(svg){
       var k = String(el.dataset.k).split(":");
       var toPt = bothMapper(svg);
       function move(e){
-        var mm = toPt(e).y;
+        var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
+        if (k[0] === "cen"){
+          /* ガイドラインの位置。拓本の上での左右の位置を直す。 */
+          var mp = mmPerPx(), ci = +k[1];
+          if (!mp || !bothRubX) return;
+          var px = Math.round((q.x - bothRubX) / mp);
+          S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
+          syncCenters();
+          renderBoth(); renderCols();
+          return;
+        }
         if (k[0] === "grp"){
           var g = S.groups[+k[1]];
           if (!g) return;

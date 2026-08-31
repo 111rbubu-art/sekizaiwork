@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v3.4</title>
+<title>彫刻原稿 v3.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -438,10 +438,9 @@
       <div class="pan" id="panRub">
         <h3 class="sec">① 拓本データ</h3>
         <div class="g2">
-          <button class="mini" id="btnRubLoad">取り込み</button>
+          <button class="mini" id="btnRubLoad">SP取込</button>
           <button class="mini" id="btnRubDel">拓本削除</button>
         </div>
-        <button class="mini" id="btnRubLocal" style="width:100%;margin-top:4px;">このパソコンから選ぶ</button>
         <div id="rubData"></div>
         <div id="rubBrowse"></div>
 
@@ -1327,7 +1326,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v3.4";
+var APP_VER = "v3.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2357,6 +2356,11 @@ function renderStage(){
   }
   st.classList.toggle("nopaper", !!r.alt && !printMode);
   window._missing = r.missing;
+
+  /* 確認資料を見ているときは、そちらも描き直す。
+     文字編集の直しは renderStage しか呼ばないものが多く、
+     確認資料に出てこなかった。 */
+  if (view === "demo" && !printMode) renderDemo();
 
   /* プロッタで切れない範囲に文字が入っていないかを見る */
   var MG = shMargin();
@@ -4161,7 +4165,9 @@ function renderTpl(){
     (fontDirReady() ? "共有フォルダー（" + esc(FONT_DIR) + "）" : "このパソコン") + '</b>' +
     (fontDirReady() ? '　<button class="mini" id="tplRel">🔄 読み直す</button>' : '') + '</p>' +
     (TPL.err ? '<div class="m" style="color:var(--shu);">' + esc(TPL.err) + '</div>' : '') +
-    (TPL.loading ? '<p class="hint" style="margin:0;">読み込んでいます…</p>' : '');
+    (TPL.loading ? '<p class="hint" style="margin:0;">読み込んでいます…</p>' : '') +
+    '<p class="hint" style="margin:0 0 8px;"><b>追加</b>＝いまのガイドラインの右どなりに足す（2行目や別の構成を作るとき）。' +
+    '<b>置換</b>＝いまの中身を消して入れかえる。</p>';
   var wire = function(){
     var rb = $("tplRel");
     if (rb) rb.onclick = function(){ FDIR.id = ""; FDIR.items = null; TPL.items = null;
@@ -4177,11 +4183,20 @@ function renderTpl(){
     return '<div class="tplitem"><span class="nm">' + esc(t.name) +
       '<span class="dt">' + (d.sheet ? d.sheet.w + "×" + d.sheet.h + " mm　" : "") +
       'ガイド ' + ((d.centers||[]).length) + '　グループ ' + ((d.groups||[]).length) + '</span></span>' +
-      '<button class="mini tplUse" data-i="' + i + '">呼出</button>' +
+      '<button class="mini tplAdd" data-i="' + i + '">追加</button>' +
+      '<button class="mini tplUse" data-i="' + i + '">置換</button>' +
       '<button class="mini tplDel" data-i="' + i + '">×</button></div>';
   }).join("");
+  Array.prototype.forEach.call(box.querySelectorAll(".tplAdd"), function(b){
+    b.onclick = function(){ tplAdd(tplList()[+b.dataset.i]); };
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".tplUse"), function(b){
-    b.onclick = function(){ tplApply(tplList()[+b.dataset.i]); };
+    b.onclick = function(){
+      if ((S.centers || []).length &&
+          !confirm("いまのガイドラインとグループを消して、テンプレートで置きかえます。よろしいですか。\n" +
+                   "（足したいだけなら〔追加〕を押してください）")) return;
+      tplApply(tplList()[+b.dataset.i]);
+    };
   });
   Array.prototype.forEach.call(box.querySelectorAll(".tplDel"), function(b){
     b.onclick = function(){
@@ -4193,6 +4208,7 @@ function renderTpl(){
   wire();
   renderMenuCounts();
 }
+/* テンプレートを、いまの中身と入れ替える。 */
 function tplApply(t){
   if (!t || !t.data) return;
   var d = JSON.parse(JSON.stringify(t.data));
@@ -4207,6 +4223,62 @@ function tplApply(t){
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
   setSub("group");
   msg("「" + t.name + "」を呼び出しました。");
+}
+
+/* テンプレートを、いまのガイドラインの右どなりに足す。
+   2行目や別の構成を作るときに使う。いまの中身は消さない。 */
+function tplAdd(t){
+  if (!t || !t.data) return;
+  if (!(S.centers || []).length){ tplApply(t); return; }   /* まだ何も無ければ、そのまま入れる */
+
+  var d = JSON.parse(JSON.stringify(t.data));
+  var nc = d.centers || [], ng = d.groups || [];
+  if (!nc.length){ msg("「" + t.name + "」にはガイドラインが入っていません。", true); return; }
+
+  var colBase = S.centers.length;
+  var glBase  = 0;
+  S.centers.forEach(function(c){ glBase = Math.max(glBase, num(c.gl, 0) + 1); });
+
+  /* 置く場所。いまの右はしの外に、行幅ぶんの間をあけて並べる。 */
+  var right = -1e9;
+  S.centers.forEach(function(c, i){ right = Math.max(right, num(c.x, 0) + cenW(i) / 2); });
+  var left = 1e9, wide = 0;
+  nc.forEach(function(c){
+    var hw = num(c.w, 0) / 2;
+    left = Math.min(left, num(c.x, 0) - hw);
+    wide = Math.max(wide, num(c.w, 0));
+  });
+  var gap = Math.max(4, wide * 0.35);
+  var shift = (right + gap) - left;
+
+  nc.forEach(function(c, i){
+    S.centers.push({
+      x: +(num(c.x, 0) + shift).toFixed(1),
+      w: num(c.w, 30.3),
+      fit: !!c.fit,
+      gl: num(c.gl, i) + glBase,
+      linkTo: (c.linkTo === null || c.linkTo === undefined) ? null : num(c.linkTo, 0) + colBase
+    });
+  });
+
+  var giBase = S.groups.length;
+  ng.forEach(function(g){
+    var o = Object.assign(mkGroup("1", "", 60, 130, 1.15), g);
+    o.col = num(g.col, 0) + colBase;
+    o.linkTo = (g.linkTo === null || g.linkTo === undefined) ? null : num(g.linkTo, 0) + giBase;
+    o.dx = num(g.dx, 0);
+    S.groups.push(o);
+  });
+
+  sel = giBase;
+  migrate(); syncOriginY();
+  renderAll(); rubPanel(); if (view !== "sheet") rubRender();
+  setSub("group");
+  var over = "";
+  if (right + gap + (wide || 0) > num(S.sheet.w, 90) - shMargin().r)
+    over = "　※ シートの右はしからはみ出しています。位置を直してください。";
+  msg("「" + t.name + "」を、1行ガイドライン " + (glBase + 1) + " 以降として足しました。" +
+      "ガイドライン " + nc.length + " 本、グループ " + ng.length + " 個。" + over);
 }
 $("btnTplSave").onclick = function(){
   var nm = ($("tplName").value || "").trim();
@@ -4236,7 +4308,7 @@ $("btnRubLoad").onclick = function(){
   if (rubCanUseSP()) spBrowseOpen("image", "rub");
   else $("fRub").click();
 };
-$("btnRubLocal").onclick = function(){ $("fRub").click(); };
+
 $("btnRubDel").onclick = function(){
   if (!RUB.img) return;
   RUB.img = null; RUB.canvas = null; RUB.data = null; RUB.mask = null; RUB.W = 0; RUB.H = 0;
@@ -5540,7 +5612,9 @@ function rubPanel(){
     rb.innerHTML = (br && br.host === "rub") ? spBrowseHTML() : "";
     if (rb.innerHTML) spBrowseBind(rb);
   }
-  var lb = $("btnRubLocal"); if (lb) lb.style.display = rubCanUseSP() ? "" : "none";
+  /* つながっていないときは、同じボタンでパソコンのファイルを選ぶ */
+  var lo = $("btnRubLoad");
+  if (lo) lo.textContent = rubCanUseSP() ? "SP取込" : "ファイルを選ぶ";
   var del = $("btnRubDel"); if (del) del.disabled = !loaded;
 
   /* ---- ③ 回転 ---- */

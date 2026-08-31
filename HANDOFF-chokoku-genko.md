@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-08-31　**chokoku-genko.html = v3.7**／**index_b.html = v1.9.414**
+最終更新: 2026-08-31　**chokoku-genko.html = v3.8**／**index_b.html = v1.9.414**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -9,7 +9,8 @@
 
 ## いまの状態
 
-- ブランチ `claude/init-project-setup-smotz-00s2gp` と `main` は同じ内容（`1738eba`）
+- 作業ブランチは `claude/chokoku-genko-v3-7-9xj06c`。`main` と同じ内容
+  （`claude/init-project-setup-smotz-00s2gp` はマージ後に消えています）
 - 未コミットの変更なし。**すべて GitHub に反映ずみ**
 - GitHub Pages に配信ずみ（`.deploy-trigger` 更新まで完了）
 
@@ -19,8 +20,8 @@
 2. `var APP_VER` と `<title>` のバージョンを上げる
 3. 中の `<script>` を取り出して `node --check` で構文確認
 4. コミット → `git fetch origin main && git rebase origin/main`
-5. `git push -u origin claude/init-project-setup-smotz-00s2gp --force-with-lease`
-   と `git push origin claude/init-project-setup-smotz-00s2gp:main` の両方
+5. `git push -u origin <branch> --force-with-lease`
+   と `git push origin <branch>:main` の両方
 6. `mcp__github__create_or_update_file` で `.deploy-trigger` を更新（Pages の再生成用）
 7. `git fetch origin main && git merge --ff-only origin/main && git push -u origin <branch>`
 
@@ -48,8 +49,15 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
 | v3.5 | 確認資料に直しが出ない／拓本取込を「SP取込」に／テンプレートの〔追加〕 |
 | v3.6 | テンプレートで足したガイドラインが拓本解析に出ない（`centersPx` の数が合っていなかった） |
 | v3.7 | 囲んだ枠を残し、四隅で拡大・縮小。画面拡大のボタンは削除 |
+| v3.8 | 「並べて」を 1画面に。校正文字（左）と拓本（右）を同じ縮尺で並べる |
 
 ## 気をつけるところ
+
+- **「並べて」の校正文字は、ゴムシート上の位置では並ばない**。1行ガイドラインごとに
+  左から詰め直す（`bothPack()`）。隣り合うガイドラインの**行幅の線どうし**のあいだが
+  既定 6mm（`S.bothGap`、ツールバーで変更）。行幅が 0 の列だけ文字幅で代える。
+  高さ（mm）はシートのまま動かさないので、拓本と行の高さを見比べられる。
+  出力（プロッター）には一切効かない。**表示だけ**
 
 - **`S.rub.centersPx` と `S.centers` は数をそろえる**。拓本解析は centersPx をたどって
   線を描くので、ずれると線が出ない。`padCentersPx()` が面倒を見る

@@ -1,32 +1,47 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
-作成日: 2026-06-07　現在バージョン: **v1.9.073**
+
+最終更新: 2026-08-31
+**index_b.html = v1.9.414**／**chokoku-genko.html = v3.7**
+
+> 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
+> そちらを先に読んでください。
+
+> **このリポジトリは公開です。** アカウントのアドレス、SharePoint のサイトURL、
+> リストやドライブの ID は、この資料には書きません。値が必要なときは
+> アプリのソース内の定数を見るか、管理者に確認してください。
 
 ---
 
 ## プロジェクト概要
 
 - **リポジトリ**: `111rbubu-art/sekizaiwork`
-- **GitHub URL**: `https://github.com/111rbubu-art/sekizaiwork`
-- **開発ブランチ**: `main`
-- **git push コマンド**: `git push -u origin main`
-- **GitHub MCP**: セッション内で `mcp__github__*` ツールが利用可能（GitHub操作はこれを使う）
+- **開発ブランチ**: `claude/init-project-setup-smotz-00s2gp`
+  （コミット後、このブランチと `main` の両方に push する）
+- **GitHub MCP**: セッション内で `mcp__github__*` ツールが使える。よく切断されるので、
+  使う直前に ToolSearch で取り直すこと
 - **MCP対象リポジトリ**: `111rbubu-art/sekizaiwork`（他リポジトリへのアクセス不可）
-- **唯一のアプリファイル**: `/home/user/sekizaiwork/index_b.html`（約21,000行超）
-- **SharePoint サイト**: `https://shojisekizai.sharepoint.com/sites/stoneworks`
-- **認証アカウント**: `syojisekizai0808@gmail.com`（社員用）、`shojisekizai@gmail.com`（法人カレンダー用）
+- **主なアプリファイル**:
+  - `index_b.html` — 本体（約27,000行）
+  - `chokoku-genko.html` — 彫刻原稿
+  - `map_b.html` / `receipt.html` / `gaikanri.html` / `tekkyo.html` ほか
+- **SharePoint**: サイトURL・各リストID・ドライブIDは、`index_b.html` の先頭付近の定数で
+  定義しています（`KOUJI_LIST_ID` / `nokListId` / `cusListId` / `DRIVE_ID`）
+- **認証アカウント**: 社員用と法人カレンダー用の2つ。アドレスは管理者に確認してください
 
 ---
 
 ## 主要定数（index_b.html 内）
 
-| 定数 | 値 | 行番号付近 |
-|------|----|-----------|
-| `APP_VERSION` | `'v1.9.073'` | ~4815 |
-| `KOUJI_LIST_ID` | `'dea1de47-62cc-4216-afb3-7c313485eba4'` | ~818 |
-| `nokListId` | `'3ae4bd1d-47b8-4300-aab5-6b828aa0e480'` | ~1409 |
-| `cusListId` | `'29524f89-0370-44ea-8d01-161f34e5a1ab'` | ~14315 |
-| `DRIVE_ID` | `'b!Kd6bySbVVkOYNZHZNe9p3GY8hGjGqNZAjqUCUF3IbAPj8QAq2YQCTJvsL-ml_Vkp'` | ~14518 |
-| `_GCAL_CALENDAR_ID` | `'shojisekizai%40gmail.com'` | ~4607 |
+値は伏せています。行番号は目安です。
+
+| 定数 | 用途 | 行番号付近 |
+|------|------|-----------|
+| `APP_VERSION` | アプリの版（手動で上げる） | ~4815 |
+| `KOUJI_LIST_ID` | 工事関連リスト | ~818 |
+| `nokListId` | 納骨リスト | ~1409 |
+| `cusListId` | 顧客リスト | ~14315 |
+| `DRIVE_ID` | ドキュメントライブラリ | ~14518 |
+| `_GCAL_CALENDAR_ID` | Google カレンダー | ~4607 |
 
 ---
 
@@ -38,32 +53,7 @@
 - **ファイル整理パネル** (`_fmgr` オブジェクト): サブウィンドウ
 - **資料作成** (テンプレートエンジン): PDF/JSON保存
 - **施工計算** (`calcFoundation` / `openFoundCalcAsDoc`): 基礎計算・A4出力
-
----
-
-## このセッションで実施した主な変更（v1.9.055〜v1.9.073）
-
-| バージョン | 内容 |
-|-----------|------|
-| v1.9.055 | 詳細ヘッダのラベル行を左寄せ・順序整理 |
-| v1.9.056 | 提出資料ボタン→ファイル整理パネル（提出資料サブフォルダー）に変更、ダブルクリックでファイルを開く |
-| v1.9.057 | ラベル行を左寄せ＋固定スペース配置 |
-| v1.9.058 | PDF保存デフォルト名を `YYYYMMDD_＜ベース名末尾グループ＞__〇〇家__工事内容` 形式に |
-| v1.9.059 | 途中保存(.json)も同じ命名規則に |
-| v1.9.060 | 工事・納骨両フィールド対応（`_currentTargetList`非依存） |
-| v1.9.061 | 納骨GCal登録強化（編集ゼロでも登録、新規登録時も納骨日があれば登録） |
-| v1.9.062 | GCalターゲットを `primary` → `shojisekizai@gmail.com` に変更 |
-| v1.9.063 | ファイル整理パネルのドロップゾーンにWindowsエクスプローラーからのドラッグ対応 |
-| v1.9.064 | 工事関連リストカードに石材①ステータスタグを右上に追加（枠線スタイル） |
-| v1.9.065 | 石材②・彫刻ステータスタグを追加、複数タグを縦積み右上表示 |
-| v1.9.066 | データタブ フォルダーサブタブの「📁 フォルダー」セクションヘッダー削除 |
-| v1.9.067 | 彫刻タグの判定を下から順（最進段階優先）に変更 |
-| v1.9.068 | 施工計算の砕石に20L袋数を追加（RC40密度1500kg/m³、20L=30kg） |
-| v1.9.069 | 施工計算A4出力の文字色を印刷向けに濃くする（#888→#444等） |
-| v1.9.070 | 施工計算A4出力の計算日・鉄筋切上の文字色をさらに濃くする |
-| v1.9.071 | 石材①②タグを下から順（最進段階優先）に変更 |
-| v1.9.072 | 工事詳細に引取済①②チェックボックスを追加（`PickUp1`/`PickUp2`、ブール型） |
-| v1.9.073 | 引取済チェック時に石材タグを「石材①: 済」（緑塗り）で表示 |
+- **彫刻原稿** (`openChokokuGenko`): 納骨リストの資料作成タブから開く別ウィンドウ
 
 ---
 
@@ -120,10 +110,22 @@
 
 ---
 
+## 彫刻原稿への受け渡し（`openChokokuGenko`）
+
+- 納骨リストの「資料作成」タブ →「✒️ 彫刻原稿」で別ウィンドウを開く
+- 渡すもの: 工事フォルダのパス、寺名・家名・納骨日、彫刻予定場所、石塔彫刻位置・行目、
+  墓誌場所・行目
+- **sessionStorage はウィンドウごとに別物**なので、開いた直後に
+  `w.__chokokuApplyHandoff(payload)` で直接渡している
+- 彫刻原稿側は自前のサインインを持たず、`window.opener._chokokuGenkoToken()` で
+  親ウィンドウのトークンを借りる
+
+---
+
 ## Google Calendar
 
-- カレンダーID: `shojisekizai@gmail.com`（URL用に `%40` エンコード済み）
-- 認証: OAuth2 Implicit Flow、`syojisekizai0808@gmail.com` でサインイン
+- カレンダーID・サインインに使うアカウントは、アプリ内の定数を参照（この資料には書かない）
+- 認証: OAuth2 Implicit Flow
 - 登録関数: `registerGcalEvent(forceRegister)`
 - GCal対象: 納骨リストのみ（`currentListMode === 'noukotsu'`）
 - テストユーザー: Google Cloud Console → OAuth同意画面 → ユーザー追加 が必要
@@ -143,13 +145,38 @@ YYYYMMDD_＜テンプレートベース名の__区切り最終グループ＞__�
 ## 未着手・将来タスク
 
 - **石材②展開確認**: v1.9.065で追加済み、実データで動作確認
-- **引取済①②の動作確認**: v1.9.072-073、SPの`PickUp1`/`PickUp2`フィールドとの疎通確認
+- **引取済①②の動作確認**: SPの`PickUp1`/`PickUp2`フィールドとの疎通確認
+- **さくらインターネットへの移設**（手動アップロードの方針）。移設したら
+  `loadMapDataFromScript` のURLを書き換え、Entra ID にリダイレクトURIを追加
+- `gaichu-portal/index.php`(v1.2.2)、`upload.php`(v18)、`submit.php`(v3) のアップロード
+- 工事関連データタブの「彫刻記入用紙返却／彫刻校正確定／彫刻納品」ゾーン
+
+---
+
+## 取り扱いの注意
+
+- **このリポジトリは公開**。新しく書くものに、アカウントのアドレス、パスワード、
+  トークン、個人名は入れないこと
+- `data_kugayama.js`（264名の氏名）は HEAD から削除ずみだが、**git の履歴には残っている**。
+  履歴からの削除は未実施
+- `data_*.js` に檀家の姓が約3,200件入っている（姓のみ）
+- FTP のパスワードや `.htsecret` は GitHub Secrets か手元の設定ファイルに置く。
+  リポジトリにもチャットにも書かない
+
+### 触ってはいけないもの
+
+- `docker compose down -v`（Dify のデータが消える）
+- `tailscale funnel`（インターネット全体に公開される）
+- LLMサーバー・管理PCの Tailscale ログアウト
 
 ---
 
 ## 開発メモ
 
-- コミット後は必ず `git push -u origin main` でpush
-- バージョン番号は `APP_VERSION` 変数（~行4815）を手動更新
+- コミット後は、開発ブランチと `main` の両方に push する
+- GitHub Pages の再生成には `.deploy-trigger` の更新が要る
+  （`mcp__github__create_or_update_file` で書き換える）
+- バージョン番号は手動更新（`index_b.html` は `APP_VERSION`、
+  `chokoku-genko.html` は `APP_VER` と `<title>` の両方）
 - SP Graph APIの`$expand=fields`で全フィールドを自動取得（`$select`なし）
 - ブール型SPフィールドはPATCH時に文字列`"true"`→`boolean true`への変換が必要

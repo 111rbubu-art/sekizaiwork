@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v4.1</title>
+<title>彫刻原稿 v4.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1353,7 +1353,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v4.1";
+var APP_VER = "v4.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5291,6 +5291,9 @@ function bothPack(rows){
 
 /* 並べて表示で、拓本の左はしがシートの何 mm にあるか。つまみの計算に使う。 */
 var bothRubX = null;
+/* つまみをつかんでいる間は、表示範囲と縮尺を止める。
+   動かすたびに絵の大きさが変わると、つまみがポインタから逃げてしまう。 */
+var bothBusy = false, bothBox = null;
 function renderBoth(){
   var st = $("bothstage"), wrap = $("bothwrap");
   var hintEl = wrap.querySelector(".bothhint"); if (hintEl) hintEl.remove();
@@ -5397,6 +5400,12 @@ function renderBoth(){
   vx -= GUT; vw += GUT * 2;
   var sc = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
   KN = 16 / (MMPX * (sc > 0 ? sc : 0.2));
+  if (bothBusy && bothBox){
+    vx = bothBox.vx; vy = bothBox.vy; vw = bothBox.vw; vh = bothBox.vh;
+    sc = bothBox.sc; KN = bothBox.KN; GUT = bothBox.GUT;
+  } else {
+    bothBox = { vx:vx, vy:vy, vw:vw, vh:vh, sc:sc, KN:KN, GUT:GUT };
+  }
   var gutL = vx, gutR = vx + vw - GUT;                /* 余白のはじまり */
 
   /* --- ガイド ---
@@ -5583,12 +5592,20 @@ function renderBoth(){
   bindBothDrag(st.querySelector("svg"));
 }
 
-/* 画面の位置を、シートの mm に直す */
+/* 画面の位置を、シートの mm に直す。
+   つかんだときに一度だけ測る。動かすたびに測り直すと、
+   絵を作り直したあとの「外れた古い SVG」を測ってしまい、
+   大きさ 0 ＝ 計算できずに、つかんだ状態が外れてしまう。 */
 function bothMapper(svg){
+  var b = svg.getBoundingClientRect();
+  var vb = (svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
+  var vx = isFinite(vb[0]) ? vb[0] : 0, vy = isFinite(vb[1]) ? vb[1] : 0;
+  var vw = (isFinite(vb[2]) && vb[2]) ? vb[2] : 1;
+  var vh = (isFinite(vb[3]) && vb[3]) ? vb[3] : 1;
+  var bw = b.width || 1, bh = b.height || 1;
   return function(e){
-    var r = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
-    return { x: vb.x + (e.clientX - r.left) / r.width * vb.width,
-             y: vb.y + (e.clientY - r.top) / r.height * vb.height };
+    return { x: vx + (e.clientX - b.left) * vw / bw,
+             y: vy + (e.clientY - b.top)  * vh / bh };
   };
 }
 /* 「並べて」で線をつかんで動かす。
@@ -5603,15 +5620,18 @@ function bindBothDrag(svg){
       if (ev.button !== undefined && ev.button !== 0) return;
       ev.preventDefault(); ev.stopPropagation();
       var k = String(el.dataset.k).split(":");
+      bothBusy = true;                 /* つかんでいる間は絵の大きさを止める */
       var toPt = bothMapper(svg);
+      var rubX0 = bothRubX;            /* 拓本の左はし。つかんだときの値で通す */
+      var mp0 = mmPerPx();
       function move(e){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
         if (k[0] === "cen"){
           /* ガイドラインの位置。拓本の上での左右の位置を直す。 */
-          var mp = mmPerPx(), ci = +k[1];
-          if (!mp || !bothRubX) return;
-          var px = Math.round((q.x - bothRubX) / mp);
+          var mp = mp0, ci = +k[1];
+          if (!mp || rubX0 === null || !isFinite(q.x)) return;
+          var px = Math.round((q.x - rubX0) / mp);
           S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
           syncCenters();
           renderBoth(); renderCols();
@@ -5638,12 +5658,15 @@ function bindBothDrag(svg){
       function up(){
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        bothBusy = false;              /* 大きさの止めを解く */
         renderCols(); renderList(); renderProps();
         if (typeof rubPanel === "function") rubPanel();
         renderStage(); persist();
       }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
     });
   });
 }

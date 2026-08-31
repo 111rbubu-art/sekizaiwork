@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v3.3</title>
+<title>彫刻原稿 v3.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1327,7 +1327,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v3.3";
+var APP_VER = "v3.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1395,6 +1395,7 @@ function b64ToBytes(b64){
     $("bootmsg").textContent = "文字組みエンジンを準備しています…";
     var mod = await createHarfBuzz({ wasmBinary: b64ToBytes(WASM_B64) });
     hb = hbjs(mod);
+    storePersist(true);          /* この端末の記憶を消さないでほしい、と先に頼む */
     $("boot").style.display = "none";
     $("app").style.visibility = "visible";
     restore();
@@ -1548,6 +1549,30 @@ $("fFontUp").onchange = async function(e){
   e.target.value = "";
 };
 
+/* --- この端末の記憶（IndexedDB） ------------------------------
+   置いただけの記憶は、ブラウザに「空きが減ったら消してよい」もの
+   として扱われる。消さないでほしいと先に頼んでおく。 */
+var STORE = { persisted: null, usage: 0, quota: 0, err: "", n: 0, bytes: 0, at: "" };
+
+async function storeQuota(){
+  try {
+    if (navigator.storage && navigator.storage.estimate){
+      var q = await navigator.storage.estimate();
+      STORE.usage = num(q.usage, 0); STORE.quota = num(q.quota, 0);
+    }
+  } catch(e){}
+}
+/* ブラウザに「この端末の記憶を消さないでほしい」と頼む */
+async function storePersist(ask){
+  try {
+    if (!navigator.storage || !navigator.storage.persisted) return;
+    STORE.persisted = await navigator.storage.persisted();
+    if (!STORE.persisted && ask && navigator.storage.persist)
+      STORE.persisted = await navigator.storage.persist();
+  } catch(e){}
+  await storeQuota();
+}
+
 /* --- IndexedDB にフォントをキャッシュ --- */
 function idb(){
   return new Promise(function(res, rej){
@@ -1557,21 +1582,44 @@ function idb(){
     r.onerror = function(){ rej(r.error); };
   });
 }
+/* 書けたかどうかを最後まで見届ける。put を投げっぱなしにしていたため、
+   容量が足りずに入らなくても気づけなかった。 */
 async function saveFontCache(list){
+  var total = (list || []).reduce(function(a, x){
+    return a + ((x && x.bytes) ? x.bytes.length : 0); }, 0);
   try {
     var db = await idb();
-    db.transaction("kv", "readwrite").objectStore("kv").put(list, "fonts");
-  } catch(e){}
+    await new Promise(function(res, rej){
+      var tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").put(list, "fonts");
+      tx.oncomplete = function(){ res(); };
+      tx.onerror    = function(){ rej(tx.error || new Error("書き込めませんでした")); };
+      tx.onabort    = function(){ rej(tx.error || new Error("書き込みが取り消されました")); };
+    });
+    STORE.err = ""; STORE.n = (list || []).length; STORE.bytes = total;
+    STORE.at = new Date().toLocaleTimeString("ja-JP");
+  } catch(e){
+    STORE.err = ((e && e.name) ? e.name + "：" : "") + ((e && e.message) || "書き込めませんでした");
+    STORE.n = 0; STORE.bytes = 0;
+    msg("フォントをこの端末に覚えさせられませんでした（" + mbText(total) + "）。" +
+        "次に開いたときは、もう一度読み込みが必要です。／" + STORE.err, true, true);
+  }
+  await storeQuota();
+  if (typeof fontPanel === "function") fontPanel();
 }
 async function loadFontCache(){
   try {
     var db = await idb();
-    return await new Promise(function(res){
+    var r = await new Promise(function(res){
       var rq = db.transaction("kv").objectStore("kv").get("fonts");
       rq.onsuccess = function(){ res(rq.result || null); };
       rq.onerror = function(){ res(null); };
     });
-  } catch(e){ return null; }
+    STORE.n = r ? r.length : 0;
+    STORE.bytes = (r || []).reduce(function(a, x){
+      return a + ((x && x.bytes) ? x.bytes.length : 0); }, 0);
+    return r;
+  } catch(e){ STORE.err = (e && e.message) || "読めませんでした"; return null; }
 }
 
 /* ============================================================
@@ -3705,6 +3753,12 @@ async function restore(){
   renderCols(); rubPanel(); renderTpl(); renderMenuCounts();
   setView(S.view || "sheet");
   var c = await loadFontCache();
+  if (!c || !c.length){
+    /* 消えていたら、なぜ毎回読み直しになるのかが分かるようにしておく */
+    if (STORE.persisted === false)
+      msg("前回のフォントが残っていません。ブラウザがこの端末の記憶を消したようです。" +
+          "「フォント・作字」の下にある〔消さない設定にする〕を押しておくと、次からは残ります。", true, true);
+  }
   if (c && c.length){
     try {
       var okc = c.filter(function(x){ return !fontProblem(x.bytes); });
@@ -8102,6 +8156,20 @@ function fontPanel(){
       }).join("") + '</div>'
     : '<p class="hint" style="margin-top:0;">まだ読み込んでいません。</p>';
 
+  h += '<h3 class="sec">このパソコンの記憶</h3>';
+  h += '<p class="hint" style="margin-top:0;">覚えているフォント：<b>' + STORE.n + '</b> 件' +
+    (STORE.bytes ? '（' + mbText(STORE.bytes) + '）' : '') +
+    (STORE.at ? '　最後に書いたのは ' + esc(STORE.at) : '') + '<br>' +
+    'ブラウザに消されない設定：<b>' +
+    (STORE.persisted === true ? "できています" :
+     STORE.persisted === false ? "まだです" : "分かりません") + '</b>' +
+    (STORE.quota ? '<br>使っている量：' + mbText(STORE.usage) + " / " + mbText(STORE.quota) : "") +
+    (STORE.err ? '<br><b style="color:var(--shu);">' + esc(STORE.err) + '</b>' : '') + '</p>';
+  if (STORE.persisted !== true)
+    h += '<button class="mini" id="stPer" style="width:100%;margin-bottom:6px;">消さない設定にする</button>';
+  h += '<p class="hint" style="margin:0 0 4px;">読み込んだフォントは、このパソコンに覚えさせて次回すぐ使えるようにしています。' +
+    '毎回読み直しになるときは、上の設定と、ブラウザの「終了時に閲覧データを消す」設定を見てください。</p>';
+
   h += '<h3 class="sec">アプリ使用フォント（共有）</h3>';
   if (!fontDirReady()){
     h += '<p class="hint" style="margin-top:0;">本体アプリの納骨リストから開くと、SharePoint の<br><b>' +
@@ -8151,6 +8219,14 @@ function fontPanel(){
   box.innerHTML = h;
   var on = function(id, ev, fn){ var e = $(id); if (e) e.addEventListener(ev, fn); };
   on("fdRel", "click", function(){ FDIR.id = ""; FDIR.items = null; fontDirLoad(); });
+  on("stPer", "click", async function(){
+    await storePersist(true);
+    fontPanel();
+    msg(STORE.persisted === true
+      ? "この端末の記憶を消さない設定にしました。次からはフォントが残ります。"
+      : "ブラウザが承諾しませんでした。このページをブックマークするか、しばらく使ってからもう一度お試しください。",
+      STORE.persisted !== true, true);
+  });
   on("fdLocal", "click", function(){ $("fFont").click(); });
   on("fdPut", "click", function(){ $("fFontUp").click(); });
   on("glPush", "click", glyphLibPush);

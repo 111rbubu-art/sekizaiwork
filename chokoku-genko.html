@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v3.2</title>
+<title>彫刻原稿 v3.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -320,7 +320,7 @@
   #peStage svg{display:block;}
   #peStage .pehit{cursor:move;}
   #peStage .pehitc{cursor:pointer;}
-  #peMenu{position:fixed;z-index:70;width:206px;background:var(--surface);
+  #peMenu{position:fixed;z-index:90;width:206px;   /* 作字の画面(80)より前に出す */background:var(--surface);
     border:1px solid var(--line);border-radius:9px;padding:10px 11px;
     box-shadow:0 10px 30px rgba(0,0,0,.22);max-height:80vh;overflow-y:auto;}
   #peMenu .hd{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;}
@@ -596,8 +596,9 @@
           <button class="mini pt" data-t="delc">輪郭を消す</button>
           <button class="mini pt" data-t="cut">線を引いて切る</button>
         </div>
-        <p class="hint" style="margin:2px 0 8px;">ダイヤルで拡大・縮小、まん中のボタンで移動。
-          右クリックで点のメニューが出ます。</p>
+        <p class="hint" style="margin:2px 0 8px;">何もない所を左ドラッグで囲むと、中の点をまとめて選べます
+          （Shift で足す）。選んだ点のどれかをつかむと、まとめて動きます。<br>
+          ダイヤルで拡大・縮小、まん中のボタンで移動。右クリックで点のメニューが出ます。</p>
         <div class="g2" style="margin-bottom:5px;">
           <button class="mini" id="peZI">＋ 拡大</button>
           <button class="mini" id="peZO">− 縮小</button>
@@ -1326,7 +1327,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v3.2";
+var APP_VER = "v3.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6165,7 +6166,7 @@ function openPathEditor(gi, ci){
          axes: JSON.parse(JSON.stringify((ep && ep.axes) ? ep.axes : (ax || {}))),
          axNow: JSON.parse(JSON.stringify(ax || {})),
          wpct: ep ? num(ep.wpct, 0) : 0,
-         sel: [], selC: [], undo: [], tool: "sel", drag: null,
+         sel: [], selC: [], undo: [], tool: "sel", drag: null, marq: null,
          view: { z: 1, dx: 0, dy: 0 },
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null };
   $("peW").value = PE.wpct;
@@ -6249,6 +6250,16 @@ function peRender(){
       (r*0.4) + '"/>');
   if ($("peFill").checked)
     o.push('<path d="' + pathD(shown) + '" fill="#14181B" fill-rule="nonzero" opacity="0.82"/>');
+
+  /* 囲んで選んでいる最中の四角 */
+  if (PE.marq){
+    var mq = PE.marq;
+    var mx1 = Math.min(mq.a.x, mq.b.x), mx2 = Math.max(mq.a.x, mq.b.x);
+    var my1 = Math.min(mq.a.y, mq.b.y), my2 = Math.max(mq.a.y, mq.b.y);
+    o.push('<rect x="' + mx1 + '" y="' + my1 + '" width="' + (mx2-mx1) + '" height="' + (my2-my1) +
+      '" fill="#1B6FD6" fill-opacity="0.10" stroke="#1B6FD6" stroke-width="' + (r*0.5) +
+      '" stroke-dasharray="' + (r*2) + ' ' + (r*1.5) + '"/>');
+  }
 
   /* 輪郭の線と節点 */
   PE.contours.forEach(function(c, cidx){
@@ -6493,6 +6504,11 @@ function peMenuOpen(ev){
   h += '<button class="mini' + (PE.tool === "add" ? " primary" : "") + '" data-a="t-add">点を足す</button>';
   h += '<button class="mini' + (PE.tool === "del" ? " primary" : "") + '" data-a="t-del">点を消す</button>';
   h += '<div class="sep"></div>';
+  if (PE.sel.length > 1)
+    h += '<button class="mini" data-a="delsel">選んだ ' + PE.sel.length + ' 点を消す</button>';
+  h += '<button class="mini" data-a="selall">この字の点をぜんぶ選ぶ</button>';
+  h += '<button class="mini" data-a="selnone">選択を外す</button>';
+  h += '<div class="sep"></div>';
   h += '<button class="mini" data-a="zin">拡大</button>';
   h += '<button class="mini" data-a="zout">縮小</button>';
   h += '<button class="mini" data-a="zreset">表示を戻す</button>';
@@ -6525,6 +6541,24 @@ function peMenuDo(a){
   } else if (a === "delc"){
     peSnap(); PE.contours.splice(m.c, 1); PE.sel = []; PE.selC = [];
     peRender(); msg("輪郭を消しました。");
+  } else if (a === "delsel"){
+    peSnap();
+    /* うしろから消すと、前の番号がずれない */
+    PE.sel.slice().sort(function(x, y){ return y.c - x.c || y.n - x.n; })
+      .forEach(function(q){
+        var ct = PE.contours[q.c]; if (ct) ct.splice(q.n, 1);
+      });
+    PE.contours = PE.contours.filter(function(ct){ return ct.length >= 3; });
+    PE.sel = []; PE.selC = []; peRender(); msg("選んだ点を消しました。");
+  } else if (a === "selall"){
+    PE.sel = []; PE.selC = [];
+    PE.contours.forEach(function(c, ci){
+      c.forEach(function(n, ni){ PE.sel.push({ c: ci, n: ni }); });
+      PE.selC.push(ci);
+    });
+    peRender(); msg(PE.sel.length + " 点を選びました。");
+  } else if (a === "selnone"){
+    PE.sel = []; PE.selC = []; peRender();
   } else if (a === "t-sel" || a === "t-add" || a === "t-del"){
     PE.tool = a.slice(2); PE.sel = []; PE.selC = []; peRender();
   } else if (a === "zin" || a === "zout"){
@@ -6598,7 +6632,10 @@ function peBind(svg){
       var c = +el.dataset.c;
       if (PE.tool === "delc"){ peSnap(); PE.contours.splice(c,1); PE.sel = []; PE.selC = []; peRender(); return; }
       if (PE.tool === "add"){ peSnap(); peAddNode(c, toPt(ev)); peRender(); return; }
-      PE.selC = ev.shiftKey ? PE.selC.concat([c]) : [c];
+      /* すでに選んである輪郭をつかんだときは、選択をこわさずまとめて動かす */
+      var inSelC = PE.selC.indexOf(c) >= 0;
+      if (ev.shiftKey) { if (!inSelC) PE.selC = PE.selC.concat([c]); }
+      else if (!inSelC) PE.selC = [c];
       PE.sel = [];
       /* 輪郭ごと動かす */
       var start = toPt(ev), snap = false;
@@ -6669,7 +6706,35 @@ function peBind(svg){
       window.addEventListener("pointerup", up2);
       return;
     }
-    if (PE.tool !== "rect"){ PE.sel = []; PE.selC = []; peRender(); return; }
+    if (PE.tool !== "rect"){
+      /* 囲んで選ぶ。Shift を押しながらだと、いま選んでいる分に足す。 */
+      ev.preventDefault();
+      var m0 = toPt(ev), addTo = ev.shiftKey ? PE.sel.slice() : [];
+      var grew = false;
+      PE.marq = { a: m0, b: m0 };
+      function mvM(e){
+        PE.marq.b = toPt(e);
+        var w = Math.abs(PE.marq.b.x - m0.x), hgt = Math.abs(PE.marq.b.y - m0.y);
+        if (!grew && w + hgt < 6) return;      /* ただのクリックと区別する */
+        grew = true;
+        peSelectIn(PE.marq, addTo);
+        peRender();
+      }
+      function upM(){
+        window.removeEventListener("pointermove", mvM);
+        window.removeEventListener("pointerup", upM);
+        window.removeEventListener("pointercancel", upM);
+        PE.marq = null;
+        if (!grew && !ev.shiftKey){ PE.sel = []; PE.selC = []; }
+        peRender();
+        if (grew && PE.sel.length)
+          msg(PE.sel.length + " 点を選びました。どれかをつかむと、まとめて動きます。");
+      }
+      window.addEventListener("pointermove", mvM);
+      window.addEventListener("pointerup", upM);
+      window.addEventListener("pointercancel", upM);
+      return;
+    }
     ev.preventDefault();
     var a = toPt(ev), snap = false, idx = -1;
     function mv(e){
@@ -6695,6 +6760,31 @@ function peBind(svg){
     window.addEventListener("pointermove", mv);
     window.addEventListener("pointerup", up);
   });
+}
+
+/* 囲んだ四角の中に入る点を選ぶ。base があれば、それに足す。 */
+function peSelectIn(m, base){
+  if (!PE || !m) return;
+  var x1 = Math.min(m.a.x, m.b.x), x2 = Math.max(m.a.x, m.b.x);
+  var y1 = Math.min(m.a.y, m.b.y), y2 = Math.max(m.a.y, m.b.y);
+  var sel = (base || []).slice();
+  var has = {};
+  sel.forEach(function(s){ has[s.c + "/" + s.n] = 1; });
+  PE.contours.forEach(function(c, ci){
+    c.forEach(function(n, ni){
+      if (n.x < x1 || n.x > x2 || n.y < y1 || n.y > y2) return;
+      var k = ci + "/" + ni;
+      if (has[k]) return;
+      has[k] = 1; sel.push({ c: ci, n: ni });
+    });
+  });
+  PE.sel = sel;
+  /* 全部の点が入った輪郭は、輪郭ごと選ばれた扱いにする */
+  var cnt = {};
+  sel.forEach(function(s){ cnt[s.c] = (cnt[s.c] || 0) + 1; });
+  PE.selC = Object.keys(cnt).filter(function(ci){
+    return PE.contours[ci] && cnt[ci] === PE.contours[ci].length;
+  }).map(Number);
 }
 
 /* 節点を消す（3 点未満になる輪郭は消す） */

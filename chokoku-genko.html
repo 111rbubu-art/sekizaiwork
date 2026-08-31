@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v4.8</title>
+<title>彫刻原稿 v4.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1356,7 +1356,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v4.8";
+var APP_VER = "v4.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3985,6 +3985,18 @@ function persist(){
     localStorage.setItem("chokoku.state", JSON.stringify(copy));
   } catch(e){}
 }
+/* 起動して前回の続きを戻すときの、進み具合。
+   フォントを読み込むときと同じ出し方（消えない知らせ）に、％を足したもの。 */
+var BOOTP = { total: 0, done: 0 };
+function bootProg(what){
+  if (!BOOTP.total) return;
+  var pct = Math.max(0, Math.min(100, Math.round(BOOTP.done / BOOTP.total * 100)));
+  msg("前回の続きを戻しています… " + pct + "％" + (what ? "（" + what + "）" : ""), false, true);
+}
+function bootStep(what){ BOOTP.done++; bootProg(what); }
+/* 画面を一度描かせて、％が実際に見えるようにする */
+function tick(){ return new Promise(function(r){ setTimeout(r, 0); }); }
+
 async function restore(){
   try {
     var raw = localStorage.getItem("chokoku.state");
@@ -4006,37 +4018,61 @@ async function restore(){
   renderCols(); rubPanel(); renderTpl(); renderMenuCounts();
   setView(S.view || "sheet");
   var c = await loadFontCache();
+  /* 前回の拓本は、案件を受け取るより先に用意しておく。
+     別の案件だった場合はここで捨てるので、前の拓本が残らない。 */
+  _pendingRubSrc = await loadRubCache();
+
+  /* 戻すものの数を数えて、％を出せるようにする。
+     拓本は「読み込み」と「下ごしらえ」の 2つぶんとして数える。 */
+  var okc = (c || []).filter(function(x){ return !fontProblem(x.bytes); });
+  BOOTP.total = okc.length + (_pendingRubSrc ? 2 : 0);
+  BOOTP.done = 0;
+  if (BOOTP.total){ bootProg("準備中"); await tick(); }
+
   if (!c || !c.length){
     /* 消えていたら、なぜ毎回読み直しになるのかが分かるようにしておく */
     if (STORE.persisted === false)
       msg("前回のフォントが残っていません。ブラウザがこの端末の記憶を消したようです。" +
           "「フォント・作字」の下にある〔消さない設定にする〕を押しておくと、次からは残ります。", true, true);
   }
-  if (c && c.length){
+  if (okc.length){
     try {
-      var okc = c.filter(function(x){ return !fontProblem(x.bytes); });
-      okc.forEach(function(x){ addFont(x.bytes, x.name); });
-      if (okc.length){
-        curFont = 0; renderFontBar(); renderAll();
-        msg("前回のフォント " + okc.length + " 件を戻しました。");
+      for (var fi2 = 0; fi2 < okc.length; fi2++){
+        addFont(okc[fi2].bytes, okc[fi2].name);
+        bootStep(okc[fi2].name);
+        await tick();                      /* ここで画面を描かせる */
       }
-      if (okc.length < c.length)
-        msg("前に読んだフォントのうち " + (c.length - okc.length) +
-            " 件がこわれていたので使いません。読み直してください。", true, true);
+      curFont = 0; renderFontBar(); renderAll();
     } catch(e){}
   }
-  /* 前回の拓本は、案件を受け取るより先に用意しておく。
-     別の案件だった場合はここで捨てるので、前の拓本が残らない。 */
-  _pendingRubSrc = await loadRubCache();
+  if (c && okc.length < c.length)
+    msg("前に読んだフォントのうち " + (c.length - okc.length) +
+        " 件がこわれていたので使いません。読み直してください。", true, true);
+
   spBoot();
-  if (_pendingRubSrc) loadRubImageQuiet(_pendingRubSrc);
+  if (_pendingRubSrc){
+    bootProg("拓本");
+    await tick();
+    loadRubImageQuiet(_pendingRubSrc, function(ok){
+      BOOTP.done = BOOTP.total;
+      if (ok) msg("前回の続きを戻しました。" +
+        (okc.length ? "フォント " + okc.length + " 件と拓本。" : "拓本。"));
+      else msg("前回の拓本を戻せませんでした。読み直してください。", true, true);
+      BOOTP.total = 0;
+    });
+  } else {
+    if (BOOTP.total) msg("前回のフォント " + okc.length + " 件を戻しました。");
+    BOOTP.total = 0;
+  }
 }
-function loadRubImageQuiet(src){
+function loadRubImageQuiet(src, done){
   var im = new Image();
+  im.onerror = function(){ if (done) done(false); };
   im.onload = function(){
     RUB.img = im;
+    if (done){ BOOTP.done++; bootProg("拓本の下ごしらえ"); }
     rebuildRub();
-    if (!RUB.data) return;
+    if (!RUB.data){ if (done) done(false); return; }
     S.rub.src = src;
     if (!S.rub.calBot){ S.rub.calTop = Math.round(RUB.H*0.06); S.rub.calBot = Math.round(RUB.H*0.94); }
     if (!S.rub.bandR){ S.rub.bandL = Math.round(RUB.W*0.05); S.rub.bandR = Math.round(RUB.W*0.35); }
@@ -4048,7 +4084,10 @@ function loadRubImageQuiet(src){
       if (pv === null || pv === undefined) S.rub.centersPx[pi] = mid0;
     }
     rubPanel(); renderMenuCounts();
-    if (view !== "sheet") rubRender();
+    /* いま見ている画面を描き直す。ここで rubRender だけを呼んでいたので、
+       構成の画面では拓本が出てこず、タブを行き来しないと現れなかった。 */
+    redraw();
+    if (done) done(true);
   };
   im.src = src;
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v4.7</title>
+<title>彫刻原稿 v4.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -90,6 +90,9 @@
   #mmGl .mmsub.lnk::after{content:"";position:absolute;left:11px;top:-3px;bottom:50%;
     width:7px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);
     border-bottom-left-radius:4px;}
+  #mmGl .mmsub{cursor:grab;}
+  #mmGl .mmsub.drag{opacity:.4;}
+  #mmGl .mmsub.over{box-shadow:inset 3px 0 0 var(--ink);}
   #mmGl .mmsub .lk{flex:none;font-style:normal;font-size:10px;font-weight:600;color:var(--muted);
     border:1px solid var(--line);border-radius:9px;padding:0 5px;line-height:15px;white-space:nowrap;}
   #gpick .gitem{background:var(--surface);}
@@ -117,6 +120,7 @@
   #bothstage svg{display:block;}
   #bothstage .bhit{cursor:ns-resize;}
   #bothstage .bhitx{cursor:ew-resize;}
+  #bothstage .bmove{cursor:grab;}
   #demowrap{min-height:0;overflow:auto;padding:20px 20px 72px;cursor:grab;overscroll-behavior:contain;}
   #demowrap.grabbing{cursor:grabbing;}
   #demostage{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.16);margin:0 auto;
@@ -557,7 +561,7 @@
           <label class="chk"><input type="checkbox" id="bGuide" checked style="width:auto;"> ガイド</label>
           <label class="chk"><input type="checkbox" id="bInv" style="width:auto;"> 拓本を反転</label>
           <button class="mini" id="bOver">拓本を重ねる</button>
-          <span class="hint" style="margin:0;" id="bInfo">ガイドラインを押すと選択　外の ■ をつかむと線が動きます</span>
+          <span class="hint" style="margin:0;" id="bInfo">ガイドラインを押すと選択　名前をつかむと並べ替え　外の ■ で線が動きます</span>
         </span>
         <span hidden>
           <!-- 拓本を重ねる機能は「構成」へ移した。ゴムシートでは使わない。 -->
@@ -1352,7 +1356,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v4.7";
+var APP_VER = "v4.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2846,6 +2850,7 @@ document.addEventListener("pointerdown", function(e){
   closeAddMenu();
 }, true);
 
+var glDragK = null;                 /* 左メニューでつかんでいるガイドライン */
 function renderMenuGl(){
   var box = $("mmGl"); if (!box) return;
   var keys = glKeys();
@@ -2859,11 +2864,34 @@ function renderMenuGl(){
     var tag = cp ? '<i class="lk">' + (o.src + 1) + ' のコピー</i>'
                  : (nCopy[k] ? '<i class="lk">元</i>' : '');
     return '<button class="mmsub' + (k === cur ? " on" : "") + (cp ? " lnk" : "") +
-      '" data-k="' + k + '">' +
+      '" data-k="' + k + '" draggable="true" title="ドラッグすると左右の並びを入れ替えます">' +
       '<span>' + (k < 0 ? "未設定" : "ガイドライン " + (k+1)) + tag + '</span>' +
       '<span class="n2">' + n + '</span></button>';
   }).join("") + addRowBtn();
   /* ［行追加］も .mmsub だが data-k を持たない。ガイドラインの並びだけを拾う。 */
+  /* ドラッグで左右の並びを入れ替える */
+  Array.prototype.forEach.call(box.querySelectorAll(".mmsub[data-k]"), function(bt){
+    var k = +bt.dataset.k;
+    if (k < 0) return;                       /* 「未設定」は動かさない */
+    bt.addEventListener("dragstart", function(e){
+      glDragK = k; bt.classList.add("drag");
+      try { e.dataTransfer.setData("text/plain", String(k)); } catch(_){}
+      e.dataTransfer.effectAllowed = "move";
+    });
+    bt.addEventListener("dragend", function(){ glDragK = null; bt.classList.remove("drag"); });
+    bt.addEventListener("dragover", function(e){
+      if (glDragK === null || glDragK === k) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      bt.classList.add("over");
+    });
+    bt.addEventListener("dragleave", function(){ bt.classList.remove("over"); });
+    bt.addEventListener("drop", function(e){
+      e.preventDefault(); bt.classList.remove("over");
+      if (glDragK === null || glDragK === k) return;
+      reorderGlTo(glDragK, k);
+      glDragK = null;
+    });
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".mmsub[data-k]"), function(bt){
     var k = +bt.dataset.k;
     var bar = document.createElement("i");
@@ -3725,7 +3753,7 @@ function bOverFill(){
   var i = $("bInfo");
   if (i) i.textContent = (can && S.bothOv)
     ? "選んでいるガイドラインに拓本を重ねています。ほかのガイドラインを押すと、そちらに合わせ直します"
-    : "ガイドラインを押すと選択　外の ■ をつかむと線が動きます";
+    : "ガイドラインを押すと選択　名前をつかむと並べ替え　外の ■ で線が動きます";
 }
 $("bOver").onclick = function(){
   if (!RUB.img || !mmPerPx()){ msg("先に拓本を取り込み、実測長を入れてください。", true); return; }
@@ -3782,19 +3810,71 @@ $("vFill").addEventListener("change", renderStage);
 $("vRub").addEventListener("change", renderStage);
 
 function addGuideline(){
-  var ng = 0, maxX = -1e9, bw = 30.3;
+  var ng = 0, minX = 1e9, maxX = -1e9, bw = 30.3;
   (S.centers||[]).forEach(function(c, i){
     ng = Math.max(ng, num(c.gl,0) + 1);
+    minX = Math.min(minX, num(c.x, 0));
     maxX = Math.max(maxX, num(c.x, 0));
     if (num(c.w, 0) > 0) bw = num(c.w, 0);        /* 行幅を持っている線を基準にする */
   });
+  /* 縦書きなので、足す行は左へ。左が紙からはみ出すときだけ右へ置く。 */
+  var MG = shMargin(), SW = num(S.sheet.w, 90);
+  var nx = (minX - bw - bw/2 >= MG.l) ? (minX - bw)
+         : ((maxX + bw + bw/2 <= SW - MG.r) ? (maxX + bw) : (minX - bw));
   S.centers.push(S.centers.length
-    ? { x: +(maxX + bw).toFixed(1), w: bw, fit: false, gl: ng }
+    ? { x: +nx.toFixed(1), w: bw, fit: false, gl: ng }
     : { x: +(num(S.sheet.w,90)/2).toFixed(1), w: 30.3, fit: false, gl: 0 });
   if (S.rub.centersPx) S.rub.centersPx.push(RUB.img ? Math.round((S.rub.bandL + S.rub.bandR) / 2) : null);
   setSub("group");
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
 };
+/* 1行ガイドラインを、シートの左右の並び順で返す（左から）。 */
+function glOrderByX(){
+  var blk = {};
+  (S.centers || []).forEach(function(c, ci){
+    var g = glOf(ci), hw = (cenW(ci) || 0) / 2, x = num(c.x, 0);
+    var b = blk[g] || (blk[g] = { g: g, l: 1e9, r: -1e9, cis: [] });
+    b.cis.push(ci);
+    b.l = Math.min(b.l, x - hw); b.r = Math.max(b.r, x + hw);
+  });
+  return Object.keys(blk).map(function(k){ return blk[k]; })
+    .sort(function(a, b){ return a.l - b.l; });
+}
+/* 1行ガイドライン g を、左から数えて toIdx 番目へ動かす。
+   いまの間隔をそのままに、左から置き直す。中の並びは変えない。 */
+function reorderGl(g, toIdx){
+  var ord = glOrderByX();
+  if (ord.length < 2) return false;
+  var from = -1;
+  ord.forEach(function(b, i){ if (b.g === g) from = i; });
+  if (from < 0) return false;
+  toIdx = Math.max(0, Math.min(ord.length - 1, toIdx));
+  if (from === toIdx) return false;
+  var start = ord[0].l, gaps = [];
+  for (var i = 1; i < ord.length; i++) gaps.push(ord[i].l - ord[i-1].r);
+  var moved = ord.splice(from, 1)[0];
+  ord.splice(toIdx, 0, moved);
+  var cur = start;
+  ord.forEach(function(b, i){
+    if (i) cur += gaps[i-1];
+    var d = cur - b.l;
+    if (d) b.cis.forEach(function(ci){
+      S.centers[ci].x = +(num(S.centers[ci].x, 0) + d).toFixed(1);
+    });
+    cur += (b.r - b.l);
+  });
+  renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
+  msg("1行ガイドライン " + (g+1) + " を、左から " + (toIdx+1) + " 番目にしました。");
+  return true;
+}
+/* 別のガイドラインの場所へ動かす（そのガイドラインのいまの並び順へ） */
+function reorderGlTo(g, targetGl){
+  if (g === targetGl) return false;
+  var ord = glOrderByX(), to = -1;
+  ord.forEach(function(b, i){ if (b.g === targetGl) to = i; });
+  if (to < 0) return false;
+  return reorderGl(g, to);
+}
 /* 1行ガイドラインを 1本まるごと消す。中の文字グループも一緒に消える。 */
 function delGuideline(g){
   if (!S.centers.length) return;
@@ -4415,17 +4495,26 @@ function tplAdd(t){
   var glBase  = 0;
   S.centers.forEach(function(c){ glBase = Math.max(glBase, num(c.gl, 0) + 1); });
 
-  /* 置く場所。いまの右はしの外に、行幅ぶんの間をあけて並べる。 */
-  var right = -1e9;
-  S.centers.forEach(function(c, i){ right = Math.max(right, num(c.x, 0) + cenW(i) / 2); });
-  var left = 1e9, wide = 0;
+  /* 置く場所。縦書きなので、いまの左はしの外に、行幅ぶんの間をあけて並べる。
+     左が紙からはみ出すときだけ、右はしの外に置く。 */
+  var right = -1e9, curLeft = 1e9;
+  S.centers.forEach(function(c, i){
+    right = Math.max(right, num(c.x, 0) + cenW(i) / 2);
+    curLeft = Math.min(curLeft, num(c.x, 0) - cenW(i) / 2);
+  });
+  var left = 1e9, tRight = -1e9, wide = 0;
   nc.forEach(function(c){
     var hw = num(c.w, 0) / 2;
     left = Math.min(left, num(c.x, 0) - hw);
+    tRight = Math.max(tRight, num(c.x, 0) + hw);
     wide = Math.max(wide, num(c.w, 0));
   });
   var gap = Math.max(4, wide * 0.35);
-  var shift = (right + gap) - left;
+  var MG0 = shMargin(), SW0 = num(S.sheet.w, 90);
+  var toLeft = (curLeft - gap) - tRight;          /* 左に置くときのずらし量 */
+  var toRight = (right + gap) - left;             /* 右に置くときのずらし量 */
+  var shift = (left + toLeft >= MG0.l) ? toLeft
+            : ((tRight + toRight <= SW0 - MG0.r) ? toRight : toLeft);
 
   nc.forEach(function(c, i){
     S.centers.push({
@@ -4467,9 +4556,14 @@ function tplAdd(t){
   migrate(); syncOriginY();
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
   setSub("group");
-  var over = "";
-  if (right + gap + (wide || 0) > num(S.sheet.w, 90) - shMargin().r)
-    over = "　※ シートの右はしからはみ出しています。位置を直してください。";
+  var over = "", nl = 1e9, nr = -1e9;
+  nc.forEach(function(c){
+    var hw = num(c.w, 0) / 2;
+    nl = Math.min(nl, num(c.x, 0) + shift - hw);
+    nr = Math.max(nr, num(c.x, 0) + shift + hw);
+  });
+  if (nl < MG0.l)          over = "　※ シートの左はしからはみ出しています。位置を直してください。";
+  else if (nr > SW0 - MG0.r) over = "　※ シートの右はしからはみ出しています。位置を直してください。";
   msg("「" + t.name + "」を、1行ガイドライン " + (glBase + 1) + " 以降として足しました。" +
       "ガイドライン " + nc.length + " 本、グループ " + ng.length + " 個。" + over);
 }
@@ -5339,6 +5433,8 @@ var bothRubX = null;
 /* つまみをつかんでいる間は、表示範囲と縮尺を止める。
    動かすたびに絵の大きさが変わると、つまみがポインタから逃げてしまう。 */
 var bothBusy = false, bothBox = null;
+/* 構成に出しているガイドラインの左右の幅（mm）。並べ替えの落とし先を決めるのに使う。 */
+var bothGlRanges = [];
 function renderBoth(){
   var st = $("bothstage"), wrap = $("bothwrap");
   var hintEl = wrap.querySelector(".bothhint"); if (hintEl) hintEl.remove();
@@ -5594,10 +5690,15 @@ function renderBoth(){
 
   /* ガイドラインを押して選ぶための面。文字の面より先に置くので、
      文字の上を押したときは、これまでどおり文字が選ばれる。 */
+  bothGlRanges = [];
   (S.centers || []).forEach(function(c, ci){
     var b = colBox[ci]; if (!b) return;
     var g = glOf(ci), x = bx(ci);
     var half = Math.max(cenW(ci), (b.x2 - b.x1)) / 2 + bothGap() / 2;
+    var rg = null;
+    bothGlRanges.forEach(function(r){ if (r.g === g) rg = r; });
+    if (!rg){ rg = { g: g, l: x - half, r: x + half }; bothGlRanges.push(rg); }
+    else { rg.l = Math.min(rg.l, x - half); rg.r = Math.max(rg.r, x + half); }
     glHit += '<rect data-gl="' + g + '" x="' + (x - half).toFixed(3) + '" y="' + vy.toFixed(3) +
       '" width="' + (half*2).toFixed(3) + '" height="' + vh.toFixed(3) + '" fill="transparent"/>';
     /* 選んでいるガイドラインは、うっすら色を敷いて分かるようにする */
@@ -5632,6 +5733,13 @@ function renderBoth(){
         '" y="' + c.y.toFixed(3) + '" width="' + (half*2).toFixed(3) + '" height="' +
         Math.max(3, c.h).toFixed(3) + '" fill="transparent"/>');
     });
+  });
+
+  /* ガイドラインの名前のところ。つかんで左右に動かすと、行の並びが入れ替わる。 */
+  if (showG && bothGlRanges.length > 1) bothGlRanges.forEach(function(r){
+    hits.push('<rect class="bmove" data-k="glmove:' + r.g + '" x="' + r.l.toFixed(3) +
+      '" y="' + vy.toFixed(3) + '" width="' + (r.r - r.l).toFixed(3) +
+      '" height="' + (KN * 1.4).toFixed(3) + '" fill="transparent"/>');
   });
 
   var pw = Math.max(120, Math.round(vw * MMPX * sc));
@@ -5696,9 +5804,11 @@ function bindBothDrag(svg){
       var toPt = bothMapper(svg);
       var rubX0 = bothRubX;            /* 拓本の左はし。つかんだときの値で通す */
       var mp0 = mmPerPx();
+      var lastX = null, ranges0 = bothGlRanges.slice();
       function move(e){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
+        if (k[0] === "glmove"){ lastX = q.x; return; }
         if (k[0] === "cen"){
           /* ガイドラインの位置。拓本の上での左右の位置を直す。 */
           var mp = mp0, ci = +k[1];
@@ -5732,6 +5842,21 @@ function bindBothDrag(svg){
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         bothBusy = false;              /* 大きさの止めを解く */
+        if (k[0] === "glmove"){
+          /* 離した場所のガイドラインと、並びを入れ替える */
+          var g = +k[1], to = null;
+          if (lastX !== null) ranges0.forEach(function(r){
+            if (lastX >= r.l && lastX <= r.r) to = r.g;
+          });
+          if (to !== null && to !== g){ reorderGlTo(g, to); return; }
+          /* 動かさずに離したときは、押しただけとみなしてその行を選ぶ */
+          if (bothSelectGl(g)){
+            setSub("group");
+            renderMenuCounts(); renderList(); renderProps(); bOverFill(); persist();
+          }
+          renderBoth();
+          return;
+        }
         renderCols(); renderList(); renderProps();
         if (typeof rubPanel === "function") rubPanel();
         renderStage(); persist();

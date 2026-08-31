@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v2.9</title>
+<title>彫刻原稿 v3.0</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -320,6 +320,12 @@
   #peStage svg{display:block;}
   #peStage .pehit{cursor:move;}
   #peStage .pehitc{cursor:pointer;}
+  #peMenu{position:fixed;z-index:70;width:206px;background:var(--surface);
+    border:1px solid var(--line);border-radius:9px;padding:10px 11px;
+    box-shadow:0 10px 30px rgba(0,0,0,.22);max-height:80vh;overflow-y:auto;}
+  #peMenu .hd{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;}
+  #peMenu button{width:100%;margin-bottom:4px;text-align:left;padding:6px 10px;}
+  #peMenu .sep{height:1px;background:var(--line);margin:7px 0;}
   #pathEd .pebox.max{width:100% !important;height:100% !important;}
   #pathEd .peside{flex:0 0 208px;border-left:1px solid var(--line);background:var(--surface);
     padding:12px;overflow-y:auto;}
@@ -566,6 +572,8 @@
 <div id="charMenu" hidden></div>
 <div id="glibPick" hidden></div>
 
+<div id="peMenu" hidden></div>
+
 <div id="pathEd" hidden>
   <div class="pebox">
     <div class="pehd">
@@ -588,6 +596,14 @@
           <button class="mini pt" data-t="delc">輪郭を消す</button>
           <button class="mini pt" data-t="cut">線を引いて切る</button>
         </div>
+        <p class="hint" style="margin:2px 0 8px;">ダイヤルで拡大・縮小、まん中のボタンで移動。
+          右クリックで点のメニューが出ます。</p>
+        <div class="g2" style="margin-bottom:5px;">
+          <button class="mini" id="peZI">＋ 拡大</button>
+          <button class="mini" id="peZO">− 縮小</button>
+        </div>
+        <button class="mini" id="peZR">表示を戻す</button>
+
         <h3 class="sec">操作</h3>
         <button class="mini" id="peDelN">選んだ点を消す</button>
         <button class="mini" id="peDelC">選んだ輪郭を消す</button>
@@ -1310,7 +1326,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v2.9";
+var APP_VER = "v3.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6136,6 +6152,7 @@ function openPathEditor(gi, ci){
          axNow: JSON.parse(JSON.stringify(ax || {})),
          wpct: ep ? num(ep.wpct, 0) : 0,
          sel: [], selC: [], undo: [], tool: "sel", drag: null,
+         view: { z: 1, dx: 0, dy: 0 },
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null };
   $("peW").value = PE.wpct;
   $("peRub").checked = !!PE.rub;
@@ -6144,7 +6161,7 @@ function openPathEditor(gi, ci){
   $("pathEd").hidden = false;
   peRender();
 }
-function closePathEditor(){ PE = null; $("pathEd").hidden = true; }
+function closePathEditor(){ peMenuClose(); PE = null; $("pathEd").hidden = true; }
 
 /* この字に効いている太さの合計（手で足した分＋可変軸の分） */
 function peTotalPct(){
@@ -6162,7 +6179,8 @@ function peTotalPct(){
   if (Math.abs(pct) > WPCT_MAX) PE.pctCapped = true;
   return Math.max(-WPCT_MAX, Math.min(WPCT_MAX, pct));
 }
-function peBox(){
+/* 字がぜんぶ入る枠。ここが拡大なしのときの見え方になる。 */
+function peBox0(){
   var U = PE.upem, m = U * 0.16;
   /* グリフの座標は 0〜upem。枠もそこに合わせる。 */
   var x1 = -m, y1 = PE.desc - m, x2 = U + m, y2 = PE.asc + m;
@@ -6171,6 +6189,22 @@ function peBox(){
     y1 = Math.min(y1, n.y); y2 = Math.max(y2, n.y);
   }); });
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+}
+var PE_ZMIN = 1, PE_ZMAX = 40;
+function peViewCfg(){
+  if (!PE.view) PE.view = { z: 1, dx: 0, dy: 0 };
+  PE.view.z = Math.max(PE_ZMIN, Math.min(PE_ZMAX, num(PE.view.z, 1)));
+  return PE.view;
+}
+/* いま見えている枠。マウスのダイヤルで拡大、中ボタンで移動する。 */
+function peBox(){
+  var b = peBox0(), v = peViewCfg();
+  var w = b.w / v.z, h = b.h / v.z;
+  return { x: b.x + b.w/2 + v.dx - w/2, y: b.y + b.h/2 + v.dy - h/2, w: w, h: h };
+}
+function peViewReset(){
+  PE.view = { z: 1, dx: 0, dy: 0 };
+  peRender();
 }
 function peRender(){
   if (!PE) return;
@@ -6249,7 +6283,9 @@ function peRender(){
     cutLine + '</svg>';
   peBind(st.querySelector("svg"));
 
-  $("peInfo").textContent = PE.contours.length + " 輪郭　" +
+  var zz = peViewCfg().z;
+  $("peInfo").textContent = (zz > 1.005 ? "拡大 " + zz.toFixed(1) + "倍　" : "") +
+    PE.contours.length + " 輪郭　" +
     PE.contours.reduce(function(a,c){ return a + c.length; }, 0) + " 点" +
     (PE.sel.length ? "　選択 " + PE.sel.length + " 点" : "") +
     (PE.selC.length ? "　輪郭 " + PE.selC.map(function(i){ return i+1; }).join(",") : "");
@@ -6325,13 +6361,176 @@ function peMapper(svg){
              y: -(vb[1] + (e.clientY - bb.top) * vb[3] / bb.height) };
   };
 }
+/* 台紙のどこを指しているか（0〜1）。拡大の中心に使う。 */
+function peFrac(svg, e){
+  var bb = svg.getBoundingClientRect();
+  return { fx: (e.clientX - bb.left) / (bb.width  || 1),
+           fy: (e.clientY - bb.top)  / (bb.height || 1) };
+}
+/* 指している所を動かさずに拡大・縮小する。 */
+function peZoomAt(svg, e, k){
+  var b0 = peBox0(), v = peViewCfg(), f = peFrac(svg, e);
+  var cur = peBox();
+  /* 指している字の位置（拡大の前後で動かさない） */
+  var px = cur.x + f.fx * cur.w;
+  var py = (cur.y + cur.h) - f.fy * cur.h;      /* 字の座標は上が＋ */
+  var z2 = Math.max(PE_ZMIN, Math.min(PE_ZMAX, v.z * k));
+  var w2 = b0.w / z2, h2 = b0.h / z2;
+  var x2 = px - f.fx * w2;
+  var y2 = py - (1 - f.fy) * h2;
+  v.z = z2;
+  v.dx = (x2 + w2/2) - (b0.x + b0.w/2);
+  v.dy = (y2 + h2/2) - (b0.y + b0.h/2);
+  peRender();
+}
+/* 台紙にいちどだけ付ける。中の SVG は描き直すたびに入れ替わるので、
+   外側の #peStage で受ける。 */
+function peStageBind(){
+  var st = $("peStage"); if (!st || st._peBound) return;
+  st._peBound = true;
+
+  /* マウスのまん中のダイヤル：手前で縮小、奥で拡大 */
+  st.addEventListener("wheel", function(e){
+    if (!PE || $("pathEd").hidden) return;
+    var svg = st.querySelector("svg"); if (!svg) return;
+    e.preventDefault();
+    peMenuClose();
+    var d = e.deltaY;
+    if (e.deltaMode === 1) d *= 16;          /* 行単位で来るブラウザ */
+    else if (e.deltaMode === 2) d *= 400;
+    peZoomAt(svg, e, Math.pow(1.0022, -d));
+  }, { passive: false });
+
+  /* まん中のボタンを押して動かす：見えている所をずらす */
+  st.addEventListener("pointerdown", function(e){
+    if (!PE || $("pathEd").hidden) return;
+    if (e.button !== 1) return;               /* 中ボタンだけ */
+    var svg = st.querySelector("svg"); if (!svg) return;
+    e.preventDefault(); e.stopPropagation();
+    peMenuClose();
+    var bb = svg.getBoundingClientRect();
+    var cur = peBox();
+    var mx = cur.w / (bb.width || 1), my = cur.h / (bb.height || 1);
+    var x0 = e.clientX, y0 = e.clientY;
+    var v = peViewCfg(), d0 = { x: v.dx, y: v.dy };
+    st.style.cursor = "grabbing";
+    function mv(q){
+      var vv = peViewCfg();
+      vv.dx = d0.x - (q.clientX - x0) * mx;
+      vv.dy = d0.y + (q.clientY - y0) * my;   /* 字の座標は上が＋ */
+      peRender();
+    }
+    function up(){
+      window.removeEventListener("pointermove", mv);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      st.style.cursor = "";
+    }
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }, true);
+
+  /* 中ボタンでページが自動スクロールに入らないように */
+  st.addEventListener("auxclick", function(e){ if (e.button === 1) e.preventDefault(); });
+
+  /* 右クリックのメニュー */
+  st.addEventListener("contextmenu", function(e){
+    if (!PE || $("pathEd").hidden) return;
+    e.preventDefault();
+    peMenuOpen(e);
+  });
+}
+
+/* --- 右クリックのメニュー（点を動かす・消す・足す） --- */
+var PEM = null;
+function peMenuClose(){
+  PEM = null;
+  var e = $("peMenu"); if (e){ e.hidden = true; e.innerHTML = ""; }
+}
+function peMenuOpen(ev){
+  var st = $("peStage"), svg = st && st.querySelector("svg");
+  var box = $("peMenu");
+  if (!svg || !box) return;
+  var t = ev.target.closest ? ev.target.closest(".pehit, .pehitc") : null;
+  var onNode = !!(t && t.classList.contains("pehit") && !t.dataset.h);
+  var onLine = !!(t && t.classList.contains("pehitc"));
+  var c  = t ? +t.dataset.c : -1;
+  var n  = onNode ? +t.dataset.n : -1;
+  var pt = peMapper(svg)(ev);
+  PEM = { c: c, n: n, pt: pt, onNode: onNode, onLine: onLine };
+
+  var h = '<div class="hd">' +
+    (onNode ? "点 " + (n + 1) + "（輪郭 " + (c + 1) + "）"
+            : onLine ? "輪郭 " + (c + 1) + " の線" : "字の編集") + '</div>';
+  /* 点のつまみと線は重なっていることがある。どちらを指しても
+     「動かす・消す・足す」がひととおり出るようにしておく。 */
+  if (onNode){
+    h += '<button class="mini" data-a="movenode">この点を動かす</button>';
+    h += '<button class="mini" data-a="delnode">この点を消す</button>';
+  }
+  if (onNode || onLine){
+    h += '<button class="mini" data-a="addhere">ここに点を足す</button>';
+    h += '<button class="mini" data-a="movec">この輪郭を動かす</button>';
+    h += '<button class="mini" data-a="delc">この輪郭を消す</button>';
+  }
+  h += '<div class="sep"></div>';
+  h += '<button class="mini' + (PE.tool === "sel" ? " primary" : "") + '" data-a="t-sel">点を動かす</button>';
+  h += '<button class="mini' + (PE.tool === "add" ? " primary" : "") + '" data-a="t-add">点を足す</button>';
+  h += '<button class="mini' + (PE.tool === "del" ? " primary" : "") + '" data-a="t-del">点を消す</button>';
+  h += '<div class="sep"></div>';
+  h += '<button class="mini" data-a="zin">拡大</button>';
+  h += '<button class="mini" data-a="zout">縮小</button>';
+  h += '<button class="mini" data-a="zreset">表示を戻す</button>';
+  h += '<p class="hint" style="margin:6px 0 0;">ダイヤルを回すと拡大・縮小、<br>まん中のボタンを押しながら動かすと移動します。</p>';
+
+  box.innerHTML = h;
+  box.hidden = false;
+  var w = box.offsetWidth, hh = box.offsetHeight;
+  box.style.left = Math.max(8, Math.min(window.innerWidth  - w  - 8, ev.clientX + 6)) + "px";
+  box.style.top  = Math.max(8, Math.min(window.innerHeight - hh - 8, ev.clientY - 10)) + "px";
+
+  Array.prototype.forEach.call(box.querySelectorAll("button"), function(b){
+    b.onclick = function(){ peMenuDo(b.dataset.a); };
+  });
+}
+function peMenuDo(a){
+  if (!PE || !PEM) return;
+  var m = PEM, svg = $("peStage").querySelector("svg");
+  peMenuClose();
+  if (a === "movenode"){
+    PE.tool = "sel"; PE.sel = [{ c:m.c, n:m.n }]; PE.selC = [m.c];
+    peRender(); msg("この点をつかんで動かせます。");
+  } else if (a === "delnode"){
+    peSnap(); peDeleteNode(m.c, m.n); peRender(); msg("点を消しました。");
+  } else if (a === "addhere"){
+    peSnap(); peAddNode(m.c, m.pt); peRender(); msg("点を足しました。");
+  } else if (a === "movec"){
+    PE.tool = "sel"; PE.selC = [m.c]; PE.sel = [];
+    peRender(); msg("この輪郭をつかんで動かせます。");
+  } else if (a === "delc"){
+    peSnap(); PE.contours.splice(m.c, 1); PE.sel = []; PE.selC = [];
+    peRender(); msg("輪郭を消しました。");
+  } else if (a === "t-sel" || a === "t-add" || a === "t-del"){
+    PE.tool = a.slice(2); PE.sel = []; PE.selC = []; peRender();
+  } else if (a === "zin" || a === "zout"){
+    var v = peViewCfg();
+    v.z = Math.max(PE_ZMIN, Math.min(PE_ZMAX, v.z * (a === "zin" ? 1.4 : 1/1.4)));
+    peRender();
+  } else if (a === "zreset"){
+    peViewReset(); msg("表示を元に戻しました。");
+  }
+}
+
 function peBind(svg){
   if (!svg) return;
   var toPt = peMapper(svg);
+  peStageBind();
 
   /* 節点・ハンドル */
   Array.prototype.forEach.call(svg.querySelectorAll(".pehit"), function(el){
     el.addEventListener("pointerdown", function(ev){
+      if (ev.button !== undefined && ev.button !== 0) return;   /* 中・右は別あつかい */
       if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "rect") return;  /* 台紙側で受ける */
       ev.preventDefault(); ev.stopPropagation();
       var c = +el.dataset.c, n = +el.dataset.n, hnd = el.dataset.h || null;
@@ -6379,6 +6578,7 @@ function peBind(svg){
   /* 輪郭の線 */
   Array.prototype.forEach.call(svg.querySelectorAll(".pehitc"), function(el){
     el.addEventListener("pointerdown", function(ev){
+      if (ev.button !== undefined && ev.button !== 0) return;
       if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "rect") return;
       ev.preventDefault(); ev.stopPropagation();
       var c = +el.dataset.c;
@@ -6417,6 +6617,8 @@ function peBind(svg){
 
   /* 何もない所：四角を描く／線で切る／拓本を動かす／選択を外す */
   svg.addEventListener("pointerdown", function(ev){
+    if (ev.button !== undefined && ev.button !== 0) return;
+    peMenuClose();
     if (PE.tool !== "rubmv" && PE.tool !== "cut" && PE.tool !== "rect" &&
         ev.target.closest(".pehit, .pehitc")) return;
     if (PE.tool === "rubmv"){
@@ -6653,6 +6855,17 @@ $("peBig").onclick = function(){
   $("peBig").textContent = box.classList.contains("max") ? "元の大きさ" : "最大化";
   setTimeout(peRender, 30);
 };
+$("peZI").onclick = function(){ if (PE) peMenuDo0("zin"); };
+$("peZO").onclick = function(){ if (PE) peMenuDo0("zout"); };
+$("peZR").onclick = function(){ if (PE) peViewReset(); };
+/* 横のボタンからも同じ動きをさせる（右クリックのメニューを開かずに） */
+function peMenuDo0(a){
+  if (!PE) return;
+  var v = peViewCfg();
+  if (a === "zin")  v.z = Math.min(PE_ZMAX, v.z * 1.4);
+  if (a === "zout") v.z = Math.max(PE_ZMIN, v.z / 1.4);
+  peRender();
+}
 $("peUnion").onclick = function(){
   if (!PE) return;
   var u = unionContours(PE.contours);
@@ -6686,7 +6899,10 @@ $("peOk").onclick = function(){
 };
 window.addEventListener("keydown", function(e){
   if (!PE || $("pathEd").hidden) return;
-  if (e.key === "Escape"){ e.preventDefault(); closePathEditor(); }
+  if (e.key === "Escape"){
+    e.preventDefault();
+    if (PEM) peMenuClose(); else closePathEditor();
+  }
   else if (e.key === "Delete" || e.key === "Backspace"){
     e.preventDefault();
     if (PE.sel.length) $("peDelN").click(); else if (PE.selC.length) $("peDelC").click();
@@ -6694,6 +6910,11 @@ window.addEventListener("keydown", function(e){
     e.preventDefault(); $("peUndo").click();
   }
 });
+document.addEventListener("pointerdown", function(e){
+  if (!PEM) return;
+  if (e.target.closest && e.target.closest("#peMenu")) return;
+  peMenuClose();
+}, true);
 window.addEventListener("resize", function(){ if (PE && !$("pathEd").hidden) peRender(); });
 if (window.ResizeObserver){
   var peRO = new ResizeObserver(function(){ if (PE && !$("pathEd").hidden) peRender(); });

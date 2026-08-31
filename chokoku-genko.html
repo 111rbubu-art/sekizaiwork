@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v2.7</title>
+<title>彫刻原稿 v2.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1310,7 +1310,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v2.7";
+var APP_VER = "v2.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1419,6 +1419,43 @@ function readOS2(F){
   } catch(e){}
 }
 
+function mbText(n){
+  n = +n || 0;
+  return n >= 1048576 ? (n/1048576).toFixed(1) + " MB"
+       : n >= 1024    ? (n/1024).toFixed(0) + " KB" : n + " バイト";
+}
+/* もらったバイト列がフォントとして通るか、ざっと確かめる。
+   途中で切れていたら、どこまで届いたかを言う。問題なければ空文字。 */
+function fontProblem(bytes){
+  if (!bytes || bytes.length < 1024)
+    return "中身がほとんどありません（" + mbText(bytes ? bytes.length : 0) + "）";
+  var dv;
+  try { dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); }
+  catch(e){ return "中身を読めませんでした"; }
+  var off = 0, tag = dv.getUint32(0);
+  if (tag === 0x74746366){                       /* 'ttcf'：フォントの詰め合わせ */
+    if (bytes.length < 16) return "詰め合わせの見出しが足りません";
+    off = dv.getUint32(12);
+    if (off + 12 > bytes.length) return "詰め合わせの中身が足りません";
+    tag = dv.getUint32(off);
+  }
+  if (tag !== 0x00010000 && tag !== 0x4F54544F && tag !== 0x74727565)
+    return "フォントの形をしていません。別のファイルか、途中で切れています。";
+  var n = dv.getUint16(off + 4);
+  if (!n || n > 512) return "中の表の数がおかしいです（" + n + "）";
+  if (off + 12 + n * 16 > bytes.length) return "表の一覧が途中で切れています";
+  var need = 0, i, q, to, tl;
+  for (i = 0; i < n; i++){
+    q = off + 12 + i * 16;
+    to = dv.getUint32(q + 8); tl = dv.getUint32(q + 12);
+    if (to + tl > need) need = to + tl;
+  }
+  if (need > bytes.length)
+    return "ファイルが途中で切れています（本来 " + mbText(need) + " ／ 届いたのは " +
+           mbText(bytes.length) + "）";
+  return "";
+}
+
 function addFont(bytes, name){
   var blob = hb.createBlob(bytes);
   var face = hb.createFace(blob, 0);
@@ -1431,7 +1468,10 @@ function addFont(bytes, name){
 }
 
 function useFont(bytes, name){
+  var bad = fontProblem(bytes);
+  if (bad) throw new Error(bad);
   var i = addFont(bytes, name);
+  if (!(FONTS[i].upem > 0)){ FONTS.pop(); throw new Error("フォントとして読めませんでした"); }
   curFont = i;
   S.groups.forEach(function(g){
     Object.keys(FONTS[i].axes).forEach(function(k){
@@ -1443,7 +1483,8 @@ function useFont(bytes, name){
   renderAll();
   renderMenuCounts();
   if (typeof fontPanel === "function") fontPanel();
-  msg("フォントを読み込みました。" + (Object.keys(FONTS[i].axes).length ? "" : " 可変軸はありません。"));
+  msg("フォントを読み込みました。" + name + "　" + mbText(bytes.length) +
+      (Object.keys(FONTS[i].axes).length ? "" : "　可変軸はありません。"));
 }
 
 function renderFontBar(){
@@ -1472,9 +1513,14 @@ $("btnFont").onclick = function(){
 $("fFont").onchange = async function(e){
   var fs = e.target.files;
   for (var i = 0; i < fs.length; i++){
-    var buf = await fs[i].arrayBuffer();
-    try { useFont(new Uint8Array(buf), fs[i].name); }
-    catch(err){ msg("フォントを読めませんでした: " + err.message, true); }
+    var f = fs[i];
+    try {
+      msg("読み込んでいます…（" + f.name + "　" + mbText(f.size) + "）", false, true);
+      var buf = await f.arrayBuffer();
+      useFont(new Uint8Array(buf), f.name);
+    } catch(err){
+      msg("「" + f.name + "」を読めませんでした：" + (err && err.message ? err.message : err), true, true);
+    }
   }
   e.target.value = "";
 };
@@ -3644,9 +3690,15 @@ async function restore(){
   var c = await loadFontCache();
   if (c && c.length){
     try {
-      c.forEach(function(x){ addFont(x.bytes, x.name); });
-      curFont = 0; renderFontBar(); renderAll();
-      msg("前回のフォント " + c.length + " 件を復元しました。");
+      var okc = c.filter(function(x){ return !fontProblem(x.bytes); });
+      okc.forEach(function(x){ addFont(x.bytes, x.name); });
+      if (okc.length){
+        curFont = 0; renderFontBar(); renderAll();
+        msg("前回のフォント " + okc.length + " 件を戻しました。");
+      }
+      if (okc.length < c.length)
+        msg("前に読んだフォントのうち " + (c.length - okc.length) +
+            " 件がこわれていたので使いません。読み直してください。", true, true);
     } catch(e){}
   }
   /* 前回の拓本は、案件を受け取るより先に用意しておく。
@@ -6932,7 +6984,28 @@ function spSleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
      A: /items/{id}/content に鍵を付けて取りに行く（＝転送先へ飛ばされる）
      B: 先に転送先のURLだけもらい、鍵なしでそこへ取りに行く
    ときどき A だけ／B だけ通ることがあるので、両方回す。 */
-async function spGetBlob(itemId, label){
+/* 本文を受け取る。大きさが分かっていれば、途中経過を出しながら読む。 */
+async function spReadBody(res, label, expect){
+  var len = expect || +(res.headers.get("content-length") || 0);
+  if (!res.body || !res.body.getReader) return await res.blob();
+  var rd = res.body.getReader(), parts = [], got = 0, shown = 0;
+  for (;;){
+    var q = await rd.read();
+    if (q.done) break;
+    parts.push(q.value); got += q.value.length;
+    if (got - shown > 524288){                  /* 0.5MB ごとに知らせる */
+      shown = got;
+      msg((label ? label + "：" : "") + "読み込んでいます… " + mbText(got) +
+          (len ? " / " + mbText(len) : ""), false, true);
+    }
+  }
+  /* 種類（image/png など）は残す。拓本はここから data URL を作るので、
+     落とすと画像として扱えなくなる。 */
+  return new Blob(parts, { type: res.headers.get("content-type") || "" });
+}
+/* expect を渡すと、その大きさぶん届いたかを確かめる。
+   足りなければ「途中で切れた」とみなして、取り直す。 */
+async function spGetBlob(itemId, label, expect){
   var TRIES = 5, last = null;
   for (var i = 0; i < TRIES; i++){
     var useDirect = (i % 2 === 1);          /* 2回目・4回目は B の方法 */
@@ -6951,9 +7024,11 @@ async function spGetBlob(itemId, label){
           { headers: { Authorization: "Bearer " + tok }, cache: "no-store" });
       }
       if (res.ok){
-        var b = await res.blob();           /* ここでも途中で切れることがある */
-        if (b && b.size > 0) return b;
-        throw new Error("中身が空でした");
+        var b = await spReadBody(res, label, expect);   /* ここでも途中で切れることがある */
+        if (!b || b.size === 0) throw new Error("中身が空でした");
+        if (expect && b.size !== expect)
+          throw new Error("途中で切れました（" + mbText(b.size) + " / " + mbText(expect) + "）");
+        return b;
       }
       if (res.status === 404) throw Object.assign(new Error("404 ファイルが見つかりません"), { stop: true });
       if (res.status === 401 || res.status === 403)
@@ -7286,12 +7361,13 @@ async function fontDirUse(item){
     if (FONTS.some(function(F){ return F.name === item.name; })){
       msg("「" + item.name + "」はもう読み込んでいます。"); return;
     }
-    msg("フォントを読み込んでいます…（" + item.name + "）", false, true);
-    var b = await spGetBlob(item.id, item.name);
+    msg("フォントを読み込んでいます…（" + item.name +
+        (item.size ? "　" + mbText(item.size) : "") + "）", false, true);
+    var b = await spGetBlob(item.id, item.name, num(item.size, 0));
     var buf = await b.arrayBuffer();
     useFont(new Uint8Array(buf), item.name);
     fontPanel();
-  } catch(e){ msg("フォントを読めませんでした：" + spErrText(e), true); }
+  } catch(e){ msg("「" + item.name + "」を読めませんでした：" + spErrText(e), true, true); }
 }
 
 /* パソコンのフォントを共有フォルダーに入れる */
@@ -7624,9 +7700,12 @@ function fontPanel(){
     else {
       h += '<div class="glist2">' + FDIR.items.map(function(it){
         var got = FONTS.some(function(F){ return F.name === it.name; });
-        return '<div class="grow fdIt" data-id="' + esc(it.id) + '" data-n="' + esc(it.name) + '">' +
+        return '<div class="grow fdIt" data-id="' + esc(it.id) + '" data-n="' + esc(it.name) +
+          '" data-s="' + (+it.size || 0) + '">' +
           '<span class="gr">' + (got ? "●" : "・") + '</span>' +
-          '<span class="d">' + esc(it.name) + '</span></div>';
+          '<span class="d">' + esc(it.name) + '</span>' +
+          '<span class="n2" style="margin-left:auto;white-space:nowrap;">' +
+          (it.size ? mbText(it.size) : "") + '</span></div>';
       }).join("") + '</div>';
       h += '<p class="hint" style="margin-top:4px;">クリックで読み込みます。● は読み込みずみ。</p>';
     }
@@ -7657,7 +7736,9 @@ function fontPanel(){
   on("glPush", "click", glyphLibPush);
   on("glPull", "click", glyphLibApply);
   Array.prototype.forEach.call(box.querySelectorAll(".fdIt"), function(e){
-    e.onclick = function(){ fontDirUse({ id: e.dataset.id, name: e.dataset.n }); };
+    e.onclick = function(){
+      fontDirUse({ id: e.dataset.id, name: e.dataset.n, size: +e.dataset.s || 0 });
+    };
   });
 }
 

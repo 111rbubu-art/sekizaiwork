@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v4.6</title>
+<title>彫刻原稿 v4.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -301,6 +301,7 @@
   .res .h{display:flex;justify-content:space-between;align-items:center;gap:6px;
     font-weight:700;color:var(--ink);font-size:12px;}
   .res .m{color:var(--muted);font-size:10.5px;margin-top:3px;font-variant-numeric:tabular-nums;}
+  .res .h .gdelL{flex:none;padding:1px 7px;font-size:10.5px;color:var(--muted);}
   .res .row{display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;}
   .res select{padding:3px 6px;font-size:11px;}
   .diag{background:var(--sunk);border:1px solid var(--line);border-radius:7px;
@@ -476,13 +477,6 @@
       <div class="pan" id="panGroup">
         <!-- 行の構成。左のメニューで選んでいるガイドラインだけを出す。 -->
         <div id="clist"></div>
-        <div class="g2" style="margin-top:8px;margin-bottom:4px;">
-          <button class="mini" id="btnAddC">＋ ガイドライン追加</button>
-          <button class="mini" id="btnDelC">− 削除</button>
-        </div>
-        <div id="gpick">
-          <div id="glist"></div>
-        </div>
         <div id="props"></div>
       </div>
 
@@ -1358,7 +1352,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v4.6";
+var APP_VER = "v4.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2513,7 +2507,9 @@ function renderCols(){
     h += '<div class="res" style="border-left:3px solid ' + col + ';">' +
       '<div class="h"><span>1行ガイドライン ' + (g+1) + '</span>' +
       '<span style="font-weight:400;color:var(--muted);">' + ng + ' グループ' +
-      (nLink ? '（ほかに ' + nLink + ' 紐づけ）' : '') + '</span></div>';
+      (nLink ? '（ほかに ' + nLink + ' 紐づけ）' : '') + '</span>' +
+      '<button class="mini gdelL" data-g="' + g + '" title="この1行ガイドラインを消す">− 削除</button>' +
+      '</div>';
     idxs.forEach(function(ci){
       var c = S.centers[ci];
       var mine = vis[ci];
@@ -2563,6 +2559,9 @@ function renderCols(){
       if (view !== "sheet") rubRender();
     });
   });
+  Array.prototype.forEach.call(box.querySelectorAll(".gdelL"), function(bt){
+    bt.onclick = function(e){ e.stopPropagation(); delGuideline(+bt.dataset.g); };
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".caddL"), function(bt){
     bt.onclick = function(e){ e.stopPropagation(); addCenterLine(+bt.dataset.g); };
   });
@@ -2579,8 +2578,14 @@ function renderCols(){
   Array.prototype.forEach.call(box.querySelectorAll(".gdelG"), function(bt){
     bt.onclick = function(e){
       e.stopPropagation();
-      removeGroup(+bt.dataset.gi);
+      /* 押し間違いで消えないよう、いちど確かめる */
+      var gi = +bt.dataset.gi, gr = S.groups[gi];
+      if (!gr) return;
+      var t = String(gr.text || "").trim();
+      if (!confirm("文字グループ「" + (t || "（未入力）") + "」を消します。\nよろしいですか。")) return;
+      removeGroup(gi);
       renderAll(); rubPanel(); if (view !== "sheet") rubRender();
+      msg("文字グループを消しました。");
     };
   });
 
@@ -2654,6 +2659,16 @@ function addCenterLine(g){
   msg("センターラインを足しました。");
 }
 
+/* 古いテンプレート・案件は、センターラインに gl（1行ガイドライン番号）を
+   持っていないことがある。そのままだと glOf が 0 を返し、
+   ぜんぶが「1行ガイドライン 1」にまとまってしまう。
+   番号が無いものには、その並び順の番号を入れて分けておく。 */
+function fillGl(list){
+  (list || []).forEach(function(c, i){
+    if (c && !isFinite(num(c.gl, NaN))) c.gl = i;
+  });
+  return list || [];
+}
 function glKeyOf(g){
   var ci = num(g.col, 0);
   return (ci >= 0 && ci < (S.centers||[]).length) ? glOf(ci) : -1;
@@ -2721,8 +2736,11 @@ function copyGuideline(k){
   msg("1行ガイドライン " + (k+1) + " を複製しました。文字を入れ替え、［左右の位置］で並びを整えてください。");
 }
 
+/* 文字グループの一覧は、行の構成（#clist）の中に出るようになった。
+   ここは呼び出しの受け皿として残してある。 */
 function renderList(){
   var box = $("glist");
+  if (!box) return;
   box.innerHTML = "";
   var rows = layout();
   if (!S.groups.length){
@@ -2816,7 +2834,7 @@ function openAddMenu(anchor){
   Array.prototype.forEach.call(m.querySelectorAll("button"), function(bt){
     bt.onclick = function(){
       closeAddMenu();
-      if (bt.dataset.a === "new"){ $("btnAddC").onclick(); }
+      if (bt.dataset.a === "new"){ addGuideline(); }
       else { copyGuideline(+bt.dataset.k); }
     };
   });
@@ -2914,12 +2932,6 @@ function renderProps(){
     '</div>';
   h += '<button class="mini" id="pSquare" style="width:100%;margin-bottom:10px;">縦を横と同じに</button>';
 
-  var tight = r.pitch > 0 && r.pitch < r.h * 0.98;
-  h += '<p class="hint">いま <b>横 ' + r.w.toFixed(1) + ' mm × 縦 ' + r.h.toFixed(1) + ' mm</b>　' +
-    '字送り <b' + (tight ? ' style="color:var(--shu)"' : '') + '>' +
-    (r.pitch > 0 ? r.pitch.toFixed(1) + ' mm' : '—') + '</b>（範囲と字数から自動）' +
-    (tight ? '<br><span style="color:var(--shu);font-weight:700;">字送りが文字の縦より小さく、重なります。縦を小さくするか［縦を自動に戻す］を押してください。</span>' : '') +
-    '</p>';
   if (srcGroup(g)){
     h += '<p class="hint" style="margin-top:0;">コピーした文字グループです。文字の入力範囲（上端・下端）は ' +
       esc(gName(S.groups.indexOf(srcGroup(g)), 10)) + ' と一緒に動きます。</p>' +
@@ -2947,7 +2959,7 @@ function renderProps(){
   var FA = FR(g.fontIdx);
   var axKeys = FA ? Object.keys(FA.axes) : [];
   if (axKeys.length){
-    h += '<h3 class="sec">可変軸</h3>';
+    h += '<h3 class="sec">太さ</h3>';
     axKeys.forEach(function(k){
       var a = FA.axes[k], v = g.axes[k] !== undefined ? g.axes[k] : a["default"];
       h += '<label class="f"><span>' + k + '　<b id="av_' + k + '">' + v + '</b></span>' +
@@ -3769,7 +3781,7 @@ $("vBlk").addEventListener("change", renderStage);
 $("vFill").addEventListener("change", renderStage);
 $("vRub").addEventListener("change", renderStage);
 
-$("btnAddC").onclick = function(){
+function addGuideline(){
   var ng = 0, maxX = -1e9, bw = 30.3;
   (S.centers||[]).forEach(function(c, i){
     ng = Math.max(ng, num(c.gl,0) + 1);
@@ -3783,13 +3795,23 @@ $("btnAddC").onclick = function(){
   setSub("group");
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
 };
-$("btnDelC").onclick = function(){
+/* 1行ガイドラインを 1本まるごと消す。中の文字グループも一緒に消える。 */
+function delGuideline(g){
   if (!S.centers.length) return;
-  var g = num(S.centers[S.centers.length-1].gl, 0);
-  for (var i = S.centers.length - 1; i >= 0; i--)
-    if (num(S.centers[i].gl,0) === g) removeCenter(i);
+  var cis = [], gis = [];
+  S.centers.forEach(function(c, i){ if (num(c.gl, 0) === g) cis.push(i); });
+  if (!cis.length) return;
+  S.groups.forEach(function(gr, gi){
+    if (cis.indexOf(num(gr.col, 0)) >= 0) gis.push(gi);
+  });
+  if (!confirm("1行ガイドライン " + (g+1) + " を消します。" +
+      (gis.length ? "中の文字グループ " + gis.length + " 個も一緒に消えます。" : "") +
+      "\nよろしいですか。")) return;
+  gis.sort(function(a,b){ return b - a; }).forEach(function(gi){ removeGroup(gi); });
+  cis.sort(function(a,b){ return b - a; }).forEach(function(i){ removeCenter(i); });
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-};
+  msg("1行ガイドライン " + (g+1) + " を消しました。");
+}
 
 
 /* ============================================================
@@ -3849,6 +3871,7 @@ function migrate(){
   delete S.sheet.m;
   if (!isFinite(S.sheet.ox)) S.sheet.ox = 0;
   if (!isFinite(S.sheet.oy)) S.sheet.oy = 0;
+  fillGl(S.centers);
   if (!S.demoDx || typeof S.demoDx !== "object") S.demoDx = {};
   if (!isFinite(S.demoRx)) S.demoRx = 0;
   if (!isFinite(S.bothGap) || S.bothGap < 0) S.bothGap = 6;
@@ -4366,7 +4389,7 @@ function tplApply(t){
   if (!t || !t.data) return;
   var d = JSON.parse(JSON.stringify(t.data));
   if (d.sheet) S.sheet = d.sheet;
-  S.centers = d.centers || [];
+  S.centers = fillGl(d.centers || []);
   S.groups  = (d.groups || []).map(function(g){ return Object.assign(mkGroup("1","",60,130,1.15), g); });
   S.demoDx = {}; S.demoRx = 0;
   sel = 0;
@@ -4385,7 +4408,7 @@ function tplAdd(t){
   if (!(S.centers || []).length){ tplApply(t); return; }   /* まだ何も無ければ、そのまま入れる */
 
   var d = JSON.parse(JSON.stringify(t.data));
-  var nc = d.centers || [], ng = d.groups || [];
+  var nc = fillGl(d.centers || []), ng = d.groups || [];
   if (!nc.length){ msg("「" + t.name + "」にはガイドラインが入っていません。", true); return; }
 
   var colBase = S.centers.length;

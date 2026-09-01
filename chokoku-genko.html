@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.6</title>
+<title>彫刻原稿 v6.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -474,6 +474,11 @@
         <h3 class="sec">拓本の置き場所</h3>
         <select id="frRub"></select>
         <p class="hint" style="margin-top:4px;">枠を選ぶとその中に、「枠の外」を選ぶと今までどおり右へ置きます。</p>
+
+        <h3 class="sec">枠テンプレート</h3>
+        <div id="frtlist"></div>
+        <label class="f"><span>名前</span><input type="text" id="frtName" placeholder="例：8寸角 石塔＋墓誌"></label>
+        <button class="mini" id="btnFrtSave" style="width:100%;">いまの枠を保存</button>
       </div>
 
       <div class="pan" id="panTpl">
@@ -1386,7 +1391,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.6";
+var APP_VER = "v6.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4729,7 +4734,7 @@ function setSub(t){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
   if (t === "tpl"){ renderTpl(); tplLoadSP(); }
-  if (t === "frame") renderFrames();
+  if (t === "frame"){ renderFrames(); frtLoadSP(); }
   if (t === "font") fontPanel();
   if (t === "info") noteFill();
   if (t === "sp") spPanel();
@@ -4835,6 +4840,96 @@ async function tplStore(list, what){
     msg(what + "このパソコンに保存しました。（本体アプリから開くと共有フォルダーに入ります）");
   }
 }
+/* --- 枠テンプレート ---
+   枠の組（石塔・墓誌…の面の寸法）だけを、名前を付けて取っておく。
+   寺や墓の形ごとに同じ寸法を使うので、文字の中身とは別に持てるようにする。
+   置き場所はテンプレートと同じ共有フォルダー。ファイルだけ別。 */
+var FRT = { items: null, loading: false, err: "" };
+function frtLocal(){
+  try { var a = JSON.parse(localStorage.getItem("chokoku.frametpl") || "[]");
+        return Array.isArray(a) ? a : []; } catch(e){ return []; }
+}
+function frtLocalSave(list){
+  try { localStorage.setItem("chokoku.frametpl", JSON.stringify(list)); } catch(e){}
+}
+function frtList(){ return FRT.items ? FRT.items : frtLocal(); }
+async function frtLoadSP(force){
+  if (!fontDirReady()) return;
+  if (FRT.items && !force) return;
+  FRT.loading = true; FRT.err = ""; renderFrames();
+  try {
+    await fontDirEnsure();
+    if (!FDIR.frtId){
+      FRT.items = [];
+    } else {
+      var b = await spGetBlob(FDIR.frtId, FRT_FILE, FDIR.frtSize);
+      var o = JSON.parse(await b.text());
+      FRT.items = Array.isArray(o) ? o : ((o && Array.isArray(o.items)) ? o.items : []);
+    }
+    var loc = frtLocal();
+    if (loc.length){
+      var names = FRT.items.map(function(x){ return x.name; });
+      var add = loc.filter(function(x){ return names.indexOf(x.name) < 0; });
+      if (add.length){ FRT.items = FRT.items.concat(add); await frtPush(); }
+      frtLocalSave([]);
+    }
+  } catch(e){ FRT.err = spErrText(e); }
+  FRT.loading = false; renderFrames();
+}
+async function frtPush(){
+  var id = await fontDirId(true);
+  var body = new Blob([JSON.stringify({ v:1, items: FRT.items || [] }, null, 2)],
+                      { type: "application/json" });
+  var it = await spPutIn(id, FRT_FILE, body, "application/json");
+  FDIR.frtId = it.id;
+}
+async function frtStore(list, what){
+  if (fontDirReady()){
+    FRT.items = list; renderFrames();
+    try {
+      msg("共有フォルダーに保存しています…", false, true);
+      await frtPush();
+      msg(what + "共有フォルダーに保存しました。");
+    } catch(e){
+      msg("共有フォルダーに保存できませんでした：" + spErrText(e), true, true);
+    }
+  } else {
+    frtLocalSave(list); renderFrames();
+    msg(what + "このパソコンに保存しました。（本体アプリから開くと共有フォルダーに入ります）");
+  }
+}
+/* いまの枠を、名前を付けて取っておく */
+function frtSaveNow(nm){
+  nm = String(nm || "").trim();
+  if (!nm){ msg("枠テンプレートの名前を入れてください。", true); return; }
+  if (!(S.frames || []).length){ msg("枠がありません。先に枠を作ってください。", true); return; }
+  var list = frtList().slice();
+  var at = list.map(function(x){ return x.name; }).indexOf(nm);
+  var rec = { name: nm, savedAt: new Date().toISOString(),
+              frames: JSON.parse(JSON.stringify(S.frames)) };
+  if (at >= 0) list[at] = rec; else list.push(rec);
+  frtStore(list, "枠「" + nm + "」を" + (at >= 0 ? "上書きして、" : ""));
+}
+/* 取っておいた枠を出す。いまの枠と入れかえるか、うしろに足すかを選べる。 */
+function frtUse(i, add){
+  var t = frtList()[i]; if (!t) return;
+  var fr = JSON.parse(JSON.stringify(t.frames || []));
+  if (!fr.length){ msg("この枠テンプレートは空です。", true); return; }
+  if (!add){
+    if ((S.frames || []).length &&
+        !confirm("いまの枠を消して「" + t.name + "」に入れかえます。よろしいですか。\n" +
+                 "（足したいだけなら〔追加〕を押してください）")) return;
+    S.frames = fr; S.glFrame = {}; S.rubFrame = null;
+  } else {
+    if (!Array.isArray(S.frames)) S.frames = [];
+    fr.forEach(function(f){ S.frames.push(f); });
+  }
+  migrate();
+  renderFrames(); renderMenuCounts(); renderMenuGl(); renderCols(); renderBoth(); persist();
+  msg("枠「" + t.name + "」を" + (add ? "足しました。" : "呼び出しました。") +
+      "行を入れる枠を選び直してください。");
+}
+
 /* ===== 枠（石の彫刻できる面）=====================================
    校正の画面にだけ出す。1行ガイドラインごとに「どの枠に入れるか」を選ぶと、
    その枠の中に並ぶ。拓本は枠の中にも、これまでどおり枠の外にも置ける。 */
@@ -4915,6 +5010,7 @@ function renderFrames(){
       box.innerHTML = h;
     }
   }
+  renderFrt();
   var rs = $("frRub");
   if (rs){
     var tmp = document.createElement("div");
@@ -4924,6 +5020,46 @@ function renderFrames(){
   }
   bindFrames();
 }
+/* 取っておいた枠の一覧 */
+function renderFrt(){
+  var box = $("frtlist"); if (!box) return;
+  var list = frtList();
+  var head = '<p class="hint" style="margin-top:0;">置き場所：<b>' +
+    (fontDirReady() ? "共有フォルダー" : "このパソコン") + '</b>　' +
+    '枠の寸法だけを取っておきます（文字は入りません）。</p>' +
+    (FRT.err ? '<div class="m" style="color:var(--shu);">' + esc(FRT.err) + '</div>' : '') +
+    (FRT.loading ? '<p class="hint" style="margin:0;">読み込んでいます…</p>' : '');
+  if (!list.length){
+    box.innerHTML = head + '<p class="hint">まだありません。よく使う面の寸法を作ったら、下から名前を付けて保存してください。</p>';
+    return;
+  }
+  box.innerHTML = head + list.map(function(t, i){
+    var fr = t.frames || [];
+    return '<div class="tplitem"><span class="nm">' + esc(t.name) +
+      '<span class="dt">' + fr.map(function(f){
+        return esc(f.name) + " " + (+num(f.w,0).toFixed(0)) + "×" + (+num(f.h,0).toFixed(0));
+      }).join("　") + '</span></span>' +
+      '<button class="mini frtAdd" data-i="' + i + '">追加</button>' +
+      '<button class="mini frtUse" data-i="' + i + '">置換</button>' +
+      '<button class="mini frtDel" data-i="' + i + '">×</button></div>';
+  }).join("");
+  Array.prototype.forEach.call(box.querySelectorAll(".frtAdd"), function(b){
+    b.onclick = function(){ frtUse(+b.dataset.i, true); };
+  });
+  Array.prototype.forEach.call(box.querySelectorAll(".frtUse"), function(b){
+    b.onclick = function(){ frtUse(+b.dataset.i, false); };
+  });
+  Array.prototype.forEach.call(box.querySelectorAll(".frtDel"), function(b){
+    b.onclick = function(){
+      var list2 = frtList().slice(), t = list2[+b.dataset.i];
+      if (!t) return;
+      if (!confirm("枠テンプレート「" + t.name + "」を消します。よろしいですか。")) return;
+      list2.splice(+b.dataset.i, 1);
+      frtStore(list2, "「" + t.name + "」を消して、");
+    };
+  });
+}
+
 function bindFrames(){
   function on(sel, ev, fn){
     Array.prototype.forEach.call(document.querySelectorAll("#panFrame " + sel), function(e){
@@ -5000,6 +5136,14 @@ function bindFrames(){
       msg(v >= 0 ? ("拓本を枠「" + frameName(v) + "」の中に置きました。")
                  : "拓本を枠の外に戻しました。");
     });
+  }
+  var sv = $("btnFrtSave");
+  if (sv && !sv._bound){
+    sv._bound = true;
+    sv.onclick = function(){
+      frtSaveNow(($("frtName") && $("frtName").value) || "");
+      if ($("frtName")) $("frtName").value = "";
+    };
   }
   var ad = $("btnFrameAdd");
   if (ad && !ad._bound){
@@ -9675,8 +9819,9 @@ function spBrowseBind(box){
 var FONT_DIR   = "/業務アプリ/アプリ使用フォント";
 var GLYPH_FILE = "作字ライブラリ.json";
 var TPL_FILE  = "テンプレート.json";
+var FRT_FILE  = "枠テンプレート.json";
 var FDIR = { id: "", items: null, loading: false, err: "", lib: null,
-             libId: "", libSize: 0, tplId: "", tplSize: 0 };
+             libId: "", libSize: 0, tplId: "", tplSize: 0, frtId: "", frtSize: 0 };
 
 /* 同じ名前かどうか。濁点の書き方（NFC / NFD）と大文字小文字の違いを吸収する。 */
 function sameName(a, b){
@@ -9730,6 +9875,8 @@ async function fontDirLoad(){
     FDIR.libId = lf ? lf.id : ""; FDIR.libSize = lf ? num(lf.size, 0) : 0;
     var tf = all.filter(function(x){ return sameName(x.name, TPL_FILE); })[0];
     FDIR.tplId = tf ? tf.id : ""; FDIR.tplSize = tf ? num(tf.size, 0) : 0;
+    var ff = all.filter(function(x){ return sameName(x.name, FRT_FILE); })[0];
+    FDIR.frtId = ff ? ff.id : ""; FDIR.frtSize = ff ? num(ff.size, 0) : 0;
     /* 作字は、一覧といっしょに読んでおく。押さないと出てこないのは分かりにくい。 */
     try { await glyphLibLoad(); } catch(e2){ FDIR.err = spErrText(e2); }
   } catch(e){

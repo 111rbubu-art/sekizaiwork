@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v5.4</title>
+<title>彫刻原稿 v5.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -637,6 +637,8 @@
         <h3 class="sec">操作</h3>
         <button class="mini" id="peDelN">選んだ点を消す</button>
         <button class="mini" id="peDelC">選んだ輪郭を消す</button>
+        <button class="mini" id="peRedC">選んだ輪郭を 赤／黒 に</button>
+        <p class="hint" id="peRedInfo" style="margin:2px 0 8px;"></p>
         <button class="mini" id="peUnion">重なりを1つにする</button>
         <h3 class="sec">画線の太さ</h3>
         <label class="f" style="margin-bottom:4px;"><span>この字だけ ±%</span>
@@ -1356,7 +1358,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v5.4";
+var APP_VER = "v5.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1746,6 +1748,20 @@ function pathD(contours, k){
     return d + "Z";
   }).join("");
 }
+/* 作字した字を「刃で切る（黒）」と「ペンで書く（赤）」に分ける。
+   細かいところは切るとつぶれるので、そこだけペンに回せるようにしてある。
+   ゴムシートと出力でだけ使う。構成と確認資料は全部まとめて黒で出す。 */
+function charPathSplit(g, i, gid, ax, fi){
+  var p = editedPath(g, i);
+  if (!p || !Array.isArray(p.red) || !p.red.length)
+    return { blk: charPathD(g, i, gid, ax, fi), red: "" };
+  var cs = weightedPathContours(g, i, gid, ax, fi);
+  var isRed = {};
+  p.red.forEach(function(k){ isRed[k] = 1; });
+  var bl = [], re = [];
+  (cs || []).forEach(function(c, k){ (isRed[k] ? re : bl).push(c); });
+  return { blk: pathD(bl), red: pathD(re) };
+}
 function charPathD(g, i, gid, ax, fi){
   var p = editedPath(g, i);
   if (!p) return glyphPath(gid, ax, fi);
@@ -2051,7 +2067,7 @@ function setPlotOff(x, y){
 function buildSVG(){
   var W = num(S.sheet.w, 90), H = num(S.sheet.h, 700);
   var rows = layout();
-  var black = [], red = [], missing = [], boxes = [], hl = [], cells = [];
+  var black = [], red = [], redFill = [], missing = [], boxes = [], hl = [], cells = [];
   var isPrint = printMode !== null;
 
   /* 文字の位置ずらし。印刷でも画面でも、中身をまとめて動かす。 */
@@ -2074,8 +2090,9 @@ function buildSVG(){
         var gid = shapeOne(ch, ax, fi);
         var ep = editedPath(g, i);
         if (!ep && (gid === null || gid === 0)){ missing.push({ gi: r.gi, i: i, ch: ch }); return; }
-        var d = charPathD(g, i, gid, ax, fi);
-        if (!d) return;
+        var sp = charPathSplit(g, i, gid, ax, fi);
+        var d = sp.blk;
+        if (!d && !sp.red) return;
         var AD = adjOf(g, i);
         var hh = AD.hmm > 0 ? AD.hmm : r.h * AD.sc;
         var ww = AD.wmm > 0 ? AD.wmm : r.w * AD.scw;
@@ -2092,9 +2109,15 @@ function buildSVG(){
         /* 出力のときは、縮尺で縮む分だけ線幅を太くしておく。
            これが無いと線が細くなりすぎて、プロッターに何も届かない。 */
         var pw = isPrint ? penAttr(Math.sqrt(Math.abs(sx * s))) : "";
-        black.push('<path' + pw + ' d="' + d + '" transform="translate(' + tx.toFixed(4) + ',' +
-          ty.toFixed(4) + ') scale(' + sx.toFixed(6) + ',' + (-s).toFixed(6) +
-          ') translate(' + (-F.upem/2) + ',0)"/>');
+        var tf = ' transform="translate(' + tx.toFixed(4) + ',' + ty.toFixed(4) +
+          ') scale(' + sx.toFixed(6) + ',' + (-s).toFixed(6) +
+          ') translate(' + (-F.upem/2) + ',0)"';
+        if (d) black.push('<path' + pw + ' d="' + d + '"' + tf + '/>');
+        /* ペンで書くことにした輪郭は、赤の側へ回す */
+        if (sp.red){
+          if (isPrint) red.push('<path' + pw + ' d="' + sp.red + '"' + tf + '/>');
+          else redFill.push('<path d="' + sp.red + '"' + tf + '/>');
+        }
         /* この字が実際に占める範囲。プロッタの外に出ていないかを見るため。 */
         cells.push({ gi: r.gi, i: i, x: tx - ww/2, y: cellTop, w: ww, h: hh });
         boxes.push({ gi: r.gi, i: i, ch: Array.from(ch)[0],
@@ -2291,6 +2314,8 @@ function buildSVG(){
         rubLayer +
         (showR ? redG + red.join("") + '</g>' : '') +
         (showR && !isPrint && note ? '<g fill="#DC2616" stroke="none">' + note + '</g>' : '') +
+        (showR && !isPrint && redFill.length
+          ? '<g fill="#DC2616" stroke="none">' + redFill.join("") + '</g>' : '') +
         (showB ? blkG + black.join("") + '</g>' : '') +
         (hl.length ? '<g pointer-events="none">' + hl.join("") + '</g>' : '') +
         picks +
@@ -7241,6 +7266,7 @@ function openPathEditor(gi, ci){
          axes: JSON.parse(JSON.stringify((ep && ep.axes) ? ep.axes : (ax || {}))),
          axNow: JSON.parse(JSON.stringify(ax || {})),
          wpct: ep ? num(ep.wpct, 0) : 0,
+         red: (ep && Array.isArray(ep.red)) ? ep.red.slice() : [],
          sel: [], selC: [], undo: [], tool: "sel", drag: null, marq: null,
          view: { z: 1, dx: 0, dy: 0 },
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null };
@@ -7355,8 +7381,10 @@ function peRender(){
   /* 輪郭の線と節点 */
   PE.contours.forEach(function(c, cidx){
     var onC = PE.selC.indexOf(cidx) >= 0;
-    o.push('<path d="' + pathD([shown[cidx] || c]) + '" fill="none" stroke="' + (onC ? "#DC2616" : "#1B6FD6") +
-      '" stroke-width="' + (r * (onC ? 1.0 : 0.6)) + '"/>');
+    var isRed = (PE.red || []).indexOf(cidx) >= 0;
+    o.push('<path d="' + pathD([shown[cidx] || c]) + '" fill="none" stroke="' +
+      (isRed ? "#DC2616" : "#1B6FD6") + '" stroke-width="' + (r * (onC ? 1.2 : 0.6)) + '"' +
+      (onC ? ' stroke-dasharray="' + (r*2.5) + ' ' + (r*1.5) + '"' : '') + '/>');
     hitsC.push('<path class="pehitc" data-c="' + cidx + '" d="' + pathD([c]) +
       '" fill="none" stroke="transparent" stroke-width="' + (r*4) + '"/>');
     c.forEach(function(n, nidx){
@@ -7425,6 +7453,18 @@ function peRender(){
   }
   $("peUndo").disabled = !PE.undo.length;
   $("peDelC").disabled = !PE.selC.length;
+  var rb = $("peRedC");
+  if (rb){
+    rb.disabled = !PE.selC.length;
+    var allR = PE.selC.length && PE.selC.every(function(c){ return (PE.red||[]).indexOf(c) >= 0; });
+    rb.textContent = allR ? "選んだ輪郭を 黒に戻す" : "選んだ輪郭を 赤にする";
+    rb.className = "mini" + (allR ? " primary" : "");
+  }
+  var ri = $("peRedInfo");
+  if (ri) ri.textContent = (PE.red || []).length
+    ? "赤（ペンで書く）にしている輪郭：" + PE.red.slice().sort(function(a,b){return a-b;})
+        .map(function(i){ return i+1; }).join("、") + "　この字を共有フォルダーに保存すると、次からも同じになります。"
+    : "細かくて刃がつぶす所は、輪郭を選んで［赤にする］。ペンで書いて手で彫れます。";
   $("peDelN").disabled = !PE.sel.length;
   $("peUnion").disabled = PE.contours.length < 2;
   Array.prototype.forEach.call(document.querySelectorAll("#pathEd .pt"), function(b2){
@@ -7634,7 +7674,7 @@ function peMenuDo(a){
     PE.tool = "sel"; PE.selC = [m.c]; PE.sel = [];
     peRender(); msg("この輪郭をつかんで動かせます。");
   } else if (a === "delc"){
-    peSnap(); PE.contours.splice(m.c, 1); PE.sel = []; PE.selC = [];
+    peSnap(); PE.contours.splice(m.c, 1); peRedDrop(m.c); PE.sel = []; PE.selC = [];
     peRender(); msg("輪郭を消しました。");
   } else if (a === "delsel"){
     peSnap();
@@ -8106,8 +8146,25 @@ $("peDelN").onclick = function(){
 $("peDelC").onclick = function(){
   if (!PE || !PE.selC.length) return;
   peSnap();
-  PE.selC.slice().sort(function(a,b){ return b - a; }).forEach(function(c){ PE.contours.splice(c,1); });
+  PE.selC.slice().sort(function(a,b){ return b - a; }).forEach(function(c){
+    PE.contours.splice(c,1); peRedDrop(c);
+  });
   PE.sel = []; PE.selC = []; peRender();
+};
+/* 選んだ輪郭を、刃で切る（黒）／ペンで書く（赤）で切り替える。
+   CG-60AR は細かいところを切るとつぶれるので、そこはペンで書いて手で彫る。 */
+$("peRedC").onclick = function(){
+  if (!PE || !PE.selC.length) return;
+  if (!PE.red) PE.red = [];
+  var allRed = PE.selC.every(function(c){ return PE.red.indexOf(c) >= 0; });
+  PE.selC.forEach(function(c){
+    var at = PE.red.indexOf(c);
+    if (allRed){ if (at >= 0) PE.red.splice(at, 1); }
+    else if (at < 0) PE.red.push(c);
+  });
+  peRender();
+  msg(allRed ? "選んだ輪郭を 黒（刃で切る）に戻しました。"
+             : "選んだ輪郭を 赤（ペンで書く）にしました。出力の赤に入ります。");
 };
 $("peRub").onchange = function(){ peRender(); };
 $("peW").oninput = function(e){
@@ -8133,21 +8190,32 @@ $("peUnion").onclick = function(){
   if (!u){ msg("まとめられませんでした。", true); return; }
   peSnap();
   PE.contours = u; PE.sel = []; PE.selC = [];
+  var hadRed = (PE.red || []).length; PE.red = [];    /* 輪郭の番号が変わるので、赤は外す */
   peRender();
-  msg("重なりを 1 つにまとめました（曲線は細かい直線になります）。");
+  msg("重なりを 1 つにまとめました（曲線は細かい直線になります）。" +
+      (hadRed ? "　赤にしていた輪郭は黒に戻りました。" : ""));
 };
 $("peCancel").onclick = closePathEditor;
 /* いまいじっている形を、その文字に当てる。［決定］と［共有に保存］で使う。 */
+/* 輪郭を 1つ消したときに、赤の印の番号をずらす */
+function peRedDrop(c){
+  if (!PE || !PE.red) return;
+  PE.red = PE.red.filter(function(k){ return k !== c; })
+                 .map(function(k){ return k > c ? k - 1 : k; });
+}
 function peCommit(){
   if (!PE) return false;
   var g = S.groups[PE.gi]; if (!g) return false;
   if (!PE.contours.length){
     setAdj(g, PE.ci, "path", null);
-  } else if (JSON.stringify(PE.contours) === PE.base && !num(PE.wpct, 0)) {
+  } else if (JSON.stringify(PE.contours) === PE.base && !num(PE.wpct, 0) &&
+             !(PE.red && PE.red.length)) {
     setAdj(g, PE.ci, "path", null);          /* フォントの字と同じなら作字にしない */
   } else {
     setAdj(g, PE.ci, "path", { upem: PE.upem, contours: PE.contours,
-                               axes: PE.axes, wpct: num(PE.wpct, 0) });
+                               axes: PE.axes, wpct: num(PE.wpct, 0),
+                               /* 赤（ペン）で書く輪郭の番号。細かくて刃がつぶす所に使う */
+                               red: (PE.red || []).slice().sort(function(a,b){ return a-b; }) });
   }
   return true;
 }

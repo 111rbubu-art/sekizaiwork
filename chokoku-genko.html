@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v5.5</title>
+<title>彫刻原稿 v5.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -394,6 +394,7 @@
     <button id="btnSave">案件を保存</button>
     <button id="btnPrintRed" class="red">① 赤を出力</button>
     <button id="btnPrintBlk" class="blk">② 黒を出力</button>
+    <button id="btnSvg" class="mini" title="赤・黒の SVG をこのパソコンに保存します">SVG</button>
   </div>
 
   <div id="main">
@@ -1358,7 +1359,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v5.5";
+var APP_VER = "v5.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4005,6 +4006,25 @@ function printLayer(which){
 }
 $("btnPrintRed").onclick = function(){ printLayer("red"); };
 $("btnPrintBlk").onclick = function(){ printLayer("blk"); };
+/* 赤・黒の SVG を、このパソコンに落とす。
+   プロッターのソフトへ直に渡したいときに使う。 */
+$("btnSvg").onclick = function(){
+  if (!FONTS.length){ msg("先にフォントを読み込んでください。", true); return; }
+  var base = safeName(S.info.family ? S.info.family + "-genko" : "chokoku-genko", "");
+  var n = 0;
+  [["red", "-red.svg"], ["blk", "-blk.svg"]].forEach(function(m){
+    var svg = outSVG(m[0]);
+    if (!svg) return;
+    var bl = new Blob([svg], { type: "image/svg+xml" });
+    var url = URL.createObjectURL(bl);
+    var a = document.createElement("a");
+    a.href = url; a.download = base + m[1];
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+    n++;
+  });
+  msg("SVG を " + n + " 件保存しました（赤・黒）。線の太さは " + PEN_MM + " mm です。");
+};
 
 /* ============================================================
    10. 保存・復元
@@ -5606,6 +5626,9 @@ var bothRubX = null;
 /* つまみをつかんでいる間は、表示範囲と縮尺を止める。
    動かすたびに絵の大きさが変わると、つまみがポインタから逃げてしまう。 */
 var bothBusy = false, bothBox = null;
+/* 頭・脚をつかんでいる間、拓本の絵を止めておくための覚え書き。
+   止めないと、つかむたびに縮尺が変わって絵が動いてしまう。 */
+var bothImgHold = null;
 /* 構成に出しているガイドラインの左右の幅（mm）。並べ替えの落とし先を決めるのに使う。 */
 var bothGlRanges = [];
 function renderBoth(){
@@ -5688,6 +5711,9 @@ function renderBoth(){
     bothRubX = ix;
     iy = mmOf(0);
     iw = RUB.W * mp; ih = RUB.H * mp;
+    /* 頭・脚をつかんでいる間は、絵を止めておく。
+       ここで動かすと、印を置きたい所が逃げてしまう。 */
+    if (bothImgHold){ iy = bothImgHold.iy; mp = bothImgHold.mp; iw = RUB.W * mp; ih = RUB.H * mp; }
     var rt = rubRotDeg(), of = rotOff();
     var rr = (rt || of.x || of.y)
       ? ' transform="translate(' + (of.x*mp).toFixed(3) + ' ' + (of.y*mp).toFixed(3) + ') rotate(' +
@@ -5840,9 +5866,11 @@ function renderBoth(){
     /* 実測した文字全長を決める線（拓本解析の 頭／脚）。
        これは拓本ぜんぶに効くので、ガイドラインを選び直しても出したままにする。 */
     if (hasRub){
-      var oy = num(S.rub.originY, autoOriginY());
+      /* 頭・脚は「拓本のどの行が文字の頭・脚か」の印。
+         絵の上の画素の行として引くので、絵といっしょに動く。 */
       var kx2 = gutR + KN * 0.9;
-      [[oy, "頭", "orig"], [oy + num(S.rub.realLen, 0), "脚", "len"]].forEach(function(pair){
+      [[iy + num(S.rub.calTop, 0) * mp, "頭", "cal:top"],
+       [iy + num(S.rub.calBot, 0) * mp, "脚", "cal:bot"]].forEach(function(pair){
         if (!isFinite(pair[0])) return;
         guides += '<line x1="' + ix.toFixed(3) + '" y1="' + pair[0].toFixed(3) +
           '" x2="' + (ix + iw).toFixed(3) + '" y2="' + pair[0].toFixed(3) +
@@ -5978,6 +6006,9 @@ function bindBothDrag(svg){
       var rubX0 = bothRubX;            /* 拓本の左はし。つかんだときの値で通す */
       var mp0 = mmPerPx();
       var lastX = null, ranges0 = bothGlRanges.slice();
+      if (k[0] === "cal" && bothRubX !== null && mp0){
+        bothImgHold = { iy: mmOf(0), mp: mp0 };
+      }
       function move(e){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
@@ -6001,13 +6032,20 @@ function bindBothDrag(svg){
           else                tg.bottomY = +mm.toFixed(1);
           g.mode = "range"; if (!g.anchor) g.anchor = "ink";
           renderBoth(); renderList();
-        } else if (k[0] === "orig"){
-          S.rub.originY = +mm.toFixed(1);
-          renderBoth();
-        } else if (k[0] === "len"){
-          var top = num(S.rub.originY, autoOriginY());
-          S.rub.realLen = Math.max(1, +(mm - top).toFixed(1));
-          S.rub.lenAuto = false;
+        } else if (k[0] === "cal"){
+          /* 拓本の絵は止めたまま、印だけを動かす。
+             つかんだときの置き場所（iy0・mp0）で画素に直す。 */
+          if (!bothImgHold) return;
+          var pyv = Math.round((mm - bothImgHold.iy) / bothImgHold.mp);
+          pyv = Math.max(0, Math.min(RUB.H, pyv));
+          if (k[1] === "top"){
+            if (pyv >= num(S.rub.calBot, RUB.H) - 4) return;
+            S.rub.calTop = pyv;
+          } else {
+            if (pyv <= num(S.rub.calTop, 0) + 4) return;
+            S.rub.calBot = pyv;
+          }
+          RUB.mask = null;
           renderBoth();
         }
       }
@@ -6016,6 +6054,15 @@ function bindBothDrag(svg){
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         bothBusy = false;              /* 大きさの止めを解く */
+        if (bothImgHold){
+          bothImgHold = null;
+          renderCols(); renderList(); renderProps();
+          if (typeof rubPanel === "function") rubPanel();
+          renderStage(); persist();
+          msg("拓本の 頭 " + num(S.rub.calTop,0) + " px ／ 脚 " + num(S.rub.calBot,0) +
+              " px にしました。実測した文字全長は " + num(S.rub.realLen,0) + " mm です。");
+          return;
+        }
         if (k[0] === "glmove"){
           /* 離した場所のガイドラインと、並びを入れ替える */
           var g = +k[1], to = null;

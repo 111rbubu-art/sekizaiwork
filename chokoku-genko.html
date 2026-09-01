@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.4</title>
+<title>彫刻原稿 v6.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -85,6 +85,14 @@
   #mmGl .mmsub > span:first-child{display:flex;align-items:center;gap:4px;min-width:0;
     white-space:nowrap;overflow:hidden;}
   /* コピーで紐づいた行は、元の下に一段下げて並べる */
+  /* 左メニューで、枠ごとにガイドラインをまとめて出すときの見出し */
+  #mmGl .frhd{display:flex;align-items:center;justify-content:space-between;gap:6px;
+    margin:8px 0 2px;padding:3px 12px 3px 11px;font-size:10.5px;font-weight:700;
+    color:#B45309;border-left:3px solid #B45309;}
+  #mmGl .frhd.out{color:var(--muted);border-left-color:var(--line);}
+  #mmGl .frhd span{font-weight:600;color:var(--muted);}
+  #mmGl .frempty{padding:2px 12px 4px 22px;font-size:10.5px;color:var(--muted);}
+  #mmGl .frhd + .mmsub, #mmGl .frempty + .mmsub{margin-top:0;}
   #mmGl .mmsub.lnk{padding-left:30px;}
   #mmGl .mmsub.lnk::before{left:20px;}
   #mmGl .mmsub.lnk::after{content:"";position:absolute;left:11px;top:-3px;bottom:50%;
@@ -474,6 +482,9 @@
         <h3 class="sec">いまの設定を保存</h3>
         <label class="f"><span>名前</span><input type="text" id="tplName" placeholder="例：一般 3行"></label>
         <button class="mini" id="btnTplSave" style="width:100%;">テンプレートとして保存</button>
+        <h3 class="sec">枠（いっしょに保存されます）</h3>
+        <div id="tplFrames"></div>
+        <button class="mini" id="btnTplFrame" style="width:100%;">枠を編集する</button>
         <p class="hint">ゴムシートの寸法・1行ガイドライン・グループの構成を覚えます。拓本の画像は含みません。</p>
       </div>
 
@@ -1375,7 +1386,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.4";
+var APP_VER = "v6.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1430,10 +1441,13 @@ function cenAt(ci){
   if (!a.length) return { x: num(S.sheet.w, 90) / 2, w: 0, fit: false };
   return a[Math.max(0, Math.min(a.length - 1, ci || 0))];
 }
+/* 新しく作る文字グループの、はじめの文字の大きさ mm。
+   入れないと「上端〜下端にちょうど収まる大きさ」になり、行ごとにばらつく。 */
+var NEW_MM = 20;
 function mkGroup(kind, text, topY, bottomY, ratio, follow){
   return { kind:kind, text:text, mode:"range", topY:topY, bottomY:bottomY,
            size:20, ratio:ratio||1.15, dx:0, axes:{}, follow:!!follow, gapPrev:0, col:0,
-           wMm:0, hMm:0, fontIdx:null, adj:[] };
+           wMm:0, hMm:NEW_MM, fontIdx:null, adj:[] };
            /* adj[i] = { gap: この字の後ろの送り調整 mm, sc: 大きさ倍率, f: フォント番号 } */
 }
 
@@ -2602,6 +2616,10 @@ function renderCols(){
       (nLink ? '（コピー ' + nLink + '）' : '') + '</span>' +
       '<button class="mini gdelL" data-g="' + g + '" title="この1行ガイドラインを消す">− 削除</button>' +
       '</div>';
+    /* この行をどの枠に入れるか。枠を作っていなければ出さない。 */
+    if ((S.frames || []).length)
+      h += '<label class="f" style="margin:6px 0 2px;"><span>入れる枠</span>' +
+        frameSelHtml("clFr_" + g, num(S.glFrame[g], -1), "clfr") + '</label>';
     if (srcK >= 0 && nLink)
       h += '<div class="m">文字の入力範囲（上端・下端）は 1行ガイドライン ' + (srcK+1) +
         ' と一緒に動きます。別々にするときは、その文字グループを選んで［紐づけを解除］。</div>';
@@ -2651,6 +2669,17 @@ function renderCols(){
       S.centers[+el.dataset.i].w = Math.max(0, num(el.value, 0));
       renderList(); renderProps(); renderStage(); persist();
       if (view !== "sheet") rubRender();
+    });
+  });
+  /* この行を入れる枠 */
+  Array.prototype.forEach.call(box.querySelectorAll(".clfr"), function(el){
+    el.addEventListener("change", function(){
+      var g = +String(el.id).replace("clFr_", ""), v = parseInt(el.value, 10);
+      if (v < 0) delete S.glFrame[g]; else S.glFrame[g] = v;
+      renderMenuGl(); renderBoth(); persist();
+      if (subTab === "frame") renderFrames();
+      msg(v < 0 ? ("ガイドライン " + (g+1) + " を枠の外にしました。")
+                : ("ガイドライン " + (g+1) + " を枠「" + frameName(v) + "」に入れました。"));
     });
   });
   Array.prototype.forEach.call(box.querySelectorAll(".gdelL"), function(bt){
@@ -2984,7 +3013,7 @@ function renderMenuGl(){
   var cur = curGlKey();
   var ord = glOrder(), nCopy = {};
   ord.forEach(function(o){ if (o.src >= 0) nCopy[o.src] = (nCopy[o.src] || 0) + 1; });
-  box.innerHTML = ord.map(function(o){
+  function btnHtml(o){
     var k = o.k, cp = o.src >= 0;
     var n = S.groups.filter(function(g){ return glKeyOf(g) === k; }).length;
     var tag = cp ? '<i class="lk">' + (o.src + 1) + ' のコピー</i>'
@@ -2993,7 +3022,27 @@ function renderMenuGl(){
       '" data-k="' + k + '" draggable="true" title="ドラッグすると左右の並びを入れ替えます">' +
       '<span>' + (k < 0 ? "未設定" : "ガイドライン " + (k+1)) + tag + '</span>' +
       '<span class="n2">' + n + '</span></button>';
-  }).join("") + addRowBtn();
+  }
+  /* 枠を作ってあるときは、枠ごとにまとめて出す。
+     どの行がどの面に彫られるのかを、ここで見て分かるようにするため。 */
+  var frames = S.frames || [];
+  if (frames.length){
+    var html = "", left = ord.slice();
+    frames.forEach(function(f, fi){
+      var mine = left.filter(function(o){ return num(S.glFrame[o.k], -1) === fi; });
+      html += '<div class="frhd" data-f="' + fi + '">枠　' + esc(f.name) +
+        '<span>' + (+num(f.w,0).toFixed(0)) + '×' + (+num(f.h,0).toFixed(0)) + '</span></div>';
+      html += mine.length ? mine.map(btnHtml).join("")
+                          : '<div class="frempty">（この枠に入れた行はありません）</div>';
+    });
+    var rest = left.filter(function(o){ return num(S.glFrame[o.k], -1) < 0; });
+    if (rest.length){
+      html += '<div class="frhd out">枠の外</div>' + rest.map(btnHtml).join("");
+    }
+    box.innerHTML = html + addRowBtn();
+  } else {
+    box.innerHTML = ord.map(btnHtml).join("") + addRowBtn();
+  }
   /* ［行追加］も .mmsub だが data-k を持たない。ガイドラインの並びだけを拾う。 */
   /* ドラッグで左右の並びを入れ替える */
   Array.prototype.forEach.call(box.querySelectorAll(".mmsub[data-k]"), function(bt){
@@ -4930,6 +4979,19 @@ function renderTpl(){
     if (rb) rb.onclick = function(){ FDIR.id = ""; FDIR.items = null; TPL.items = null;
                                      fontDirLoad().then(function(){ tplLoadSP(true); }); };
   };
+  /* テンプレートには枠もいっしょに入る。いま何があるかをここでも見せる。 */
+  var fb = $("tplFrames");
+  if (fb){
+    fb.innerHTML = (S.frames || []).length
+      ? '<p class="hint" style="margin:0 0 6px;">' + S.frames.map(function(f, i){
+          var n = glList().filter(function(g){ return num(S.glFrame[g], -1) === i; }).length;
+          return esc(f.name) + '（' + (+num(f.w,0).toFixed(0)) + '×' + (+num(f.h,0).toFixed(0)) +
+                 ' mm・行 ' + n + '）';
+        }).join('<br>') + '</p>'
+      : '<p class="hint" style="margin:0 0 6px;">まだ枠がありません。</p>';
+  }
+  var fbt = $("btnTplFrame");
+  if (fbt && !fbt._bound){ fbt._bound = true; fbt.onclick = function(){ setSub("frame"); }; }
   if (!list.length){
     box.innerHTML = head +
       '<p class="hint">まだテンプレートがありません。よく使う構成をつくったら、下から名前を付けて保存してください。</p>';
@@ -4939,7 +5001,8 @@ function renderTpl(){
     var d = t.data || {};
     return '<div class="tplitem"><span class="nm">' + esc(t.name) +
       '<span class="dt">' + (d.sheet ? d.sheet.w + "×" + d.sheet.h + " mm　" : "") +
-      'ガイド ' + ((d.centers||[]).length) + '　グループ ' + ((d.groups||[]).length) + '</span></span>' +
+      'ガイド ' + ((d.centers||[]).length) + '　グループ ' + ((d.groups||[]).length) +
+      ((d.frames||[]).length ? '　枠 ' + d.frames.length : '') + '</span></span>' +
       '<button class="mini tplAdd" data-i="' + i + '">追加</button>' +
       '<button class="mini tplUse" data-i="' + i + '">置換</button>' +
       '<button class="mini tplDel" data-i="' + i + '">×</button></div>';
@@ -4972,6 +5035,10 @@ function tplApply(t){
   if (d.sheet) S.sheet = d.sheet;
   S.centers = fillGl(d.centers || []);
   S.groups  = (d.groups || []).map(function(g){ return Object.assign(mkGroup("1","",60,130,1.15), g); });
+  /* 枠もテンプレートのものに入れかえる。持っていないテンプレートなら空にする。 */
+  S.frames  = JSON.parse(JSON.stringify(d.frames || []));
+  S.glFrame = JSON.parse(JSON.stringify(d.glFrame || {}));
+  S.rubFrame = null;
   S.demoDx = {}; S.demoRx = 0;
   sel = 0;
   migrate(); syncOriginY();
@@ -5028,6 +5095,18 @@ function tplAdd(t){
     });
   });
 
+  /* 枠も足す。番号がずれるので、行の割り当ても足したぶんだけずらす。 */
+  var frBase = (S.frames || []).length;
+  var addFr = JSON.parse(JSON.stringify(d.frames || []));
+  if (addFr.length){
+    if (!Array.isArray(S.frames)) S.frames = [];
+    addFr.forEach(function(f){ S.frames.push(f); });
+    var gm = d.glFrame || {};
+    Object.keys(gm).forEach(function(k){
+      var v = num(gm[k], -1);
+      if (v >= 0) S.glFrame[num(k, 0) + glBase] = v + frBase;
+    });
+  }
   var giBase = S.groups.length;
   ng.forEach(function(g){
     var o = Object.assign(mkGroup("1", "", 60, 130, 1.15), g);
@@ -5081,7 +5160,11 @@ $("btnTplSave").onclick = function(){
       var o = JSON.parse(JSON.stringify(g));
       delete o._bottom; delete o._size; delete o._n; delete o._i;
       return o;
-    })
+    }),
+    /* 枠（石の彫刻できる面）と、行をどの枠に入れるか。
+       同じ寺・同じ形の墓では毎回同じなので、テンプレートで持ち回れるようにする。 */
+    frames: JSON.parse(JSON.stringify(S.frames || [])),
+    glFrame: JSON.parse(JSON.stringify(S.glFrame || {}))
   };
   var at = list.map(function(x){ return x.name; }).indexOf(nm);
   var rec = { name: nm, savedAt: new Date().toISOString(), data: data };

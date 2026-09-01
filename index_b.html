@@ -3110,6 +3110,125 @@ function renderStonePriceList(items) {
   _loadStoneListThumbs(items);
 }
 
+/* ===== 添付の写真を出す ==============================================
+   現地の電波では、写真の表示がいちばん待たされる。手は 3つ。
+   ① 一度落とした写真は、この端末に取っておく（IndexedDB）。
+      2回目からは通信ゼロで、すぐ出る。
+   ② いっぺんに全部取りに行かない。1枚ずつ順番に。
+      同時に何本も出すと、細い回線ではどれも遅くなる。
+      いま見えている 1枚目から取るので、待ち時間が短く感じる。
+   ③ 落としている間、その写真の上に％を出す。
+   取っておいた写真は 30日で捨てる。同じ名前で差し替えたときは、
+   ［🔄 読み直す］を押すと取り直す。 */
+var ATT_CACHE_DAYS = 30;
+var _attDBP = null;
+function _attDB(){
+  if (_attDBP) return _attDBP;
+  _attDBP = new Promise(function(res){
+    try{
+      var rq = indexedDB.open('spAttachCache', 1);
+      rq.onupgradeneeded = function(){ rq.result.createObjectStore('blob'); };
+      rq.onsuccess = function(){ res(rq.result); };
+      rq.onerror   = function(){ res(null); };
+    }catch(e){ res(null); }
+  });
+  return _attDBP;
+}
+function _attGet(key){
+  return _attDB().then(function(db){
+    if (!db) return null;
+    return new Promise(function(res){
+      try{
+        var rq = db.transaction('blob').objectStore('blob').get(key);
+        rq.onsuccess = function(){
+          var v = rq.result;
+          if (!v || !v.blob) return res(null);
+          if (Date.now() - (v.at || 0) > ATT_CACHE_DAYS*86400000) return res(null);
+          res(v.blob);
+        };
+        rq.onerror = function(){ res(null); };
+      }catch(e){ res(null); }
+    });
+  });
+}
+function _attPut(key, blob){
+  if (!blob || blob.size > 12*1024*1024) return;          /* 大きすぎるものは取っておかない */
+  _attDB().then(function(db){
+    if (!db) return;
+    try{ db.transaction('blob','readwrite').objectStore('blob').put({ blob: blob, at: Date.now() }, key); }catch(e){}
+  });
+}
+function _attDrop(key){
+  _attDB().then(function(db){
+    if (!db) return;
+    try{ db.transaction('blob','readwrite').objectStore('blob')['delete'](key); }catch(e){}
+  });
+}
+/* 写真の上に出す、％の札 */
+function _attBadge(imgEl){
+  var par = imgEl.parentNode; if (!par) return null;
+  if (getComputedStyle(par).position === 'static') par.style.position = 'relative';
+  var b = document.createElement('div');
+  b.style.cssText = 'position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);' +
+    'text-align:center;font-size:11px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none';
+  b.textContent = '0%';
+  par.appendChild(b);
+  return b;
+}
+/* 1枚ぶん。取っておいたものがあればそれを使い、無ければ％を出しながら落とす。 */
+function attachImgLoad(imgEl, relUrl, token, force){
+  var key = relUrl;
+  var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+               String(relUrl).replace(/'/g, "''") + "')/$value";
+  function show(blob){
+    imgEl.src = URL.createObjectURL(blob);
+    imgEl.style.background = '';
+    if (imgEl._attOnBlob) imgEl._attOnBlob(imgEl.src);
+  }
+  return (force ? Promise.resolve(null) : _attGet(key)).then(function(hit){
+    if (hit){ show(hit); return true; }
+    var badge = _attBadge(imgEl);
+    function done(ok){ if (badge && badge.parentNode) badge.parentNode.removeChild(badge); return ok; }
+    return fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var len = +(r.headers.get('content-length') || 0);
+        if (!r.body || !r.body.getReader) return r.blob();
+        var rd = r.body.getReader(), parts = [], got = 0;
+        return (function pump(){
+          return rd.read().then(function(q){
+            if (q.done) return new Blob(parts, { type: r.headers.get('content-type') || 'image/jpeg' });
+            parts.push(q.value); got += q.value.length;
+            if (badge) badge.textContent = len ? (Math.round(got/len*100) + '%')
+                                               : ((got/1048576).toFixed(1) + 'MB');
+            return pump();
+          });
+        })();
+      })
+      .then(function(blob){
+        if (!blob || !blob.size) throw new Error('中身が空');
+        _attPut(key, blob);
+        show(blob);
+        return done(true);
+      })
+      .catch(function(){
+        done(false);
+        imgEl.style.display = 'none';        /* 読めなかった写真は隠す（白い枠を残さない）*/
+        return false;
+      });
+  });
+}
+/* 何枚かを、上から順に 1枚ずつ落とす */
+function attachImgLoadAll(list, token, force){
+  var i = 0;
+  function next(){
+    if (i >= list.length) return Promise.resolve();
+    var it = list[i++];
+    return attachImgLoad(it.el, it.relUrl, token, force).then(next, next);
+  }
+  return next();
+}
+
 var _stoneThumbCache = {}; // {itemId: blobUrl | 'none'}
 var _stoneThumbLoading = false;
 
@@ -3149,8 +3268,14 @@ function _loadStoneListThumbs(items) {
           var relPath = imgs[0].ServerRelativeUrl;
           var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
             relPath.replace(/'/g, "''") + "')/$value";
-          return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
-            .then(function(r) { return r.ok ? r.blob() : null; })
+          /* 取っておいたものがあれば通信しない（2回目からすぐ出る） */
+          return _attGet(relPath)
+            .then(function(hit){
+              if (hit) return hit;
+              return fetch(binUrl, { headers: { Authorization: 'Bearer ' + token } })
+                .then(function(r) { return r.ok ? r.blob() : null; })
+                .then(function(bl){ if (bl) _attPut(relPath, bl); return bl; });
+            })
             .then(function(blob) {
               if (blob) {
                 var burl = URL.createObjectURL(blob);
@@ -3401,20 +3526,13 @@ function _loadStonePhotoModalImages(itemId) {
       account: msalApp.getActiveAccount()
     }).then(function(resp) {
       var t2 = resp.accessToken;
+      /* 1枚ずつ順番に。取っておいたものがあれば通信しない。落とす間は％を出す。 */
+      var jobs2 = [];
       area.querySelectorAll('.stone-photo-modal-lazy').forEach(function(imgEl) {
-        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
-        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
-          relPath.replace(/'/g,"''") + "')/$value";
-        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
-          .then(function(r) { return r.ok ? r.blob() : null; })
-          .then(function(blob) {
-            if (!blob) return;
-            var burl = URL.createObjectURL(blob);
-            imgEl.src = burl;
-            imgEl.style.background = '';
-            imgEl.onclick = function() { openCustImgPreview(burl); };
-          }).catch(function() {});
+        imgEl._attOnBlob = function(u){ imgEl.onclick = function(){ openCustImgPreview(u); }; };
+        jobs2.push({ el: imgEl, relUrl: decodeURIComponent(imgEl.getAttribute('data-relpath')) });
       });
+      attachImgLoadAll(jobs2, t2);
     }).catch(function() {});
   }).catch(function(e) {
     if (area) area.innerHTML = '<div style="color:#c0392b;font-size:12px">読み込みエラー: ' + _esc(e.message) + '</div>';
@@ -3710,20 +3828,12 @@ function loadStoneSampleImages(itemId) {
       account: msalApp.getActiveAccount()
     }).then(function(resp) {
       var t2 = resp.accessToken;
+      var jobs3 = [];
       area.querySelectorAll('.stone-sample-lazy').forEach(function(imgEl) {
-        var relPath = decodeURIComponent(imgEl.getAttribute('data-relpath'));
-        var binUrl = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
-          relPath.replace(/'/g,"''") + "')/$value";
-        fetch(binUrl, { headers: { 'Authorization': 'Bearer ' + t2 } })
-          .then(function(r){ return r.ok ? r.blob() : null; })
-          .then(function(blob){
-            if (!blob) return;
-            var burl = URL.createObjectURL(blob);
-            imgEl.src = burl;
-            imgEl.style.background = '';
-            imgEl.onclick = function(){ openCustImgPreview(burl); };
-          }).catch(function(){});
+        imgEl._attOnBlob = function(u){ imgEl.onclick = function(){ openCustImgPreview(u); }; };
+        jobs3.push({ el: imgEl, relUrl: decodeURIComponent(imgEl.getAttribute('data-relpath')) });
       });
+      attachImgLoadAll(jobs3, t2);
     }).catch(function(){});
   }).catch(function(e) {
     if (area) area.innerHTML = '<div style="color:#c0392b;font-size:12px">読み込みエラー: ' + _esc(e.message) + '</div>';
@@ -6499,7 +6609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.414';
+var APP_VERSION = 'v1.9.415';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

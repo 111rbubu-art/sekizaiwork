@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.1</title>
+<title>彫刻原稿 v6.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -402,7 +402,7 @@
     <button id="btnSave">案件を保存</button>
     <button id="btnPrintRed" class="red">① 赤を出力</button>
     <button id="btnPrintBlk" class="blk">② 黒を出力</button>
-    <button id="btnSvg" class="mini" title="赤・黒の SVG をこのパソコンに保存します">SVG</button>
+    <button id="btnSvg" class="mini" title="ぜんぶ黒の SVG を 1枚、このパソコンに保存します">SVG</button>
   </div>
 
   <div id="main">
@@ -453,12 +453,8 @@
           例）幅 90mm でセンターラインが左端から 61mm に出たとき　45 − 61 ＝ <b>−16</b> を「左右」へ。<br>
           この端末だけが覚えます。画面の見え方は変わりません。</p></details>
 
-        <h3 class="sec">文字の位置</h3>
-        <button class="mini" id="btnSheetMove" style="width:100%;">マウスで動かす</button>
-        <p class="hint" id="shOfInfo"></p>
-        <details class="help"><summary>どこまで動くか</summary>
-          <p class="hint">つかんだ字の <b>1行ガイドラインだけ</b>が動きます。<br>
-          ゴムシートと出力（赤・黒）だけの位置です。<b>拓本・校正・確認資料には効きません。</b></p></details>
+        <!-- 「文字の位置」は上のバーの［✥ 文字の位置］に集約した（v6.2）。
+             同じものが 2か所にあると迷うため。 -->
       </div>
 
       <div class="pan" id="panTpl">
@@ -1350,7 +1346,7 @@ function gName(i, max){
 var VS_BASE = 0xE0100, VS_COUNT = 16;   // 異体字セレクタ VS17〜VS32
 
 var hb = null, face = null, font = null;
-var printMode = null;                    // null | 'red' | 'blk'
+var printMode = null;                    // null | 'red' | 'blk' | 'all'（ぜんぶ黒で1枚）
 var sel = 0, charSel = 0, showDetail = false;
 var demoClean = false;      /* デモを画像に書き出すとき、操作用の枠を消す */
 
@@ -1368,7 +1364,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.1";
+var APP_VER = "v6.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2215,13 +2211,15 @@ function buildSVG(){
      画面では細い輪郭だと小さくて読めないので、塗りつぶして出す。 */
   if (isPrint) red.push(note);
 
-  var showR = printMode === "red" || (printMode === null && $("vRed").checked);
-  var showB = printMode === "blk" || (printMode === null && $("vBlk").checked);
+  var showR = printMode === "red" || printMode === "all" || (printMode === null && $("vRed").checked);
+  var showB = printMode === "blk" || printMode === "all" || (printMode === null && $("vBlk").checked);
 
   /* 印刷時は必ず「塗りなし・細線の輪郭」。画面ではそれだと消えるので見え方を変える。 */
   var redG, blkG;
   if (isPrint){
-    redG = '<g fill="none" stroke="#FF0000" stroke-width="' + PEN_MM + '" stroke-linecap="butt">';
+    /* "all" は 1枚にぜんぶ入れる。赤で分ける相手（プロッター）に渡さないので黒。 */
+    redG = '<g fill="none" stroke="' + (printMode === "all" ? "#000000" : "#FF0000") +
+      '" stroke-width="' + PEN_MM + '" stroke-linecap="butt">';
     blkG = '<g fill="none" stroke="#000000" stroke-width="' + PEN_MM + '" stroke-linejoin="round">';
   } else {
     redG = '<g fill="none" stroke="#FF0000" stroke-width="1" vector-effect="non-scaling-stroke">';
@@ -2709,6 +2707,33 @@ function renderCols(){
 }
 var dragGi = null;
 /* そのセンターラインに文字グループを 1つ足す */
+/* 拓本の 頭 のライン（シートの何 mm か）。拓本が無い・較正していなければ null。 */
+function rubTopMm(){
+  if (!RUB.img || !mmPerPx()) return null;
+  var v = mmOf(num(S.rub.calTop, 0));
+  return (v === null || !isFinite(v)) ? null : +v.toFixed(1);
+}
+/* 作ったばかりの行を、拓本の 頭 のラインからはじまるように動かす。
+   いちばん上をそろえて、まとめて動かすので、行どうしの上下の関係は変わらない。
+   テンプレートを呼んだときと、新しい行を作ったときに使う。 */
+function snapToRubTop(list){
+  var t = rubTopMm();
+  if (t === null || !list || !list.length) return false;
+  var tg, seen = [], tops = [];
+  list.forEach(function(g){
+    tg = srcGroup(g) || g;
+    if (seen.indexOf(tg) < 0){ seen.push(tg); tops.push(num(gTop(tg), 0)); }
+  });
+  if (!tops.length) return false;
+  var d = t - Math.min.apply(null, tops);
+  if (Math.abs(d) < 0.05) return false;
+  seen.forEach(function(x){
+    x.topY = +(num(x.topY, 0) + d).toFixed(1);
+    x.bottomY = +(num(x.bottomY, 0) + d).toFixed(1);
+  });
+  return true;
+}
+
 function addGroupTo(ci){
   var last = S.groups[S.groups.length-1];
   var top = last ? Math.max(num(last._bottom,0), num(last.bottomY,0)) + 20 : 60;
@@ -3403,7 +3428,6 @@ function shOfFill(){
   var t = $("shOvInfo");
   if (t) t.textContent = shOfText();
 }
-$("btnSheetMove").onclick = function(){ setSheetMove(!sheetMove); };
 $("btnSheetMove2").onclick = function(){
   if (view === "demo" || view === "rub") setView("sheet");   /* 動かせる画面へ */
   setSheetMove(!sheetMove);
@@ -3625,6 +3649,15 @@ function openCharMenu(gi, ci, cx, cy){
   h += '<button class="mini' + (A.path ? '' : ' primary') + '" id="mPath" style="width:100%;margin-bottom:6px;">' +
     (A.path ? '作字を編集し直す' : 'パスにして形を編集') + '</button>';
   h += '<button class="mini" id="mLib" style="width:100%;margin-bottom:6px;">作字一覧を表示</button>';
+  /* 刃でつぶれる細い所を、ペン（赤）に回す。輪郭ごとに測って選ぶ。 */
+  h += '<div class="g2">' +
+    '<label class="f"><span>細さ mm 未満</span><input type="number" id="mThin" value="' +
+      thinMm() + '" step="0.1" min="0.1"></label>' +
+    '<label class="f"><span>&nbsp;</span><button class="mini" id="mThin1" style="width:100%;">' +
+      'この字を赤に</button></label>' +
+    '</div>';
+  h += '<button class="mini" id="mThinAll" style="width:100%;margin-bottom:6px;">' +
+    'この文字グループぜんぶ調べる</button>';
   if (A.path){
     h += '<button class="mini" id="mShare" style="width:100%;margin-bottom:6px;">この字を共有フォルダーに保存</button>';
     h += '<button class="mini" id="mPathDel" style="width:100%;margin-bottom:8px;">作字をやめて元の字に戻す</button>';
@@ -3763,6 +3796,30 @@ function openCharMenu(gi, ci, cx, cy){
     closeCharMenu(); openGlyphLib(gi, ci, mx, my);
   });
   mon("mShare","click",function(){ closeCharMenu(); glyphLibPushOne(gi, ci); });
+  /* 細い所をペン（赤）に回す。しきい値はこの端末で覚える。 */
+  mon("mThin","input",function(e){
+    var v = num(e.target.value, 0);
+    if (v > 0){ S.thinMm = +v.toFixed(2); persist(); }
+  });
+  mon("mThin1","click",function(){
+    var mm = thinMm(), n = redThinOne(gi, ci, mm);
+    renderAll(); closeCharMenu();
+    if (n < 0) msg("測れませんでした。", true);
+    else if (!n) msg("細さ " + mm + " mm より細い所はありませんでした。");
+    else msg("輪郭 " + n + " 個をペン（赤）に回しました（細さ " + mm + " mm 未満）。");
+  });
+  mon("mThinAll","click",function(){
+    var mm = thinMm(), rows = layout(), r = rows[gi];
+    if (!r){ msg("測れませんでした。", true); return; }
+    var chg = 0, tot = 0;
+    r.chars.forEach(function(_, k){
+      var n = redThinOne(gi, k, mm, rows);
+      if (n > 0){ chg++; tot += n; }
+    });
+    renderAll(); closeCharMenu();
+    msg(chg ? (chg + " 字・輪郭 " + tot + " 個をペン（赤）に回しました（細さ " + mm + " mm 未満）。")
+            : ("細さ " + mm + " mm より細い所はありませんでした。"));
+  });
   mon("mPathDel","click",function(){
     setAdj(g, ci, "path", null);
     renderAll(); closeCharMenu(); msg("元のフォントの字に戻しました。");
@@ -3866,10 +3923,6 @@ function setSheetMove(on){
   sheetMove = !!on;
   sheetPad = sheetMove ? 30 : 0;     /* 動かす間は表示範囲を固定して、縮尺を変えない */
   document.body.classList.toggle("sheetmove", sheetMove);
-  var b = $("btnSheetMove");
-  if (b){ b.textContent = sheetMove ? "マウスで動かす 中（終了）" : "マウスで動かす";
-          b.className = "mini" + (sheetMove ? " primary" : ""); }
-  /* 画面のうえにも同じボタンを置いてある。文言と色をそろえる。 */
   var b2 = $("btnSheetMove2");
   if (b2){ b2.textContent = sheetMove ? "✥ 動かす 中（終了）" : "✥ 文字の位置";
            b2.className = "mini" + (sheetMove ? " primary" : ""); }
@@ -4047,6 +4100,8 @@ function addGuideline(){
   if (lastG){ t0 = num(gTop(lastG), 60); b0 = num(gBot(lastG), 130); }
   S.groups.push(Object.assign(mkGroup("1", "", t0, b0, 1.15), { col: nci }));
   sel = S.groups.length - 1; charSel = 0;
+  /* 拓本があれば、行のはじまりを 頭 のラインにそろえる */
+  snapToRubTop([S.groups[sel]]);
   setSub("group");
   renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
   msg("1行ガイドライン " + (num(S.centers[nci].gl, 0) + 1) + " を足しました。文字を入れてください。");
@@ -4136,24 +4191,20 @@ function printLayer(which){
 }
 $("btnPrintRed").onclick = function(){ printLayer("red"); };
 $("btnPrintBlk").onclick = function(){ printLayer("blk"); };
-/* 赤・黒の SVG を、このパソコンに落とす。
-   プロッターのソフトへ直に渡したいときに使う。 */
+/* SVG をこのパソコンに落とす。1枚に、ぜんぶ黒で入れる。
+   この形はプロッターへは渡さない（渡すのは赤・黒の印刷）ので、色で分けない。 */
 $("btnSvg").onclick = function(){
   if (!FONTS.length){ msg("先にフォントを読み込んでください。", true); return; }
   var base = safeName(S.info.family ? S.info.family + "-genko" : "chokoku-genko", "");
-  var n = 0;
-  [["red", "-red.svg"], ["blk", "-blk.svg"]].forEach(function(m){
-    var svg = outSVG(m[0]);
-    if (!svg) return;
-    var bl = new Blob([svg], { type: "image/svg+xml" });
-    var url = URL.createObjectURL(bl);
-    var a = document.createElement("a");
-    a.href = url; a.download = base + m[1];
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
-    n++;
-  });
-  msg("SVG を " + n + " 件保存しました（赤・黒）。線の太さは " + PEN_MM + " mm です。");
+  var svg = outSVG("all");
+  if (!svg){ msg("SVG を作れませんでした。", true); return; }
+  var bl = new Blob([svg], { type: "image/svg+xml" });
+  var url = URL.createObjectURL(bl);
+  var a = document.createElement("a");
+  a.href = url; a.download = base + ".svg";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+  msg("SVG を 1枚保存しました（ぜんぶ黒）。線の太さは " + PEN_MM + " mm です。");
 };
 
 /* ============================================================
@@ -4758,6 +4809,7 @@ function tplApply(t){
   S.demoDx = {}; S.demoRx = 0;
   sel = 0;
   migrate(); syncOriginY();
+  snapToRubTop(S.groups);          /* 拓本の 頭 のラインからはじめる */
   sheetFill();
   setSheetOff(num(S.sheet.ox,0), num(S.sheet.oy,0));
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
@@ -4838,6 +4890,7 @@ function tplAdd(t){
 
   sel = giBase;
   migrate(); syncOriginY();
+  snapToRubTop(S.groups.slice(giBase));   /* 足したぶんだけ 頭 のラインへ */
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
   setSub("group");
   var over = "", nl = 1e9, nr = -1e9;
@@ -7233,6 +7286,56 @@ function weightedPathContours(g, i, gid, ax, fi){
   var out = pct ? offsetContours(cs, weightDelta(cs, pct)) : cs;
   wdCache[key] = out;
   return out;
+}
+
+/* --- 細い所をペン（赤）に回す ------------------------------------
+   回転刃は刃先が軸より 0.25〜0.5mm 後ろにあり、その場で向きを変えられない。
+   だから、その何倍かより細い形は必ず丸まる。切ってつぶすくらいなら、
+   そこだけペンで書いて手で彫るほうが早い。
+   輪郭ごとに、いちばん細いところ（画線幅の中央値）を測り、
+   決めた太さに足りないものを赤に回す。 */
+function thinMm(){
+  var v = num(S.thinMm, 0.8);
+  return (isFinite(v) && v > 0) ? v : 0.8;
+}
+/* この字の 1 upem が、シートの上で何 mm になるか。細いほうで見る（安全側）。 */
+function charMmPerUpem(g, i, r){
+  var F = FR(fontIdxOf(g, i)); if (!F || !F.upem) return 0;
+  var AD = adjOf(g, i);
+  var hh = AD.hmm > 0 ? AD.hmm : r.h * AD.sc;
+  var ww = AD.wmm > 0 ? AD.wmm : r.w * AD.scw;
+  return Math.min(hh, ww) / F.upem;
+}
+/* 1文字ぶん。赤に回した数を返す（-1 ＝ 測れなかった）。 */
+function redThinOne(gi, ci, mm, rows){
+  var g = S.groups[gi]; if (!g) return -1;
+  var chars = splitChars(g.text), ch = chars[ci]; if (!ch) return -1;
+  var fi = fontIdxOf(g, ci), F = FR(fi); if (!F) return -1;
+  var r = (rows || layout())[gi]; if (!r) return -1;
+  var k = charMmPerUpem(g, ci, r); if (!k) return -1;
+  var ax = axesOf(g, ci), gid = shapeOne(ch, ax, fi);
+  var ep = editedPath(g, ci);
+  var cs = ep ? JSON.parse(JSON.stringify(pathContours(ep, F)))
+              : parsePath(gid ? glyphPath(gid, ax, fi) : "");
+  if (!cs || !cs.length) return -1;
+  var red = [];
+  cs.forEach(function(c, idx){
+    var m = measureGlyph([c]);
+    if (m.ink && m.ink * k < mm) red.push(idx);
+  });
+  if (!red.length){
+    /* 細い所が無いのに作字にしてしまうと、あとで字を差し替えられなくなる。
+       もともと作字だったときは、赤の指定だけ外す。 */
+    if (ep && Array.isArray(ep.red) && ep.red.length){
+      var q = JSON.parse(JSON.stringify(ep)); q.red = [];
+      setAdj(g, ci, "path", q);
+    }
+    return 0;
+  }
+  setAdj(g, ci, "path", { upem: F.upem, contours: cs,
+    axes: JSON.parse(JSON.stringify((ep && ep.axes) ? ep.axes : (ax || {}))),
+    wpct: ep ? num(ep.wpct, 0) : 0, red: red });
+  return red.length;
 }
 
 /* ============================================================

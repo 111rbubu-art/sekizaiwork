@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v5.3</title>
+<title>彫刻原稿 v5.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1356,7 +1356,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v5.3";
+var APP_VER = "v5.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2734,16 +2734,25 @@ function copyGuideline(k){
   var ng = 0;
   S.centers.forEach(function(c){ ng = Math.max(ng, num(c.gl,0) + 1); });
   var base = S.centers[idxs[0]];
-  /* 縦書きなので次の行は左へ。左が紙からはみ出すときだけ右へ置く。 */
+  /* 縦書きなので次の行は左へ。左が紙からはみ出すときだけ右へ置く。
+     同じ行を 2回コピーしても重ならないよう、
+     「コピー元の隣」ではなく「いまある行ぜんぶの外」に置く。 */
   var step = (cenW(idxs[0]) || 30.3);
-  var lo = 1e9, hi = -1e9;
+  var lo = 1e9, hi = -1e9;                 /* コピー元のかたまり */
   idxs.forEach(function(ci){
     var c = S.centers[ci], hw = (cenW(ci) || 0) / 2;
     lo = Math.min(lo, num(c.x,0) - hw); hi = Math.max(hi, num(c.x,0) + hw);
   });
+  var allLo = 1e9, allHi = -1e9;           /* いまある行ぜんぶ */
+  S.centers.forEach(function(c, ci){
+    var hw = (cenW(ci) || 0) / 2;
+    allLo = Math.min(allLo, num(c.x,0) - hw); allHi = Math.max(allHi, num(c.x,0) + hw);
+  });
   var MG = shMargin(), SW = num(S.sheet.w, 90);
-  var shift = (lo - step >= MG.l) ? -step
-            : ((hi + step <= SW - MG.r) ? step : -step);
+  var toL = (allLo - step) - lo;           /* 左はしの外へ */
+  var toR = (allHi + step) - hi;           /* 右はしの外へ */
+  var shift = (lo + toL >= MG.l) ? toL
+            : ((hi + toR <= SW - MG.r) ? toR : toL);
   /* 紙からはみ出すときは、切れる範囲に寄せる */
   if (lo + shift < MG.l) shift = MG.l - lo;
   else if (hi + shift > SW - MG.r) shift = (SW - MG.r) - hi;
@@ -4472,7 +4481,7 @@ async function tplLoadSP(force){
     if (!FDIR.tplId){
       TPL.items = [];
     } else {
-      var b = await spGetBlob(FDIR.tplId, TPL_FILE);
+      var b = await spGetBlob(FDIR.tplId, TPL_FILE, FDIR.tplSize);
       var o = JSON.parse(await b.text());
       TPL.items = Array.isArray(o) ? o : ((o && Array.isArray(o.items)) ? o.items : []);
     }
@@ -5949,13 +5958,14 @@ function bindBothDrag(svg){
         if (!isFinite(mm)) return;
         if (k[0] === "glmove"){ lastX = q.x; return; }
         if (k[0] === "cen"){
-          /* ガイドラインの位置。拓本の上での左右の位置を直す。 */
+          /* 拓本の上のガイドラインの位置。拓本の見本の行を指しているだけなので、
+             ここを動かしても、構成した文字の行は動かさない（syncCenters は呼ばない）。
+             文字の行を動かすときは、名前の帯をつかんで並べ替える。 */
           var mp = mp0, ci = +k[1];
           if (!mp || rubX0 === null || !isFinite(q.x)) return;
           var px = Math.round((q.x - rubX0) / mp);
           S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
-          syncCenters();
-          renderBoth(); renderCols();
+          renderBoth();
           return;
         }
         if (k[0] === "grp"){
@@ -8643,7 +8653,7 @@ async function autoOpenCase(){
   if (!SP.cfg.folderId) return false;
   try {
     var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + SP.cfg.folderId +
-      "/children?$top=200&$select=id,name,file,folder,lastModifiedDateTime");
+      "/children?$top=200&$select=id,name,size,file,folder,lastModifiedDateTime");
     var js = (r.value || []).filter(function(x){ return !x.folder && /\.json$/i.test(x.name); });
     if (!js.length) return false;
     js.sort(function(a, b){
@@ -8662,7 +8672,7 @@ async function spOpenProject(item, auto){
   try {
     msg((auto ? "この案件の続きを読み込んでいます…（" : "案件を読み込んでいます…（") +
         item.name + "）", false, true);
-    var b = await spGetBlob(item.id, item.name);
+    var b = await spGetBlob(item.id, item.name, num(item.size, 0));
     var o = JSON.parse(await b.text());
     applyProject(o, item.name);
     hoFillBlanks();          /* 抜けている確認情報は本体アプリの値で埋める */
@@ -8673,7 +8683,7 @@ async function spOpenProject(item, auto){
 async function spOpenRub(item){
   try {
     msg("拓本を読み込んでいます…（" + item.name + "）", false, true);
-    var b = await spGetBlob(item.id, item.name);
+    var b = await spGetBlob(item.id, item.name, num(item.size, 0));
     var url = await blobToDataURL(b);
     spBrowseClose();
     loadRubImage(url, item.name || "");
@@ -8852,7 +8862,8 @@ function spBrowseBind(box){
 var FONT_DIR   = "/業務アプリ/アプリ使用フォント";
 var GLYPH_FILE = "作字ライブラリ.json";
 var TPL_FILE  = "テンプレート.json";
-var FDIR = { id: "", items: null, loading: false, err: "", lib: null, libId: "", tplId: "" };
+var FDIR = { id: "", items: null, loading: false, err: "", lib: null,
+             libId: "", libSize: 0, tplId: "", tplSize: 0 };
 
 /* 同じ名前かどうか。濁点の書き方（NFC / NFD）と大文字小文字の違いを吸収する。 */
 function sameName(a, b){
@@ -8903,9 +8914,9 @@ async function fontDirLoad(){
     FDIR.items = all.filter(function(x){ return isFontName(x.name); })
       .sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
     var lf = all.filter(function(x){ return sameName(x.name, GLYPH_FILE); })[0];
-    FDIR.libId = lf ? lf.id : "";
+    FDIR.libId = lf ? lf.id : ""; FDIR.libSize = lf ? num(lf.size, 0) : 0;
     var tf = all.filter(function(x){ return sameName(x.name, TPL_FILE); })[0];
-    FDIR.tplId = tf ? tf.id : "";
+    FDIR.tplId = tf ? tf.id : ""; FDIR.tplSize = tf ? num(tf.size, 0) : 0;
     /* 作字は、一覧といっしょに読んでおく。押さないと出てこないのは分かりにくい。 */
     try { await glyphLibLoad(); } catch(e2){ FDIR.err = spErrText(e2); }
   } catch(e){
@@ -8995,8 +9006,12 @@ function sameGlyphCh(a, b){
 async function glyphLibLoad(){
   if (!fontDirReady()) return null;
   if (!FDIR.libId){ FDIR.lib = { v:1, items:[] }; return FDIR.lib; }
-  var b = await spGetBlob(FDIR.libId, GLYPH_FILE);
-  var o = JSON.parse(await b.text());
+  /* フォントと同じで、大きさを渡して「途中で切れていないか」を確かめる。
+     渡さないと、切れた中身をそのまま読もうとして止まってしまう。 */
+  var b = await spGetBlob(FDIR.libId, GLYPH_FILE, FDIR.libSize);
+  var o = null;
+  try { o = JSON.parse(await b.text()); }
+  catch(e){ throw new Error("作字の一覧を読めませんでした（中身がこわれています）"); }
   FDIR.lib = (o && Array.isArray(o.items)) ? o : { v:1, items:[] };
   return FDIR.lib;
 }
@@ -9004,7 +9019,7 @@ async function glyphLibSave(){
   var id = await fontDirId(true);
   var body = new Blob([JSON.stringify(FDIR.lib, null, 2)], { type: "application/json" });
   var it = await spPutIn(id, GLYPH_FILE, body, "application/json");
-  FDIR.libId = it.id;
+  FDIR.libId = it.id; FDIR.libSize = num(it.size, body.size);
 }
 /* 一覧をまだ読んでいなければ読む */
 async function fontDirEnsure(){

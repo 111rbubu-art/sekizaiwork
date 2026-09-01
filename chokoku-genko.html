@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.7</title>
+<title>彫刻原稿 v6.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1391,7 +1391,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.7";
+var APP_VER = "v6.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4325,6 +4325,7 @@ function migrate(){
     return { name: String((f && f.name) || ("枠 " + (i+1))),
              w: Math.max(1, num(f && f.w, 300)), h: Math.max(1, num(f && f.h, 200)),
              y: num(f && f.y, 40),
+             top: Math.max(0, num(f && f.top, 0)),  /* 文字のはじまり。枠の上端からの下げ mm */
              ax: ax,                       /* 1行目をどちら寄せで置くか */
              dx: num(f && f.dx, 0) };      /* そこからの左右のずらし mm（右が＋）*/
   });
@@ -4953,12 +4954,26 @@ function frameGroups(fi){
 }
 /* 行を枠に入れたときは、その枠の上端から始まるようにそろえる。
    枠の「上端 y mm」が、行のはじまりの基準になる。 */
+function frameTextTop(fi){
+  var f = (S.frames || [])[fi];
+  return f ? num(f.y, 0) + Math.max(0, num(f.top, 0)) : null;
+}
 function frameAssign(g, fi){
   if (fi < 0){ delete S.glFrame[g]; return false; }
   S.glFrame[g] = fi;
   var f = S.frames[fi]; if (!f) return false;
   var list = (S.groups || []).filter(function(gr){ return glKeyOf(gr) === g; });
-  return snapListTop(list, num(f.y, 0));
+  return snapListTop(list, frameTextTop(fi));
+}
+/* この枠の行を、いまの「文字のはじまり」にそろえ直す */
+function frameSnapAll(fi){
+  var moved = false;
+  glList().forEach(function(g){
+    if (num(S.glFrame[g], -1) !== fi) return;
+    var list = (S.groups || []).filter(function(gr){ return glKeyOf(gr) === g; });
+    if (snapListTop(list, frameTextTop(fi))) moved = true;
+  });
+  return moved;
 }
 function renderFrames(){
   var box = $("framelist");
@@ -4982,9 +4997,14 @@ function renderFrames(){
             '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
               '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
           '</div>' +
-          '<label class="f"><span>上端 y mm（行のはじまり）</span>' +
-            '<input type="number" class="fry" data-i="' + i + '" value="' + (+num(f.y,0).toFixed(1)) +
-            '" step="1"></label>' +
+          '<div class="g2">' +
+            '<label class="f"><span>枠の上端 y mm</span>' +
+              '<input type="number" class="fry" data-i="' + i + '" value="' + (+num(f.y,0).toFixed(1)) +
+              '" step="1"></label>' +
+            '<label class="f"><span>文字のはじまり mm</span>' +
+              '<input type="number" class="frtop" data-i="' + i + '" value="' + (+num(f.top,0).toFixed(1)) +
+              '" step="1" min="0"></label>' +
+          '</div>' +
           '<div class="g2">' +
             '<label class="f" style="margin-bottom:0;"><span>1行目の寄せ</span>' +
               '<select class="frax" data-i="' + i + '">' +
@@ -5081,8 +5101,7 @@ function bindFrames(){
   });
   on(".fry", "input", function(e){
     var i = +e.target.dataset.i, f = S.frames[i]; if (!f) return;
-    /* 上端 y は「この枠の行のはじまり」。動かしたら、中の行もいっしょに動かす。
-       行だけ置いていかれると、枠を動かすたびに合わせ直すことになるため。 */
+    /* 枠ごと上下に動かす。中の行もいっしょに動かす（枠と中身の関係は変えない）。 */
     var d = num0(e) - num(f.y, 0);
     f.y = num0(e);
     if (d) frameGroups(i).forEach(function(g){
@@ -5090,6 +5109,13 @@ function bindFrames(){
       t.topY = +(num(t.topY, 0) + d).toFixed(1);
       t.bottomY = +(num(t.bottomY, 0) + d).toFixed(1);
     });
+    renderCols(); renderList(); renderStage(); renderBoth(); persist();
+  });
+  on(".frtop", "input", function(e){
+    var i = +e.target.dataset.i, f = S.frames[i]; if (!f) return;
+    /* 枠はそのまま。中の行だけを、枠の上端から この分だけ下げた所へそろえる。 */
+    f.top = Math.max(0, num0(e));
+    frameSnapAll(i);
     renderCols(); renderList(); renderStage(); renderBoth(); persist();
   });
   on(".frax", "change", function(e){
@@ -6436,20 +6462,31 @@ function renderBoth(){
   var KN = 16 / (MMPX * (sc0 > 0 ? sc0 : 0.2));      /* 画面で 16px ぶんの mm */
   var GUT = KN * 3.4;                                 /* 左右の余白 */
   vx -= GUT; vw += GUT * 2;
+  /* 枠の「1行目の位置」のつまみは、枠の外（上）に出す。その分の余白をとる。 */
+  var FRTOP = ((pk.fbox || []).length) ? KN * 2.8 : 0;
+  vy -= FRTOP; vh += FRTOP;
   var sc = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
   KN = 16 / (MMPX * (sc > 0 ? sc : 0.2));
   if (bothBusy && bothBox){
     vx = bothBox.vx; vy = bothBox.vy; vw = bothBox.vw; vh = bothBox.vh;
     sc = bothBox.sc; KN = bothBox.KN; GUT = bothBox.GUT;
+    FRTOP = num(bothBox.FRTOP, FRTOP);
   } else {
-    bothBox = { vx:vx, vy:vy, vw:vw, vh:vh, sc:sc, KN:KN, GUT:GUT };
+    bothBox = { vx:vx, vy:vy, vw:vw, vh:vh, sc:sc, KN:KN, GUT:GUT, FRTOP:FRTOP };
   }
   var gutL = vx, gutR = vx + vw - GUT;                /* 余白のはじまり */
 
   /* --- 枠（石の彫刻できる面）---
      校正の画面にだけ出す。中に収まっているかを見るためのもので、
      ゴムシート・出力・確認資料には出さない。 */
-  var frameLayer = "";
+  var frameLayer = "", hits = [];      /* hits は枠のつまみでも使うので、ここで用意する */
+  /* この枠に入っている行の、いちばん右のはし。1行目の位置のつまみを置く所。 */
+  var fRight = {};
+  (S.centers || []).forEach(function(c, ci){
+    var b = colBox[ci]; if (!b) return;
+    var fi0 = num(S.glFrame[glOf(ci)], -1); if (fi0 < 0) return;
+    if (!(fRight[fi0] > b.x2)) fRight[fi0] = b.x2;
+  });
   (pk.fbox || []).forEach(function(q){
     var f = S.frames[q.i]; if (!f) return;
     var fy = num(f.y, 0), fh = Math.max(1, num(f.h, 1));
@@ -6467,12 +6504,25 @@ function renderBoth(){
       frameLayer += '<rect x="' + q.l.toFixed(3) + '" y="' + fy.toFixed(3) +
         '" width="' + num(f.w, 0).toFixed(3) + '" height="' + fh.toFixed(3) +
         '" fill="none" stroke="#DC2616" stroke-width="0.6"/>';
+    /* 1行目の右はしの線。枠の外まで伸ばし、上のつまみをつかんで左右に動かす。 */
+    var rx = fRight[q.i];
+    if (rx !== undefined && FRTOP > 0){
+      var hy = fy - FRTOP + KN * 0.9;
+      frameLayer += '<line x1="' + rx.toFixed(3) + '" y1="' + hy.toFixed(3) +
+        '" x2="' + rx.toFixed(3) + '" y2="' + (fy + fh).toFixed(3) +
+        '" stroke="#B45309" stroke-width="0.5" stroke-dasharray="4 3"/>' +
+        '<circle cx="' + rx.toFixed(3) + '" cy="' + hy.toFixed(3) + '" r="' + (KN*0.62).toFixed(3) +
+        '" fill="#B45309" stroke="#fff" stroke-width="' + (KN*0.16).toFixed(3) + '"/>';
+      hits.push('<rect class="bhitx" data-k="frx:' + q.i + '" x="' + (rx - KN).toFixed(3) +
+        '" y="' + (hy - KN).toFixed(3) + '" width="' + (KN*2).toFixed(3) +
+        '" height="' + (KN*2).toFixed(3) + '" fill="transparent"/>');
+    }
   });
 
   /* --- ガイド ---
      いま選んでいる 1行ガイドラインの線だけを出す。ほかのガイドラインの線は
      隠す。線が重なって、どれがどの行のものか分からなくなるため。 */
-  var guides = "", glHit = "", hits = [];
+  var guides = "", glHit = "";
   if (showG){
     /* 校正文字：センターラインと行幅の線。選んでいるガイドラインの分だけ。 */
     (S.centers || []).forEach(function(c, ci){
@@ -6755,6 +6805,14 @@ function bindBothDrag(svg){
       var rubX0 = bothRubX;            /* 拓本の左はし。つかんだときの値で通す */
       var mp0 = mmPerPx();
       var lastX = null, ranges0 = bothGlRanges.slice();
+      /* 枠の「1行目の位置」をつかんだとき。押した所と、そのときのずらし量を覚える。 */
+      var frx0 = null;
+      if (k[0] === "frx"){
+        var f0 = S.frames[+k[1]];
+        /* 押したその場所を基準にする。最初の動きを基準にすると、その分だけ足りなくなる。 */
+        var p0 = toPt(ev);
+        if (f0 && isFinite(p0.x)) frx0 = { x: p0.x, dx: num(f0.dx, 0) };
+      }
       if (k[0] === "cal" && bothRubX !== null && mp0){
         bothImgHold = { iy: mmOf(0), mp: mp0 };
       }
@@ -6762,6 +6820,13 @@ function bindBothDrag(svg){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
         if (k[0] === "glmove"){ lastX = q.x; return; }
+        if (k[0] === "frx"){
+          var f2 = S.frames[+k[1]];
+          if (!f2 || !frx0 || !isFinite(q.x)) return;
+          f2.dx = +(frx0.dx + (q.x - frx0.x)).toFixed(1);
+          renderBoth();
+          return;
+        }
         if (k[0] === "cen"){
           /* 拓本の上のガイドラインの位置。拓本の見本の行を指しているだけなので、
              ここを動かしても、構成した文字の行は動かさない（syncCenters は呼ばない）。
@@ -6822,6 +6887,14 @@ function bindBothDrag(svg){
           msg("拓本の 頭 " + num(S.rub.calTop,0) + " px ／ 脚 " + num(S.rub.calBot,0) +
               " px にしました。いまの縮尺では、この間は " + num(S.rub.realLen,0) +
               " mm です。実際に測った長さは「実測長」の欄に打ち込んでください。");
+          return;
+        }
+        if (k[0] === "frx"){
+          var f3 = S.frames[+k[1]];
+          renderCols(); if (subTab === "frame") renderFrames();
+          renderBoth(); persist();
+          if (f3) msg("枠「" + f3.name + "」の 1行目の位置を、左右 " +
+                      (num(f3.dx,0) > 0 ? "＋" : "") + (+num(f3.dx,0).toFixed(1)) + " mm にしました。");
           return;
         }
         if (k[0] === "glmove"){

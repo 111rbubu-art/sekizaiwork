@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.3</title>
+<title>彫刻原稿 v6.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -416,6 +416,7 @@
         <button class="mm" data-m="rub">拓本解析<span class="n none" id="nRub">未取込</span></button>
         <button class="mm" data-m="group">文字編集<span class="n none" id="nGroup">なし</span></button>
         <div id="mmGl"></div>
+        <button class="mm" data-m="frame">枠<span class="n none" id="nFrame">なし</span></button>
         <button class="mm" data-m="info">備考メモ</button>
         <div class="gap2"></div>
         <button class="mm" data-m="font">フォント・作字<span class="n none" id="nFont">未読込</span></button>
@@ -455,6 +456,16 @@
 
         <!-- 「文字の位置」は上のバーの［✥ 文字の位置］に集約した（v6.2）。
              同じものが 2か所にあると迷うため。 -->
+      </div>
+
+      <div class="pan" id="panFrame">
+        <h3 class="sec">枠（石の彫刻できる面）</h3>
+        <p class="hint" style="margin-top:0;">校正の画面にだけ出ます。ゴムシート・出力・確認資料には出ません。</p>
+        <button class="mini primary" id="btnFrameAdd" style="width:100%;margin-bottom:10px;">＋ 枠を追加</button>
+        <div id="framelist"></div>
+        <h3 class="sec">拓本の置き場所</h3>
+        <select id="frRub"></select>
+        <p class="hint" style="margin-top:4px;">枠を選ぶとその中に、「枠の外」を選ぶと今までどおり右へ置きます。</p>
       </div>
 
       <div class="pan" id="panTpl">
@@ -1364,7 +1375,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.3";
+var APP_VER = "v6.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1404,6 +1415,12 @@ var S = {
   demoDx: {},                        /* 確認資料での左右のずらし量 mm。1行ガイドラインごと。出力には効かない */
   demoRx: 0,                         /* デモでの拓本そのものの左右ずらし mm */
   bothGap: 6,                        /* 構成表示：ガイドライン同士のあいだ mm */
+  /* 枠 ＝ 石の彫刻できる面。校正の画面にだけ出す。
+     frames[i] = { name, w, h, y }。y はシートと同じ縦の目盛りでの上端。
+     glFrame[ガイドライン番号] = 枠の番号。rubFrame は拓本を入れる枠（null＝枠の外）。 */
+  frames: [],
+  glFrame: {},
+  rubFrame: null,
   bothOv: false,                     /* 構成表示：拓本を重ねているか */
   groups: []                         /* 最初は無し */
 };
@@ -4245,6 +4262,18 @@ function migrate(){
   if (!isFinite(S.sheet.ox)) S.sheet.ox = 0;
   if (!isFinite(S.sheet.oy)) S.sheet.oy = 0;
   fillGl(S.centers);
+  if (!Array.isArray(S.frames)) S.frames = [];
+  S.frames = S.frames.map(function(f, i){
+    return { name: String((f && f.name) || ("枠 " + (i+1))),
+             w: Math.max(1, num(f && f.w, 300)), h: Math.max(1, num(f && f.h, 200)),
+             y: num(f && f.y, 40) };
+  });
+  if (!S.glFrame || typeof S.glFrame !== "object") S.glFrame = {};
+  Object.keys(S.glFrame).forEach(function(k){
+    var v = num(S.glFrame[k], -1);
+    if (!(v >= 0 && v < S.frames.length)) delete S.glFrame[k];
+  });
+  if (!(num(S.rubFrame, -1) >= 0 && num(S.rubFrame, -1) < S.frames.length)) S.rubFrame = null;
   if (!S.demoDx || typeof S.demoDx !== "object") S.demoDx = {};
   if (!isFinite(S.demoRx)) S.demoRx = 0;
   if (!isFinite(S.bothGap) || S.bothGap < 0) S.bothGap = 6;
@@ -4632,7 +4661,7 @@ $("viewDemo").onclick  = function(){ setView("demo"); };
 
 /* --- メインメニュー（左）とサブメニュー（左2列目） --- */
 var subTab = "sheet";
-var PANEL = { sheet:"panSheet", tpl:"panTpl", rub:"panRub",
+var PANEL = { sheet:"panSheet", tpl:"panTpl", rub:"panRub", frame:"panFrame",
               group:"panGroup", font:"panFont", sp:"panSP", info:"panInfo" };
 function setSub(t){
   if (t === "col" || t === "guide") t = "rub";      /* 旧い呼び名 */
@@ -4645,6 +4674,7 @@ function setSub(t){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
   if (t === "tpl"){ renderTpl(); tplLoadSP(); }
+  if (t === "frame") renderFrames();
   if (t === "font") fontPanel();
   if (t === "info") noteFill();
   if (t === "sp") spPanel();
@@ -4661,6 +4691,7 @@ function renderMenuCounts(){
     e.className = "n" + (n ? "" : " none");
   }
   set("nGroup", (S.groups || []).length, "なし");
+  set("nFrame", (S.frames || []).length, "なし");
   renderMenuGl();
   set("nTpl", tplList().length, "0");
   var e = $("nRub");
@@ -4749,6 +4780,141 @@ async function tplStore(list, what){
     msg(what + "このパソコンに保存しました。（本体アプリから開くと共有フォルダーに入ります）");
   }
 }
+/* ===== 枠（石の彫刻できる面）=====================================
+   校正の画面にだけ出す。1行ガイドラインごとに「どの枠に入れるか」を選ぶと、
+   その枠の中に並ぶ。拓本は枠の中にも、これまでどおり枠の外にも置ける。 */
+function frameName(i){
+  var f = (S.frames || [])[i];
+  return f ? f.name : "";
+}
+function frameSelHtml(id, val, cls){
+  var h = '<select id="' + id + '"' + (cls ? ' class="' + cls + '"' : '') + '>' +
+    '<option value="-1"' + (num(val, -1) < 0 ? " selected" : "") + '>枠の外</option>';
+  (S.frames || []).forEach(function(f, i){
+    h += '<option value="' + i + '"' + (num(val, -1) === i ? " selected" : "") + '>' + esc(f.name) + '</option>';
+  });
+  return h + '</select>';
+}
+function renderFrames(){
+  var box = $("framelist");
+  if (box){
+    if (!(S.frames || []).length){
+      box.innerHTML = '<p class="hint" style="margin-top:0;">まだ枠がありません。' +
+        '［＋ 枠を追加］で、石の彫刻できる面の大きさを入れてください。</p>';
+    } else {
+      var h = "";
+      S.frames.forEach(function(f, i){
+        h += '<div class="detail" style="margin-bottom:10px;">' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">' +
+            '<b style="font-size:12px;">枠 ' + (i+1) + '</b>' +
+            '<button class="mini frdel" data-i="' + i + '" style="margin-left:auto;">− 削除</button>' +
+          '</div>' +
+          '<label class="f"><span>名前</span><input type="text" class="frname" data-i="' + i +
+            '" value="' + esc(f.name) + '"></label>' +
+          '<div class="g2">' +
+            '<label class="f"><span>幅 mm</span><input type="number" class="frw" data-i="' + i +
+              '" value="' + (+num(f.w,0).toFixed(1)) + '" step="1" min="1"></label>' +
+            '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
+              '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
+          '</div>' +
+          '<label class="f" style="margin-bottom:0;"><span>上端 y mm</span>' +
+            '<input type="number" class="fry" data-i="' + i + '" value="' + (+num(f.y,0).toFixed(1)) +
+            '" step="1"></label>' +
+          '</div>';
+      });
+      /* どの行をどの枠に入れるか */
+      var gs = glList();
+      if (gs.length){
+        h += '<h3 class="sec">行をどの枠に入れるか</h3>';
+        gs.forEach(function(g){
+          h += '<label class="f"><span>ガイドライン ' + (g+1) + '</span>' +
+            frameSelHtml("frGl_" + g, num(S.glFrame[g], -1), "frgl") + '</label>';
+        });
+      }
+      box.innerHTML = h;
+    }
+  }
+  var rs = $("frRub");
+  if (rs){
+    var tmp = document.createElement("div");
+    tmp.innerHTML = frameSelHtml("frRubTmp", num(S.rubFrame, -1));
+    rs.innerHTML = tmp.firstChild.innerHTML;
+    rs.value = String(num(S.rubFrame, -1));
+  }
+  bindFrames();
+}
+function bindFrames(){
+  function on(sel, ev, fn){
+    Array.prototype.forEach.call(document.querySelectorAll("#panFrame " + sel), function(e){
+      e.addEventListener(ev, fn);
+    });
+  }
+  function num0(e){ return num(e.target.value, 0); }
+  on(".frname", "input", function(e){
+    var f = S.frames[+e.target.dataset.i]; if (!f) return;
+    f.name = e.target.value; renderBoth(); persist();
+  });
+  on(".frw", "input", function(e){
+    var f = S.frames[+e.target.dataset.i]; if (!f) return;
+    f.w = Math.max(1, num0(e)); renderBoth(); persist();
+  });
+  on(".frh", "input", function(e){
+    var f = S.frames[+e.target.dataset.i]; if (!f) return;
+    f.h = Math.max(1, num0(e)); renderBoth(); persist();
+  });
+  on(".fry", "input", function(e){
+    var f = S.frames[+e.target.dataset.i]; if (!f) return;
+    f.y = num0(e); renderBoth(); persist();
+  });
+  on(".frdel", "click", function(e){
+    var i = +e.target.dataset.i;
+    var f = S.frames[i]; if (!f) return;
+    if (!confirm("枠「" + f.name + "」を消します。よろしいですか。")) return;
+    S.frames.splice(i, 1);
+    /* 番号が繰り上がるので、割り当ても付け替える */
+    var nx = {};
+    Object.keys(S.glFrame).forEach(function(k){
+      var v = num(S.glFrame[k], -1);
+      if (v === i) return;                       /* 消した枠の行は「枠の外」へ */
+      nx[k] = (v > i) ? v - 1 : v;
+    });
+    S.glFrame = nx;
+    var rf = num(S.rubFrame, -1);
+    S.rubFrame = (rf === i) ? null : (rf > i ? rf - 1 : (rf < 0 ? null : rf));
+    renderFrames(); renderMenuCounts(); renderBoth(); persist();
+    msg("枠を消しました。");
+  });
+  on(".frgl", "change", function(e){
+    var g = +String(e.target.id).replace("frGl_", "");
+    var v = parseInt(e.target.value, 10);
+    if (v < 0) delete S.glFrame[g]; else S.glFrame[g] = v;
+    renderBoth(); persist();
+  });
+  var rs = $("frRub");
+  if (rs && !rs._bound){
+    rs._bound = true;
+    rs.addEventListener("change", function(){
+      var v = parseInt(rs.value, 10);
+      S.rubFrame = (v >= 0) ? v : null;
+      renderBoth(); persist();
+      msg(v >= 0 ? ("拓本を枠「" + frameName(v) + "」の中に置きました。")
+                 : "拓本を枠の外に戻しました。");
+    });
+  }
+  var ad = $("btnFrameAdd");
+  if (ad && !ad._bound){
+    ad._bound = true;
+    ad.onclick = function(){
+      var last = S.frames[S.frames.length - 1];
+      S.frames.push({ name: "枠 " + (S.frames.length + 1),
+                      w: last ? last.w : 300, h: last ? last.h : 200,
+                      y: last ? last.y : num(rubTopMm && rubTopMm(), 0) || 40 });
+      renderFrames(); renderMenuCounts(); renderBoth(); persist();
+      msg("枠を足しました。幅と高さを入れてください。");
+    };
+  }
+}
+
 function renderTpl(){
   var box = $("tpllist"); if (!box) return;
   var list = tplList();
@@ -5796,14 +5962,39 @@ function bothPack(rows){
   /* いまシートで見えている左右の順は変えない */
   var gls = Object.keys(blk).map(Number).sort(function(a, b){ return blk[a].l - blk[b].l; });
   var gap = bothGap(), cur = 0, x = {};
-  gls.forEach(function(g, i){
-    var b = blk[g];
-    if (i) cur += gap;
-    b.cis.forEach(function(ci){ x[ci] = cx0[ci] + (cur - b.l); });
-    cur += (b.r - b.l);
+  /* 枠に入れる行は、その枠の中へ。枠を選んでいない行は、これまでどおり右へ続ける。 */
+  var frames = S.frames || [], fbox = [];
+  var FGAP = Math.max(gap * 2, 10);          /* 枠と枠のあいだ */
+  function placeRun(list, from){
+    var c = from;
+    list.forEach(function(g, i){
+      var b = blk[g];
+      if (i) c += gap;
+      b.cis.forEach(function(ci){ x[ci] = cx0[ci] + (c - b.l); });
+      c += (b.r - b.l);
+    });
+    return c;
+  }
+  function runWidth(list){
+    var w = 0;
+    list.forEach(function(g, i){ if (i) w += gap; w += (blk[g].r - blk[g].l); });
+    return w;
+  }
+  frames.forEach(function(f, fi){
+    var mine = gls.filter(function(g){ return num(S.glFrame[g], -1) === fi; });
+    var contentW = runWidth(mine);
+    var fw = Math.max(num(f.w, 1), contentW);
+    /* 中身は枠の中で中央に置く */
+    if (mine.length) placeRun(mine, cur + (fw - contentW) / 2);
+    fbox.push({ i: fi, l: cur, r: cur + fw, w: fw });
+    cur += fw + FGAP;
   });
-  return { x: x, half: half, right: Math.max(0, cur) };
+  var rest = gls.filter(function(g){ return num(S.glFrame[g], -1) < 0; });
+  if (rest.length){ cur = placeRun(rest, cur); }
+  else if (fbox.length) cur -= FGAP;          /* 最後の枠のうしろの空きは要らない */
+  return { x: x, half: half, right: Math.max(0, cur), fbox: fbox };
 }
+/* 枠がひとつも無いときは frames が空なので、これまでどおりの並べ方になる。 */
 
 /* 構成表示で、拓本の左はしがシートの何 mm にあるか。つまみの計算に使う。 */
 var bothRubX = null;
@@ -5879,6 +6070,13 @@ function renderBoth(){
   if (RUB.img && mp){
     hasRub = true;
     ix = pk.right + zoneGap;
+    /* 「枠の中」を選んでいれば、その枠の真ん中に置く。既定は枠の外（右） */
+    var rfi = num(S.rubFrame, -1);
+    if (rfi >= 0 && pk.fbox){
+      var rb = null;
+      pk.fbox.forEach(function(q){ if (q.i === rfi) rb = q; });
+      if (rb) ix = rb.l + (rb.w - RUB.W * mp) / 2;
+    }
     if (ov){
       /* 合わせ先は、いま選んでいる文字グループのセンターライン。
          拓本の上のその線が、校正文字のセンターラインに重なるように動かす。 */
@@ -5937,6 +6135,12 @@ function renderBoth(){
     vx = Math.min(vx, ix); vx2 = Math.max(vx2, ix + iw);
     vy = Math.min(vy, iy); vy2 = Math.max(vy2, iy + ih);
   }
+  /* 枠も画面に入れる。中身が無い枠でも、置いた大きさが見えるように。 */
+  (pk.fbox || []).forEach(function(q){
+    var f = S.frames[q.i]; if (!f) return;
+    vx = Math.min(vx, q.l); vx2 = Math.max(vx2, q.r);
+    vy = Math.min(vy, num(f.y, 0)); vy2 = Math.max(vy2, num(f.y, 0) + num(f.h, 0));
+  });
   if (!(vy < vy2)){ vy = 0; vy2 = 100; }
   var pad = 8;
   vx -= pad; vy -= pad;
@@ -5958,6 +6162,27 @@ function renderBoth(){
     bothBox = { vx:vx, vy:vy, vw:vw, vh:vh, sc:sc, KN:KN, GUT:GUT };
   }
   var gutL = vx, gutR = vx + vw - GUT;                /* 余白のはじまり */
+
+  /* --- 枠（石の彫刻できる面）---
+     校正の画面にだけ出す。中に収まっているかを見るためのもので、
+     ゴムシート・出力・確認資料には出さない。 */
+  var frameLayer = "";
+  (pk.fbox || []).forEach(function(q){
+    var f = S.frames[q.i]; if (!f) return;
+    var fy = num(f.y, 0), fh = Math.max(1, num(f.h, 1));
+    frameLayer += '<rect x="' + q.l.toFixed(3) + '" y="' + fy.toFixed(3) +
+      '" width="' + q.w.toFixed(3) + '" height="' + fh.toFixed(3) +
+      '" fill="#F4A26022" stroke="#B45309" stroke-width="0.6" stroke-dasharray="5 3"/>' +
+      '<text x="' + (q.l + 1).toFixed(3) + '" y="' + (fy - KN * 0.35).toFixed(3) +
+      '" fill="#B45309" font-size="' + (KN * 0.8).toFixed(2) + '" font-weight="700" ' +
+      'pointer-events="none">' + esc(f.name) + '　' + (+num(f.w,0).toFixed(1)) + '×' +
+      (+num(f.h,0).toFixed(1)) + '</text>';
+    /* 中身が枠より広いときは、その分を赤で知らせる */
+    if (q.w > num(f.w, 0) + 0.05)
+      frameLayer += '<rect x="' + q.l.toFixed(3) + '" y="' + fy.toFixed(3) +
+        '" width="' + num(f.w, 0).toFixed(3) + '" height="' + fh.toFixed(3) +
+        '" fill="none" stroke="#DC2616" stroke-width="0.6"/>';
+  });
 
   /* --- ガイド ---
      いま選んでいる 1行ガイドラインの線だけを出す。ほかのガイドラインの線は
@@ -6195,6 +6420,7 @@ function renderBoth(){
       '<rect x="' + vx.toFixed(3) + '" y="' + vy.toFixed(3) + '" width="' + vw.toFixed(3) +
         '" height="' + vh.toFixed(3) + '" fill="#fff"/>' +
       gut +
+      frameLayer +
       img +
       guides +
       /* 重ねているときは文字を透かす。下の拓本が見えないと見比べられない。 */

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v6.5</title>
+<title>彫刻原稿 v6.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1386,7 +1386,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v6.5";
+var APP_VER = "v6.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2675,11 +2675,12 @@ function renderCols(){
   Array.prototype.forEach.call(box.querySelectorAll(".clfr"), function(el){
     el.addEventListener("change", function(){
       var g = +String(el.id).replace("clFr_", ""), v = parseInt(el.value, 10);
-      if (v < 0) delete S.glFrame[g]; else S.glFrame[g] = v;
-      renderMenuGl(); renderBoth(); persist();
+      var moved = frameAssign(g, v);
+      renderMenuGl(); renderCols(); renderList(); renderStage(); renderBoth(); persist();
       if (subTab === "frame") renderFrames();
       msg(v < 0 ? ("ガイドライン " + (g+1) + " を枠の外にしました。")
-                : ("ガイドライン " + (g+1) + " を枠「" + frameName(v) + "」に入れました。"));
+                : ("ガイドライン " + (g+1) + " を枠「" + frameName(v) + "」に入れました。" +
+                   (moved ? "上端 " + (+num(S.frames[v].y,0).toFixed(1)) + " mm からにそろえました。" : "")));
     });
   });
   Array.prototype.forEach.call(box.querySelectorAll(".gdelL"), function(bt){
@@ -2762,9 +2763,10 @@ function rubTopMm(){
 /* 作ったばかりの行を、拓本の 頭 のラインからはじまるように動かす。
    いちばん上をそろえて、まとめて動かすので、行どうしの上下の関係は変わらない。
    テンプレートを呼んだときと、新しい行を作ったときに使う。 */
-function snapToRubTop(list){
-  var t = rubTopMm();
-  if (t === null || !list || !list.length) return false;
+function snapToRubTop(list){ return snapListTop(list, rubTopMm()); }
+/* 渡した行を、いちばん上が t mm に来るように、まとめて動かす。 */
+function snapListTop(list, t){
+  if (t === null || t === undefined || !isFinite(t) || !list || !list.length) return false;
   var tg, seen = [], tops = [];
   list.forEach(function(g){
     tg = srcGroup(g) || g;
@@ -4313,9 +4315,13 @@ function migrate(){
   fillGl(S.centers);
   if (!Array.isArray(S.frames)) S.frames = [];
   S.frames = S.frames.map(function(f, i){
+    var ax = (f && f.ax) || "center";
+    if (["center","left","right"].indexOf(ax) < 0) ax = "center";
     return { name: String((f && f.name) || ("枠 " + (i+1))),
              w: Math.max(1, num(f && f.w, 300)), h: Math.max(1, num(f && f.h, 200)),
-             y: num(f && f.y, 40) };
+             y: num(f && f.y, 40),
+             ax: ax,                       /* 1行目をどちら寄せで置くか */
+             dx: num(f && f.dx, 0) };      /* そこからの左右のずらし mm（右が＋）*/
   });
   if (!S.glFrame || typeof S.glFrame !== "object") S.glFrame = {};
   Object.keys(S.glFrame).forEach(function(k){
@@ -4844,6 +4850,21 @@ function frameSelHtml(id, val, cls){
   });
   return h + '</select>';
 }
+/* その枠に入っている文字グループ。上下に動かすときに使う。 */
+function frameGroups(fi){
+  return (S.groups || []).filter(function(g){
+    return num(S.glFrame[glKeyOf(g)], -1) === fi;
+  });
+}
+/* 行を枠に入れたときは、その枠の上端から始まるようにそろえる。
+   枠の「上端 y mm」が、行のはじまりの基準になる。 */
+function frameAssign(g, fi){
+  if (fi < 0){ delete S.glFrame[g]; return false; }
+  S.glFrame[g] = fi;
+  var f = S.frames[fi]; if (!f) return false;
+  var list = (S.groups || []).filter(function(gr){ return glKeyOf(gr) === g; });
+  return snapListTop(list, num(f.y, 0));
+}
 function renderFrames(){
   var box = $("framelist");
   if (box){
@@ -4866,9 +4887,20 @@ function renderFrames(){
             '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
               '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
           '</div>' +
-          '<label class="f" style="margin-bottom:0;"><span>上端 y mm</span>' +
+          '<label class="f"><span>上端 y mm（行のはじまり）</span>' +
             '<input type="number" class="fry" data-i="' + i + '" value="' + (+num(f.y,0).toFixed(1)) +
             '" step="1"></label>' +
+          '<div class="g2">' +
+            '<label class="f" style="margin-bottom:0;"><span>1行目の寄せ</span>' +
+              '<select class="frax" data-i="' + i + '">' +
+              '<option value="center"' + (f.ax === "center" ? " selected" : "") + '>中央</option>' +
+              '<option value="right"' + (f.ax === "right" ? " selected" : "") + '>右から</option>' +
+              '<option value="left"' + (f.ax === "left" ? " selected" : "") + '>左から</option>' +
+              '</select></label>' +
+            '<label class="f" style="margin-bottom:0;"><span>左右のずらし mm</span>' +
+              '<input type="number" class="frdx" data-i="' + i + '" value="' + (+num(f.dx,0).toFixed(1)) +
+              '" step="1"></label>' +
+          '</div>' +
           '</div>';
       });
       /* どの行をどの枠に入れるか */
@@ -4912,8 +4944,25 @@ function bindFrames(){
     f.h = Math.max(1, num0(e)); renderBoth(); persist();
   });
   on(".fry", "input", function(e){
+    var i = +e.target.dataset.i, f = S.frames[i]; if (!f) return;
+    /* 上端 y は「この枠の行のはじまり」。動かしたら、中の行もいっしょに動かす。
+       行だけ置いていかれると、枠を動かすたびに合わせ直すことになるため。 */
+    var d = num0(e) - num(f.y, 0);
+    f.y = num0(e);
+    if (d) frameGroups(i).forEach(function(g){
+      var t = srcGroup(g) || g;
+      t.topY = +(num(t.topY, 0) + d).toFixed(1);
+      t.bottomY = +(num(t.bottomY, 0) + d).toFixed(1);
+    });
+    renderCols(); renderList(); renderStage(); renderBoth(); persist();
+  });
+  on(".frax", "change", function(e){
     var f = S.frames[+e.target.dataset.i]; if (!f) return;
-    f.y = num0(e); renderBoth(); persist();
+    f.ax = e.target.value; renderBoth(); persist();
+  });
+  on(".frdx", "input", function(e){
+    var f = S.frames[+e.target.dataset.i]; if (!f) return;
+    f.dx = num0(e); renderBoth(); persist();
   });
   on(".frdel", "click", function(e){
     var i = +e.target.dataset.i;
@@ -4936,8 +4985,10 @@ function bindFrames(){
   on(".frgl", "change", function(e){
     var g = +String(e.target.id).replace("frGl_", "");
     var v = parseInt(e.target.value, 10);
-    if (v < 0) delete S.glFrame[g]; else S.glFrame[g] = v;
-    renderBoth(); persist();
+    var moved = frameAssign(g, v);
+    renderMenuGl(); renderCols(); renderList(); renderStage(); renderBoth(); persist();
+    if (moved) msg("ガイドライン " + (g+1) + " を枠「" + frameName(v) +
+                   "」の上端 " + (+num(S.frames[v].y,0).toFixed(1)) + " mm からにそろえました。");
   });
   var rs = $("frRub");
   if (rs && !rs._bound){
@@ -6067,8 +6118,13 @@ function bothPack(rows){
     var mine = gls.filter(function(g){ return num(S.glFrame[g], -1) === fi; });
     var contentW = runWidth(mine);
     var fw = Math.max(num(f.w, 1), contentW);
-    /* 中身は枠の中で中央に置く */
-    if (mine.length) placeRun(mine, cur + (fw - contentW) / 2);
+    /* 1行目をどこに置くか。既定は中央。左右のずらしで細かく合わせる。 */
+    var at = cur;
+    if (f.ax === "left")       at = cur;
+    else if (f.ax === "right") at = cur + fw - contentW;
+    else                       at = cur + (fw - contentW) / 2;
+    at += num(f.dx, 0);
+    if (mine.length) placeRun(mine, at);
     fbox.push({ i: fi, l: cur, r: cur + fw, w: fw });
     cur += fw + FGAP;
   });
@@ -6256,8 +6312,10 @@ function renderBoth(){
     frameLayer += '<rect x="' + q.l.toFixed(3) + '" y="' + fy.toFixed(3) +
       '" width="' + q.w.toFixed(3) + '" height="' + fh.toFixed(3) +
       '" fill="#F4A26022" stroke="#B45309" stroke-width="0.6" stroke-dasharray="5 3"/>' +
-      '<text x="' + (q.l + 1).toFixed(3) + '" y="' + (fy - KN * 0.35).toFixed(3) +
+      /* 名前は枠の中に出す。外（上）に出すと、画面のふちで切れてしまう。 */
+      '<text x="' + (q.l + KN * 0.35).toFixed(3) + '" y="' + (fy + KN * 0.95).toFixed(3) +
       '" fill="#B45309" font-size="' + (KN * 0.8).toFixed(2) + '" font-weight="700" ' +
+      'stroke="#fff" stroke-width="' + (KN * 0.22).toFixed(3) + '" paint-order="stroke" ' +
       'pointer-events="none">' + esc(f.name) + '　' + (+num(f.w,0).toFixed(1)) + '×' +
       (+num(f.h,0).toFixed(1)) + '</text>';
     /* 中身が枠より広いときは、その分を赤で知らせる */

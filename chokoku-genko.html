@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v7.4</title>
+<title>彫刻原稿 v7.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1391,7 +1391,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v7.4";
+var APP_VER = "v7.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1435,6 +1435,7 @@ var S = {
      frames[i] = { name, w, h, y }。y はシートと同じ縦の目盛りでの上端。
      glFrame[ガイドライン番号] = 枠の番号。rubFrame は拓本を入れる枠（null＝枠の外）。 */
   frames: [],
+  glSeq: [],                         /* 校正での行の並び。右から左の順に gl の番号 */
   glFrame: {},
   rubFrame: null,
   bothOv: false,                     /* 構成表示：拓本を重ねているか */
@@ -3026,9 +3027,11 @@ function renderMenuGl(){
   ord.forEach(function(o){ if (o.src >= 0) nCopy[o.src] = (nCopy[o.src] || 0) + 1; });
   /* 並びは、シートの上の左右の位置に合わせる。縦書きなので **上が右の行**。
      コピーの行も、元の行の下ではなく、実際の位置の順に置く（コピーの札で分かるため）。 */
-  var atX = {};
-  glOrderByX().forEach(function(bx){ atX[bx.g] = bx.l; });
-  ord = ord.slice().sort(function(a, b){ return num(atX[b.k], -1e9) - num(atX[a.k], -1e9); });
+  var seqIx = {};
+  glSeq().forEach(function(g, i){ seqIx[g] = i; });
+  ord = ord.slice().sort(function(a, b){
+    return num(seqIx[a.k], 1e9) - num(seqIx[b.k], 1e9);
+  });
   function btnHtml(o){
     var k = o.k, cp = o.src >= 0;
     var n = S.groups.filter(function(g){ return glKeyOf(g) === k; }).length;
@@ -4201,31 +4204,52 @@ function glOrderByX(){
   return Object.keys(blk).map(function(k){ return blk[k]; })
     .sort(function(a, b){ return a.l - b.l; });
 }
-/* 1行ガイドライン g を、左から数えて toIdx 番目へ動かす。
-   いまの間隔をそのままに、左から置き直す。中の並びは変えない。 */
-function reorderGl(g, toIdx){
-  var ord = glOrderByX();
-  if (ord.length < 2) return false;
-  var from = -1;
-  ord.forEach(function(b, i){ if (b.g === g) from = i; });
-  if (from < 0) return false;
-  toIdx = Math.max(0, Math.min(ord.length - 1, toIdx));
-  if (from === toIdx) return false;
-  var start = ord[0].l, gaps = [];
-  for (var i = 1; i < ord.length; i++) gaps.push(ord[i].l - ord[i-1].r);
-  var moved = ord.splice(from, 1)[0];
-  ord.splice(toIdx, 0, moved);
-  var cur = start;
-  ord.forEach(function(b, i){
-    if (i) cur += gaps[i-1];
-    var d = cur - b.l;
-    if (d) b.cis.forEach(function(ci){
-      S.centers[ci].x = +(num(S.centers[ci].x, 0) + d).toFixed(1);
-    });
-    cur += (b.r - b.l);
+/* --- 校正での行の並び ------------------------------------------------
+   もとはシートの上の x で並べていた。ところが行はどれもシートの真ん中に
+   置くことが多く、x が同じだと並べ替えても何も動かなかった
+   （間隔を保ったまま置き直す計算が、同じ位置どうしだと成り立たない）。
+   そこで「校正での並び」を覚えておく。右から左（縦書きの読み順）に持ち、
+   いちばん前が 1行目＝右。シートの x はいじらない
+   ―― ゴムシートのどこに載せるかは、別もの（✥ 文字の位置）だから。 */
+function glSeq(){
+  var keys = glKeys().filter(function(k){ return k >= 0; });
+  var out = [];
+  (S.glSeq || []).forEach(function(k){
+    k = num(k, -1);
+    if (keys.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
   });
+  /* まだ並びを持っていない行は、シートの右にあるものから順に足す */
+  glOrderByX().slice().sort(function(a, b){ return b.l - a.l; }).forEach(function(b){
+    if (keys.indexOf(b.g) >= 0 && out.indexOf(b.g) < 0) out.push(b.g);
+  });
+  keys.forEach(function(k){ if (out.indexOf(k) < 0) out.push(k); });
+  return out;
+}
+function glSeqIndex(g){ return glSeq().indexOf(g); }
+/* 左から何番目か。校正は左から並べるので、こちらも要る。 */
+function glSeqRankLTR(){
+  var seq = glSeq(), r = {};
+  seq.forEach(function(g, i){ r[g] = seq.length - 1 - i; });
+  return r;
+}
+function glSeqMove(g, toIdx){
+  var seq = glSeq(), from = seq.indexOf(g);
+  if (from < 0) return false;
+  toIdx = Math.max(0, Math.min(seq.length - 1, toIdx));
+  if (from === toIdx) return false;
+  seq.splice(toIdx, 0, seq.splice(from, 1)[0]);
+  S.glSeq = seq;
+  return true;
+}
+
+/* 1行ガイドライン g を、左から数えて toIdx 番目へ動かす。 */
+function reorderGl(g, toIdx){
+  var n = glSeq().length;
+  if (n < 2) return false;
+  toIdx = Math.max(0, Math.min(n - 1, toIdx));
+  if (!glSeqMove(g, n - 1 - toIdx)) return false;
   renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
-  msg("1行ガイドライン " + (g+1) + " を、左から " + (toIdx+1) + " 番目にしました。");
+  msg("1行ガイドライン " + (g+1) + " を、右から " + (n - toIdx) + " 行目にしました。");
   return true;
 }
 /* 別のガイドラインの場所へ動かす。
@@ -4248,10 +4272,12 @@ function moveGlTo(g, targetGl){
 /* 別のガイドラインの場所へ動かす（そのガイドラインのいまの並び順へ） */
 function reorderGlTo(g, targetGl){
   if (g === targetGl) return false;
-  var ord = glOrderByX(), to = -1;
-  ord.forEach(function(b, i){ if (b.g === targetGl) to = i; });
+  var seq = glSeq(), to = seq.indexOf(targetGl);
   if (to < 0) return false;
-  return reorderGl(g, to);
+  if (!glSeqMove(g, to)) return false;
+  renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
+  msg("1行ガイドライン " + (g+1) + " を、右から " + (to + 1) + " 行目にしました。");
+  return true;
 }
 /* 1行ガイドラインを 1本まるごと消す。中の文字グループも一緒に消える。 */
 function delGuideline(g){
@@ -4345,6 +4371,7 @@ function migrate(){
   if (!isFinite(S.sheet.ox)) S.sheet.ox = 0;
   if (!isFinite(S.sheet.oy)) S.sheet.oy = 0;
   fillGl(S.centers);
+  if (!Array.isArray(S.glSeq)) S.glSeq = [];
   if (!Array.isArray(S.frames)) S.frames = [];
   S.frames = S.frames.map(function(f, i){
     var ax = (f && f.ax) || "center";
@@ -6342,8 +6369,15 @@ function bothPack(rows){
     b.l = Math.min(b.l, cx0[ci] - half[ci]);
     b.r = Math.max(b.r, cx0[ci] + half[ci]);
   });
-  /* いまシートで見えている左右の順は変えない */
-  var gls = Object.keys(blk).map(Number).sort(function(a, b){ return blk[a].l - blk[b].l; });
+  /* 並びは「校正での並び」で決める（右から数えた順の裏返し＝左から）。
+     シートの x は見ない。行はどれも同じ x のことが多く、それでは並べ替えられない。 */
+  var rankL = glSeqRankLTR();
+  var gls = Object.keys(blk).map(Number).sort(function(a, b){
+    var ra = rankL[a] === undefined ? 1e9 : rankL[a];
+    var rb = rankL[b] === undefined ? 1e9 : rankL[b];
+    if (ra !== rb) return ra - rb;
+    return blk[a].l - blk[b].l;
+  });
   var gap = bothGap(), cur = 0, x = {};
   /* 枠に入れる行は、その枠の中へ。枠を選んでいない行は、これまでどおり右へ続ける。 */
   var frames = S.frames || [], fbox = [];

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v8.4</title>
+<title>彫刻原稿 v8.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -506,7 +506,10 @@
         <h3 class="sec">② 回転</h3>
         <div id="rubRot"></div>
 
-        <h3 class="sec">③ 長さ調整</h3>
+        <h3 class="sec">③ トリミング</h3>
+        <div id="rubCrop"></div>
+
+        <h3 class="sec">④ 長さ調整</h3>
         <div id="rubCal"></div>
 
       </div>
@@ -581,7 +584,6 @@
         <span class="forDemo">
           <label class="chk"><input type="checkbox" id="dInv" style="width:auto;"> 拓本を反転</label>
           <label class="chk"><input type="checkbox" id="dWhite" checked style="width:auto;"> 列を白地に</label>
-          <label class="chk"><input type="checkbox" id="dCrop" style="width:auto;"> トリミング</label>
           <label class="chk"><input type="checkbox" id="dGuide" style="width:auto;"> ガイド</label>
           <label class="chk"><input type="checkbox" id="dAdj" style="width:auto;"> 位置調整</label>
           <button class="mini" id="dReset">元に戻す</button>
@@ -1405,7 +1407,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v8.4";
+var APP_VER = "v8.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4240,7 +4242,6 @@ $("bothstage").addEventListener("contextmenu", function(e){
 $("dInv").addEventListener("change", renderDemo);
 $("dGuide").addEventListener("change", renderDemo);
 $("dWhite").addEventListener("change", renderDemo);
-$("dCrop").addEventListener("change", renderDemo);
 /* 位置調整のレ点。入れている間だけ、文字や拓本をつかんで動かせる。 */
 $("dAdj").addEventListener("change", function(){
   renderDemo();
@@ -4676,17 +4677,59 @@ function rotPivot(w, h){
 }
 var rotMode = null;   /* null | "pivot"（中心をクリック）| "confirm"（確定待ち）| "spin"（回す）*/
 var calBusy = false;  /* 長さ調整のつまみを動かしている、または実測長を入力中 */
+var cropMode = false; /* 拓本の画面で、トリミングの範囲を決めている最中 */
 /* 回転や長さ調整をしている間は、ガイドラインと文字グループの線を出さない */
-function rubQuiet(){ return !!rotMode || calBusy; }
+function rubQuiet(){ return !!rotMode || calBusy || cropMode; }
+
+/* --- トリミング（確認資料に出す範囲） -----------------------------
+   確認資料の道具だったが、拓本そのものの設定なので拓本解析へ移した（v8.5）。
+   範囲は「画像の画素」で持つ。180°反転すると rubFlip180 が裏返すので、
+   画面で見えている場所と、いつも同じ所を指す。 */
+function cropBox(){
+  var c = S.rub && S.rub.crop;
+  if (c && isFinite(c.x1) && isFinite(c.y2)) return c;
+  return { x1: 0, y1: 0, x2: RUB.W || 0, y2: RUB.H || 0 };
+}
+function startCrop(){
+  if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  if (rotMode) endRot();
+  if (!S.rub.crop) S.rub.crop = cropBox();
+  cropMode = true;
+  setView("rub");
+  rubPanel(); rubRender();
+  msg("赤い四角の 4辺をつかんで、確認資料に出す範囲を決めてください。");
+}
+function endCrop(){
+  cropMode = false;
+  rubPanel(); persist();
+  if (view === "rub") setView("both"); else { rubRender(); renderDemo(); }
+}
+function cropAll(){
+  S.rub.crop = null;
+  if (cropMode) S.rub.crop = cropBox();
+  rubPanel(); rubRender(); renderDemo(); persist();
+  msg("トリミングを外して、拓本ぜんぶを出すようにしました。");
+}
 
 /* 拓本の画面に出す操作ボタン。回転の手順をここで進める。 */
 function rubOverlay(){
   var ov = $("rubOv"); if (!ov) return;
-  if (!rotMode || !RUB.img){ ov.hidden = true; ov.innerHTML = ""; return; }
+  if ((!rotMode && !cropMode) || !RUB.img){ ov.hidden = true; ov.innerHTML = ""; return; }
   ov.hidden = false;
-  if (rotMode === "pivot" || rotMode === "confirm"){
+  if (!cropMode && (rotMode === "pivot" || rotMode === "confirm")){
     /* 古い呼び方。いまは押したその場から回せる。 */
     rotMode = "spin";
+  }
+  if (cropMode){
+    var cb = cropBox();
+    ov.innerHTML = '<span class="tag">4辺のつまみで範囲を決める</span>' +
+      '<span class="tag">' + Math.round(cb.x2 - cb.x1) + ' × ' + Math.round(cb.y2 - cb.y1) + ' px</span>' +
+      '<button class="mini" id="ovCropAll">全体に戻す</button>' +
+      '<button class="mini primary" id="ovCropEnd">終了</button>';
+    var ca = $("ovCropAll"), ce = $("ovCropEnd");
+    if (ca) ca.onclick = cropAll;
+    if (ce) ce.onclick = endCrop;
+    return;
   }
   ov.innerHTML = '<span class="tag">つかんで回す　' + num(S.rub.rot,0).toFixed(2) + '°</span>' +
     '<span class="tag">◎ を動かすと緑の線も動く</span>' +
@@ -6338,11 +6381,12 @@ function renderDemo(){
   /* トリミング範囲（拓本の画素座標）。未設定なら全体。 */
   /* トリミングのレ点を外しているときは、切らずに全部出す。
      （v5.3 で［全体に戻す］のボタンを外したので、ここで戻せるようにする） */
-  var cr = ($("dCrop").checked && hasRub) ? S.rub.crop : null;
+  /* トリミングは「拓本解析」で決める。決めてあれば、確認資料はその範囲だけを出す。 */
+  var cr = hasRub ? S.rub.crop : null;
   if (!cr) cr = { x1: 0, y1: 0, x2: hasRub ? RUB.W : 0, y2: hasRub ? RUB.H : 0 };
   var cx1 = ix + cr.x1 * mp, cx2 = ix + cr.x2 * mp;
   var cy1 = iy + cr.y1 * mp, cy2 = iy + cr.y2 * mp;
-  var cropping = $("dCrop").checked && showRub && !demoClean;
+  var cropping = false;   /* つまみは拓本解析の画面に移した（v8.5） */
 
   var glyphs = [], hits = [], colBox = {}, demoCells = [];
   if (FONTS.length){
@@ -6532,10 +6576,14 @@ function renderDemo(){
         '" width="' + (cx2-cx1).toFixed(3) + '" height="' + (cy2-cy1).toFixed(3) + '"/></clipPath>' +
       '</defs>' +
       '<rect x="' + vx + '" y="' + vy + '" width="' + vw + '" height="' + vh + '" fill="#fff"/>' +
+      /* 切り抜きは、回す前の外側の g に付ける。内側（回す g の中）に付けると、
+         切り抜きの四角も一緒に回ってしまい、180° 反転したときに
+         見えている範囲と切れる範囲が上下逆になる（v8.5 で直した）。 */
       (showRub
-        ? '<g' + rr + '><image href="' + S.rub.src + '" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) +
+        ? '<g clip-path="url(#dclip)"><g' + rr + '><image href="' + S.rub.src +
+          '" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) +
           '" width="' + iw.toFixed(3) + '" height="' + ih.toFixed(3) + '"' + inv +
-          ' clip-path="url(#dclip)"/></g>'
+          '/></g></g>'
         : '') +
       /* 枠（石の彫刻できる面）。確認資料では、線だけを細く出す。 */
       demoFBox.map(function(q){
@@ -7527,6 +7575,29 @@ function rubRender(){
       '<line x1="' + pvr.x + '" y1="' + (pvr.y - pr*2) + '" x2="' + pvr.x + '" y2="' + (pvr.y + pr*2) +
       '" stroke="#1B6FD6" stroke-width="' + (pr*0.2).toFixed(2) + '"/></g>');
   }
+  /* トリミングの四角と、4辺のつまみ。外側は薄く伏せて、残る所を分かりやすくする。 */
+  var cropHits = "";
+  if (cropMode){
+    var cb = cropBox(), kw = Math.max(W*0.02, (cb.x2-cb.x1)*0.05), kh = Math.max(H*0.006, (cb.y2-cb.y1)*0.02);
+    var dim = 'fill="#14181B" opacity=".38" pointer-events="none"';
+    o.push('<rect x="' + (-GUT) + '" y="0" width="' + (W+GUT) + '" height="' + cb.y1 + '" ' + dim + '/>' +
+      '<rect x="' + (-GUT) + '" y="' + cb.y2 + '" width="' + (W+GUT) + '" height="' + (H-cb.y2) + '" ' + dim + '/>' +
+      '<rect x="' + (-GUT) + '" y="' + cb.y1 + '" width="' + (GUT+cb.x1) + '" height="' + (cb.y2-cb.y1) + '" ' + dim + '/>' +
+      '<rect x="' + cb.x2 + '" y="' + cb.y1 + '" width="' + (W-cb.x2) + '" height="' + (cb.y2-cb.y1) + '" ' + dim + '/>' +
+      '<rect x="' + cb.x1 + '" y="' + cb.y1 + '" width="' + (cb.x2-cb.x1) + '" height="' + (cb.y2-cb.y1) +
+      '" fill="none" stroke="#DC2616" stroke-width="' + (W*0.004) + '" stroke-dasharray="' +
+      (W*0.02) + ' ' + (W*0.014) + '" pointer-events="none"/>');
+    [["x1", cb.x1, (cb.y1+cb.y2)/2, kw, (cb.y2-cb.y1)*0.16, "ew"],
+     ["x2", cb.x2, (cb.y1+cb.y2)/2, kw, (cb.y2-cb.y1)*0.16, "ew"],
+     ["y1", (cb.x1+cb.x2)/2, cb.y1, (cb.x2-cb.x1)*0.28, kh, "ns"],
+     ["y2", (cb.x1+cb.x2)/2, cb.y2, (cb.x2-cb.x1)*0.28, kh, "ns"]].forEach(function(k){
+      o.push('<rect x="' + (k[1]-k[3]/2) + '" y="' + (k[2]-k[4]/2) + '" width="' + k[3] +
+        '" height="' + k[4] + '" rx="' + (Math.min(k[3],k[4])*0.3) + '" fill="#DC2616" opacity=".92" ' +
+        'stroke="#fff" stroke-width="' + (W*0.002) + '" pointer-events="none"/>');
+      cropHits += '<rect class="crophit ' + k[5] + '" data-rcrop="' + k[0] + '" x="' + (k[1]-k[3]) +
+        '" y="' + (k[2]-k[4]) + '" width="' + (k[3]*2) + '" height="' + (k[4]*2) + '" fill="transparent"/>';
+    });
+  }
   var maskLayer = "";
   if ($("rShowMask") && $("rShowMask").checked){
     var mk = buildMask();
@@ -7545,8 +7616,10 @@ function rubRender(){
     /* 中心の印。つかんで動かすので、いちばん上に置く。 */
     (rotMode ? '<circle class="pivhit" cx="' + pvr.x.toFixed(2) + '" cy="' + pvr.y.toFixed(2) +
       '" r="' + (Math.max(W, H) * 0.012 * 2.6).toFixed(2) + '" fill="transparent"/>' : '') +
+    cropHits +
     '</svg>';
   var svg = st.querySelector("svg");
+  bindRubCrop(svg);
   bindPivot(svg);
   rubOverlay();
   bindDrag(svg);
@@ -7559,6 +7632,41 @@ function rubRender(){
       return;
     }
     if (rotMode) return;
+  });
+}
+
+/* トリミングの 4辺をつかんで動かす。画像の画素で持つので、
+   拡大していても、あとで反転しても、指している所は変わらない。 */
+function bindRubCrop(svg){
+  Array.prototype.forEach.call(svg.querySelectorAll("[data-rcrop]"), function(el){
+    el.addEventListener("pointerdown", function(ev){
+      if (ev.button !== undefined && ev.button !== 0) return;
+      ev.preventDefault(); ev.stopPropagation();
+      try { el.setPointerCapture(ev.pointerId); } catch(_){}
+      var k = el.dataset.rcrop, toPt = rubMapper(svg);
+      var MIN = 20;
+      function mv(e){
+        var q = toPt(e), c = S.rub.crop || (S.rub.crop = cropBox());
+        if (k === "x1")      c.x1 = Math.round(Math.max(0, Math.min(c.x2 - MIN, q.x)));
+        else if (k === "x2") c.x2 = Math.round(Math.min(RUB.W, Math.max(c.x1 + MIN, q.x)));
+        else if (k === "y1") c.y1 = Math.round(Math.max(0, Math.min(c.y2 - MIN, q.y)));
+        else                 c.y2 = Math.round(Math.min(RUB.H, Math.max(c.y1 + MIN, q.y)));
+        rubRender();
+      }
+      function up(){
+        try { el.releasePointerCapture(ev.pointerId); } catch(_){}
+        window.removeEventListener("pointermove", mv);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        rubPanel(); persist();
+        var c2 = cropBox();
+        msg("トリミングの範囲を " + Math.round(c2.x2-c2.x1) + " × " +
+            Math.round(c2.y2-c2.y1) + " px にしました。");
+      }
+      window.addEventListener("pointermove", mv);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
   });
 }
 
@@ -7880,6 +7988,26 @@ function rubPanel(){
       '<br>緑の縦線は、この中心を通ります。◎ をつかんで動かすと、線も一緒に動きます。</p>';
   }
   $("rubRot").innerHTML = h;
+
+  /* ---- ③ トリミング ---- */
+  h = "";
+  if (loaded){
+    var cb0 = cropBox(), whole = !r.crop ||
+      (cb0.x1 <= 0 && cb0.y1 <= 0 && cb0.x2 >= RUB.W && cb0.y2 >= RUB.H);
+    h += '<button class="mini' + (cropMode ? " primary" : "") + '" id="rCrop" style="width:100%;margin-bottom:4px;">' +
+      (cropMode ? "終了（いま 範囲を決めています）" : "▣ 範囲を決める") + '</button>';
+    if (!whole)
+      h += '<button class="mini" id="rCropAll" style="width:100%;margin-bottom:4px;">全体に戻す</button>';
+    h += '<p class="hint" style="margin-top:0;">' +
+      (whole ? '拓本ぜんぶを出しています。'
+             : 'いまの範囲　' + Math.round(cb0.x1) + ', ' + Math.round(cb0.y1) + ' 〜 ' +
+               Math.round(cb0.x2) + ', ' + Math.round(cb0.y2) + ' px（' +
+               Math.round(cb0.x2-cb0.x1) + ' × ' + Math.round(cb0.y2-cb0.y1) + '）') +
+      '<br><b>確認資料</b>に出す範囲です。ゴムシートの出力と長さ調整には関わりません。</p>';
+  }
+  $("rubCrop").innerHTML = h;
+  var bc = $("rCrop");   if (bc) bc.onclick = function(){ cropMode ? endCrop() : startCrop(); };
+  var bca = $("rCropAll"); if (bca) bca.onclick = cropAll;
 
   /* ---- ④ 長さ調整 ---- */
   h = "";

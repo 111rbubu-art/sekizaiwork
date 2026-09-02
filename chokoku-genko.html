@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v8.7</title>
+<title>彫刻原稿 v8.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1407,7 +1407,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v8.7";
+var APP_VER = "v8.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1446,6 +1446,7 @@ var S = {
   note: { on:true, text:"", x:null, y:null, size:6 },
   demoDx: {},                        /* 確認資料での左右のずらし量 mm。1行ガイドラインごと。出力には効かない */
   demoRx: 0,                         /* デモでの拓本そのものの左右ずらし mm */
+  rubDx: 0,                          /* 校正での拓本そのものの左右ずらし mm。出力には効かない */
   bothGap: 6,                        /* 構成表示：ガイドライン同士のあいだ mm */
   /* 枠 ＝ 石の彫刻できる面。校正の画面にだけ出す。
      frames[i] = { name, w, h, y }。y はシートと同じ縦の目盛りでの上端。
@@ -4931,6 +4932,7 @@ function setSub(t){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
   if (t === "tpl"){ renderTpl(); tplLoadSP(); frtLoadSP(); }
+  if (t === "rub") rubPanel();
   if (t === "frame") renderFrames();
   if (t === "font") fontPanel();
   if (t === "info") noteFill();
@@ -6344,7 +6346,10 @@ function renderDemo(){
     (pkD.fbox || []).forEach(function(q){ if (q.i === rfd) fbD = q; });
     /* 文字側のずらし（demoDx）は混ぜない。混ぜると拓本も一緒に動いてしまい、
        いくらずらしても重なり方が変わらない（＝動かないように見える）。 */
-    ix = fbD ? (fbD.l + (fbD.w - RUB.W * mp) / 2)
+    /* 置き場所は「見えている範囲」で決める。トリミングで切った分まで
+       場所を取ると、枠の中に白い空きができる（v8.8）。 */
+    var cbD = cropBox();
+    ix = fbD ? (fbD.l + (fbD.w - (cbD.x2 - cbD.x1) * mp) / 2 - cbD.x1 * mp)
              : (demoXBase(Math.max(0, Math.min((S.centers||[]).length-1, num((S.groups[sel]||{}).col, 0))))
                 - an.px * mp);
     ix += rdx;
@@ -6478,9 +6483,9 @@ function renderDemo(){
   }
   /* 拓本そのものも、位置調整のときだけ左右に動かせる（表示だけ）。
      文字の面より先に置くので、文字の上を押したときは文字が優先される。 */
-  if (demoAdj && showRub && iw > 0)
-    hits.push('<rect class="rubhit" data-rubdrag="1" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) +
-      '" width="' + iw.toFixed(3) + '" height="' + ih.toFixed(3) + '" fill="transparent"/>');
+  if (demoAdj && showRub && (cx2 - cx1) > 0)
+    hits.push('<rect class="rubhit" data-rubdrag="1" x="' + cx1.toFixed(3) + '" y="' + cy1.toFixed(3) +
+      '" width="' + (cx2-cx1).toFixed(3) + '" height="' + (cy2-cy1).toFixed(3) + '" fill="transparent"/>');
   if (demoAdj) demoCells.forEach(function(c){
     var pad = 0.8;
     hits.push('<rect class="colhit" data-gl="' + glOf(c.ci) + '" x="' + (c.x - c.w/2 - pad).toFixed(3) +
@@ -6766,16 +6771,23 @@ function renderBoth(){
   var mp = mmPerPx(), gap = bothGap();
   var zoneGap = Math.max(gap, 10);
   var img = "", ix = 0, iy = 0, iw = 0, ih = 0, hasRub = false, bothClip = "";
+  /* 画面に出ている拓本の範囲（mm）。トリミングしてあれば、その分だけ小さい。
+     場所を決めるのも、まわりの広さを計るのも、こちらを見る。
+     切り落とした分まで場所を取っていたので、枠の中に白い空きができていた（v8.8）。 */
+  var rvL = 0, rvT = 0, rvW = 0, rvH = 0, rcX = 0, rcY = 0;
   bothRubX = null;
   if (RUB.img && mp){
     hasRub = true;
-    ix = pk.right + zoneGap;
+    var cbB = cropBox();
+    rcX = cbB.x1 * mp; rcY = cbB.y1 * mp;
+    rvW = (cbB.x2 - cbB.x1) * mp; rvH = (cbB.y2 - cbB.y1) * mp;
+    ix = pk.right + zoneGap - rcX;
     /* 「枠の中」を選んでいれば、その枠の真ん中に置く。既定は枠の外（右） */
     var rfi = num(S.rubFrame, -1);
     if (rfi >= 0 && pk.fbox){
       var rb = null;
       pk.fbox.forEach(function(q){ if (q.i === rfi) rb = q; });
-      if (rb) ix = rb.l + (rb.w - RUB.W * mp) / 2;
+      if (rb) ix = rb.l + (rb.w - rvW) / 2 - rcX;
     }
     if (ov){
       /* 合わせ先は、いま選んでいる文字グループのセンターライン。
@@ -6798,7 +6810,11 @@ function renderBoth(){
     iw = RUB.W * mp; ih = RUB.H * mp;
     /* 頭・脚をつかんでいる間は、絵を止めておく。
        ここで動かすと、印を置きたい所が逃げてしまう。 */
-    if (bothImgHold){ iy = bothImgHold.iy; mp = bothImgHold.mp; iw = RUB.W * mp; ih = RUB.H * mp; }
+    if (bothImgHold){ iy = bothImgHold.iy; mp = bothImgHold.mp; iw = RUB.W * mp; ih = RUB.H * mp;
+      rcX = cbB.x1 * mp; rcY = cbB.y1 * mp;
+      rvW = (cbB.x2 - cbB.x1) * mp; rvH = (cbB.y2 - cbB.y1) * mp; }
+    ix += num(S.rubDx, 0);                 /* 拓本そのものの左右のずらし（v8.8） */
+    rvL = ix + rcX; rvT = iy + rcY;
     var rt = rubRotDeg(), of = rotOff();
     var rr = (rt || of.x || of.y)
       ? ' transform="translate(' + (of.x*mp).toFixed(3) + ' ' + (of.y*mp).toFixed(3) + ') rotate(' +
@@ -6820,8 +6836,8 @@ function renderBoth(){
       (ov ? ' opacity="0.6"' : '') + '/></g>' + (bcr ? '</g>' : '') +
       /* 拓本の絵を押したら、左のメニューを「拓本解析」に切り替えるための面。
          この上に文字やガイドラインの面を重ねるので、そちらが優先される。 */
-      '<rect data-rub="1" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) + '" width="' + iw.toFixed(3) +
-      '" height="' + ih.toFixed(3) + '" fill="transparent"/>';
+      '<rect data-rub="1" x="' + rvL.toFixed(3) + '" y="' + rvT.toFixed(3) + '" width="' + rvW.toFixed(3) +
+      '" height="' + rvH.toFixed(3) + '" fill="transparent"/>';
   }
 
   /* まだ何も出せないとき。枠だけでも作ってあれば、それは出す
@@ -6844,8 +6860,8 @@ function renderBoth(){
     vy = Math.min(vy, b.y1); vy2 = Math.max(vy2, b.y2);
   });
   if (hasRub){
-    vx = Math.min(vx, ix); vx2 = Math.max(vx2, ix + iw);
-    vy = Math.min(vy, iy); vy2 = Math.max(vy2, iy + ih);
+    vx = Math.min(vx, rvL); vx2 = Math.max(vx2, rvL + rvW);
+    vy = Math.min(vy, rvT); vy2 = Math.max(vy2, rvT + rvH);
   }
   /* 枠も画面に入れる。中身が無い枠でも、置いた大きさが見えるように。 */
   (pk.fbox || []).forEach(function(q){
@@ -6866,7 +6882,7 @@ function renderBoth(){
   var GUT = KN * 3.4;                                 /* 左右の余白 */
   vx -= GUT; vw += GUT * 2;
   /* 枠の「1行目の位置」のつまみは、枠の外（上）に出す。その分の余白をとる。 */
-  var FRTOP = ((pk.fbox || []).length) ? KN * 2.8 : 0;
+  var FRTOP = ((pk.fbox || []).length || hasRub) ? KN * 2.8 : 0;
   vy -= FRTOP; vh += FRTOP;
   var sc = fitScale(vw * MMPX, vh * MMPX, "bothwrap") * Z.both / 100;
   KN = 16 / (MMPX * (sc > 0 ? sc : 0.2));
@@ -6923,6 +6939,21 @@ function renderBoth(){
     }
   });
 
+  /* 拓本そのものの左右のつまみ。枠の「1行目の位置」と同じ作りにして、
+     右はしの線を上へ伸ばし、その先のふうせんをつかんで動かす（v8.8）。
+     動かすのは校正の見え方だけで、ゴムシートの出力には効かない。 */
+  if (hasRub && FRTOP > 0){
+    var rhx = rvL + rvW, rhy = rvT - FRTOP + KN * 0.9;
+    frameLayer += '<line x1="' + rhx.toFixed(3) + '" y1="' + rhy.toFixed(3) +
+      '" x2="' + rhx.toFixed(3) + '" y2="' + (rvT + rvH).toFixed(3) +
+      '" stroke="#137A52" stroke-width="0.5" stroke-dasharray="4 3"/>' +
+      '<circle cx="' + rhx.toFixed(3) + '" cy="' + rhy.toFixed(3) + '" r="' + (KN*0.62).toFixed(3) +
+      '" fill="#137A52" stroke="#fff" stroke-width="' + (KN*0.16).toFixed(3) + '"/>';
+    hits.push('<rect class="bhitx" data-k="rubx:0" x="' + (rhx - KN).toFixed(3) +
+      '" y="' + (rhy - KN).toFixed(3) + '" width="' + (KN*2).toFixed(3) +
+      '" height="' + (KN*2).toFixed(3) + '" fill="transparent"/>');
+  }
+
   /* --- ガイド ---
      いま選んでいる 1行ガイドラインの線だけを出す。ほかのガイドラインの線は
      隠す。線が重なって、どれがどの行のものか分からなくなるため。 */
@@ -6958,12 +6989,12 @@ function renderBoth(){
       var col = CCOL[curGl % CCOL.length];
       var x = ix + px * mp, rw = cenW(ci);
       /* 拓本の上は絵が細かいので、線は校正文字の側より太くする */
-      guides += '<line x1="' + x.toFixed(3) + '" y1="' + iy.toFixed(3) + '" x2="' + x.toFixed(3) +
-        '" y2="' + (iy + ih).toFixed(3) + '" stroke="' + col +
+      guides += '<line x1="' + x.toFixed(3) + '" y1="' + rvT.toFixed(3) + '" x2="' + x.toFixed(3) +
+        '" y2="' + (rvT + rvH).toFixed(3) + '" stroke="' + col +
         '" stroke-width="1" stroke-dasharray="4 3"/>';
       if (rw > 0) [x - rw/2, x + rw/2].forEach(function(xx){
-        guides += '<line x1="' + xx.toFixed(3) + '" y1="' + iy.toFixed(3) + '" x2="' + xx.toFixed(3) +
-          '" y2="' + (iy + ih).toFixed(3) + '" stroke="' + col +
+        guides += '<line x1="' + xx.toFixed(3) + '" y1="' + rvT.toFixed(3) + '" x2="' + xx.toFixed(3) +
+          '" y2="' + (rvT + rvH).toFixed(3) + '" stroke="' + col +
           '" stroke-width="0.7" opacity="0.75"/>';
       });
       guides += '<text text-anchor="middle" x="' + x.toFixed(3) + '" y="' + (vy + KN*0.8).toFixed(3) +
@@ -7023,8 +7054,8 @@ function renderBoth(){
       [[iy + num(S.rub.calTop, 0) * mp, "頭", "cal:top"],
        [iy + num(S.rub.calBot, 0) * mp, "脚", "cal:bot"]].forEach(function(pair){
         if (!isFinite(pair[0])) return;
-        guides += '<line x1="' + ix.toFixed(3) + '" y1="' + pair[0].toFixed(3) +
-          '" x2="' + (ix + iw).toFixed(3) + '" y2="' + pair[0].toFixed(3) +
+        guides += '<line x1="' + rvL.toFixed(3) + '" y1="' + pair[0].toFixed(3) +
+          '" x2="' + (rvL + rvW).toFixed(3) + '" y2="' + pair[0].toFixed(3) +
           '" stroke="#DC2616" stroke-width="0.5"/>';
         guides += '<rect x="' + (kx2 - KN/2).toFixed(3) + '" y="' + (pair[0] - KN/2).toFixed(3) +
           '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
@@ -7217,6 +7248,11 @@ function bindBothDrag(svg){
         var p0 = toPt(ev);
         if (f0 && isFinite(p0.x)) frx0 = { x: p0.x, dx: num(f0.dx, 0) };
       }
+      var rbx0 = null;
+      if (k[0] === "rubx"){
+        var pr0 = toPt(ev);
+        if (isFinite(pr0.x)) rbx0 = { x: pr0.x, dx: num(S.rubDx, 0) };
+      }
       if (k[0] === "cal" && bothRubX !== null && mp0){
         bothImgHold = { iy: mmOf(0), mp: mp0 };
       }
@@ -7224,6 +7260,12 @@ function bindBothDrag(svg){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
         if (k[0] === "glmove"){ lastX = q.x; return; }
+        if (k[0] === "rubx"){
+          if (!rbx0 || !isFinite(q.x)) return;
+          S.rubDx = +(rbx0.dx + (q.x - rbx0.x)).toFixed(1);
+          renderBoth();
+          return;
+        }
         if (k[0] === "frx"){
           var f2 = S.frames[+k[1]];
           if (!f2 || !frx0 || !isFinite(q.x)) return;
@@ -7293,6 +7335,12 @@ function bindBothDrag(svg){
           msg("拓本の 頭 " + num(S.rub.calTop,0) + " px ／ 脚 " + num(S.rub.calBot,0) +
               " px にしました。いまの縮尺では、この間は " + num(S.rub.realLen,0) +
               " mm です。実際に測った長さは「実測長」の欄に打ち込んでください。");
+          return;
+        }
+        if (k[0] === "rubx"){
+          renderBoth(); persist();
+          msg("拓本を左右 " + (num(S.rubDx,0) > 0 ? "＋" : "") + (+num(S.rubDx,0).toFixed(1)) +
+              " mm にしました（校正の見え方だけ）。");
           return;
         }
         if (k[0] === "frx"){
@@ -7996,9 +8044,19 @@ function rubPanel(){
              : 'いまの範囲　' + Math.round(cb0.x1) + ', ' + Math.round(cb0.y1) + ' 〜 ' +
                Math.round(cb0.x2) + ', ' + Math.round(cb0.y2) + ' px（' +
                Math.round(cb0.x2-cb0.x1) + ' × ' + Math.round(cb0.y2-cb0.y1) + '）') +
-      '<br><b>確認資料</b>に出す範囲です。ゴムシートの出力と長さ調整には関わりません。</p>';
+      '<br><b>校正</b>と<b>確認資料</b>に出す範囲です。ゴムシートの出力と長さ調整には関わりません。</p>';
+    if (num(S.rubDx, 0))
+      h += '<button class="mini" id="rDx0" style="width:100%;margin-bottom:4px;">左右のずらしを 0 に戻す（' +
+        (num(S.rubDx,0) > 0 ? "＋" : "") + (+num(S.rubDx,0).toFixed(1)) + ' mm）</button>';
+    h += '<p class="hint" style="margin-top:0;">校正では、拓本の右はしから上へ伸びた線の' +
+      '<b>緑のふうせん</b>をつかむと、拓本そのものを左右に動かせます（見え方だけ）。</p>';
   }
   $("rubCrop").innerHTML = h;
+  var bdx = $("rDx0");
+  if (bdx) bdx.onclick = function(){
+    S.rubDx = 0; rubPanel(); renderBoth(); persist();
+    msg("拓本の左右のずらしを 0 に戻しました。");
+  };
   var bc = $("rCrop");   if (bc) bc.onclick = function(){ cropMode ? endCrop() : startCrop(); };
   var bca = $("rCropAll"); if (bca) bca.onclick = cropAll;
 

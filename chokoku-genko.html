@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v9.0</title>
+<title>彫刻原稿 v9.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -291,6 +291,17 @@
   #rubstage{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.16);margin:0 auto;
     -webkit-user-select:none;user-select:none;}
   #rubstage svg{display:block;}
+  #rubwrap{position:relative;}
+  #rubLenBox{position:absolute;left:0;right:0;display:flex;justify-content:center;z-index:12;}
+  #rubLenBox[hidden]{display:none !important;}
+  #rubLenBox .inner{display:flex;align-items:center;gap:6px;background:var(--surface);
+    border:1px solid var(--line);border-radius:8px;padding:5px 9px;
+    box-shadow:0 2px 10px rgba(0,0,0,.18);font-size:11.5px;white-space:nowrap;}
+  #rubLenBox input{width:92px;padding:3px 6px;font-size:12px;}
+  #rubFix .fixrow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+    padding:3px 0;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--muted);}
+  #rubFix .fixrow:last-child{border-bottom:none;}
+  #rubFix .fixrow b{color:var(--ink);font-weight:600;text-align:right;}
   #rubstage .hit{cursor:ns-resize;}
   #rubstage .hitx{cursor:ew-resize;}
   #rubstage .spinhit{cursor:grab;}
@@ -503,14 +514,8 @@
         <div id="rubData"></div>
         <div id="rubBrowse"></div>
 
-        <h3 class="sec">② 回転</h3>
-        <div id="rubRot"></div>
-
-        <h3 class="sec">③ トリミング</h3>
-        <div id="rubCrop"></div>
-
-        <h3 class="sec">④ 長さ調整</h3>
-        <div id="rubCal"></div>
+        <h3 class="sec">② 修正結果</h3>
+        <div id="rubFix"></div>
 
       </div>
 
@@ -599,6 +604,11 @@
         </span>
         <span class="forRub">
           <label class="chk"><input type="checkbox" id="rShowGuides" checked style="width:auto;"> ガイド</label>
+          <button class="mini" id="rbFlip">↻ 180° 反転</button>
+          <button class="mini" id="rbRot">◎ 回して合わせる</button>
+          <button class="mini" id="rbCrop">▣ トリミング</button>
+          <button class="mini" id="rbCropAll">全体に戻す</button>
+          <button class="mini primary" id="rbEnd">終了</button>
         </span>
         <span class="forBoth">
           <label class="f" style="margin:0;flex-direction:row;align-items:center;gap:5px;">
@@ -637,6 +647,10 @@
         <div id="rubwrap">
           <div id="rubOvWrap"><div id="rubOv" hidden></div></div>
           <div id="rubstage"></div>
+          <!-- 脚の線のすぐ下に出す入力欄。絵を描き直しても作り直さない
+               （作り直すと、打っている途中で消えてしまう）。 -->
+          <div id="rubLenBox" hidden><div class="inner"><span>実測した文字全長 mm</span>
+            <input type="number" id="rLen" step="0.1" placeholder="現場で測った値"></div></div>
         </div>
         <div id="demowrap"><div id="demostage"></div></div>
         <div id="bothwrap"><div id="bothstage"></div></div>
@@ -1407,7 +1421,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v9.0";
+var APP_VER = "v9.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4694,17 +4708,27 @@ function cropBox(){
 }
 function startCrop(){
   if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
-  if (rotMode) endRot();
+  rotMode = null;
   if (!S.rub.crop) S.rub.crop = cropBox();
   cropMode = true;
-  setView("rub");
+  if (view !== "rub") setView("rub");
   rubPanel(); rubRender();
-  msg("赤い四角の 4辺をつかんで、確認資料に出す範囲を決めてください。");
+  msg("赤い四角の 4辺をつかんで、出す範囲を決めてください。");
 }
 function endCrop(){
   cropMode = false;
-  rubPanel(); persist();
-  if (view === "rub") setView("both"); else { rubRender(); renderDemo(); }
+  rubPanel(); rubRender(); renderDemo(); renderBoth(); persist();
+}
+/* 拓本の画面をひらく／とじる（パネルの［✎ 修正する］と、画面の［終了］） */
+function startFix(){
+  if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  setView("rub"); rubPanel(); rubRender();
+}
+function endFix(){
+  rotMode = null; cropMode = false;
+  persist();
+  setView("both");
+  rubPanel();
 }
 function cropAll(){
   S.rub.crop = null;
@@ -4713,36 +4737,28 @@ function cropAll(){
   msg("トリミングを外して、拓本ぜんぶを出すようにしました。");
 }
 
-/* 拓本の画面に出す操作ボタン。回転の手順をここで進める。 */
+/* 拓本の画面の帯。道具はぜんぶ、この 1つの帯にまとめる（v9.1）。
+   ふうせん（#rubOv）は使わない。 */
 function rubOverlay(){
-  var ov = $("rubOv"); if (!ov) return;
-  if ((!rotMode && !cropMode) || !RUB.img){ ov.hidden = true; ov.innerHTML = ""; return; }
-  ov.hidden = false;
-  if (!cropMode && (rotMode === "pivot" || rotMode === "confirm")){
-    /* 古い呼び方。いまは押したその場から回せる。 */
-    rotMode = "spin";
+  var ov = $("rubOv");
+  if (ov){ ov.hidden = true; ov.innerHTML = ""; }
+  rubBar();
+}
+function rubBar(){
+  function set(id, on, show){
+    var b = $(id); if (!b) return;
+    b.hidden = (show === false);
+    if (on !== null) b.className = "mini" + (on ? " primary" : "");
   }
-  if (cropMode){
-    var cb = cropBox();
-    ov.innerHTML = '<span class="tag">4辺のつまみで範囲を決める</span>' +
-      '<span class="tag">' + Math.round(cb.x2 - cb.x1) + ' × ' + Math.round(cb.y2 - cb.y1) + ' px</span>' +
-      '<button class="mini" id="ovCropAll">全体に戻す</button>' +
-      '<button class="mini primary" id="ovCropEnd">終了</button>';
-    var ca = $("ovCropAll"), ce = $("ovCropEnd");
-    if (ca) ca.onclick = cropAll;
-    if (ce) ce.onclick = endCrop;
-    return;
-  }
-  ov.innerHTML = '<span class="tag">つかんで回す　' + num(S.rub.rot,0).toFixed(2) + '°</span>' +
-    '<span class="tag">◎ を動かすと緑の線も動く</span>' +
-    (S.rub.pivot ? '<button class="mini" id="ovMid">中心を真ん中に戻す</button>' : '') +
-    '<button class="mini primary" id="ovEnd">終了</button>';
-  var mid = $("ovMid"), en = $("ovEnd");
-  if (mid) mid.onclick = function(){
-    S.rub.pivot = null; rubPanel(); rubRender(); persist();
-    msg("回転の中心を画像の真ん中に戻しました。");
-  };
-  if (en) en.onclick = endRot;
+  var loaded = !!RUB.img;
+  set("rbFlip", !!(S.rub && S.rub.flip180), loaded);
+  set("rbRot",  !!rotMode, loaded);
+  set("rbCrop", !!cropMode, loaded);
+  var cb = loaded ? cropBox() : null;
+  var whole = !loaded || !S.rub.crop ||
+    (cb.x1 <= 0 && cb.y1 <= 0 && cb.x2 >= RUB.W && cb.y2 >= RUB.H);
+  set("rbCropAll", null, loaded && cropMode && !whole);
+  var e = $("rbEnd"); if (e) e.className = "mini primary";
 }
 /* 回転の中心を置く。何度でもクリックし直せる。 */
 function setPivotAt(q){
@@ -4755,9 +4771,15 @@ function setPivotAt(q){
 }
 function endRot(){
   rotMode = null;
-  rubPanel(); persist();
-  /* 拓本の画面は回すときだけのもの。終わったら構成へ戻す。 */
-  if (view === "rub") setView("both"); else { rubRender(); renderStage(); }
+  rubPanel(); rubRender(); renderStage(); persist();
+}
+function startSpin(){
+  if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  cropMode = false;
+  rotMode = "spin";
+  if (view !== "rub") setView("rub");
+  rubPanel(); rubRender();
+  msg("拓本をつかんで動かすと回ります。クリックすると、そこが回転の中心になります。");
 }
 /* 画面の座標を、拓本の画素座標（viewBox）に直す変換を作る。
    ドラッグ中は SVG を描き直すので、押した時点の対応表を作って最後まで使う。 */
@@ -7475,7 +7497,8 @@ function bindDemoDrag(svg){
 /* --- 拓本ビューの描画 --- */
 function rubRender(){
   var st = $("rubstage");
-  if (!RUB.img){ st.innerHTML = ""; st.style.width = "auto"; st.style.height = "auto"; return; }
+  if (!RUB.img){ st.innerHTML = ""; st.style.width = "auto"; st.style.height = "auto";
+    var lb0 = $("rubLenBox"); if (lb0) lb0.hidden = true; return; }
   var r = S.rub, W = RUB.W, H = RUB.H;
   var GUT = W * 0.30;                 /* 左の余白。つまみはここに出して、紙の上を隠さない。 */
   var sc = fitScale(W + GUT, H, "rubwrap") * Z.rub / 100;
@@ -7667,6 +7690,15 @@ function rubRender(){
       '" r="' + (Math.max(W, H) * 0.012 * 2.6).toFixed(2) + '" fill="transparent"/>' : '') +
     cropHits +
     '</svg>';
+  /* 脚の線のすぐ下に、実測した文字全長の入力欄を出す（v9.1）。場所と値だけ直す。 */
+  var lb = $("rubLenBox");
+  if (lb){
+    lb.hidden = false;
+    lb.style.top = (st.offsetTop + Math.max(0, num(r.calBot, 0)) * (dispH / (H || 1)) + 10) + "px";
+    var li = $("rLen");
+    if (li && document.activeElement !== li) li.value = r.realLen || "";
+  }
+
   var svg = st.querySelector("svg");
   bindRubCrop(svg);
   bindPivot(svg);
@@ -7778,10 +7810,8 @@ function bindSpin(svg){
       if (img) img.setAttribute("transform",
         "translate(" + of.x.toFixed(2) + " " + of.y.toFixed(2) + ") rotate(" +
         rubRotDeg() + " " + (RUB.W/2) + " " + (RUB.H/2) + ")");
-      var lab = $("rubRot") && $("rubRot").querySelector("b");
+      var lab = $("rFixRot");          /* パネルの「角度」を、回している間も出す */
       if (lab) lab.textContent = S.rub.rot.toFixed(2) + "°";
-      var tg = $("rubOv") && $("rubOv").querySelector(".tag");
-      if (tg) tg.textContent = "つかんで回す　" + S.rub.rot.toFixed(2) + "°";
     }
     function up(){
       try { hit.releasePointerCapture(ev.pointerId); } catch(_){}
@@ -7993,8 +8023,7 @@ function rubPanel(){
         '<span style="word-break:break-all;">' + esc((SP.cfg && SP.cfg.folderPath) || "") + '</span></p>'
       : '<p class="hint" style="margin-top:6px;">本体アプリの納骨リストから開くと、［取り込み］でその案件のフォルダーの中から選べます。</p>';
   } else {
-    h += '<p class="hint">' + RUB.W + ' × ' + RUB.H + ' px' +
-      (S.rub && S.rub.srcName ? '<br>' + esc(S.rub.srcName) : '') + '</p>';
+    h += '<p class="hint">' + esc((S.rub && S.rub.srcName) || "拓本") + '</p>';
   }
   $("rubData").innerHTML = h;
   if (!loaded){
@@ -8016,100 +8045,59 @@ function rubPanel(){
   if (lo) lo.textContent = rubCanUseSP() ? "SP取込" : "ファイルを選ぶ";
   var del = $("btnRubDel"); if (del) del.disabled = !loaded;
 
-  /* ---- ③ 回転 ---- */
-  h = "";
-  if (!loaded){
-    h += "";
-  } else {
-    var pv = rotPivot();
-    /* スキャナーに上下逆に置いた拓本を直す。角度の微調整とは別に持つ。 */
-    h += '<button class="mini' + (r.flip180 ? " primary" : "") + '" id="rFlip" style="width:100%;margin-bottom:8px;">' +
-      (r.flip180 ? "↻ 180° 反転中（もう一度で戻す）" : "↻ 180° 反転（上下が逆のとき）") + '</button>';
-    h += '<label class="f"><span>角度　<b>' + (num(r.rot,0)).toFixed(2) + '°</b></span>' +
-      '<input type="range" id="rRot" min="-15" max="15" step="0.05" value="' + num(r.rot,0) + '"></label>';
-    h += '<button class="mini' + (rotMode ? " primary" : "") + '" id="rPivot" style="width:100%;margin-bottom:4px;">' +
-      (rotMode ? "終了（いま マウスで回せます）" : "マウスで回す") + '</button>';
-    h += '<p class="hint" style="margin-top:0;">' + (rotMode
-      ? '拓本の上でつかんで動かすと回ります。クリックした場所が回転の中心になります。'
-      : '拓本をつかんで回せるようにします。') + '</p>';
-    h += '<p class="hint">回転の中心 ' + Math.round(pv.x) + ', ' + Math.round(pv.y) + ' px' +
-      (r.pivot ? '' : '（画像の中心）') +
-      '<br>緑の縦線は、この中心を通ります。◎ をつかんで動かすと、線も一緒に動きます。</p>';
-  }
-  $("rubRot").innerHTML = h;
-
-  /* ---- ③ トリミング ---- */
+  /* ---- ② 修正結果 ----
+     直す操作はぜんぶ拓本の画面（［✎ 修正する］）へ移した。
+     ここは「いまどうなっているか」を並べるだけ（v9.1）。 */
   h = "";
   if (loaded){
-    var cb0 = cropBox(), whole = !r.crop ||
-      (cb0.x1 <= 0 && cb0.y1 <= 0 && cb0.x2 >= RUB.W && cb0.y2 >= RUB.H);
-    h += '<button class="mini' + (cropMode ? " primary" : "") + '" id="rCrop" style="width:100%;margin-bottom:4px;">' +
-      (cropMode ? "終了（いま 範囲を決めています）" : "▣ 範囲を決める") + '</button>';
-    if (!whole)
-      h += '<button class="mini" id="rCropAll" style="width:100%;margin-bottom:4px;">全体に戻す</button>';
-    h += '<p class="hint" style="margin-top:0;">' +
-      (whole ? '拓本ぜんぶを出しています。'
-             : 'いまの範囲　' + Math.round(cb0.x1) + ', ' + Math.round(cb0.y1) + ' 〜 ' +
-               Math.round(cb0.x2) + ', ' + Math.round(cb0.y2) + ' px（' +
-               Math.round(cb0.x2-cb0.x1) + ' × ' + Math.round(cb0.y2-cb0.y1) + '）') +
-      '<br><b>校正</b>と<b>確認資料</b>に出す範囲です。ゴムシートの出力と長さ調整には関わりません。</p>';
-    if (num(S.rubDx, 0))
-      h += '<button class="mini" id="rDx0" style="width:100%;margin-bottom:4px;">左右のずらしを 0 に戻す（' +
-        (num(S.rubDx,0) > 0 ? "＋" : "") + (+num(S.rubDx,0).toFixed(1)) + ' mm）</button>';
-    h += '<p class="hint" style="margin-top:0;">校正では、拓本の右はしから上へ伸びた線の' +
-      '<b>緑のふうせん</b>をつかむと、拓本そのものを左右に動かせます（見え方だけ）。</p>';
-  }
-  $("rubCrop").innerHTML = h;
-  var bdx = $("rDx0");
-  if (bdx) bdx.onclick = function(){
-    S.rubDx = 0; rubPanel(); renderBoth(); persist();
-    msg("拓本の左右のずらしを 0 に戻しました。");
-  };
-  var bc = $("rCrop");   if (bc) bc.onclick = function(){ cropMode ? endCrop() : startCrop(); };
-  var bca = $("rCropAll"); if (bca) bca.onclick = cropAll;
-
-  /* ---- ④ 長さ調整 ---- */
-  h = "";
-  if (!loaded){
-    h += "";
-  } else {
+    h += '<button class="mini' + (view === "rub" ? " primary" : "") +
+      '" id="rFix" style="width:100%;margin-bottom:8px;">' +
+      (view === "rub" ? "終了" : "✎ 修正する") + '</button>';
+    var row = function(k, v, id){
+      return '<div class="fixrow"><span>' + k + '</span><b' +
+        (id ? ' id="' + id + '"' : '') + '>' + v + '</b></div>';
+    };
+    var cb1 = cropBox(), whole1 = !r.crop ||
+      (cb1.x1 <= 0 && cb1.y1 <= 0 && cb1.x2 >= RUB.W && cb1.y2 >= RUB.H);
+    h += row("180° 反転", r.flip180 ? "あり" : "なし");
+    h += row("角度", num(r.rot, 0).toFixed(2) + "°", "rFixRot");
+    h += row("トリミング", whole1 ? "全体"
+      : (Math.round(cb1.x2 - cb1.x1) + " × " + Math.round(cb1.y2 - cb1.y1) + " px"));
     var dpi = num(r.dpi, 0), ld = lenFromDpi();
-    h += '<p class="hint" style="margin-top:0;">' + (dpi
-      ? '画像 <b>' + dpi + ' dpi</b>（' + esc(r.dpiSrc || "") + '）　頭〜脚 <b>' + ld + ' mm</b>'
-      : '画像に解像度の記録がありません。実測長を入れてください。') + '</p>';
-    h += '<label class="f" style="margin-bottom:5px;"><span id="rLenLab">実測した文字全長 mm</span>' +
-      '<input type="number" id="rLen" value="' + (r.realLen || "") +
-      '" step="0.1" placeholder="現場で測った値"></label>';
-    if (dpi)
-      h += '<button class="mini" id="rLenDpi" style="width:100%;margin-bottom:6px;"' +
-        (r.lenAuto ? ' disabled' : '') + '>解像度どおりに戻す</button>';
-    h += '<p class="hint" id="rLenDev" style="margin-top:0;"></p>';
-    h += '<p class="hint" id="rLenScale"></p>';
+    h += row("画像の解像度", dpi ? (dpi + " dpi（" + esc(r.dpiSrc || "") + "）") : "記録なし");
+    if (dpi) h += row("解像度どおりの 頭〜脚", ld + " mm");
+    h += row("実測した文字全長",
+      (r.realLen ? (+num(r.realLen,0).toFixed(1)) + " mm" : "未入力") +
+      (dpi ? (r.lenAuto ? "（解像度どおり）" : "（手で入力）") : ""));
+    h += '<div class="fixrow" id="rLenDevRow"><span>歪みの補正</span><b id="rLenDev"></b></div>';
+    h += '<div class="fixrow"><span>縮尺</span><b id="rLenScale"></b></div>';
   }
-  $("rubCal").innerHTML = h;
+  $("rubFix").innerHTML = h;
+  var bf = $("rFix");
+  if (bf) bf.onclick = function(){ (view === "rub") ? endFix() : startFix(); };
   rubCalInfo();
 
   renderCols();
   bindRub();
 }
 
-/* ③ の数値表示だけを更新する。入力欄は作り直さない（打っている途中で消えないように）。 */
+/* 数値の表示だけを更新する。入力欄は作り直さない（打っている途中で消えないように）。 */
 function rubCalInfo(){
-  var r = S.rub, dev = $("rLenDev"), sc = $("rLenScale"), bd = $("rLenDpi");
-  if (bd) bd.disabled = !!r.lenAuto;
-  var lab = $("rLenLab");
-  if (lab) lab.textContent = "実測した文字全長 mm" +
-    (num(r.dpi,0) ? (r.lenAuto ? "（解像度どおり）" : "（手で入力）") : "");
+  var r = S.rub, dev = $("rLenDev"), sc = $("rLenScale");
   var ld = lenFromDpi(), mp = mmPerPx();
   if (dev){
+    var row = $("rLenDevRow");
     if (num(r.dpi,0) && !r.lenAuto && ld && r.realLen){
       var d = (r.realLen / ld - 1) * 100;
-      dev.textContent = "歪みの補正 " + (d >= 0 ? "＋" : "−") + Math.abs(d).toFixed(2) + "%" +
-        "（解像度どおりなら " + ld + " mm）";
-      dev.style.color = Math.abs(d) > 1.5 ? "var(--shu)" : "var(--muted)";
-    } else { dev.textContent = ""; }
+      dev.textContent = (d >= 0 ? "＋" : "−") + Math.abs(d).toFixed(2) + "%";
+      dev.style.color = Math.abs(d) > 1.5 ? "var(--shu)" : "";
+      if (row) row.hidden = false;
+    } else { dev.textContent = "−"; if (row) row.hidden = true; }
   }
-  if (sc) sc.textContent = mp ? (mp.toFixed(4) + " mm/px（" + Math.round(25.4/mp) + " dpi 相当）") : "";
+  if (sc) sc.textContent = mp ? (mp.toFixed(4) + " mm/px") : "−";
+  /* 拓本の画面に出している入力欄も、外から変わったら合わせる */
+  var le = $("rLen");
+  if (le && document.activeElement !== le) le.value = r.realLen || "";
 }
 
 function bindRub(){
@@ -8123,17 +8111,24 @@ function bindRub(){
     syncOriginY(); renderAll(); rubPanel(); rubRender(); persist();
     msg("解像度どおりの長さに戻しました。");
   });
-  on("rLen","focus",function(){ calBusy = true; rubRender(); });
+  /* 実測長の欄は #rubwrap の中に 1つだけあり、作り直さない。
+     bindRub は何度も通るので、つなぐのは 1回だけにする（重ねると何重にも動く）。 */
+  var le0 = $("rLen");
+  if (le0 && !le0._bound){
+  le0._bound = 1;
+  on("rLen","focus",function(){ calBusy = true; });
   on("rLen","blur",function(){ calBusy = false; rubRender(); });
   on("rLen","input",function(e){
     r.realLen = num(e.target.value, 0);
     r.lenAuto = false;
     syncOriginY();
     framesFitRub();                 /* 枠の文字のはじまりも、頭に合わせ直す */
-    renderCols(); renderList(); renderProps(); renderStage(); renderBoth(); rubRender(); persist();
-    rubCalInfo();
-    renderCols();
+    /* 打っている間は rubRender を呼ばない。絵を描き直しても拓本の見え方は
+       変わらないうえ、入力欄の場所を計り直すぶん、打ちごこちが悪くなる。 */
+    renderCols(); renderList(); renderProps(); renderStage(); renderBoth(); persist();
+    rubPanel();
   });
+  }
 
   on("rInv","change",function(e){ r.invert = e.target.checked; A = null; RUB.mask = null; rebuildRub(); rubPanel(); rubRender(); persist(); });
   var rotT;
@@ -8146,6 +8141,13 @@ function bindRub(){
     rubRender();
   });
   on("rFlip","click",rubFlip180);
+  /* 拓本の画面の帯（v9.1） */
+  var bb;
+  bb = $("rbFlip");    if (bb) bb.onclick = rubFlip180;
+  bb = $("rbRot");     if (bb) bb.onclick = function(){ rotMode ? endRot() : startSpin(); };
+  bb = $("rbCrop");    if (bb) bb.onclick = function(){ cropMode ? endCrop() : startCrop(); };
+  bb = $("rbCropAll"); if (bb) bb.onclick = cropAll;
+  bb = $("rbEnd");     if (bb) bb.onclick = endFix;
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
     setView("rub");                    /* 回すあいだだけ拓本の画面を開く */

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v10.4</title>
+<title>彫刻原稿 v10.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -224,6 +224,11 @@
   .grow.on{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink);}
   .grow.drag{opacity:.4;}
   .grow .gr{color:var(--line);font-size:12px;line-height:1;letter-spacing:-2px;}
+  /* 札の中で文字を打つ欄（v10.5） */
+  .grow .gtxt{flex:1;min-width:0;border:none;background:none;padding:2px 2px;
+    font-size:12px;font-weight:600;color:var(--ink);}
+  .grow .gtxt:focus{outline:none;background:var(--sunk);border-radius:4px;}
+  .grow .lk2{font-size:10px;font-weight:400;color:var(--muted);flex:none;}
   .grow .d{flex:1;min-width:0;font-size:11.5px;font-weight:700;color:var(--ink);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .grow .warn{color:var(--shu);font-weight:600;font-size:10.5px;}
@@ -534,9 +539,6 @@
           <button class="mini primary" id="btnBulk">この内容で入れる</button>
           <button class="mini" id="btnBulkKanji">数字を漢数字に</button>
         </div>
-        <p class="hint" style="margin-top:5px;">いま選んでいる<b>1行ガイドラインの中</b>に入ります。
-        1行に 1つずつ、<b>上から 文字グループ ①②③…</b> の順。
-        足りなければ文字グループを足し、多いぶんは空にします。</p>
         <div id="props"></div>
       </div>
 
@@ -1426,7 +1428,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v10.4";
+var APP_VER = "v10.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1958,7 +1960,9 @@ function colWScale(ci, rows){
 
 /* 縦横の連動。入れておくと、片方を変えたときにもう片方も同じ割合で変わる。
    文字グループの大きさと、1文字修正のどちらでも同じ覚え書きを使う。 */
-function linkWH(){ return !!S.linkWH; }
+/* 横と縦の連動。既定は「入」（v10.5）。
+   古い案件で false を入れてあるものは、その値をそのまま使う。 */
+function linkWH(){ return (S.linkWH === undefined || S.linkWH === null) ? true : !!S.linkWH; }
 
 /* 文字ごとの調整を取り出す（無ければ既定） */
 function adjOf(g, i){
@@ -2677,11 +2681,13 @@ function renderCols(){
 
   function groupCard(gi){
     var miss = (window._missing || []).filter(function(m){ return m.gi === gi; }).length;
+    var g = S.groups[gi];
     return '<div class="grow' + (gi === sel ? " on" : "") + '" data-gi="' + gi + '" draggable="true"' +
       ' title="つかんで、ほかのセンターラインへ動かせます">' +
-      '<span class="d">' + esc(gName(gi, 14)) +
-        (srcGroup(S.groups[gi]) ? ' <span style="font-weight:400;color:var(--muted);">コピー</span>' : '') +
-        (miss ? ' <span class="warn">字なし ' + miss + '</span>' : '') + '</span>' +
+      '<input type="text" class="gtxt" data-gi="' + gi + '" draggable="false"' +
+        ' value="' + esc(String(g && g.text || "")) + '" placeholder="（未入力）">' +
+      (srcGroup(g) ? '<span class="lk2">コピー</span>' : '') +
+      (miss ? '<span class="warn">字なし ' + miss + '</span>' : '') +
       '<button class="mini gdelG" data-gi="' + gi + '" title="この文字グループを消す">×</button></div>';
   }
 
@@ -2758,6 +2764,19 @@ function renderCols(){
 
   box.innerHTML = h;
 
+  /* 札の中で文字を打つ（v10.5）。ここが主な入り口。
+     打っている間は作り直さない ―― 作り直すと欄が消えて打てなくなる。 */
+  Array.prototype.forEach.call(box.querySelectorAll(".gtxt"), function(el){
+    el.addEventListener("focus", function(){ var gi = +el.dataset.gi;
+      if (gi !== sel){ sel = gi; charSel = 0; renderProps(); renderStage(); renderBoth(); } });
+    el.addEventListener("input", function(){
+      var gi = +el.dataset.gi, g = S.groups[gi]; if (!g) return;
+      g.text = el.value;
+      renderProps(); renderStage(); renderBoth(); persist();
+      if (view !== "sheet") rubRender();
+    });
+    el.addEventListener("blur", function(){ renderCols(); });
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".cw"), function(el){
     el.addEventListener("input", function(){
       var ci = +el.dataset.i;
@@ -3370,13 +3389,6 @@ function renderProps(){
   var rows = layout(), r = rows[sel];
 
   var h = '<h3 class="sec">' + esc(gName(sel, 14)) + '</h3>';
-  h += '<label class="f" style="margin-bottom:5px;"><span>文字</span>' +
-    '<textarea id="pText" rows="3" placeholder="縦書きの内容">' + esc(g.text) + '</textarea></label>';
-  var kj = kanjifyDigits(g.text);
-  h += '<button class="mini" id="pKanji" style="width:100%;margin-bottom:9px;"' +
-    (kj === g.text ? ' disabled' : '') + '>数字を漢数字に' +
-    (kj === g.text ? '' : '　<span style="font-weight:400;">' + esc(kj.slice(0, 14)) + '</span>') +
-    '</button>';
   if (FONTS.length){
     h += '<label class="f"><span>フォント</span><select id="pFont">' +
       FONTS.map(function(F, i){ return '<option value="' + i + '"' +
@@ -3387,18 +3399,17 @@ function renderProps(){
   }
 
   h += '<h3 class="sec">文字の大きさ</h3>';
+  h += '<button class="mini' + (linkWH() ? ' primary' : '') + '" id="pLink"' +
+    ' style="width:100%;margin-bottom:6px;"' +
+    ' title="押しておくと、横を変えると縦も、縦を変えると横も、同じ割合で変わります">' +
+    (linkWH() ? '🔗 連動 入' : '🔗 連動 切') + '</button>';
   h += '<div class="g2">' +
     '<label class="f"><span>横 mm</span><input type="number" id="pW" value="' +
       (g.wMm || "") + '" step="0.5" placeholder="' + r.w.toFixed(1) + '（縦と同じ）"></label>' +
     '<label class="f"><span>縦 mm</span><input type="number" id="pH" value="' +
       (g.hMm || "") + '" step="0.5" placeholder="' + r.h.toFixed(1) + '（範囲に合わせて自動）"></label>' +
     '</div>';
-  h += '<div class="g2" style="margin-bottom:10px;">' +
-    '<button class="mini' + (linkWH() ? ' primary' : '') + '" id="pLink"' +
-      ' title="押しておくと、横を変えると縦も、縦を変えると横も、同じ割合で変わります">' +
-      (linkWH() ? '🔗 連動 入' : '🔗 連動 切') + '</button>' +
-    '<button class="mini" id="pSquare">縦を横と同じに</button>' +
-    '</div>';
+  h += '<button class="mini" id="pSquare" style="width:100%;margin-bottom:10px;">縦を横と同じに</button>';
 
   if (srcGroup(g)){
     h += '<p class="hint" style="margin-top:0;">コピーした文字グループです。文字の入力範囲（上端・下端）は ' +
@@ -3484,7 +3495,7 @@ function renderProps(){
       });
     } else {
       h += '<h3 class="sec">一文字ごとの調整</h3>';
-      h += '<p class="hint" style="margin-top:0;">いまは入っていません。ゴムシートの画面で<b>その字を右クリック</b>すると調整できます。</p>';
+      h += '<p class="hint" style="margin-top:0;">いまは入っていません。</p>';
     }
 
     h += '<h3 class="sec">字間のまとめ調整</h3>';

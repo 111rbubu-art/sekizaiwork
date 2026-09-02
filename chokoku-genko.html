@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v7.8</title>
+<title>彫刻原稿 v7.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -512,14 +512,16 @@
 
       <div class="pan" id="panGroup">
         <!-- まとめて入力。1行に1つずつ、右の行から順に入れる。 -->
-        <h3 class="sec">まとめて入力</h3>
+        <h3 class="sec">まとめて入力<span id="bulkGl" style="font-weight:400;color:var(--muted);"></span></h3>
         <textarea id="bulkText" rows="4" placeholder="山田家之墓&#10;令和七年三月吉日&#10;俗名 山田太郎"></textarea>
         <div class="g2" style="margin-top:6px;">
           <button class="mini primary" id="btnBulk">この内容で入れる</button>
-          <button class="mini" id="btnBulkNow">いまの内容を出す</button>
+          <button class="mini" id="btnBulkKanji">数字を漢数字に</button>
         </div>
-        <p class="hint" style="margin-top:5px;">1行に 1つずつ。<b>右の行から順</b>に入ります。
-        行が足りなければ足し、多いぶんの行は空にします。</p>
+        <button class="mini" id="btnBulkNow" style="width:100%;margin-top:6px;">いまの内容を出す</button>
+        <p class="hint" style="margin-top:5px;">いま選んでいる<b>1行ガイドラインの中</b>に入ります。
+        1行に 1つずつ、<b>上から 文字グループ ①②③…</b> の順。
+        足りなければ文字グループを足し、多いぶんは空にします。</p>
         <div id="clist"></div>
         <div id="props"></div>
       </div>
@@ -1401,7 +1403,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v7.8";
+var APP_VER = "v7.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2593,63 +2595,54 @@ function removeGroup(gi){
    行ごとに文字を入れるのに、いちいち行を選んで打つのは手間がかかる。
    1行に 1つずつ書いて、まとめて入れられるようにする。
    並びは校正と同じ「右の行から」。行が足りなければ足す。 */
+/* いま選んでいる 1行ガイドラインの、文字グループの番号を上から順に */
+function bulkGis(){
+  var g = curGlKey(), out = [];
+  (S.groups || []).forEach(function(gr, gi){ if (glKeyOf(gr) === g) out.push(gi); });
+  return out;
+}
 function bulkLines(){
-  return glSeq().map(function(g){
-    var t = "";
-    (S.groups || []).forEach(function(gr){
-      if (glKeyOf(gr) !== g || t) return;
-      t = String(gr.text || "");
-    });
-    return t;
-  });
+  return bulkGis().map(function(gi){ return String(S.groups[gi].text || ""); });
 }
 function bulkFill(force){
+  var lab = $("bulkGl");
+  if (lab) lab.textContent = (S.centers || []).length
+    ? "　ガイドライン " + (curGlKey() + 1) + " へ" : "";
   var el = $("bulkText"); if (!el) return;
   if (!force && document.activeElement === el) return;   /* 打っている最中は触らない */
   el.value = bulkLines().join("\n");
 }
 function bulkApply(){
   var el = $("bulkText"); if (!el) return;
+  var g = curGlKey();
+  if (!(S.centers || []).length){ msg("先に 1行ガイドラインを作ってください。", true); return; }
   var lines = String(el.value || "").replace(/\r/g, "").split("\n");
   while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  if (!lines.length && !glSeq().length){ msg("入れる文字がありません。", true); return; }
-  var made = 0, seq = glSeq();
+  /* 入れ先は、いま選んでいる 1行ガイドラインの中の文字グループ。
+     行（ガイドライン）は増やさない。 */
+  var ci = -1;
+  (S.centers || []).forEach(function(c, k){ if (ci < 0 && glOf(k) === g) ci = k; });
+  if (ci < 0){ msg("入れ先の行が見つかりません。", true); return; }
+  var made = 0;
   for (var i = 0; i < lines.length; i++){
-    if (i >= seq.length){
-      /* 行を足す。足した行は「いまの並びのいちばん後ろ（左）」に置く。
-         シートの上のどこに置かれるかは決まっていないので、ここで並びを決める。 */
-      var before = glKeys().filter(function(k){ return k >= 0; });
-      addGuideline();
-      var after = glKeys().filter(function(k){ return k >= 0; });
-      var nk = after.filter(function(k){ return before.indexOf(k) < 0; })[0];
-      if (nk === undefined) break;
-      seq = seq.concat([nk]);
-      S.glSeq = seq.slice();
+    var gis = bulkGis();
+    if (i >= gis.length){
+      /* 文字グループを 1つ足す。上下の位置はあとから直せる。 */
+      var lastGi = gis.length ? gis[gis.length - 1] : -1;
+      addGroupTo(lastGi >= 0 ? num(S.groups[lastGi].col, ci) : ci);
       made++;
+      gis = bulkGis();
+      if (i >= gis.length) break;
     }
-    var g = seq[i];
-    if (g === undefined) break;
-    /* その行の、いちばん先の文字グループに入れる。無ければ 1つ作る。 */
-    var gi = -1;
-    (S.groups || []).forEach(function(gr, k){ if (gi < 0 && glKeyOf(gr) === g) gi = k; });
-    if (gi < 0){
-      var ci = -1;
-      (S.centers || []).forEach(function(c, k){ if (ci < 0 && glOf(k) === g) ci = k; });
-      if (ci < 0) continue;
-      addGroupTo(ci);
-      gi = S.groups.length - 1;
-    }
-    S.groups[gi].text = lines[i];
+    S.groups[gis[i]].text = lines[i];
   }
-  S.glSeq = seq.slice();
-  /* 余った行は空にする（消しはしない。行の設定は残す） */
-  var seq2 = glSeq();
-  for (var j = lines.length; j < seq2.length; j++){
-    (S.groups || []).forEach(function(gr){ if (glKeyOf(gr) === seq2[j]) gr.text = ""; });
-  }
+  /* 余った文字グループは空にする（消しはしない。大きさや位置は残す） */
+  var gis2 = bulkGis();
+  for (var j2 = lines.length; j2 < gis2.length; j2++) S.groups[gis2[j2]].text = "";
   renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
   bulkFill(true);
-  msg(lines.length + " 行を入れました。" + (made ? "行を " + made + " 本足しました。" : ""));
+  msg("ガイドライン " + (g + 1) + " に " + lines.length + " つ入れました。" +
+      (made ? "文字グループを " + made + " 個足しました。" : ""));
 }
 
 function renderCols(){
@@ -3338,6 +3331,18 @@ function renderProps(){
   if (bb && !bb._bound){ bb._bound = true; bb.onclick = bulkApply; }
   var bn = $("btnBulkNow");
   if (bn && !bn._bound){ bn._bound = true; bn.onclick = function(){ bulkFill(true); msg("いまの内容を出しました。"); }; }
+  var bk = $("btnBulkKanji");
+  if (bk && !bk._bound){
+    bk._bound = true;
+    bk.onclick = function(){
+      var e2 = $("bulkText"); if (!e2) return;
+      var v = String(e2.value || "");
+      var k = v.replace(/\r/g, "").split("\n").map(function(t){ return kanjifyDigits(t); }).join("\n");
+      if (k === v){ msg("直すところがありませんでした。"); return; }
+      e2.value = k;
+      msg("数字を漢数字にしました。〔この内容で入れる〕を押すと入ります。");
+    };
+  }
 }
 
 function bindProps(){

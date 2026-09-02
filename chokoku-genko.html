@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v7.7</title>
+<title>彫刻原稿 v7.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -511,7 +511,15 @@
       </div>
 
       <div class="pan" id="panGroup">
-        <!-- 行の構成。左のメニューで選んでいるガイドラインだけを出す。 -->
+        <!-- まとめて入力。1行に1つずつ、右の行から順に入れる。 -->
+        <h3 class="sec">まとめて入力</h3>
+        <textarea id="bulkText" rows="4" placeholder="山田家之墓&#10;令和七年三月吉日&#10;俗名 山田太郎"></textarea>
+        <div class="g2" style="margin-top:6px;">
+          <button class="mini primary" id="btnBulk">この内容で入れる</button>
+          <button class="mini" id="btnBulkNow">いまの内容を出す</button>
+        </div>
+        <p class="hint" style="margin-top:5px;">1行に 1つずつ。<b>右の行から順</b>に入ります。
+        行が足りなければ足し、多いぶんの行は空にします。</p>
         <div id="clist"></div>
         <div id="props"></div>
       </div>
@@ -1393,7 +1401,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v7.7";
+var APP_VER = "v7.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2581,6 +2589,69 @@ function removeGroup(gi){
   charSel = 0;
 }
 
+/* --- まとめて入力 ---------------------------------------------------
+   行ごとに文字を入れるのに、いちいち行を選んで打つのは手間がかかる。
+   1行に 1つずつ書いて、まとめて入れられるようにする。
+   並びは校正と同じ「右の行から」。行が足りなければ足す。 */
+function bulkLines(){
+  return glSeq().map(function(g){
+    var t = "";
+    (S.groups || []).forEach(function(gr){
+      if (glKeyOf(gr) !== g || t) return;
+      t = String(gr.text || "");
+    });
+    return t;
+  });
+}
+function bulkFill(force){
+  var el = $("bulkText"); if (!el) return;
+  if (!force && document.activeElement === el) return;   /* 打っている最中は触らない */
+  el.value = bulkLines().join("\n");
+}
+function bulkApply(){
+  var el = $("bulkText"); if (!el) return;
+  var lines = String(el.value || "").replace(/\r/g, "").split("\n");
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (!lines.length && !glSeq().length){ msg("入れる文字がありません。", true); return; }
+  var made = 0, seq = glSeq();
+  for (var i = 0; i < lines.length; i++){
+    if (i >= seq.length){
+      /* 行を足す。足した行は「いまの並びのいちばん後ろ（左）」に置く。
+         シートの上のどこに置かれるかは決まっていないので、ここで並びを決める。 */
+      var before = glKeys().filter(function(k){ return k >= 0; });
+      addGuideline();
+      var after = glKeys().filter(function(k){ return k >= 0; });
+      var nk = after.filter(function(k){ return before.indexOf(k) < 0; })[0];
+      if (nk === undefined) break;
+      seq = seq.concat([nk]);
+      S.glSeq = seq.slice();
+      made++;
+    }
+    var g = seq[i];
+    if (g === undefined) break;
+    /* その行の、いちばん先の文字グループに入れる。無ければ 1つ作る。 */
+    var gi = -1;
+    (S.groups || []).forEach(function(gr, k){ if (gi < 0 && glKeyOf(gr) === g) gi = k; });
+    if (gi < 0){
+      var ci = -1;
+      (S.centers || []).forEach(function(c, k){ if (ci < 0 && glOf(k) === g) ci = k; });
+      if (ci < 0) continue;
+      addGroupTo(ci);
+      gi = S.groups.length - 1;
+    }
+    S.groups[gi].text = lines[i];
+  }
+  S.glSeq = seq.slice();
+  /* 余った行は空にする（消しはしない。行の設定は残す） */
+  var seq2 = glSeq();
+  for (var j = lines.length; j < seq2.length; j++){
+    (S.groups || []).forEach(function(gr){ if (glKeyOf(gr) === seq2[j]) gr.text = ""; });
+  }
+  renderAll(); rubPanel(); if (view !== "sheet") rubRender(); persist();
+  bulkFill(true);
+  msg(lines.length + " 行を入れました。" + (made ? "行を " + made + " 本足しました。" : ""));
+}
+
 function renderCols(){
   var box = $("clist"); if (!box) return;
   box.innerHTML = "";
@@ -3262,6 +3333,11 @@ function renderProps(){
 
   box.innerHTML = h;
   bindProps();
+  bulkFill(false);
+  var bb = $("btnBulk");
+  if (bb && !bb._bound){ bb._bound = true; bb.onclick = bulkApply; }
+  var bn = $("btnBulkNow");
+  if (bn && !bn._bound){ bn._bound = true; bn.onclick = function(){ bulkFill(true); msg("いまの内容を出しました。"); }; }
 }
 
 function bindProps(){
@@ -4975,8 +5051,47 @@ function frtSaveNow(nm){
   if (!(S.frames || []).length){ msg("枠がありません。先に枠を作ってください。", true); return; }
   var list = frtList().slice();
   var at = list.map(function(x){ return x.name; }).indexOf(nm);
+  /* 枠の中に入れてある行（センターラインと文字グループ）も一緒に取っておく。
+     番号は 0 から振り直して、呼び出したときにそのまま使えるようにする。 */
+  var map = {}, cis = [];
+  (S.centers || []).forEach(function(c, ci){
+    if (num(S.glFrame[glOf(ci)], -1) >= 0){ map[ci] = cis.length; cis.push(ci); }
+  });
+  var glMap = {}, gn = 0;
+  var centers = cis.map(function(ci){
+    var c = JSON.parse(JSON.stringify(S.centers[ci]));
+    var lt = (c.linkTo === null || c.linkTo === undefined) ? null : map[c.linkTo];
+    c.linkTo = (lt === undefined) ? null : lt;
+    return c;
+  });
+  centers.forEach(function(c){
+    var g = num(c.gl, 0);
+    if (glMap[g] === undefined) glMap[g] = gn++;
+  });
+  centers.forEach(function(c){ c.gl = glMap[num(c.gl, 0)]; });
+  var gidx = {}, gsrc = [];
+  (S.groups || []).forEach(function(g, gi){
+    if (map[num(g.col, 0)] === undefined) return;
+    gidx[gi] = gsrc.length; gsrc.push({ g: g, gi: gi });
+  });
+  var groups = gsrc.map(function(o){
+    var g = JSON.parse(JSON.stringify(o.g));
+    delete g._bottom; delete g._size; delete g._n; delete g._i;
+    g.col = map[num(o.g.col, 0)];
+    var lt2 = (o.g.linkTo === null || o.g.linkTo === undefined) ? null : gidx[o.g.linkTo];
+    g.linkTo = (lt2 === undefined) ? null : lt2;
+    return g;
+  });
+  var gf = {};
+  Object.keys(S.glFrame || {}).forEach(function(k){
+    var g = num(k, 0);
+    if (glMap[g] !== undefined) gf[glMap[g]] = num(S.glFrame[k], -1);
+  });
+  var frCopy = JSON.parse(JSON.stringify(S.frames));
   var rec = { name: nm, savedAt: new Date().toISOString(),
-              frames: JSON.parse(JSON.stringify(S.frames)) };
+              frames: frCopy,
+              /* 呼び出しはテンプレートと同じ道を通すので、同じ形で持たせる */
+              data: { centers: centers, groups: groups, frames: frCopy, glFrame: gf } };
   if (at >= 0) list[at] = rec; else list.push(rec);
   frtStore(list, "枠「" + nm + "」を" + (at >= 0 ? "上書きして、" : ""));
 }
@@ -4985,6 +5100,24 @@ function frtUse(i, add){
   var t = frtList()[i]; if (!t) return;
   var fr = JSON.parse(JSON.stringify(t.frames || []));
   if (!fr.length){ msg("この枠テンプレートは空です。", true); return; }
+  var hasRows = !!(t.data && (t.data.centers || []).length);
+  /* 行も入っているものは、テンプレートと同じ道を通す（枠と行がまとめて入る）。 */
+  if (hasRows){
+    if (!add){
+      if (((S.centers || []).length || (S.frames || []).length) &&
+          !confirm("いまの枠と行を消して「" + t.name + "」に入れかえます。よろしいですか。\n" +
+                   "（足したいだけなら〔追加〕を押してください）")) return;
+      tplApply({ name: t.name, data: t.data });
+    } else {
+      tplAdd({ name: t.name, data: t.data });
+    }
+    /* tplApply/tplAdd は文字編集の画面に切り替える。ここは枠テンプレートから
+       呼んでいるので、テンプレートの画面に戻しておく（続けて選べるように）。 */
+    setSub("tpl"); renderFrames(); renderFrt();
+    msg("枠「" + t.name + "」を" + (add ? "足しました。" : "呼び出しました。") +
+        "（枠 " + fr.length + " ・行 " + (t.data.centers || []).length + "）");
+    return;
+  }
   if (!add){
     if ((S.frames || []).length &&
         !confirm("いまの枠を消して「" + t.name + "」に入れかえます。よろしいですか。\n" +
@@ -5167,7 +5300,9 @@ function renderFrt(){
     return '<div class="tplitem"><span class="nm">' + esc(t.name) +
       '<span class="dt">' + fr.map(function(f){
         return esc(f.name) + " " + (+num(f.w,0).toFixed(0)) + "×" + (+num(f.h,0).toFixed(0));
-      }).join("　") + '</span></span>' +
+      }).join("　") +
+      ((t.data && (t.data.centers || []).length) ? "　行 " + t.data.centers.length : "") +
+      '</span></span>' +
       '<button class="mini frtAdd" data-i="' + i + '">追加</button>' +
       '<button class="mini frtUse" data-i="' + i + '">置換</button>' +
       '<button class="mini frtDel" data-i="' + i + '">×</button></div>';

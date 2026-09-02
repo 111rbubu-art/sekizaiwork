@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v8.1</title>
+<title>彫刻原稿 v8.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -670,11 +670,13 @@
           <button class="mini pt" data-t="add">点を足す</button>
           <button class="mini pt" data-t="del">点を消す</button>
           <button class="mini pt" data-t="rect">画（四角）を足す</button>
+          <button class="mini pt" data-t="oval">画（丸）を足す</button>
           <button class="mini pt" data-t="delc">輪郭を消す</button>
           <button class="mini pt" data-t="cut">線を引いて切る</button>
         </div>
         <p class="hint" style="margin:2px 0 8px;">何もない所を左ドラッグで囲むと、中の点をまとめて選べます
           （Shift で足す）。<br>
+          「画（丸）を足す」は、Shift を押しながら引くと <b>まん丸</b>になります。<br>
           囲んだ枠は残るので、<b>中をつかむと移動</b>、<b>四隅をつかむと拡大・縮小</b>。
           四隅は Shift でたて・よこの比を保ちます。<br>
           画面の拡大・縮小はマウスのダイヤル、移動はまん中のボタン。
@@ -1404,7 +1406,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v8.1";
+var APP_VER = "v8.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9057,7 +9059,7 @@ function peBind(svg){
   Array.prototype.forEach.call(svg.querySelectorAll(".pehit"), function(el){
     el.addEventListener("pointerdown", function(ev){
       if (ev.button !== undefined && ev.button !== 0) return;   /* 中・右は別あつかい */
-      if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "rect") return;  /* 台紙側で受ける */
+      if (PE.tool === "rubmv" || PE.tool === "cut" || peDrawTool()) return;  /* 台紙側で受ける */
       ev.preventDefault(); ev.stopPropagation();
       var c = +el.dataset.c, n = +el.dataset.n, hnd = el.dataset.h || null;
       if (PE.tool === "del"){ peSnap(); peDeleteNode(c, n); peRender(); return; }
@@ -9105,7 +9107,7 @@ function peBind(svg){
   Array.prototype.forEach.call(svg.querySelectorAll(".pehitc"), function(el){
     el.addEventListener("pointerdown", function(ev){
       if (ev.button !== undefined && ev.button !== 0) return;
-      if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "rect") return;
+      if (PE.tool === "rubmv" || PE.tool === "cut" || peDrawTool()) return;
       ev.preventDefault(); ev.stopPropagation();
       var c = +el.dataset.c;
       if (PE.tool === "delc"){ peSnap(); PE.contours.splice(c,1); PE.sel = []; PE.selC = []; peRender(); return; }
@@ -9148,7 +9150,7 @@ function peBind(svg){
   svg.addEventListener("pointerdown", function(ev){
     if (ev.button !== undefined && ev.button !== 0) return;
     peMenuClose();
-    if (PE.tool !== "rubmv" && PE.tool !== "cut" && PE.tool !== "rect" &&
+    if (PE.tool !== "rubmv" && PE.tool !== "cut" && !peDrawTool() &&
         ev.target.closest(".pehit, .pehitc, .pecor")) return;
     if (PE.tool === "rubmv"){
       if (!PE.rub) return;
@@ -9184,7 +9186,7 @@ function peBind(svg){
       window.addEventListener("pointerup", up2);
       return;
     }
-    if (PE.tool !== "rect"){
+    if (!peDrawTool()){
       /* 囲んで選ぶ。Shift を押しながらだと、いま選んでいる分に足す。 */
       ev.preventDefault();
       var m0 = toPt(ev), addTo = ev.shiftKey ? PE.sel.slice() : [];
@@ -9222,11 +9224,12 @@ function peBind(svg){
         PE.contours.push([]); idx = PE.contours.length - 1; }
       var x1 = Math.min(a.x, p.x), x2 = Math.max(a.x, p.x);
       var y1 = Math.min(a.y, p.y), y2 = Math.max(a.y, p.y);
-      /* 時計回り（外側）で作る */
-      PE.contours[idx] = [
-        { x:x1, y:y1, i:null, o:null }, { x:x1, y:y2, i:null, o:null },
-        { x:x2, y:y2, i:null, o:null }, { x:x2, y:y1, i:null, o:null }
-      ];
+      if (PE.tool === "oval" && e.shiftKey){        /* Shift でまん丸 */
+        var r = Math.min(x2 - x1, y2 - y1) / 2, cx0 = (x1 + x2) / 2, cy0 = (y1 + y2) / 2;
+        x1 = cx0 - r; x2 = cx0 + r; y1 = cy0 - r; y2 = cy0 + r;
+      }
+      PE.contours[idx] = (PE.tool === "oval")
+        ? ovalContour(x1, y1, x2, y2) : rectContour(x1, y1, x2, y2);
       peRender();
     }
     function up(){
@@ -9238,6 +9241,33 @@ function peBind(svg){
     window.addEventListener("pointermove", mv);
     window.addEventListener("pointerup", up);
   });
+}
+
+/* 形をひとつ足す道具かどうか（四角・丸）。
+   この道具のときは、点や輪郭の上を押しても台紙側で受けて、新しい形を引ける。 */
+function peDrawTool(){ return PE && (PE.tool === "rect" || PE.tool === "oval"); }
+
+/* 四角の輪郭。時計回り（外側）で作る。 */
+function rectContour(x1, y1, x2, y2){
+  return [
+    { x:x1, y:y1, i:null, o:null }, { x:x1, y:y2, i:null, o:null },
+    { x:x2, y:y2, i:null, o:null }, { x:x2, y:y1, i:null, o:null }
+  ];
+}
+/* 丸（楕円）の輪郭。四角と同じ向き（時計回り）で作る。
+   節点は 左・上・右・下 の 4つ。ハンドルの長さは半径の 0.5523 倍
+   ―― これが、3次ベジエでいちばん円に近くなる長さ。 */
+function ovalContour(x1, y1, x2, y2){
+  var K = 0.5522847498;
+  var cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+  var rx = (x2 - x1) / 2, ry = (y2 - y1) / 2;
+  var kx = rx * K, ky = ry * K;
+  return [
+    { x:x1, y:cy, i:[x1, cy - ky], o:[x1, cy + ky] },   /* 左 */
+    { x:cx, y:y2, i:[cx - kx, y2], o:[cx + kx, y2] },   /* 上 */
+    { x:x2, y:cy, i:[x2, cy + ky], o:[x2, cy - ky] },   /* 右 */
+    { x:cx, y:y1, i:[cx + kx, y1], o:[cx - kx, y1] }    /* 下 */
+  ];
 }
 
 /* 選んでいる点をぜんぶ囲む四角。四隅をつかんで拡大・縮小する。

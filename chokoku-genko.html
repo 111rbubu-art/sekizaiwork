@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v10.1</title>
+<title>彫刻原稿 v10.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1426,7 +1426,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v10.1";
+var APP_VER = "v10.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7155,16 +7155,25 @@ function renderBoth(){
             '" x2="' + xx.toFixed(3) + '" y2="' + (b.y2+4).toFixed(3) + '" stroke="' + col +
             '" stroke-width="0.4"/>';
         });
-        /* センターラインを左右に動かすふうせん（v9.8／v10.1 で復活）。
-           拓本の写真に目で合わせるので、自動ではそろえない。 */
-        var chy = b.y1 - KN * 1.5;
-        guides += '<circle cx="' + x.toFixed(3) + '" cy="' + chy.toFixed(3) +
-          '" r="' + (KN*0.5).toFixed(3) + '" fill="' + col +
-          '" stroke="#fff" stroke-width="' + (KN*0.14).toFixed(3) + '" pointer-events="none"/>';
-        if (!ov)
-          hits.push('<rect class="bhitx" data-k="cenx:' + ci + '" x="' + (x - KN*0.8).toFixed(3) +
-            '" y="' + (chy - KN*0.8).toFixed(3) + '" width="' + (KN*1.6).toFixed(3) +
-            '" height="' + (KN*1.6).toFixed(3) + '" fill="transparent"/>');
+        /* ふうせんを出すのは、**2本目から** かつ **拓本で決まっていないとき**（v10.2）。
+             センター 1-1 … 行のはじまり。枠の［1行目の位置］のふうせんで決める
+             2本目から   … 拓本があれば、拓本の上の線に合わせた離れぐあいがそのまま入る
+                            （syncCenters）。拓本が無いときだけ、ここのふうせんで合わせる */
+        var i00 = glCenters(g)[0];
+        var byRub = !!(RUB.img && mmPerPx() &&
+          (S.rub.centersPx || [])[ci] !== null && (S.rub.centersPx || [])[ci] !== undefined &&
+          (S.rub.centersPx || [])[i00] !== null && (S.rub.centersPx || [])[i00] !== undefined &&
+          (S.centers[ci].linkTo === null || S.centers[ci].linkTo === undefined));
+        if (i00 !== ci && !byRub){
+          var chy = b.y1 - KN * 1.5;
+          guides += '<circle cx="' + x.toFixed(3) + '" cy="' + chy.toFixed(3) +
+            '" r="' + (KN*0.5).toFixed(3) + '" fill="' + col +
+            '" stroke="#fff" stroke-width="' + (KN*0.14).toFixed(3) + '" pointer-events="none"/>';
+          if (!ov)
+            hits.push('<rect class="bhitx" data-k="cenx:' + ci + '" x="' + (x - KN*0.8).toFixed(3) +
+              '" y="' + (chy - KN*0.8).toFixed(3) + '" width="' + (KN*1.6).toFixed(3) +
+              '" height="' + (KN*1.6).toFixed(3) + '" fill="transparent"/>');
+        }
       }
       /* 名前はどのガイドラインにも出す。ここを押して選べるようにするため。 */
       guides += '<text x="' + x.toFixed(3) + '" y="' + (vy + KN*0.8).toFixed(3) +
@@ -7477,13 +7486,14 @@ function bindBothDrag(svg){
           return;
         }
         if (k[0] === "cen"){
-          /* 拓本の上のガイドラインの位置。拓本の見本の行を指しているだけなので、
-             ここを動かしても、構成した文字の行は動かさない（syncCenters は呼ばない）。
-             文字の行を動かすときは、名前の帯をつかんで並べ替える。 */
+          /* 拓本の上のセンターラインを動かす。
+             2本目からは、その離れぐあいがそのまま文字のセンターラインになる（v10.2）。
+             1本目は基準なので、動かしても文字の行は動かない。 */
           var mp = mp0, ci = +k[1];
           if (!mp || rubX0 === null || !isFinite(q.x)) return;
           var px = Math.round((q.x - rubX0) / mp);
           S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
+          syncCenters();
           renderBoth();
           return;
         }
@@ -8182,15 +8192,28 @@ function autoDeskew(){
 
 /* 拓本上のセンターラインの間隔を、シートの列の中心に写す。
    1本目はシート側の値をそのまま使い、2本目以降はそこからの実距離で置く。 */
+/* 拓本の上のセンターラインの離れぐあいを、そのまま文字のセンターラインに移す。
+   **1行ガイドラインごと**に、その 1本目を基準にする（v10.2）。
+   1本目そのものは動かさない ―― 行のはじまりは枠の［1行目の位置］で決めるため。 */
 function syncCenters(){
   var mp = mmPerPx(), pxs = S.rub.centersPx || [];
-  if (!mp || pxs[0] === null || pxs[0] === undefined) return;
-  for (var i = 1; i < pxs.length && i < S.centers.length; i++){
-    if (pxs[i] === null || pxs[i] === undefined) continue;
-    /* コピーした行は拓本に元が無いので、左右の位置は手で決めたものを保つ */
-    if (S.centers[i].linkTo !== null && S.centers[i].linkTo !== undefined) continue;
-    S.centers[i].x = +(num(S.centers[0].x, 45) + (pxs[i] - pxs[0]) * mp).toFixed(1);
-  }
+  if (!mp) return false;
+  var moved = false;
+  glList().forEach(function(g){
+    var idxs = glCenters(g);
+    if (idxs.length < 2) return;
+    var i0 = idxs[0];
+    if (pxs[i0] === null || pxs[i0] === undefined) return;
+    for (var j = 1; j < idxs.length; j++){
+      var ci = idxs[j];
+      if (pxs[ci] === null || pxs[ci] === undefined) continue;
+      /* コピーした行は拓本に元が無いので、左右の位置は手で決めたものを保つ */
+      if (S.centers[ci].linkTo !== null && S.centers[ci].linkTo !== undefined) continue;
+      var x = +(num(S.centers[i0].x, 45) + (pxs[ci] - pxs[i0]) * mp).toFixed(1);
+      if (Math.abs(x - num(S.centers[ci].x, 0)) >= 0.05){ S.centers[ci].x = x; moved = true; }
+    }
+  });
+  return moved;
 }
 
 /* --- 拓本パネル --- */

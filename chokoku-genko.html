@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v9.3</title>
+<title>彫刻原稿 v9.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -86,10 +86,16 @@
     white-space:nowrap;overflow:hidden;}
   /* コピーで紐づいた行は、元の下に一段下げて並べる */
   /* 左メニューで、枠ごとにガイドラインをまとめて出すときの見出し */
-  #mmGl .frhd{display:flex;align-items:center;justify-content:space-between;gap:6px;
+  #mmGl .frhd{width:100%;text-align:left;border:none;background:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:space-between;gap:6px;
     margin:8px 0 2px;padding:3px 12px 3px 11px;font-size:10.5px;font-weight:700;
     color:#B45309;border-left:3px solid #B45309;}
-  #mmGl .frhd.out{color:var(--muted);border-left-color:var(--line);}
+  #mmGl .frhd.out{color:var(--muted);border-left-color:var(--line);cursor:default;}
+  #mmGl .frhd:hover{background:var(--sunk);}
+  #mmGl .frhd.out:hover{background:none;}
+  #mmGl .frhd.on{background:var(--sunk);color:var(--ink);}
+  #mmGl .frhd.over{box-shadow:inset 3px 0 0 var(--ink);}
+  #mmGl .rubrow.drag{opacity:.4;}
   #mmGl .frhd span{font-weight:600;color:var(--muted);}
   #mmGl .frempty{padding:2px 12px 4px 22px;font-size:10.5px;color:var(--muted);}
   #mmGl .frhd + .mmsub, #mmGl .frempty + .mmsub{margin-top:0;}
@@ -436,11 +442,9 @@
         <button class="mm on" data-m="sheet">ゴムシート</button>
         <button class="mm" data-m="tpl">テンプレート管理<span class="n" id="nTpl">0</span></button>
         <div class="gap"></div>
-        <button class="mm" data-m="rub">拓本解析<span class="n none" id="nRub">未取込</span></button>
-        <button class="mm" data-m="group">文字編集<span class="n none" id="nGroup">なし</span></button>
         <div id="mmGl"></div>
-        <button class="mm" data-m="frame">枠<span class="n none" id="nFrame">なし</span></button>
         <button class="mm" data-m="info">備考メモ</button>
+        <span hidden><i id="nRub"></i><i id="nGroup"></i><i id="nFrame"></i></span>
         <div class="gap2"></div>
         <button class="mm" data-m="font">フォント・作字<span class="n none" id="nFont">未読込</span></button>
         <button class="mm" data-m="sp">設定<span class="n none" id="nSP">未接続</span></button>
@@ -482,13 +486,7 @@
       </div>
 
       <div class="pan" id="panFrame">
-        <h3 class="sec">枠（石の彫刻できる面）</h3>
-        <p class="hint" style="margin-top:0;">校正の画面にだけ出ます。ゴムシート・出力・確認資料には出ません。</p>
-        <button class="mini primary" id="btnFrameAdd" style="width:100%;margin-bottom:10px;">＋ 枠を追加</button>
         <div id="framelist"></div>
-        <h3 class="sec">拓本の置き場所</h3>
-        <select id="frRub"></select>
-        <p class="hint" style="margin-top:4px;">枠を選ぶとその中に、「枠の外」を選ぶと今までどおり右へ置きます。</p>
 
       </div>
 
@@ -1424,7 +1422,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v9.3";
+var APP_VER = "v9.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3134,7 +3132,8 @@ function openFrameMenu(anchor){
       var a = bt.dataset.a;
       if (a === "new") addFrameNew();
       else if (a === "copy") copyFrame(+bt.dataset.i);
-      else if (a === "frt"){ frtUse(+bt.dataset.i, true); setSub("frame"); }
+      else if (a === "frt"){ frtUse(+bt.dataset.i, true);
+        frameSel = Math.max(0, (S.frames || []).length - 1); setSub("frame"); renderFrames(); }
     };
   });
 }
@@ -3147,7 +3146,7 @@ function addFrameNew(){
                   y: last ? last.y : 40, top: last ? last.top : 0,
                   ax: last ? last.ax : "center", dx: 0 });
   framesFitRub();
-  setSub("frame");
+  frameSel = S.frames.length - 1; setSub("frame");
   renderFrames(); renderMenuCounts(); renderMenuGl(); renderBoth(); persist();
   msg("枠を足しました。幅と高さを入れてください。");
 }
@@ -3159,7 +3158,7 @@ function copyFrame(i){
   n.name = f.name + " のコピー";
   S.frames.push(n);
   framesFitRub();
-  setSub("frame");
+  frameSel = S.frames.length - 1; setSub("frame");
   renderFrames(); renderMenuCounts(); renderMenuGl(); renderBoth(); persist();
   msg("枠「" + f.name + "」をコピーしました。");
 }
@@ -3172,13 +3171,40 @@ document.addEventListener("pointerdown", function(e){
 }, true);
 
 var glDragK = null;                 /* 左メニューでつかんでいるガイドライン */
+var menuDragRub = false;            /* 左メニューでつかんでいるのが拓本のとき */
+var frameSel = -1;                  /* 左メニューで選んでいる枠。−1 は選んでいない */
+/* 左メニューで何を選んでいるか。何も選んでいなければサブメニューは閉じる。 */
+function selFrame(fi){
+  frameSel = fi; setSub("frame");
+  renderFrames(); renderMenuGl(); renderBoth();
+}
+function selRub(){
+  frameSel = -1; setSub("rub");
+  rubPanel(); renderMenuGl();
+}
+function selGl(k){
+  frameSel = -1;
+  for (var i = 0; i < S.groups.length; i++)
+    if (glKeyOf(S.groups[i]) === k){ sel = i; charSel = 0; break; }
+  setSub("group");
+  renderAll(); if (view !== "sheet") rubRender();
+}
+/* 拓本を、この枠の中／枠の外へ */
+function rubToFrame(fi){
+  S.rubFrame = (fi >= 0) ? fi : null;
+  renderFrames(); renderMenuGl(); renderBoth(); renderDemo(); persist();
+  msg(fi >= 0 ? ("拓本を枠「" + frameName(fi) + "」の中に置きました。")
+              : "拓本を枠の外に置きました。");
+}
 function renderMenuGl(){
   var box = $("mmGl"); if (!box) return;
   var keys = glKeys();
   /* 1行しか無くても、枠だけでも一覧を出す（どの枠に入っているかを見せるため）。
      何も無いときだけ［行追加］だけにする。 */
-  if (!keys.length && !(S.frames || []).length){
-    box.innerHTML = addRowBtn(); bindAddRow(box); return;
+  if (!keys.length && !(S.frames || []).length && !RUB.img){
+    box.innerHTML = '<button class="mmsub rubrow' + (subTab === "rub" ? " on" : "") +
+      '" data-rub="1"><span>拓本</span><span class="n2">未取込</span></button>' + addRowBtn();
+    bindMenuRub(box); bindAddRow(box); return;
   }
   var cur = curGlKey();
   var ord = glOrder(), nCopy = {};
@@ -3202,23 +3228,34 @@ function renderMenuGl(){
   }
   /* 枠を作ってあるときは、枠ごとにまとめて出す。
      どの行がどの面に彫られるのかを、ここで見て分かるようにするため。 */
+  /* 拓本の札。ガイドラインと同じように、押すと拓本解析が出て、
+     つかんで枠へ動かすと、その枠の中に置ける（v9.4）。 */
+  function rubHtml(){
+    var got = !!RUB.img;
+    return '<button class="mmsub rubrow' + (subTab === "rub" ? " on" : "") +
+      '" data-rub="1"' + (got ? ' draggable="true" title="ドラッグで枠へ入れる"' : '') + '>' +
+      '<span>拓本</span><span class="n2">' + (got ? "取込済" : "未取込") + '</span></button>';
+  }
+  var rubIn = RUB.img ? num(S.rubFrame, -1) : -2;    /* −2 … 拓本そのものが無い */
   var frames = S.frames || [];
   if (frames.length){
     var html = "", left = ord.slice();
     frames.forEach(function(f, fi){
       var mine = left.filter(function(o){ return num(S.glFrame[o.k], -1) === fi; });
-      html += '<div class="frhd" data-f="' + fi + '">枠　' + esc(f.name) +
-        '<span>' + (+num(f.w,0).toFixed(0)) + '×' + (+num(f.h,0).toFixed(0)) + '</span></div>';
-      html += mine.length ? mine.map(btnHtml).join("")
-                          : '<div class="frempty">（この枠に入れた行はありません）</div>';
+      html += '<button class="frhd' + (subTab === "frame" && frameSel === fi ? " on" : "") +
+        '" data-f="' + fi + '">枠　' + esc(f.name) +
+        '<span>' + (+num(f.w,0).toFixed(0)) + '×' + (+num(f.h,0).toFixed(0)) + '</span></button>';
+      html += mine.map(btnHtml).join("");
+      if (rubIn === fi) html += rubHtml();
+      if (!mine.length && rubIn !== fi) html += '<div class="frempty">（この枠に入れた行はありません）</div>';
     });
     var rest = left.filter(function(o){ return num(S.glFrame[o.k], -1) < 0; });
-    if (rest.length){
-      html += '<div class="frhd out">枠の外</div>' + rest.map(btnHtml).join("");
-    }
+    html += '<div class="frhd out" data-f="-1">枠の外</div>' + rest.map(btnHtml).join("");
+    if (rubIn < 0) html += rubHtml();
+    if (!rest.length && rubIn >= 0) html += '<div class="frempty">（枠の外に置いたものはありません）</div>';
     box.innerHTML = html + addRowBtn();
   } else {
-    box.innerHTML = ord.map(btnHtml).join("") + addRowBtn();
+    box.innerHTML = ord.map(btnHtml).join("") + rubHtml() + addRowBtn();
   }
   /* ［行追加］も .mmsub だが data-k を持たない。ガイドラインの並びだけを拾う。 */
   /* ドラッグで左右の並びを入れ替える */
@@ -3252,14 +3289,44 @@ function renderMenuGl(){
       "px;top:8px;bottom:8px;width:3px;border-radius:2px;" +
       "background:" + (k < 0 ? "var(--line)" : CCOL[k % CCOL.length]) + ";";
     bt.appendChild(bar);
-    bt.onclick = function(){
-      for (var i = 0; i < S.groups.length; i++)
-        if (glKeyOf(S.groups[i]) === k){ sel = i; charSel = 0; break; }
-      setSub("group");
-      renderAll(); if (view !== "sheet") rubRender();
-    };
+    bt.onclick = function(){ selGl(k); };
   });
+  /* 枠の札。押すとその枠だけが出る。行や拓本を落とすと、その枠に入る。 */
+  Array.prototype.forEach.call(box.querySelectorAll(".frhd"), function(hd){
+    var fi = num(hd.dataset.f, -1);
+    if (!hd.classList.contains("out")) hd.onclick = function(){ selFrame(fi); };
+    hd.addEventListener("dragover", function(e){
+      if (glDragK === null && !menuDragRub) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move"; hd.classList.add("over");
+    });
+    hd.addEventListener("dragleave", function(){ hd.classList.remove("over"); });
+    hd.addEventListener("drop", function(e){
+      e.preventDefault(); hd.classList.remove("over");
+      if (menuDragRub){ menuDragRub = false; rubToFrame(fi); return; }
+      if (glDragK === null) return;
+      frameAssign(glDragK, fi);
+      glDragK = null;
+      renderAll();
+      renderMenuGl();
+    });
+  });
+  bindMenuRub(box);
   bindAddRow(box);
+}
+/* 拓本の札。押すと拓本解析、つかんで枠へ落とすと置き場所が変わる。 */
+function bindMenuRub(box){
+  var bt = box.querySelector(".rubrow"); if (!bt) return;
+  var bar = document.createElement("i");
+  bar.style.cssText = "position:absolute;left:11px;top:8px;bottom:8px;width:3px;" +
+    "border-radius:2px;background:" + (RUB.img ? "#137A52" : "var(--line)") + ";";
+  bt.appendChild(bar);
+  bt.onclick = function(){ selRub(); };
+  bt.addEventListener("dragstart", function(e){
+    menuDragRub = true; bt.classList.add("drag");
+    try { e.dataTransfer.setData("text/plain", "rub"); } catch(_){}
+    e.dataTransfer.effectAllowed = "move";
+  });
+  bt.addEventListener("dragend", function(){ menuDragRub = false; bt.classList.remove("drag"); });
 }
 /* ガイドラインの並びの下に置く［行追加］ */
 function addRowBtn(){
@@ -5021,7 +5088,8 @@ var PANEL = { sheet:"panSheet", tpl:"panTpl", rub:"panRub", frame:"panFrame",
               group:"panGroup", font:"panFont", sp:"panSP", info:"panInfo" };
 function setSub(t){
   if (t === "col" || t === "guide") t = "rub";      /* 旧い呼び名 */
-  if (!PANEL[t]) t = "sheet";
+  /* null を渡すと、どのパネルも開かない（何も選んでいない状態）。v9.4 */
+  if (t !== null && !PANEL[t]) t = "sheet";
   subTab = t;
   Object.keys(PANEL).forEach(function(k){
     var p = $(PANEL[k]); if (p) p.className = "pan" + (k === t ? " on" : "");
@@ -5029,6 +5097,7 @@ function setSub(t){
   Array.prototype.forEach.call(document.querySelectorAll("#mainmenu .mm"), function(b){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
+  if (t === null){ var s0 = $("sub"); if (s0) s0.scrollTop = 0; renderMenuGl(); return; }
   if (t === "tpl"){ renderTpl(); tplLoadSP(); frtLoadSP(); }
   if (t === "rub") rubPanel();
   if (t === "frame") renderFrames();
@@ -5360,86 +5429,73 @@ function frameSnapAll(fi){
 function renderFrames(){
   framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
   var box = $("framelist");
+  var f = (S.frames || [])[frameSel];
   if (box){
-    if (!(S.frames || []).length){
-      box.innerHTML = '<p class="hint" style="margin-top:0;">まだ枠がありません。' +
-        '［＋ 枠を追加］で、石の彫刻できる面の大きさを入れてください。</p>';
+    if (!f){
+      box.innerHTML = '<p class="hint" style="margin-top:0;">' +
+        ((S.frames || []).length ? '左のメニューで枠を選んでください。'
+                                 : '［枠追加］で、石の彫刻できる面の大きさを入れてください。') + '</p>';
     } else {
-      var h = "";
-      S.frames.forEach(function(f, i){
-        h += '<div class="detail" style="margin-bottom:10px;">' +
-          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">' +
-            '<b style="font-size:12px;">枠 ' + (i+1) + '</b>' +
-            '<button class="mini frdel" data-i="' + i + '" style="margin-left:auto;">− 削除</button>' +
-          '</div>' +
-          '<label class="f"><span>名前</span><input type="text" class="frname" data-i="' + i +
-            '" value="' + esc(f.name) + '"></label>' +
-          '<div class="g2">' +
-            '<label class="f"><span>幅 mm</span><input type="number" class="frw" data-i="' + i +
-              '" value="' + (+num(f.w,0).toFixed(1)) + '" step="1" min="1"></label>' +
-            '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
-              '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
-          '</div>' +
-          '<label class="f"><span>文字のはじまり mm（面の上から下げる分）</span>' +
-            '<input type="number" class="frtop" data-i="' + i + '" value="' + (+num(f.top,0).toFixed(1)) +
-            '" step="1"></label>' +
-          (function(){
-            /* 行の上端は「枠の上端＋文字のはじまり」。拓本があるときは、
-               その頭のラインとも合っているかを、ここで見えるようにする。 */
-            var tt = num(f.y, 0) + num(f.top, 0);
-            var rt = (typeof rubTopMm === "function") ? rubTopMm() : null;
-            var t2 = '<p class="hint" style="margin:0 0 6px;">枠の上端 ' +
-              (+num(f.y,0).toFixed(1)) + ' mm　＋　下げ ' + (+num(f.top,0).toFixed(1)) +
-              ' mm　＝　行の上端 <b>' + (+tt.toFixed(1)) + ' mm</b>';
-            if (rt !== null){
-              var dd = tt - rt;
-              t2 += '　拓本の頭 ' + (+rt.toFixed(1)) + ' mm' +
-                (Math.abs(dd) < 0.05 ? '（そろっています）'
-                  : '<b style="color:var(--shu);">（' + (dd > 0 ? "＋" : "") +
-                    (+dd.toFixed(1)) + ' mm ちがいます）</b>');
-              t2 += '<br>行の上端は<b>拓本の頭</b>に合わせてあります。' +
-                '<b>下げ</b>を直すと、文字はそのままで<b>枠のほうが</b>上下します。';
-            } else {
-              t2 += '<br><b>下げ</b>を直すと、枠はそのままで文字だけが上下します。';
-            }
-            t2 += '　枠の上端は下げから出すので、打ち込む欄はありません。';
-            t2 += '</p>';
-            if (rt !== null && Math.abs(num(f.y,0) + num(f.top,0) - rt) >= 0.05)
-              t2 += '<button class="mini frfit" data-i="' + i +
-                '" style="width:100%;margin-bottom:8px;">拓本の頭に合わせる</button>';
-            return t2;
-          })() +
-          '<div class="g2">' +
-            '<label class="f" style="margin-bottom:0;"><span>1行目の寄せ</span>' +
-              '<select class="frax" data-i="' + i + '">' +
-              '<option value="center"' + (f.ax === "center" ? " selected" : "") + '>中央</option>' +
-              '<option value="right"' + (f.ax === "right" ? " selected" : "") + '>右から</option>' +
-              '<option value="left"' + (f.ax === "left" ? " selected" : "") + '>左から</option>' +
-              '</select></label>' +
-            '<label class="f" style="margin-bottom:0;"><span>左右のずらし mm</span>' +
-              '<input type="number" class="frdx" data-i="' + i + '" value="' + (+num(f.dx,0).toFixed(1)) +
-              '" step="1"></label>' +
-          '</div>' +
-          '</div>';
-      });
-      /* どの行をどの枠に入れるか */
-      var gs = glList();
-      if (gs.length){
-        h += '<h3 class="sec">行をどの枠に入れるか</h3>';
-        gs.forEach(function(g){
-          h += '<label class="f"><span>ガイドライン ' + (g+1) + '</span>' +
-            frameSelHtml("frGl_" + g, num(S.glFrame[g], -1), "frgl") + '</label>';
-        });
+      var i = frameSel;
+      var h = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">' +
+          '<b style="font-size:12px;">枠　' + esc(f.name) + '</b>' +
+          '<button class="mini frdel" data-i="' + i + '" style="margin-left:auto;">− 削除</button>' +
+        '</div>' +
+        '<label class="f"><span>名前</span><input type="text" class="frname" data-i="' + i +
+          '" value="' + esc(f.name) + '"></label>' +
+        '<div class="g2">' +
+          '<label class="f"><span>幅 mm</span><input type="number" class="frw" data-i="' + i +
+            '" value="' + (+num(f.w,0).toFixed(1)) + '" step="1" min="1"></label>' +
+          '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
+            '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
+        '</div>' +
+        '<label class="f"><span>文字のはじまり mm（面の上から下げる分）</span>' +
+          '<input type="number" class="frtop" data-i="' + i + '" value="' + (+num(f.top,0).toFixed(1)) +
+          '" step="1"></label>';
+      /* 行の上端は「枠の上端＋文字のはじまり」。拓本があるときは、
+         その頭のラインとも合っているかを、ここで見えるようにする。 */
+      var tt = num(f.y, 0) + num(f.top, 0);
+      var rt = (typeof rubTopMm === "function") ? rubTopMm() : null;
+      h += '<p class="hint" style="margin:0 0 6px;">枠の上端 ' + (+num(f.y,0).toFixed(1)) +
+        ' mm　＋　下げ ' + (+num(f.top,0).toFixed(1)) + ' mm　＝　行の上端 <b>' +
+        (+tt.toFixed(1)) + ' mm</b>';
+      if (rt !== null){
+        var dd = tt - rt;
+        h += '　拓本の頭 ' + (+rt.toFixed(1)) + ' mm' +
+          (Math.abs(dd) < 0.05 ? '（そろっています）'
+            : '<b style="color:var(--shu);">（' + (dd > 0 ? "＋" : "") + (+dd.toFixed(1)) + ' mm ちがいます）</b>');
       }
+      h += '</p>';
+      if (rt !== null && Math.abs(tt - rt) >= 0.05)
+        h += '<button class="mini frfit" data-i="' + i +
+          '" style="width:100%;margin-bottom:8px;">拓本の頭に合わせる</button>';
+      h += '<div class="g2" style="margin-bottom:10px;">' +
+          '<label class="f" style="margin-bottom:0;"><span>1行目の寄せ</span>' +
+            '<select class="frax" data-i="' + i + '">' +
+            '<option value="center"' + (f.ax === "center" ? " selected" : "") + '>中央</option>' +
+            '<option value="right"' + (f.ax === "right" ? " selected" : "") + '>右から</option>' +
+            '<option value="left"' + (f.ax === "left" ? " selected" : "") + '>左から</option>' +
+            '</select></label>' +
+          '<label class="f" style="margin-bottom:0;"><span>左右のずらし mm</span>' +
+            '<input type="number" class="frdx" data-i="' + i + '" value="' + (+num(f.dx,0).toFixed(1)) +
+            '" step="1"></label>' +
+        '</div>';
+      /* この枠に入っているもの。押すとそれが出る。 */
+      h += '<h3 class="sec">この枠に入っているもの</h3>';
+      var mine = glList().filter(function(g){ return num(S.glFrame[g], -1) === i; });
+      h += mine.length
+        ? mine.map(function(g){
+            var n = S.groups.filter(function(gr){ return glKeyOf(gr) === g; }).length;
+            return '<button class="mini frgo" data-g="' + g + '" style="width:100%;margin-bottom:4px;' +
+              'display:flex;justify-content:space-between;">ガイドライン ' + (g+1) +
+              '<span style="color:var(--muted);">' + n + '</span></button>';
+          }).join("")
+        : '<p class="hint" style="margin-top:0;">行はまだ入っていません。左のメニューで、行をこの枠へドラッグしてください。</p>';
+      h += '<label class="chk" style="margin-top:6px;"><input type="checkbox" id="frRubIn"' +
+        (num(S.rubFrame, -1) === i ? " checked" : "") + (RUB.img ? "" : " disabled") +
+        ' style="width:auto;"> 拓本をこの枠に入れる</label>';
       box.innerHTML = h;
     }
-  }
-  var rs = $("frRub");
-  if (rs){
-    var tmp = document.createElement("div");
-    tmp.innerHTML = frameSelHtml("frRubTmp", num(S.rubFrame, -1));
-    rs.innerHTML = tmp.firstChild.innerHTML;
-    rs.value = String(num(S.rubFrame, -1));
   }
   bindFrames();
 }
@@ -5554,7 +5610,8 @@ function bindFrames(){
     S.glFrame = nx;
     var rf = num(S.rubFrame, -1);
     S.rubFrame = (rf === i) ? null : (rf > i ? rf - 1 : (rf < 0 ? null : rf));
-    renderFrames(); renderMenuCounts(); renderBoth(); persist();
+    frameSel = -1; setSub(null);          /* 選んでいたものが無くなったので閉じる */
+    renderFrames(); renderMenuCounts(); renderMenuGl(); renderBoth(); persist();
     msg("枠を消しました。");
   });
   on(".frgl", "change", function(e){
@@ -5565,22 +5622,13 @@ function bindFrames(){
     if (moved) msg("ガイドライン " + (g+1) + " を枠「" + frameName(v) +
                    "」の上端 " + (+num(S.frames[v].y,0).toFixed(1)) + " mm からにそろえました。");
   });
-  var rs = $("frRub");
-  if (rs && !rs._bound){
-    rs._bound = true;
-    rs.addEventListener("change", function(){
-      var v = parseInt(rs.value, 10);
-      S.rubFrame = (v >= 0) ? v : null;
-      renderBoth(); persist();
-      msg(v >= 0 ? ("拓本を枠「" + frameName(v) + "」の中に置きました。")
-                 : "拓本を枠の外に戻しました。");
-    });
-  }
-  var ad = $("btnFrameAdd");
-  if (ad && !ad._bound){
-    ad._bound = true;
-    ad.onclick = addFrameNew;
-  }
+  /* この枠に入っている行を押したら、その行の中身へ */
+  on(".frgo", "click", function(e){
+    var b = e.target.closest(".frgo"); if (b) selGl(+b.dataset.g);
+  });
+  /* 拓本をこの枠に入れる */
+  var ri = $("frRubIn");
+  if (ri) ri.onchange = function(){ rubToFrame(ri.checked ? frameSel : -1); };
 }
 
 function renderTpl(){

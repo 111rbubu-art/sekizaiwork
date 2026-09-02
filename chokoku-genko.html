@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v7.6</title>
+<title>彫刻原稿 v7.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -572,6 +572,8 @@
           <label class="chk"><input type="checkbox" id="dWhite" checked style="width:auto;"> 列を白地に</label>
           <label class="chk"><input type="checkbox" id="dCrop" style="width:auto;"> トリミング</label>
           <label class="chk"><input type="checkbox" id="dGuide" style="width:auto;"> ガイド</label>
+          <label class="chk"><input type="checkbox" id="dAdj" style="width:auto;"> 位置調整</label>
+          <button class="mini" id="dReset">元に戻す</button>
           <button class="mini" id="dSave">JPEGで保存</button>
           <button class="mini" id="dSaveLocal" title="このパソコンに保存する">⤓</button>
           <span class="hint" style="margin:0;" id="dInfo">文字をつかむと、その1行ガイドラインごと左右に動きます</span>
@@ -1391,7 +1393,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v7.6";
+var APP_VER = "v7.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4156,6 +4158,19 @@ $("dInv").addEventListener("change", renderDemo);
 $("dGuide").addEventListener("change", renderDemo);
 $("dWhite").addEventListener("change", renderDemo);
 $("dCrop").addEventListener("change", renderDemo);
+/* 位置調整のレ点。入れている間だけ、文字や拓本をつかんで動かせる。 */
+$("dAdj").addEventListener("change", function(){
+  renderDemo();
+  msg($("dAdj").checked
+    ? "位置調整を入れました。文字をつかむと、その1行ガイドラインごと左右に動きます。"
+    : "位置調整をやめました。");
+});
+/* ずらしをぜんぶ取り消して、校正と同じ並びに戻す。 */
+$("dReset").onclick = function(){
+  S.demoDx = {}; S.demoRx = 0;
+  renderDemo(); persist();
+  msg("確認資料の位置を、校正と同じ並びに戻しました。");
+};
 $("dSave").onclick = function(){ saveDemoJPEG(false); };
 $("dSaveLocal").onclick = function(){ saveDemoJPEG(true); };
 $("vRed").addEventListener("change", renderStage);
@@ -6120,14 +6135,31 @@ function renderDemo(){
   }
 
   var rows = layout();
+  /* 並べ方は校正と同じにする（枠・行・拓本の位置関係をそろえる）。
+     校正で見たとおりのものが、そのまま確認資料になる。 */
+  var pkD = bothPack(rows);
+  var demoAdj = $("dAdj") && $("dAdj").checked;
   /* 拓本はシートの座標系に固定する。デモのずらしは文字側だけに効かせる。 */
   var an = hasRub ? rubAnchor() : { x: 0, px: 0 };
   /* デモでは拓本そのものも左右に動かせる（表示だけ。シートには効かない） */
   var rdx = num(S.demoRx, 0);
-  var ix = hasRub ? (an.x - an.px * mp + rdx) : 0;
-  var iy = hasRub ? mmOf(0) : 0;
+  var ix = 0, iy = 0;
+  if (hasRub){
+    /* 枠に入れているときは、校正と同じくその枠の真ん中へ。
+       枠を使っていないときは、これまでどおりセンターラインに合わせる。 */
+    var rfd = num(S.rubFrame, -1), fbD = null;
+    (pkD.fbox || []).forEach(function(q){ if (q.i === rfd) fbD = q; });
+    ix = fbD ? (fbD.l + (fbD.w - RUB.W * mp) / 2)
+             : (demoX(Math.max(0, Math.min((S.centers||[]).length-1, num((S.groups[sel]||{}).col, 0))))
+                - an.px * mp);
+    ix += rdx;
+    iy = mmOf(0);
+  }
   /* ずらし量は 1行ガイドライン単位。同じガイドラインのセンターラインは一緒に動く。 */
-  function demoX(ci){ return num(cenAt(ci).x, 45) + num((S.demoDx || {})[glOf(ci)], 0); }
+  function demoX(ci){
+    var base = (pkD.x[ci] !== undefined) ? pkD.x[ci] : num(cenAt(ci).x, 45);
+    return base + num((S.demoDx || {})[glOf(ci)], 0);
+  }
   var iw = hasRub ? RUB.W * mp : 0, ih = hasRub ? RUB.H * mp : 0;
   var rt = rubRotDeg(), ofd = rotOff();
   var rr = (rt || ofd.x || ofd.y)
@@ -6245,7 +6277,7 @@ function renderDemo(){
         'stroke-dasharray="3 2" opacity="0.7" pointer-events="none"/>');
     });
   }
-  demoCells.forEach(function(c){
+  if (demoAdj) demoCells.forEach(function(c){
     var pad = 0.8;
     hits.push('<rect class="colhit" data-gl="' + glOf(c.ci) + '" x="' + (c.x - c.w/2 - pad).toFixed(3) +
       '" y="' + (c.y1 - pad).toFixed(3) + '" width="' + (c.w + pad*2).toFixed(3) +
@@ -6258,17 +6290,12 @@ function renderDemo(){
      （枠そのものはシートの上の左右の位置を持たないため）。 */
   var demoFBox = [];
   demoFrames.forEach(function(f, fi){
-    var l = 1e9, r = -1e9;
-    (S.centers || []).forEach(function(c, ci){
-      if (num(S.glFrame[glOf(ci)], -1) !== fi) return;
-      var b = colBox[ci]; if (!b) return;
-      var w2 = Math.max(cenW(ci), (b.x2 - b.x1) + 4);
-      l = Math.min(l, demoX(ci) - w2/2); r = Math.max(r, demoX(ci) + w2/2);
-    });
-    var mid = (l <= r) ? (l + r) / 2 : num(S.sheet.w, 90) / 2;
-    var fw = Math.max(1, num(f.w, 1)), fh = Math.max(1, num(f.h, 1));
-    var bx = mid - fw / 2, by = num(f.y, 0);
-    demoFBox.push({ i: fi, x: bx, y: by, w: fw, h: fh });
+    var q = null;
+    (pkD.fbox || []).forEach(function(o){ if (o.i === fi) q = o; });
+    var fw = q ? q.w : Math.max(1, num(f.w, 1));
+    var fh = Math.max(1, num(f.h, 1));
+    var bx = q ? q.l : 0, by = num(f.y, 0);
+    demoFBox.push({ i: fi, x: bx, y: by, w: fw, h: fh, name: f.name });
     vx = Math.min(vx, bx); vx2 = Math.max(vx2, bx + fw);
     vy = Math.min(vy, by); vy2 = Math.max(vy2, by + fh);
   });
@@ -6318,7 +6345,8 @@ function renderDemo(){
   
   $("dInfo").textContent = info.length
     ? info.join("　") + "（表示のみ）"
-    : "文字をつかむと、その1行ガイドラインごと左右に動きます";
+    : (demoAdj ? "文字をつかむと、その1行ガイドラインごと左右に動きます"
+               : "校正と同じ並びです。ずらすときは〔位置調整〕にレ点を");
 
   st.style.width = pw + "px"; st.style.height = ph + "px";
   st.innerHTML =
@@ -6338,8 +6366,12 @@ function renderDemo(){
         : '') +
       /* 枠（石の彫刻できる面）。確認資料では、線だけを細く出す。 */
       demoFBox.map(function(q){
+        var fs2 = Math.max(3, vw * 0.022);
         return '<rect x="' + q.x.toFixed(3) + '" y="' + q.y.toFixed(3) + '" width="' + q.w.toFixed(3) +
-          '" height="' + q.h.toFixed(3) + '" fill="none" stroke="#8A94A6" stroke-width="0.5"/>';
+          '" height="' + q.h.toFixed(3) + '" fill="none" stroke="#8A94A6" stroke-width="0.5"/>' +
+          '<text x="' + q.x.toFixed(3) + '" y="' + (q.y - fs2 * 0.35).toFixed(3) +
+          '" fill="#6B7680" font-size="' + fs2.toFixed(2) + '" font-weight="700" ' +
+          'pointer-events="none">' + esc(q.name || "") + '</text>';
       }).join("") +
       white +
       guides +

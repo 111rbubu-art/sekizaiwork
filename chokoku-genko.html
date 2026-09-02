@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v10.0</title>
+<title>彫刻原稿 v10.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1426,7 +1426,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v10.0";
+var APP_VER = "v10.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2724,6 +2724,8 @@ function renderCols(){
       h += '<div class="cbox gdrop" data-ci="' + ci + '" style="border-color:' + col + '33;">' +
         '<div class="hh"><b style="color:' + col + ';">センター ' + glName(ci) + '</b>' +
         (idxs.length > 1 ? '<button class="mini cdelL" data-i="' + ci + '">×</button>' : '') + '</div>' +
+        '<label class="f inl" style="margin:0 0 4px;"><span>左右 mm</span>' +
+          '<input type="number" class="cx" data-i="' + ci + '" value="' + num(c.x,0) + '" step="0.5"></label>' +
         '<label class="f inl" style="margin:0 0 6px;"><span>行幅 mm</span>' +
           '<input type="number" class="cw" data-i="' + ci + '" value="' + num(c.w,0) + '" step="0.1" min="0"></label>' +
         '<div class="glist2">' +
@@ -2758,12 +2760,19 @@ function renderCols(){
 
   box.innerHTML = h;
 
+  /* センターラインの左右の位置。校正のふうせんでも動かせる。
+     自動ではそろえない ―― 拓本の写真に目で合わせるため。 */
+  Array.prototype.forEach.call(box.querySelectorAll(".cx"), function(el){
+    el.addEventListener("input", function(){
+      S.centers[+el.dataset.i].x = num(el.value, 0);
+      renderList(); renderProps(); renderStage(); renderBoth(); persist();
+      if (view !== "sheet") rubRender();
+    });
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".cw"), function(el){
     el.addEventListener("input", function(){
-      var ci = +el.dataset.i, g0 = glOf(ci);
-      var right0 = glRightX(g0);        /* 行のはじまりは動かさない */
+      var ci = +el.dataset.i;
       S.centers[ci].w = Math.max(0, num(el.value, 0));
-      packCentersInGl(g0, right0);      /* 幅が変わったぶん、左へ詰め直す */
       renderList(); renderProps(); renderStage(); renderBoth(); persist();
       if (view !== "sheet") rubRender();
     });
@@ -2888,79 +2897,33 @@ function addGroupTo(ci){
   sel = S.groups.length - 1;
   renderAll(); if (view !== "sheet") rubRender();
 }
-/* そのガイドラインのセンターラインの並び（左から右へ返す） */
+/* そのガイドラインのセンターラインの並び */
 function glCenters(g){
   var idxs = [];
   S.centers.forEach(function(c, ci){ if (glOf(ci) === g) idxs.push(ci); });
   return idxs;
 }
-/* そのガイドラインが取っている左右の幅（mm）。線の幅を足したもの。 */
-function glSpan(g){
-  var w = 0;
-  glCenters(g).forEach(function(ci){ w += (cenW(ci) || 0); });
-  return w;
-}
-/* いま取っている左右のまん中（mm） */
-function glMidX(g){
-  var idxs = glCenters(g);
-  if (!idxs.length) return 45;
-  var l = 1e9, r = -1e9;
-  idxs.forEach(function(ci){
-    var hw = (cenW(ci) || 0) / 2, x = num(S.centers[ci].x, 45);
-    l = Math.min(l, x - hw); r = Math.max(r, x + hw);
-  });
-  return (l + r) / 2;
-}
-/* 行のはじまり（いちばん右のはし）。縦書きなので、ここが 1行目の右はし。 */
-function glRightX(g){
-  var idxs = glCenters(g);
-  if (!idxs.length) return 45;
-  var r = -1e9;
-  idxs.forEach(function(ci){ r = Math.max(r, num(S.centers[ci].x, 45) + (cenW(ci) || 0) / 2); });
-  return r;
-}
-/* そのガイドラインのセンターラインを、すきま無く並べ直す（v9.9／v10.0 で見直し）。
-   ・行のはじまり（右はし）は変えない ―― 足しても、行そのものは動かない
-   ・縦書きなので、2本目からは **左へ** 続ける
-   左右の場所は、枠の［1行目の位置］のふうせんで、行ごとまとめて動かす。 */
-function packCentersInGl(g, rightX){
-  var idxs = glCenters(g);
-  if (idxs.length < 2) return false;
-  var moved = false;
-  /* 行のはじまり（右はし）はそのまま。そこから左へ、幅のぶんずつ置いていく。 */
-  var right = (rightX === undefined) ? glRightX(g) : rightX;
-  idxs.forEach(function(ci){
-    var w = cenW(ci) || 0;
-    var x = +(right - w / 2).toFixed(1);
-    if (Math.abs(x - num(S.centers[ci].x, 0)) >= 0.05){ S.centers[ci].x = x; moved = true; }
-    right -= w;
-  });
-  return moved;
-}
 /* そのガイドラインにセンターラインを 1本足す。
-   ガイドラインが取る幅は変えず、その中を **分け合う**（v10.0）。
-   足したせいで枠からはみ出さないようにするため。 */
+   置き場所は、いちばん左の線のすぐ左（行幅ぶん）。重ならない所から始める。
+   そのあとは **手で動かす** ―― 拓本の写真に目で合わせるので、
+   ここを自動でそろえてしまうと合わせられなくなる（v10.1）。 */
 function addCenterLine(g){
   var idxs = glCenters(g);
   if (!idxs.length) return;
   var base = S.centers[idxs[0]];
-  var right0 = glRightX(g);                  /* 足す前の右はしを覚えておく */
-  var span = glSpan(g) || (num(base.w, 0) || 30.3);
-  var n = idxs.length + 1;
+  var w = num(base.w, 0) || 30.3;
+  /* いちばん左の線を探して、その左へ置く */
+  var lx = 1e9;
+  idxs.forEach(function(ci){ lx = Math.min(lx, num(S.centers[ci].x, 45) - (cenW(ci) || w) / 2); });
   var last = idxs[idxs.length - 1];
   S.centers.splice(last + 1, 0,
-    { x: num(base.x, 45), w: 0, fit: false, gl: g });
+    { x: +(lx - w / 2).toFixed(1), w: num(base.w, 0), fit: false, gl: g });
   if (S.rub.centersPx)
     S.rub.centersPx.splice(last + 1, 0,
       RUB.img ? Math.round((S.rub.bandL + S.rub.bandR) / 2) : null);
   S.groups.forEach(function(gr){ if (num(gr.col,0) > last) gr.col = num(gr.col,0) + 1; });
-  /* 幅を等分する。合計は足す前と同じなので、ガイドラインは広がらない。 */
-  var w1 = +(span / n).toFixed(1);
-  glCenters(g).forEach(function(ci){ S.centers[ci].w = w1; });
-  packCentersInGl(g, right0);
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-  msg("センターラインを足しました。ガイドラインの幅 " + (+span.toFixed(1)) +
-      " mm を " + n + " 本で分けています。");
+  msg("センターラインを足しました。左右の位置は、校正のふうせんか「左右 mm」で合わせてください。");
 }
 
 /* 古いテンプレート・案件は、センターラインに gl（1行ガイドライン番号）を
@@ -4716,10 +4679,6 @@ function migrate(){
   if (S.rub.pivot && !(isFinite(S.rub.pivot.x) && isFinite(S.rub.pivot.y))) S.rub.pivot = null;
   if (!S.rub.off || !(isFinite(S.rub.off.x) && isFinite(S.rub.off.y))) S.rub.off = { x:0, y:0 };
   padCentersPx();
-  /* 同じガイドラインに 2本以上センターラインがあるものは、すきま無く並べ直す（v10.0）。
-     昔は好きな所へ置けたので、離れていたり重なっていたりして、
-     ガイドラインの幅からはみ出して見えることがあった。幅（行幅）は変えない。 */
-  glList().forEach(function(g){ packCentersInGl(g); });
 }
 /* 拓本の上のセンターラインは centersPx で持っている。
    ガイドラインを足したのに、こちらが足りないと、
@@ -6911,7 +6870,18 @@ function renderBoth(){
   var hintEl = wrap.querySelector(".bothhint"); if (hintEl) hintEl.remove();
   var rows = layout();
   var pk = bothPack(rows);
-  function bx(ci){ return pk.x[ci] !== undefined ? pk.x[ci] : num(cenAt(ci).x, 45); }
+  /* 校正での、そのセンターラインの左右の位置。
+     文字がまだ入っていない線は詰め直しの対象外なので、
+     同じガイドラインのずれ量を借りて、同じだけ動かす（v10.1）。 */
+  function bx(ci){
+    if (pk.x[ci] !== undefined) return pk.x[ci];
+    var g = glOf(ci), d = null;
+    (S.centers || []).forEach(function(_, cj){
+      if (d !== null || pk.x[cj] === undefined || glOf(cj) !== g) return;
+      d = pk.x[cj] - num(cenAt(cj).x, 45);
+    });
+    return num(cenAt(ci).x, 45) + (d === null ? 0 : d);
+  }
   var showG = $("bGuide").checked;
   var curGl = bothGl();
   var ov = bothOv();
@@ -7159,10 +7129,21 @@ function renderBoth(){
      隠す。線が重なって、どれがどの行のものか分からなくなるため。 */
   var guides = "", glHit = "";
   if (showG){
+    /* まだ文字を入れていないセンターラインにも線とふうせんを出せるように、
+       いま選んでいるガイドラインの上下の範囲をまとめておく（v10.1）。 */
+    var glY = null;
+    (S.centers || []).forEach(function(c, ci){
+      var b0 = colBox[ci];
+      if (!b0 || glOf(ci) !== curGl) return;
+      glY = glY ? { y1: Math.min(glY.y1, b0.y1), y2: Math.max(glY.y2, b0.y2) }
+                : { y1: b0.y1, y2: b0.y2 };
+    });
     /* 校正文字：センターラインと行幅の線。選んでいるガイドラインの分だけ。 */
     (S.centers || []).forEach(function(c, ci){
-      var b = colBox[ci]; if (!b) return;
       var g = glOf(ci), on = (g === curGl);
+      /* 文字がまだ無い線は、同じガイドラインの上下の範囲を借りて出す */
+      var b = colBox[ci] || (on && glY ? glY : null);
+      if (!b) return;
       var col = CCOL[g % CCOL.length];
       var x = bx(ci), rw = cenW(ci);
       if (on){
@@ -7174,6 +7155,16 @@ function renderBoth(){
             '" x2="' + xx.toFixed(3) + '" y2="' + (b.y2+4).toFixed(3) + '" stroke="' + col +
             '" stroke-width="0.4"/>';
         });
+        /* センターラインを左右に動かすふうせん（v9.8／v10.1 で復活）。
+           拓本の写真に目で合わせるので、自動ではそろえない。 */
+        var chy = b.y1 - KN * 1.5;
+        guides += '<circle cx="' + x.toFixed(3) + '" cy="' + chy.toFixed(3) +
+          '" r="' + (KN*0.5).toFixed(3) + '" fill="' + col +
+          '" stroke="#fff" stroke-width="' + (KN*0.14).toFixed(3) + '" pointer-events="none"/>';
+        if (!ov)
+          hits.push('<rect class="bhitx" data-k="cenx:' + ci + '" x="' + (x - KN*0.8).toFixed(3) +
+            '" y="' + (chy - KN*0.8).toFixed(3) + '" width="' + (KN*1.6).toFixed(3) +
+            '" height="' + (KN*1.6).toFixed(3) + '" fill="transparent"/>');
       }
       /* 名前はどのガイドラインにも出す。ここを押して選べるようにするため。 */
       guides += '<text x="' + x.toFixed(3) + '" y="' + (vy + KN*0.8).toFixed(3) +
@@ -7448,6 +7439,11 @@ function bindBothDrag(svg){
         var p0 = toPt(ev);
         if (f0 && isFinite(p0.x)) frx0 = { x: p0.x, dx: num(f0.dx, 0) };
       }
+      var cnx0 = null;
+      if (k[0] === "cenx"){
+        var cc0 = S.centers[+k[1]], pc0 = toPt(ev);
+        if (cc0 && isFinite(pc0.x)) cnx0 = { x: pc0.x, cx: num(cc0.x, 0) };
+      }
       var rbx0 = null;
       if (k[0] === "rubx"){
         var pr0 = toPt(ev);
@@ -7460,6 +7456,13 @@ function bindBothDrag(svg){
         var q = toPt(e), mm = q.y;
         if (!isFinite(mm)) return;
         if (k[0] === "glmove"){ lastX = q.x; return; }
+        if (k[0] === "cenx"){
+          var cc2 = S.centers[+k[1]];
+          if (!cc2 || !cnx0 || !isFinite(q.x)) return;
+          cc2.x = +(cnx0.cx + (q.x - cnx0.x)).toFixed(1);
+          renderBoth();
+          return;
+        }
         if (k[0] === "rubx"){
           if (!rbx0 || !isFinite(q.x)) return;
           S.rubDx = +(rbx0.dx + (q.x - rbx0.x)).toFixed(1);
@@ -7535,6 +7538,14 @@ function bindBothDrag(svg){
           msg("拓本の 頭 " + num(S.rub.calTop,0) + " px ／ 脚 " + num(S.rub.calBot,0) +
               " px にしました。いまの縮尺では、この間は " + num(S.rub.realLen,0) +
               " mm です。実際に測った長さは「実測長」の欄に打ち込んでください。");
+          return;
+        }
+        if (k[0] === "cenx"){
+          var cc3 = S.centers[+k[1]];
+          renderCols(); renderList(); renderStage(); renderBoth(); persist();
+          if (view !== "sheet") rubRender();
+          if (cc3) msg("センター " + glName(+k[1]) + " を 左右 " +
+                       (+num(cc3.x,0).toFixed(1)) + " mm にしました。");
           return;
         }
         if (k[0] === "rubx"){

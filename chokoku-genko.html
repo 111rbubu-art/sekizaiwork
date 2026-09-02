@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v7.5</title>
+<title>彫刻原稿 v7.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1391,7 +1391,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v7.5";
+var APP_VER = "v7.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6101,25 +6101,34 @@ function renderDemo(){
   var st = $("demostage"), wrap = $("demowrap");
   var mp = mmPerPx();
   var hintEl = wrap.querySelector(".demohint"); if (hintEl) hintEl.remove();
-  if (!RUB.img || !mp){
+  /* 出す・出さないの決め方（v7.6）
+       枠が無い    … これまでどおり、拓本があるときだけ
+       枠がある    … 枠と文字を出す（拓本が無くてもよい）
+       枠と拓本    … 拓本を「枠の中」に置いているときだけ、拓本も出す
+                     （枠の外に置いている拓本は、見本として横に並べているだけなので出さない）*/
+  var demoFrames = S.frames || [];
+  var hasRub = !!(RUB.img && mp);
+  var showRub = hasRub && (!demoFrames.length || num(S.rubFrame, -1) >= 0);
+  if (!hasRub && !demoFrames.length){
     st.innerHTML = ''; st.style.width = "auto"; st.style.height = "auto";
     var d = document.createElement("p");
     d.className = "hint demohint";
     d.style.cssText = "text-align:center;width:100%;margin-top:40px;";
-    d.textContent = "拓本を読み込み、実測長を入力するとデモ表示になります。";
+    d.textContent = "拓本を読み込み、実測長を入力するとデモ表示になります。（枠を作ると、拓本が無くても出ます）";
     wrap.appendChild(d);
     return;
   }
 
   var rows = layout();
   /* 拓本はシートの座標系に固定する。デモのずらしは文字側だけに効かせる。 */
-  var an = rubAnchor();
+  var an = hasRub ? rubAnchor() : { x: 0, px: 0 };
   /* デモでは拓本そのものも左右に動かせる（表示だけ。シートには効かない） */
   var rdx = num(S.demoRx, 0);
-  var ix = an.x - an.px * mp + rdx, iy = mmOf(0);
+  var ix = hasRub ? (an.x - an.px * mp + rdx) : 0;
+  var iy = hasRub ? mmOf(0) : 0;
   /* ずらし量は 1行ガイドライン単位。同じガイドラインのセンターラインは一緒に動く。 */
   function demoX(ci){ return num(cenAt(ci).x, 45) + num((S.demoDx || {})[glOf(ci)], 0); }
-  var iw = RUB.W * mp, ih = RUB.H * mp;
+  var iw = hasRub ? RUB.W * mp : 0, ih = hasRub ? RUB.H * mp : 0;
   var rt = rubRotDeg(), ofd = rotOff();
   var rr = (rt || ofd.x || ofd.y)
     ? ' transform="translate(' + (ofd.x*mp).toFixed(3) + ' ' + (ofd.y*mp).toFixed(3) + ') rotate(' +
@@ -6129,11 +6138,11 @@ function renderDemo(){
   /* トリミング範囲（拓本の画素座標）。未設定なら全体。 */
   /* トリミングのレ点を外しているときは、切らずに全部出す。
      （v5.3 で［全体に戻す］のボタンを外したので、ここで戻せるようにする） */
-  var cr = $("dCrop").checked ? S.rub.crop : null;
-  if (!cr) cr = { x1: 0, y1: 0, x2: RUB.W, y2: RUB.H };
+  var cr = ($("dCrop").checked && hasRub) ? S.rub.crop : null;
+  if (!cr) cr = { x1: 0, y1: 0, x2: hasRub ? RUB.W : 0, y2: hasRub ? RUB.H : 0 };
   var cx1 = ix + cr.x1 * mp, cx2 = ix + cr.x2 * mp;
   var cy1 = iy + cr.y1 * mp, cy2 = iy + cr.y2 * mp;
-  var cropping = $("dCrop").checked && !demoClean;
+  var cropping = $("dCrop").checked && showRub && !demoClean;
 
   var glyphs = [], hits = [], colBox = {}, demoCells = [];
   if (FONTS.length){
@@ -6243,7 +6252,26 @@ function renderDemo(){
       '" height="' + (c.y2 - c.y1 + pad*2).toFixed(3) + '" fill="transparent"/>');
   });
 
-  var vx = cx1, vy = cy1, vx2 = cx2, vy2 = cy2;
+  var vx = showRub ? cx1 : 1e9, vy = showRub ? cy1 : 1e9;
+  var vx2 = showRub ? cx2 : -1e9, vy2 = showRub ? cy2 : -1e9;
+  /* 枠も画面に入れる。枠は、その枠に入れた行のまわりに置く
+     （枠そのものはシートの上の左右の位置を持たないため）。 */
+  var demoFBox = [];
+  demoFrames.forEach(function(f, fi){
+    var l = 1e9, r = -1e9;
+    (S.centers || []).forEach(function(c, ci){
+      if (num(S.glFrame[glOf(ci)], -1) !== fi) return;
+      var b = colBox[ci]; if (!b) return;
+      var w2 = Math.max(cenW(ci), (b.x2 - b.x1) + 4);
+      l = Math.min(l, demoX(ci) - w2/2); r = Math.max(r, demoX(ci) + w2/2);
+    });
+    var mid = (l <= r) ? (l + r) / 2 : num(S.sheet.w, 90) / 2;
+    var fw = Math.max(1, num(f.w, 1)), fh = Math.max(1, num(f.h, 1));
+    var bx = mid - fw / 2, by = num(f.y, 0);
+    demoFBox.push({ i: fi, x: bx, y: by, w: fw, h: fh });
+    vx = Math.min(vx, bx); vx2 = Math.max(vx2, bx + fw);
+    vy = Math.min(vy, by); vy2 = Math.max(vy2, by + fh);
+  });
   Object.keys(colBox).forEach(function(ci){
     var b = colBox[ci];
     vx = Math.min(vx, b.x1); vy = Math.min(vy, b.y1);
@@ -6255,6 +6283,8 @@ function renderDemo(){
     vx = Math.min(vx, demoX(ci) - w2/2); vx2 = Math.max(vx2, demoX(ci) + w2/2);
     vy = Math.min(vy, b.y1 - 6); vy2 = Math.max(vy2, b.y2 + 6);
   });
+  if (!(vx < vx2)){ vx = 0; vx2 = num(S.sheet.w, 90); }
+  if (!(vy < vy2)){ vy = 0; vy2 = 100; }
   var pad2 = 8;
   vx -= pad2; vy -= pad2;
   var vw = (vx2 - vx) + pad2, vh = (vy2 - vy) + pad2;
@@ -6301,9 +6331,16 @@ function renderDemo(){
         '" width="' + (cx2-cx1).toFixed(3) + '" height="' + (cy2-cy1).toFixed(3) + '"/></clipPath>' +
       '</defs>' +
       '<rect x="' + vx + '" y="' + vy + '" width="' + vw + '" height="' + vh + '" fill="#fff"/>' +
-      '<g' + rr + '><image href="' + S.rub.src + '" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) +
-        '" width="' + iw.toFixed(3) + '" height="' + ih.toFixed(3) + '"' + inv +
-        ' clip-path="url(#dclip)"/></g>' +
+      (showRub
+        ? '<g' + rr + '><image href="' + S.rub.src + '" x="' + ix.toFixed(3) + '" y="' + iy.toFixed(3) +
+          '" width="' + iw.toFixed(3) + '" height="' + ih.toFixed(3) + '"' + inv +
+          ' clip-path="url(#dclip)"/></g>'
+        : '') +
+      /* 枠（石の彫刻できる面）。確認資料では、線だけを細く出す。 */
+      demoFBox.map(function(q){
+        return '<rect x="' + q.x.toFixed(3) + '" y="' + q.y.toFixed(3) + '" width="' + q.w.toFixed(3) +
+          '" height="' + q.h.toFixed(3) + '" fill="none" stroke="#8A94A6" stroke-width="0.5"/>';
+      }).join("") +
       white +
       guides +
       '<g fill="#111" stroke="none">' + glyphs.join("") + '</g>' +

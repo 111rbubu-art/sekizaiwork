@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v9.9</title>
+<title>彫刻原稿 v10.0</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1426,7 +1426,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v9.9";
+var APP_VER = "v10.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2760,9 +2760,10 @@ function renderCols(){
 
   Array.prototype.forEach.call(box.querySelectorAll(".cw"), function(el){
     el.addEventListener("input", function(){
-      var ci = +el.dataset.i;
+      var ci = +el.dataset.i, g0 = glOf(ci);
+      var right0 = glRightX(g0);        /* 行のはじまりは動かさない */
       S.centers[ci].w = Math.max(0, num(el.value, 0));
-      packCentersInGl(glOf(ci));        /* 幅が変わったぶん、詰め直す */
+      packCentersInGl(g0, right0);      /* 幅が変わったぶん、左へ詰め直す */
       renderList(); renderProps(); renderStage(); renderBoth(); persist();
       if (view !== "sheet") rubRender();
     });
@@ -2887,40 +2888,79 @@ function addGroupTo(ci){
   sel = S.groups.length - 1;
   renderAll(); if (view !== "sheet") rubRender();
 }
-/* そのガイドラインのセンターラインを、すきま無く並べ直す（v9.9）。
-   1本目の位置はそのまま。2本目からは、縦書きの読む向きに合わせて **左へ** 続ける。
-   こうすると、足したセンターがガイドラインの幅の外へ出ることがない。
-   左右の場所は、枠の［1行目の位置］のふうせんで、行ごとまとめて動かす。 */
-function packCentersInGl(g){
+/* そのガイドラインのセンターラインの並び（左から右へ返す） */
+function glCenters(g){
   var idxs = [];
   S.centers.forEach(function(c, ci){ if (glOf(ci) === g) idxs.push(ci); });
+  return idxs;
+}
+/* そのガイドラインが取っている左右の幅（mm）。線の幅を足したもの。 */
+function glSpan(g){
+  var w = 0;
+  glCenters(g).forEach(function(ci){ w += (cenW(ci) || 0); });
+  return w;
+}
+/* いま取っている左右のまん中（mm） */
+function glMidX(g){
+  var idxs = glCenters(g);
+  if (!idxs.length) return 45;
+  var l = 1e9, r = -1e9;
+  idxs.forEach(function(ci){
+    var hw = (cenW(ci) || 0) / 2, x = num(S.centers[ci].x, 45);
+    l = Math.min(l, x - hw); r = Math.max(r, x + hw);
+  });
+  return (l + r) / 2;
+}
+/* 行のはじまり（いちばん右のはし）。縦書きなので、ここが 1行目の右はし。 */
+function glRightX(g){
+  var idxs = glCenters(g);
+  if (!idxs.length) return 45;
+  var r = -1e9;
+  idxs.forEach(function(ci){ r = Math.max(r, num(S.centers[ci].x, 45) + (cenW(ci) || 0) / 2); });
+  return r;
+}
+/* そのガイドラインのセンターラインを、すきま無く並べ直す（v9.9／v10.0 で見直し）。
+   ・行のはじまり（右はし）は変えない ―― 足しても、行そのものは動かない
+   ・縦書きなので、2本目からは **左へ** 続ける
+   左右の場所は、枠の［1行目の位置］のふうせんで、行ごとまとめて動かす。 */
+function packCentersInGl(g, rightX){
+  var idxs = glCenters(g);
   if (idxs.length < 2) return false;
-  var moved = false, prev = null;
-  idxs.forEach(function(ci, i){
-    var w = cenW(ci) || 30.3;
-    if (i === 0){ prev = { x: num(S.centers[ci].x, 45), w: w }; return; }
-    var x = +(prev.x - (prev.w + w) / 2).toFixed(1);
+  var moved = false;
+  /* 行のはじまり（右はし）はそのまま。そこから左へ、幅のぶんずつ置いていく。 */
+  var right = (rightX === undefined) ? glRightX(g) : rightX;
+  idxs.forEach(function(ci){
+    var w = cenW(ci) || 0;
+    var x = +(right - w / 2).toFixed(1);
     if (Math.abs(x - num(S.centers[ci].x, 0)) >= 0.05){ S.centers[ci].x = x; moved = true; }
-    prev = { x: x, w: w };
+    right -= w;
   });
   return moved;
 }
-/* そのガイドラインにセンターラインを 1本足す。すぐ左に、すきま無く置く。 */
+/* そのガイドラインにセンターラインを 1本足す。
+   ガイドラインが取る幅は変えず、その中を **分け合う**（v10.0）。
+   足したせいで枠からはみ出さないようにするため。 */
 function addCenterLine(g){
-  var idxs = [];
-  S.centers.forEach(function(c, ci){ if (num(c.gl,0) === g) idxs.push(ci); });
+  var idxs = glCenters(g);
   if (!idxs.length) return;
   var base = S.centers[idxs[0]];
-  var last = idxs[idxs.length-1];
+  var right0 = glRightX(g);                  /* 足す前の右はしを覚えておく */
+  var span = glSpan(g) || (num(base.w, 0) || 30.3);
+  var n = idxs.length + 1;
+  var last = idxs[idxs.length - 1];
   S.centers.splice(last + 1, 0,
-    { x: num(base.x, 45), w: num(base.w, 0), fit: false, gl: g });   /* 行幅は 1本目と同じ */
+    { x: num(base.x, 45), w: 0, fit: false, gl: g });
   if (S.rub.centersPx)
     S.rub.centersPx.splice(last + 1, 0,
       RUB.img ? Math.round((S.rub.bandL + S.rub.bandR) / 2) : null);
   S.groups.forEach(function(gr){ if (num(gr.col,0) > last) gr.col = num(gr.col,0) + 1; });
-  packCentersInGl(g);
+  /* 幅を等分する。合計は足す前と同じなので、ガイドラインは広がらない。 */
+  var w1 = +(span / n).toFixed(1);
+  glCenters(g).forEach(function(ci){ S.centers[ci].w = w1; });
+  packCentersInGl(g, right0);
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-  msg("センターラインを足しました。");
+  msg("センターラインを足しました。ガイドラインの幅 " + (+span.toFixed(1)) +
+      " mm を " + n + " 本で分けています。");
 }
 
 /* 古いテンプレート・案件は、センターラインに gl（1行ガイドライン番号）を
@@ -4676,6 +4716,10 @@ function migrate(){
   if (S.rub.pivot && !(isFinite(S.rub.pivot.x) && isFinite(S.rub.pivot.y))) S.rub.pivot = null;
   if (!S.rub.off || !(isFinite(S.rub.off.x) && isFinite(S.rub.off.y))) S.rub.off = { x:0, y:0 };
   padCentersPx();
+  /* 同じガイドラインに 2本以上センターラインがあるものは、すきま無く並べ直す（v10.0）。
+     昔は好きな所へ置けたので、離れていたり重なっていたりして、
+     ガイドラインの幅からはみ出して見えることがあった。幅（行幅）は変えない。 */
+  glList().forEach(function(g){ packCentersInGl(g); });
 }
 /* 拓本の上のセンターラインは centersPx で持っている。
    ガイドラインを足したのに、こちらが足りないと、

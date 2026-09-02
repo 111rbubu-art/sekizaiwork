@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v8.6</title>
+<title>彫刻原稿 v8.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1407,7 +1407,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v8.6";
+var APP_VER = "v8.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2510,6 +2510,7 @@ function hRun(text, x, y, sizeMm, axes, forPrint){
    ============================================================ */
 function renderAll(){
   clearWeightCache();
+  framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
   renderMenuCounts(); renderCols(); renderList(); renderProps();
   if (view === "demo"){ renderDemo(); persist(); return; }
   renderStage();
@@ -5217,44 +5218,34 @@ function frameAssign(g, fi){
   var list = (S.groups || []).filter(function(gr){ return glKeyOf(gr) === g; });
   return snapListTop(list, frameTextTop(fi));
 }
-/* 拓本があるときは、拓本のほうを動かせない代わりに **枠を動かして** そろえる。
-   拓本を取り込んだとき・頭を動かしたとき・実測長を変えたときに通る。
+/* 枠の上端（f.y）は、入れる数字ではなく **計算で出す**（v8.7）。
 
-   拓本は、その石にいま彫ってある字の写しなので、
-   「面の上端から、字がはじまるまで（＝下げ）」は実物で決まっている。
-   だから **下げ（f.top）を動かさず、枠の上端（f.y）を拓本の頭から逆算する**。
+     拓本があるとき  … 行の上端は拓本の頭。だから  f.y ＝ 拓本の頭 − 下げ
+     拓本が無いとき  … 行の上端は行そのもの。だから f.y ＝ 行の上端 − 下げ
 
-       枠の上端 f.y ＝ 拓本の頭 − 下げ f.top
-
-   こうすると、拓本の頭を動かすと 枠も文字もいっしょに動き、
-   枠と拓本がずれたままになることがない。
-   ※ v7.2〜v8.3 は逆に「枠は固定・下げのほうを直す」だった。
-     枠がどこにも動かないので、拓本と合わせようがなかった（v8.4 で直した）。 */
-function framesFitRub(){
+   下げ（面の上から字がはじまるまで）だけが、人が決める寸法。
+   上端は「その下げの分だけ、文字の上にある線」でしかないので、
+   別に打ち込む欄を持たせると、かえって食い違いのもとになる。
+   ※ 名前は昔のまま（呼んでいる所が多いので）。 */
+function framesFitRub(){ return framesSyncY(); }
+function framesSyncY(){
   var rt = (typeof rubTopMm === "function") ? rubTopMm() : null;
-  if (rt === null) return false;
   var moved = false;
   (S.frames || []).forEach(function(f, i){
-    var y = +(rt - num(f.top, 0)).toFixed(1);
+    var t = rt;
+    if (t === null){
+      /* 拓本が無いときは、その枠に入っている行の上端に合わせる。
+         行がまだ無ければ、いまの位置のままにしておく。 */
+      var tops = [];
+      frameGroups(i).forEach(function(g){ tops.push(num((srcGroup(g) || g).topY, 0)); });
+      if (!tops.length) return;
+      t = Math.min.apply(null, tops);
+    }
+    var y = +(t - num(f.top, 0)).toFixed(1);
     if (Math.abs(y - num(f.y, 0)) >= 0.05){ f.y = y; moved = true; }
-    if (frameSnapAll(i)) moved = true;
+    if (rt !== null && frameSnapAll(i)) moved = true;
   });
   return moved;
-}
-/* 枠の上端を y mm へ。上端は **石の面そのものの位置**なので、
-   動かすと中の行もいっしょに動く（枠と文字の関係は変えない）。
-   下げ（f.top）はさわらない。 */
-function frameSetY(fi, y){
-  var f = (S.frames || [])[fi]; if (!f) return false;
-  y = +num(y, 0).toFixed(1);
-  var d = y - num(f.y, 0);
-  f.y = y;
-  if (d) frameGroups(fi).forEach(function(g){
-    var t = srcGroup(g) || g;
-    t.topY = +(num(t.topY, 0) + d).toFixed(1);
-    t.bottomY = +(num(t.bottomY, 0) + d).toFixed(1);
-  });
-  return true;
 }
 /* この枠の行を、いまの「文字のはじまり」にそろえ直す */
 function frameSnapAll(fi){
@@ -5267,6 +5258,7 @@ function frameSnapAll(fi){
   return moved;
 }
 function renderFrames(){
+  framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
   var box = $("framelist");
   if (box){
     if (!(S.frames || []).length){
@@ -5288,36 +5280,29 @@ function renderFrames(){
             '<label class="f"><span>高さ mm</span><input type="number" class="frh" data-i="' + i +
               '" value="' + (+num(f.h,0).toFixed(1)) + '" step="1" min="1"></label>' +
           '</div>' +
-          '<div class="g2">' +
-            '<label class="f"><span>上端 mm（シートの上から）</span>' +
-              '<input type="number" class="fry" data-i="' + i + '" value="' + (+num(f.y,0).toFixed(1)) +
-              '" step="1"></label>' +
-            '<label class="f"><span>文字のはじまり mm（上端から下げる分）</span>' +
-              '<input type="number" class="frtop" data-i="' + i + '" value="' + (+num(f.top,0).toFixed(1)) +
-              '" step="1"></label>' +
-          '</div>' +
+          '<label class="f"><span>文字のはじまり mm（面の上から下げる分）</span>' +
+            '<input type="number" class="frtop" data-i="' + i + '" value="' + (+num(f.top,0).toFixed(1)) +
+            '" step="1"></label>' +
           (function(){
             /* 行の上端は「枠の上端＋文字のはじまり」。拓本があるときは、
                その頭のラインとも合っているかを、ここで見えるようにする。 */
             var tt = num(f.y, 0) + num(f.top, 0);
             var rt = (typeof rubTopMm === "function") ? rubTopMm() : null;
-            var t2 = '<p class="hint" style="margin:0 0 6px;">行の上端 ＝ <b>' +
-              (+tt.toFixed(1)) + ' mm</b>';
+            var t2 = '<p class="hint" style="margin:0 0 6px;">枠の上端 ' +
+              (+num(f.y,0).toFixed(1)) + ' mm　＋　下げ ' + (+num(f.top,0).toFixed(1)) +
+              ' mm　＝　行の上端 <b>' + (+tt.toFixed(1)) + ' mm</b>';
             if (rt !== null){
               var dd = tt - rt;
               t2 += '　拓本の頭 ' + (+rt.toFixed(1)) + ' mm' +
                 (Math.abs(dd) < 0.05 ? '（そろっています）'
                   : '<b style="color:var(--shu);">（' + (dd > 0 ? "＋" : "") +
                     (+dd.toFixed(1)) + ' mm ちがいます）</b>');
-              t2 += '<br><b>上端</b>を直すと、枠も中の文字もいっしょに動きます（石の面ごと動かす）。' +
-                '<b>下げ</b>を直すと、枠はそのままで文字だけが上下します。' +
-                '<br>拓本を取り込んだり、頭を動かしたときは、下げを保ったまま' +
-                '<b>枠ごと</b>拓本の頭へそろえ直します。';
+              t2 += '<br>行の上端は<b>拓本の頭</b>に合わせてあります。' +
+                '<b>下げ</b>を直すと、文字はそのままで<b>枠のほうが</b>上下します。';
             } else {
-              t2 += '<br>上端 ＋ 下げ ＝ 行の上端。' +
-                '<b>上端</b>を直すと枠も中の文字もいっしょに動き、' +
-                '<b>下げ</b>を直すと枠はそのままで文字だけが動きます。';
+              t2 += '<br><b>下げ</b>を直すと、枠はそのままで文字だけが上下します。';
             }
+            t2 += '　枠の上端は下げから出すので、打ち込む欄はありません。';
             t2 += '</p>';
             if (rt !== null && Math.abs(num(f.y,0) + num(f.top,0) - rt) >= 0.05)
               t2 += '<button class="mini frfit" data-i="' + i +
@@ -5427,16 +5412,13 @@ function bindFrames(){
     var f = S.frames[+e.target.dataset.i]; if (!f) return;
     f.h = Math.max(1, num0(e)); renderBoth(); persist();
   });
-  on(".fry", "input", function(e){
-    var i = +e.target.dataset.i; if (!S.frames[i]) return;
-    frameSetY(i, num0(e));
-    renderCols(); renderList(); renderStage(); renderBoth(); persist();
-  });
   on(".frtop", "input", function(e){
     var i = +e.target.dataset.i, f = S.frames[i]; if (!f) return;
-    /* 枠はそのまま。中の行だけを、枠の上端から この分だけ下げた所へそろえる。 */
     f.top = num0(e);
-    frameSnapAll(i);
+    /* 拓本があるときは、文字は頭から動かせない。枠のほうが上下する。
+       拓本が無いときは、枠をそのままにして中の行を下げる。 */
+    if (rubTopMm() !== null) framesSyncY();
+    else { frameSnapAll(i); framesSyncY(); }
     renderCols(); renderList(); renderStage(); renderBoth(); persist();
   });
   /* 枠を上下に動かして、文字のはじまりを拓本の頭に合わせる。
@@ -5445,8 +5427,7 @@ function bindFrames(){
     var i = +e.target.dataset.i, f = S.frames[i]; if (!f) return;
     var rt = rubTopMm();
     if (rt === null){ msg("先に拓本を取り込み、実測長を入れてください。", true); return; }
-    f.y = +(rt - num(f.top, 0)).toFixed(1);
-    frameSnapAll(i);
+    framesSyncY();
     renderFrames(); renderCols(); renderList(); renderStage(); renderBoth(); persist();
     msg("行の上端を拓本の頭（" + (+rt.toFixed(1)) + " mm）に合わせました。");
   });
@@ -6324,6 +6305,7 @@ async function saveDemoJPEG(local){
    同じ縮尺で並べる。列は左右にドラッグして位置を試せる。
    ---------------------------------------------------------------- */
 function renderDemo(){
+  framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
   var st = $("demostage"), wrap = $("demowrap");
   var mp = mmPerPx();
   var hintEl = wrap.querySelector(".demohint"); if (hintEl) hintEl.remove();
@@ -6724,6 +6706,7 @@ var bothImgHold = null;
 /* 構成に出しているガイドラインの左右の幅（mm）。並べ替えの落とし先を決めるのに使う。 */
 var bothGlRanges = [];
 function renderBoth(){
+  framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
   var st = $("bothstage"), wrap = $("bothwrap");
   var hintEl = wrap.querySelector(".bothhint"); if (hintEl) hintEl.remove();
   var rows = layout();
@@ -6925,8 +6908,7 @@ function renderBoth(){
       frameLayer += '<rect x="' + q.l.toFixed(3) + '" y="' + fy.toFixed(3) +
         '" width="' + num(f.w, 0).toFixed(3) + '" height="' + fh.toFixed(3) +
         '" fill="none" stroke="#DC2616" stroke-width="0.6"/>';
-    /* 1行目の右はしの線。枠の外まで伸ばし、上のつまみをつかんで動かす。
-       左右＝1行目の位置、上下＝枠そのものの位置。 */
+    /* 1行目の右はしの線。枠の外まで伸ばし、上のつまみをつかんで左右に動かす。 */
     var rx = fRight[q.i];
     if (rx !== undefined && FRTOP > 0){
       var hy = fy - FRTOP + KN * 0.9;
@@ -7233,8 +7215,7 @@ function bindBothDrag(svg){
         var f0 = S.frames[+k[1]];
         /* 押したその場所を基準にする。最初の動きを基準にすると、その分だけ足りなくなる。 */
         var p0 = toPt(ev);
-        if (f0 && isFinite(p0.x)) frx0 = { x: p0.x, dx: num(f0.dx, 0),
-                                           y: p0.y, fy: num(f0.y, 0) };
+        if (f0 && isFinite(p0.x)) frx0 = { x: p0.x, dx: num(f0.dx, 0) };
       }
       if (k[0] === "cal" && bothRubX !== null && mp0){
         bothImgHold = { iy: mmOf(0), mp: mp0 };
@@ -7247,8 +7228,6 @@ function bindBothDrag(svg){
           var f2 = S.frames[+k[1]];
           if (!f2 || !frx0 || !isFinite(q.x)) return;
           f2.dx = +(frx0.dx + (q.x - frx0.x)).toFixed(1);
-          /* 上下は枠ごと動かす。石の面を動かすので、中の文字もいっしょに動く。 */
-          if (isFinite(frx0.y) && isFinite(q.y)) frameSetY(+k[1], frx0.fy + (q.y - frx0.y));
           renderBoth();
           return;
         }
@@ -7320,9 +7299,8 @@ function bindBothDrag(svg){
           var f3 = S.frames[+k[1]];
           renderCols(); if (subTab === "frame") renderFrames();
           renderBoth(); persist();
-          if (f3) msg("枠「" + f3.name + "」を、上端 " + (+num(f3.y,0).toFixed(1)) +
-                      " mm ／ 1行目の左右 " + (num(f3.dx,0) > 0 ? "＋" : "") +
-                      (+num(f3.dx,0).toFixed(1)) + " mm にしました。");
+          if (f3) msg("枠「" + f3.name + "」の 1行目の位置を、左右 " +
+                      (num(f3.dx,0) > 0 ? "＋" : "") + (+num(f3.dx,0).toFixed(1)) + " mm にしました。");
           return;
         }
         if (k[0] === "glmove"){

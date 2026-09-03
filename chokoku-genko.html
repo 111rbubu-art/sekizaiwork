@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v11.1</title>
+<title>彫刻原稿 v11.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -745,8 +745,10 @@
           <input type="range" id="peRubOp" min="0.15" max="1" step="0.05" value="0.5"></label>
         <h3 class="sec">この字を残す</h3>
         <button class="mini" id="peShare">この字を共有フォルダーに保存</button>
+        <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <p class="hint" style="margin-top:4px;">ほかの案件で同じ字が出たときに、
-          「フォント・作字」から呼び出せます。</p>
+          「フォント・作字」から呼び出せます。同じ字は「月1」「月2」…と
+          自動で名前が付くので、いくつでも残せます。</p>
         <h3 class="sec">戻す</h3>
         <button class="mini" id="peUndo">1つ戻す</button>
         <button class="mini" id="peReset">元の字に戻す</button>
@@ -1443,7 +1445,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v11.1";
+var APP_VER = "v11.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9353,7 +9355,18 @@ function peRender(){
 var PE_MODE = { sel:"選ぶ・動かす", add:"点を足す", del:"点を消す",
                 oval:"丸を置く", delc:"輪郭を消す", cut:"線で切る", rubmv:"拓本を動かす" };
 /* モードの札とポインタ（v10.8）。選ぶ・動かすのときは何も出さない。 */
+/* いまいじっている字が、共有フォルダーで何という名前かを出す（v11.2） */
+function peNameShow(){
+  var el = $("peName"); if (!el) return;
+  var g = PE && S.groups[PE.gi];
+  var pa = g ? ((g.adj || [])[PE.ci] || {}).path : null;
+  var nm = (pa && pa.name) || "";
+  if (!nm){ el.hidden = true; el.textContent = ""; return; }
+  el.hidden = false;
+  el.innerHTML = '共有フォルダーでの名前：<b>' + esc(nm) + '</b>';
+}
 function peModeShow(){
+  peNameShow();
   var st = $("peStage"), tag = $("peModeTag");
   var t = (PE && PE.tool) || "sel";
   if (st) st.className = (t === "sel") ? "" : ("m-" + t);
@@ -10133,7 +10146,10 @@ function peCommit(){
              !(PE.red && PE.red.length)) {
     setAdj(g, PE.ci, "path", null);          /* フォントの字と同じなら作字にしない */
   } else {
+    /* もとの作字が名前を持っていれば引き継ぐ（v11.2）。形を直しても「月2」のまま。 */
+    var old = ((g.adj || [])[PE.ci] || {}).path;
     setAdj(g, PE.ci, "path", { upem: PE.upem, contours: PE.contours,
+                               name: (old && old.name) || "",
                                axes: PE.axes, wpct: num(PE.wpct, 0),
                                /* 赤（ペン）で書く輪郭の番号。細かくて刃がつぶす所に使う */
                                red: (PE.red || []).slice().sort(function(a,b){ return a-b; }) });
@@ -11029,12 +11045,51 @@ function glyphsInProject(){
   });
   return out.filter(function(x){ return x.ch; });
 }
-function glyphKey(ch, font){ return ch + " " + (font || ""); }
+/* 共有フォルダーの目印。同じ字・同じフォントでも、名前がちがえば別ものとして貯まる（v11.2）。 */
+function glyphKey(ch, font, name){ return ch + " " + (font || "") + " " + (name || ""); }
+/* 見出しの字（異体字セレクタを外した頭の 1文字） */
+function bareCh(ch){ return Array.from(String(ch || ""))[0] || ""; }
+/* 「月1」「月2」…のうち、まだ使っていないいちばん小さい番号の名前を作る。
+   同じ字・同じフォントの中だけで数える。 */
+function glyphAutoName(ch, font){
+  var b = bareCh(ch), mx = 0;
+  (((FDIR.lib || {}).items) || []).forEach(function(y){
+    if (!y || bareCh(y.ch) !== b || (y.font || "") !== (font || "")) return;
+    var m = /^(.+?)(\d+)$/.exec(String(y.name || ""));
+    if (m && m[1] === b) mx = Math.max(mx, parseInt(m[2], 10) || 0);
+  });
+  return b + (mx + 1);
+}
+/* 形がまったく同じか */
+function samePathShape(a, b){
+  if (!a || !b) return false;
+  return JSON.stringify(a.contours) === JSON.stringify(b.contours) &&
+         num(a.wpct, 0) === num(b.wpct, 0) &&
+         JSON.stringify((a.red || []).slice().sort()) === JSON.stringify((b.red || []).slice().sort());
+}
 /* 同じ字か。異体字セレクタは外して、頭の1文字で見る。 */
 function sameGlyphCh(a, b){
   return Array.from(String(a || ""))[0] === Array.from(String(b || ""))[0];
 }
 
+/* v11.2 より前に貯めたものは名前を持っていない。読んだところで順に「月1」「月2」…を入れる。
+   ここで入れた名前は、次に共有へ書いたときにファイルにも残る。 */
+function glyphLibFixNames(){
+  var items = ((FDIR.lib || {}).items) || [], cnt = {};
+  items.forEach(function(y){
+    if (!y) return;
+    var b = bareCh(y.ch), k = b + " " + (y.font || "");
+    var m = /^(.+?)(\d+)$/.exec(String(y.name || ""));
+    if (m && m[1] === b) cnt[k] = Math.max(num(cnt[k], 0), parseInt(m[2], 10) || 0);
+  });
+  items.forEach(function(y){
+    if (!y || y.name) return;
+    var b = bareCh(y.ch), k = b + " " + (y.font || "");
+    cnt[k] = num(cnt[k], 0) + 1;
+    y.name = b + cnt[k];
+    if (y.path) y.path.name = y.name;
+  });
+}
 async function glyphLibLoad(){
   if (!fontDirReady()) return null;
   if (!FDIR.libId){ FDIR.lib = { v:1, items:[] }; return FDIR.lib; }
@@ -11045,6 +11100,7 @@ async function glyphLibLoad(){
   try { o = JSON.parse(await b.text()); }
   catch(e){ throw new Error("作字の一覧を読めませんでした（中身がこわれています）"); }
   FDIR.lib = (o && Array.isArray(o.items)) ? o : { v:1, items:[] };
+  glyphLibFixNames();
   return FDIR.lib;
 }
 async function glyphLibSave(){
@@ -11056,6 +11112,35 @@ async function glyphLibSave(){
 /* 一覧をまだ読んでいなければ読む */
 async function fontDirEnsure(){
   if (FDIR.items === null) await fontDirLoad();
+}
+/* 共有フォルダーへ 1字入れる。名前の付け方はここに集めてある（v11.2）。
+     ・その作字がすでに名前を持っていれば、その名前のものを書き換える
+     ・形がまったく同じものが入っていれば、何もせず、その名前を使う
+     ・どちらでもなければ、「月1」「月2」…と自動で名前を付けて足す
+   path には名前を書き戻すので、案件の側にも同じ名前が残る。 */
+function glyphLibPut(ch, font, upem, path){
+  if (!FDIR.lib || !Array.isArray(FDIR.lib.items)) FDIR.lib = { v:1, items:[] };
+  var items = FDIR.lib.items, b = bareCh(ch), how = "add", name = String((path && path.name) || "");
+  var hit = -1;
+  if (name){
+    var k = glyphKey(ch, font, name);
+    items.forEach(function(y, i){ if (glyphKey(y.ch, y.font, y.name) === k) hit = i; });
+    if (hit >= 0) how = samePathShape(items[hit].path, path) ? "same" : "upd";
+  }
+  if (hit < 0){
+    items.forEach(function(y, i){
+      if (hit >= 0) return;
+      if (bareCh(y.ch) !== b || (y.font || "") !== (font || "")) return;
+      if (samePathShape(y.path, path)){ hit = i; how = "same"; name = y.name || ""; }
+    });
+  }
+  if (hit < 0){ name = glyphAutoName(ch, font); how = "add"; }
+  if (path) path.name = name;
+  if (how === "same"){ if (hit >= 0 && !items[hit].name) items[hit].name = name; return { how:how, name:name }; }
+  var rec = { ch:ch, font:font || "", name:name, upem:upem || 1000, path:path,
+              at:new Date().toISOString() };
+  if (hit >= 0) items[hit] = rec; else items.push(rec);
+  return { how:how, name:name };
 }
 /* 1字だけ共有に足す。作字の画面と、右クリックのメニューから使う。 */
 async function glyphLibPushOne(gi, ci){
@@ -11076,12 +11161,14 @@ async function glyphLibPushOne(gi, ci){
     msg("「" + ch + "」を共有フォルダーに保存しています…", false, true);
     await fontDirEnsure();
     await glyphLibLoad();
-    var k = glyphKey(ch, fname), hit = -1;
-    FDIR.lib.items.forEach(function(y, i){ if (glyphKey(y.ch, y.font) === k) hit = i; });
-    var rec = { ch:ch, font:fname, upem:(F && F.upem) || 1000, path:a.path, at:new Date().toISOString() };
-    if (hit >= 0) FDIR.lib.items[hit] = rec; else FDIR.lib.items.push(rec);
+    var r = glyphLibPut(ch, fname, (F && F.upem) || 1000, a.path);
     await glyphLibSave();
-    msg("「" + ch + "」を共有フォルダーに" + (hit >= 0 ? "書き換えました。" : "保存しました。"));
+    setAdj(g, ci, "path", a.path);        /* 名前が入ったので入れ直す */
+    persist();
+    if (typeof peNameShow === "function") peNameShow();
+    msg("「" + ch + "」を共有フォルダーに" +
+        (r.how === "upd" ? "書き換えました" : r.how === "same" ? "はすでに入っています" : "保存しました") +
+        "。名前は「" + r.name + "」です。");
     fontPanel();
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
@@ -11093,15 +11180,19 @@ async function glyphLibPush(){
     msg("作字を共有フォルダーに保存しています…", false, true);
     await fontDirEnsure();
     await glyphLibLoad();
-    var now = new Date().toISOString(), added = 0, upd = 0;
+    var added = 0, upd = 0, same = 0, names = [];
     mine.forEach(function(x){
-      var k = glyphKey(x.ch, x.font), hit = -1;
-      FDIR.lib.items.forEach(function(y, i){ if (glyphKey(y.ch, y.font) === k) hit = i; });
-      var rec = { ch:x.ch, font:x.font, upem:x.upem, path:x.path, at:now };
-      if (hit >= 0){ FDIR.lib.items[hit] = rec; upd++; } else { FDIR.lib.items.push(rec); added++; }
+      var r = glyphLibPut(x.ch, x.font, x.upem, x.path);
+      if (r.how === "add"){ added++; names.push(r.name); }
+      else if (r.how === "upd"){ upd++; names.push(r.name); }
+      else same++;
     });
     await glyphLibSave();
-    msg("作字を保存しました。新しく " + added + " 字、書き換え " + upd + " 字。");
+    persist();
+    msg("作字を保存しました。新しく " + added + " 字" +
+        (upd ? "、書き換え " + upd + " 字" : "") +
+        (same ? "、もう入っていた " + same + " 字" : "") +
+        (names.length ? "（" + names.join("、") + "）" : "") + "。");
     fontPanel();
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
@@ -11141,13 +11232,13 @@ function glibCandidates(bare, gi, ci){
       if (!a || !a.path) return;
       if (Array.from(String(chars[i] || ""))[0] !== bare) return;
       var F = FR(fontIdxOf(g, i));
-      add({ font: (F && F.name) || "", path: a.path,
+      add({ font: (F && F.name) || "", path: a.path, name: (a.path && a.path.name) || "",
             where: "この案件　" + gName(gj, 6) + " " + (i + 1) + " 文字目" });
     });
   });
   (((FDIR.lib || {}).items) || []).forEach(function(y){
     if (!y || !sameGlyphCh(y.ch, bare)) return;
-    add({ font: y.font || "", path: y.path, where: "共有フォルダー" });
+    add({ font: y.font || "", path: y.path, name: y.name || "", where: "共有フォルダー" });
   });
   return out;
 }
@@ -11196,7 +11287,7 @@ function glibPick(idx){
   var bare = GLP.bare;
   closeGlyphLib(true);
   renderAll();
-  msg(it ? ("「" + bare + "」を" + (it.where || "作字") + "の形にしました。")
+  msg(it ? ("「" + bare + "」を" + (it.name ? "「" + it.name + "」" : (it.where || "作字") + "の形") + "にしました。")
          : ("「" + bare + "」を元のフォントの字に戻しました。"));
 }
 
@@ -11217,8 +11308,9 @@ function glibRender(cx, cy){
       '<span class="w">フォントのまま</span></button>';
     GLP.items.forEach(function(it, i){
       h += '<button class="glcard" data-i="' + i + '">' + glibThumb(it.path, 52) +
-        '<span class="t">' + esc(it.font || "—") + '</span>' +
-        '<span class="w">' + esc(it.where || "") + '</span></button>';
+        '<span class="t">' + esc(it.name || GLP.bare) + '</span>' +
+        '<span class="w">' + esc(it.where || "") +
+        (it.font ? '<br>' + esc(it.font) : '') + '</span></button>';
     });
     h += '</div>';
   }
@@ -11264,8 +11356,14 @@ async function glyphLibApply(){
     await fontDirEnsure();
     await glyphLibLoad();
     if (!FDIR.lib || !FDIR.lib.items.length){ msg("共有フォルダーに作字がありません。", true); return; }
+    /* 同じ字・同じフォントが何個もあるので、名前のいちばん若いもの（月1）を入れる（v11.2）。
+       ほかのものに替えたいときは、シートの字を右クリック →［作字一覧を表示］で選ぶ。 */
     var map = {};
-    FDIR.lib.items.forEach(function(y){ map[glyphKey(y.ch, y.font)] = y; });
+    FDIR.lib.items.forEach(function(y){
+      var k = bareCh(y.ch) + " " + (y.font || "");
+      var cur = map[k];
+      if (!cur || String(y.name || "") < String(cur.name || "")) map[k] = y;
+    });
     var n = 0, skip = 0;
     (S.groups || []).forEach(function(g){
       var chars = splitChars(g.text);
@@ -11273,7 +11371,7 @@ async function glyphLibApply(){
         var a = (g.adj || [])[i];
         if (a && a.path && a.path.contours && a.path.contours.length){ skip++; return; }
         var F = FR(fontIdxOf(g, i));
-        var hit = map[glyphKey(ch, (F && F.name) || "")];
+        var hit = map[bareCh(ch) + " " + ((F && F.name) || "")];
         if (!hit) return;
         setAdj(g, i, "path", hit.path);
         n++;
@@ -11345,13 +11443,15 @@ function fontPanel(){
     /* 共有にある作字は、一覧を読んだときにいっしょに読んでいる。 */
     var lib = (FDIR.lib && FDIR.lib.items) || [];
     h += '<p class="hint" style="margin-top:0;">共有フォルダーの作字：<b>' + lib.length + '</b> 字' +
-      (lib.length ? '（' + esc(lib.map(function(x){ return Array.from(String(x.ch||""))[0] || ""; })
-                               .join("")) + '）' : '') +
+      (lib.length ? '（' + esc(lib.map(function(x){ return x.name || bareCh(x.ch); })
+                               .join("、")) + '）' : '') +
       (FDIR.lib ? '' : '<br>まだ読んでいません。「🔄 一覧を読む」を押してください。') + '</p>';
     h += '<button class="mini" id="glPush" style="width:100%;"' + (mine.length ? '' : ' disabled') +
       '>共有フォルダーに保存する</button>';
     h += '<button class="mini" id="glPull" style="width:100%;margin-top:4px;">共有の作字を当てはめる</button>';
-    h += '<p class="hint" style="margin-top:4px;">同じ字・同じフォントのものだけ入れます。すでに作字ずみの字は書き換えません。</p>';
+    h += '<p class="hint" style="margin-top:4px;">同じ字・同じフォントのものだけ入れます。すでに作字ずみの字は書き換えません。' +
+      '同じ字が何個もあるときは、いちばん若い番号（月1）が入ります。' +
+      'ほかのものにするときは、ゴムシートの字を右クリック →［作字一覧を表示］から選んでください。</p>';
   } else {
     h += '<p class="hint" style="margin-top:0;">本体アプリから開くと、作った字を共有フォルダーに残せます。</p>';
   }

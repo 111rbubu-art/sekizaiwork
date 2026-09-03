@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v11.6</title>
+<title>彫刻原稿 v11.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -11,6 +11,7 @@
     --ink:#14181B; --text:#2C3338; --muted:#6A757D;
     --shu:#DC2616; --shu-soft:#FCEBE9;
     --ok:#137A52; --ok-soft:#E6F4EE;
+    --ao:#1B62C4;                       /* 読み込みずみの青丸（v11.7） */
     --bar:52px;
   }
   *{box-sizing:border-box;}
@@ -234,6 +235,16 @@
     padding:5px 7px;margin-bottom:7px;font-size:11px;color:var(--muted);}
   #iFixBar b{color:var(--shu);}
   #iFixBar button{margin-top:4px;width:100%;}
+  /* 共有フォルダーの作字の一覧（v11.7） */
+  .glib{display:flex;flex-direction:column;gap:4px;margin-top:4px;}
+  .glibrow{display:flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:6px;padding:4px 6px;background:var(--surface);}
+  .glibrow svg{flex:none;background:#fff;border:1px solid var(--line);border-radius:4px;}
+  .glibrow .t{flex:1;min-width:0;font-size:11.5px;font-weight:700;line-height:1.3;}
+  .glibrow .t .s{font-size:10px;font-weight:400;color:var(--muted);
+    display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .glibrow button{flex:none;padding:2px 7px;}
+  .glist2 .gr.got{color:var(--ao);font-weight:700;}
   .grow .gtxt{flex:1;min-width:0;border:none;background:none;padding:2px 2px;
     font-size:12px;font-weight:600;color:var(--ink);}
   .grow .gtxt:focus{outline:none;background:var(--sunk);border-radius:4px;}
@@ -1456,7 +1467,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v11.6";
+var APP_VER = "v11.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9356,7 +9367,7 @@ function peRender(){
     '" stroke="#C8CFD5" stroke-width="' + (r*0.5) + '"/>');
 
   /* 元の形をうすく重ねる */
-  if ($("peGhost").checked && PE.base !== JSON.stringify(PE.contours))
+  if ($("peGhost").checked && PE.base && PE.base !== JSON.stringify(PE.contours))
     o.push('<path d="' + pathD(JSON.parse(PE.base)) + '" fill="#14181B" opacity="0.10"/>');
 
   /* いまの形（太さを当てた結果）。点は元の位置のまま。 */
@@ -9504,9 +9515,15 @@ var PE_MODE = { sel:"選ぶ・動かす", add:"点を足す", del:"点を消す"
 /* いまいじっている字が、共有フォルダーで何という名前かを出す（v11.2） */
 function peNameShow(){
   var el = $("peName"); if (!el) return;
-  var g = PE && S.groups[PE.gi];
-  var pa = g ? ((g.adj || [])[PE.ci] || {}).path : null;
-  var nm = (pa && pa.name) || "";
+  var nm = "";
+  if (PE && PE.lib !== undefined && PE.lib !== null){
+    var y = (((FDIR.lib || {}).items) || [])[PE.lib];
+    nm = (y && (y.name || bareCh(y.ch))) || "";
+  } else {
+    var g = PE && S.groups[PE.gi];
+    var pa = g ? ((g.adj || [])[PE.ci] || {}).path : null;
+    nm = (pa && pa.name) || "";
+  }
   if (!nm){ el.hidden = true; el.textContent = ""; return; }
   el.hidden = false;
   el.innerHTML = '共有フォルダーでの名前：<b>' + esc(nm) + '</b>';
@@ -10197,6 +10214,9 @@ Array.prototype.forEach.call(document.querySelectorAll("#pathEd .pt"), function(
    まだ保存していない編集も、いまの形のまま残す。 */
 $("peShare").onclick = function(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+  if (PE.lib !== undefined && PE.lib !== null){
+    msg("この字はもう共有フォルダーのものです。［決定］で書き換わります。", true); return;
+  }
   peCommit();                       /* いまの形をこの字に当てる */
   glyphLibPushOne(PE.gi, PE.ci);
 };
@@ -10209,6 +10229,7 @@ $("peReset").onclick = function(){
   if (!PE) return;
   if (!confirm("編集を捨てて、フォントの元の形に戻します。よろしいですか。")) return;
   peSnap();
+  if (!PE.base) return;
   PE.contours = JSON.parse(PE.base);
   PE.sel = []; PE.selC = []; peRender();
 };
@@ -10285,6 +10306,7 @@ function peRedDrop(c){
 }
 function peCommit(){
   if (!PE) return false;
+  if (PE.lib !== undefined && PE.lib !== null) return peCommitLib();
   var g = S.groups[PE.gi]; if (!g) return false;
   if (!PE.contours.length){
     setAdj(g, PE.ci, "path", null);
@@ -10302,12 +10324,31 @@ function peCommit(){
   }
   return true;
 }
+/* 共有フォルダーの作字を、その場で書き換える（v11.7）。名前は変わらない。 */
+function peCommitLib(){
+  var items = ((FDIR.lib || {}).items) || [], y = items[PE.lib];
+  if (!y) return false;
+  if (!PE.contours.length){ msg("形がなくなりました。消すときは一覧の［削除］から。", true); return false; }
+  y.path = { upem: PE.upem, contours: PE.contours, name: y.name || "",
+             axes: PE.axes, wpct: num(PE.wpct, 0),
+             red: (PE.red || []).slice().sort(function(a,b){ return a-b; }) };
+  var nm = y.name || bareCh(y.ch);
+  msg("共有フォルダーに書いています…", false, true);
+  glyphLibSave().then(function(){
+    fontPanel();
+    msg("共有フォルダーの作字「" + nm + "」を書き換えました。");
+  }).catch(function(e){
+    FDIR.lib = null; fontPanel();
+    msg("書き換えられませんでした：" + spErrText(e), true);
+  });
+  return true;
+}
 $("peOk").onclick = function(){
   if (!PE) return;
+  var lib = (PE.lib !== undefined && PE.lib !== null);
   peCommit();
   closePathEditor();
-  renderAll();
-  msg("形を反映しました。");
+  if (!lib){ renderAll(); msg("形を反映しました。"); }
 };
 window.addEventListener("keydown", function(e){
   if (!PE || $("pathEd").hidden) return;
@@ -11320,30 +11361,6 @@ async function glyphLibPushOne(gi, ci){
     fontPanel();
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
-/* この案件の作字を共有に足す。同じ字・同じフォントなら差し替える。 */
-async function glyphLibPush(){
-  try {
-    var mine = glyphsInProject();
-    if (!mine.length){ msg("この案件には作字がありません。", true); return; }
-    msg("作字を共有フォルダーに保存しています…", false, true);
-    await fontDirEnsure();
-    await glyphLibLoad();
-    var added = 0, upd = 0, same = 0, names = [];
-    mine.forEach(function(x){
-      var r = glyphLibPut(x.ch, x.font, x.upem, x.path);
-      if (r.how === "add"){ added++; names.push(r.name); }
-      else if (r.how === "upd"){ upd++; names.push(r.name); }
-      else same++;
-    });
-    await glyphLibSave();
-    persist();
-    msg("作字を保存しました。新しく " + added + " 字" +
-        (upd ? "、書き換え " + upd + " 字" : "") +
-        (same ? "、もう入っていた " + same + " 字" : "") +
-        (names.length ? "（" + names.join("、") + "）" : "") + "。");
-    fontPanel();
-  } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
-}
 /* ---- 作字一覧から選んで置き換える --------------------------------
    ゴムシートの字を右クリック →「作字一覧を表示」。
    見本にポインタを当てるとシートの字がその場で入れ替わり、押すと決まる。 */
@@ -11497,39 +11514,6 @@ async function openGlyphLib(gi, ci, cx, cy){
   glibRender(cx, cy);
 }
 
-/* 共有の作字を、この案件の同じ字に当てはめる */
-async function glyphLibApply(){
-  try {
-    msg("共有の作字を読んでいます…", false, true);
-    await fontDirEnsure();
-    await glyphLibLoad();
-    if (!FDIR.lib || !FDIR.lib.items.length){ msg("共有フォルダーに作字がありません。", true); return; }
-    /* 同じ字・同じフォントが何個もあるので、名前のいちばん若いもの（月1）を入れる（v11.2）。
-       ほかのものに替えたいときは、シートの字を右クリック →［作字一覧を表示］で選ぶ。 */
-    var map = {};
-    FDIR.lib.items.forEach(function(y){
-      var k = bareCh(y.ch) + " " + (y.font || "");
-      var cur = map[k];
-      if (!cur || String(y.name || "") < String(cur.name || "")) map[k] = y;
-    });
-    var n = 0, skip = 0;
-    (S.groups || []).forEach(function(g){
-      var chars = splitChars(g.text);
-      chars.forEach(function(ch, i){
-        var a = (g.adj || [])[i];
-        if (a && a.path && a.path.contours && a.path.contours.length){ skip++; return; }
-        var F = FR(fontIdxOf(g, i));
-        var hit = map[bareCh(ch) + " " + ((F && F.name) || "")];
-        if (!hit) return;
-        setAdj(g, i, "path", hit.path);
-        n++;
-      });
-    });
-    if (!n){ msg("当てはまる作字はありませんでした。同じ字・同じフォントのものだけ入れます。", true); fontPanel(); return; }
-    renderAll(); persist(); fontPanel();
-    msg(n + " 字に共有の作字を当てはめました。" + (skip ? "すでに作字ずみの " + skip + " 字はそのままです。" : ""));
-  } catch(e){ msg("読めませんでした：" + spErrText(e), true); }
-}
 
 /* --- パネル ---------------------------------------------------- */
 function fontPanel(){
@@ -11549,18 +11533,11 @@ function fontPanel(){
     'ブラウザに消されない設定：<b>' +
     (STORE.persisted === true ? "できています" :
      STORE.persisted === false ? "まだです" : "分かりません") + '</b>' +
-    (STORE.quota ? '<br>使っている量：' + mbText(STORE.usage) + " / " + mbText(STORE.quota) : "") +
     (STORE.err ? '<br><b style="color:var(--shu);">' + esc(STORE.err) + '</b>' : '') + '</p>';
-  if (STORE.persisted !== true)
-    h += '<button class="mini" id="stPer" style="width:100%;margin-bottom:6px;">消さない設定にする</button>';
-  h += '<p class="hint" style="margin:0 0 4px;">読み込んだフォントは、このパソコンに覚えさせて次回すぐ使えるようにしています。' +
-    '毎回読み直しになるときは、上の設定と、ブラウザの「終了時に閲覧データを消す」設定を見てください。</p>';
 
-  h += '<h3 class="sec">アプリ使用フォント（共有）</h3>';
-  if (!fontDirReady()){
-    h += '<p class="hint" style="margin-top:0;">本体アプリの納骨リストから開くと、SharePoint の<br><b>' +
-      esc(FONT_DIR) + '</b><br>にあるフォントをそのまま読み込めます。</p>';
-  } else {
+  /* 共有フォルダーの話は、本体アプリから開いているときだけ出す（v11.7） */
+  if (fontDirReady()){
+    h += '<h3 class="sec">アプリ使用フォント（共有）</h3>';
     h += '<div class="m" style="word-break:break-all;">' + esc(FONT_DIR) + '</div>';
     h += '<button class="mini" id="fdRel" style="width:100%;margin-bottom:6px;">🔄 一覧を読む</button>';
     if (FDIR.err) h += '<div class="m" style="color:var(--shu);">' + esc(FDIR.err) + '</div>';
@@ -11572,58 +11549,127 @@ function fontPanel(){
         var got = FONTS.some(function(F){ return F.name === it.name; });
         return '<div class="grow fdIt" data-id="' + esc(it.id) + '" data-n="' + esc(it.name) +
           '" data-s="' + (+it.size || 0) + '">' +
-          '<span class="gr">' + (got ? "●" : "・") + '</span>' +
+          '<span class="gr' + (got ? " got" : "") + '">' + (got ? "●" : "・") + '</span>' +
           '<span class="d">' + esc(it.name) + '</span>' +
           '<span class="n2" style="margin-left:auto;white-space:nowrap;">' +
           (it.size ? mbText(it.size) : "") + '</span></div>';
       }).join("") + '</div>';
-      h += '<p class="hint" style="margin-top:4px;">クリックで読み込みます。● は読み込みずみ。</p>';
+      h += '<p class="hint" style="margin-top:4px;">クリックで読み込みます。' +
+        '<b style="color:var(--ao);">●</b> は読み込みずみ。</p>';
     }
-    h += '<button class="mini" id="fdPut" style="width:100%;margin-top:4px;">このパソコンのフォントを共有に入れる</button>';
+    h += '<button class="mini" id="fdPut" style="width:100%;margin-top:4px;">' +
+      'このパソコンのフォントをSPにアップロード</button>';
   }
-  h += '<button class="mini" id="fdLocal" style="width:100%;margin-top:4px;">このパソコンから読む（共有には入れない）</button>';
 
   h += '<h3 class="sec">作字（このアプリで作った字）</h3>';
-  var mine = glyphsInProject();
-  h += '<p class="hint" style="margin-top:0;">この案件の作字：<b>' + mine.length + '</b> 字' +
-    (mine.length ? '（' + esc(mine.map(function(x){ return x.ch; }).join("")) + '）' : '') + '</p>';
-  if (fontDirReady()){
-    /* 共有にある作字は、一覧を読んだときにいっしょに読んでいる。 */
-    var lib = (FDIR.lib && FDIR.lib.items) || [];
-    h += '<p class="hint" style="margin-top:0;">共有フォルダーの作字：<b>' + lib.length + '</b> 字' +
-      (lib.length ? '（' + esc(lib.map(function(x){ return x.name || bareCh(x.ch); })
-                               .join("、")) + '）' : '') +
-      (FDIR.lib ? '' : '<br>まだ読んでいません。「🔄 一覧を読む」を押してください。') + '</p>';
-    h += '<button class="mini" id="glPush" style="width:100%;"' + (mine.length ? '' : ' disabled') +
-      '>共有フォルダーに保存する</button>';
-    h += '<button class="mini" id="glPull" style="width:100%;margin-top:4px;">共有の作字を当てはめる</button>';
-    h += '<p class="hint" style="margin-top:4px;">同じ字・同じフォントのものだけ入れます。すでに作字ずみの字は書き換えません。' +
-      '同じ字が何個もあるときは、いちばん若い番号（月1）が入ります。' +
-      'ほかのものにするときは、ゴムシートの字を右クリック →［作字一覧を表示］から選んでください。</p>';
-  } else {
+  if (!fontDirReady()){
     h += '<p class="hint" style="margin-top:0;">本体アプリから開くと、作った字を共有フォルダーに残せます。</p>';
+  } else {
+    var lib = (FDIR.lib && FDIR.lib.items) || [];
+    h += '<button class="mini" id="glRel" style="width:100%;">🔄 一覧を読む</button>';
+    h += '<p class="hint" style="margin-top:6px;">共有フォルダーの作字：<b>' + lib.length + '</b> 字' +
+      (lib.length ? '（' + esc(lib.map(function(x){ return x.name || bareCh(x.ch); }).join("、")) + '）' : '') +
+      (FDIR.lib ? '' : '<br>まだ読んでいません。「🔄 一覧を読む」を押してください。') + '</p>';
+    if (lib.length){
+      h += '<div class="glib">' + lib.map(function(y, i){
+        return '<div class="glibrow">' + glibThumb(y.path, 40) +
+          '<span class="t"><b>' + esc(y.name || bareCh(y.ch)) + '</b><br>' +
+          '<span class="s">' + esc(y.font || "—") + '</span></span>' +
+          '<button class="mini glibEd" data-i="' + i + '">編集</button>' +
+          '<button class="mini glibDel" data-i="' + i + '">削除</button></div>';
+      }).join("") + '</div>';
+      h += '<p class="hint" style="margin-top:4px;">［編集］でその字の形を直せます。直すと共有フォルダーの中身も変わります。' +
+        '［削除］は取り消せません。</p>';
+    }
   }
 
   box.innerHTML = h;
   var on = function(id, ev, fn){ var e = $(id); if (e) e.addEventListener(ev, fn); };
   on("fdRel", "click", function(){ FDIR.id = ""; FDIR.items = null; fontDirLoad(); });
-  on("stPer", "click", async function(){
-    await storePersist(true);
-    fontPanel();
-    msg(STORE.persisted === true
-      ? "この端末の記憶を消さない設定にしました。次からはフォントが残ります。"
-      : "ブラウザが承諾しませんでした。このページをブックマークするか、しばらく使ってからもう一度お試しください。",
-      STORE.persisted !== true, true);
-  });
-  on("fdLocal", "click", function(){ $("fFont").click(); });
   on("fdPut", "click", function(){ $("fFontUp").click(); });
-  on("glPush", "click", glyphLibPush);
-  on("glPull", "click", glyphLibApply);
+  /* 作字だけ読み直す（v11.7）。フォントの一覧は触らない。 */
+  on("glRel", "click", async function(){
+    try {
+      msg("共有フォルダーの作字を読んでいます…", false, true);
+      await fontDirEnsure();
+      FDIR.lib = null;
+      await glyphLibLoad();
+      fontPanel();
+      msg("共有フォルダーの作字を読みました。" +
+          (((FDIR.lib || {}).items) || []).length + " 字です。");
+    } catch(e){ msg("読めませんでした：" + spErrText(e), true); }
+  });
   Array.prototype.forEach.call(box.querySelectorAll(".fdIt"), function(e){
     e.onclick = function(){
       fontDirUse({ id: e.dataset.id, name: e.dataset.n, size: +e.dataset.s || 0 });
     };
   });
+  Array.prototype.forEach.call(box.querySelectorAll(".glibEd"), function(e){
+    e.onclick = function(){ openLibEditor(+e.dataset.i); };
+  });
+  Array.prototype.forEach.call(box.querySelectorAll(".glibDel"), function(e){
+    e.onclick = function(){ glibLibDelete(+e.dataset.i); };
+  });
+}
+/* 共有フォルダーの作字を 1つ消す（v11.7）。取り消せないので、いちど確かめる。 */
+async function glibLibDelete(i){
+  var items = ((FDIR.lib || {}).items) || [], y = items[i];
+  if (!y) return;
+  var nm = y.name || bareCh(y.ch);
+  if (!confirm("共有フォルダーの作字「" + nm + "」を消します。\n" +
+               "ほかの案件からも呼び出せなくなります。取り消せません。\nよろしいですか。")) return;
+  try {
+    msg("消しています…", false, true);
+    items.splice(i, 1);
+    await glyphLibSave();
+    fontPanel();
+    msg("作字「" + nm + "」を消しました。");
+  } catch(e){
+    FDIR.lib = null;                       /* 書けなかったので、読み直させる */
+    fontPanel();
+    msg("消せませんでした：" + spErrText(e), true);
+  }
+}
+/* 共有フォルダーの作字を、そのまま作字の画面で直す（v11.7）。
+   案件の字ではないので、［決定］で共有フォルダーのほうへ書き戻す。 */
+function openLibEditor(i){
+  var items = ((FDIR.lib || {}).items) || [], y = items[i];
+  if (!y || !y.path || !y.path.contours){ msg("その作字がありません。", true); return; }
+  var fi = -1;
+  FONTS.forEach(function(F, k){ if (F.name === (y.font || "")) fi = k; });
+  if (fi < 0){
+    msg("この作字は「" + (y.font || "（不明）") + "」で作られています。" +
+        "そのフォントを読み込んでから開いてください。", true);
+    return;
+  }
+  var F = FR(fi);
+  var contours = JSON.parse(JSON.stringify(y.path.contours));
+  if (y.path.upem && y.path.upem !== F.upem){
+    var k2 = F.upem / y.path.upem;
+    contours.forEach(function(c){ c.forEach(function(nd){
+      nd.x *= k2; nd.y *= k2;
+      if (nd.i){ nd.i[0] *= k2; nd.i[1] *= k2; }
+      if (nd.o){ nd.o[0] *= k2; nd.o[1] *= k2; }
+    }); });
+  }
+  PE = { lib: i, gi: null, ci: null, ch: y.ch, fi: fi,
+         upem: F.upem, asc: F.asc, desc: F.desc,
+         /* 元は「開いたときの形」。うすい影と［元の字に戻す］がこれを使う。 */
+         contours: contours, base: JSON.stringify(contours),
+         axes: JSON.parse(JSON.stringify(y.path.axes || {})),
+         axNow: JSON.parse(JSON.stringify(y.path.axes || {})),
+         wpct: num(y.path.wpct, 0),
+         red: Array.isArray(y.path.red) ? y.path.red.slice() : [],
+         sel: [], selC: [], undo: [], tool: "sel", drag: null, marq: null,
+         view: { z: 1, dx: 0, dy: 0 }, rub: null, cut: null };
+  $("peW").value = PE.wpct;
+  $("peRub").checked = false;
+  $("peRub").disabled = true;
+  $("peChar").textContent = bareCh(y.ch);
+  $("pathEd").hidden = false;
+  peRender();
+  msg("共有フォルダーの作字「" + (y.name || bareCh(y.ch)) + "」を開きました。" +
+      "［決定］で共有フォルダーのほうが書き換わります。");
 }
 
 /* 起動時。本体アプリから開かれていれば、そのまま案件を受け取って接続まで進める。 */

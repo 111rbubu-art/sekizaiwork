@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v13.0</title>
+<title>彫刻原稿 v13.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1518,7 +1518,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v13.0";
+var APP_VER = "v13.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7199,6 +7199,8 @@ function bothPack(rows){
 
 /* 構成表示で、拓本の左はしがシートの何 mm にあるか。つまみの計算に使う。 */
 var bothRubX = null;
+/* 重ねているときの合わせ先のセンターライン。つかむ処理から見る（v13.1） */
+var bothOvAci = null;
 /* つまみをつかんでいる間は、表示範囲と縮尺を止める。
    動かすたびに絵の大きさが変わると、つまみがポインタから逃げてしまう。 */
 var bothBusy = false, bothBox = null;
@@ -7284,6 +7286,7 @@ function renderBoth(){
      切り落とした分まで場所を取っていたので、枠の中に白い空きができていた（v8.8）。 */
   var rvL = 0, rvT = 0, rvW = 0, rvH = 0, rcX = 0, rcY = 0;
   var ovAci = null;          /* 重ねているときの合わせ先のセンターライン（v13.0） */
+  bothOvAci = null;
   bothRubX = null;
   if (RUB.img && mp){
     hasRub = true;
@@ -7319,7 +7322,7 @@ function renderBoth(){
         (S.centers || []).forEach(function(_, ci){
           if (aci === null && glOf(ci) === curGl && pk.x[ci] !== undefined) aci = ci;
         });
-      ovAci = aci;
+      ovAci = aci; bothOvAci = aci;
       var apx = aci === null ? null : bothAnchorPx(aci);
       if (apx !== null) ix = bx(aci) - apx * mp;
     }
@@ -7567,11 +7570,10 @@ function renderBoth(){
         '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
         '" fill="' + col + '" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
         '" pointer-events="none"/>';
-      /* 重ねているときも、拓本の線はつかめる（v13.0）。
-         ただし「合わせ先」の線だけは動かせない。そこを動かすと拓本の絵ごと
-         ついてきてしまい、つかんだ線は指から離れない（合わせ先に貼りついているため）。 */
-      if (!ov || ci !== ovAci)
-        hits.push('<rect class="bhitx" data-k="cen:' + ci + '" x="' + (x - KN*0.7).toFixed(3) +
+      /* 重ねているときも、拓本の線はぜんぶつかめる（v13.1）。
+         合わせ先の線だけは意味がちがい、「拓本は動かさず、文字のほうを動かす」。
+         つかむ処理（cen:）のほうで振り分けている。 */
+      hits.push('<rect class="bhitx" data-k="cen:' + ci + '" x="' + (x - KN*0.7).toFixed(3) +
           '" y="' + (rky - KN).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
           '" height="' + Math.max(KN*2, ry2 - rky + KN).toFixed(3) + '" fill="transparent"/>');
     });
@@ -7896,6 +7898,34 @@ function bindBothDrag(svg){
              1本目は基準なので、動かしても文字の行は動かない。 */
           var mp = mp0, ci = +k[1];
           if (!mp || rubX0 === null || !isFinite(q.x)) return;
+          /* 重ねているときの「合わせ先」の線だけは、意味がちがう（v13.1）。
+             拓本の置き場所はこの線から逆算しているので、ふつうに動かすと
+             拓本の絵ごとついてくる。ここでは
+                拓本は動かさない ／ 文字のほうがつかんだ所へ動く
+             にする。そのために、文字のセンターラインを動かしたぶんだけ、
+             拓本の画素のほうも同じだけずらして、逆算の答えを変えない。 */
+          if (bothOv() && ci === bothOvAci){
+            var g0 = glOf(ci);
+            var off0 = num((S.bothOff || {})[g0], NaN);
+            if (!isFinite(off0)) return;
+            var oldX = num(S.centers[ci].x, 45);
+            var pxs0 = S.rub.centersPx || [];
+            if (pxs0[ci] === null || pxs0[ci] === undefined) return;
+            /* 画素は整数なので、動かす量も画素にそろえてから mm に直す。
+               こうしないと、文字を動かすたびに 2本目以降がじわじわずれる。 */
+            var dpx = Math.round(((q.x - off0) - oldX) / mp);
+            if (!dpx) return;
+            var pxNew = Math.max(0, Math.min(RUB.W, pxs0[ci] + dpx));
+            dpx = pxNew - pxs0[ci];
+            if (!dpx) return;
+            pxs0[ci] = pxNew;
+            S.centers[ci].x = +(oldX + dpx * mp).toFixed(1);
+            /* ここでは syncCenters() を呼ばない。2本目以降は動かさないのが目的で、
+               呼ぶと 1回動かすごとに丸めのぶんだけ、じわじわずれていく。
+               文字と画素を同じだけずらしてあるので、次に呼ばれても同じ値に戻る。 */
+            renderBoth();
+            return;
+          }
           var px = Math.round((q.x - rubX0) / mp);
           S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
           syncCenters();

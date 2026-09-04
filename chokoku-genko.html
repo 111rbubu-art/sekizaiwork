@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v12.6</title>
+<title>彫刻原稿 v12.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -300,6 +300,9 @@
   #mLibBox .hd{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
   #mLibBox .hd .sm{font-size:11px;color:var(--muted);font-weight:700;}
   #mLibBox .hd .sp{flex:1;}
+  /* 絵は半分の大きさ、名前だけ（v12.7）。数が多くても並ぶように札も小さく */
+  #mLibBox .glcard{width:54px;padding:4px 3px 5px;gap:1px;}
+  #mLibBox .glcard .t{max-width:48px;font-size:10px;}
   .glcards{display:flex;flex-wrap:wrap;gap:7px;}
   .glcard{width:86px;padding:5px 4px 6px;border:1px solid var(--line);border-radius:8px;
     background:var(--surface);display:flex;flex-direction:column;align-items:center;gap:2px;
@@ -1513,7 +1516,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v12.6";
+var APP_VER = "v12.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -4252,9 +4255,9 @@ function openCharMenu(gi, ci, cx, cy){
   h += '<label class="f"><span>後ろの送り ±mm</span><input type="number" id="mGap" value="' +
       (+A.gap.toFixed(2)) + '" step="0.5"' + (last ? " disabled" : "") + '></label>';
   h += '<button class="mini' + (A.path ? '' : ' primary') + '" id="mPath" style="width:100%;margin-top:6px;margin-bottom:6px;">' +
-    (A.path ? '作字を編集し直す' : 'パスにして形を編集') + '</button>';
-  h += '<button class="mini" id="mLib" style="width:100%;margin-bottom:6px;">作字一覧を表示</button>';
-  h += '<div id="mLibBox" hidden></div>';
+    (A.path ? '作字を編集し直す' : 'パスで編集') + '</button>';
+  /* この字の候補（作字＋異体字）。押さなくても、いつも出しておく（v12.7） */
+  h += '<div id="mLibBox"></div>';
   /* この字を、ぜんぶ赤（ペン）にする／黒（刃）に戻す。押すたびに切り替わる（v12.4）。 */
   var epNow = editedPath(g, ci), allRedNow = !!(epNow && Array.isArray(epNow.red) &&
     epNow.red.length && epNow.red.length === (epNow.contours || []).length);
@@ -4280,7 +4283,6 @@ function openCharMenu(gi, ci, cx, cy){
       FONTS.map(function(F, k){ return '<option value="' + k + '"' + (A.f === k ? " selected" : "") +
         '>' + esc(F.name) + '</option>'; }).join("") + '</select></label>';
   }
-  h += '<h4>異体字</h4><div id="mIvs"></div>';
 
   var el = $("charMenu");
   el.innerHTML = h;
@@ -4289,30 +4291,8 @@ function openCharMenu(gi, ci, cx, cy){
   el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, cx + 8)) + "px";
   el.style.top  = Math.max(8, Math.min(window.innerHeight - hh - 8, cy - 20)) + "px";
 
-  /* 異体字 */
-  var ax = axesOf(g, ci), list = variantsOf(bare, ax, fi);
-  var box = $("mIvs");
-  if (!FC || list.length <= 1){
-    box.innerHTML = '<p class="hint" style="margin:0;">この字に異体字はありません。</p>';
-  } else {
-    var curVs = Array.from(chars[ci]).length > 1 ? Array.from(chars[ci])[1] : null;
-    box.innerHTML = '<div class="ivs">' + list.map(function(v, i){
-      var s = 34 / FC.upem, d = glyphPath(v.gid, ax, fi);
-      var on = (curVs === v.vs) || (!curVs && !v.vs);
-      return '<button class="ivsb' + (on ? " on" : "") + '" data-i="' + i + '">' +
-        '<svg width="30" height="30" viewBox="0 0 30 30"><g fill="#14181B" stroke="none">' +
-        '<path d="' + d + '" transform="translate(15,' + (2 + FC.asc * s).toFixed(2) + ') scale(' +
-        s.toFixed(5) + ',' + (-s).toFixed(5) + ') translate(' + (-FC.upem/2) + ',0)"/></g></svg></button>';
-    }).join("") + '</div>';
-    Array.prototype.forEach.call(box.querySelectorAll(".ivsb"), function(b){
-      b.onclick = function(){
-        var v = list[+b.dataset.i];
-        chars[ci] = bare + (v.vs || "");
-        g.text = chars.join("");
-        renderAll(); closeCharMenu();
-      };
-    });
-  }
+  /* この字の候補（作字＋異体字）を、その場で出す。読み込みは押されたときだけ（v12.7） */
+  openGlyphLib(gi, ci);
 
   function mon(id, ev, fn){ var e = $(id); if (e) e.addEventListener(ev, fn); }
   mon("mGap","input",function(e){
@@ -4392,11 +4372,6 @@ function openCharMenu(gi, ci, cx, cy){
                  : "縦横の連動をやめました。");
   });
   mon("mPath","click",function(){ closeCharMenu(); openPathEditor(gi, ci); });
-  mon("mLib","click",function(){
-    /* 消えずに、この窓の中に出す（v12.5） */
-    if (GLP){ closeGlyphLib(); return; }
-    openGlyphLib(gi, ci);
-  });
   mon("mShare","click",function(){ closeCharMenu(); glyphLibPushOne(gi, ci); });
   mon("mThin1","click",function(){
     var n = toggleCharRed(gi, ci);
@@ -11470,11 +11445,67 @@ function glibCandidates(bare, gi, ci){
 }
 
 /* 見本を当てはめて見せる。idx が -1 なら、作字なし（元のフォントの字）。 */
+/* この字の候補を集める（v12.7）。
+   ① 元の字（フォントのまま）　② 作字（この案件＋共有フォルダー）　③ 異体字
+   絵を描くためのかたち（thumb）と、当てるもの（path / vs）は別に持つ。 */
+function glibItems(gi, ci){
+  var g = S.groups[gi]; if (!g) return [];
+  var chars = splitChars(g.text), ch = chars[ci]; if (!ch) return [];
+  var bare = Array.from(String(ch))[0];
+  var fi = fontIdxOf(g, ci), FC = FR(fi), ax = axesOf(g, ci);
+  var out = [];
+  var gid0 = FC ? shapeOne(bare, ax, fi) : null;
+  out.push({ kind:"orig", name:"元の字",
+             thumb: gid0 ? { contours: parsePath(glyphPath(gid0, ax, fi)) } : null });
+  glibCandidates(bare, gi, ci).forEach(function(r){
+    out.push({ kind:"path", path:r.path, thumb:r.path, name:r.name || bare });
+  });
+  if (FC){
+    var n = 0;
+    variantsOf(bare, ax, fi).forEach(function(v){
+      if (!v.vs) return;                     /* 素の字は「元の字」と同じなので出さない */
+      n++;
+      out.push({ kind:"vs", vs:v.vs, name:"異体字" + n,
+                 thumb: { contours: parsePath(glyphPath(v.gid, ax, fi)) } });
+    });
+  }
+  return out;
+}
+/* いま使っているのはどれか */
+function glibCurrent(){
+  if (!GLP) return -1;
+  var g = S.groups[GLP.gi]; if (!g) return -1;
+  var p = adjOf(g, GLP.ci).path;
+  var ch = splitChars(g.text)[GLP.ci] || "";
+  var vs = Array.from(String(ch)).length > 1 ? Array.from(String(ch))[1] : null;
+  var hit = -1;
+  GLP.items.forEach(function(it, i){
+    if (hit >= 0) return;
+    if (p && it.kind === "path" &&
+        JSON.stringify(it.path.contours) === JSON.stringify(p.contours)) hit = i;
+    else if (!p && vs && it.kind === "vs" && it.vs === vs) hit = i;
+    else if (!p && !vs && it.kind === "orig") hit = i;
+  });
+  return hit;
+}
+/* その候補を当てる（試し描きと、決めるときの両方で使う） */
+function glibApply(it){
+  var g = S.groups[GLP.gi]; if (!g) return;
+  var ci = GLP.ci, chars = splitChars(g.text);
+  if (!it){ setAdj(g, ci, "path", GLP.origPath); chars[ci] = GLP.origCh; }
+  else if (it.kind === "vs"){
+    /* 作字が乗っていると異体字が見えないので、そのときは作字を外す */
+    setAdj(g, ci, "path", null);
+    chars[ci] = GLP.bare + it.vs;
+  } else {
+    setAdj(g, ci, "path", it.kind === "path" ? it.path : null);
+    chars[ci] = GLP.bare;
+  }
+  g.text = chars.join("");
+}
 function glibShow(idx){
   if (!GLP) return;
-  var g = S.groups[GLP.gi]; if (!g) return;
-  var p = (idx >= 0 && GLP.items[idx]) ? GLP.items[idx].path : null;
-  setAdj(g, GLP.ci, "path", p);
+  glibApply(idx >= 0 ? GLP.items[idx] : null);
   GLP.shown = idx;
   renderStage();
   if (view === "demo") renderDemo();
@@ -11486,8 +11517,7 @@ function glibShow(idx){
 /* ポインタが離れたら、元の見た目に戻す */
 function glibRestore(){
   if (!GLP || GLP.shown === null) return;
-  var g = S.groups[GLP.gi]; if (!g) return;
-  setAdj(g, GLP.ci, "path", GLP.orig);
+  glibApply(null);
   GLP.shown = null;
   renderStage();
   if (view === "demo") renderDemo();
@@ -11500,55 +11530,55 @@ function closeGlyphLib(keep){
   if (!GLP) return;
   if (!keep) glibRestore();
   GLP = null;
-  var el = $("mLibBox");
-  if (el){ el.hidden = true; el.innerHTML = ""; }
-  var b = $("mLib"); if (b) b.textContent = "作字一覧を表示";
 }
-/* 押して決める。文字メニューはそのまま開いていたいところだが、
-   異体字を選んだときと同じく、決めたらいったん閉じる（v12.5）。 */
+/* 押して決める。異体字を選んだときと同じく、決めたらメニューごと閉じる。 */
 function glibPick(idx){
   if (!GLP) return;
-  var g = S.groups[GLP.gi]; if (!g) return;
-  var ci = GLP.ci, it = (idx >= 0) ? GLP.items[idx] : null;
-  setAdj(g, ci, "path", it ? it.path : null);
-  GLP.shown = idx; GLP.orig = it ? it.path : null;
-  var bare = GLP.bare;
+  var it = (idx >= 0) ? GLP.items[idx] : null;
+  var bare = GLP.bare, hadPath = !!GLP.origPath;
+  glibApply(it);
+  GLP.shown = idx;
+  GLP.origPath = adjOf(S.groups[GLP.gi], GLP.ci).path;
+  GLP.origCh = splitChars(S.groups[GLP.gi].text)[GLP.ci];
   closeGlyphLib(true);
   renderAll(); closeCharMenu();
-  msg(it ? ("「" + bare + "」を" + (it.name ? "「" + it.name + "」" : (it.where || "作字") + "の形") + "にしました。")
-         : ("「" + bare + "」を元のフォントの字に戻しました。"));
+  msg(!it || it.kind === "orig"
+        ? ("「" + bare + "」を元のフォントの字に戻しました。")
+        : it.kind === "vs"
+          ? ("「" + bare + "」を " + it.name + " にしました。" + (hadPath ? "（作字は外しました）" : ""))
+          : ("「" + bare + "」を「" + it.name + "」の形にしました。"));
 }
 
-/* 文字メニュー（#charMenu）の中の #mLibBox に、その場で開く（v12.5）。
-   前は別の窓（#glibPick）に浮かせていたが、押すと元の窓が消えたように
-   見えるという指摘があったのでやめた。 */
+/* 文字メニュー（#charMenu）の中の #mLibBox に出す（v12.5）。
+   絵は小さめ、名前だけ。共有フォルダー名・フォント名は出さない（v12.7）。 */
 function glibRender(){
   var el = $("mLibBox"); if (!el || !GLP) return;
-  var h = '<div class="hd"><span class="sm">作字一覧　' + GLP.items.length + ' 件</span>' +
-    '<span class="sp"></span><button class="mini" id="glX">閉じる</button></div>';
-  if (!GLP.items.length){
-    h += '<p class="hint" style="margin:0;">「' + esc(GLP.bare) +
-      '」の作字は、この案件にも共有フォルダーにもありません。<br>' +
-      '「パスにして形を編集」で作り、「作字登録」を押すと、ここに並びます。</p>';
-  } else {
-    h += '<p class="hint" style="margin:0 0 8px;">見本にポインタを当てると、ゴムシートの字がその場で入れ替わります。押すと決まります。</p>';
-    h += '<div class="glcards">';
-    h += '<button class="glcard' + (GLP.orig ? '' : ' now') + '" data-i="-1">' +
-      glibThumb(null, 52) + '<span class="t">元の字</span>' +
-      '<span class="w">フォントのまま</span></button>';
-    GLP.items.forEach(function(it, i){
-      h += '<button class="glcard" data-i="' + i + '">' + glibThumb(it.path, 52) +
-        '<span class="t">' + esc(it.name || GLP.bare) + '</span>' +
-        '<span class="w">' + esc(it.where || "") +
-        (it.font ? '<br>' + esc(it.font) : '') + '</span></button>';
-    });
-    h += '</div>';
-  }
+  var cur = glibCurrent();
+  var h = '<div class="hd"><span class="sm">この字の候補　' + GLP.items.length + ' 件</span>' +
+    '<span class="sp"></span>' +
+    (fontDirReady() ? '<button class="mini" id="glLoad">🔄 読み込む</button>' : '') +
+    '</div>';
+  h += '<div class="glcards">';
+  GLP.items.forEach(function(it, i){
+    h += '<button class="glcard' + (i === cur ? " now" : "") + '" data-i="' + i + '">' +
+      glibThumb(it.thumb, 26) + '<span class="t">' + esc(it.name) + '</span></button>';
+  });
+  h += '</div>';
+  if (fontDirReady() && !FDIR.lib)
+    h += '<p class="hint" style="margin:4px 0 0;">共有フォルダーの作字はまだ読んでいません。' +
+      '［🔄 読み込む］で出せます。</p>';
   el.innerHTML = h;
-  el.hidden = false;
-  var b = $("mLib"); if (b) b.textContent = "作字一覧を閉じる";
 
-  var x = $("glX"); if (x) x.onclick = function(){ closeGlyphLib(); };
+  var lb = $("glLoad");
+  if (lb) lb.onclick = async function(){
+    try {
+      msg("共有フォルダーの作字を読んでいます…", false, true);
+      await fontDirEnsure();
+      await glyphLibLoad();
+      if (GLP){ GLP.items = glibItems(GLP.gi, GLP.ci); glibRender(); }
+      msg("読み込みました。候補 " + (GLP ? GLP.items.length : 0) + " 件です。");
+    } catch(e){ msg("読めませんでした：" + spErrText(e), true); }
+  };
   Array.prototype.forEach.call(el.querySelectorAll(".glcard"), function(b2){
     var i = +b2.dataset.i;
     b2.addEventListener("mouseenter", function(){ glibShow(i); });
@@ -11557,26 +11587,18 @@ function glibRender(){
   });
 }
 
-/* 一覧を開く。共有フォルダーが使えるときは、そちらも読んでから並べる。 */
-async function openGlyphLib(gi, ci){
+/* 一覧を出す。共有フォルダーは自動では読まない（右クリックのたびに
+   通信すると重いので、［🔄 読み込む］を押されたときだけ・v12.7）。 */
+function openGlyphLib(gi, ci){
   var g = S.groups[gi]; if (!g) return;
   var chars = splitChars(g.text), ch = chars[ci];
   if (!ch){ msg("その文字がありません。", true); return; }
-  var bare = Array.from(String(ch))[0];
   closeGlyphLib();
-  if (fontDirReady()){
-    try {
-      msg("共有フォルダーの作字を読んでいます…", false, true);
-      await fontDirEnsure();
-      await glyphLibLoad();
-      msg("");
-    } catch(e){ msg("共有フォルダーは読めませんでした：" + spErrText(e), true); }
-  }
-  GLP = { gi: gi, ci: ci, bare: bare, orig: adjOf(g, ci).path, items: [], shown: null };
-  GLP.items = glibCandidates(bare, gi, ci);
+  GLP = { gi: gi, ci: ci, bare: Array.from(String(ch))[0],
+          origPath: adjOf(g, ci).path, origCh: ch, items: [], shown: null };
+  GLP.items = glibItems(gi, ci);
   glibRender();
 }
-
 
 /* --- パネル ---------------------------------------------------- */
 function fontPanel(){

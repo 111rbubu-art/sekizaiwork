@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v13.3</title>
+<title>彫刻原稿 v13.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -508,6 +508,20 @@
     #stage svg{display:block;}
     *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   }
+
+/* --- 校正のロック（v13.4）。読み取り専用にして、うっかり触るのを防ぐ --- */
+#lockBar{display:none;align-items:center;gap:8px;padding:5px 10px;font-size:12px;font-weight:700;
+  background:#FFF3CD;color:#6b4b00;border-bottom:1px solid #E0C97A;}
+body.locked #lockBar{display:flex;}
+#lockBar .sp{flex:1;}
+#lockBar .lb2{font-weight:400;color:#7a6330;}
+/* サブメニューは触れなくする。設定パネルだけは残す（ここに解除がある） */
+body.locked #sub{opacity:.5;pointer-events:none;}
+body.locked #sub #panSP{opacity:1;pointer-events:auto;}
+body.locked #bGap,body.locked #dReset,body.locked #dAdj,body.locked #btnSheetMove2,
+body.locked #bRubHome,body.locked #rbFlip,body.locked #rbRot,body.locked #rbCrop,
+body.locked #rbCropAll{opacity:.45;pointer-events:none;}
+.lockrow{display:flex;align-items:center;gap:6px;}
 </style>
 <style id="pagecss">@page{size:90mm 700mm;margin:0;}</style>
 </head>
@@ -530,6 +544,8 @@
     <button id="btnPrintBlk" class="blk">② 黒を出力</button>
     <button id="btnSvg" class="mini" title="赤・黒の色分けのまま、SVG を 1枚このパソコンに保存します">SVG</button>
   </div>
+
+  <div id="lockBar"><span>🔒 ロック中</span><span class="lb2" id="lockInfo"></span><span class="sp"></span><span class="lb2">解除は［設定］メニューから</span></div>
 
   <div id="main">
 
@@ -1550,7 +1566,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v13.3";
+var APP_VER = "v13.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2771,6 +2787,7 @@ function hRun(text, x, y, sizeMm, axes, forPrint){
 function renderAll(){
   clearWeightCache();
   framesSyncY();                 /* 枠の上端は計算で出す（v8.7） */
+  applyLock();
   renderMenuCounts(); renderCols(); renderList(); renderProps();
   if (view === "demo"){ renderDemo(); persist(); return; }
   renderStage();
@@ -5166,6 +5183,109 @@ function padCentersPx(){
   var mid = Math.round((num(r.bandL, 0) + num(r.bandR, 0)) / 2);
   while (r.centersPx.length < n) r.centersPx.push(has ? mid : null);
   if (r.centersPx.length > n) r.centersPx = r.centersPx.slice(0, n);
+}
+/* --- 校正のロック（v13.4） -----------------------------------------
+   お客様に校正を出したら、その内容が後から動かないように読み取り専用にする。
+   S.lock = null か { at:"ISO", status:"お客様校正提出", note:"" }。
+   解除は［設定］メニューから。だれでも解除できる（暗証番号などは付けない）。 */
+function locked(){ return !!(S && S.lock && S.lock.at); }
+var LOCK_TOAST = 0;
+function lockNo(){
+  var t = Date.now();
+  if (t - LOCK_TOAST < 1200) return;      /* 続けて触っても、知らせは出しすぎない */
+  LOCK_TOAST = t;
+  msg("この校正はロックされています。変えるときは［設定］メニューで解除してください。", true);
+}
+function lockDate(iso){
+  var d = new Date(iso); if (isNaN(d)) return String(iso || "");
+  var z = function(n){ return (n < 10 ? "0" : "") + n; };
+  return d.getFullYear() + "/" + z(d.getMonth()+1) + "/" + z(d.getDate()) +
+         " " + z(d.getHours()) + ":" + z(d.getMinutes());
+}
+function applyLock(){
+  var on = locked();
+  document.body.classList.toggle("locked", on);
+  var e = $("lockInfo");
+  if (e) e.textContent = on
+    ? (S.lock.status || "") + "　" + lockDate(S.lock.at) +
+      (S.lock.note ? "　" + S.lock.note : "")
+    : "";
+}
+/* 絵の上でつかんで動かす操作を、まとめて止める。
+   pointerdown だけを止めるので、押して選ぶ（click）はそのまま使える。 */
+var LOCK_ZONE = "#stagewrap,#bothwrap,#rubwrap,#demowrap";
+document.addEventListener("pointerdown", function(e){
+  if (!locked()) return;
+  var t = e.target;
+  if (!t || !t.closest || !t.closest(LOCK_ZONE)) return;
+  e.stopPropagation();
+  lockNo();
+}, true);
+document.addEventListener("contextmenu", function(e){
+  if (!locked()) return;
+  var t = e.target;
+  if (!t || !t.closest || !t.closest(LOCK_ZONE)) return;
+  e.preventDefault(); e.stopPropagation();
+  lockNo();
+}, true);
+document.addEventListener("dblclick", function(e){
+  if (!locked()) return;
+  var t = e.target;
+  if (!t || !t.closest || !t.closest(LOCK_ZONE)) return;
+  e.preventDefault(); e.stopPropagation();
+}, true);
+/* 打ち込みも止める（欄が残っていても字は変わらない） */
+document.addEventListener("beforeinput", function(e){
+  if (!locked()) return;
+  var t = e.target;
+  if (!t || !t.closest || t.closest("#panSP")) return;
+  e.preventDefault(); e.stopPropagation();
+  lockNo();
+}, true);
+
+function lockOn(status, note){
+  S.lock = { at: new Date().toISOString(), status: String(status || "お客様校正提出"),
+             note: String(note || "") };
+  applyLock(); persist(); spPanel();
+  msg("ロックしました。この校正は読み取り専用です。");
+}
+function lockOff(){
+  S.lock = null;
+  applyLock(); persist(); spPanel();
+  msg("ロックを解除しました。編集できます。");
+}
+/* 設定メニューに出す欄 */
+function lockHTML(){
+  var h = '<h3 class="sec">校正のロック</h3>';
+  if (locked()){
+    h += '<div class="res"><div class="h"><span>🔒 ロック中</span></div>' +
+      '<div class="m">' + esc(S.lock.status || "") + '<br>' + esc(lockDate(S.lock.at)) +
+      (S.lock.note ? '<br>' + esc(S.lock.note) : '') + '</div>' +
+      '<button class="mini" id="btnLockOff" style="width:100%;margin-top:6px;">ロックを解除する</button>' +
+      '</div>' +
+      '<p class="hint">解除すると、また編集できます。上書き保存もできます。</p>';
+  } else {
+    h += '<label class="f"><span>ステータス</span>' +
+      '<input type="text" id="lkStatus" value="お客様校正提出"></label>' +
+      '<label class="f"><span>メモ（任意）</span>' +
+      '<input type="text" id="lkNote" placeholder="2回目　など"></label>' +
+      '<button class="mini" id="btnLockOn" style="width:100%;margin-top:4px;">🔒 ロックする</button>' +
+      '<p class="hint">お客様に校正を出したら押してください。' +
+      '文字・ガイドライン・拓本の位置がすべて読み取り専用になります。' +
+      '印刷・SVG 出力・案件の保存はそのままできます。</p>';
+  }
+  return h;
+}
+function bindLock(){
+  var a = $("btnLockOn");
+  if (a) a.onclick = function(){
+    lockOn(($("lkStatus") || {}).value, ($("lkNote") || {}).value);
+  };
+  var b = $("btnLockOff");
+  if (b) b.onclick = function(){
+    if (!confirm("ロックを解除して、編集できるようにしますか？")) return;
+    lockOff();
+  };
 }
 function persist(){
   try {
@@ -11211,8 +11331,8 @@ function spPanel(){
     h += '<p class="hint">この機能は、ファイルを直接開いた状態（file://）では使えません。' +
       'sekizaiwork と同じ場所に置いて、そのアドレスで開いてください。' +
       'シートの作図・印刷はこのままでも今までどおり使えます。</p>';
-    h += testCutHTML();
-    box.innerHTML = h; bindTestCut(); return;
+    h += lockHTML() + testCutHTML();
+    box.innerHTML = h; bindLock(); bindTestCut(); return;
   }
   if (!hoParent()){
     h += '<p class="hint">このページは自分ではサインインしません。<br><br>' +
@@ -11222,8 +11342,8 @@ function spPanel(){
       '本体アプリの窓を閉じてしまったときも、ここが読めなくなります。' +
       'その場合はもう一度そちらから開き直してください。' +
       'シートの作図・印刷はこのままでも使えます。</p>';
-    h += testCutHTML();
-    box.innerHTML = h; bindTestCut(); return;
+    h += lockHTML() + testCutHTML();
+    box.innerHTML = h; bindLock(); bindTestCut(); return;
   }
 
   /* つながり具合 */
@@ -11278,10 +11398,12 @@ function spPanel(){
   /* ファイル選択の画面 */
   if (SP.browse) h += spBrowseHTML();
 
+  h += lockHTML();
   h += testCutHTML();
 
   box.innerHTML = h;
   spBind();
+  bindLock();
   bindTestCut();
 }
 function spBrowseHTML(){

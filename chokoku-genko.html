@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v13.4</title>
+<title>彫刻原稿 v13.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -528,6 +528,28 @@ body.locked #sub .grow{cursor:default;}
 body.locked #bGap,body.locked #bRubHome,body.locked #rbFlip,body.locked #rbRot,
 body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
 .lockrow{display:flex;align-items:center;gap:6px;}
+
+/* --- 版を選ぶ窓（v13.5） --- */
+#verWin{position:fixed;inset:0;background:rgba(20,24,27,.18);z-index:81;
+  display:flex;align-items:center;justify-content:center;padding:24px;}
+#verWin[hidden]{display:none !important;}
+#verWin .vwbox{background:var(--paper);border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.35);
+  width:min(720px,100%);max-height:min(680px,100%);display:flex;flex-direction:column;overflow:hidden;}
+#verWin .vwhd{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--surface);border-bottom:1px solid var(--line);cursor:move;user-select:none;}
+#verWin .vwhd button{cursor:auto;}
+#verWin .vwhd .t{font-weight:700;color:var(--ink);}
+#verWin .vwhd .sp{flex:1;}
+#verWin .vwbody{flex:1;min-height:0;overflow:auto;padding:12px 14px;}
+#verWin .vrow{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
+  border:1px solid var(--line);border-radius:8px;background:var(--surface);cursor:pointer;}
+#verWin .vrow:hover{border-color:var(--ink);}
+#verWin .vrow .lk{font-size:16px;width:20px;text-align:center;}
+#verWin .vrow .mid{flex:1;min-width:0;}
+#verWin .vrow .st{font-weight:700;}
+#verWin .vrow .dt{font-size:11.5px;color:var(--muted);}
+#verWin .vrow .tag{font-size:11px;font-weight:700;color:var(--paper);background:var(--ink);
+  border-radius:4px;padding:2px 6px;}
 </style>
 <style id="pagecss">@page{size:90mm 700mm;margin:0;}</style>
 </head>
@@ -801,6 +823,15 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
 </div>
 
 <!-- 共有フォルダーの作字の一覧。数が多いので別ウインドウにした（v11.8） -->
+<div id="verWin" hidden>
+  <div class="vwbox">
+    <div class="vwhd"><span class="t">どの版を開きますか</span>
+      <span class="sp"></span>
+      <button class="mini" id="vwX">やめる</button></div>
+    <div class="vwbody" id="vwList"></div>
+  </div>
+</div>
+
 <div id="glibWin" hidden>
   <div class="glwbox">
     <div class="glwhd">
@@ -1572,7 +1603,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v13.4";
+var APP_VER = "v13.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5117,6 +5148,8 @@ var RUB_DEFAULT = { invert:true, thresh:null, calTop:0, calBot:0, bandL:0, bandR
                     dpi:0, dpiSrc:"", lenAuto:true };
 /* 旧い形（列が1つだけ）のデータを新しい形に合わせる */
 function migrate(){
+  if (S.lock === undefined) S.lock = null;
+  if (S.verId === undefined) S.verId = 0;
   if (!Array.isArray(S.centers)) S.centers = (S.centerX !== undefined)
     ? [ { x: num(S.centerX, 45), w: 30.3, fit:false } ] : [];
   S.centers = S.centers.map(function(c, i){
@@ -5258,16 +5291,22 @@ document.addEventListener("beforeinput", function(e){
   lockNo();
 }, true);
 
-function lockOn(status, note){
+async function lockOn(status, note){
   S.lock = { at: new Date().toISOString(), status: String(status || "お客様校正提出"),
              note: String(note || "") };
   applyLock(); persist(); spPanel();
-  msg("ロックしました。この校正は読み取り専用です。");
+  /* ロックした校正は、そのまま履歴の 1 版として残す（v13.5） */
+  if (typeof SP !== "undefined" && SP.state === "ready" && SP.cfg.folderId){
+    await spSaveProject();
+  } else {
+    msg("ロックしました。この校正は読み取り専用です。");
+  }
 }
 function lockOff(){
   S.lock = null;
   applyLock(); persist(); spPanel();
-  msg("ロックを解除しました。編集できます。");
+  msg("ロックを解除しました。編集できます。" +
+      "　※ ロックした版は履歴に残ります。次に保存すると新しい版になります。");
 }
 /* 設定メニューに出す欄 */
 function lockHTML(){
@@ -5278,7 +5317,8 @@ function lockHTML(){
       (S.lock.note ? '<br>' + esc(S.lock.note) : '') + '</div>' +
       '<button class="mini" id="btnLockOff" style="width:100%;margin-top:6px;">ロックを解除する</button>' +
       '</div>' +
-      '<p class="hint">解除すると、また編集できます。上書き保存もできます。</p>';
+      '<p class="hint">この版はもう書き換わりません。解除して直すと、' +
+      '次の保存で<b>新しい版</b>になります。ロックした校正は履歴に残ります。</p>';
   } else {
     h += '<label class="f"><span>ステータス</span>' +
       '<input type="text" id="lkStatus" value="お客様校正提出"></label>' +
@@ -5286,9 +5326,13 @@ function lockHTML(){
       '<input type="text" id="lkNote" placeholder="2回目　など"></label>' +
       '<button class="mini" id="btnLockOn" style="width:100%;margin-top:4px;">🔒 ロックする</button>' +
       '<p class="hint">お客様に校正を出したら押してください。' +
-      '文字・ガイドライン・拓本の位置がすべて読み取り専用になります。' +
-      '印刷・SVG 出力・案件の保存はそのままできます。</p>';
+      '文字・ガイドライン・拓本の位置が読み取り専用になり、' +
+      'そのままの内容が<b>ひとつの版として履歴に残ります</b>。' +
+      'ゴムシートと確認資料の置き場所調整、印刷・SVG 出力はそのままできます。</p>';
   }
+  h += '<div class="m" style="margin-top:6px;color:var(--muted);">いまの版：' +
+    (num(S.verId, 0) ? ("版 " + S.verId) : "未保存") +
+    (CASEF.name ? "　（" + esc(CASEF.name) + "）" : "") + '</div>';
   return h;
 }
 function bindLock(){
@@ -5424,6 +5468,127 @@ function loadRubImageQuiet(src, done){
 $("fRub").onchange = function(e){ fileToRub(e.target.files[0]); e.target.value = ""; };
 
 /* 案件として書き出す中身 */
+/* --- 案件ファイル（履歴つき・v13.5） ---------------------------------
+   1 つの .json の中に、版（versions）をならべて持つ。
+
+     { v:2, savedAt, fonts:[], rubSrc:"data:…",  ← 拓本の画像はここに 1 つだけ
+       cur: 3,
+       versions:[ { id, at, lock:{…}|null, status, note, state:{…S} }, … ] }
+
+   ・ロックした版は二度と書き換えない。上書きしようとすると、新しい版が増える。
+   ・拓本の画像は版ごとに複製しない（すると数十MBになる）。
+   ・古い形（S を丸ごと入れたもの）も読める。ただし書き戻しはしない。 --- */
+var CASEF = { id:"", name:"" };     /* いま開いている「履歴つき」の案件ファイル */
+
+function caseFileName(){
+  var base = String(S.info.family || "").replace(/[\\\/:*?"<>|]/g, "").trim() || "彫刻原稿";
+  return base + "_彫刻原稿.json";
+}
+function docEmpty(){
+  return { v:2, savedAt:"", fonts:[], rubSrc:"", cur:0, versions:[] };
+}
+function docIsV2(o){ return !!(o && o.v === 2 && Array.isArray(o.versions)); }
+/* 古い形を、履歴つきの形に読み替える（ファイルは書き換えない） */
+function docUpgrade(o){
+  if (docIsV2(o)) return o;
+  if (!o || !o.groups) return docEmpty();
+  var st = JSON.parse(JSON.stringify(o));
+  var src = (st.rub && st.rub.src) || "";
+  if (st.rub) delete st.rub.src;
+  var d = docEmpty();
+  d.savedAt = o.savedAt || "";
+  d.fonts = o.fonts || [];
+  d.rubSrc = src;
+  d.cur = 1;
+  d.versions = [ { id:1, at: o.savedAt || new Date().toISOString(),
+                   lock: o.lock || null,
+                   status: (o.lock && o.lock.status) || "",
+                   note:   (o.lock && o.lock.note)   || "",
+                   state: st } ];
+  return d;
+}
+function verOf(doc, id){
+  var a = (doc.versions || []).filter(function(v){ return +v.id === +id; });
+  return a.length ? a[0] : null;
+}
+function verNextId(doc){
+  var m = 0;
+  (doc.versions || []).forEach(function(v){ if (+v.id > m) m = +v.id; });
+  return m + 1;
+}
+function verSorted(doc){
+  return (doc.versions || []).slice().sort(function(a, b){
+    return String(b.at || "").localeCompare(String(a.at || "")) || (+b.id - +a.id);
+  });
+}
+/* いまの画面の内容を、その案件ファイルへ入れる。
+   いまの版がロック済みなら上書きせず、新しい版として足す。 */
+function docPutCurrent(doc){
+  var st = JSON.parse(JSON.stringify(S));
+  var src = (st.rub && st.rub.src) || "";
+  if (st.rub) delete st.rub.src;
+  delete st.fonts;
+  if (src) doc.rubSrc = src;
+  doc.v = 2;
+  doc.savedAt = new Date().toISOString();
+  doc.fonts = FONTS.map(function(F){ return F.name; });
+  if (!Array.isArray(doc.versions)) doc.versions = [];
+  var now = verOf(doc, S.verId), added = false;
+  if (!now || now.lock){
+    now = { id: verNextId(doc), at:"", lock:null, status:"", note:"", state:null };
+    doc.versions.push(now); added = true;
+  }
+  now.at = doc.savedAt;
+  now.lock = S.lock ? JSON.parse(JSON.stringify(S.lock)) : null;
+  now.status = (S.lock && S.lock.status) || "";
+  now.note   = (S.lock && S.lock.note)   || "";
+  now.state = st;
+  doc.cur = now.id;
+  S.verId = now.id;
+  return { ver: now, added: added };
+}
+/* 版をひらく */
+function applyVersion(doc, ver, name){
+  var st = JSON.parse(JSON.stringify(ver.state));
+  st.verId = ver.id;
+  /* ロックかどうかは版の記録を正とする（中の写しとずれても大丈夫なように） */
+  st.lock = ver.lock ? JSON.parse(JSON.stringify(ver.lock)) : null;
+  if (doc.rubSrc){ st.rub = st.rub || {}; st.rub.src = doc.rubSrc; }
+  st.fonts = doc.fonts || [];
+  applyProject(st, name + "（版 " + ver.id + "）");
+}
+
+/* --- 版を選ぶ窓 --- */
+var VW = null;      /* { doc, name } */
+function verLabel(v){
+  return (v.lock ? "🔒 " : "") + (v.status || (v.lock ? "ロック済み" : "作業中"));
+}
+function openVerWin(doc, name){
+  VW = { doc: doc, name: name };
+  var list = verSorted(doc), h = "";
+  list.forEach(function(v, i){
+    h += '<div class="vrow" data-id="' + v.id + '">' +
+      '<span class="lk">' + (v.lock ? "🔒" : "✎") + '</span>' +
+      '<span class="mid"><span class="st">' + esc(v.status || (v.lock ? "ロック済み" : "作業中")) +
+        '</span>' + (v.note ? '　' + esc(v.note) : '') +
+        '<div class="dt">版 ' + v.id + '　' + esc(lockDate(v.at)) + '</div></span>' +
+      (i === 0 ? '<span class="tag">いちばん新しい</span>' : '') +
+      '</div>';
+  });
+  $("vwList").innerHTML = h || '<p class="hint">版がありません。</p>';
+  Array.prototype.forEach.call($("vwList").querySelectorAll(".vrow"), function(row){
+    row.onclick = function(){
+      var v = verOf(VW.doc, +row.dataset.id); if (!v) return;
+      var d = VW.doc, nm = VW.name;
+      closeVerWin();
+      applyVersion(d, v, nm);
+      if (typeof hoFillBlanks === "function") hoFillBlanks();
+    };
+  });
+  $("verWin").hidden = false;
+}
+function closeVerWin(){ VW = null; $("verWin").hidden = true; }
+
 function projectJSON(){
   var out = JSON.parse(JSON.stringify(S));
   out.fonts = FONTS.map(function(F){ return F.name; });
@@ -5432,7 +5597,11 @@ function projectJSON(){
 }
 /* パソコンに .json として落とす。SharePoint を使わないときの逃げ道。 */
 function saveProjectLocal(){
-  var t = JSON.stringify(projectJSON(), null, 2);
+  /* 持ち出し用の写しなので、版の番号は動かさない（SharePoint 側とずれる） */
+  var keep = S.verId, doc = docEmpty();
+  docPutCurrent(doc);
+  S.verId = keep;
+  var t = JSON.stringify(doc, null, 2);
   var b = new Blob([t], { type:"application/json" });
   var a = document.createElement("a");
   a.href = URL.createObjectURL(b);
@@ -9152,6 +9321,8 @@ function resetAll(){
         note:{ on:true, x:null, y:null, size:6, vert:false },
         demoDx:{}, demoRx:0, bothGap:6, bothOv:false, groups:[], rubDx:0, rubX:null, bothOff:{} };
   S.rub = Object.assign({}, RUB_DEFAULT, { centersPx:[], crop:null, pivot:null, off:{x:0,y:0} });
+  S.lock = null; S.verId = 0; CASEF = { id:"", name:"" };   /* 版もまっさらに（v13.5） */
+  applyLock();
   try { idb().then(function(db){ db.transaction("kv","readwrite").objectStore("kv")["delete"]("rub"); }); } catch(e){}
   $("bGap").value = 6;
   S.bothDim = false;
@@ -10803,7 +10974,18 @@ function applyProject(o, name){
 }
 $("fJson").onchange = async function(e){
   var f = e.target.files[0]; if (!f) return;
-  try { applyProject(JSON.parse(await f.text()), f.name); }
+  try {
+    var o = JSON.parse(await f.text());
+    if (docIsV2(o) && o.versions.length){
+      CASEF = { id:"", name:"" };
+      var vs = verSorted(o);
+      if (vs.length === 1) applyVersion(o, vs[0], f.name);
+      else openVerWin(o, f.name);
+    } else {
+      CASEF = { id:"", name:"" };
+      applyProject(o, f.name);
+    }
+  }
   catch(err){ msg("読み込めませんでした: " + err.message, true); }
   e.target.value = "";
 };
@@ -11261,13 +11443,39 @@ async function spNeedFolder(){
     return "";
   }
 }
+/* 履歴つきの案件ファイルを読む。まだ無ければ空のものを返す。 */
+async function caseLoadDoc(){
+  var name = CASEF.name || caseFileName(), id = CASEF.id;
+  if (!id){
+    try {
+      var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + SP.cfg.folderId +
+        "/children?$top=200&$select=id,name,size,file,folder");
+      var hit = (r.value || []).filter(function(x){ return !x.folder && x.name === name; });
+      if (hit.length){ id = hit[0].id; CASEF = { id: id, name: hit[0].name }; }
+    } catch(e){}
+  }
+  if (!id) return docEmpty();
+  try {
+    var b = await spGetBlob(id, name, 0);
+    var o = JSON.parse(await b.text());
+    return docIsV2(o) ? o : docEmpty();   /* 古い形のファイルは書き換えない */
+  } catch(e){ return docEmpty(); }
+}
 async function spSaveProject(){
   try {
     if (!(await spNeedFolder())) return;
-    var name = spName("", ".json");
-    var b = new Blob([JSON.stringify(projectJSON(), null, 2)], { type: "application/json" });
+    msg("案件を保存しています…", false, true);
+    var doc = await caseLoadDoc();
+    var r = docPutCurrent(doc);
+    var name = CASEF.name || caseFileName();
+    var b = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
     var it = await spPut(name, b, "application/json");
-    msg("工事フォルダに保存しました（" + it.name + " / " + sizeText(b.size) + "）。");
+    CASEF = { id: it.id, name: it.name };
+    persist();
+    if (typeof spPanel === "function") spPanel();
+    msg("工事フォルダに保存しました（" + it.name + "／" +
+        (r.added ? "新しい版 " : "版 ") + r.ver.id +
+        "／全 " + doc.versions.length + " 版／" + sizeText(b.size) + "）。");
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
 /* 起動したときに、工事フォルダの中の案件ファイルを開く。
@@ -11297,6 +11505,19 @@ async function spOpenProject(item, auto){
         item.name + "）", false, true);
     var b = await spGetBlob(item.id, item.name, num(item.size, 0));
     var o = JSON.parse(await b.text());
+    if (docIsV2(o) && o.versions.length){
+      CASEF = { id: item.id, name: item.name };
+      var vs = verSorted(o);
+      spBrowseClose();
+      if (auto || vs.length === 1){
+        applyVersion(o, vs[0], item.name);
+        hoFillBlanks();
+      } else {
+        openVerWin(o, item.name);   /* どの版を開くか選んでもらう */
+      }
+      return;
+    }
+    CASEF = { id:"", name:"" };     /* 古い形。保存は新しいファイルへ */
     applyProject(o, item.name);
     hoFillBlanks();          /* 抜けている確認情報は本体アプリの値で埋める */
     spBrowseClose();
@@ -12120,6 +12341,8 @@ function winDrag(boxSel, hdSel){
   });
 }
 winDrag("#glibWin .glwbox", ".glwhd");
+winDrag("#verWin .vwbox", ".vwhd");
+$("vwX").onclick = closeVerWin;
 winDrag("#pathEd .pebox", ".pehd");
 /* 窓の外の大きさが変わったら、画面の外に出ないように戻す */
 window.addEventListener("resize", function(){

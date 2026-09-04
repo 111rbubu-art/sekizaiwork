@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v13.5</title>
+<title>彫刻原稿 v13.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -520,7 +520,9 @@ body.locked #lockBar{display:flex;}
 body.locked #sub input,body.locked #sub select,
 body.locked #sub textarea,body.locked #sub button{opacity:.5;pointer-events:none;}
 body.locked #sub #panSP input,body.locked #sub #panSP select,
-body.locked #sub #panSP textarea,body.locked #sub #panSP button{opacity:1;pointer-events:auto;}
+body.locked #sub #panSP textarea,body.locked #sub #panSP button,
+body.locked #sub #panFile input,body.locked #sub #panFile select,
+body.locked #sub #panFile textarea,body.locked #sub #panFile button{opacity:1;pointer-events:auto;}
 /* 並べ替えのつかみ（グループの順番＝中身なので止める） */
 body.locked #sub .grow{cursor:default;}
 /* 校正・拓本のバーのうち、中身が変わるもの。
@@ -573,13 +575,14 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
     <button id="btnSvg" class="mini" title="赤・黒の色分けのまま、SVG を 1枚このパソコンに保存します">SVG</button>
   </div>
 
-  <div id="lockBar"><span>🔒 ロック中</span><span class="lb2" id="lockInfo"></span><span class="sp"></span><span class="lb2">解除は［設定］メニューから</span></div>
+  <div id="lockBar"><span>🔒 ロック中</span><span class="lb2" id="lockInfo"></span><span class="sp"></span><span class="lb2">直すときは［設定］→［新規バージョンで制作］</span></div>
 
   <div id="main">
 
     <!-- ============ 左：メインメニュー ============ -->
     <div class="col" id="left">
       <div id="mainmenu">
+        <button class="mm" data-m="file">ファイル管理<span class="n none" id="nFile">未保存</span></button>
         <button class="mm on" data-m="sheet">ゴムシート</button>
         <button class="mm" data-m="tpl">テンプレート管理<span class="n" id="nTpl">0</span></button>
         <div class="gap"></div>
@@ -594,6 +597,8 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
 
     <!-- ============ 左2：サブメニュー ============ -->
     <div class="col" id="sub">
+
+      <div class="pan" id="panFile"></div>
 
       <div class="pan on" id="panSheet">
         <h3 class="sec">ゴムシート</h3>
@@ -1603,7 +1608,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v13.5";
+var APP_VER = "v13.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5286,7 +5291,7 @@ document.addEventListener("dblclick", function(e){
 document.addEventListener("beforeinput", function(e){
   if (!locked()) return;
   var t = e.target;
-  if (!t || !t.closest || t.closest("#panSP")) return;
+  if (!t || !t.closest || t.closest("#panSP,#panFile")) return;
   e.preventDefault(); e.stopPropagation();
   lockNo();
 }, true);
@@ -5302,12 +5307,21 @@ async function lockOn(status, note){
     msg("ロックしました。この校正は読み取り専用です。");
   }
 }
-function lockOff(){
+/* ロックした版はそのまま履歴に残し、その写しから編集を始める。
+   「解除」ではなく「新規バージョンで制作」と呼ぶ（v13.6）。
+   版が増えるのは、次に［案件を保存］したとき。 */
+function lockNext(){
+  var from = num(S.verId, 0);
   S.lock = null;
-  applyLock(); persist(); spPanel();
-  msg("ロックを解除しました。編集できます。" +
-      "　※ ロックした版は履歴に残ります。次に保存すると新しい版になります。");
+  applyLock(); persist();
+  if (typeof spPanel === "function") spPanel();
+  if (typeof filePanel === "function") filePanel();
+  renderMenuCounts();
+  msg("新規バージョンの制作を始めました。" +
+      (from ? "版 " + from + " はロックしたまま履歴に残ります。" : "") +
+      "［案件を保存］すると、新しい版として足されます。");
 }
+function lockOff(){ lockNext(); }      /* 旧い呼び名 */
 /* 設定メニューに出す欄 */
 function lockHTML(){
   var h = '<h3 class="sec">校正のロック</h3>';
@@ -5315,10 +5329,13 @@ function lockHTML(){
     h += '<div class="res"><div class="h"><span>🔒 ロック中</span></div>' +
       '<div class="m">' + esc(S.lock.status || "") + '<br>' + esc(lockDate(S.lock.at)) +
       (S.lock.note ? '<br>' + esc(S.lock.note) : '') + '</div>' +
-      '<button class="mini" id="btnLockOff" style="width:100%;margin-top:6px;">ロックを解除する</button>' +
+      '<button class="mini primary" id="btnLockNext" style="width:100%;margin-top:6px;">' +
+      '✎ 新規バージョンで制作</button>' +
       '</div>' +
-      '<p class="hint">この版はもう書き換わりません。解除して直すと、' +
-      '次の保存で<b>新しい版</b>になります。ロックした校正は履歴に残ります。</p>';
+      '<p class="hint">この版はもう書き換わりません。直すときは' +
+      '［新規バージョンで制作］を押してください。いまの内容の写しから編集を始め、' +
+      '［案件を保存］したときに<b>次の版</b>として足されます。' +
+      'ロックした版 ' + (num(S.verId,0) || "") + ' は、そのまま履歴に残ります。</p>';
   } else {
     h += '<label class="f"><span>ステータス</span>' +
       '<input type="text" id="lkStatus" value="お客様校正提出"></label>' +
@@ -5340,10 +5357,12 @@ function bindLock(){
   if (a) a.onclick = function(){
     lockOn(($("lkStatus") || {}).value, ($("lkNote") || {}).value);
   };
-  var b = $("btnLockOff");
+  var b = $("btnLockNext");
   if (b) b.onclick = function(){
-    if (!confirm("ロックを解除して、編集できるようにしますか？")) return;
-    lockOff();
+    if (!confirm("新規バージョンとして編集を始めます。\n\n" +
+      "・いまのロック済みの版は、そのまま履歴に残ります\n" +
+      "・保存したときに、新しい版として足されます\n\nよろしいですか。")) return;
+    lockNext();
   };
 }
 function persist(){
@@ -5887,7 +5906,7 @@ $("viewDemo").onclick  = function(){ setView("demo"); };
 
 /* --- メインメニュー（左）とサブメニュー（左2列目） --- */
 var subTab = "sheet";
-var PANEL = { sheet:"panSheet", tpl:"panTpl", rub:"panRub", frame:"panFrame",
+var PANEL = { file:"panFile", sheet:"panSheet", tpl:"panTpl", rub:"panRub", frame:"panFrame",
               group:"panGroup", font:"panFont", sp:"panSP", info:"panInfo" };
 function setSub(t){
   if (t === "col" || t === "guide") t = "rub";      /* 旧い呼び名 */
@@ -5901,6 +5920,7 @@ function setSub(t){
     b.className = "mm" + (b.dataset.m === t ? " on" : "");
   });
   if (t === null){ var s0 = $("sub"); if (s0) s0.scrollTop = 0; renderMenuGl(); return; }
+  if (t === "file") filePanel();
   if (t === "tpl"){ renderTpl(); tplLoadSP(); frtLoadSP(); }
   if (t === "rub") rubPanel();
   if (t === "frame") renderFrames();
@@ -5933,6 +5953,12 @@ function renderMenuCounts(){
   if (typeof bOverFill === "function") bOverFill();
   if (typeof bDimFill === "function") bDimFill();
   if (typeof renderSheetGl === "function") renderSheetGl();
+  var nf = $("nFile");
+  if (nf){
+    var vn = (CASEDOC && (CASEDOC.versions || []).length) || 0;
+    nf.textContent = num(S.verId, 0) ? ("版 " + S.verId + (vn > 1 ? "／" + vn : "")) : "未保存";
+    nf.className = "n" + (num(S.verId, 0) ? "" : " none");
+  }
   var sp = $("nSP");
   if (sp){
     var ok = (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.folderId;
@@ -9321,7 +9347,7 @@ function resetAll(){
         note:{ on:true, x:null, y:null, size:6, vert:false },
         demoDx:{}, demoRx:0, bothGap:6, bothOv:false, groups:[], rubDx:0, rubX:null, bothOff:{} };
   S.rub = Object.assign({}, RUB_DEFAULT, { centersPx:[], crop:null, pivot:null, off:{x:0,y:0} });
-  S.lock = null; S.verId = 0; CASEF = { id:"", name:"" };   /* 版もまっさらに（v13.5） */
+  S.lock = null; S.verId = 0; CASEF = { id:"", name:"" }; CASEDOC = null;   /* 版もまっさらに */
   applyLock();
   try { idb().then(function(db){ db.transaction("kv","readwrite").objectStore("kv")["delete"]("rub"); }); } catch(e){}
   $("bGap").value = 6;
@@ -10978,11 +11004,12 @@ $("fJson").onchange = async function(e){
     var o = JSON.parse(await f.text());
     if (docIsV2(o) && o.versions.length){
       CASEF = { id:"", name:"" };
+      CASEDOC = o;
       var vs = verSorted(o);
       if (vs.length === 1) applyVersion(o, vs[0], f.name);
       else openVerWin(o, f.name);
     } else {
-      CASEF = { id:"", name:"" };
+      CASEF = { id:"", name:"" }; CASEDOC = null;
       applyProject(o, f.name);
     }
   }
@@ -11471,8 +11498,11 @@ async function spSaveProject(){
     var b = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
     var it = await spPut(name, b, "application/json");
     CASEF = { id: it.id, name: it.name };
+    CASEDOC = doc;
     persist();
     if (typeof spPanel === "function") spPanel();
+    if (typeof filePanel === "function") filePanel();
+    renderMenuCounts();
     msg("工事フォルダに保存しました（" + it.name + "／" +
         (r.added ? "新しい版 " : "版 ") + r.ver.id +
         "／全 " + doc.versions.length + " 版／" + sizeText(b.size) + "）。");
@@ -11507,6 +11537,7 @@ async function spOpenProject(item, auto){
     var o = JSON.parse(await b.text());
     if (docIsV2(o) && o.versions.length){
       CASEF = { id: item.id, name: item.name };
+      CASEDOC = o;
       var vs = verSorted(o);
       spBrowseClose();
       if (auto || vs.length === 1){
@@ -11518,6 +11549,7 @@ async function spOpenProject(item, auto){
       return;
     }
     CASEF = { id:"", name:"" };     /* 古い形。保存は新しいファイルへ */
+    CASEDOC = null;
     applyProject(o, item.name);
     hoFillBlanks();          /* 抜けている確認情報は本体アプリの値で埋める */
     spBrowseClose();
@@ -11556,6 +11588,83 @@ function outSVG(mode){
   var r = buildSVG();
   printMode = p; renderStage();
   return r.svg;
+}
+
+
+/* --- ファイル管理のパネル（v13.6） ------------------------------------
+   いまの案件ファイルと、その中の履歴（版）を見せる。 --- */
+var CASEDOC = null;        /* 最後に読んだ／書いた案件ファイルの中身 */
+function fileVerRows(){
+  if (!CASEDOC || !(CASEDOC.versions || []).length)
+    return '<p class="hint" style="margin-top:0;">まだ履歴がありません。' +
+      '［案件を保存］すると、いまの内容が版 1 になります。</p>';
+  var h = "";
+  verSorted(CASEDOC).forEach(function(v){
+    var now = (+v.id === num(S.verId, -1));
+    h += '<div class="res' + (now ? " on" : "") + '" style="margin-bottom:6px;' +
+      (now ? "border-left:3px solid var(--ink);" : "") + '">' +
+      '<div class="h"><span>' + (v.lock ? "🔒 " : "✎ ") +
+        esc(v.status || (v.lock ? "ロック済み" : "作業中")) + '</span>' +
+        '<span style="font-weight:400;color:var(--muted);">版 ' + v.id +
+        (now ? "・表示中" : "") + '</span></div>' +
+      '<div class="m">' + esc(lockDate(v.at)) + (v.note ? "　" + esc(v.note) : "") + '</div>' +
+      (now ? "" : '<button class="mini fvOpen" data-id="' + v.id +
+        '" style="width:100%;margin-top:5px;">この版を開く</button>') +
+      '</div>';
+  });
+  return h;
+}
+function filePanel(){
+  var box = $("panFile"); if (!box) return;
+  var h = '<h3 class="sec">いまの案件ファイル</h3>';
+  h += '<div class="res"><div class="h"><span style="word-break:break-all;">' +
+    esc(CASEF.name || caseFileName()) + '</span></div>' +
+    '<div class="m">' +
+      (num(S.verId, 0) ? ("いま開いているのは <b>版 " + S.verId + "</b>") : "まだ保存していません") +
+      (locked() ? '　<b style="color:#8a6100;">🔒 ロック中</b>' : "") +
+    '</div></div>';
+
+  h += '<h3 class="sec">出し入れ</h3>' +
+    '<div class="g2">' +
+    '<button class="mini primary" id="fmSave">案件を保存</button>' +
+    '<button class="mini" id="fmOpen">案件を開く</button>' +
+    '</div>' +
+    '<p class="hint" style="margin-top:4px;">保存すると、いまの版に上書きします。' +
+    'ロック済みの版のときは、<b>新しい版</b>として足されます。</p>';
+
+  h += '<h3 class="sec">履歴</h3>' +
+    '<button class="mini" id="fmReload" style="width:100%;margin-bottom:6px;">🔄 履歴を読み直す</button>' +
+    fileVerRows();
+
+  h += '<h3 class="sec">このパソコン</h3>' +
+    '<button class="mini" id="fmLcSave" style="width:100%;">パソコンに保存（.json）</button>' +
+    '<button class="mini" id="fmLcOpen" style="width:100%;margin-top:4px;">パソコンのファイルを開く</button>';
+
+  h += '<p class="hint">ロックと［新規バージョンで制作］は［設定］メニューにあります。</p>';
+
+  box.innerHTML = h;
+  var on = function(id, fn){ var e = $(id); if (e) e.onclick = fn; };
+  on("fmSave", function(){ $("btnSave").click(); });
+  on("fmOpen", function(){ $("btnOpen").click(); });
+  on("fmLcSave", saveProjectLocal);
+  on("fmLcOpen", openProjectLocal);
+  on("fmReload", async function(){
+    if (!(typeof SP !== "undefined" && SP.state === "ready" && SP.cfg.folderId)){
+      msg("本体アプリとつながっていないので、履歴を読めません。", true); return;
+    }
+    msg("履歴を読んでいます…", false, true);
+    CASEDOC = await caseLoadDoc();
+    filePanel(); renderMenuCounts();
+    msg("履歴を読みました（全 " + (CASEDOC.versions || []).length + " 版）。");
+  });
+  Array.prototype.forEach.call(box.querySelectorAll(".fvOpen"), function(b){
+    b.onclick = function(){
+      var v = verOf(CASEDOC, +b.dataset.id); if (!v) return;
+      if (!confirm("版 " + v.id + " を開きます。いまの内容は保存していなければ消えます。よろしいですか。")) return;
+      applyVersion(CASEDOC, v, CASEF.name || caseFileName());
+      filePanel();
+    };
+  });
 }
 
 /* --- パネル ----------------------------------------------------- */

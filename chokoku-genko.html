@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v14.0</title>
+<title>彫刻原稿 v14.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -567,6 +567,26 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
 #panFile .vrow>summary .ar{font-size:11px;color:var(--muted);}
 #panFile .vrow[open]>summary .ar{transform:rotate(180deg);display:inline-block;}
 #panFile .vrow .vbody{padding:0 9px 9px;}
+
+/* --- 作字の見くらべ窓（v14.1） --- */
+#glyCmp{position:fixed;inset:0;background:rgba(20,24,27,.18);z-index:82;
+  display:flex;align-items:center;justify-content:center;padding:24px;}
+#glyCmp[hidden]{display:none !important;}
+#glyCmp .gcbox{background:var(--paper);border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.35);
+  width:min(560px,100%);max-height:min(620px,100%);display:flex;flex-direction:column;overflow:hidden;}
+#glyCmp .gchd{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--surface);border-bottom:1px solid var(--line);cursor:move;user-select:none;}
+#glyCmp .gchd button{cursor:auto;}
+#glyCmp .gchd .t{font-weight:700;color:var(--ink);}
+#glyCmp .gchd .sp{flex:1;}
+#glyCmp .gcbody{flex:1;min-height:0;overflow:auto;padding:12px 14px;}
+#glyCmp .gc2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+#glyCmp .gcard{border:1px solid var(--line);border-radius:8px;background:var(--surface);
+  padding:10px;text-align:center;}
+#glyCmp .gcard .cap{font-weight:700;font-size:12.5px;margin-bottom:6px;}
+#glyCmp .gcard .sub{font-size:11.5px;color:var(--muted);margin-bottom:6px;}
+#glyCmp .gcard svg{background:var(--paper);border:1px solid var(--line);border-radius:6px;}
+#glyCmp .gcard button{width:100%;margin-top:8px;}
 </style>
 <style id="pagecss">@page{size:90mm 700mm;margin:0;}</style>
 </head>
@@ -843,6 +863,15 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
 </div>
 
 <!-- 共有フォルダーの作字の一覧。数が多いので別ウインドウにした（v11.8） -->
+<div id="glyCmp" hidden>
+  <div class="gcbox">
+    <div class="gchd"><span class="t" id="gcTitle">形がちがいます</span>
+      <span class="sp"></span>
+      <button class="mini" id="gcX">やめる</button></div>
+    <div class="gcbody" id="gcBody"></div>
+  </div>
+</div>
+
 <div id="verWin" hidden>
   <div class="vwbox">
     <div class="vwhd"><span class="t">どの版を開きますか</span>
@@ -1623,7 +1652,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v14.0";
+var APP_VER = "v14.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10974,6 +11003,11 @@ function peCommit(){
 function peCommitLib(){
   var items = ((FDIR.lib || {}).items) || [], y = items[PE.lib];
   if (!y) return false;
+  if (locked()){
+    msg("ロック中は共有フォルダーの作字を書き換えません。" +
+        "直すときは上の［✎ 修正（新Verへ）］を押してください。", true);
+    return false;
+  }
   if (!PE.contours.length){ msg("形がなくなりました。消すときは一覧の［削除］から。", true); return false; }
   y.path = { upem: PE.upem, contours: PE.contours, name: y.name || "",
              axes: PE.axes, wpct: num(PE.wpct, 0),
@@ -12150,6 +12184,9 @@ async function glyphLibLoad(){
   return FDIR.lib;
 }
 async function glyphLibSave(){
+  /* ロック中は共有フォルダーの作字に手を入れない（v14.1）。
+     校正を出したあとに、ほかの案件の都合で形が変わるのを防ぐため。 */
+  if (locked()) throw new Error("ロック中は共有フォルダーの作字を書き換えません");
   var id = await fontDirId(true);
   var body = new Blob([JSON.stringify(FDIR.lib, null, 2)], { type: "application/json" });
   var it = await spPutIn(id, GLYPH_FILE, body, "application/json");
@@ -12189,7 +12226,43 @@ function glyphLibPut(ch, font, upem, path){
   return { how:how, name:name };
 }
 /* 1字だけ共有に足す。作字の画面と、右クリックのメニューから使う。 */
-async function glyphLibPushOne(gi, ci, asNew){
+
+/* --- 共有の作字と形がちがうとき、見くらべて決める窓（v14.1） ------------
+   同じ名前（例「月1」）なのに形がちがうとき、勝手に上書きしない。
+   直したのか、別の形を作ったのか、こちらでは分からないので選んでもらう。 */
+var GCMP = null;    /* { gi, ci, name, next } */
+function closeGlyCmp(){ GCMP = null; $("glyCmp").hidden = true; }
+function openGlyCmp(gi, ci, ch, name, libPath, curPath, next){
+  GCMP = { gi: gi, ci: ci, name: name, next: next };
+  $("gcTitle").textContent = "「" + name + "」と形がちがいます";
+  $("gcBody").innerHTML =
+    '<p class="hint" style="margin-top:0;">共有フォルダーの「' + esc(name) + '」と、' +
+    'いまの形がちがいます。どちらにしますか。</p>' +
+    '<div class="gc2">' +
+      '<div class="gcard"><div class="cap">共有にある「' + esc(name) + '」</div>' +
+        '<div class="sub">いま登録されている形</div>' +
+        glibThumb(libPath, 130) +
+        '<button class="mini" id="gcKeep">これを残す<br>いまの形は「' + esc(next) + '」で登録</button>' +
+      '</div>' +
+      '<div class="gcard"><div class="cap">いまの形</div>' +
+        '<div class="sub">この案件で直したもの</div>' +
+        glibThumb(curPath, 130) +
+        '<button class="mini primary" id="gcOver">「' + esc(name) + '」を<br>この形に書き換える</button>' +
+      '</div>' +
+    '</div>' +
+    '<p class="hint">「これを残す」を選ぶと、共有の「' + esc(name) + '」はそのままで、' +
+    'いまの形が「' + esc(next) + '」として新しく入ります。' +
+    'ほかの案件で「' + esc(name) + '」を使っているときは、こちらが安全です。</p>';
+  $("gcKeep").onclick = function(){
+    var a = GCMP; closeGlyCmp(); glyphLibPushOne(a.gi, a.ci, true);
+  };
+  $("gcOver").onclick = function(){
+    var a = GCMP; closeGlyCmp(); glyphLibPushOne(a.gi, a.ci, false, true);
+  };
+  $("glyCmp").hidden = false;
+}
+
+async function glyphLibPushOne(gi, ci, asNew, force){
   try {
     var g = S.groups[gi]; if (!g){ msg("その文字がありません。", true); return; }
     var chars = splitChars(g.text), ch = chars[ci] || "";
@@ -12203,10 +12276,25 @@ async function glyphLibPushOne(gi, ci, asNew){
       msg("本体アプリの納骨リストから開くと、共有フォルダーに保存できます。", true);
       return;
     }
+    if (locked()){
+      msg("ロック中は共有フォルダーの作字を書き換えません。" +
+          "直すときは上の［✎ 修正（新Verへ）］を押してください。", true);
+      return;
+    }
     var F = FR(fontIdxOf(g, ci)), fname = (F && F.name) || "";
     msg("「" + ch + "」を共有フォルダーに保存しています…", false, true);
     await fontDirEnsure();
     await glyphLibLoad();
+    /* 同じ名前なのに形がちがうときは、勝手に上書きせず見くらべてもらう（v14.1） */
+    if (!asNew && !force && a.path.name){
+      var items0 = ((FDIR.lib || {}).items) || [], k0 = glyphKey(ch, fname, a.path.name), old0 = null;
+      items0.forEach(function(y){ if (glyphKey(y.ch, y.font, y.name) === k0) old0 = y; });
+      if (old0 && !samePathShape(old0.path, a.path)){
+        msg("");
+        openGlyCmp(gi, ci, ch, a.path.name, old0.path, a.path, glyphAutoName(ch, fname));
+        return;
+      }
+    }
     /* asNew ＝ 上書きせず、別の名前で新しく入れる（v12.8）。
        名前を外した写しを渡すと、glyphLibPut が「月2」「月3」…を付けて足す。 */
     var put = a.path;
@@ -12583,6 +12671,8 @@ function winDrag(boxSel, hdSel){
 winDrag("#glibWin .glwbox", ".glwhd");
 winDrag("#verWin .vwbox", ".vwhd");
 $("vwX").onclick = closeVerWin;
+winDrag("#glyCmp .gcbox", ".gchd");
+$("gcX").onclick = closeGlyCmp;
 winDrag("#pathEd .pebox", ".pehd");
 /* 窓の外の大きさが変わったら、画面の外に出ないように戻す */
 window.addEventListener("resize", function(){
@@ -12610,6 +12700,9 @@ async function glibLibDelete(i){
   var items = ((FDIR.lib || {}).items) || [], y = items[i];
   if (!y) return;
   var nm = y.name || bareCh(y.ch);
+  if (locked()){
+    msg("ロック中は共有フォルダーの作字を消せません。", true); return;
+  }
   if (!confirm("共有フォルダーの作字「" + nm + "」を消します。\n" +
                "ほかの案件からも呼び出せなくなります。取り消せません。\nよろしいですか。")) return;
   try {

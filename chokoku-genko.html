@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v13.6</title>
+<title>彫刻原稿 v13.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -570,6 +570,7 @@ body.locked #rbCrop,body.locked #rbCropAll{opacity:.45;pointer-events:none;}
     <button id="btnNew">新規</button>
     <button id="btnOpen">案件を開く</button>
     <button id="btnSave">案件を保存</button>
+    <button id="btnLock">🔒 ロック</button>
     <button id="btnPrintRed" class="red">① 赤を出力</button>
     <button id="btnPrintBlk" class="blk">② 黒を出力</button>
     <button id="btnSvg" class="mini" title="赤・黒の色分けのまま、SVG を 1枚このパソコンに保存します">SVG</button>
@@ -1608,7 +1609,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v13.6";
+var APP_VER = "v13.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5246,9 +5247,17 @@ function lockDate(iso){
   return d.getFullYear() + "/" + z(d.getMonth()+1) + "/" + z(d.getDate()) +
          " " + z(d.getHours()) + ":" + z(d.getMinutes());
 }
+function lockBtnFill(){
+  var b = $("btnLock"); if (!b) return;
+  b.textContent = locked() ? "✎ 新規バージョン" : "🔒 ロック";
+  b.title = locked()
+    ? "ロックした版は履歴に残したまま、新しいバージョンの制作を始めます"
+    : "いまの校正を読み取り専用にして、履歴に 1 版として残します";
+}
 function applyLock(){
   var on = locked();
   document.body.classList.toggle("locked", on);
+  lockBtnFill();
   var e = $("lockInfo");
   if (e) e.textContent = on
     ? (S.lock.status || "") + "　" + lockDate(S.lock.at) +
@@ -10979,6 +10988,19 @@ $("btnSave").onclick = function(){
   if (SP.state === "ready"){ spSaveProject(); return; }
   saveProjectLocal();
 };
+$("btnLock").onclick = function(){
+  if (locked()){
+    if (!confirm("新規バージョンとして編集を始めます。\n\n" +
+      "・いまのロック済みの版は、そのまま履歴に残ります\n" +
+      "・保存したときに、新しい版として足されます\n\nよろしいですか。")) return;
+    lockNext(); return;
+  }
+  var st = prompt("この校正をロックします。ステータスを入れてください。", "お客様校正提出");
+  if (st === null) return;
+  var nt = prompt("メモ（任意）。例：2回目", "");
+  if (nt === null) nt = "";
+  lockOn(st, nt);
+};
 /* 読み込んだ案件を画面に反映する */
 function applyProject(o, name){
   if (!o || !o.groups) throw new Error("形式が違います");
@@ -11494,10 +11516,7 @@ async function spSaveProject(){
     msg("案件を保存しています…", false, true);
     var doc = await caseLoadDoc();
     var r = docPutCurrent(doc);
-    var name = CASEF.name || caseFileName();
-    var b = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
-    var it = await spPut(name, b, "application/json");
-    CASEF = { id: it.id, name: it.name };
+    var it = await casePut(doc);
     CASEDOC = doc;
     persist();
     if (typeof spPanel === "function") spPanel();
@@ -11505,7 +11524,7 @@ async function spSaveProject(){
     renderMenuCounts();
     msg("工事フォルダに保存しました（" + it.name + "／" +
         (r.added ? "新しい版 " : "版 ") + r.ver.id +
-        "／全 " + doc.versions.length + " 版／" + sizeText(b.size) + "）。");
+        "／全 " + doc.versions.length + " 版／" + sizeText(num(it.size, 0)) + "）。");
   } catch(e){ msg("保存できませんでした：" + spErrText(e), true); }
 }
 /* 起動したときに、工事フォルダの中の案件ファイルを開く。
@@ -11591,9 +11610,40 @@ function outSVG(mode){
 }
 
 
-/* --- ファイル管理のパネル（v13.6） ------------------------------------
-   いまの案件ファイルと、その中の履歴（版）を見せる。 --- */
+/* --- ファイル管理のパネル（v13.7） ------------------------------------
+   履歴（版）を上に。開いたら勝手に読む。ステータスは後から直せる。 --- */
 var CASEDOC = null;        /* 最後に読んだ／書いた案件ファイルの中身 */
+var _fileBusy = false;
+
+function spReady(){
+  return typeof SP !== "undefined" && SP.state === "ready" && !!SP.cfg.folderId;
+}
+/* いまの案件ファイルをそのまま書き戻す（版は増やさない） */
+async function casePut(doc){
+  var name = CASEF.name || caseFileName();
+  var b = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+  var it = await spPut(name, b, "application/json");
+  CASEF = { id: it.id, name: it.name };
+  return it;
+}
+/* 版のステータスとメモを直す（中身は触らない） */
+async function verEditStatus(id){
+  var v = verOf(CASEDOC, id); if (!v) return;
+  var st = prompt("ステータス（例：お客様校正提出）", v.status || "");
+  if (st === null) return;
+  var nt = prompt("メモ（例：2回目・不備あり）", v.note || "");
+  if (nt === null) nt = v.note || "";
+  v.status = st; v.note = nt;
+  if (v.lock){ v.lock.status = st; v.lock.note = nt; }
+  if (+id === num(S.verId, -1) && S.lock){
+    S.lock.status = st; S.lock.note = nt; applyLock(); persist();
+  }
+  if (spReady()){
+    try { msg("直しています…", false, true); await casePut(CASEDOC); msg("ステータスを直しました。"); }
+    catch(e){ msg("直せませんでした：" + spErrText(e), true); }
+  }
+  filePanel();
+}
 function fileVerRows(){
   if (!CASEDOC || !(CASEDOC.versions || []).length)
     return '<p class="hint" style="margin-top:0;">まだ履歴がありません。' +
@@ -11601,57 +11651,56 @@ function fileVerRows(){
   var h = "";
   verSorted(CASEDOC).forEach(function(v){
     var now = (+v.id === num(S.verId, -1));
-    h += '<div class="res' + (now ? " on" : "") + '" style="margin-bottom:6px;' +
+    h += '<div class="res" style="margin-bottom:6px;' +
       (now ? "border-left:3px solid var(--ink);" : "") + '">' +
       '<div class="h"><span>' + (v.lock ? "🔒 " : "✎ ") +
         esc(v.status || (v.lock ? "ロック済み" : "作業中")) + '</span>' +
         '<span style="font-weight:400;color:var(--muted);">版 ' + v.id +
         (now ? "・表示中" : "") + '</span></div>' +
       '<div class="m">' + esc(lockDate(v.at)) + (v.note ? "　" + esc(v.note) : "") + '</div>' +
-      (now ? "" : '<button class="mini fvOpen" data-id="' + v.id +
-        '" style="width:100%;margin-top:5px;">この版を開く</button>') +
-      '</div>';
+      '<div class="g2" style="margin-top:5px;">' +
+        (now ? '<span></span>'
+             : '<button class="mini fvOpen" data-id="' + v.id + '">この版を開く</button>') +
+        '<button class="mini fvSt" data-id="' + v.id + '">ステータスを直す</button>' +
+      '</div></div>';
   });
   return h;
 }
+async function fileLoadOnce(){
+  if (CASEDOC || _fileBusy || !spReady()) return;
+  _fileBusy = true;
+  try { CASEDOC = await caseLoadDoc(); } catch(e){}
+  _fileBusy = false;
+  if (subTab === "file") filePanel();
+  renderMenuCounts();
+}
 function filePanel(){
   var box = $("panFile"); if (!box) return;
-  var h = '<h3 class="sec">いまの案件ファイル</h3>';
-  h += '<div class="res"><div class="h"><span style="word-break:break-all;">' +
-    esc(CASEF.name || caseFileName()) + '</span></div>' +
-    '<div class="m">' +
-      (num(S.verId, 0) ? ("いま開いているのは <b>版 " + S.verId + "</b>") : "まだ保存していません") +
-      (locked() ? '　<b style="color:#8a6100;">🔒 ロック中</b>' : "") +
-    '</div></div>';
+  var h = '<h3 class="sec">履歴</h3>';
+  if (!CASEDOC && spReady() && !_fileBusy)
+    h += '<p class="hint" style="margin-top:0;">読み込んでいます…</p>';
+  else h += fileVerRows();
+  h += '<button class="mini" id="fmReload" style="width:100%;margin-top:2px;">🔄 履歴を読み直す</button>';
 
-  h += '<h3 class="sec">出し入れ</h3>' +
-    '<div class="g2">' +
-    '<button class="mini primary" id="fmSave">案件を保存</button>' +
-    '<button class="mini" id="fmOpen">案件を開く</button>' +
-    '</div>' +
-    '<p class="hint" style="margin-top:4px;">保存すると、いまの版に上書きします。' +
-    'ロック済みの版のときは、<b>新しい版</b>として足されます。</p>';
+  h += '<h3 class="sec">エクスポート</h3>' +
+    '<button class="mini" id="fmLcSave" style="width:100%;">案件ファイル（.json）を保存</button>' +
+    '<button class="mini" id="fmSvg" style="width:100%;margin-top:4px;">SVG ファイルを出力</button>' +
+    '<button class="mini" id="fmJpg" style="width:100%;margin-top:4px;">確認資料を JPEG で保存</button>' +
+    '<p class="hint" style="margin-top:4px;">どれもこのパソコンに落とします。</p>';
 
-  h += '<h3 class="sec">履歴</h3>' +
-    '<button class="mini" id="fmReload" style="width:100%;margin-bottom:6px;">🔄 履歴を読み直す</button>' +
-    fileVerRows();
+  h += '<h3 class="sec">インポート</h3>' +
+    '<button class="mini" id="fmLcOpen" style="width:100%;">案件ファイル（.json）を読み込む</button>';
 
-  h += '<h3 class="sec">このパソコン</h3>' +
-    '<button class="mini" id="fmLcSave" style="width:100%;">パソコンに保存（.json）</button>' +
-    '<button class="mini" id="fmLcOpen" style="width:100%;margin-top:4px;">パソコンのファイルを開く</button>';
-
-  h += '<p class="hint">ロックと［新規バージョンで制作］は［設定］メニューにあります。</p>';
+  h += '<p class="hint">ロックと［新規バージョンで制作］は、上のバーか［設定］メニューから。</p>';
 
   box.innerHTML = h;
   var on = function(id, fn){ var e = $(id); if (e) e.onclick = fn; };
-  on("fmSave", function(){ $("btnSave").click(); });
-  on("fmOpen", function(){ $("btnOpen").click(); });
   on("fmLcSave", saveProjectLocal);
   on("fmLcOpen", openProjectLocal);
+  on("fmSvg", function(){ $("btnSvg").click(); });
+  on("fmJpg", function(){ saveDemoJPEG(true); });
   on("fmReload", async function(){
-    if (!(typeof SP !== "undefined" && SP.state === "ready" && SP.cfg.folderId)){
-      msg("本体アプリとつながっていないので、履歴を読めません。", true); return;
-    }
+    if (!spReady()){ msg("本体アプリとつながっていないので、履歴を読めません。", true); return; }
     msg("履歴を読んでいます…", false, true);
     CASEDOC = await caseLoadDoc();
     filePanel(); renderMenuCounts();
@@ -11665,6 +11714,10 @@ function filePanel(){
       filePanel();
     };
   });
+  Array.prototype.forEach.call(box.querySelectorAll(".fvSt"), function(b){
+    b.onclick = function(){ verEditStatus(+b.dataset.id); };
+  });
+  fileLoadOnce();
 }
 
 /* --- パネル ----------------------------------------------------- */

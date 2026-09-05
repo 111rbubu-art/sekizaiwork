@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v15.0</title>
+<title>彫刻原稿 v15.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1657,7 +1657,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v15.0";
+var APP_VER = "v15.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6365,6 +6365,9 @@ function frameTextTop(fi){
   return f ? num(f.y, 0) + num(f.top, 0) : null;
 }
 function frameAssign(g, fi){
+  /* 引っ越したら、覚えていた校正での置き場所は捨てる（v15.1）。
+     残しておくと、枠に入れたのに文字が前の場所に留まってしまう。 */
+  if (S.bothOff) delete S.bothOff[g];
   if (fi < 0){ delete S.glFrame[g]; return false; }
   S.glFrame[g] = fi;
   var f = S.frames[fi]; if (!f) return false;
@@ -7815,43 +7818,41 @@ function bothPack(rows){
     list.forEach(function(g, i){ if (i) w += gap; w += (blk[g].r - blk[g].l); });
     return w;
   }
-  /* 行がひとつも入っていない枠は、ここでは置かない。
-     置くと x=0 のあたり（＝もう文字や拓本がいる場所）に重なってしまう。
-     あとで、ぜんぶの内容の左へ逃がす（v15.0）。 */
-  var empties = [];
+  /* 校正の画面は 2 つのエリアに分ける（v15.1）。
+
+       枠エリア　　x < 0 側。枠は追加順に、新しい枠ほど左。
+       　　　　　　**枠の場所は中身によらず動かない**（右はしを f.w で積むだけ）
+       枠外エリア　x >= 0 側。枠に入れていない行と、拓本
+
+     こう分けておくと、行を枠に入れても枠は動かず、文字のほうが枠へ移る。
+     拓本も枠外エリアに居つづけるので、枠にかぶらない。 */
+  var fr = 0;                       /* いま見ている枠の右はし */
   frames.forEach(function(f, fi){
     var mine = gls.filter(function(g){ return num(S.glFrame[g], -1) === fi; });
-    if (!mine.length){ empties.push(fi); return; }
+    var nomW = Math.max(1, num(f.w, 1));
     var contentW = runWidth(mine);
-    var fw = Math.max(num(f.w, 1), contentW);
-    /* 1行目をどこに置くか。既定は中央。左右のずらしで細かく合わせる。 */
-    var at = cur;
-    if (f.ax === "left")       at = cur;
-    else if (f.ax === "right") at = cur + fw - contentW;
-    else                       at = cur + (fw - contentW) / 2;
-    placeRun(mine, at, num(f.dx, 0));
-    fbox.push({ i: fi, l: cur, r: cur + fw, w: fw });
-    cur += fw + FGAP;
+    var fw = Math.max(nomW, contentW);      /* 中身が広いときだけ、左へ広がる */
+    var l = fr - fw;
+    fbox.push({ i: fi, l: l, r: fr, w: fw });
+    if (mine.length){
+      var at = l;
+      if (f.ax === "left")       at = l;
+      else if (f.ax === "right") at = fr - contentW;
+      else                       at = l + (fw - contentW) / 2;
+      placeRun(mine, at, num(f.dx, 0));
+    }
+    fr -= (nomW + FGAP);            /* 次の枠の右はしは、名目の幅で積む（場所を動かさないため） */
   });
   var rest = gls.filter(function(g){ return num(S.glFrame[g], -1) < 0; });
-  if (rest.length){ cur = placeRun(rest, cur, 0); }
-  else if (fbox.length) cur -= FGAP;          /* 最後の枠のうしろの空きは要らない */
-  /* 空の枠は、置いたものぜんぶの左へ。新しい枠ほど さらに左（v15.0）。 */
-  if (empties.length){
-    var minL = 0, hasL = false;
-    Object.keys(x).forEach(function(k){
-      var ci = +k, l = x[ci] - (half[ci] || 0);
-      if (!hasL || l < minL){ minL = l; hasL = true; }
-    });
-    fbox.forEach(function(q){ if (!hasL || q.l < minL){ minL = q.l; hasL = true; } });
-    if (!hasL) minL = 0;
-    empties.forEach(function(fi){
-      var fw = Math.max(1, num((frames[fi] || {}).w, 1));
-      minL -= (FGAP + fw);
-      fbox.push({ i: fi, l: minL, r: minL + fw, w: fw });
-    });
-  }
-  return { x: x, half: half, right: Math.max(0, cur), fbox: fbox };
+  if (rest.length) cur = placeRun(rest, 0, 0);
+  /* 拓本は「枠の外の文字」の右へ置く。実際に置いた右はしで測る。 */
+  var rightEdge = 0, hasR = false;
+  rest.forEach(function(g){
+    var o = num(S.bothOff[g], NaN); if (!isFinite(o)) return;
+    var r2 = blk[g].r + o;
+    if (!hasR || r2 > rightEdge){ rightEdge = r2; hasR = true; }
+  });
+  return { x: x, half: half, right: hasR ? rightEdge : Math.max(0, cur), fbox: fbox };
 }
 /* 枠がひとつも無いときは frames が空なので、これまでどおりの並べ方になる。 */
 

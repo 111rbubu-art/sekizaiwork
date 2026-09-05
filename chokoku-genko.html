@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v15.9</title>
+<title>彫刻原稿 v16.0</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -599,6 +599,11 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
 #noteMenu .nhd{font-size:11px;font-weight:700;color:var(--muted);
   letter-spacing:.06em;margin-bottom:8px;}
 #noteMenu button{width:100%;margin-bottom:5px;}
+
+/* --- ゴムシートの範囲選択（v16.0） --- */
+#selBox{position:absolute;z-index:18;border:1.5px dashed #1B6FD6;background:rgba(27,111,214,.10);
+  pointer-events:none;border-radius:3px;}
+#selBox[hidden]{display:none !important;}
 </style>
 <style id="pagecss">@page{size:90mm 700mm;margin:0;}</style>
 </head>
@@ -789,6 +794,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <label class="chk"><input type="checkbox" id="vBlk" checked style="width:auto;"> 黒（カット）</label>
           <label class="chk"><input type="checkbox" id="vFill" checked style="width:auto;"> 塗って表示</label>
           <button class="mini" id="btnShHome" title="つかんで動かした文字の位置を、ぜんぶ元に戻します">位置を戻す</button>
+          <span class="hint" style="margin:0;">Shift＋ドラッグで行をまとめて選択</span>
           <button id="btnPrintRed" class="red">① 赤を出力</button>
           <button id="btnPrintBlk" class="blk">② 黒を出力</button>
           <button id="btnSvg" class="mini" title="赤・黒の色分けのまま、SVG を 1枚このパソコンに保存します">SVG</button>
@@ -823,6 +829,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       </div>
       <div id="panes">
         <div id="stagewrap">
+          <div id="selBox" hidden></div>
           <div id="stage"></div>
           <div id="inlineEd" hidden>
             <div class="lab" id="edLab"></div>
@@ -1658,7 +1665,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v15.9";
+var APP_VER = "v16.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2365,6 +2372,30 @@ function renderSheetGl(){
     el.addEventListener("change", function(){ setGlShown(+el.dataset.g, el.checked); });
   });
 }
+/* ゴムシートでまとめて動かすために選んだ 1行ガイドライン（v16.0）。
+   案件には保存しない（そのときだけの選択）。 */
+var shSel = {};
+function shSelList(){ return Object.keys(shSel).map(Number).filter(function(g){ return shSel[g]; }); }
+function shSelHas(g){ return !!shSel[g]; }
+function shSelClear(){ shSel = {}; }
+/* そのガイドラインが、ゴムシートの上で左右どこからどこまでか（mm） */
+function glSpanMm(g){
+  var l = 1e9, r = -1e9, t = 1e9, b = -1e9;
+  var rows = layout();
+  (S.centers || []).forEach(function(c, ci){
+    if (glOf(ci) !== g) return;
+    var go = glOffOf(g);
+    var cx = num(cenAt(ci).x, 45) + go.x, hw = Math.max(cenW(ci), 8) / 2;
+    l = Math.min(l, cx - hw); r = Math.max(r, cx + hw);
+    rows.forEach(function(rw){
+      if ((num(S.groups[rw.gi].col, 0)) !== ci || !rw.chars.length) return;
+      t = Math.min(t, rw.top + go.y); b = Math.max(b, rw.bottom + go.y);
+    });
+  });
+  if (!(l < r)) return null;
+  if (!(t < b)){ t = 0; b = num(S.sheet.h, 700); }
+  return { l: l, r: r, t: t, b: b };
+}
 function glOffMap(){
   if (!S.sheet.glOff || typeof S.sheet.glOff !== "object") S.sheet.glOff = {};
   return S.sheet.glOff;
@@ -2500,6 +2531,16 @@ function buildSVG(){
         '" fill="none" stroke="#1B6FD6" stroke-width="0.6" stroke-dasharray="3 2"/>');
     }
   }
+
+  /* 選んでいるガイドラインに、うすく色を敷く（v16.0・画面だけ） */
+  if (!isPrint) shSelList().forEach(function(g){
+    if (!glShown(g)) return;
+    var sp = glSpanMm(g); if (!sp) return;
+    hl.push('<rect x="' + (sp.l - 1.5).toFixed(3) + '" y="' + (sp.t - 4).toFixed(3) +
+      '" width="' + (sp.r - sp.l + 3).toFixed(3) + '" height="' + (sp.b - sp.t + 8).toFixed(3) +
+      '" fill="#1B6FD6" opacity="0.10" stroke="#1B6FD6" stroke-width="0.4" ' +
+      'stroke-dasharray="2 1.5"/>');
+  });
 
   /* --- 赤：ガイド線（グループから自動生成） --- */
   (S.centers || []).forEach(function(c, ci){
@@ -4686,11 +4727,20 @@ function startSheetDrag(ev){
   /* つかんだ 1行ガイドラインだけを動かす。ほかの行はそのまま。 */
   var gl = glOfPick(ev.target);
   if (gl === null) gl = bothGl();
-  var o0 = glOffOf(gl);
+  /* 選んでいるガイドラインの中をつかんだら、選んだぶんぜんぶ動かす（v16.0）。
+     選んでいないところをつかんだら、そのガイドラインだけ（選択は外す）。 */
+  var many = shSelHas(gl) ? shSelList() : null;
+  if (!many){ if (shSelList().length){ shSelClear(); renderStage(); } many = [gl]; }
+  var o0 = {};
+  many.forEach(function(g){ o0[g] = glOffOf(g); });
   var wrap = $("stagewrap");
   wrap.classList.add("moving");
   function mv(e){
-    setGlOff(gl, o0.x + (e.clientX - x0) * sc, o0.y + (e.clientY - y0) * sc);
+    var dx = (e.clientX - x0) * sc, dy = (e.clientY - y0) * sc;
+    many.forEach(function(g){
+      glOffMap()[g] = { x: +(o0[g].x + dx).toFixed(2), y: +(o0[g].y + dy).toFixed(2) };
+    });
+    shOfFill(); renderStage(); persist();
   }
   function up(){
     window.removeEventListener("pointermove", mv);
@@ -4717,6 +4767,69 @@ function setSheetMove(on){
   document.body.classList.add("sheetmove");
   renderStage();
 }
+
+/* --- ゴムシートの範囲選択（v16.0） --------------------------------------
+   Shift を押しながらドラッグで四角を描き、かかった 1行ガイドラインを選ぶ。
+   選んだあとは、その中の文字をつかむと、選んだぶんがまとめて動く。 */
+function selBoxRect(a, b){
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+           w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+}
+/* 画面の座標を、シートの mm に直す */
+function sheetPtMm(cx, cy){
+  var sv = $("stage").querySelector("svg"); if (!sv) return null;
+  var b = sv.getBoundingClientRect();
+  var vb = (sv.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
+  var vx = isFinite(vb[0]) ? vb[0] : 0, vy = isFinite(vb[1]) ? vb[1] : 0;
+  var vw = isFinite(vb[2]) && vb[2] ? vb[2] : num(S.sheet.w, 90);
+  var vh = isFinite(vb[3]) && vb[3] ? vb[3] : num(S.sheet.h, 700);
+  if (!b.width || !b.height) return null;
+  return { x: vx + (cx - b.left) / b.width * vw, y: vy + (cy - b.top) / b.height * vh };
+}
+$("stagewrap").addEventListener("pointerdown", function(e){
+  if (view !== "sheet" || e.button !== 0 || !e.shiftKey) return;
+  e.preventDefault(); e.stopPropagation();
+  var wrap = $("stagewrap"), box = $("selBox");
+  var wb = wrap.getBoundingClientRect();
+  var a = { x: e.clientX, y: e.clientY }, cur = a;
+  box.hidden = false;
+  function draw(){
+    var r = selBoxRect(a, cur);
+    box.style.left = (r.x - wb.left + wrap.scrollLeft) + "px";
+    box.style.top  = (r.y - wb.top  + wrap.scrollTop)  + "px";
+    box.style.width = r.w + "px"; box.style.height = r.h + "px";
+  }
+  draw();
+  function mv(ev){ cur = { x: ev.clientX, y: ev.clientY }; draw(); }
+  function up(){
+    window.removeEventListener("pointermove", mv);
+    window.removeEventListener("pointerup", up);
+    box.hidden = true;
+    var p1 = sheetPtMm(Math.min(a.x, cur.x), Math.min(a.y, cur.y));
+    var p2 = sheetPtMm(Math.max(a.x, cur.x), Math.max(a.y, cur.y));
+    if (!p1 || !p2) return;
+    if (Math.abs(cur.x - a.x) < 4 && Math.abs(cur.y - a.y) < 4){
+      shSelClear(); renderStage();
+      msg("選択を外しました。");
+      return;
+    }
+    shSelClear();
+    glList().forEach(function(g){
+      if (!glShown(g)) return;
+      var sp = glSpanMm(g); if (!sp) return;
+      /* 左右がかかっていれば選ぶ（縦書きの行なので、横のかかり具合で決める） */
+      if (sp.r >= p1.x && sp.l <= p2.x) shSel[g] = true;
+    });
+    var n = shSelList().length;
+    renderStage();
+    msg(n ? ("1行ガイドライン " + shSelList().map(function(g){ return g+1; }).join("・") +
+             " を選びました。中の文字をつかむと、まとめて動きます。")
+          : "その範囲にガイドラインはありませんでした。", !n);
+  }
+  window.addEventListener("pointermove", mv);
+  window.addEventListener("pointerup", up);
+}, true);
+
 function makePannable(id){
   var el = $(id), armed = false, on = false, sx = 0, sy = 0, l = 0, t = 0, pid = null;
   el.addEventListener("mousedown", function(e){ if (e.button === 1) e.preventDefault(); });

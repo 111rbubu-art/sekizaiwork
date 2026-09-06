@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v16.9</title>
+<title>彫刻原稿 v17.0</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -491,6 +491,18 @@
     color:var(--muted);font-weight:700;}
   #grpMenu .hd .sm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
   #grpMenu .hd button{white-space:nowrap;flex:0 0 auto;}
+  /* 拓本に重ねている間の、文字の打ち直し欄（v17.0） */
+  #bothEd{position:fixed;right:20px;bottom:20px;z-index:55;width:246px;background:var(--surface);
+    border:1px solid var(--line);border-radius:9px;padding:10px 11px;
+    box-shadow:0 10px 30px rgba(0,0,0,.22);}
+  #bothEd .bhd{display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:move;user-select:none;}
+  #bothEd .bhd .t{font-size:11px;color:var(--muted);font-weight:700;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  #bothEd .bhd .sp{flex:1;}
+  #bothEd .bhd button{flex:0 0 auto;padding:0 7px;line-height:19px;cursor:auto;}
+  #bothEd select{width:100%;margin-bottom:6px;}
+  #bothEd textarea{width:100%;font-size:15px;line-height:1.7;resize:vertical;min-height:64px;}
+  #bothEd .tip{font-size:10.5px;color:var(--muted);margin-top:5px;}
   #grpMenu .sec:first-of-type{margin-top:4px;}
   #pathEd .peside h3.sec:first-child{margin-top:0;}
 
@@ -501,7 +513,7 @@
   /* ---------- print ---------- */
   @media print{
     html,body{overflow:visible;background:#fff;margin:0;padding:0;height:auto;line-height:0;}
-    #bar,#left,#sub,#pvbar,#msg,#boot,#rubwrap,#demowrap,#bothwrap,#inlineEd,#charMenu,#grpMenu,
+    #bar,#left,#sub,#pvbar,#msg,#boot,#rubwrap,#demowrap,#bothwrap,#inlineEd,#charMenu,#grpMenu,#bothEd,
     #addMenu{display:none !important;}
     #app{display:block !important;height:auto;visibility:visible !important;}
     #main{display:block;overflow:visible;height:auto;}
@@ -865,6 +877,14 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
 <div id="msg"></div>
 <div id="charMenu" hidden></div>
 <div id="grpMenu" hidden></div>
+<!-- 拓本に重ねている間、文字の内容をその場で直せる欄（v17.0） -->
+<div id="bothEd" hidden>
+  <div class="bhd"><span class="t" id="bothEdLab">文字</span><span class="sp"></span>
+    <button class="mini" id="bothEdHide" title="この欄を閉じます">×</button></div>
+  <select id="bothEdSel" hidden></select>
+  <textarea id="bothEdT" rows="3" spellcheck="false"></textarea>
+  <div class="tip" id="bothEdTip">拓本に重ねたまま、文字を打ち直せます</div>
+</div>
 <div id="addMenu" hidden></div>
 
 <div id="peMenu" hidden></div>
@@ -1679,7 +1699,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v16.9";
+var APP_VER = "v17.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -5064,6 +5084,7 @@ function makePannable(id){
     var onHandle = e.target.closest && e.target.closest("[data-k]");
     if (placing && id === "rubwrap" && e.button === 0) return;   /* 置いている最中は掴まない */
     if (id === "stagewrap" && e.target.closest && e.target.closest("#inlineEd")) return;
+    if (e.target.closest && e.target.closest("#bothEd")) return;   /* 打ち直し欄（v17.0） */
     /* 文字の位置を動かすのは、文字の上をつかんだときだけ。
        ほかの場所をつかんだときは、画面ぜんぶを動かす（スクロール）。 */
     if (id === "stagewrap" && sheetMove && e.button === 0 &&
@@ -5143,9 +5164,69 @@ function bOverFill(){
 $("bOver").onclick = function(){
   if (!RUB.img || !mmPerPx()){ msg("先に拓本を取り込み、実測長を入れてください。", true); return; }
   S.bothOv = !S.bothOv;
+  bothEdOff = false;             /* 重ね直したら、打ち直し欄もまた出す */
   bOverFill(); renderBoth(); persist();
-  msg(S.bothOv ? ("ガイドライン " + (bothGl()+1) + " に拓本を重ねました。") : "重ねるのをやめました。");
+  msg(S.bothOv ? ("ガイドライン " + (bothGl()+1) + " に拓本を重ねました。文字はそのまま打ち直せます。")
+               : "重ねるのをやめました。");
 };
+
+/* --- 拓本に重ねている間の、文字の打ち直し欄（v17.0） --------------------
+   重ねているときは、拓本と校正文字を見くらべながら字を直したい。
+   左のメニューまで目を戻さずに済むように、画面のすみに小さな欄を出す。 */
+var bothEdOff = false;           /* × で閉じたら、重ね直すまで出さない */
+var bothEdGi = null;             /* いま欄に出している文字グループ */
+/* その 1行ガイドラインにいる文字グループ（複数あることがある） */
+function glGroupIdx(g){
+  var out = [];
+  (S.groups || []).forEach(function(gr, i){
+    var ci = Math.max(0, Math.min((S.centers || []).length - 1, num(gr.col, 0)));
+    if (glOf(ci) === g) out.push(i);
+  });
+  return out;
+}
+function bothEdFill(){
+  var box = $("bothEd"); if (!box) return;
+  var g = S.groups[sel];
+  var on = (view === "both") && bothOv() && !locked() && !bothEdOff && !!g;
+  box.hidden = !on;
+  if (!on){ bothEdGi = null; return; }
+  var gl = bothGl(), list = glGroupIdx(gl);
+  var lab = $("bothEdLab");
+  if (lab) lab.textContent = "ガイドライン " + (gl + 1) + "　文字の打ち直し";
+  var se = $("bothEdSel");
+  if (se){
+    /* 同じガイドラインに文字グループが 2 つ以上あるときだけ、選ばせる */
+    if (list.length > 1){
+      se.hidden = false;
+      se.innerHTML = list.map(function(i){
+        return '<option value="' + i + '"' + (i === sel ? " selected" : "") +
+               '>' + esc(gName(i, 16)) + '</option>'; }).join("");
+    } else { se.hidden = true; se.innerHTML = ""; }
+  }
+  var t = $("bothEdT");
+  /* 打っている最中に入れ直すと、カーソルが先頭へ飛んでしまう。
+     ただし別の文字グループに移ったときは、打っている最中でも入れ直す。 */
+  if (t && (bothEdGi !== sel || document.activeElement !== t)) t.value = g.text || "";
+  bothEdGi = sel;
+  var tip = $("bothEdTip");
+  if (tip) tip.textContent = "改行で 2 行目以降になります。拓本の合わせ先は、この文字グループです。";
+}
+$("bothEdT").addEventListener("input", function(e){
+  var g = S.groups[sel]; if (!g) return;
+  g.text = e.target.value;
+  renderList(); renderProps(); renderBoth(); persist();
+});
+$("bothEdSel").addEventListener("change", function(e){
+  var i = parseInt(e.target.value, 10);
+  if (!S.groups[i]) return;
+  sel = i; charSel = 0; charPicked = false;
+  renderList(); renderProps(); renderBoth();
+});
+$("bothEdHide").onclick = function(){
+  bothEdOff = true; bothEdFill();
+  msg("打ち直しの欄を閉じました。［拓本を重ねる］を押し直すと、また出ます。");
+};
+winDrag("#bothEd", ".bhd");
 $("bGap").addEventListener("input", function(){
   S.bothGap = Math.max(0, num($("bGap").value, 6));
   /* これはガイドラインの並べ方そのものを決める欄なので、
@@ -5782,6 +5863,7 @@ function applyLock(){
   document.body.classList.toggle("locked", on);
   lockBtnFill();
   barVerFill();
+  if (typeof bothEdFill === "function") bothEdFill();   /* ロック中は打ち直し欄を出さない */
 }
 /* 止めるのは「中身を変える入口」だけ。
    ゴムシート・確認資料の位置合わせ（つかんで動かす）は、ロック中もできる。
@@ -6427,6 +6509,7 @@ function setView(v){
   if (v === "sheet" || v === "both") renderStage();
   if (v === "rub") rubRender();
   if (v === "demo") renderDemo();
+  if (typeof bothEdFill === "function") bothEdFill();
   persist();
 }
 $("viewSheet").onclick = function(){ setView("sheet"); };
@@ -8989,6 +9072,7 @@ function renderBoth(){
       '<g>' + hits.join("") + '</g>' +
     '</svg>';
   bindBothDrag(st.querySelector("svg"));
+  if (typeof bothEdFill === "function") bothEdFill();   /* 打ち直し欄（v17.0） */
 }
 
 /* 画面の位置を、シートの mm に直す。

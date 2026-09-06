@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v19.0</title>
+<title>彫刻原稿 v19.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -476,6 +476,22 @@
   #startWin .foot .sp{flex:1;}
   #startWin .foot button{padding:8px 18px;font-size:13px;}
   #startWin .none{font-size:11.5px;color:var(--muted);}
+  /* 工事フォルダの画像の一覧（v19.1） */
+  #startWin .stpick{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:5px;
+    margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  #startWin .stpick button{width:auto;padding:4px 10px;font-size:11.5px;}
+  /* 行のテンプレートの下見（v19.1） */
+  #startWin .tpls{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-bottom:7px;}
+  #startWin .tpcard{width:auto;padding:6px;border:2px solid var(--line);border-radius:9px;
+    background:var(--paper);cursor:pointer;display:flex;flex-direction:column;
+    align-items:center;gap:4px;}
+  #startWin .tpcard:hover{border-color:var(--ok);}
+  #startWin .tpcard.on{border-color:var(--ok);background:var(--ok-soft);}
+  #startWin .tpv{width:96px;height:118px;display:flex;align-items:center;justify-content:center;
+    background:#fff;border:1px solid var(--line);border-radius:5px;overflow:hidden;}
+  #startWin .tpn{font-size:11px;font-weight:700;color:var(--ink);max-width:96px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #startWin .tpnone{font-size:10.5px;color:var(--muted);}
   /* お客様からの資料の窓（v18.0）。校正を見ながら読めるよう、右寄せの小さめの窓 */
   #docWin{position:fixed;right:16px;top:calc(var(--bar) + 12px);bottom:16px;width:min(560px,46vw);
     z-index:78;display:flex;}
@@ -1817,7 +1833,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v19.0";
+var APP_VER = "v19.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12608,7 +12624,93 @@ async function spSaveProject(){
    ここで［新規］か［追加彫刻］を選ぶと、その仕事に要るものだけを
    順に登録できる。どの手順もとばせる（あとから左のメニューでもできる）。
    =================================================================== */
-var ST = { mode: null };
+var ST = { mode: null, pick: null, rowTpl: "" };
+/* はじめの画面の中に出す「工事フォルダの画像」の一覧（v19.1）。
+   kind は "docs"（資料の登録）か "rub"（拓本の取り込み）。 */
+function stPickOpen(kind){
+  if (ST.pick && ST.pick.kind === kind){ ST.pick = null; startRender(); return; }
+  ST.pick = { kind: kind, items: [], loading: true };
+  startRender();
+  spImageList().then(function(list){
+    if (!ST.pick || ST.pick.kind !== kind) return;
+    ST.pick = { kind: kind, items: list, loading: false };
+    startRender();
+  }).catch(function(e){
+    ST.pick = { kind: kind, items: [], loading: false, err: spErrText(e) };
+    startRender();
+  });
+}
+function stPickHtml(kind){
+  var q = ST.pick;
+  if (!q || q.kind !== kind) return "";
+  var h = '<div class="stpick">';
+  if (q.loading) h += '<span class="none">工事フォルダを見ています…</span>';
+  else if (q.err) h += '<span class="none" style="color:var(--shu);">' + esc(q.err) + '</span>';
+  else if (!q.items.length) h += '<span class="none">画像がありません。</span>';
+  q.items.forEach(function(it, i){
+    var on = (kind === "docs") && !!docFind(it.id);
+    var now = (kind === "rub") && (S.rub && S.rub.srcName === it.name);
+    h += '<button class="mini' + (on || now ? " primary" : "") + '" data-sa="' + kind +
+      '-take" data-si="' + i + '">' + (on ? "✓ " : "") + esc(it.name) +
+      '<span style="color:var(--muted);font-weight:400;">　' + sizeText(num(it.size, 0)) +
+      '</span></button>';
+  });
+  h += '</div>';
+  return h;
+}
+
+/* 行のテンプレートの下見（v19.1）。名前だけでは、どんな校正か分からないため。
+   フォントは使わず、画面の字で組む。位置と行数と文字数が分かればよい。 */
+function tplPrevSVG(t, W, H){
+  var d = (t && t.data) || {};
+  var cs = d.centers || [], gs = d.groups || [], fr = d.frames || [];
+  if (!cs.length && !fr.length) return '<div class="tpnone">中身なし</div>';
+  var x1 = 1e9, x2 = -1e9, y1 = 1e9, y2 = -1e9;
+  cs.forEach(function(c, i){
+    var hw = (num(c.w, 30) || 30) / 2;
+    x1 = Math.min(x1, num(c.x, 45) - hw); x2 = Math.max(x2, num(c.x, 45) + hw);
+  });
+  gs.forEach(function(g){
+    y1 = Math.min(y1, num(g.topY, 60)); y2 = Math.max(y2, num(g.bottomY, 130));
+  });
+  fr.forEach(function(f, i){
+    var w = num(f.w, 100), hh = num(f.h, 300);
+    x1 = Math.min(x1, 0); x2 = Math.max(x2, w);
+    y1 = Math.min(y1, 0); y2 = Math.max(y2, hh);
+  });
+  if (!(x2 > x1)){ x1 = 0; x2 = 90; }
+  if (!(y2 > y1)){ y1 = 0; y2 = 200; }
+  var pad = Math.max((x2 - x1), (y2 - y1)) * 0.06 + 4;
+  x1 -= pad; x2 += pad; y1 -= pad; y2 += pad;
+  var vw = x2 - x1, vh = y2 - y1;
+  var h = '<svg viewBox="' + x1.toFixed(1) + ' ' + y1.toFixed(1) + ' ' +
+    vw.toFixed(1) + ' ' + vh.toFixed(1) + '" width="' + W + '" height="' + H +
+    '" preserveAspectRatio="xMidYMid meet">';
+  fr.forEach(function(f){
+    h += '<rect x="0" y="0" width="' + num(f.w, 100) + '" height="' + num(f.h, 300) +
+      '" fill="none" stroke="#c9cfd4" stroke-width="' + (vw * 0.006).toFixed(2) + '"/>';
+  });
+  gs.forEach(function(g){
+    var ci = Math.max(0, Math.min(cs.length - 1, num(g.col, 0)));
+    var c = cs[ci] || { x: 45, w: 30 };
+    var cx = num(c.x, 45), top = num(g.topY, 60), bot = num(g.bottomY, 130);
+    var txt = String(g.text || "").replace(/\s+/g, "");
+    var n = Array.from(txt).length;
+    h += '<line x1="' + cx + '" y1="' + top + '" x2="' + cx + '" y2="' + bot +
+      '" stroke="#d24b3f" stroke-width="' + (vw * 0.004).toFixed(2) +
+      '" stroke-dasharray="' + (vw * 0.02).toFixed(2) + ' ' + (vw * 0.02).toFixed(2) + '"/>';
+    if (!n) return;
+    var pitch = n > 1 ? (bot - top) / (n - 1) : 0;
+    var fs = Math.min(num(c.w, 30) * 0.9, pitch ? pitch * 0.85 : (bot - top));
+    Array.from(txt).forEach(function(ch, i){
+      h += '<text x="' + cx + '" y="' + (top + pitch * i + fs * 0.35).toFixed(1) +
+        '" font-size="' + fs.toFixed(1) + '" text-anchor="middle" fill="#22282c">' +
+        esc(ch) + '</text>';
+    });
+  });
+  h += '</svg>';
+  return h;
+}
 function startOpen(mode){
   ST.mode = mode || null;
   $("startWin").hidden = false;
@@ -12711,33 +12813,58 @@ function stPicks(k){
   var h = "";
   if (k === "frame"){
     BUILTIN_FRT.forEach(function(t, i){
-      h += '<button class="mini" data-sa="frame-bi" data-si="' + i + '">' + esc(t.name) + '</button>';
+      var f0 = (t.frames || [])[0] || {};
+      h += '<button class="mini" data-sa="frame-bi" data-si="' + i + '">' + esc(t.name) +
+        '<span style="color:var(--muted);font-weight:400;">　' +
+        num(f0.w, 0) + '×' + num(f0.h, 0) + '</span></button>';
     });
     frtList().forEach(function(t, i){
-      h += '<button class="mini" data-sa="frame-tpl" data-si="' + i + '">' + esc(t.name) + '</button>';
+      var f1 = (t.frames || [])[0] || {};
+      h += '<button class="mini" data-sa="frame-tpl" data-si="' + i + '">' + esc(t.name) +
+        '<span style="color:var(--muted);font-weight:400;">　' +
+        num(f1.w, 0) + '×' + num(f1.h, 0) + '</span></button>';
     });
     h += '<button class="mini" data-sa="frame-none">枠を使わない</button>';
+    if ((S.frames || []).length)
+      h += '<button class="mini" data-sa="frame-clear">入れた枠を消す</button>';
     return h;
   }
   if (k === "row"){
+    /* 名前だけでは、どんな校正か分からない。下見を並べる（v19.1）。
+       押すと、いまの行を「入れかえる」。押すたびに増えない。 */
     var ts = tplList();
-    if (!ts.length) h += '<span class="none">テンプレートがありません。　</span>';
+    if (!ts.length) return '<span class="none">テンプレートがありません。　</span>' +
+      '<button class="mini" data-sa="row-new">空の行を 1 本つくる</button>';
+    h += '<div class="tpls">';
     ts.forEach(function(t, i){
-      h += '<button class="mini" data-sa="row-tpl" data-si="' + i + '">' + esc(t.name) + '</button>';
+      var on = (ST.rowTpl === t.name);
+      h += '<button class="tpcard' + (on ? " on" : "") + '" data-sa="row-tpl" data-si="' + i + '">' +
+        '<div class="tpv">' + tplPrevSVG(t, 96, 118) + '</div>' +
+        '<div class="tpn">' + esc(t.name) + '</div></button>';
     });
+    h += '</div>';
     h += '<button class="mini" data-sa="row-new">空の行を 1 本つくる</button>';
+    if ((S.centers || []).length)
+      h += '<button class="mini" data-sa="row-clear">入れた行を消す</button>';
     return h;
   }
   if (k === "docs"){
     if (!docsReady()) return '<span class="none">本体アプリから開くと登録できます。</span>';
     h += '<button class="mini" data-sa="docs-up">パソコンから入れる</button>';
-    h += '<button class="mini" data-sa="docs-pick">工事フォルダから選ぶ</button>';
+    h += '<button class="mini' + (ST.pick && ST.pick.kind === "docs" ? " primary" : "") +
+      '" data-sa="docs-pick">工事フォルダから選ぶ</button>';
     if ((S.docs || []).length) h += '<button class="mini" data-sa="docs-see">見る</button>';
+    h += stPickHtml("docs");
     return h;
   }
   if (k === "rub"){
-    h += '<button class="mini" data-sa="rub-file">拓本の写真をえらぶ</button>';
+    /* 拓本も共有フォルダーにある。まず工事フォルダから選べるようにする（v19.1）。 */
+    if (docsReady())
+      h += '<button class="mini' + (ST.pick && ST.pick.kind === "rub" ? " primary" : "") +
+        '" data-sa="rub-pick">工事フォルダから選ぶ</button>';
+    h += '<button class="mini" data-sa="rub-file">パソコンから選ぶ</button>';
     if (RUB.img) h += '<button class="mini" data-sa="rub-panel">拓本の設定をひらく</button>';
+    h += stPickHtml("rub");
     return h;
   }
   return h;
@@ -12755,15 +12882,54 @@ function stDo(a, si){
     }
   }
   else if (a === "frame-none"){ msg("枠を使わずに進みます。あとから〔枠追加〕で足せます。"); }
+  else if (a === "frame-clear"){
+    S.frames = []; S.glFrame = {}; S.rubFrame = null;
+    migrate(); renderAll(); renderFrames(); persist(); msg("入れた枠を消しました。");
+  }
   else if (a === "row-tpl"){
     var t2 = tplList()[i];
-    if (t2){ if (ST.mode === "add") tplAdd(t2); else tplApply(t2); }
+    /* 押すたびに増えないよう、いつも「入れかえる」（v19.1）。
+       選び直すと、前に入れた行は残らない。 */
+    if (t2){ ST.rowTpl = t2.name; tplApply(t2); }
   }
-  else if (a === "row-new"){ addGuideline(); }
+  else if (a === "row-new"){
+    S.centers = []; S.groups = []; S.bothOff = {}; ST.rowTpl = "";
+    addGuideline();
+  }
+  else if (a === "row-clear"){
+    S.centers = []; S.groups = []; S.bothOff = {}; S.glFrame = {}; ST.rowTpl = "";
+    sel = 0; migrate(); renderAll(); persist(); msg("入れた行を消しました。");
+  }
   else if (a === "docs-up"){ $("fDoc").click(); }
-  else if (a === "docs-pick"){ startClose(); setSub("docs"); docsPickLoad(); return; }
+  else if (a === "docs-pick"){ stPickOpen("docs"); return; }
   else if (a === "docs-see"){ docWinOpen(0); return; }
+  else if (a === "docs-take"){
+    /* 一覧のまま、その場で入れる／外す（v19.1・窓は閉じない） */
+    var it = (ST.pick && ST.pick.items[i]);
+    if (it){
+      if (!Array.isArray(S.docs)) S.docs = [];
+      if (docFind(it.id)){ docsRemoveId(it.id); msg("「" + it.name + "」を外しました。"); }
+      else {
+        S.docs.push({ id: it.id, name: it.name, drive: SP.cfg.driveId,
+                      at: new Date().toISOString() });
+        msg("「" + it.name + "」を入れました。");
+      }
+      persist(); renderMenuCounts();
+    }
+  }
+  else if (a === "rub-pick"){ stPickOpen("rub"); return; }
   else if (a === "rub-file"){ $("fRub").click(); }
+  else if (a === "rub-take"){
+    var it2 = (ST.pick && ST.pick.items[i]);
+    if (it2){
+      msg("拓本を読み込んでいます…（" + it2.name + "）", false, true);
+      spImageDataUrl(it2).then(function(u){
+        loadRubImage(u, it2.name);
+        startRender();
+      }).catch(function(e){ msg("読めませんでした：" + spErrText(e), true); });
+    }
+    return;
+  }
   else if (a === "rub-panel"){ startClose(); setSub("rub"); return; }
   startRender();
 }
@@ -12921,29 +13087,42 @@ function docsMove(i, dir){
   var t = l[i]; l[i] = l[j]; l[j] = t;
   persist(); docsPanel();
 }
-/* 工事フォルダ（と、その下の 資料 フォルダ）の画像を並べる */
+/* 工事フォルダ（と、その下の 資料 フォルダ）にある画像をぜんぶ並べる。
+   資料の登録にも、拓本の取り込みにも使う（v19.1）。 */
+async function spImageList(){
+  var ids = [SP.cfg.folderId];
+  var top = await graph("/drives/" + SP.cfg.driveId + "/items/" + SP.cfg.folderId +
+    "/children?$top=200&$select=id,name,size,file,folder");
+  (top.value || []).forEach(function(x){
+    if (x.folder && sameName(x.name, DOCS_DIR)) ids.push(x.id);
+  });
+  var out = (top.value || []).filter(function(x){ return !x.folder && isImgName(x.name); });
+  if (ids.length > 1){
+    var sub = await graph("/drives/" + SP.cfg.driveId + "/items/" + ids[1] +
+      "/children?$top=200&$select=id,name,size,file,folder");
+    out = out.concat((sub.value || []).filter(function(x){ return !x.folder && isImgName(x.name); }));
+  }
+  /* 同じものが 2 度出ないように（工事フォルダと 資料 フォルダの両方を見るため） */
+  var seen = {};
+  out = out.filter(function(x){ if (seen[x.id]) return false; seen[x.id] = 1; return true; });
+  out.sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
+  return out;
+}
+/* 共有フォルダーの画像を、拓本や資料に使えるデータ URL にする（v19.1） */
+async function spImageDataUrl(it){
+  var b = await spGetBlob(it.id, it.name, num(it.size, 0));
+  return await new Promise(function(res, rej){
+    var fr = new FileReader();
+    fr.onload = function(){ res(fr.result); };
+    fr.onerror = function(){ rej(new Error("画像を読めませんでした")); };
+    fr.readAsDataURL(b);
+  });
+}
 async function docsPickLoad(){
   DOCP = { items: [], loading: true };
   docsPanel();
-  try {
-    var ids = [SP.cfg.folderId];
-    var top = await graph("/drives/" + SP.cfg.driveId + "/items/" + SP.cfg.folderId +
-      "/children?$top=200&$select=id,name,size,file,folder");
-    (top.value || []).forEach(function(x){
-      if (x.folder && sameName(x.name, DOCS_DIR)) ids.push(x.id);
-    });
-    var out = (top.value || []).filter(function(x){ return !x.folder && isImgName(x.name); });
-    if (ids.length > 1){
-      var sub = await graph("/drives/" + SP.cfg.driveId + "/items/" + ids[1] +
-        "/children?$top=200&$select=id,name,size,file,folder");
-      out = out.concat((sub.value || []).filter(function(x){ return !x.folder && isImgName(x.name); }));
-    }
-    /* 同じものが 2 度出ないように（工事フォルダと 資料 フォルダの両方を見るため） */
-    var seen = {};
-    out = out.filter(function(x){ if (seen[x.id]) return false; seen[x.id] = 1; return true; });
-    out.sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
-    DOCP = { items: out, loading: false };
-  } catch(e){
+  try { DOCP = { items: await spImageList(), loading: false }; }
+  catch(e){
     DOCP = { items: [], loading: false };
     msg("工事フォルダを見られませんでした：" + spErrText(e), true);
   }

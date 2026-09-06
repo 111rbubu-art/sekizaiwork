@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v19.3</title>
+<title>彫刻原稿 v19.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1847,7 +1847,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v19.3";
+var APP_VER = "v19.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -1885,6 +1885,7 @@ var S = {
      x/y が null なら、切れない縁の内側に自動で置く。vert は縦書き 2行。 */
   note: { on:true, x:null, y:null, size:6, vert:false },
   docs: [],                          /* お客様からの資料（v18.0）。絵は持たず、共有フォルダーの置き場所だけ */
+  docOv: null,                       /* 校正に重ねている資料（v19.4）。{id,x,y,w,rot,op} mm。出力には出ない */
   demoFx: {},                        /* 確認資料での左右のずらし量 mm。枠ごと（枠の線もいっしょに動く） */
   demoGx: {},                        /* 同上。枠に入っていない 1行ガイドラインごと。どちらも出力には効かない */
   rubDx: 0,                          /* 校正での拓本そのものの左右ずらし mm。出力には効かない */
@@ -6008,6 +6009,14 @@ function migrate(){
   if (!S.info || typeof S.info !== "object") S.info = {};
   /* 資料（v18.0）。中身は持たず、共有フォルダーの置き場所だけ覚える。 */
   if (!Array.isArray(S.docs)) S.docs = [];
+  /* 校正に重ねている資料（v19.4）。合わせ方は手で決める。 */
+  if (S.docOv && !S.docOv.id) S.docOv = null;
+  if (S.docOv){
+    S.docOv.x = num(S.docOv.x, 0); S.docOv.y = num(S.docOv.y, 0);
+    S.docOv.w = Math.max(5, num(S.docOv.w, 120));
+    S.docOv.rot = num(S.docOv.rot, 0);
+    S.docOv.op = Math.max(0.1, Math.min(1, num(S.docOv.op, 0.6)));
+  }
   S.docs = S.docs.filter(function(d){ return d && d.id; }).map(function(d){
     return { id: String(d.id), name: String(d.name || "資料"),
              drive: d.drive ? String(d.drive) : "", at: d.at || "" };
@@ -8893,6 +8902,14 @@ function renderBoth(){
     vx = Math.min(vx, q.l); vx2 = Math.max(vx2, q.r);
     vy = Math.min(vy, num(f.y, 0)); vy2 = Math.max(vy2, num(f.y, 0) + num(f.h, 0));
   });
+  /* 重ねた資料も画面に入れる（v19.4）。入れないと、置いたそばから
+     画面の外に出てしまい、つかむこともできない。 */
+  if (S.docOv && DOCC[S.docOv.id]){
+    var oz = docOvSize();
+    var ow = Math.max(5, num(S.docOv.w, 120)), oh = ow * oz.h / oz.w;
+    vx = Math.min(vx, num(S.docOv.x, 0)); vx2 = Math.max(vx2, num(S.docOv.x, 0) + ow);
+    vy = Math.min(vy, num(S.docOv.y, 0)); vy2 = Math.max(vy2, num(S.docOv.y, 0) + oh);
+  }
   if (!(vy < vy2)){ vy = 0; vy2 = 100; }
   var pad = 8;
   vx -= pad; vy -= pad;
@@ -9298,6 +9315,7 @@ function renderBoth(){
       frameLayer +
       img +
       bWhiteLayer +
+      (typeof docOvLayer === "function" ? docOvLayer() : "") +   /* 重ねた資料（v19.4） */
       guides +
       /* 重ねているときは文字を透かす。下の拓本が見えないと見比べられない。 */
       '<g fill="#111" stroke="none"' + (ov ? ' fill-opacity="0.45"' : '') + '>' +
@@ -9307,6 +9325,7 @@ function renderBoth(){
       '<g class="glhit">' + glHit + '</g>' +
       '<g>' + picks.join("") + '</g>' +
       '<g>' + hits.join("") + '</g>' +
+      (typeof docOvHits === "function" ? docOvHits() : "") +
     '</svg>';
   bindBothDrag(st.querySelector("svg"));
   if (typeof bothEdFill === "function") bothEdFill();   /* 打ち直し欄（v17.0） */
@@ -9365,6 +9384,13 @@ function bindBothDrag(svg){
         var pr0 = toPt(ev);
         if (isFinite(pr0.x)) rbx0 = { x: pr0.x, dx: num(S.rubDx, 0) };
       }
+      /* 重ねた資料（v19.4）。押した所を基準にして、そのまま動かす／大きさを変える。 */
+      var dov0 = null;
+      if ((k[0] === "dov" || k[0] === "dovs") && S.docOv){
+        var pd0 = toPt(ev);
+        if (isFinite(pd0.x)) dov0 = { x: pd0.x, y: pd0.y,
+          ox: num(S.docOv.x, 0), oy: num(S.docOv.y, 0), ow: Math.max(5, num(S.docOv.w, 120)) };
+      }
       if (k[0] === "cal" && bothRubX !== null && mp0){
         bothImgHold = { iy: mmOf(0), mp: mp0 };
       }
@@ -9382,6 +9408,20 @@ function bindBothDrag(svg){
         if (k[0] === "rubx"){
           if (!rbx0 || !isFinite(q.x)) return;
           S.rubDx = +(rbx0.dx + (q.x - rbx0.x)).toFixed(1);
+          renderBoth();
+          return;
+        }
+        if (k[0] === "dov"){
+          if (!dov0 || !S.docOv || !isFinite(q.x)) return;
+          S.docOv.x = +(dov0.ox + (q.x - dov0.x)).toFixed(1);
+          S.docOv.y = +(dov0.oy + (q.y - dov0.y)).toFixed(1);
+          renderBoth();
+          return;
+        }
+        if (k[0] === "dovs"){
+          if (!dov0 || !S.docOv || !isFinite(q.x)) return;
+          /* 左上を留めたまま、横に引いた分だけ大きさを変える。縦横の比は保つ。 */
+          S.docOv.w = +Math.max(5, dov0.ow + (q.x - dov0.x)).toFixed(1);
           renderBoth();
           return;
         }
@@ -9497,6 +9537,11 @@ function bindBothDrag(svg){
           renderBoth(); persist();
           msg("拓本を左右 " + (num(S.rubDx,0) > 0 ? "＋" : "") + (+num(S.rubDx,0).toFixed(1)) +
               " mm にしました（校正の見え方だけ）。");
+          return;
+        }
+        if (k[0] === "dov" || k[0] === "dovs"){
+          renderBoth(); persist();
+          if (typeof docsPanel === "function" && subTab === "docs") docsPanel();
           return;
         }
         if (k[0] === "frx"){
@@ -10353,7 +10398,7 @@ function resetAll(){
   if (typeof docsForget === "function") docsForget();
   S = { sheet:{ w:90, h:700, mx:10, mt:25, mb:50, ox:0, oy:0, glOff:{}, glHide:{} }, centers:[], info:{temple:"",family:"",date:"",chokokuBasho:"",sekitouPos:"",sekitouLine:"",boshiPos:"",boshiLine:"",other:""},
         note:{ on:true, x:null, y:null, size:6, vert:false },
-        docs:[], demoFx:{}, demoGx:{}, bothGap:6, bothOv:false, groups:[], rubDx:0, rubX:null, bothOff:{} };
+        docs:[], docOv:null, demoFx:{}, demoGx:{}, bothGap:6, bothOv:false, groups:[], rubDx:0, rubX:null, bothOff:{} };
   S.rub = Object.assign({}, RUB_DEFAULT, { centersPx:[], crop:null, pivot:null, off:{x:0,y:0} });
   S.lock = null; S.verId = 0; CASEF = { id:"", name:"" }; CASEDOC = null;   /* 版もまっさらに */
   applyLock();
@@ -13091,6 +13136,9 @@ function docsPanel(){
       h += '<div class="docrow" data-d="' + i + '">' +
         '<span class="n">' + esc(d.name) + '</span>' +
         '<button class="mini dcSee" data-i="' + i + '">見る</button>' +
+        (isTxtName(d.name) ? "" :
+          '<button class="mini dcOv' + (docOvOn(d.id) ? " primary" : "") + '" data-i="' + i +
+          '" title="校正に重ねて、手で位置を合わせます">重</button>') +
         '<button class="mini dcUp" data-i="' + i + '"' + (i ? "" : " disabled") + '>↑</button>' +
         '<button class="mini dcDn" data-i="' + i + '"' +
           (i < list.length - 1 ? "" : " disabled") + '>↓</button>' +
@@ -13098,6 +13146,28 @@ function docsPanel(){
         '</div>';
     });
     h += '<button class="mini primary" id="dcOpen" style="width:100%;margin-top:6px;">📄 資料を見る</button>';
+  }
+  /* 校正に重ねている資料の合わせ（v19.4）。合わせ方は手で決める。 */
+  if (S.docOv){
+    var ovd = docFind(S.docOv.id);
+    h += '<h3 class="sec">校正に重ねている資料</h3>';
+    h += '<p class="hint" style="margin-top:0;">' + esc((ovd && ovd.name) || "資料") +
+      '<br>絵をつかむと動きます。右下の青い四角で大きさを変えられます。' +
+      '拓本とちがって実測長が無いので、大きさは手で合わせてください。</p>';
+    h += '<div class="g2">' +
+      '<label class="f"><span>左右 mm</span><input type="number" id="dvX" step="1" value="' +
+        num(S.docOv.x, 0) + '"></label>' +
+      '<label class="f"><span>上下 mm</span><input type="number" id="dvY" step="1" value="' +
+        num(S.docOv.y, 0) + '"></label></div>';
+    h += '<div class="g2">' +
+      '<label class="f"><span>幅 mm</span><input type="number" id="dvW" step="1" min="5" value="' +
+        num(S.docOv.w, 120) + '"></label>' +
+      '<label class="f"><span>回転 °</span><input type="number" id="dvR" step="0.5" value="' +
+        num(S.docOv.rot, 0) + '"></label></div>';
+    h += '<label class="f"><span>濃さ</span><input type="range" id="dvO" min="0.1" max="1" step="0.05" value="' +
+      num(S.docOv.op, 0.6) + '"></label>';
+    h += '<div class="g2"><button class="mini" id="dvFlat">回転を 0 に</button>' +
+      '<button class="mini" id="dvOff">重ねるのをやめる</button></div>';
   }
   box.innerHTML = h;
 
@@ -13122,6 +13192,25 @@ function docsPanel(){
   Array.prototype.forEach.call(box.querySelectorAll(".dcSee"), function(e){
     e.onclick = function(){ docWinOpen(+e.dataset.i); };
   });
+  Array.prototype.forEach.call(box.querySelectorAll(".dcOv"), function(e){
+    e.onclick = function(){
+      var d = docList()[+e.dataset.i]; if (!d) return;
+      docOvSet(docOvOn(d.id) ? null : d);
+    };
+  });
+  [["dvX","x"],["dvY","y"],["dvW","w"],["dvR","rot"],["dvO","op"]].forEach(function(pr){
+    var el = $(pr[0]); if (!el || !S.docOv) return;
+    el.addEventListener("input", function(){
+      var v = num(el.value, 0);
+      if (pr[1] === "w") v = Math.max(5, v);
+      if (pr[1] === "op") v = Math.max(0.1, Math.min(1, v));
+      S.docOv[pr[1]] = v;
+      renderBoth(); persist();
+    });
+  });
+  var fb = $("dvFlat"); if (fb) fb.onclick = function(){
+    if (!S.docOv) return; S.docOv.rot = 0; renderBoth(); docsPanel(); persist(); };
+  var ob2 = $("dvOff"); if (ob2) ob2.onclick = function(){ docOvSet(null); msg("重ねるのをやめました。"); };
   Array.prototype.forEach.call(box.querySelectorAll(".dcUp"), function(e){
     e.onclick = function(){ docsMove(+e.dataset.i, -1); };
   });
@@ -13140,11 +13229,12 @@ function docsPanel(){
 /* 読んである資料の絵を捨てる。案件を替えたときに呼ぶ。 */
 function docsForget(){
   Object.keys(DOCC).forEach(function(k){ try { URL.revokeObjectURL(DOCC[k]); } catch(e){} });
-  DOCC = {}; DOCP = null; DW = { i:0, z:0, rot:0, url:"", busy:false };
+  DOCC = {}; DOCP = null; DOCSZ = {}; DW = { i:0, z:0, rot:0, url:"", busy:false };
   var w = $("docWin"); if (w) w.hidden = true;
 }
 function docsRemoveId(id){
   S.docs = docList().filter(function(d){ return d.id !== id; });
+  if (S.docOv && S.docOv.id === id) S.docOv = null;   /* 重ねていたものも外す（v19.4） */
 }
 function docsMove(i, dir){
   var l = docList(), j = i + dir;
@@ -13381,6 +13471,96 @@ $("fDoc").onchange = async function(e){
         (small ? "　大きな写真 " + small + " 件は、長辺 " + DOC_MAX_SIDE + " に縮めました。" : ""));
   } catch(e2){ msg("置けませんでした：" + spErrText(e2), true); }
 };
+
+/* ---- 校正に重ねる（v19.4） ----------------------------------------
+   拓本と同じように、資料の写真を校正の上に重ねて見比べる。
+   ただし拓本とちがって実測長が無いので、大きさも位置も手で合わせる。
+   重ねた絵は画面で見るためだけのもの。出力にも確認資料にも出ない。 */
+var DOCSZ = {};                  /* id → {w,h} 絵の大きさ（画素） */
+function docOvOn(id){ return !!(S.docOv && S.docOv.id === id); }
+function docOvSize(){
+  var z = S.docOv && DOCSZ[S.docOv.id];
+  return z && z.w > 0 && z.h > 0 ? z : { w: 3, h: 4 };
+}
+/* 絵を読んで、大きさを覚えてから重ねる */
+function docOvSet(d){
+  if (!d){ S.docOv = null; renderBoth(); docsPanel(); persist(); return; }
+  if (isTxtName(d.name)){ msg("文字の資料は重ねられません。", true); return; }
+  msg("資料を読んでいます…（" + d.name + "）", false, true);
+  docBlobUrl(d).then(function(u){
+    var im = new Image();
+    im.onload = function(){
+      DOCSZ[d.id] = { w: im.naturalWidth || 3, h: im.naturalHeight || 4 };
+      /* はじめの大きさは、いまの行の高さに合わせる。置き場所は右どなり。
+         あとから、つかんで動かし、角のつまみで合わせる。 */
+      var zz = DOCSZ[d.id], H0 = 200, X0 = 0, Y0 = 0;
+      try {
+        var rows0 = layout(), pk0 = bothPack(rows0);
+        var t0 = 1e9, b0 = -1e9;
+        rows0.forEach(function(r){ if (!r.chars.length) return;
+          t0 = Math.min(t0, r.top); b0 = Math.max(b0, r.bottom); });
+        if (b0 > t0){ H0 = b0 - t0; Y0 = t0; }
+        X0 = +(num(pk0.right, 0) + 12).toFixed(1);
+      } catch(_){}
+      var W0 = +Math.max(20, H0 * zz.w / zz.h).toFixed(1);
+      S.docOv = { id: d.id, x: X0, y: +Y0.toFixed(1), w: W0, rot: 0, op: 0.6 };
+      if (view !== "both") setView("both");
+      renderBoth(); docsPanel(); persist();
+      msg("「" + d.name + "」を校正に重ねました。つかんで動かし、角のつまみで大きさを合わせてください。");
+    };
+    im.onerror = function(){ msg("絵を読めませんでした。", true); };
+    im.src = u;
+  }).catch(function(e){ msg("読めませんでした：" + spErrText(e), true); });
+}
+/* 重ねている絵を描く。文字の下、拓本の上。 */
+var docOvLoad = false;
+function docOvLayer(){
+  var o = S.docOv; if (!o) return "";
+  var u = DOCC[o.id];
+  if (!u){
+    /* 案件を開き直した直後は、絵をまだ読んでいない。ここで読んで描き直す（v19.4） */
+    var d0 = docFind(o.id);
+    if (d0 && !docOvLoad && docsReady()){
+      docOvLoad = true;
+      docBlobUrl(d0).then(function(u2){
+        var im = new Image();
+        im.onload = function(){
+          DOCSZ[o.id] = { w: im.naturalWidth || 3, h: im.naturalHeight || 4 };
+          docOvLoad = false; renderBoth();
+        };
+        im.onerror = function(){ docOvLoad = false; };
+        im.src = u2;
+      }).catch(function(){ docOvLoad = false; });
+    }
+    return "";
+  }
+  var z = docOvSize();
+  var w = Math.max(5, num(o.w, 120)), h = w * z.h / z.w;
+  var cx = num(o.x, 0) + w / 2, cy = num(o.y, 0) + h / 2;
+  var rt = num(o.rot, 0);
+  return '<g opacity="' + num(o.op, 0.6) + '"' +
+    (rt ? ' transform="rotate(' + rt.toFixed(2) + ' ' + cx.toFixed(3) + ' ' + cy.toFixed(3) + ')"' : "") +
+    '><image href="' + u + '" x="' + num(o.x, 0).toFixed(3) + '" y="' + num(o.y, 0).toFixed(3) +
+    '" width="' + w.toFixed(3) + '" height="' + h.toFixed(3) +
+    '" preserveAspectRatio="none" pointer-events="none"/></g>';
+}
+/* つかむ面。絵ぜんぶで動かし、右下の角で大きさを変える。 */
+function docOvHits(){
+  var o = S.docOv; if (!o || !DOCC[o.id]) return "";
+  var z = docOvSize();
+  var w = Math.max(5, num(o.w, 120)), h = w * z.h / z.w;
+  var x = num(o.x, 0), y = num(o.y, 0), rt = num(o.rot, 0);
+  var cx = x + w / 2, cy = y + h / 2;
+  var k = Math.max(4, w * 0.05);
+  var tf = rt ? ' transform="rotate(' + rt.toFixed(2) + ' ' + cx.toFixed(3) + ' ' + cy.toFixed(3) + ')"' : "";
+  return '<g' + tf + '>' +
+    '<rect class="bmove" data-k="dov" x="' + x.toFixed(3) + '" y="' + y.toFixed(3) +
+      '" width="' + w.toFixed(3) + '" height="' + h.toFixed(3) +
+      '" fill="transparent" stroke="#1B6FD6" stroke-width="0.4" stroke-dasharray="3 2"/>' +
+    '<rect class="bhit" data-k="dovs" x="' + (x + w - k).toFixed(3) + '" y="' + (y + h - k).toFixed(3) +
+      '" width="' + k.toFixed(3) + '" height="' + k.toFixed(3) +
+      '" fill="#1B6FD6" opacity="0.75"/></g>';
+}
 
 /* ---- 別の窓で見る ---- */
 function docWinClose(){ $("docWin").hidden = true; }

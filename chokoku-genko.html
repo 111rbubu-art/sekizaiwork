@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.0</title>
+<title>彫刻原稿 v20.1</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1893,7 +1893,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.0";
+var APP_VER = "v20.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9002,7 +9002,7 @@ function renderBoth(){
   });
   /* 重ねた資料も画面に入れる（v19.4）。入れないと、置いたそばから
      画面の外に出てしまい、つかむこともできない。 */
-  if (S.docOv && DOCC[S.docOv.id]){
+  if (S.docOv && DOCIMG[S.docOv.id]){
     var oz = docOvSize();
     var ow = Math.max(5, num(S.docOv.w, 120)), oh = ow * oz.h / oz.w;
     vx = Math.min(vx, num(S.docOv.x, 0)); vx2 = Math.max(vx2, num(S.docOv.x, 0) + ow);
@@ -13338,6 +13338,11 @@ function docsPanel(){
   if (S.docOv){
     var ovd = docFind(S.docOv.id);
     h += '<h3 class="sec">校正に重ねている資料</h3>';
+    if (DOCOV.busy)
+      h += '<p class="hint" style="margin-top:0;color:var(--ok);font-weight:700;">絵を読み込んでいます…</p>';
+    else if (DOCOV.err)
+      h += '<p class="hint" style="margin-top:0;color:var(--shu);">読めませんでした：' +
+        esc(DOCOV.err) + '<br>［重］を押し直すか、共有フォルダーの元のファイルを確かめてください。</p>';
     h += '<p class="hint" style="margin-top:0;">' + esc((ovd && ovd.name) || "資料") +
       '<br>絵をつかむと動きます。右下の青い四角で大きさを変えられます。' +
       '拓本とちがって実測長が無いので、大きさは手で合わせてください。</p>';
@@ -13416,7 +13421,8 @@ function docsPanel(){
 /* 読んである資料の絵を捨てる。案件を替えたときに呼ぶ。 */
 function docsForget(){
   Object.keys(DOCC).forEach(function(k){ try { URL.revokeObjectURL(DOCC[k]); } catch(e){} });
-  DOCC = {}; DOCP = null; DOCSZ = {}; DW = { i:0, z:0, rot:0, url:"", busy:false };
+  DOCC = {}; DOCP = null; DOCSZ = {}; DOCIMG = {}; DOCOV = { busy:false, err:"" };
+  DW = { i:0, z:0, rot:0, url:"", busy:false };
   var w = $("docWin"); if (w) w.hidden = true;
 }
 function docsRemoveId(id){
@@ -13598,7 +13604,7 @@ async function docPutOne(body, name, type, have){
   var it = await spPutIn(dir, nm, body, type || "application/octet-stream");
   docsRemoveId(it.id);
   S.docs.push({ id: it.id, name: it.name, drive: SP.cfg.driveId, at: new Date().toISOString() });
-  delete DOCC[it.id];
+  delete DOCC[it.id]; delete DOCIMG[it.id]; delete DOCSZ[it.id];
   persist(); renderMenuCounts(); DOCP = null; docsPanel();
   if (typeof startRender === "function") startRender();
   return it;
@@ -13679,62 +13685,95 @@ $("fDoc").onchange = async function(e){
    ただし拓本とちがって実測長が無いので、大きさも位置も手で合わせる。
    重ねた絵は画面で見るためだけのもの。出力にも確認資料にも出ない。 */
 var DOCSZ = {};                  /* id → {w,h} 絵の大きさ（画素） */
+var DOCIMG = {};                 /* id → データ URL。重ねる絵はこちらを使う（v20.1）。
+                                    objectURL（blob:）は SVG の <image> で出ないことがあり、
+                                    何も出ないのに知らせも無い、という形になっていた。
+                                    拓本と同じデータ URL なら確実に出る。 */
+var DOCOV = { busy: false, err: "" };
 function docOvOn(id){ return !!(S.docOv && S.docOv.id === id); }
 function docOvSize(){
   var z = S.docOv && DOCSZ[S.docOv.id];
   return z && z.w > 0 && z.h > 0 ? z : { w: 3, h: 4 };
 }
+/* 絵を読んで、大きさを覚える。読めたら then に データ URL を渡す。 */
+function docOvFetch(d){
+  if (DOCIMG[d.id]) return Promise.resolve(DOCIMG[d.id]);
+  return spImageDataUrl(d).then(function(u){
+    return new Promise(function(res, rej){
+      var im = new Image();
+      im.onload = function(){
+        DOCSZ[d.id] = { w: im.naturalWidth || 3, h: im.naturalHeight || 4 };
+        DOCIMG[d.id] = u; res(u);
+      };
+      im.onerror = function(){ rej(new Error("絵として読めませんでした")); };
+      im.src = u;
+    });
+  });
+}
 /* 絵を読んで、大きさを覚えてから重ねる */
 function docOvSet(d){
-  if (!d){ S.docOv = null; renderBoth(); docsPanel(); persist(); return; }
+  if (!d){ S.docOv = null; DOCOV.err = ""; renderBoth(); docsPanel(); persist(); return; }
   if (isTxtName(d.name)){ msg("文字の資料は重ねられません。", true); return; }
+  if (!docsReady()){ msg("本体アプリにつながっていないので、資料を読めません。", true); return; }
+  DOCOV.busy = true; DOCOV.err = "";
   msg("資料を読んでいます…（" + d.name + "）", false, true);
-  docBlobUrl(d).then(function(u){
-    var im = new Image();
-    im.onload = function(){
-      DOCSZ[d.id] = { w: im.naturalWidth || 3, h: im.naturalHeight || 4 };
-      /* はじめの大きさは、いまの行の高さに合わせる。置き場所は右どなり。
-         あとから、つかんで動かし、角のつまみで合わせる。 */
-      var zz = DOCSZ[d.id], H0 = 200, X0 = 0, Y0 = 0;
-      try {
-        var rows0 = layout(), pk0 = bothPack(rows0);
-        var t0 = 1e9, b0 = -1e9;
-        rows0.forEach(function(r){ if (!r.chars.length) return;
-          t0 = Math.min(t0, r.top); b0 = Math.max(b0, r.bottom); });
-        if (b0 > t0){ H0 = b0 - t0; Y0 = t0; }
-        X0 = +(num(pk0.right, 0) + 12).toFixed(1);
-      } catch(_){}
-      var W0 = +Math.max(20, H0 * zz.w / zz.h).toFixed(1);
-      S.docOv = { id: d.id, x: X0, y: +Y0.toFixed(1), w: W0, rot: 0, op: 0.6 };
-      if (view !== "both") setView("both");
-      renderBoth(); docsPanel(); persist();
-      msg("「" + d.name + "」を校正に重ねました。つかんで動かし、角のつまみで大きさを合わせてください。");
-    };
-    im.onerror = function(){ msg("絵を読めませんでした。", true); };
-    im.src = u;
-  }).catch(function(e){ msg("読めませんでした：" + spErrText(e), true); });
+  docsPanel();
+  docOvFetch(d).then(function(){
+    /* はじめの大きさは、いまの行の高さに合わせる。置き場所は右どなり。
+       あとから、つかんで動かし、角のつまみで合わせる。 */
+    var zz = DOCSZ[d.id], H0 = 200, X0 = 0, Y0 = 0;
+    try {
+      var rows0 = layout(), pk0 = bothPack(rows0);
+      var t0 = 1e9, b0 = -1e9;
+      rows0.forEach(function(r){ if (!r.chars.length) return;
+        t0 = Math.min(t0, r.top); b0 = Math.max(b0, r.bottom); });
+      if (b0 > t0){ H0 = b0 - t0; Y0 = t0; }
+      X0 = +(num(pk0.right, 0) + 12).toFixed(1);
+    } catch(_){}
+    var W0 = +Math.max(20, H0 * zz.w / zz.h).toFixed(1);
+    S.docOv = { id: d.id, x: X0, y: +Y0.toFixed(1), w: W0, rot: 0, op: 0.6 };
+    DOCOV.busy = false;
+    if (view !== "both") setView("both");
+    renderBoth(); docsPanel(); persist();
+    msg("「" + d.name + "」を校正に重ねました。つかんで動かし、角のつまみで大きさを合わせてください。");
+  }).catch(function(e){
+    DOCOV.busy = false; DOCOV.err = spErrText(e);
+    docsPanel();
+    msg("資料を読めませんでした：" + DOCOV.err, true);
+  });
 }
 /* 重ねている絵を描く。文字の下、拓本の上。 */
 var docOvLoad = false;
 function docOvLayer(){
   var o = S.docOv; if (!o) return "";
-  var u = DOCC[o.id];
+  var u = DOCIMG[o.id];
   if (!u){
-    /* 案件を開き直した直後は、絵をまだ読んでいない。ここで読んで描き直す（v19.4） */
+    /* 案件を開き直した直後は、絵をまだ読んでいない。ここで読んで描き直す（v19.4）。
+       読めていない間も、置き場所だけは四角で見せる（v20.1）。
+       何も出ないと、重ねたつもりが消えたように見えるため。 */
     var d0 = docFind(o.id);
-    if (d0 && !docOvLoad && docsReady()){
-      docOvLoad = true;
-      docBlobUrl(d0).then(function(u2){
-        var im = new Image();
-        im.onload = function(){
-          DOCSZ[o.id] = { w: im.naturalWidth || 3, h: im.naturalHeight || 4 };
-          docOvLoad = false; renderBoth();
-        };
-        im.onerror = function(){ docOvLoad = false; };
-        im.src = u2;
-      }).catch(function(){ docOvLoad = false; });
+    if (d0 && !docOvLoad && !DOCOV.err && docsReady()){
+      docOvLoad = true; DOCOV.busy = true;
+      docOvFetch(d0).then(function(){
+        docOvLoad = false; DOCOV.busy = false; renderBoth(); docsPanel();
+      }).catch(function(e){
+        docOvLoad = false; DOCOV.busy = false; DOCOV.err = spErrText(e);
+        renderBoth(); docsPanel();
+        msg("重ねている資料を読めませんでした：" + DOCOV.err, true);
+      });
     }
-    return "";
+    var pw2 = Math.max(5, num(o.w, 120)), ph2 = pw2 * 1.3;
+    var lab = DOCOV.err ? "資料を読めませんでした"
+            : (!docsReady() ? "つながっていないので読めません" : "資料を読み込んでいます…");
+    return '<g pointer-events="none">' +
+      '<rect x="' + num(o.x, 0).toFixed(3) + '" y="' + num(o.y, 0).toFixed(3) +
+        '" width="' + pw2.toFixed(3) + '" height="' + ph2.toFixed(3) +
+        '" fill="#F2F4F5" stroke="' + (DOCOV.err ? "#C0392B" : "#1B6FD6") +
+        '" stroke-width="0.5" stroke-dasharray="4 3"/>' +
+      '<text x="' + (num(o.x, 0) + pw2 / 2).toFixed(3) + '" y="' +
+        (num(o.y, 0) + ph2 / 2).toFixed(3) + '" text-anchor="middle" font-size="' +
+        Math.max(3, pw2 * 0.06).toFixed(2) + '" fill="' + (DOCOV.err ? "#C0392B" : "#1B6FD6") +
+        '">' + lab + '</text></g>';
   }
   var z = docOvSize();
   var w = Math.max(5, num(o.w, 120)), h = w * z.h / z.w;
@@ -13748,7 +13787,7 @@ function docOvLayer(){
 }
 /* つかむ面。絵ぜんぶで動かし、右下の角で大きさを変える。 */
 function docOvHits(){
-  var o = S.docOv; if (!o || !DOCC[o.id]) return "";
+  var o = S.docOv; if (!o || !DOCIMG[o.id]) return "";
   var z = docOvSize();
   var w = Math.max(5, num(o.w, 120)), h = w * z.h / z.w;
   var x = num(o.x, 0), y = num(o.y, 0), rt = num(o.rot, 0);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.3</title>
+<title>彫刻原稿 v20.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1874,7 +1874,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.3";
+var APP_VER = "v20.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3204,6 +3204,42 @@ function glFamily(g){
   });
   return out;
 }
+/* コピーで結ばれた「同じ位置のセンターライン」ぜんぶ（v20.4）。
+   元の線 1本と、それを見ているコピーの線 ぜんぶ。
+   行幅（cenW）はもともと元から借りている。左右の位置も同じ扱いにする。 */
+function cenSlot(ci){
+  var c = (S.centers || [])[ci];
+  if (!c) return [];
+  var root = (c.linkTo === null || c.linkTo === undefined) ? ci : num(c.linkTo, ci);
+  if (!S.centers[root]) root = ci;
+  var out = [root];
+  (S.centers || []).forEach(function(cc, cj){
+    if (cj === root) return;
+    var t = num(cc.linkTo, NaN);
+    if (isFinite(t) && t === root) out.push(cj);
+  });
+  return out;
+}
+/* 左右の位置を決める。結ばれた線も **同じ量だけ** 動かす（v20.4）。
+   元から動かしてもコピーから動かしても、離れぐあいは変わらない。 */
+function cenSetX(ci, x){
+  var c = (S.centers || [])[ci];
+  if (!c) return 0;
+  var d = num(x, 0) - num(c.x, 45);
+  if (!d) return 0;
+  cenSlot(ci).forEach(function(cj){
+    var cc = S.centers[cj];
+    if (cc) cc.x = +(num(cc.x, 45) + d).toFixed(1);
+  });
+  return d;
+}
+/* 同じ位置の線を、結ばれた分ごと消す（v20.4）。
+   元だけ消すと、コピーに宙に浮いた線が残ってしまう。 */
+function removeCenterSlot(ci){
+  var list = cenSlot(ci).slice().sort(function(a, b){ return b - a; });
+  list.forEach(function(cj){ removeCenter(cj); });
+  return list.length;
+}
 /* センターラインを 1本入れる。あとの番号（col・linkTo・拓本の画素）も直す（v20.3）。
    直さないと、途中に差し込んだときに 紐づけ先が 1本ずれる。 */
 function insertCenter(at, obj, px){
@@ -3349,14 +3385,20 @@ function renderCols(){
     if (srcK >= 0 && nLink)
       h += '<div class="m">文字の入力範囲（上端・下端）は 1行ガイドライン ' + (srcK+1) +
         ' と一緒に動きます。別々にするときは、その文字グループを選んで［紐づけを解除］。</div>';
+    /* コピーの行では、センターラインの欄（行幅・×・＋足す）を出さない（v20.4）。
+       線の本数・行幅・左右の位置は元の行から借りていて、ここで打っても効かない。
+       文字グループの入れ替え・追加はできるので、入れ物だけは出す。 */
+    var isCp = (srcK >= 0);
     idxs.forEach(function(ci){
       var c = S.centers[ci];
       var mine = vis[ci];
       h += '<div class="cbox gdrop" data-ci="' + ci + '" style="border-color:' + col + '33;">' +
-        '<div class="hh"><b style="color:' + col + ';">センター ' + glName(ci) + '</b>' +
-        (idxs.length > 1 ? '<button class="mini cdelL" data-i="' + ci + '">×</button>' : '') + '</div>' +
-        '<label class="f inl" style="margin:0 0 6px;"><span>行幅 mm</span>' +
-          '<input type="number" class="cw" data-i="' + ci + '" value="' + num(c.w,0) + '" step="0.1" min="0"></label>' +
+        '<div class="hh"><b style="color:' + col + ';">センター ' + glName(ci) +
+          (isCp ? '<span style="font-weight:400;color:var(--muted);">　元と同じ</span>' : '') + '</b>' +
+        (!isCp && idxs.length > 1 ? '<button class="mini cdelL" data-i="' + ci + '">×</button>' : '') + '</div>' +
+        (isCp ? '' :
+          '<label class="f inl" style="margin:0 0 6px;"><span>行幅 mm</span>' +
+          '<input type="number" class="cw" data-i="' + ci + '" value="' + num(c.w,0) + '" step="0.1" min="0"></label>') +
         '<div class="glist2">' +
           (mine.length ? mine.map(groupCard).join("")
                        : '<div class="empty">ここへ文字グループをドラッグ</div>') +
@@ -3364,7 +3406,10 @@ function renderCols(){
         '<button class="mini gaddG" data-ci="' + ci + '">＋ 文字グループ</button>' +
         '</div>';
     });
-    h += '<button class="mini caddL" data-g="' + g + '" style="width:100%;">＋ センターラインを足す</button>' +
+    h += (isCp
+      ? '<div class="m">センターラインは 1行ガイドライン ' + (srcK+1) +
+        ' で決めます。行幅も左右の位置も、元を動かすと同じだけ動きます。</div>'
+      : '<button class="mini caddL" data-g="' + g + '" style="width:100%;">＋ センターラインを足す</button>') +
       '</div>';
   });
 
@@ -3454,8 +3499,9 @@ function renderCols(){
   Array.prototype.forEach.call(box.querySelectorAll(".cdelL"), function(bt){
     bt.onclick = function(e){
       e.stopPropagation();
-      removeCenter(+bt.dataset.i);
+      var nrm = removeCenterSlot(+bt.dataset.i);   /* コピーの分も一緒に（v20.4） */
       renderAll(); if (view !== "sheet") rubRender();
+      if (nrm > 1) msg("センターラインを消しました。コピーの " + (nrm - 1) + " 本も一緒に消しています。");
     };
   });
   Array.prototype.forEach.call(box.querySelectorAll(".gaddG"), function(bt){
@@ -3571,6 +3617,11 @@ function glCenters(g){
    足す・複製する・テンプレートから入れる、どれも同じ空け方にする。 */
 var ADD_GAP = 6;
 function addCenterLine(g){
+  /* センターラインは **コピー元の行** で決める（v20.4）。
+     コピーの行で押されたら、元の行に足す。コピーには
+     「同じ場所・同じ行幅」の入れ物だけを作り、行の構成には出さない。 */
+  var rootK = glSrcKey(g);
+  if (rootK >= 0) g = rootK;
   var idxs = glCenters(g);
   if (!idxs.length) return;
   var base = S.centers[idxs[0]];
@@ -3614,10 +3665,13 @@ function addCenterLine(g){
   if (rootO) made.forEach(function(m){
     m.o.linkTo = (m.o === rootO) ? null : S.centers.indexOf(rootO);
   });
+  /* 足した行を出しておく（コピーの行から押したときは、元の行へ移る） */
+  for (var si = 0; si < S.groups.length; si++)
+    if (glKeyOf(S.groups[si]) === g){ sel = si; charSel = 0; charPicked = false; break; }
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
   msg(made.length > 1
-    ? ("センターラインを足しました。コピーで結ばれた " + made.length +
-       " 行ぜんぶに、同じ場所へ足しています。")
+    ? ("1行ガイドライン " + (g+1) + " にセンターラインを足しました。" +
+       "コピーの " + (made.length - 1) + " 行も、同じ場所・同じ行幅で一緒に動きます。")
     : "センターラインを足しました。左右の位置は、校正のふうせんか「左右 mm」で合わせてください。");
 }
 
@@ -9474,7 +9528,8 @@ function bindBothDrag(svg){
         if (k[0] === "cenx"){
           var cc2 = S.centers[+k[1]];
           if (!cc2 || !cnx0 || !isFinite(q.x)) return;
-          cc2.x = +(cnx0.cx + (q.x - cnx0.x)).toFixed(1);
+          /* 結ばれた線も同じだけ動かす（v20.4）。cc2 は cenSetX の中で動く。 */
+          cenSetX(+k[1], +(cnx0.cx + (q.x - cnx0.x)).toFixed(1));
           renderBoth();
           return;
         }
@@ -9532,7 +9587,7 @@ function bindBothDrag(svg){
             dpx = pxNew - pxs0[ci];
             if (!dpx) return;
             pxs0[ci] = pxNew;
-            S.centers[ci].x = +(oldX + dpx * mp).toFixed(1);
+            cenSetX(ci, +(oldX + dpx * mp).toFixed(1));   /* 結ばれた線も同じだけ（v20.4） */
             /* ここでは syncCenters() を呼ばない。2本目以降は動かさないのが目的で、
                呼ぶと 1回動かすごとに丸めのぶんだけ、じわじわずれていく。
                文字と画素を同じだけずらしてあるので、次に呼ばれても同じ値に戻る。 */
@@ -10249,7 +10304,8 @@ function syncCenters(){
       /* コピーした行は拓本に元が無いので、左右の位置は手で決めたものを保つ */
       if (S.centers[ci].linkTo !== null && S.centers[ci].linkTo !== undefined) continue;
       var x = +(num(S.centers[i0].x, 45) + (pxs[ci] - pxs[i0]) * mp).toFixed(1);
-      if (Math.abs(x - num(S.centers[ci].x, 0)) >= 0.05){ S.centers[ci].x = x; moved = true; }
+      /* コピーの線も同じだけ動かす（v20.4） */
+      if (Math.abs(x - num(S.centers[ci].x, 0)) >= 0.05){ cenSetX(ci, x); moved = true; }
     }
   });
   return moved;

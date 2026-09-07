@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.2</title>
+<title>彫刻原稿 v20.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -649,6 +649,10 @@
   #grpMenu .hd .sm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
   #grpMenu .hd button{white-space:nowrap;flex:0 0 auto;}
   #grpMenu .sec:first-of-type{margin-top:4px;}
+  /* コピーの案内と［紐づけを解除］（v20.3）。まわりの設定に紛れないよう囲む。 */
+  .lnkbox{border:1px solid var(--line);border-left:3px solid var(--accent,#8a4a00);
+    border-radius:6px;padding:8px 9px;margin:0 0 10px;background:rgba(0,0,0,.02);}
+  .lnkbox .hint{font-size:11px;}
   #pathEd .peside h3.sec:first-child{margin-top:0;}
   /* 輪郭を選択（v18.1）。点の上から引いても囲みになる */
   #peStage.m-box,#peStage.m-box .pehit,#peStage.m-box .pehitc{cursor:crosshair;}
@@ -1870,7 +1874,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.2";
+var APP_VER = "v20.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3189,6 +3193,29 @@ function glList(){                       /* ガイドラインの番号を、出
   });
   return out;
 }
+/* コピーで結ばれた 1行ガイドラインぜんぶ（元 → そのコピー の順・v20.3）。
+   センターラインを足すときに、結ばれた行にも同じ場所へ足すのに使う。 */
+function glFamily(g){
+  var root = glSrcKey(g);
+  if (root < 0) root = g;
+  var out = [root];
+  glList().forEach(function(k){
+    if (k !== root && glSrcKey(k) === root && out.indexOf(k) < 0) out.push(k);
+  });
+  return out;
+}
+/* センターラインを 1本入れる。あとの番号（col・linkTo・拓本の画素）も直す（v20.3）。
+   直さないと、途中に差し込んだときに 紐づけ先が 1本ずれる。 */
+function insertCenter(at, obj, px){
+  S.centers.splice(at, 0, obj);
+  S.centers.forEach(function(c){
+    if (c === obj) return;
+    var t = num(c.linkTo, NaN);
+    if (isFinite(t) && t >= at) c.linkTo = t + 1;
+  });
+  if (S.rub.centersPx) S.rub.centersPx.splice(at, 0, (px === undefined) ? null : px);
+  S.groups.forEach(function(gr){ if (num(gr.col, 0) >= at) gr.col = num(gr.col, 0) + 1; });
+}
 /* センターラインを 1本消す。グループの紐づけと拓本上の位置も直す。 */
 function removeCenter(i){
   if (i < 0 || i >= S.centers.length) return;
@@ -3555,27 +3582,43 @@ function addCenterLine(g){
   (S.centers || []).forEach(function(c, ci){
     lx = Math.min(lx, num(c.x, 45) - (cenW(ci) || num(c.w, 0) || w) / 2);
   });
-  var last = idxs[idxs.length - 1];
   var nx = +(lx - ADD_GAP - w / 2).toFixed(1);
-  S.centers.splice(last + 1, 0,
-    { x: nx, w: num(base.w, 0), fit: false, gl: g });
-  /* 拓本の画素も、いま決めた場所に合わせて入れる（v15.6）。
-     まん中の画素を入れると、syncCenters() が
-     「1本目と同じ画素＝同じ場所」と計算し直して、線が重なってしまう。 */
-  if (S.rub.centersPx){
+  /* 押した行の 1本目の線から、どれだけ離れているか。
+     コピーで結ばれた行にも、同じだけ離して足す＝場所を共通にする（v20.3）。
+     ここを自分の行だけにしていたので、コピーした行は線の本数も場所も
+     ばらばらになっていた。 */
+  var rel = nx - num(base.x, 45);
+  var fam = glFamily(g), made = [];
+  fam.forEach(function(k){
+    var ks = glCenters(k);              /* 差し込むたびに番号が動くので、都度とり直す */
+    if (!ks.length) return;
+    var b = S.centers[ks[0]];
+    var x = +(num(b.x, 45) + rel).toFixed(1);
+    var o = { x: x, w: num(b.w, 0), fit: false, gl: k };
+    /* 拓本の画素も、いま決めた場所に合わせて入れる（v15.6）。
+       まん中の画素を入れると、syncCenters() が
+       「1本目と同じ画素＝同じ場所」と計算し直して、線が重なってしまう。 */
     var npx = null;
-    if (RUB.img){
-      var mp0 = mmPerPx(), i0 = idxs[0], p0 = (S.rub.centersPx || [])[i0];
+    if (S.rub.centersPx && RUB.img){
+      var mp0 = mmPerPx(), p0 = (S.rub.centersPx || [])[ks[0]];
       npx = (mp0 && p0 !== null && p0 !== undefined)
-        ? Math.max(0, Math.min(RUB.W || 1e9,
-            Math.round(p0 + (nx - num(S.centers[i0].x, 45)) / mp0)))
+        ? Math.max(0, Math.min(RUB.W || 1e9, Math.round(p0 + (x - num(b.x, 45)) / mp0)))
         : Math.round((num(S.rub.bandL, 0) + num(S.rub.bandR, 0)) / 2);
     }
-    S.rub.centersPx.splice(last + 1, 0, npx);
-  }
-  S.groups.forEach(function(gr){ if (num(gr.col,0) > last) gr.col = num(gr.col,0) + 1; });
+    insertCenter(ks[ks.length - 1] + 1, o, npx);
+    made.push({ k: k, o: o });
+  });
+  /* 行幅は元の線から借りる（コピーと同じ決まり）。 */
+  var rootO = null;
+  made.forEach(function(m){ if (m.k === fam[0]) rootO = m.o; });
+  if (rootO) made.forEach(function(m){
+    m.o.linkTo = (m.o === rootO) ? null : S.centers.indexOf(rootO);
+  });
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-  msg("センターラインを足しました。左右の位置は、校正のふうせんか「左右 mm」で合わせてください。");
+  msg(made.length > 1
+    ? ("センターラインを足しました。コピーで結ばれた " + made.length +
+       " 行ぜんぶに、同じ場所へ足しています。")
+    : "センターラインを足しました。左右の位置は、校正のふうせんか「左右 mm」で合わせてください。");
 }
 
 /* 古いテンプレート・案件は、センターラインに gl（1行ガイドライン番号）を
@@ -3603,8 +3646,24 @@ function unlinkGroup(gi){
   if (c && c.linkTo !== null && c.linkTo !== undefined){
     c.w = cenW(ci); c.linkTo = null;
   }
+  /* この行に「コピーの文字」がもう残っていなければ、行そのものの紐づけも外す（v20.3）。
+     ここを外していなかったので、文字グループが乗っていないセンターラインが
+     行幅を借りたまま残り、メニューに「○ のコピー」の札と つなぎの線が
+     出たままになっていた。 */
+  var k = glKeyOf(g);
+  var still = (S.groups || []).some(function(gr){
+    return glKeyOf(gr) === k && srcGroup(gr);
+  });
+  var freed = 0;
+  if (!still) (S.centers || []).forEach(function(cc, cj){
+    if (glOf(cj) !== k) return;
+    if (cc.linkTo === null || cc.linkTo === undefined) return;
+    cc.w = cenW(cj); cc.linkTo = null; freed++;
+  });
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-  msg("紐づけを解除しました。この文字グループの範囲は［校正］の線をつかんで決められます。");
+  msg(still
+    ? "紐づけを解除しました。この文字グループの範囲は［校正］の線をつかんで決められます。（この行には、まだコピーのままの文字グループが残っています）"
+    : "紐づけを解除しました。この行はコピー元から離れました。範囲も行幅も［校正］の線をつかんで決められます。");
 }
 /* 1行ガイドラインを、中の文字グループごと複製する。
    上端・下端と行幅はコピー元に紐づけ、文字と左右の位置は別に持つ。 */
@@ -4037,6 +4096,15 @@ function renderProps(){
   var rows = layout(), r = rows[sel];
 
   var h = '<h3 class="sec">' + esc(gName(sel, 14)) + '</h3>';
+  /* コピーの案内と［紐づけを解除］は、いちばん上に置く（v20.3）。
+     「文字の大きさ」と「太さ」の間に挟まっていて、太さの設定に見えていた。 */
+  if (srcGroup(g)){
+    h += '<div class="lnkbox">' +
+      '<p class="hint" style="margin:0 0 6px;">コピーした文字グループです。文字の入力範囲（上端・下端）は ' +
+      esc(gName(S.groups.indexOf(srcGroup(g)), 10)) + ' と一緒に動きます。</p>' +
+      '<button class="mini" id="pUnlink" style="width:100%;">' +
+      'この文字グループの紐づけを解除</button></div>';
+  }
   if (FONTS.length){
     h += '<label class="f"><span>フォント</span><select id="pFont">' +
       FONTS.map(function(F, i){ return '<option value="' + i + '"' +
@@ -4060,28 +4128,6 @@ function renderProps(){
     '</div>';
   h += '<button class="mini" id="pSquare" style="width:100%;margin-bottom:10px;">縦を横と同じに</button>';
 
-  if (srcGroup(g)){
-    h += '<p class="hint" style="margin-top:0;">コピーした文字グループです。文字の入力範囲（上端・下端）は ' +
-      esc(gName(S.groups.indexOf(srcGroup(g)), 10)) + ' と一緒に動きます。</p>' +
-      '<button class="mini" id="pUnlink" style="width:100%;margin-bottom:4px;">' +
-      'この文字グループの紐づけを解除</button>';
-  }
-  h += '<button class="mini" id="pMore" style="width:100%;margin-bottom:4px;">' +
-    (showDetail ? '詳細を隠す' : '詳細') + '</button>';
-  if (showDetail){
-    h += '<div class="detail">';
-    h += '<div class="g2">' +
-      '<label class="f"><span>上端 y mm</span><input type="number" id="pTop" value="' + gTop(g) + '" step="1"></label>' +
-      '<label class="f"><span>下端 y mm</span><input type="number" id="pBot" value="' + gBot(g) + '" step="1"></label>' +
-      '</div>';
-    h += '<label class="f"><span>上端下端の基準</span><select id="pAnchor">' +
-      '<option value="ink"' + (g.anchor !== "em" ? " selected" : "") + '>字面（見える墨の端）</option>' +
-      '<option value="em"' + (g.anchor === "em" ? " selected" : "") + '>仮想ボディ（全角枠）</option>' +
-      '</select></label>';
-    h += '<label class="f" style="margin-bottom:0;"><span>左右ずれ mm</span><input type="number" id="pDx" value="' +
-      g.dx + '" step="0.5"></label>';
-    h += '</div>';
-  }
 
   /* 可変軸 */
   var FA = FR(g.fontIdx);
@@ -4156,6 +4202,25 @@ function renderProps(){
   if (miss.length){
     h += '<div class="miss"><b>フォントに無い字があります</b><br>' +
       miss.map(function(m){ return (m.i + 1) + "文字目「" + esc(m.ch) + "」"; }).join("、") + '</div>';
+  }
+
+  /* ［詳細］は、めったに使わないので いちばん下（v20.3） */
+  h += '<h3 class="sec">詳細</h3>';
+  h += '<button class="mini" id="pMore" style="width:100%;margin-bottom:4px;">' +
+    (showDetail ? '詳細を隠す' : '上端・下端・左右ずれを出す') + '</button>';
+  if (showDetail){
+    h += '<div class="detail">';
+    h += '<div class="g2">' +
+      '<label class="f"><span>上端 y mm</span><input type="number" id="pTop" value="' + gTop(g) + '" step="1"></label>' +
+      '<label class="f"><span>下端 y mm</span><input type="number" id="pBot" value="' + gBot(g) + '" step="1"></label>' +
+      '</div>';
+    h += '<label class="f"><span>上端下端の基準</span><select id="pAnchor">' +
+      '<option value="ink"' + (g.anchor !== "em" ? " selected" : "") + '>字面（見える墨の端）</option>' +
+      '<option value="em"' + (g.anchor === "em" ? " selected" : "") + '>仮想ボディ（全角枠）</option>' +
+      '</select></label>';
+    h += '<label class="f" style="margin-bottom:0;"><span>左右ずれ mm</span><input type="number" id="pDx" value="' +
+      g.dx + '" step="0.5"></label>';
+    h += '</div>';
   }
 
   box.innerHTML = h;

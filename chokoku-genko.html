@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.6</title>
+<title>彫刻原稿 v20.7</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1874,7 +1874,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.6";
+var APP_VER = "v20.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6116,6 +6116,36 @@ function padCentersPx(){
   if (r.centersPx.length > n) r.centersPx = r.centersPx.slice(0, n);
   pxSyncLinked();
 }
+/* 拓本の上の位置（画素）を、解析はんいの まん中に かたまりごと 置く（v20.7）。
+   テンプレートの x は、その拓本と何の関係も無い。行どうしの離れ方だけを写して、
+   かたまりごと まん中に置く。あとは拓本を見ながら手で合わせてもらう。
+   ここを「1本目からのシート上の実距離」で出していたので、テンプレートを
+   いまの行の左はしの外へ ずらして 置いた その ずらし量 が そのまま拓本にも乗り、
+   文字側の線と拓本側の線が まったく違う所に出ていた。 */
+function pxPlaceRange(from, to){
+  if (!S.rub) return;
+  if (!Array.isArray(S.rub.centersPx)) S.rub.centersPx = [];
+  var pxs = S.rub.centersPx;
+  while (pxs.length < from) pxs.push(null);
+  var haveImg = (typeof RUB !== "undefined") && RUB.img;
+  var mp = mmPerPx(), i;
+  var bMid = Math.round((num(S.rub.bandL, 0) + num(S.rub.bandR, 0)) / 2);
+  if (haveImg && !(num(S.rub.bandR, 0) > num(S.rub.bandL, 0))) bMid = Math.round(RUB.W / 2);
+  var lo = 1e9, hi = -1e9;
+  for (i = from; i < to; i++){
+    var xv = num((S.centers[i] || {}).x, 0);
+    lo = Math.min(lo, xv); hi = Math.max(hi, xv);
+  }
+  var mid = (lo <= hi) ? (lo + hi) / 2 : 0;
+  for (i = from; i < to; i++){
+    var v = null;
+    if (haveImg && mp) v = Math.round(bMid + (num((S.centers[i] || {}).x, 0) - mid) / mp);
+    else if (haveImg)  v = bMid;
+    if (v !== null && RUB.W > 0) v = Math.max(0, Math.min(RUB.W, v));
+    pxs[i] = v;
+  }
+  pxSyncLinked();
+}
 /* コピーの行の「位置決めライン」（拓本の画素）は、いつも元の行と同じ場所にする（v20.6）。
    拓本に写っているのは元の線だけで、それを手で合わせている。
    コピーがずれた画素を持っていると、合わせたはずの場所からずれて見える。
@@ -7574,6 +7604,10 @@ function tplApply(t){
     S.centers = fillGl(d.centers);
     S.groups  = (d.groups || []).map(function(g){ return Object.assign(mkGroup("1","",60,130,1.15), g); });
     S.bothOff = {};
+    /* 前の行の拓本の位置が残っていると、まったく違う所に線が出る（v20.7）。
+       解析はんいの まん中に置き直して、そこから手で合わせてもらう。 */
+    if (S.rub) S.rub.centersPx = [];
+    pxPlaceRange(0, S.centers.length);
   }
   /* 枠は、テンプレートが持っているときだけ入れかえる。
      持っていないテンプレート（文字だけのもの）で、先に作ってあった枠を
@@ -7673,35 +7707,25 @@ function tplAdd(t){
     S.groups.push(o);
   });
 
-  /* 拓本の上の位置も足しておく。ここを足さないと、拓本解析に
-     線が出ず、位置を直せない。1本目からの実距離で置く。 */
-  if (!Array.isArray(S.rub.centersPx)) S.rub.centersPx = [];
-  while (S.rub.centersPx.length < colBase) S.rub.centersPx.push(null);
-  var pxs = S.rub.centersPx;
-  var mp = mmPerPx(), base = pxs[0];
-  var haveImg = (typeof RUB !== "undefined") && RUB.img;
-  for (var k = colBase; k < S.centers.length; k++){
-    var v = null;
-    if (mp && base !== null && base !== undefined)
-      v = Math.round(base + (num(S.centers[k].x, 0) - num(S.centers[0].x, 0)) / mp);
-    else if (haveImg)
-      v = Math.round((num(S.rub.bandL, 0) + num(S.rub.bandR, 0)) / 2);
-    if (v !== null && haveImg && RUB.W > 0) v = Math.max(0, Math.min(RUB.W, v));
-    pxs[k] = v;
-  }
+  /* 拓本の上の位置も足しておく。ここを足さないと、拓本解析に線が出ず、位置を直せない。 */
+  pxPlaceRange(colBase, S.centers.length);
 
   sel = giBase;
   migrate(); syncOriginY();
   snapToRubTop(S.groups.slice(giBase));   /* 足したぶんだけ 頭 のラインへ */
   renderAll(); rubPanel(); if (view !== "sheet") rubRender();
   setSub("group");
+  /* はみ出しの見張り。MG0・SW0 をどこにも作っていなかったので、
+     テンプレートを足すたびに ここで例外になって、
+     お知らせが出ないまま止まっていた（v20.7 で修正）。 */
+  var MG0 = shMargin(), SW0 = num(S.sheet.w, 90);
   var over = "", nl = 1e9, nr = -1e9;
   nc.forEach(function(c){
     var hw = num(c.w, 0) / 2;
     nl = Math.min(nl, num(c.x, 0) + shift - hw);
     nr = Math.max(nr, num(c.x, 0) + shift + hw);
   });
-  if (nl < MG0.l)          over = "　※ シートの左はしからはみ出しています。位置を直してください。";
+  if (nl < MG0.l)            over = "　※ シートの左はしからはみ出しています。位置を直してください。";
   else if (nr > SW0 - MG0.r) over = "　※ シートの右はしからはみ出しています。位置を直してください。";
   msg("「" + t.name + "」を、1行ガイドライン " + (glBase + 1) + " 以降として足しました。" +
       "ガイドライン " + nc.length + " 本、グループ " + ng.length + " 個。" + over);

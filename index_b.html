@@ -6609,7 +6609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.420';
+var APP_VERSION = 'v1.9.421';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8348,6 +8348,8 @@ function openCustRegModal(d, mode) {
   listEl('crm-src-zip',   nokZip);
   listEl('crm-src-addr',  nokAddr1);
   listEl('crm-src-addr2', nokAddr2);
+  _crm2ShowSame = false;
+  crm2Refresh();
 
   // 追加工事セクション
   var tuiSection = document.getElementById('crm-tui-section');
@@ -8447,6 +8449,7 @@ function openCustRegModal(d, mode) {
     setCrmCur('crm-cur-zip',   f['Zipcode']||'');
     setCrmCur('crm-cur-addr',  f['address_1']||'');
     setCrmCur('crm-cur-addr2', f['address_2']||'');
+    crm2Refresh();          /* 顧客リスト側の いま が入ったので、見え方を作り直す */
     // 彫刻
     // 現在の顧客リスト彫刻内容のみセット（彫刻前状態は納骨リストから取得済み）
     setCrmCur('crm-cur-engrave', f['choukoku']||'');
@@ -8530,6 +8533,17 @@ function closeCustRegModal(){
   document.getElementById('cust-reg-modal').style.display='none';
   _custRegData=null;_custRegMode=null;_custRegCusItem=null;
 }
+/* 工事履歴の次の ID（v1.9.421）。
+   件数＋1 だと、履歴を 1つ消したことがあると番号が重なる。
+   いま使われている いちばん大きい番号の次にする。 */
+function _crmNextLogId(logs){
+  var mx = 0;
+  (logs || []).forEach(function(l){
+    var n = parseInt(l && l['ID'], 10);
+    if (!isNaN(n) && n > mx) mx = n;
+  });
+  return mx + 1;
+}
 function submitCustReg() {
   if (!_custRegCusItem) { alert('顧客情報が読み込まれていません。少し待ってから再試行してください。'); return; }
   var cusId = _custRegData && _custRegData['Cus_ID'] ? parseInt(_custRegData['Cus_ID']) : null;
@@ -8567,7 +8581,7 @@ function submitCustReg() {
     var bikEl  = document.getElementById('crm-f-bikou');
     var existingLogs = [];
     try { existingLogs = JSON.parse(_custRegCusItem['KoujiLogJson']||'[]'); } catch(e){}
-    var newId = existingLogs.length + 1;
+    var newId = _crmNextLogId(existingLogs);
     var mainLog = {
       'ID':      newId,
       '内容':    catEl  ? catEl.value  : '',
@@ -8590,7 +8604,7 @@ function submitCustReg() {
     var tuiDat = document.getElementById('crm-tui-paydate');
     var tuiBik = document.getElementById('crm-tui-bikou');
     var logs2base = fields['KoujiLogJson'] ? JSON.parse(fields['KoujiLogJson']) : (function(){ try{return JSON.parse(_custRegCusItem['KoujiLogJson']||'[]');}catch(e){return[];} })();
-    var tuiId = logs2base.length + 1;
+    var tuiId = _crmNextLogId(logs2base);
     var tuiLog = {
       'ID':      tuiId,
       '内容':    tuiCat ? tuiCat.value : '',
@@ -8704,11 +8718,86 @@ function crmEngraveTab(tab){
 // 基本情報チェックボックスでテキスト入力を有効化
 function crmBasicToggle(chk, inputId) {
   var inp = document.getElementById(inputId);
-  if (!inp) return;
-  inp.disabled = !chk.checked;
-  inp.style.background = chk.checked ? '#fff' : '#f5f5f5';
-  inp.style.color = chk.checked ? '#1a1a1a' : '#999';
+  if (inp) inp.disabled = !chk.checked;
   crmRebuildBikou();
+  crm2Refresh();
+}
+/* 基本情報の更新（v1.9.421）。
+   いま（顧客リスト）と 新しく（工事・納骨） を見くらべて、
+   ・違う → 前に出して緑の縁　・同じ／新しい値が空 → 畳む
+   をやる。ID は前のままなので、保存の仕組み（submitCustReg）は触っていない。 */
+var CRM2_KEYS = [
+  { k:'name',  lbl:'顧客名' },
+  { k:'tel',   lbl:'電話番号' },
+  { k:'zip',   lbl:'郵便番号' },
+  { k:'addr',  lbl:'住所1' },
+  { k:'addr2', lbl:'住所2' }
+];
+var _crm2ShowSame = false;
+function _crm2Val(s){ return String(s == null ? '' : s).replace(/[\s　]+/g, ' ').trim(); }
+function crm2State(k){
+  var cur = document.getElementById('crm-cur-' + k);
+  var src = document.getElementById('crm-src-' + k);
+  var cv = _crm2Val(cur && cur.textContent), sv = _crm2Val(src && src.value);
+  if (!sv) return 'nosrc';          /* 新しい値が無い */
+  if (cv === sv) return 'same';     /* 同じ */
+  return 'chg';                     /* 違う＝判断が要る */
+}
+function crm2Refresh(){
+  var list = document.getElementById('crm2-list');
+  if (!list) return;
+  var nChg = 0, nOn = 0, nHide = 0;
+  CRM2_KEYS.forEach(function(q){
+    var row = document.getElementById('crm2-row-' + q.k);
+    var chk = document.getElementById('crm-chk-' + q.k);
+    var flg = document.getElementById('crm2-flag-' + q.k);
+    var nt  = document.getElementById('crm2-note-' + q.k);
+    if (!row || !chk) return;
+    var st = crm2State(q.k), on = !!chk.checked;
+    row.className = 'crm2-row ' + st + (on ? ' on' : '');
+    if (st === 'chg') nChg++;
+    if (on) nOn++;
+    if (flg) flg.textContent = (st === 'chg') ? '違います'
+                             : (st === 'same') ? '同じです' : '新しい値なし';
+    if (nt){
+      var cur = document.getElementById('crm-cur-' + q.k);
+      var cv = _crm2Val(cur && cur.textContent);
+      nt.textContent = cv ? ('備考に「変更前：' + cv + '」を残します') : '備考には残しません（いまは空）';
+    }
+    /* 変わらない行は畳む。ただし上書きすると決めた行は、畳まずに出しておく。 */
+    var hide = (st !== 'chg') && !on && !_crm2ShowSame;
+    row.style.display = hide ? 'none' : '';
+    if (hide) nHide++;
+  });
+  var sum = document.getElementById('crm2-sum');
+  if (sum) sum.textContent = nOn ? (nOn + ' 件を上書きします')
+                                 : (nChg ? ('違いが ' + nChg + ' 件あります') : '違いはありません');
+  var sb = document.getElementById('crm2-same-btn');
+  if (sb){
+    if (nHide > 0 || _crm2ShowSame){
+      sb.style.display = '';
+      sb.textContent = _crm2ShowSame ? '▲ 変わらない項目を畳む'
+                                     : ('▼ 変わらない項目（' + nHide + '）を見る');
+    } else sb.style.display = 'none';
+  }
+}
+function crm2ToggleSame(){ _crm2ShowSame = !_crm2ShowSame; crm2Refresh(); }
+/* 違う行だけを選ぶ。押すたびに全部入る／全部外れる、ではない。 */
+function crmPickChanged(){
+  CRM2_KEYS.forEach(function(q){
+    var chk = document.getElementById('crm-chk-' + q.k);
+    if (!chk) return;
+    var want = (crm2State(q.k) === 'chg');
+    if (chk.checked !== want){ chk.checked = want; crmBasicToggle(chk, 'crm-src-' + q.k); }
+  });
+  crmRebuildBikou(); crm2Refresh();
+}
+function crmPickNone(){
+  CRM2_KEYS.forEach(function(q){
+    var chk = document.getElementById('crm-chk-' + q.k);
+    if (chk && chk.checked){ chk.checked = false; crmBasicToggle(chk, 'crm-src-' + q.k); }
+  });
+  crmRebuildBikou(); crm2Refresh();
 }
 // 備考を1行にまとめて再構築
 function crmRebuildBikou() {
@@ -27859,6 +27948,31 @@ function openImageViewer(imgs, startIdx) {
 .crm-val-auto{background:#fffbe6;border:0.5px solid #f0c000;border-radius:4px;padding:5px 8px}
 .crm-val-auto .crm-lbl{font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px}
 .crm-val-auto .crm-v{font-size:12px;color:#1a1a1a}
+/* 基本情報の更新（v1.9.421）。いま／新しく を上下に並べて、まるごと読めるようにする。 */
+.crm2-row{border:1px solid #e2e2e2;border-left:4px solid #e2e2e2;border-radius:6px;
+  padding:7px 10px;margin-bottom:6px;background:#fafafa}
+.crm2-row.chg{border-color:#bfe0bf;border-left-color:#1a5a1a;background:#f4faf4}
+.crm2-row.on{border-color:#1a5a1a;border-left-color:#1a5a1a;background:#eef7ee}
+.crm2-row.same,.crm2-row.nosrc{background:#f7f7f7}
+.crm2-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.crm2-lbl{font-size:12.5px;font-weight:700;color:#1a2535}
+.crm2-flag{font-size:10px;color:#999}
+.crm2-row.chg .crm2-flag{color:#1a5a1a;font-weight:700}
+.crm2-sw{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11.5px;color:#555;
+  cursor:pointer;padding:2px 8px 2px 4px;border:1px solid #d5d5d5;border-radius:14px;background:#fff;
+  white-space:nowrap;flex-shrink:0}
+.crm2-sw input{width:15px;height:15px;accent-color:#1a5a1a;margin:0;cursor:pointer}
+.crm2-row.on .crm2-sw{border-color:#1a5a1a;background:#1a5a1a;color:#fff;font-weight:700}
+.crm2-line{display:flex;align-items:center;gap:7px;margin-top:3px}
+.crm2-k{flex:0 0 34px;font-size:10px;color:#999;text-align:right}
+.crm2-cur{flex:1;min-width:0;font-size:12.5px;color:#555;word-break:break-all;line-height:1.5}
+.crm2-cur:empty::before{content:'（空）';color:#bbb}
+.crm2-inp{flex:1;min-width:0;font-size:12.5px;padding:5px 8px;border:1px solid #ccc;border-radius:5px;
+  font-family:inherit;background:#f2f2f2;color:#999}
+.crm2-inp:enabled{background:#fff;color:#1a1a1a;border-color:#1a5a1a;font-weight:600}
+.crm2-src{flex:0 0 auto;font-size:9.5px;color:#aaa}
+.crm2-note{font-size:10px;color:#1a5a1a;margin-top:4px;padding-left:41px;display:none}
+.crm2-row.on .crm2-note{display:block}
 </style>
 <div id="cust-reg-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:900;overflow-y:auto;padding:16px 8px;align-items:flex-start;justify-content:center">
 <div style="background:#fff;max-width:560px;width:100%;margin:0 auto;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column">
@@ -27875,64 +27989,76 @@ function openImageViewer(imgs, startIdx) {
       <div style="margin-top:5px"><span id="crm-source" style="font-size:11px;padding:2px 10px;background:#1a5a1a;color:#fff;border-radius:10px"></span></div>
     </div>
 
-    <!-- 基本情報の更新 -->
+    <!-- 基本情報の更新（v1.9.421 で作り直し）
+         1行に 6つ詰め込んでいたのをやめ、「いま／新しく」を上下に並べる。
+         同じ値・新しい値が空の行は畳んでおき、変わる行だけを前に出す。 -->
     <div style="margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;background:#1a5a1a;padding:4px 10px;border-radius:3px;margin-bottom:4px">
-        <span style="font-size:11px;font-weight:500;color:#fff">基本情報の更新</span>
-        <span onclick="crmCheckAll('crm-basic-chk')" style="font-size:10px;color:#cfe;cursor:pointer;text-decoration:underline">全て選択</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;background:#1a5a1a;padding:5px 10px;border-radius:4px;margin-bottom:6px">
+        <span style="font-size:12px;font-weight:600;color:#fff">基本情報の更新</span>
+        <span id="crm2-sum" style="font-size:11px;color:#cfe"></span>
       </div>
-      <div style="font-size:10px;color:#888;padding:3px 8px;margin-bottom:5px">
-        チェックした項目を上書き。変更前の値は備考に自動記録します。
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <button type="button" onclick="crmPickChanged()" style="padding:5px 12px;font-size:11.5px;background:#1a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600">違うものを全部えらぶ</button>
+        <button type="button" onclick="crmPickNone()" style="padding:5px 12px;font-size:11.5px;background:#eee;color:#555;border:none;border-radius:6px;cursor:pointer;font-family:inherit">えらびを外す</button>
+        <span style="font-size:10.5px;color:#888;margin-left:auto">変更前の値は備考に残します</span>
       </div>
-      <!-- 顧客名 -->
-      <div class="crm-row">
-        <span style="min-width:60px;flex-shrink:0">顧客名</span>
-        <span class="crm-badge">現顧客リスト</span>
-        <span id="crm-cur-name" class="crm-cur"></span>
-        <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-name" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-name')">
-        <input id="crm-src-name" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
+      <div id="crm2-list">
+      <div class="crm2-row" id="crm2-row-name" data-k="name">
+        <div class="crm2-head">
+          <span class="crm2-lbl">顧客名</span>
+          <span class="crm2-flag" id="crm2-flag-name"></span>
+          <label class="crm2-sw"><input type="checkbox" id="crm-chk-name" class="crm-basic-chk" data-cur="" onchange="crmBasicToggle(this,'crm-src-name')"><span>上書きする</span></label>
+        </div>
+        <div class="crm2-line"><span class="crm2-k">いま</span><span class="crm2-cur" id="crm-cur-name"></span></div>
+        <div class="crm2-line"><span class="crm2-k">新しく</span><input id="crm-src-name" type="text" class="crm-src-inp crm2-inp" disabled oninput="crm2Refresh()" placeholder="工事・納骨から"><span class="crm2-src">工事・納骨から</span></div>
+        <div class="crm2-note" id="crm2-note-name"></div>
       </div>
-      <!-- 電話番号 -->
-      <div class="crm-row">
-        <span style="min-width:60px;flex-shrink:0">電話番号</span>
-        <span class="crm-badge">現顧客リスト</span>
-        <span id="crm-cur-tel" class="crm-cur"></span>
-        <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-tel" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-tel')">
-        <input id="crm-src-tel" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
+      <div class="crm2-row" id="crm2-row-tel" data-k="tel">
+        <div class="crm2-head">
+          <span class="crm2-lbl">電話番号</span>
+          <span class="crm2-flag" id="crm2-flag-tel"></span>
+          <label class="crm2-sw"><input type="checkbox" id="crm-chk-tel" class="crm-basic-chk" data-cur="" onchange="crmBasicToggle(this,'crm-src-tel')"><span>上書きする</span></label>
+        </div>
+        <div class="crm2-line"><span class="crm2-k">いま</span><span class="crm2-cur" id="crm-cur-tel"></span></div>
+        <div class="crm2-line"><span class="crm2-k">新しく</span><input id="crm-src-tel" type="text" class="crm-src-inp crm2-inp" disabled oninput="crm2Refresh()" placeholder="工事・納骨から"><span class="crm2-src">工事・納骨から</span></div>
+        <div class="crm2-note" id="crm2-note-tel"></div>
       </div>
-      <!-- 郵便番号 -->
-      <div class="crm-row">
-        <span style="min-width:60px;flex-shrink:0">郵便番号</span>
-        <span class="crm-badge">現顧客リスト</span>
-        <span id="crm-cur-zip" class="crm-cur"></span>
-        <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-zip" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-zip')">
-        <input id="crm-src-zip" type="text" class="crm-src-inp" disabled placeholder="工事/納骨リストから">
+      <div class="crm2-row" id="crm2-row-zip" data-k="zip">
+        <div class="crm2-head">
+          <span class="crm2-lbl">郵便番号</span>
+          <span class="crm2-flag" id="crm2-flag-zip"></span>
+          <label class="crm2-sw"><input type="checkbox" id="crm-chk-zip" class="crm-basic-chk" data-cur="" onchange="crmBasicToggle(this,'crm-src-zip')"><span>上書きする</span></label>
+        </div>
+        <div class="crm2-line"><span class="crm2-k">いま</span><span class="crm2-cur" id="crm-cur-zip"></span></div>
+        <div class="crm2-line"><span class="crm2-k">新しく</span><input id="crm-src-zip" type="text" class="crm-src-inp crm2-inp" disabled oninput="crm2Refresh()" placeholder="工事・納骨から"><span class="crm2-src">工事・納骨から</span></div>
+        <div class="crm2-note" id="crm2-note-zip"></div>
       </div>
-      <!-- 住所1 -->
-      <div class="crm-row">
-        <span style="min-width:60px;flex-shrink:0">住所1</span>
-        <span class="crm-badge">現顧客リスト</span>
-        <span id="crm-cur-addr" class="crm-cur"></span>
-        <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-addr" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-addr')">
-        <input id="crm-src-addr" type="text" class="crm-src-inp" disabled placeholder="入力">
+      <div class="crm2-row" id="crm2-row-addr" data-k="addr">
+        <div class="crm2-head">
+          <span class="crm2-lbl">住所1</span>
+          <span class="crm2-flag" id="crm2-flag-addr"></span>
+          <label class="crm2-sw"><input type="checkbox" id="crm-chk-addr" class="crm-basic-chk" data-cur="" onchange="crmBasicToggle(this,'crm-src-addr')"><span>上書きする</span></label>
+        </div>
+        <div class="crm2-line"><span class="crm2-k">いま</span><span class="crm2-cur" id="crm-cur-addr"></span></div>
+        <div class="crm2-line"><span class="crm2-k">新しく</span><input id="crm-src-addr" type="text" class="crm-src-inp crm2-inp" disabled oninput="crm2Refresh()" placeholder="入力"><span class="crm2-src">手で入力</span></div>
+        <div class="crm2-note" id="crm2-note-addr"></div>
       </div>
-      <!-- 住所2 -->
-      <div class="crm-row">
-        <span style="min-width:60px;flex-shrink:0">住所2</span>
-        <span class="crm-badge">現顧客リスト</span>
-        <span id="crm-cur-addr2" class="crm-cur"></span>
-        <span style="color:#aaa;font-size:11px">→</span>
-        <input type="checkbox" id="crm-chk-addr2" class="crm-basic-chk" data-cur="" style="width:15px;height:15px;accent-color:#1a5a1a;flex-shrink:0" onchange="crmBasicToggle(this,'crm-src-addr2')">
-        <input id="crm-src-addr2" type="text" class="crm-src-inp" disabled placeholder="入力">
+      <div class="crm2-row" id="crm2-row-addr2" data-k="addr2">
+        <div class="crm2-head">
+          <span class="crm2-lbl">住所2</span>
+          <span class="crm2-flag" id="crm2-flag-addr2"></span>
+          <label class="crm2-sw"><input type="checkbox" id="crm-chk-addr2" class="crm-basic-chk" data-cur="" onchange="crmBasicToggle(this,'crm-src-addr2')"><span>上書きする</span></label>
+        </div>
+        <div class="crm2-line"><span class="crm2-k">いま</span><span class="crm2-cur" id="crm-cur-addr2"></span></div>
+        <div class="crm2-line"><span class="crm2-k">新しく</span><input id="crm-src-addr2" type="text" class="crm-src-inp crm2-inp" disabled oninput="crm2Refresh()" placeholder="入力"><span class="crm2-src">手で入力</span></div>
+        <div class="crm2-note" id="crm2-note-addr2"></div>
       </div>
+      </div>
+      <button type="button" id="crm2-same-btn" onclick="crm2ToggleSame()" style="display:none;width:100%;margin-top:2px;padding:6px;font-size:11.5px;background:#f2f2f2;color:#666;border:1px dashed #d0d0d0;border-radius:6px;cursor:pointer;font-family:inherit"></button>
       <!-- 備考 -->
-      <div style="margin-top:5px">
-        <div style="font-size:10px;color:#185fa5;font-weight:500;margin-bottom:3px">備考（変更履歴が自動入力されます）</div>
-        <textarea id="crm-basic-bikou" rows="2" style="width:100%;font-size:11px;padding:5px 8px;border:0.5px solid #ccc;border-radius:4px;resize:vertical;font-family:inherit;color:#555"></textarea>
+      <div style="margin-top:8px">
+        <div style="font-size:10.5px;color:#185fa5;font-weight:600;margin-bottom:3px">備考（変更履歴が自動で入ります）</div>
+        <textarea id="crm-basic-bikou" rows="2" style="width:100%;font-size:11.5px;padding:6px 8px;border:0.5px solid #ccc;border-radius:5px;resize:vertical;font-family:inherit;color:#555"></textarea>
       </div>
     </div>
 

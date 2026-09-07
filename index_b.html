@@ -6609,7 +6609,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.421';
+var APP_VERSION = 'v1.9.422';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8349,6 +8349,14 @@ function openCustRegModal(d, mode) {
   listEl('crm-src-addr',  nokAddr1);
   listEl('crm-src-addr2', nokAddr2);
   _crm2ShowSame = false;
+  crm3Lock();          /* 自動で入る 3つは、はじめは読むだけ（v1.9.422） */
+  /* 前に開いたときの「登録不要」が残らないよう、開くたびに外しておく（v1.9.422） */
+  ['crm-skip-main','crm-skip-tui'].forEach(function(id){
+    var c = document.getElementById(id); if (c) c.checked = false;
+  });
+  var dw0 = document.getElementById('crm-dup-warn'); if (dw0) dw0.classList.remove('on');
+  var tw0 = document.getElementById('crm-tui-dup-warn'); if (tw0) tw0.style.display = 'none';
+  crm3SkipTog(false);
   crm2Refresh();
 
   // 追加工事セクション
@@ -8494,23 +8502,29 @@ function openCustRegModal(d, mode) {
     var logDiv = document.getElementById('crm-existing-log');
     if (logDiv) {
       if (existingLogs.length > 0) {
-        logDiv.innerHTML = '<div style="font-size:10px;color:#888;margin-bottom:4px">登録済み '+existingLogs.length+'件</div>' +
-          existingLogs.slice(-3).map(function(l){
-            return '<div style="font-size:11px;padding:4px 6px;background:#f5f5f5;border-radius:3px;margin-bottom:3px;color:#555">' +
-              '<div>' + (l['時期']||'―') + '　' + (l['内容']||'―') + '　' + (l['決済金額']||'―') + '</div>' +
-              (l['備考'] ? '<div style="font-size:10px;color:#888;margin-top:1px">備考：' + l['備考'] + '</div>' : '') +
-            '</div>';
-          }).join('');
+        /* v1.9.422：入力欄と同じ 時期／内容／決済金額 の並びで出す。
+           重複している行だけ赤くして「同じ」の札を付ける。 */
+        logDiv.innerHTML = existingLogs.slice(-3).map(function(l){
+            var same = (l['内容']===category && l['時期']===payDateWareki);
+            return '<div class="crm3-log' + (same ? ' same' : '') + '">' +
+              '<span class="crm3-d">' + _esc(l['時期']||'―') + '</span>' +
+              '<span class="crm3-c">' + _esc(l['内容']||'―') + '</span>' +
+              (same ? '<span class="crm3-tag">同じ</span>' : '') +
+              '<span class="crm3-m">' + _esc(l['決済金額']||'―') + '</span>' +
+            '</div>' +
+            (l['備考'] ? '<div class="crm3-bik">備考：' + _esc(l['備考']) + '</div>' : '');
+          }).join('') +
+          '<div class="crm3-cap" style="margin-top:2px">登録済み ' + existingLogs.length + ' 件</div>';
         // 重複チェック → 重複時は登録不要を自動チェック
         var isDup = existingLogs.some(function(l){ return l['内容']===category && l['時期']===payDateWareki; });
         var dupWarn = document.getElementById('crm-dup-warn');
-        if (dupWarn) dupWarn.style.display = isDup ? '' : 'none';
-        if (isDup) {
-          var skipMainChk = document.getElementById('crm-skip-main');
-          if (skipMainChk) skipMainChk.checked = true;
-        }
+        if (dupWarn) dupWarn.classList.toggle('on', isDup);
+        var skipMainChk = document.getElementById('crm-skip-main');
+        if (skipMainChk && isDup) skipMainChk.checked = true;
+        crm3SkipTog(isDup);
       } else {
         logDiv.innerHTML = '<div style="font-size:11px;color:#aaa">履歴なし</div>';
+        crm3SkipTog(false);
       }
     }
     // 追加工事の重複チェック
@@ -8548,7 +8562,6 @@ function submitCustReg() {
   if (!_custRegCusItem) { alert('顧客情報が読み込まれていません。少し待ってから再試行してください。'); return; }
   var cusId = _custRegData && _custRegData['Cus_ID'] ? parseInt(_custRegData['Cus_ID']) : null;
   if (!cusId) { alert('顧客IDが不明です'); return; }
-  if (!confirm('顧客リストに登録します。よろしいですか？')) return;
 
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   var listId = '29524f89-0370-44ea-8d01-161f34e5a1ab';
@@ -8673,8 +8686,11 @@ function submitCustReg() {
   });
 
   // ---- PATCHで送信 → 完了後に添付コピー ----
-  var btn = document.querySelector('#cust-reg-modal button[onclick="submitCustReg()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ 登録中...'; }
+  var btn = document.getElementById('crm-submit-btn');
+  var btnT = document.getElementById('crm-go-t');
+  var btnBack = function(){ if (btn) btn.disabled = false; if (btnT) btnT.textContent = '✅ 顧客リストに登録'; };
+  if (btn) btn.disabled = true;
+  if (btnT) btnT.textContent = '⏳ 登録中...';
 
 
   getToken().then(function(resp) {
@@ -8683,7 +8699,7 @@ function submitCustReg() {
         body: JSON.stringify(fields) });
   })
   .then(function(r) {
-    if (btn) { btn.disabled = false; btn.textContent = '✅ 顧客リストに登録'; }
+    btnBack();
     if (r.ok) {
       showSaveToast(true, '顧客リストに登録しました');
       closeCustRegModal();
@@ -8692,7 +8708,7 @@ function submitCustReg() {
     }
   })
   .catch(function(e) {
-    if (btn) { btn.disabled = false; btn.textContent = '✅ 顧客リストに登録'; }
+    btnBack();
     showSaveToast(false, 'ネットワークエラー: ' + e.message);
   });
 }
@@ -8780,8 +8796,104 @@ function crm2Refresh(){
                                      : ('▼ 変わらない項目（' + nHide + '）を見る');
     } else sb.style.display = 'none';
   }
+  crmGoText();
 }
 function crm2ToggleSame(){ _crm2ShowSame = !_crm2ShowSame; crm2Refresh(); }
+/* ───── 工事履歴に追加（本体）まわり（v1.9.422）───── */
+function _esc(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+var CRM3_AUTO = ['crm-f-paydate','crm-f-money','crm-f-iraisha'];
+/* 時期・決済金額・依頼主は、この工事から自動で入る値。
+   うっかり書きかえないよう、はじめは読むだけにしておく。 */
+function crm3Lock(){
+  CRM3_AUTO.forEach(function(id){
+    var e = document.getElementById(id);
+    if (e){ e.readOnly = true; e.classList.add('crm3-ro'); }
+  });
+  var b = document.getElementById('crm-fix-btn');
+  if (b) b.style.display = '';
+  var t = document.getElementById('crm-fix-tx');
+  if (t) t.textContent = '時期・決済金額・依頼主は、この工事から自動で入ります';
+}
+function crm3Unlock(){
+  CRM3_AUTO.forEach(function(id){
+    var e = document.getElementById(id);
+    if (e){ e.readOnly = false; e.classList.remove('crm3-ro'); }
+  });
+  var b = document.getElementById('crm-fix-btn');
+  if (b) b.style.display = 'none';
+  var t = document.getElementById('crm-fix-tx');
+  if (t) t.textContent = '手で直せます';
+  var f = document.getElementById('crm-f-paydate');
+  if (f) f.focus();
+}
+/* 「この履歴は登録不要」の見え方。重複で自動チェックが入ったことを文にも出す。 */
+function crm3SkipTog(autoDup){
+  var chk = document.getElementById('crm-skip-main');
+  var box = document.getElementById('crm-skip-box');
+  var tx  = document.getElementById('crm-skip-tx');
+  var on  = !!(chk && chk.checked);
+  if (box) box.classList.toggle('on', on);
+  if (tx)  tx.textContent = (on && autoDup) ? 'この履歴は登録不要（重複のため自動で入れました）'
+                                            : 'この履歴は登録不要';
+  crmGoText();
+}
+/* 登録ボタンに、何件入るのかを出す。 */
+function _crm3HistOn(){
+  var chk = document.getElementById('crm-skip-main');
+  return !(chk && chk.checked);
+}
+function _crm3TuiOn(){
+  var sec = document.getElementById('crm-tui-section');
+  if (!sec || sec.style.display === 'none') return false;
+  var chk = document.getElementById('crm-skip-tui');
+  return !(chk && chk.checked);
+}
+function crmGoText(){
+  var sub = document.getElementById('crm-go-sub');
+  if (!sub) return;
+  var nBasic = document.querySelectorAll('#crm2-list .crm-basic-chk:checked').length;
+  var nHist  = (_crm3HistOn() ? 1 : 0) + (_crm3TuiOn() ? 1 : 0);
+  sub.textContent = '基本情報 ' + nBasic + ' 件を上書き・' +
+    (nHist ? ('履歴 ' + nHist + ' 件を追加') : '履歴は登録しません');
+}
+/* 押す前に、入る中身を並べて出す（v1.9.422）。 */
+function crmOpenSheet(){
+  var h = '', on = 0;
+  CRM2_KEYS.forEach(function(q){
+    var chk = document.getElementById('crm-chk-' + q.k);
+    if (!chk || !chk.checked) return;
+    on++;
+    var cur = document.getElementById('crm-cur-' + q.k);
+    var src = document.getElementById('crm-src-' + q.k);
+    h += '<div class="crm-ck"><span class="mk">✓</span><span class="tx"><b>' + _esc(q.lbl) + '</b>　<i>' +
+      _esc((cur && cur.textContent) || '（空）') + '</i> → ' + _esc(src && src.value) + '</span></div>';
+  });
+  if (!on) h += '<div class="crm-ck no"><span class="mk">—</span><span class="tx">基本情報は変えません</span></div>';
+  var v = function(id){ var e = document.getElementById(id); return _esc(e && e.value); };
+  h += _crm3HistOn()
+    ? '<div class="crm-ck"><span class="mk">＋</span><span class="tx"><b>工事履歴</b>　' +
+        v('crm-f-paydate') + '　' + v('crm-f-category') + '　' + v('crm-f-money') + ' 千円</span></div>'
+    : '<div class="crm-ck no"><span class="mk">—</span><span class="tx">工事履歴は登録しません</span></div>';
+  var sec = document.getElementById('crm-tui-section');
+  if (sec && sec.style.display !== 'none'){
+    h += _crm3TuiOn()
+      ? '<div class="crm-ck"><span class="mk">＋</span><span class="tx"><b>工事履歴（追加工事）</b>　' +
+          v('crm-tui-paydate') + '　' + v('crm-tui-content') + '　' + v('crm-tui-money') + ' 千円</span></div>'
+      : '<div class="crm-ck no"><span class="mk">—</span><span class="tx">追加工事の履歴は登録しません</span></div>';
+  }
+  if (on) h += '<div class="crm-ck"><span class="mk">📝</span><span class="tx">備考に変更前の値を書き足します</span></div>';
+  var list = document.getElementById('crm-sheet-list');
+  if (list) list.innerHTML = h;
+  var sh = document.getElementById('crm-sheet');
+  if (sh) sh.classList.add('on');
+}
+function crmCloseSheet(){
+  var sh = document.getElementById('crm-sheet');
+  if (sh) sh.classList.remove('on');
+}
 /* 違う行だけを選ぶ。押すたびに全部入る／全部外れる、ではない。 */
 function crmPickChanged(){
   CRM2_KEYS.forEach(function(q){
@@ -27973,6 +28085,67 @@ function openImageViewer(imgs, startIdx) {
 .crm2-src{flex:0 0 auto;font-size:9.5px;color:#aaa}
 .crm2-note{font-size:10px;color:#1a5a1a;margin-top:4px;padding-left:41px;display:none}
 .crm2-row.on .crm2-note{display:block}
+/* 工事履歴に追加（v1.9.422）。
+   登録済みの履歴と「今回ここに足す 1件」を、同じ並び・同じ列幅で縦に揃える。
+   打てるのは 内容 と 備考 だけ。時期・決済金額・依頼主は［✎ 直す］で開く。 */
+.crm3-cap{font-size:10px;color:#888;margin-bottom:4px}
+.crm3-cap.n{margin-top:9px}
+.crm3-hdr{display:flex;gap:8px;font-size:9.5px;color:#8a7000;font-weight:700;padding:0 8px 3px}
+.crm3-log{font-size:11px;padding:5px 8px;background:#f6f6f6;border:1px solid #ececec;border-radius:4px;
+  margin-bottom:4px;color:#555;display:flex;gap:8px;align-items:baseline}
+.crm3-d{flex:0 0 76px;color:#777;font-variant-numeric:tabular-nums}
+.crm3-c{flex:1;min-width:0;word-break:break-all}
+.crm3-m{flex:0 0 96px;text-align:right;font-variant-numeric:tabular-nums;color:#666}
+.crm3-log.same{background:#fdeceb;border-color:#f2c4c0;color:#7a1f1a}
+.crm3-log.same .crm3-d,.crm3-log.same .crm3-m{color:#a33}
+.crm3-tag{font-size:9.5px;background:#c0322b;color:#fff;border-radius:3px;padding:1px 5px;flex:0 0 auto}
+.crm3-bik{font-size:10px;color:#888;margin-top:2px;padding-left:84px}
+.crm3-log.new{background:#fffdf3;border-color:#f0c000;border-left:3px solid #f0c000;align-items:center;padding:6px 8px 6px 6px}
+.crm3-log.new input{width:100%;font-size:12px;padding:4px 6px;border:1px solid #f0c000;border-radius:4px;
+  font-family:inherit;background:#fffbe6;color:#1a1a1a}
+.crm3-log.new .crm3-m{display:flex;align-items:center;gap:4px}
+.crm3-log.new .crm3-m input{text-align:right;font-variant-numeric:tabular-nums}
+.crm3-unit{flex:0 0 auto;font-size:10px;color:#8a7000;font-weight:700}
+.crm3-inp{width:100%;font-size:12px;padding:4px 6px;border:1px solid #f0c000;border-radius:4px;
+  font-family:inherit;background:#fffbe6;color:#1a1a1a}
+input.crm3-ro{background:#f4f4f4;border-color:#e0e0e0;color:#666;cursor:default}
+.crm3-fix{display:flex;align-items:center;gap:8px;margin:5px 0 8px;font-size:10.5px;color:#999}
+.crm3-fixbtn{border:1px solid #d5d5d5;background:#fff;color:#555;border-radius:13px;padding:3px 11px;
+  font-size:11px;font-family:inherit;cursor:pointer}
+.crm3-fixbtn:hover{border-color:#8a7000;color:#8a7000}
+.crm3-dup{display:none;gap:8px;align-items:flex-start;font-size:11.5px;color:#7a1f1a;background:#fdeceb;
+  border:1px solid #f2c4c0;border-left:4px solid #c0322b;border-radius:6px;padding:8px 10px;margin-bottom:8px}
+.crm3-dup.on{display:flex}
+.crm3-dup b{color:#c0322b;display:block;font-size:12.5px;margin-bottom:2px}
+.crm3-dup b.i{display:inline;font-size:inherit;margin:0}
+.crm3-skip{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;margin-bottom:8px;
+  border:1px solid #e0e0e0;background:#f4f4f4;font-size:12px;color:#555;cursor:pointer}
+.crm3-skip.on{border-color:#c0322b;background:#fdeceb;color:#7a1f1a;font-weight:700}
+.crm3-skip input{width:15px;height:15px;accent-color:#c0322b;margin:0}
+/* 登録ボタン・確認シート（v1.9.422） */
+.crm-go{flex:2;padding:9px 12px;background:#1a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;
+  font-family:inherit;text-align:left;display:flex;align-items:center;gap:8px}
+.crm-go .t{font-size:13px;font-weight:600;display:block}
+.crm-go .s{font-size:10.5px;opacity:.85;display:block;font-weight:400}
+.crm-go .ar{margin-left:auto;font-size:15px}
+#crm-sheet{display:none;position:fixed;inset:0;background:rgba(20,26,34,.45);z-index:960;
+  align-items:flex-end;justify-content:center;padding:0 8px}
+#crm-sheet.on{display:flex}
+.crm-sheet-in{background:#fff;width:100%;max-width:560px;border-radius:12px 12px 0 0;padding:14px 14px 16px;
+  box-shadow:0 -8px 30px rgba(0,0,0,.25);max-height:80vh;overflow-y:auto}
+.crm-sheet-in h4{margin:0 0 2px;font-size:14px;color:#1a2535}
+.crm-sheet-in .sub{font-size:11px;color:#888;margin-bottom:10px}
+.crm-ck{display:flex;gap:8px;font-size:12px;padding:6px 0;border-top:1px solid #eee;align-items:baseline}
+.crm-ck:first-of-type{border-top:none}
+.crm-ck .mk{flex:0 0 18px;text-align:center}
+.crm-ck .tx{flex:1;min-width:0;word-break:break-all}
+.crm-ck .tx b{font-weight:700;color:#1a2535}
+.crm-ck .tx i{font-style:normal;color:#888}
+.crm-ck.no .tx{color:#999}
+.crm-sheet-btns{display:flex;gap:8px;margin-top:12px}
+.crm-sheet-btns button{flex:1;padding:10px;border:none;border-radius:8px;font-family:inherit;font-size:13px;cursor:pointer}
+.crm-sheet-btns .c{background:#eee;color:#555}
+.crm-sheet-btns .o{background:#1a5a1a;color:#fff;font-weight:700}
 </style>
 <div id="cust-reg-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:900;overflow-y:auto;padding:16px 8px;align-items:flex-start;justify-content:center">
 <div style="background:#fff;max-width:560px;width:100%;margin:0 auto;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column">
@@ -28066,31 +28239,41 @@ function openImageViewer(imgs, startIdx) {
     <div style="margin-bottom:10px">
       <div style="background:#8a4a00;padding:4px 10px;border-radius:3px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
         <span style="font-size:11px;font-weight:500;color:#fff">工事履歴に追加（本体）</span>
-        <span style="font-size:10px;background:#e8f4ff;color:#185fa5;border-radius:10px;padding:1px 7px">自動取得・手動修正可</span>
+        <span style="font-size:10px;background:#e8f4ff;color:#185fa5;border-radius:10px;padding:1px 7px">時期・金額・依頼主は自動</span>
+      </div>
+      <!-- 重複のお知らせ（v1.9.422：何が起きるかを書く） -->
+      <div id="crm-dup-warn" class="crm3-dup">
+        <span>⚠️</span>
+        <div><b>同じ履歴がすでにあります</b>
+          重複するので、この履歴は<b class="i">登録しません</b>。それでも登録するなら、下のチェックを外してください。</div>
       </div>
       <!-- 登録不要チェック -->
-      <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#f0f0f0;border-radius:5px;margin-bottom:6px">
-        <input type="checkbox" id="crm-skip-main" style="width:15px;height:15px;accent-color:#c00">
-        <label for="crm-skip-main" style="font-size:12px;color:#555;cursor:pointer">この履歴は登録不要</label>
-      </div>
-      <!-- 既存履歴 -->
+      <label class="crm3-skip" id="crm-skip-box">
+        <input type="checkbox" id="crm-skip-main" onchange="crm3SkipTog()">
+        <span id="crm-skip-tx">この履歴は登録不要</span>
+      </label>
+      <!-- 既存履歴 ＋ 今回ここに足す 1件（同じ並び・同じ列幅） -->
       <div style="margin-bottom:6px">
-        <div style="font-size:10px;color:#888;margin-bottom:3px">▼ 顧客リスト登録済み履歴（直近3件）</div>
+        <div class="crm3-cap">▼ 顧客リスト登録済み履歴（直近3件）</div>
+        <div class="crm3-hdr"><span class="crm3-d">時期</span><span class="crm3-c">内容</span><span class="crm3-m">決済金額</span></div>
         <div id="crm-existing-log" style="font-size:11px;color:#aaa;padding:4px 0">読み込み中...</div>
+        <div class="crm3-cap n">▼ 今回ここに足す 1 件</div>
+        <div class="crm3-log new">
+          <span class="crm3-d"><input id="crm-f-paydate" type="text" class="crm3-ro" readonly></span>
+          <span class="crm3-c"><input id="crm-f-category" type="text"></span>
+          <span class="crm3-m"><input id="crm-f-money" type="text" class="crm3-ro" readonly><span class="crm3-unit">千円</span></span>
+        </div>
       </div>
-      <div id="crm-dup-warn" style="display:none;font-size:11px;color:#c00;background:#fee;border:0.5px solid #fcc;border-radius:4px;padding:5px 8px;margin-bottom:6px">
-        ⚠️ 同じ内容・日付の工事履歴が既に存在します。登録すると重複します。
-      </div>
-      <!-- 入力フィールド（全て手動修正可） -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px">
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">内容</div><input id="crm-f-category" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">依頼主</div><input id="crm-f-iraisha" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">決済金額（千円単位・小数点2位まで）</div><input id="crm-f-money" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
-        <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">入金日（和暦）</div><input id="crm-f-paydate" type="text" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #f0c000;border-radius:3px;font-family:inherit;background:#fffbe6"></div>
+      <div class="crm3-fix">
+        <span id="crm-fix-tx">時期・決済金額・依頼主は、この工事から自動で入ります</span>
+        <button type="button" class="crm3-fixbtn" id="crm-fix-btn" onclick="crm3Unlock()">✎ 直す</button>
       </div>
       <!-- 備考（納骨・戒切の場合は自動組み立て） -->
       <div><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">備考</div>
         <input id="crm-f-bikou" type="text" placeholder="任意入力" style="width:100%;font-size:12px;padding:4px 6px;border:0.5px solid #ccc;border-radius:3px;font-family:inherit">
+      </div>
+      <div style="margin-top:5px"><div style="font-size:9px;color:#185fa5;font-weight:500;margin-bottom:2px">依頼主</div>
+        <input id="crm-f-iraisha" type="text" class="crm3-inp crm3-ro" readonly>
       </div>
     </div>
 
@@ -28102,7 +28285,7 @@ function openImageViewer(imgs, startIdx) {
       </div>
       <!-- 登録不要チェック -->
       <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#f0f0f0;border-radius:5px;margin-bottom:6px">
-        <input type="checkbox" id="crm-skip-tui" style="width:15px;height:15px;accent-color:#c00">
+        <input type="checkbox" id="crm-skip-tui" style="width:15px;height:15px;accent-color:#c00" onchange="crmGoText()">
         <label for="crm-skip-tui" style="font-size:12px;color:#555;cursor:pointer">この履歴は登録不要</label>
       </div>
       <div id="crm-tui-dup-warn" style="display:none;font-size:11px;color:#c00;background:#fee;border:0.5px solid #fcc;border-radius:4px;padding:5px 8px;margin-bottom:6px">
@@ -28391,7 +28574,22 @@ function openImageViewer(imgs, startIdx) {
   <!-- フッター -->
   <div style="padding:10px 14px;border-top:1px solid #eee;flex-shrink:0;display:flex;gap:8px">
     <button onclick="closeCustRegModal()" style="flex:1;padding:11px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px">キャンセル</button>
-    <button onclick="submitCustReg()" style="flex:2;padding:11px;background:#1a5a1a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500">✅ 顧客リストに登録</button>
+    <button id="crm-submit-btn" class="crm-go" onclick="crmOpenSheet()">
+      <span><span class="t" id="crm-go-t">✅ 顧客リストに登録</span><span class="s" id="crm-go-sub"></span></span>
+      <span class="ar">›</span>
+    </button>
+  </div>
+</div>
+<!-- 確認シート（v1.9.422）：押す前に、何が入るのかを並べて出す -->
+<div id="crm-sheet" onclick="if(event.target===this)crmCloseSheet()">
+  <div class="crm-sheet-in">
+    <h4>これから入れる内容</h4>
+    <div class="sub">押すと顧客リストに書き込みます</div>
+    <div id="crm-sheet-list"></div>
+    <div class="crm-sheet-btns">
+      <button type="button" class="c" onclick="crmCloseSheet()">戻る</button>
+      <button type="button" class="o" onclick="crmCloseSheet();submitCustReg()">この内容で登録</button>
+    </div>
   </div>
 </div>
 </div>

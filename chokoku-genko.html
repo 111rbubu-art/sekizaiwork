@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.7</title>
+<title>彫刻原稿 v20.8</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -139,6 +139,8 @@
   #bothstage svg{display:block;}
   #bothstage .bhit{cursor:ns-resize;}
   #bothstage .bhitx{cursor:ew-resize;}
+  /* コピーで紐づいている行のつまみ。動かせない（右クリックで外せる・v20.8） */
+  #bothstage .bhitlk{cursor:context-menu;}
   #bothstage .bmove{cursor:grab;}
   #demowrap{min-height:0;overflow:auto;padding:20px 20px 72px;cursor:grab;overscroll-behavior:contain;}
   #demowrap.grabbing{cursor:grabbing;}
@@ -1874,7 +1876,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.7";
+var APP_VER = "v20.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3203,6 +3205,50 @@ function glFamily(g){
     if (k !== root && glSrcKey(k) === root && out.indexOf(k) < 0) out.push(k);
   });
   return out;
+}
+/* この 1行ガイドラインは、コピーで元に紐づいているか（v20.8）。
+   紐づいている間は、校正のつまみを 中空（○□）にして動かせなくする。
+   右クリックの［紐づけを解除］で、動かせる ●■ になる。 */
+function glLocked(k){ return glSrcKey(k) >= 0; }
+/* その 1行ガイドラインの紐づけを、まるごと外す（v20.8）。
+   文字グループの上端・下端も、センターラインの行幅も、いまの値のまま自前にする。 */
+function unlinkGl(k){
+  var n = 0;
+  (S.groups || []).forEach(function(g){
+    if (glKeyOf(g) !== k) return;
+    var t = srcGroup(g); if (!t) return;
+    g.topY = num(t.topY, 0); g.bottomY = num(t.bottomY, 0); g.linkTo = null; n++;
+  });
+  (S.centers || []).forEach(function(c, ci){
+    if (glOf(ci) !== k) return;
+    if (c.linkTo === null || c.linkTo === undefined) return;
+    c.w = cenW(ci); c.linkTo = null; n++;
+  });
+  renderAll(); rubPanel(); if (view !== "sheet") rubRender();
+  msg(n ? ("1行ガイドライン " + (k+1) + " の紐づけを解除しました。" +
+           "行の長さもセンターラインも、つまみをつかんで動かせます。")
+        : "この行は、もともと紐づいていません。");
+}
+/* 拓本の上でセンターラインを動かす（v20.8）。
+   その 1行ガイドラインの 1本目（親）を動かしたときは、
+   あとから足した線（子）も同じだけ動かす。子だけを動かすときはその線だけ。 */
+function rubMoveCenPx(ci, px){
+  var pxs = S.rub.centersPx || [];
+  var lim = (typeof RUB !== "undefined" && RUB.W > 0) ? RUB.W : 1e9;
+  var v = Math.max(0, Math.min(lim, Math.round(px)));
+  var old = pxs[ci];
+  var idxs = glCenters(glOf(ci));
+  if (idxs.length > 1 && idxs[0] === ci && old !== null && old !== undefined){
+    var d = v - old;
+    idxs.forEach(function(cj){
+      if (cj === ci) return;
+      var q = pxs[cj];
+      if (q === null || q === undefined) return;
+      pxs[cj] = Math.max(0, Math.min(lim, q + d));
+    });
+  }
+  pxs[ci] = v;
+  pxSyncLinked();
 }
 /* コピーで結ばれた「同じ位置のセンターライン」ぜんぶ（v20.4）。
    元の線 1本と、それを見ているコピーの線 ぜんぶ。
@@ -4776,7 +4822,30 @@ $("edText").addEventListener("blur", function(){ setTimeout(function(){ closeInl
 /* 右クリックの振り分け（v16.9）。
    左クリックで選んだ字の上なら 1 文字の調整、
    字を選んでいなければ（または他の字・何もない所なら）文字グループぜんぶの調整。 */
+/* 動かせない（中空の）つまみを右クリックすると出る、小さなえらび（v20.8） */
+function openLockMenu(k, cx, cy){
+  var m = $("addMenu"); if (!m) return;
+  m.innerHTML = '<h4>1行ガイドライン ' + (k+1) + '</h4>' +
+    '<div class="none" style="margin-bottom:7px;">コピー元と紐づいているので、' +
+    '行の長さもセンターラインも動かせません。</div>' +
+    '<button class="mini primary" data-a="unlk">紐づけを解除して動かせるようにする</button>';
+  m.hidden = false;
+  var w = m.offsetWidth || 230, hh = m.offsetHeight || 120;
+  m.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, cx + 8)) + "px";
+  m.style.top  = Math.max(8, Math.min(window.innerHeight - hh - 8, cy - 10)) + "px";
+  Array.prototype.forEach.call(m.querySelectorAll("button"), function(bt){
+    bt.onclick = function(){ closeAddMenu(); unlinkGl(k); };
+  });
+}
 function ctxOnChars(e){
+  /* 中空のつまみ（コピーで紐づいている行）。押すと紐づけを外せる。 */
+  var lk = e.target.closest && e.target.closest("[data-lk]");
+  if (lk){
+    e.preventDefault();
+    closeCharMenu(); closeGrpMenu();
+    openLockMenu(+lk.dataset.lk, e.clientX, e.clientY);
+    return;
+  }
   var t = e.target.closest && e.target.closest("[data-ci]");
   var gt = e.target.closest && e.target.closest("[data-gi]");
   if (!t && !gt) return;
@@ -8881,6 +8950,9 @@ function renderBoth(){
   }
   var showG = $("bGuide").checked;
   var curGl = bothGl();
+  /* コピーで元に紐づいている行は、つまみを 中空（○□）にして動かせなくする（v20.8）。
+     右クリック →［紐づけを解除］で、動かせる ●■ になる。 */
+  var lockGl = glLocked(curGl);
   var ov = bothOv();
 
   var glyphs = [], picks = [], hl = [], colBox = {}, cells = [];
@@ -9203,9 +9275,14 @@ function renderBoth(){
         if (i00 !== ci && !byRub){
           var chy = b.y1 - KN * 1.5;
           guides += '<circle cx="' + x.toFixed(3) + '" cy="' + chy.toFixed(3) +
-            '" r="' + (KN*0.5).toFixed(3) + '" fill="' + col +
-            '" stroke="#fff" stroke-width="' + (KN*0.14).toFixed(3) + '" pointer-events="none"/>';
-          if (!ov)
+            '" r="' + (KN*0.5).toFixed(3) + '" fill="' + (lockGl ? "#fff" : col) +
+            '" stroke="' + (lockGl ? col : "#fff") + '" stroke-width="' + (KN*0.14).toFixed(3) +
+            '" pointer-events="none"/>';
+          if (lockGl)
+            hits.push('<rect class="bhitlk" data-lk="' + curGl + '" x="' + (x - KN*0.8).toFixed(3) +
+              '" y="' + (chy - KN*0.8).toFixed(3) + '" width="' + (KN*1.6).toFixed(3) +
+              '" height="' + (KN*1.6).toFixed(3) + '" fill="transparent"/>');
+          else if (!ov)
             hits.push('<rect class="bhitx" data-k="cenx:' + ci + '" x="' + (x - KN*0.8).toFixed(3) +
               '" y="' + (chy - KN*0.8).toFixed(3) + '" width="' + (KN*1.6).toFixed(3) +
               '" height="' + (KN*1.6).toFixed(3) + '" fill="transparent"/>');
@@ -9225,7 +9302,9 @@ function renderBoth(){
        出す場所は、元の行の線（bothAnchorPx）。拓本の上にあるのはそれだけ。 */
     if (hasRub) (S.centers || []).forEach(function(c, ci){
       if (glOf(ci) !== curGl) return;
-      if (!cenShown(ci) && !ov) return;
+      /* コピーの行は 拓本に自分の線が無いので ふだんは出さない（cenShown）。
+         紐づいている間は 中空（□）で出して、どこに合わせてあるかを見せる（v20.8）。 */
+      if (!cenShown(ci) && !lockGl) return;
       var px = bothAnchorPx(ci);
       if (px === null || px === undefined) return;
       var col = CCOL[curGl % CCOL.length];
@@ -9254,12 +9333,15 @@ function renderBoth(){
       var rky = ry1 - KN * 1.5;
       guides += '<rect x="' + (x - KN/2).toFixed(3) + '" y="' + (rky - KN/2).toFixed(3) +
         '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
-        '" fill="' + col + '" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
-        '" pointer-events="none"/>';
+        '" fill="' + (lockGl ? "#fff" : col) + '" stroke="' + (lockGl ? col : "#fff") +
+        '" stroke-width="' + (KN*0.12).toFixed(3) + '" pointer-events="none"/>';
       /* 重ねているときも、拓本の線はぜんぶつかめる（v13.1）。
          合わせ先の線だけは意味がちがい、「拓本は動かさず、文字のほうを動かす」。
-         つかむ処理（cen:）のほうで振り分けている。 */
-      hits.push('<rect class="bhitx" data-k="cen:' + ci + '" x="' + (x - KN*0.7).toFixed(3) +
+         つかむ処理（cen:）のほうで振り分けている。
+         コピーで紐づいている行は 中空 にして、つかめなくする（v20.8）。 */
+      hits.push('<rect class="' + (lockGl ? "bhitlk" : "bhitx") + '" ' +
+          (lockGl ? 'data-lk="' + curGl + '"' : 'data-k="cen:' + ci + '"') +
+          ' x="' + (x - KN*0.7).toFixed(3) +
           '" y="' + (rky - KN).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
           '" height="' + Math.max(KN*2, ry2 - rky + KN).toFixed(3) + '" fill="transparent"/>');
     });
@@ -9268,7 +9350,9 @@ function renderBoth(){
        校正文字から拓本の右端まで通す。 */
     var seenY = {}, kOrd = 0;
     (S.groups || []).forEach(function(g, gi){
-      if (srcGroup(g)) return;
+      /* コピーで紐づいた行も出す。中空（□）にして、つかめなくする（v20.8）。
+         これまでは出していなかったので、行の長さがどこにあるのか見えなかった。 */
+      var gLk = !!srcGroup(g);
       var ci = Math.max(0, Math.min((S.centers || []).length - 1, num(g.col, 0)));
       if (glOf(ci) !== curGl) return;
       var col = GCOL[gi % GCOL.length];
@@ -9286,9 +9370,11 @@ function renderBoth(){
         /* つかんで動かすためのつまみ。文字の長さ（行の上端・下端）を決める。 */
         guides += '<rect x="' + (kx - KN/2).toFixed(3) + '" y="' + (y - KN/2).toFixed(3) +
           '" width="' + KN.toFixed(3) + '" height="' + KN.toFixed(3) + '" rx="' + (KN*0.2).toFixed(3) +
-          '" fill="' + col + '" stroke="#fff" stroke-width="' + (KN*0.12).toFixed(3) +
-          '" pointer-events="none"/>';
-        hits.push('<rect class="bhit" data-k="grp:' + gi + ':' + pair[1] + '" x="' + (kx - KN*0.7).toFixed(3) +
+          '" fill="' + (gLk ? "#fff" : col) + '" stroke="' + (gLk ? col : "#fff") +
+          '" stroke-width="' + (KN*0.12).toFixed(3) + '" pointer-events="none"/>';
+        hits.push('<rect class="' + (gLk ? "bhitlk" : "bhit") + '" ' +
+          (gLk ? 'data-lk="' + curGl + '"' : 'data-k="grp:' + gi + ':' + pair[1] + '"') +
+          ' x="' + (kx - KN*0.7).toFixed(3) +
           '" y="' + (y - KN*0.7).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
           '" height="' + (KN*1.4).toFixed(3) + '" fill="transparent"/>');
       });
@@ -9642,8 +9728,7 @@ function bindBothDrag(svg){
             renderBoth();
             return;
           }
-          var px = Math.round((q.x - rubX0) / mp);
-          S.rub.centersPx[ci] = Math.max(0, Math.min(RUB.W, px));
+          rubMoveCenPx(ci, (q.x - rubX0) / mp);   /* 親を動かせば子も（v20.8） */
           syncCenters();
           renderBoth();
           return;
@@ -10180,8 +10265,7 @@ function bindDrag(svg){
       function move(e){
         var r = S.rub, q = toPt(e);
         if (cen !== null){
-          S.rub.centersPx[cen] = Math.max(0, Math.min(RUB.W, Math.round(q.x)));
-          pxSyncLinked();
+          rubMoveCenPx(cen, q.x);      /* 親を動かせば子も同じだけ（v20.8） */
           syncCenters();
           rubRender(); renderCols();
         } else if (grp){

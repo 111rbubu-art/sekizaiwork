@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.21</title>
+<title>彫刻原稿 v20.22</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1899,7 +1899,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.21";
+var APP_VER = "v20.22";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13055,21 +13055,25 @@ async function spReadBody(res, label, expect){
 }
 /* expect を渡すと、その大きさぶん届いたかを確かめる。
    足りなければ「途中で切れた」とみなして、取り直す。 */
-async function spGetBlob(itemId, label, expect){
+async function spGetBlob(itemId, label, expect, driveId){
+  /* driveId を渡すと、そのドライブから読む（v20.22）。
+     渡さないときは、いまつながっている工事フォルダのドライブ。
+     資料は登録したときのドライブを覚えているので、そちらを使う。 */
+  var DV = driveId || SP.cfg.driveId;
   var TRIES = 5, last = null;
   for (var i = 0; i < TRIES; i++){
     var useDirect = (i % 2 === 1);          /* 2回目・4回目は B の方法 */
     try {
       var res;
       if (useDirect){
-        var meta = await graph("/drives/" + SP.cfg.driveId + "/items/" + itemId +
+        var meta = await graph("/drives/" + DV + "/items/" + itemId +
                                "?$select=id,name,size,@microsoft.graph.downloadUrl");
         var du = meta && meta["@microsoft.graph.downloadUrl"];
         if (!du) throw new Error("配信URLをもらえませんでした");
         res = await fetch(du, { cache: "no-store" });
       } else {
         var tok = await spToken();
-        res = await fetch("https://graph.microsoft.com/v1.0/drives/" + SP.cfg.driveId +
+        res = await fetch("https://graph.microsoft.com/v1.0/drives/" + DV +
           "/items/" + itemId + "/content",
           { headers: { Authorization: "Bearer " + tok }, cache: "no-store" });
       }
@@ -13684,10 +13688,42 @@ async function docsDirId(){
       "@microsoft.graph.conflictBehavior": "replace" } });
   return mk.id;
 }
+/* 資料を読む（v20.22）。
+   案件ファイルに覚えているのは「置き場所（番号）」だけ。
+   工事フォルダで入れ直した・名前を変えた・別のフォルダから開いた などで
+   その番号が通らなくなると「読めませんでした」になっていた。
+   見つからないときは、資料フォルダの中を **同じ名前** でさがして、
+   番号を新しいものに直してから もう一度読む。 */
+async function docFetch(d){
+  var dv = d.drive || SP.cfg.driveId;
+  try {
+    return await spGetBlob(d.id, d.name, 0, dv);
+  } catch(e){
+    var t = spErrText(e);
+    if (!/404|itemNotFound|見つかりません/i.test(t)) throw e;
+    if (!(await docRefindId(d))) throw e;
+    return await spGetBlob(d.id, d.name, 0, d.drive || SP.cfg.driveId);
+  }
+}
+/* 資料フォルダの中を名前でさがして、覚えている番号を直す。直せたら true。 */
+async function docRefindId(d){
+  try {
+    var dir = await docsDirId();
+    var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + dir +
+      "/children?$top=400&$select=id,name,file");
+    var hit = (r.value || []).filter(function(x){ return x.file && sameName(x.name, d.name); })[0];
+    if (!hit) return false;
+    delete DOCC[d.id]; delete DOCIMG[d.id]; delete DOCSZ[d.id];
+    d.id = hit.id; d.drive = SP.cfg.driveId;
+    persist();
+    msg("「" + d.name + "」の置き場所が変わっていたので、さがして直しました。");
+    return true;
+  } catch(_){ return false; }
+}
 /* 資料の絵を読む。一度読んだものは覚えておく。 */
 async function docBlobUrl(d){
   if (DOCC[d.id]) return DOCC[d.id];
-  var b = await spGetBlob(d.id, d.name, 0);
+  var b = await docFetch(d);
   var u = URL.createObjectURL(b);
   DOCC[d.id] = u;
   return u;
@@ -14105,7 +14141,15 @@ function docOvSize(){
 /* 絵を読んで、大きさを覚える。読めたら then に データ URL を渡す。 */
 function docOvFetch(d){
   if (DOCIMG[d.id]) return Promise.resolve(DOCIMG[d.id]);
-  return spImageDataUrl(d).then(function(u){
+  /* 資料は docFetch を通す。番号が変わっていたら さがし直す（v20.22）。 */
+  return docFetch(d).then(function(b){
+    return new Promise(function(res, rej){
+      var fr = new FileReader();
+      fr.onload = function(){ res(fr.result); };
+      fr.onerror = function(){ rej(new Error("画像を読めませんでした")); };
+      fr.readAsDataURL(b);
+    });
+  }).then(function(u){
     return new Promise(function(res, rej){
       var im = new Image();
       im.onload = function(){
@@ -14244,7 +14288,7 @@ function docWinShow(){
   DW.busy = true;
   /* 文字で入れた資料（.txt）は、そのまま字で出す（v19.3） */
   if (isTxtName(d.name)){
-    spGetBlob(d.id, d.name, 0).then(function(b){ return b.text(); }).then(function(t){
+    docFetch(d).then(function(b){ return b.text(); }).then(function(t){
       DW.busy = false;
       if (docList()[DW.i] && docList()[DW.i].id !== want) return;
       DW.url = "";
@@ -14253,7 +14297,7 @@ function docWinShow(){
     }).catch(function(e){
       DW.busy = false;
       body.innerHTML = '<div class="dwmsg">読めませんでした。<br>' + esc(spErrText(e)) +
-        '<br><br>上の ⟳ を押すと、もう一度読み込みます。</div>';
+        docErrHint(e) + '</div>';
     });
     return;
   }
@@ -14264,8 +14308,29 @@ function docWinShow(){
     docWinDraw();
   }).catch(function(e){
     DW.busy = false;
-    body.innerHTML = '<div class="dwmsg">読めませんでした。<br>' + esc(spErrText(e)) + '</div>';
+    body.innerHTML = '<div class="dwmsg">読めませんでした。<br>' + esc(spErrText(e)) +
+      docErrHint(e) + '</div>';
   });
+}
+/* 読めなかった理由ごとの、次の一手（v20.22） */
+function docErrHint(e){
+  var t = spErrText(e), d = docList()[DW.i] || {};
+  var h;
+  if (/404|itemNotFound|見つかりません/i.test(t))
+    h = "工事フォルダの「" + DOCS_DIR + "」に、この名前のファイルが見つかりません。<br>" +
+        "消した・名前を変えた・ほかへ動かした、のどれかだと思います。<br>" +
+        "入れ直すか、左の［資料］から登録し直してください。";
+  else if (/401|InvalidAuthenticationToken/i.test(t))
+    h = "本体アプリのサインインが切れています。本体を開き直してから、上の ⟳ を押してください。";
+  else if (/403|accessDenied/i.test(t))
+    h = "このフォルダーを見る権限がありません。共有の設定を確かめてください。";
+  else if (/本体アプリから開いて/.test(t))
+    h = "資料は工事フォルダに置いてあるので、本体アプリから開かないと読めません。";
+  else
+    h = "通信が途中で切れたのかもしれません。上の ⟳ を押すと、もう一度読み込みます。";
+  return '<br><br>' + h +
+    '<br><br><span style="opacity:.6;font-size:11px;">' + esc(d.name || "") + '　' +
+    esc(String(d.id || "").slice(0, 24)) + '</span>';
 }
 function docWinDraw(){
   var body = $("dwBody"); if (!body || !DW.url) return;
@@ -14346,6 +14411,7 @@ $("dwEye").onclick = function(){ DW.fx = (num(DW.fx, 0) + 1) % DW_FX.length; doc
 $("dwRe").onclick = function(){
   var d = docList()[DW.i];
   if (!d) return;
+  DOCP = null;
   if (DOCC[d.id]){ try { URL.revokeObjectURL(DOCC[d.id]); } catch(_){} delete DOCC[d.id]; }
   if (DOCIMG[d.id]) delete DOCIMG[d.id];
   if (DOCSZ[d.id]) delete DOCSZ[d.id];

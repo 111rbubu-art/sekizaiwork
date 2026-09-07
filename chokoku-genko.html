@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.8</title>
+<title>彫刻原稿 v20.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1876,7 +1876,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.8";
+var APP_VER = "v20.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3210,25 +3210,6 @@ function glFamily(g){
    紐づいている間は、校正のつまみを 中空（○□）にして動かせなくする。
    右クリックの［紐づけを解除］で、動かせる ●■ になる。 */
 function glLocked(k){ return glSrcKey(k) >= 0; }
-/* その 1行ガイドラインの紐づけを、まるごと外す（v20.8）。
-   文字グループの上端・下端も、センターラインの行幅も、いまの値のまま自前にする。 */
-function unlinkGl(k){
-  var n = 0;
-  (S.groups || []).forEach(function(g){
-    if (glKeyOf(g) !== k) return;
-    var t = srcGroup(g); if (!t) return;
-    g.topY = num(t.topY, 0); g.bottomY = num(t.bottomY, 0); g.linkTo = null; n++;
-  });
-  (S.centers || []).forEach(function(c, ci){
-    if (glOf(ci) !== k) return;
-    if (c.linkTo === null || c.linkTo === undefined) return;
-    c.w = cenW(ci); c.linkTo = null; n++;
-  });
-  renderAll(); rubPanel(); if (view !== "sheet") rubRender();
-  msg(n ? ("1行ガイドライン " + (k+1) + " の紐づけを解除しました。" +
-           "行の長さもセンターラインも、つまみをつかんで動かせます。")
-        : "この行は、もともと紐づいていません。");
-}
 /* 拓本の上でセンターラインを動かす（v20.8）。
    その 1行ガイドラインの 1本目（親）を動かしたときは、
    あとから足した線（子）も同じだけ動かす。子だけを動かすときはその線だけ。 */
@@ -4822,19 +4803,38 @@ $("edText").addEventListener("blur", function(){ setTimeout(function(){ closeInl
 /* 右クリックの振り分け（v16.9）。
    左クリックで選んだ字の上なら 1 文字の調整、
    字を選んでいなければ（または他の字・何もない所なら）文字グループぜんぶの調整。 */
-/* 動かせない（中空の）つまみを右クリックすると出る、小さなえらび（v20.8） */
-function openLockMenu(k, cx, cy){
+/* 動かせない（中空の）つまみを右クリックすると出る、小さなえらび（v20.8）。
+   解除は **文字グループ 1つずつ**（v20.9）。行まるごとではない。
+   gi を渡すと、そのつまみの文字グループを先頭に置く。 */
+function openLockMenu(k, cx, cy, gi){
   var m = $("addMenu"); if (!m) return;
-  m.innerHTML = '<h4>1行ガイドライン ' + (k+1) + '</h4>' +
-    '<div class="none" style="margin-bottom:7px;">コピー元と紐づいているので、' +
-    '行の長さもセンターラインも動かせません。</div>' +
-    '<button class="mini primary" data-a="unlk">紐づけを解除して動かせるようにする</button>';
+  var list = [];
+  (S.groups || []).forEach(function(g, i){ if (glKeyOf(g) === k && srcGroup(g)) list.push(i); });
+  if (gi !== null && gi !== undefined && list.indexOf(gi) >= 0)
+    list = [gi].concat(list.filter(function(i){ return i !== gi; }));
+  var h = '<h4>1行ガイドライン ' + (k+1) + '</h4>';
+  if (!list.length){
+    h += '<div class="none">紐づいている文字グループはありません。</div>';
+  } else {
+    h += '<div class="none" style="margin-bottom:7px;">コピー元と紐づいている間は動かせません。' +
+      '解除する文字グループをえらんでください。</div>';
+    list.forEach(function(i, n){
+      h += '<button class="mini' + (n === 0 ? " primary" : "") + '" data-g="' + i + '">' +
+        esc(gName(i, 10)) + ' の紐づけを解除</button>';
+    });
+  }
+  m.innerHTML = h;
   m.hidden = false;
   var w = m.offsetWidth || 230, hh = m.offsetHeight || 120;
   m.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, cx + 8)) + "px";
   m.style.top  = Math.max(8, Math.min(window.innerHeight - hh - 8, cy - 10)) + "px";
   Array.prototype.forEach.call(m.querySelectorAll("button"), function(bt){
-    bt.onclick = function(){ closeAddMenu(); unlinkGl(k); };
+    bt.onclick = function(){
+      var i = +bt.dataset.g;
+      closeAddMenu();
+      sel = i; charSel = 0; charPicked = false;
+      unlinkGroup(i);
+    };
   });
 }
 function ctxOnChars(e){
@@ -4843,7 +4843,8 @@ function ctxOnChars(e){
   if (lk){
     e.preventDefault();
     closeCharMenu(); closeGrpMenu();
-    openLockMenu(+lk.dataset.lk, e.clientX, e.clientY);
+    var lg = (lk.dataset.lg === undefined || lk.dataset.lg === "") ? null : +lk.dataset.lg;
+    openLockMenu(+lk.dataset.lk, e.clientX, e.clientY, lg);
     return;
   }
   var t = e.target.closest && e.target.closest("[data-ci]");
@@ -9373,7 +9374,8 @@ function renderBoth(){
           '" fill="' + (gLk ? "#fff" : col) + '" stroke="' + (gLk ? col : "#fff") +
           '" stroke-width="' + (KN*0.12).toFixed(3) + '" pointer-events="none"/>';
         hits.push('<rect class="' + (gLk ? "bhitlk" : "bhit") + '" ' +
-          (gLk ? 'data-lk="' + curGl + '"' : 'data-k="grp:' + gi + ':' + pair[1] + '"') +
+          (gLk ? 'data-lk="' + curGl + '" data-lg="' + gi + '"'
+               : 'data-k="grp:' + gi + ':' + pair[1] + '"') +
           ' x="' + (kx - KN*0.7).toFixed(3) +
           '" y="' + (y - KN*0.7).toFixed(3) + '" width="' + (KN*1.4).toFixed(3) +
           '" height="' + (KN*1.4).toFixed(3) + '" fill="transparent"/>');

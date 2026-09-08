@@ -268,8 +268,11 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
       <label>請求書作成日</label><input type="date" id="b_billdate">
       <label>領収書作成日</label><input type="date" id="b_recdate">
 
-      <label>お客様</label><input type="text" id="b_cust" placeholder="例：横内">
+      <label>お客様</label><input type="text" id="b_cust" placeholder="例：横内" oninput="estTitleFill();recalc()">
       <label>工事場所</label><input type="text" id="b_place" placeholder="例：長泉寺">
+      <label>工事名</label><input type="text" id="b_title" placeholder="（お客様から自動）"
+        title="見積書・請求書・領収書の明細の見出しに出ます。空にすると「○○家墓石撤去工事」に戻ります"
+        oninput="recalc()">
       <label>撤去種類</label>
       <select id="b_type" onchange="recalc()">
         <option>石塔＋外柵</option>
@@ -1367,6 +1370,29 @@ function ceilDigits(n, d){
 }
 
 /* ============ 見積書プレビュー描画 ============ */
+/* 明細の見出しを作る。
+   打ち込んであればそれ。無ければ「○○家墓石撤去工事」。
+   お客様の名前も空なら、これまでどおり「墓石撤去工事」。 */
+function estWorkTitle(cust, title){
+  var t = String(title || "").trim();
+  if (t) return t;
+  var c = String(cust || "").trim().replace(/\s+/g, "");
+  return c ? (c + "家墓石撤去工事") : "墓石撤去工事";
+}
+/* お客様の名前を打ったときに、工事名の下書き（プレースホルダ）も合わせる */
+function estTitleFill(){
+  var el = $('b_title'); if (!el) return;
+  var c = String(($('b_cust') || {}).value || "").trim().replace(/\s+/g, "");
+  el.placeholder = c ? ("（自動：" + c + "家墓石撤去工事）") : "（お客様から自動）";
+}
+/* 見積の上で直したとき。＜＞は外して覚える。空にすると自動に戻る。 */
+function applyEstWorkTitle(el){
+  var v = String(el.textContent || "").trim().replace(/^＜|＞$/g, "").trim();
+  var b = $('b_title');
+  var auto = estWorkTitle(($('b_cust') || {}).value, "");
+  if (b) b.value = (v === auto) ? "" : v;      /* 自動と同じなら、覚えない */
+  renderEstimate();
+}
 function renderEstimate(){
   const kind = $('doc_kind').value;
   const D = collectInputs();
@@ -1393,6 +1419,9 @@ function renderEstimate(){
   const aisatsuText = (CUSTOM_AISATSU[kind] !== null && CUSTOM_AISATSU[kind] !== undefined) ? CUSTOM_AISATSU[kind] : aisatsuMap[kind];
 
   // 明細行 (見積書フォーマット 9行 + 追加品目)
+  /* 明細の見出し。空なら「○○家墓石撤去工事」。○○ はお客様の名前。
+     打ち込めば、その文字をそのまま使う。 */
+  const workTitle = estWorkTitle(D.cust, D.title);
   const rowsHtml = buildEstRows(D, C);
 
   let html = `
@@ -1452,7 +1481,11 @@ function renderEstimate(){
         </tr>
       </thead>
       <tbody>
-        <tr><td colspan="6" style="font-weight:bold;background:#f0f0f0">＜墓石撤去工事＞</td></tr>
+        <tr><td colspan="6" id="est_work_title" contenteditable="true" spellcheck="false"
+            style="font-weight:bold;background:#f0f0f0"
+            title="クリックして直せます。空にすると「○○家墓石撤去工事」に戻ります"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+            onblur="applyEstWorkTitle(this)">＜${escapeHtml(workTitle)}＞</td></tr>
         ${rowsHtml}
       </tbody>
       <tfoot>
@@ -1716,6 +1749,7 @@ function collectInputs(){
     billdate:$('b_billdate').value,
     recdate: $('b_recdate').value,
     cust   : $('b_cust').value,
+    title  : ($('b_title') ? $('b_title').value : ''),
     place  : $('b_place').value,
     type   : $('b_type').value,
     term   : $('b_term').value,
@@ -1816,6 +1850,7 @@ function initFromKouji(){
     FROM_KOUJI = data;
     if(data.cust)  $('b_cust').value  = data.cust;
     if(data.place) $('b_place').value = data.place;
+    estTitleFill();                       /* 工事名の下書きも合わせる */
     if(data.hakaSpec) {
       const sp = data.hakaSpec;
       // hakaSpecがある場合はITEMSをデフォルトにリセット（前回localStorage値が混入しないよう）
@@ -2034,7 +2069,7 @@ function applyData(d){
     const map = {
       estno:'b_estno', billno:'b_billno', recno:'b_recno',
       estdate:'b_estdate', billdate:'b_billdate', recdate:'b_recdate',
-      cust:'b_cust', place:'b_place', type:'b_type',
+      cust:'b_cust', title:'b_title', place:'b_place', type:'b_type',
       term:'b_term', valid:'b_valid', pay_pre:'b_pay_pre', pay_post:'b_pay_post',
       d_w:'d_w', d_d:'d_d',
       memo_est:'memo_est', memo_bill:'memo_bill', memo_rec:'memo_rec',
@@ -2043,6 +2078,7 @@ function applyData(d){
       if(d.inputs[k]!==undefined && $(map[k])) $(map[k]).value = d.inputs[k];
     }
   }
+  estTitleFill();
   if(d.items) ITEMS = d.items;
   // ドラフト読み込み時は手入力フラグをリセットして参考表から再自動入力
   ITEMS.forEach(it => { it.nin_manual = false; it.juki_manual = false; it.nen_manual = false; });
@@ -2108,6 +2144,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
     recalc();
   }
 
+  estTitleFill();
   // 工事関連画面から渡された顧客名・お寺名・Folder_Passを取り込む
   initFromKouji();
   // 保存モード初期化（SP優先、不可ならPC固定）

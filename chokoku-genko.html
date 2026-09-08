@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.28</title>
+<title>彫刻原稿 v20.29</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1904,7 +1904,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.28";
+var APP_VER = "v20.29";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11487,42 +11487,58 @@ function fitInkMask(G, glyph0){
   var M = peRubMat(), Mi = M && mInv(M);
   if (!Mi || !RUB.data) return null;
   var W = RUB.W, H = RUB.H, px = RUB.data.data;
-  var w = G.w, h = G.h, val = new Float32Array(w*h), inv = S.rub.invert;
-  var hist = new Float64Array(256), got = 0;
+  var w = G.w, h = G.h, val = new Float32Array(w*h), got = 0, out = new Uint8Array(w*h);
   for (var gy = 0; gy < h; gy++){
     var uy = G.y1 - (gy + 0.5) * G.cell;          /* 字の座標（上向き） */
     for (var gx = 0; gx < w; gx++){
       var ux = G.x0 + (gx + 0.5) * G.cell;
       var q = mApp(Mi, ux, -uy);                  /* 画面は下向きなので符号を返す */
-      var X = q.x | 0, Y = q.y | 0, v = 0;
+      var X = q.x | 0, Y = q.y | 0, v = 0, k0 = gy*w + gx;
       if (X >= 0 && Y >= 0 && X < W && Y < H){
         var p = (Y*W + X) * 4;
         v = px[p]*0.299 + px[p+1]*0.587 + px[p+2]*0.114;
-        if (!inv) v = 255 - v;                    /* 白地に黒なら裏返す */
-        hist[v | 0]++; got++;
-      }
-      val[gy*w + gx] = v;
+        got++;
+      } else out[k0] = 1;                         /* 拓本の外 */
+      val[k0] = v;
     }
   }
   if (got < w*h*0.2) return null;                 /* 拓本の外だった */
 
+  /* 白黒どちらが墨かは、両方でやってみて、いまの字とよく重なった方を採る。
+     拓本には「黒地に白」も「白地に黒」もあり、設定を取り違えると
+     地の粒ばかり拾ってしまう。どちらが字かはフォントの形が知っている。 */
+  var A = fitInkOne(G, glyph0, val, out, got, false);
+  var B = fitInkOne(G, glyph0, val, out, got, true);
+  var sA = A ? fitIoU(A.m, glyph0) : -1, sB = B ? fitIoU(B.m, glyph0) : -1;
+  var pick = (sA >= sB) ? A : B;
+  if (!pick) return null;
+  FIT_DIAG = pick.d;
+  return pick.m;
+}
+/* 片方の白黒の取り方で、墨のかたちを作る */
+function fitInkOne(G, glyph0, val0, out, got, inkDark){
+  var w = G.w, h = G.h, i;
+  var val = new Float32Array(w*h), hist = new Float64Array(256);
+  for (i = 0; i < w*h; i++){
+    val[i] = inkDark ? (255 - val0[i]) : val0[i];
+    if (!out[i]) hist[val[i] | 0]++;
+  }
   /* しきい値は、この字の周りだけで決める（大津の方法）。
      紙ぜんたいで 1 つ決めると、炭の乗り方の差でずれる。
      字の中の囲み（「日」の中など）は炭が薄くて中くらいの明るさになるので、
      明暗の谷を探すこの決め方でないと、囲みまで墨と間違える。 */
   function pct(p){
     var need = got * p, run = 0;
-    for (var i = 0; i < 256; i++){ run += hist[i]; if (run >= need) return i; }
+    for (var k = 0; k < 256; k++){ run += hist[k]; if (run >= need) return k; }
     return 255;
   }
   var lo = pct(0.05), hi = pct(0.97);
   if (hi - lo < 25) return null;                  /* 明暗の差がない */
   var T = otsu(hist, got);
   if (T < lo + 8 || T > hi - 8) T = (lo + hi) / 2; /* 谷が端に寄ったときの逃げ */
-  FIT_DIAG = { T: Math.round(T), lo: lo, hi: hi, mmCell: G.mmCell };
 
-  var raw = new Uint8Array(w*h), i;
-  for (i = 0; i < w*h; i++) raw[i] = val[i] > T ? 1 : 0;
+  var raw = new Uint8Array(w*h);
+  for (i = 0; i < w*h; i++) raw[i] = (!out[i] && val[i] > T) ? 1 : 0;
 
   /* 細いつながりを切る（縮めてから広げる）。地の粒どうしの橋を落とす */
   var op = Math.max(1, Math.round(G.mmCell ? 0.12 / G.mmCell : 1));
@@ -11531,7 +11547,8 @@ function fitInkMask(G, glyph0){
   /* 字の輪郭のそばにある塊だけ残す（＝フォントが持っている当たり）。
      隣の字がかすっただけの塊は落としたいので、塊の大半がそばに無いと残さない。 */
   var near = fitMorph(glyph0, w, h, Math.max(2, Math.round(G.mmCell ? 0.8 / G.mmCell : 4)));
-  return fitKeepNear(a2, near, w, h);
+  return { m: fitKeepNear(a2, near, w, h),
+           d: { T: Math.round(T), lo: lo, hi: hi, mmCell: G.mmCell, dark: inkDark } };
 }
 /* r>0 で広げる、r<0 で縮める（四角い窓。積分画像で速く） */
 function fitMorph(m, w, h, r){
@@ -11659,6 +11676,7 @@ function fitEdgeLayer(){
   if (fi && FIT_DIAG) fi.textContent =
     "拾った墨：" + (n * G.mmCell * G.mmCell).toFixed(0) + " mm²　" +
     "しきい値 " + FIT_DIAG.T + "（地 " + FIT_DIAG.lo + "／墨 " + FIT_DIAG.hi + "）　" +
+    (FIT_DIAG.dark ? "白地に黒の字として読みました　" : "黒地に白の字として読みました　") +
     "1ますは " + G.mmCell.toFixed(3) + "mm。" +
     "赤いふちが彫ってある字をなぞっていれば、拓本は正しく読めています。";
   return '<image href="' + cv.toDataURL("image/png") + '" x="' + G.x0.toFixed(1) +

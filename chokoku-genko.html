@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.27</title>
+<title>彫刻原稿 v20.28</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1204,8 +1204,9 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="f" style="margin-top:4px;"><span>濃さ</span>
           <input type="range" id="peRubOp" min="0.15" max="1" step="0.05" value="0.5"></label>
         <h3 class="sec">テスト：拓本に合わせる</h3>
+        <label class="chk" style="margin-bottom:5px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> テスト：拾った墨のふちを出す</label>
         <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
-        <p class="hint" id="peFitInfo" style="margin:2px 0 0;">この字だけ、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
+        <p class="hint" id="peFitInfo" style="margin:2px 0 0;">まず［拓本を動かす］で、彫ってある同じ字をこの字の下に重ねてください。そのうえで押すと、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <h3 class="sec">戻す</h3>
         <button class="mini" id="peReset">元の字に戻す</button>
@@ -1903,7 +1904,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.27";
+var APP_VER = "v20.28";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11518,6 +11519,7 @@ function fitInkMask(G, glyph0){
   if (hi - lo < 25) return null;                  /* 明暗の差がない */
   var T = otsu(hist, got);
   if (T < lo + 8 || T > hi - 8) T = (lo + hi) / 2; /* 谷が端に寄ったときの逃げ */
+  FIT_DIAG = { T: Math.round(T), lo: lo, hi: hi, mmCell: G.mmCell };
 
   var raw = new Uint8Array(w*h), i;
   for (i = 0; i < w*h; i++) raw[i] = val[i] > T ? 1 : 0;
@@ -11618,22 +11620,59 @@ function fitInkBox(contours){
   if (x2 <= x1 || y2 <= y1) return null;
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
 }
+var FIT_DIAG = null;      /* テスト用：しきい値などの内訳 */
+/* 解析につかう格子。ふち出しと合わせ込みで同じものを使う */
+function fitGrid(){
+  var bb = fitInkBox(PE.contours); if (!bb) return null;
+  var pad = (bb.w + bb.h) * 0.25;
+  var cell = Math.max((bb.w + 2*pad)/256, Math.abs(PE.rub.kx) || 1);
+  var w = Math.max(32, Math.min(320, Math.round((bb.w + 2*pad)/cell)));
+  var h = Math.max(32, Math.min(320, Math.round((bb.h + 2*pad)/cell)));
+  var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  return { cv:cv, ctx:cv.getContext("2d", { willReadFrequently:true }),
+           w:w, h:h, cell:cell, x0:bb.x - pad, y1:bb.y + bb.h + pad, bb:bb,
+           mmCell: (PE.rub.kx ? cell * (mmPerPx() / Math.abs(PE.rub.kx)) : 0) };
+}
+
+/* テスト：拾った墨のふちを、拓本の上に赤で出す。
+   合わせ込みが変な動きをしたとき、拓本を読めていないのか、
+   拾い方が悪いのかを、目で切り分けるため。 */
+function fitEdgeLayer(){
+  if (!PE || !PE.rub || !RUB.data) return "";
+  var G = fitGrid(); if (!G) return "";
+  var g0 = fitGlyphMask(PE.contours, G); if (!g0) return "";
+  var ink = fitInkMask(G, g0); if (!ink) return "";
+  var w = G.w, h = G.h;
+  var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  var cx = cv.getContext("2d"), id = cx.createImageData(w, h);
+  for (var y = 0; y < h; y++) for (var x = 0; x < w; x++){
+    var i = y*w + x; if (!ink[i]) continue;
+    var edge = (x === 0 || y === 0 || x === w-1 || y === h-1) ||
+               !ink[i-1] || !ink[i+1] || !ink[i-w] || !ink[i+w];
+    var p = i*4;
+    if (edge){ id.data[p] = 220; id.data[p+1] = 38; id.data[p+2] = 22; id.data[p+3] = 255; }
+    else     { id.data[p] = 220; id.data[p+1] = 38; id.data[p+2] = 22; id.data[p+3] = 40; }
+  }
+  cx.putImageData(id, 0, 0);
+  var n = 0; for (var k = 0; k < ink.length; k++) n += ink[k];
+  var fi = $("peFitInfo");
+  if (fi && FIT_DIAG) fi.textContent =
+    "拾った墨：" + (n * G.mmCell * G.mmCell).toFixed(0) + " mm²　" +
+    "しきい値 " + FIT_DIAG.T + "（地 " + FIT_DIAG.lo + "／墨 " + FIT_DIAG.hi + "）　" +
+    "1ますは " + G.mmCell.toFixed(3) + "mm。" +
+    "赤いふちが彫ってある字をなぞっていれば、拓本は正しく読めています。";
+  return '<image href="' + cv.toDataURL("image/png") + '" x="' + G.x0.toFixed(1) +
+    '" y="' + (-G.y1).toFixed(1) + '" width="' + (w*G.cell).toFixed(1) +
+    '" height="' + (h*G.cell).toFixed(1) + '" preserveAspectRatio="none"' +
+    ' style="image-rendering:pixelated"/>';
+}
+
 function peFitTest(){
   if (!PE){ return; }
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
-  var bb = fitInkBox(PE.contours);
-  if (!bb){ msg("形がありません。", true); return; }
-
-  /* 格子は拓本の 1 画素ぶんくらい。細かすぎても遅くなるだけ */
-  var pad = (bb.w + bb.h) * 0.25;
-  var x0 = bb.x - pad, y0 = bb.y - pad, x1 = bb.x + bb.w + pad, y1 = bb.y + bb.h + pad;
-  var cell = Math.max((x1-x0)/256, Math.abs(PE.rub.kx) || 1);
-  var w = Math.max(32, Math.min(320, Math.round((x1-x0)/cell)));
-  var h = Math.max(32, Math.min(320, Math.round((y1-y0)/cell)));
-  var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
-  var G = { cv:cv, ctx:cv.getContext("2d", { willReadFrequently:true }),
-            w:w, h:h, cell:cell, x0:x0, y1:y1,
-            mmCell: (PE.rub.kx ? cell * (mmPerPx() / Math.abs(PE.rub.kx)) : 0) };
+  var G = fitGrid();
+  if (!G){ msg("形がありません。", true); return; }
+  var bb = G.bb;
 
   var g0 = fitGlyphMask(PE.contours, G);
   if (!g0){ msg("形を読めませんでした。", true); return; }
@@ -11656,6 +11695,21 @@ function peFitTest(){
     if (wt) m = fitMorph(m, G.w, G.h, wt);
     return fitIoU(m, ink);
   }
+  /* 下にある墨が、字の大きさとかけ離れているときは動かさない。
+     ちがう字が下に来ている／拓本の位置がずれている、のどちらかで、
+     そのまま合わせると形が壊れる。 */
+  var nG = 0, nI = 0, qi;
+  for (qi = 0; qi < g0.length; qi++){ nG += g0[qi]; nI += ink[qi]; }
+  var ratio = nG ? nI / nG : 0;
+  if (ratio < 0.25 || ratio > 4){
+    var fi0 = $("peFitInfo");
+    if (fi0) fi0.textContent = "下にある墨は、この字の " + ratio.toFixed(1) + " 倍の広さでした。" +
+      "ちがう字が下に来ているか、拓本の位置がずれています。［拓本を動かす］で" +
+      "彫ってある同じ字を重ねてから、もう一度押してください（［拾った墨のふちを出す］で確かめられます）。";
+    msg("拓本の同じ字が下に来ていないようです。動かしませんでした。", true);
+    return;
+  }
+
   var before = score(best); bestS = before;
 
   /* 探し始めの見当を、重心と広がりから付ける。
@@ -11700,7 +11754,10 @@ function peFitTest(){
   PE.contours = fitApply(PE.contours, best, cx, cy);   /* 太さ（wt）は掛けない */
   PE.sel = []; PE.selC = [];
   peRender();
+  var hitLim = (Math.abs(best.sx-1) > lim.sx - 1e-6) || (Math.abs(best.sy-1) > lim.sy - 1e-6) ||
+               (Math.abs(best.dx) > lim.dx - 1e-6) || (Math.abs(best.dy) > lim.dy - 1e-6);
   if (info) info.textContent = "一致 " + Math.round(before*100) + "% → " + Math.round(bestS*100) + "%。" +
+    (hitLim ? "【動かせる上限まで振り切りました。拓本の位置を確かめてください】" : "") +
     "（動かした量：よこ " + best.dx.toFixed(0) + "・たて " + best.dy.toFixed(0) + " 単位、" +
     "よこ幅 ×" + best.sx.toFixed(3) + "・たて幅 ×" + best.sy.toFixed(3) +
     "、傾き " + best.sh.toFixed(3) + "、回し " + best.rot.toFixed(1) + "°）" +
@@ -11902,6 +11959,8 @@ function peRender(){
   if (PE.rub && $("peRub").checked && RUB.img)
     rubLayer = '<image href="' + S.rub.src + '" x="0" y="0" width="' + RUB.W + '" height="' + RUB.H +
       '" opacity="' + PE.rub.op + '" preserveAspectRatio="none"' + peRubAttr() + '/>';
+  if (PE.rub && $("peFitEdge") && $("peFitEdge").checked && RUB.img)
+    rubLayer += fitEdgeLayer();
   /* 切る線 */
   var cutLine = "";
   if (PE.cut)
@@ -12822,6 +12881,7 @@ $("peRedC").onclick = function(){
 };
 $("peRub").onchange = function(){ peRender(); };
 $("peFitTest").onclick = function(){ peFitTest(); };
+$("peFitEdge").onchange = function(){ peRender(); };
 $("peW").oninput = function(e){
   if (!PE) return;
   PE.wpct = Math.max(-30, Math.min(30, num(e.target.value, 0)));

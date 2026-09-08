@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.36</title>
+<title>彫刻原稿 v20.37</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1207,6 +1207,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="chk" style="margin-bottom:5px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> テスト：拾った墨のふちを出す</label>
         <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
         <button class="mini" id="peFitW" style="margin-top:4px;">テスト：画線の太さを拓本に合わせる</button>
+        <button class="mini" id="peFitSnap" style="margin-top:4px;">テスト：縁を拓本に寄せる</button>
         <p class="hint" id="peFitInfo" style="margin:2px 0 0;">まず［拓本を動かす］で、彫ってある同じ字をこの字の下に重ねてください。そのうえで押すと、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <h3 class="sec">戻す</h3>
@@ -1905,7 +1906,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.36";
+var APP_VER = "v20.37";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11768,6 +11769,139 @@ function peFitWeight(){
   msg("画線の太さを合わせました（" + was + "% → " + PE.wpct + "%）。", false);
 }
 
+
+/* テスト：縁を拓本に寄せる（v20.37・第4段）。
+   点の数は増やさない。1つずつ、輪郭に垂直な向きへ少しだけ探して、
+   彫ってある字の縁が見つかったらそこまで動かす。
+   見つからなければ動かさない（拓本が擦れて欠けている所は、フォントのまま残る）。
+   隣とかけ離れた動きは捨て、そのあと軽くならす。線がガタガタにならないため。 */
+function fitSample(m, G, x, y){
+  var gx = Math.round((x - G.x0) / G.cell - 0.5);
+  var gy = Math.round((G.y1 - y) / G.cell - 0.5);
+  if (gx < 0 || gy < 0 || gx >= G.w || gy >= G.h) return 0;
+  return m[gy*G.w + gx];
+}
+function peFitEdgeSnap(){
+  if (!PE) return;
+  if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
+  var info = $("peFitInfo");
+
+  /* 太さの ±% を入れてあるなら、先に形へ取り込む。
+     そうしないと「見えている形」と「動かす形」が食い違う。 */
+  var wp = num(PE.wpct, 0);
+  if (wp){
+    var d0 = weightDelta(PE.contours, wp);
+    if (d0){ PE.contours = offsetContours(PE.contours, d0); }
+    PE.wpct = 0; if ($("peW")) $("peW").value = 0;
+  }
+
+  var G = fitGrid(); if (!G){ msg("形がありません。", true); return; }
+  var g0 = fitGlyphMask(PE.contours, G); if (!g0){ msg("形を読めませんでした。", true); return; }
+  var ink = fitInkMask(G, g0);
+  if (!ink){ msg("拓本から墨を見つけられませんでした。", true); return; }
+  if (FIT_DIAG && FIT_DIAG.warnFlip){
+    if (info) info.textContent = "白黒が逆に読まれているようです。拓本の画面で［反転］を確かめてください。";
+    msg("拓本の白黒が逆かもしれません。", true); return;
+  }
+  var nG = 0, nI = 0, k;
+  for (k = 0; k < g0.length; k++){ nG += g0[k]; nI += ink[k]; }
+  var ratio = nG ? nI / nG : 0;
+  if (ratio < 0.25 || ratio > 4){
+    if (info) info.textContent = "下にある墨は、この字の " + ratio.toFixed(1) + " 倍の広さでした。" +
+      "先に［テスト：この字を拓本に合わせる］で位置を合わせてください。";
+    msg("拓本の同じ字が下に来ていないようです。", true); return;
+  }
+
+  var before = fitIoU(g0, ink);
+  var RANGE = Math.max(2, 0.35 / G.mmCell);      /* 探すのは 0.35mm まで。押すたびに少しずつ寄る */
+  var STEP  = 0.5;                               /* ますの半分きざみ */
+  var LIM   = 0.5 / (G.mmCell || 1);             /* 隣とこれ以上ちがったら捨てる（0.5mm） */
+  var movedN = 0, keptN = 0;
+
+  var next = PE.contours.map(function(c){
+    var n = c.length, i, dsp = new Array(n), nor = new Array(n);
+    for (i = 0; i < n; i++){
+      var p = c[i], a = c[(i-1+n)%n], b = c[(i+1)%n];
+      var tx = b.x - a.x, ty = b.y - a.y, L = Math.sqrt(tx*tx + ty*ty);
+      if (L < 1e-9){ dsp[i] = null; continue; }
+      var nx = ty / L, ny = -tx / L;             /* 輪郭に垂直 */
+      /* 外向きを決める。字の中でない方が外 */
+      var pr = G.cell * 2;
+      var iA = fitSample(g0, G, p.x + nx*pr, p.y + ny*pr);
+      var iB = fitSample(g0, G, p.x - nx*pr, p.y - ny*pr);
+      if (iA === iB){ dsp[i] = null; continue; } /* 角など、決められない所は動かさない */
+      if (iA){ nx = -nx; ny = -ny; }
+      nor[i] = [nx, ny];
+      /* 墨の縁を探す。向きは決め打ちにする。
+         「いちばん近い縁」を内外どちらでも探すと、細い画では
+         向かい側の縁に飛び移って、画がつぶれてしまう。
+           ・いま墨の中にいる → 外へ、墨が切れる所まで
+           ・いま墨の外にいる → 内へ、墨に入る所まで
+         見つからなければ動かさない。 */
+      var hit = null, t, d;
+      if (fitSample(ink, G, p.x, p.y)){
+        for (t = STEP; t <= RANGE; t += STEP){
+          d = t * G.cell;
+          if (!fitSample(ink, G, p.x + nx*d, p.y + ny*d)){ hit = d - G.cell*STEP/2; break; }
+        }
+      } else {
+        for (t = STEP; t <= RANGE; t += STEP){
+          d = -t * G.cell;
+          if (fitSample(ink, G, p.x + nx*d, p.y + ny*d)){ hit = d + G.cell*STEP/2; break; }
+        }
+      }
+      dsp[i] = hit;
+    }
+    /* 隣とかけ離れた動きは捨てる */
+    for (i = 0; i < n; i++){
+      if (dsp[i] === null) continue;
+      var sum = 0, cnt = 0, j;
+      for (j = -2; j <= 2; j++){
+        if (!j) continue;
+        var v = dsp[(i + j + n) % n];
+        if (v !== null){ sum += v; cnt++; }
+      }
+      if (cnt && Math.abs(dsp[i] - sum/cnt) > LIM * G.cell) dsp[i] = null;
+    }
+    /* 軽くならす（動かす量だけ。位置そのものはならさない） */
+    var sm = dsp.slice();
+    for (i = 0; i < n; i++){
+      if (dsp[i] === null) continue;
+      var pv = dsp[(i-1+n)%n], nv = dsp[(i+1)%n], w = 2, s = dsp[i]*2;
+      if (pv !== null){ s += pv; w++; }
+      if (nv !== null){ s += nv; w++; }
+      sm[i] = s / w;
+    }
+    return c.map(function(p, i2){
+      if (sm[i2] === null || !nor[i2]){ keptN++; return p; }
+      var dx = nor[i2][0] * sm[i2], dy = nor[i2][1] * sm[i2];
+      if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) movedN++;
+      var q = { x: p.x + dx, y: p.y + dy };
+      if (p.i) q.i = [p.i[0] + dx, p.i[1] + dy];   /* ハンドルも同じだけ動かす */
+      if (p.o) q.o = [p.o[0] + dx, p.o[1] + dy];
+      return q;
+    });
+  });
+
+  var g1 = fitGlyphMask(next, G);
+  var after = g1 ? fitIoU(g1, ink) : 0;
+  if (after <= before + 0.002){
+    if (info) info.textContent = "一致 " + Math.round(before*100) + "%。寄せても良くなりませんでした" +
+      "（動かせた点 " + movedN + " ／ " + (movedN + keptN) + "）。" +
+      "位置と太さを先に合わせてから、もう一度お試しください。";
+    msg("これ以上よくなりませんでした。", true);
+    return;
+  }
+  peSnap();
+  PE.contours = next;
+  PE.sel = []; PE.selC = [];
+  peRender();
+  if (info) info.textContent = "縁に寄せました。一致 " + Math.round(before*100) + "% → " +
+    Math.round(after*100) + "%。動かした点 " + movedN + " ／ " + (movedN + keptN) + "。" +
+    "（拓本の縁が見つからなかった点は、そのままにしてあります。もう一度押すと、さらに寄ります）";
+  msg("縁に寄せました。一致 " + Math.round(before*100) + "% → " + Math.round(after*100) + "%。", false);
+}
+
 function peFitTest(){
   if (!PE){ return; }
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
@@ -11919,6 +12053,7 @@ function openPathEditor(gi, ci){
   $("peRub").disabled = !PE.rub;
   if ($("peFitTest")) $("peFitTest").disabled = !PE.rub;   /* 拓本が無ければ押せない */
   if ($("peFitW")) $("peFitW").disabled = !PE.rub;
+  if ($("peFitSnap")) $("peFitSnap").disabled = !PE.rub;
   $("peChar").textContent = Array.from(ch)[0] || "";
   $("pathEd").hidden = false;
   peRender();
@@ -12991,6 +13126,7 @@ $("peRedC").onclick = function(){
 $("peRub").onchange = function(){ peRender(); };
 $("peFitTest").onclick = function(){ peFitTest(); };
 $("peFitW").onclick = function(){ peFitWeight(); };
+$("peFitSnap").onclick = function(){ peFitEdgeSnap(); };
 $("peFitEdge").onchange = function(){ peRender(); };
 $("peW").oninput = function(e){
   if (!PE) return;

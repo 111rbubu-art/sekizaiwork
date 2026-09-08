@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.35</title>
+<title>彫刻原稿 v20.36</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1206,6 +1206,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <h3 class="sec">テスト：拓本に合わせる</h3>
         <label class="chk" style="margin-bottom:5px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> テスト：拾った墨のふちを出す</label>
         <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
+        <button class="mini" id="peFitW" style="margin-top:4px;">テスト：画線の太さを拓本に合わせる</button>
         <p class="hint" id="peFitInfo" style="margin:2px 0 0;">まず［拓本を動かす］で、彫ってある同じ字をこの字の下に重ねてください。そのうえで押すと、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <h3 class="sec">戻す</h3>
@@ -1904,7 +1905,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.35";
+var APP_VER = "v20.36";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11709,6 +11710,64 @@ function fitEdgeLayer(){
     ' style="image-rendering:pixelated"/>';
 }
 
+/* テスト：画線の太さを拓本に合わせる（v20.36）。
+   輪郭の点は動かさない。「この字だけ ±%」を決めるだけなので、
+   数字を 0 に戻せばいつでも元どおり。
+   合わせ込み（位置）を先に済ませてから押すのが順番。 */
+function peFitWeight(){
+  if (!PE) return;
+  if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
+  var G = fitGrid();
+  if (!G){ msg("形がありません。", true); return; }
+  var g0 = fitGlyphMask(PE.contours, G);
+  if (!g0){ msg("形を読めませんでした。", true); return; }
+  var ink = fitInkMask(G, g0);
+  var info = $("peFitInfo");
+  if (!ink){ msg("拓本から墨を見つけられませんでした。", true); return; }
+  if (FIT_DIAG && FIT_DIAG.warnFlip){
+    if (info) info.textContent = "白黒が逆に読まれているようです。拓本の画面で［反転］を確かめてください。";
+    msg("拓本の白黒が逆かもしれません。", true); return;
+  }
+  var nG = 0, nI = 0, i;
+  for (i = 0; i < g0.length; i++){ nG += g0[i]; nI += ink[i]; }
+  var ratio = nG ? nI / nG : 0;
+  if (ratio < 0.25 || ratio > 4){
+    if (info) info.textContent = "下にある墨は、この字の " + ratio.toFixed(1) + " 倍の広さでした。" +
+      "先に［テスト：この字を拓本に合わせる］で位置を合わせてください。";
+    msg("拓本の同じ字が下に来ていないようです。", true); return;
+  }
+
+  /* 太らせる／細らせる量を、ますいくつぶんかで探す */
+  var best = 0, bestS = fitIoU(g0, ink), wt;
+  for (wt = -8; wt <= 8; wt++){
+    if (!wt) continue;
+    var sc = fitIoU(fitMorph(g0, G.w, G.h, wt), ink);
+    if (sc > bestS){ bestS = sc; best = wt; }
+  }
+  var mmPerUnit = G.cell ? G.mmCell / G.cell : 0;
+  if (!best){
+    if (info) info.textContent = "いまの太さがいちばん合っています（一致 " + Math.round(bestS*100) + "%）。";
+    msg("太さは、いまのままがいちばん合っています。", false); return;
+  }
+  var mm0 = measureGlyph(PE.contours);
+  if (!mm0.ink){ msg("画線の太さを測れませんでした。", true); return; }
+
+  var pct = (best * G.cell * 2) / mm0.ink * 100;      /* 両側に広がるので 2倍 */
+  var auto = peTotalPct() - num(PE.wpct, 0);          /* 可変軸ぶんは差し引く */
+  var want = Math.max(-WPCT_MAX, Math.min(WPCT_MAX, pct - auto));
+  var was = num(PE.wpct, 0);
+  PE.wpct = Math.round(want);
+  if ($("peW")) $("peW").value = PE.wpct;
+  peRender();
+  var dmm = Math.abs(best * G.cell * 2 * mmPerUnit);
+  if (info) info.textContent = "彫ってある画は、この字より約 " + dmm.toFixed(2) + "mm " +
+    (best > 0 ? "太い" : "細い") + "ので、「この字だけ ±%」を " + was + "% → " + PE.wpct + "% にしました。" +
+    "一致 " + Math.round(bestS*100) + "%。" +
+    (Math.abs(pct - auto) > WPCT_MAX ? "（ずらせる上限 " + WPCT_MAX + "% に抑えました）" : "") +
+    "　元に戻すときは、この数字を " + was + " に戻してください。";
+  msg("画線の太さを合わせました（" + was + "% → " + PE.wpct + "%）。", false);
+}
+
 function peFitTest(){
   if (!PE){ return; }
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
@@ -11859,6 +11918,7 @@ function openPathEditor(gi, ci){
   $("peRub").checked = !!PE.rub;
   $("peRub").disabled = !PE.rub;
   if ($("peFitTest")) $("peFitTest").disabled = !PE.rub;   /* 拓本が無ければ押せない */
+  if ($("peFitW")) $("peFitW").disabled = !PE.rub;
   $("peChar").textContent = Array.from(ch)[0] || "";
   $("pathEd").hidden = false;
   peRender();
@@ -12930,6 +12990,7 @@ $("peRedC").onclick = function(){
 };
 $("peRub").onchange = function(){ peRender(); };
 $("peFitTest").onclick = function(){ peFitTest(); };
+$("peFitW").onclick = function(){ peFitWeight(); };
 $("peFitEdge").onchange = function(){ peRender(); };
 $("peW").oninput = function(e){
   if (!PE) return;

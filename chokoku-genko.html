@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.26</title>
+<title>彫刻原稿 v20.27</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1203,6 +1203,9 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <button class="mini" id="peRubR">拓本の位置を戻す</button>
         <label class="f" style="margin-top:4px;"><span>濃さ</span>
           <input type="range" id="peRubOp" min="0.15" max="1" step="0.05" value="0.5"></label>
+        <h3 class="sec">テスト：拓本に合わせる</h3>
+        <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
+        <p class="hint" id="peFitInfo" style="margin:2px 0 0;">この字だけ、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <h3 class="sec">戻す</h3>
         <button class="mini" id="peReset">元の字に戻す</button>
@@ -1900,7 +1903,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.26";
+var APP_VER = "v20.27";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11403,6 +11406,311 @@ function simplifyContour(c, tol){
   return out.length > 2 ? out : c;
 }
 
+
+/* ===== テスト：拓本に合わせる（v20.27） =====================================
+   彫ってある字（拓本）に、これから彫る字の輪郭を寄せる。ここでやるのは
+   「字ぜんたいを一つの変形で動かす」ところまで。点は 1 つも動かさない。
+
+   拓本の墨をどう拾うか（実際の拓本で確かめた取り方）:
+     ・ぼかしてからしきい値を掛けると線が痩せ、細い画は消える。
+       ぼかした絵は「どこに文字があるか」を探すのにだけ使い、
+       縁の位置は元の画素で決める。
+     ・地にも白い粒が散っているので、細いつながりを一度切ってから、
+       いまの字の輪郭の近くにある塊だけを残す。
+       ＝ 文字と関係ない墨は、フォントの形が知っているので落とせる。 */
+
+/* --- 2×3 の行列。SVG と同じ並び [a,b,c,d,e,f]
+       x' = a x + c y + e ／ y' = b x + d y + f --- */
+function mMul(m, n){
+  return [ m[0]*n[0] + m[2]*n[1], m[1]*n[0] + m[3]*n[1],
+           m[0]*n[2] + m[2]*n[3], m[1]*n[2] + m[3]*n[3],
+           m[0]*n[4] + m[2]*n[5] + m[4], m[1]*n[4] + m[3]*n[5] + m[5] ];
+}
+function mT(x, y){ return [1,0,0,1,x,y]; }
+function mS(x, y){ return [x,0,0,(y===undefined?x:y),0,0]; }
+function mR(deg, cx, cy){
+  var t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  return mMul(mMul(mT(cx, cy), [c,s,-s,c,0,0]), mT(-cx, -cy));
+}
+function mInv(m){
+  var det = m[0]*m[3] - m[1]*m[2];
+  if (Math.abs(det) < 1e-12) return null;
+  var a =  m[3]/det, b = -m[1]/det, c = -m[2]/det, d = m[0]/det;
+  return [a, b, c, d, -(a*m[4] + c*m[5]), -(b*m[4] + d*m[5])];
+}
+function mApp(m, x, y){ return { x: m[0]*x + m[2]*y + m[4], y: m[1]*x + m[3]*y + m[5] }; }
+
+/* 拓本の画素 → 画面（輪郭編集の外側の座標）。peRubAttr と同じ並び */
+function peRubMat(){
+  var R = PE && PE.rub; if (!R || !RUB.W) return null;
+  var U = PE.upem, cx = U/2, cy = -(PE.asc + PE.desc)/2;
+  var of = rotOff(), rt = rubRotDeg();
+  var m = mT(R.dx, R.dy);
+  m = mMul(m, mT(cx, cy)); m = mMul(m, mS(R.k)); m = mMul(m, mT(-cx, -cy));
+  m = mMul(m, mT(R.ax, R.ay));
+  m = mMul(m, mS(R.kx, R.ky));
+  m = mMul(m, mT(of.x, of.y));
+  m = mMul(m, mR(rt, RUB.W/2, RUB.H/2));
+  return m;
+}
+
+/* 積分画像。四角い範囲の平均をすぐ出せるようにする */
+function fitIntegral(v, w, h){
+  var I = new Float64Array((w+1) * (h+1));
+  for (var y = 0; y < h; y++){
+    var run = 0;
+    for (var x = 0; x < w; x++){
+      run += v[y*w + x];
+      I[(y+1)*(w+1) + (x+1)] = I[y*(w+1) + (x+1)] + run;
+    }
+  }
+  return I;
+}
+
+/* 輪郭を格子に塗る。1 = 字の中 */
+function fitGlyphMask(contours, G){
+  var c = G.cv, cx = G.ctx;
+  cx.setTransform(1, 0, 0, 1, 0, 0);
+  cx.clearRect(0, 0, G.w, G.h);
+  cx.setTransform(1/G.cell, 0, 0, -1/G.cell, -G.x0/G.cell, G.y1/G.cell);
+  cx.fillStyle = "#000";
+  try { cx.fill(new Path2D(pathD(contours)), "nonzero"); } catch(e){ return null; }
+  cx.setTransform(1, 0, 0, 1, 0, 0);
+  var d = cx.getImageData(0, 0, G.w, G.h).data, m = new Uint8Array(G.w * G.h);
+  for (var i = 0, n = m.length; i < n; i++) m[i] = d[i*4+3] > 100 ? 1 : 0;
+  return m;
+}
+
+/* 拓本の墨を、字の格子の上に写し取る */
+function fitInkMask(G, glyph0){
+  var M = peRubMat(), Mi = M && mInv(M);
+  if (!Mi || !RUB.data) return null;
+  var W = RUB.W, H = RUB.H, px = RUB.data.data;
+  var w = G.w, h = G.h, val = new Float32Array(w*h), inv = S.rub.invert;
+  var hist = new Float64Array(256), got = 0;
+  for (var gy = 0; gy < h; gy++){
+    var uy = G.y1 - (gy + 0.5) * G.cell;          /* 字の座標（上向き） */
+    for (var gx = 0; gx < w; gx++){
+      var ux = G.x0 + (gx + 0.5) * G.cell;
+      var q = mApp(Mi, ux, -uy);                  /* 画面は下向きなので符号を返す */
+      var X = q.x | 0, Y = q.y | 0, v = 0;
+      if (X >= 0 && Y >= 0 && X < W && Y < H){
+        var p = (Y*W + X) * 4;
+        v = px[p]*0.299 + px[p+1]*0.587 + px[p+2]*0.114;
+        if (!inv) v = 255 - v;                    /* 白地に黒なら裏返す */
+        hist[v | 0]++; got++;
+      }
+      val[gy*w + gx] = v;
+    }
+  }
+  if (got < w*h*0.2) return null;                 /* 拓本の外だった */
+
+  /* しきい値は、この字の周りだけで決める（大津の方法）。
+     紙ぜんたいで 1 つ決めると、炭の乗り方の差でずれる。
+     字の中の囲み（「日」の中など）は炭が薄くて中くらいの明るさになるので、
+     明暗の谷を探すこの決め方でないと、囲みまで墨と間違える。 */
+  function pct(p){
+    var need = got * p, run = 0;
+    for (var i = 0; i < 256; i++){ run += hist[i]; if (run >= need) return i; }
+    return 255;
+  }
+  var lo = pct(0.05), hi = pct(0.97);
+  if (hi - lo < 25) return null;                  /* 明暗の差がない */
+  var T = otsu(hist, got);
+  if (T < lo + 8 || T > hi - 8) T = (lo + hi) / 2; /* 谷が端に寄ったときの逃げ */
+
+  var raw = new Uint8Array(w*h), i;
+  for (i = 0; i < w*h; i++) raw[i] = val[i] > T ? 1 : 0;
+
+  /* 細いつながりを切る（縮めてから広げる）。地の粒どうしの橋を落とす */
+  var op = Math.max(1, Math.round(G.mmCell ? 0.12 / G.mmCell : 1));
+  var a1 = fitMorph(raw, w, h, -op), a2 = fitMorph(a1, w, h, op);
+
+  /* 字の輪郭のそばにある塊だけ残す（＝フォントが持っている当たり）。
+     隣の字がかすっただけの塊は落としたいので、塊の大半がそばに無いと残さない。 */
+  var near = fitMorph(glyph0, w, h, Math.max(2, Math.round(G.mmCell ? 0.8 / G.mmCell : 4)));
+  return fitKeepNear(a2, near, w, h);
+}
+/* r>0 で広げる、r<0 で縮める（四角い窓。積分画像で速く） */
+function fitMorph(m, w, h, r){
+  var rr = Math.abs(r); if (!rr) return m;
+  var I = fitIntegral(m, w, h), out = new Uint8Array(w*h);
+  for (var y = 0; y < h; y++) for (var x = 0; x < w; x++){
+    var x1 = Math.max(0, x-rr), y1 = Math.max(0, y-rr);
+    var x2 = Math.min(w, x+rr+1), y2 = Math.min(h, y+rr+1);
+    var s = I[y2*(w+1)+x2] - I[y1*(w+1)+x2] - I[y2*(w+1)+x1] + I[y1*(w+1)+x1];
+    var n = (x2-x1) * (y2-y1);
+    out[y*w+x] = (r > 0) ? (s > 0 ? 1 : 0) : (s >= n ? 1 : 0);
+  }
+  return out;
+}
+/* 塊ごとに見て、その大半（3割以上）が near の中にあるものだけ残す。
+   隣の字が枠にかすっただけ、というものを落とすため。 */
+function fitKeepNear(m, near, w, h){
+  var out = new Uint8Array(w*h), seen = new Uint8Array(w*h);
+  var st = new Int32Array(w*h), cell = new Int32Array(w*h);
+  for (var s0 = 0; s0 < w*h; s0++){
+    if (!m[s0] || seen[s0]) continue;
+    var top = 0, cnt = 0, hit = 0;
+    st[top++] = s0; seen[s0] = 1;
+    while (top){
+      var i = st[--top]; cell[cnt++] = i; if (near[i]) hit++;
+      var x = i % w, y = (i - x) / w;
+      if (x > 0   && m[i-1] && !seen[i-1]){ seen[i-1] = 1; st[top++] = i-1; }
+      if (x < w-1 && m[i+1] && !seen[i+1]){ seen[i+1] = 1; st[top++] = i+1; }
+      if (y > 0   && m[i-w] && !seen[i-w]){ seen[i-w] = 1; st[top++] = i-w; }
+      if (y < h-1 && m[i+w] && !seen[i+w]){ seen[i+w] = 1; st[top++] = i+w; }
+    }
+    if (hit >= cnt * 0.3) for (var j = 0; j < cnt; j++) out[cell[j]] = 1;
+  }
+  return out;
+}
+/* 重心と広がり（字の座標で）。太さの違いに強いので、探し始めの見当に使う */
+function fitMoments(m, G){
+  var n = 0, sx = 0, sy = 0, i, x, y;
+  for (y = 0; y < G.h; y++) for (x = 0; x < G.w; x++){
+    if (!m[y*G.w + x]) continue;
+    n++; sx += x; sy += y;
+  }
+  if (n < 8) return null;
+  var mx = sx/n, my = sy/n, vx = 0, vy = 0;
+  for (y = 0; y < G.h; y++) for (x = 0; x < G.w; x++){
+    if (!m[y*G.w + x]) continue;
+    vx += (x-mx)*(x-mx); vy += (y-my)*(y-my);
+  }
+  return { x: G.x0 + (mx+0.5)*G.cell, y: G.y1 - (my+0.5)*G.cell,
+           sx: Math.sqrt(vx/n)*G.cell, sy: Math.sqrt(vy/n)*G.cell, n: n };
+}
+/* 重なり具合（重なった面積 ÷ 合わせた面積） */
+function fitIoU(a, b){
+  var and = 0, or = 0;
+  for (var i = 0, n = a.length; i < n; i++){
+    if (a[i] | b[i]){ or++; if (a[i] & b[i]) and++; }
+  }
+  return or ? and / or : 0;
+}
+/* 変形を輪郭に掛ける。中心は字の真ん中 */
+function fitApply(contours, p, cx, cy){
+  var t = p.rot * Math.PI / 180, co = Math.cos(t), si = Math.sin(t);
+  function go(x, y){
+    var X = (x - cx) * p.sx, Y = (y - cy) * p.sy;
+    X += Y * p.sh;                                  /* 傾き（せん断） */
+    var rx = X*co - Y*si, ry = X*si + Y*co;
+    return [rx + cx + p.dx, ry + cy + p.dy];
+  }
+  return contours.map(function(c){
+    return c.map(function(n){
+      var q = go(n.x, n.y), o = { x:q[0], y:q[1] };
+      if (n.i){ var a = go(n.i[0], n.i[1]); o.i = [a[0], a[1]]; }
+      if (n.o){ var b = go(n.o[0], n.o[1]); o.o = [b[0], b[1]]; }
+      return o;
+    });
+  });
+}
+
+/* 輪郭そのものの外枠（em の余白は入れない） */
+function fitInkBox(contours){
+  var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  contours.forEach(function(c){ c.forEach(function(n){
+    x1 = Math.min(x1, n.x); x2 = Math.max(x2, n.x);
+    y1 = Math.min(y1, n.y); y2 = Math.max(y2, n.y);
+  }); });
+  if (x2 <= x1 || y2 <= y1) return null;
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+}
+function peFitTest(){
+  if (!PE){ return; }
+  if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
+  var bb = fitInkBox(PE.contours);
+  if (!bb){ msg("形がありません。", true); return; }
+
+  /* 格子は拓本の 1 画素ぶんくらい。細かすぎても遅くなるだけ */
+  var pad = (bb.w + bb.h) * 0.25;
+  var x0 = bb.x - pad, y0 = bb.y - pad, x1 = bb.x + bb.w + pad, y1 = bb.y + bb.h + pad;
+  var cell = Math.max((x1-x0)/256, Math.abs(PE.rub.kx) || 1);
+  var w = Math.max(32, Math.min(320, Math.round((x1-x0)/cell)));
+  var h = Math.max(32, Math.min(320, Math.round((y1-y0)/cell)));
+  var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  var G = { cv:cv, ctx:cv.getContext("2d", { willReadFrequently:true }),
+            w:w, h:h, cell:cell, x0:x0, y1:y1,
+            mmCell: (PE.rub.kx ? cell * (mmPerPx() / Math.abs(PE.rub.kx)) : 0) };
+
+  var g0 = fitGlyphMask(PE.contours, G);
+  if (!g0){ msg("形を読めませんでした。", true); return; }
+  var ink = fitInkMask(G, g0);
+  if (!ink){ msg("拓本から墨を見つけられませんでした。拓本の位置と濃さを確かめてください。", true); return; }
+
+  var cx = bb.x + bb.w/2, cy = bb.y + bb.h/2;
+  /* 画線の太さも一緒に探す。フォントの方が太い（細い）ままだと、
+     重なりを増やそうとして字の大きさまで狂ってしまうため。
+     ここでは太さは「測るだけ」で、輪郭には掛けない。 */
+  var best = { dx:0, dy:0, sx:1, sy:1, sh:0, rot:0, wt:0 }, bestS;
+  var keys = ["dx","dy","sx","sy","sh","rot","wt"];
+  var step = { dx: bb.w*0.06, dy: bb.h*0.06, sx: 0.05, sy: 0.05, sh: 0.05, rot: 1.5, wt: 2 };
+  var lim  = { dx: bb.w*0.35, dy: bb.h*0.35, sx: 0.35, sy: 0.35, sh: 0.30, rot: 8, wt: 8 };
+
+  function score(p){
+    var m = fitGlyphMask(fitApply(PE.contours, p, cx, cy), G);
+    if (!m) return 0;
+    var wt = Math.round(p.wt);
+    if (wt) m = fitMorph(m, G.w, G.h, wt);
+    return fitIoU(m, ink);
+  }
+  var before = score(best); bestS = before;
+
+  /* 探し始めの見当を、重心と広がりから付ける。
+     画線の太さが違っても重心はあまりずれないので、いきなり総当たりするより
+     まともな所から始められる。 */
+  var M0 = fitMoments(g0, G), M1 = fitMoments(ink, G);
+  if (M0 && M1 && M0.sx > 1e-6 && M0.sy > 1e-6){
+    var p0 = { dx: M1.x - M0.x, dy: M1.y - M0.y,
+               sx: M1.sx / M0.sx, sy: M1.sy / M0.sy, sh: 0, rot: 0, wt: 0 };
+    p0.dx = Math.max(-lim.dx, Math.min(lim.dx, p0.dx));
+    p0.dy = Math.max(-lim.dy, Math.min(lim.dy, p0.dy));
+    p0.sx = Math.max(1-lim.sx, Math.min(1+lim.sx, p0.sx));
+    p0.sy = Math.max(1-lim.sy, Math.min(1+lim.sy, p0.sy));
+    var s0 = score(p0);
+    if (s0 > bestS){ best = p0; bestS = s0; }
+  }
+  for (var pass = 0; pass < 5; pass++){
+    var moved = false;
+    for (var ki = 0; ki < keys.length; ki++){
+      var k = keys[ki], base = { dx:best.dx, dy:best.dy, sx:best.sx, sy:best.sy, sh:best.sh, rot:best.rot };
+      for (var sg = -1; sg <= 1; sg += 2){
+        var p = { dx:base.dx, dy:base.dy, sx:base.sx, sy:base.sy, sh:base.sh, rot:base.rot };
+        p[k] = base[k] + sg * step[k];
+        if (k === "wt") p[k] = Math.round(p[k]);
+        var mid = (k === "sx" || k === "sy") ? 1 : 0;
+        if (Math.abs(p[k] - mid) > lim[k]) continue;
+        var sc = score(p);
+        if (sc > bestS + 1e-5){ bestS = sc; best = p; moved = true; }
+      }
+    }
+    if (!moved) for (var kj = 0; kj < keys.length; kj++) step[keys[kj]] *= 0.5;
+  }
+
+  var info = $("peFitInfo");
+  if (bestS <= before + 0.005){
+    if (info) info.textContent = "一致 " + Math.round(before*100) + "%。動かしても良くなりませんでした。" +
+      "拓本の位置がずれているか、この字は擦れているかもしれません。";
+    msg("これ以上よくなりませんでした（一致 " + Math.round(before*100) + "%）。", true);
+    return;
+  }
+  peSnap();
+  PE.contours = fitApply(PE.contours, best, cx, cy);   /* 太さ（wt）は掛けない */
+  PE.sel = []; PE.selC = [];
+  peRender();
+  if (info) info.textContent = "一致 " + Math.round(before*100) + "% → " + Math.round(bestS*100) + "%。" +
+    "（動かした量：よこ " + best.dx.toFixed(0) + "・たて " + best.dy.toFixed(0) + " 単位、" +
+    "よこ幅 ×" + best.sx.toFixed(3) + "・たて幅 ×" + best.sy.toFixed(3) +
+    "、傾き " + best.sh.toFixed(3) + "、回し " + best.rot.toFixed(1) + "°）" +
+    (Math.round(best.wt) && G.mmCell
+      ? "／彫ってある画は、いまの字より約 " + Math.abs(Math.round(best.wt) * 2 * G.mmCell).toFixed(1) +
+        "mm " + (best.wt > 0 ? "太い" : "細い") + "です（太さはまだ変えていません）"
+      : "");
+  msg("拓本に合わせました。一致 " + Math.round(before*100) + "% → " + Math.round(bestS*100) + "%。", false);
+}
+
 /* --- 編集画面 --- */
 function peSnap(){
   if (!PE) return;
@@ -11444,6 +11752,7 @@ function openPathEditor(gi, ci){
   $("peW").value = PE.wpct;
   $("peRub").checked = !!PE.rub;
   $("peRub").disabled = !PE.rub;
+  if ($("peFitTest")) $("peFitTest").disabled = !PE.rub;   /* 拓本が無ければ押せない */
   $("peChar").textContent = Array.from(ch)[0] || "";
   $("pathEd").hidden = false;
   peRender();
@@ -12512,6 +12821,7 @@ $("peRedC").onclick = function(){
              : "選んだ輪郭を 赤（ペンで書く）にしました。出力の赤に入ります。");
 };
 $("peRub").onchange = function(){ peRender(); };
+$("peFitTest").onclick = function(){ peFitTest(); };
 $("peW").oninput = function(e){
   if (!PE) return;
   PE.wpct = Math.max(-30, Math.min(30, num(e.target.value, 0)));

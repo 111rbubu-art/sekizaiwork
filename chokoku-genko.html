@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.63</title>
+<title>彫刻原稿 v20.64</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1211,6 +1211,12 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
             <button class="mini" id="peInkClr">塗りを消す</button>
           </div>
           <p class="hint" id="peInkInfo" style="margin:3px 0 0;"></p>
+          <button class="mini" id="peTaku" style="margin-top:5px;">この字を学習用に保存</button>
+          <div class="g2" style="margin-top:4px;">
+            <button class="mini" id="peTakuOut">学習用を書き出す</button>
+            <button class="mini" id="peTakuClr">学習用を消す</button>
+          </div>
+          <p class="hint" id="peTakuInfo" style="margin:3px 0 0;"></p>
         </div>
         <label class="chk" style="margin-bottom:6px;"><input type="checkbox" id="peGhost" checked style="width:auto;"> 元の形を薄く出す</label>
         <h3 class="sec">拓本に合わせる</h3>
@@ -1920,7 +1926,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.63";
+var APP_VER = "v20.64";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11491,6 +11497,230 @@ function simplifyContour(c, tol){
 }
 
 
+
+/* ===== 学習用データ（拓本クリーン化 AI の教師）＝ v20.64 ==========================
+   AI を立てる前から、教師データだけは貯めておく。
+   1 文字ぶんを、ぜんぶ同じ正方形に切りそろえて 3 枚 1 組で持つ。
+     raw  … 拓本の切り抜き（白黒の濃淡）
+     mask … 拾った墨に人の筆を重ねたもの＝正解
+     hint … いま合わせているフォントの字形（学習で手がかりに使える）
+   3 枚は「字の座標の正方形」から作るので、必ず 1 画素もずれずに重なる。
+   置き場はこの端末の IndexedDB。あとで ZIP にまとめて書き出す。 */
+var TAKU_N = 512;                       /* 1 辺の画素数 */
+function takuDB(){
+  return new Promise(function(res, rej){
+    var r = indexedDB.open("chokoku_taku", 1);
+    r.onupgradeneeded = function(){
+      if (!r.result.objectStoreNames.contains("pairs"))
+        r.result.createObjectStore("pairs", { keyPath: "id", autoIncrement: true });
+    };
+    r.onsuccess = function(){ res(r.result); };
+    r.onerror   = function(){ rej(r.error); };
+  });
+}
+async function takuAdd(rec){
+  var db = await takuDB();
+  return new Promise(function(res, rej){
+    var tx = db.transaction("pairs", "readwrite");
+    var rq = tx.objectStore("pairs").add(rec);
+    tx.oncomplete = function(){ res(rq.result); };
+    tx.onerror    = function(){ rej(tx.error); };
+    tx.onabort    = function(){ rej(tx.error); };
+  });
+}
+async function takuAll(){
+  var db = await takuDB();
+  return new Promise(function(res){
+    var out = [], rq = db.transaction("pairs").objectStore("pairs").openCursor();
+    rq.onsuccess = function(){
+      var c = rq.result;
+      if (!c){ res(out); return; }
+      out.push(c.value); c.continue();
+    };
+    rq.onerror = function(){ res(out); };
+  });
+}
+async function takuCount(){
+  var db = await takuDB();
+  return new Promise(function(res){
+    var rq = db.transaction("pairs").objectStore("pairs").count();
+    rq.onsuccess = function(){ res(rq.result || 0); };
+    rq.onerror   = function(){ res(0); };
+  });
+}
+async function takuClear(){
+  var db = await takuDB();
+  return new Promise(function(res, rej){
+    var tx = db.transaction("pairs", "readwrite");
+    tx.objectStore("pairs").clear();
+    tx.oncomplete = function(){ res(); };
+    tx.onerror    = function(){ rej(tx.error); };
+  });
+}
+
+/* 1 文字ぶんを切り出す。字の枠を正方形にして 2 割ふくらませた所を、
+   TAKU_N × TAKU_N に写す。3 枚とも同じ写し方なので、重ねればぴったり合う。 */
+function takuShot(){
+  if (!PE || !PE.rub || !RUB.data) return null;
+  var P = fitPrep(); if (!P) return null;
+  var G = P.G, ink = P.ink;
+  var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
+  var Mi = mInv(peRubMat()); if (!Mi) return null;
+  var bb = fitInkBox(PE.contours); if (!bb) return null;
+  var side = Math.max(bb.w, bb.h) * 1.2;
+  var cx = bb.x + bb.w/2, cy = bb.y + bb.h/2;
+  var x0 = cx - side/2, y1 = cy + side/2;       /* 左上（字の座標。y は上向き） */
+  var N = TAKU_N, st = side / N;
+
+  function cv(){ var c = document.createElement("canvas"); c.width = N; c.height = N; return c; }
+  var cR = cv(), cM = cv(), cH = cv();
+  var xR = cR.getContext("2d"), xM = cM.getContext("2d"), xH = cH.getContext("2d");
+  var iR = xR.createImageData(N, N), iM = xM.createImageData(N, N), iH = xH.createImageData(N, N);
+  var px = RUB.data.data, W = RUB.W, H = RUB.H;
+  for (var py = 0; py < N; py++){
+    var uy = y1 - (py + 0.5) * st;
+    for (var pxi = 0; pxi < N; pxi++){
+      var ux = x0 + (pxi + 0.5) * st, o = (py*N + pxi) * 4;
+      var q = mApp(Mi, ux, -uy);
+      var X = q.x | 0, Y = q.y | 0, v = 255;
+      if (X >= 0 && Y >= 0 && X < W && Y < H){
+        var p2 = (Y*W + X) * 4;
+        v = Math.round(px[p2]*0.299 + px[p2+1]*0.587 + px[p2+2]*0.114);
+      }
+      iR.data[o] = iR.data[o+1] = iR.data[o+2] = v; iR.data[o+3] = 255;
+      var m = fitSample(ink, G, ux, uy) ? 255 : 0;     /* 墨＝白 */
+      iM.data[o] = iM.data[o+1] = iM.data[o+2] = m; iM.data[o+3] = 255;
+      var g = fitSample(g0, G, ux, uy) ? 255 : 0;
+      iH.data[o] = iH.data[o+1] = iH.data[o+2] = g; iH.data[o+3] = 255;
+    }
+  }
+  xR.putImageData(iR, 0, 0); xM.putImageData(iM, 0, 0); xH.putImageData(iH, 0, 0);
+  var g = S.groups[PE.gi], AD = g ? adjOf(g, PE.ci) : null;
+  var mpu = peMmPerUnit();
+  return {
+    raw: cR.toDataURL("image/png"),
+    mask: cM.toDataURL("image/png"),
+    hint: cH.toDataURL("image/png"),
+    meta: {
+      char: $("peChar") ? $("peChar").textContent : "",
+      n: N,
+      sideUnits: Math.round(side),
+      sideMm: mpu ? +(side * mpu).toFixed(2) : null,
+      upem: PE.upem,
+      font: (AD && AD.path && AD.path.name) || (g && g.font) || "",
+      group: PE.gi, index: PE.ci,
+      thresh: (FIT_DIAG && FIT_DIAG.T) || null,
+      flat: !!(FIT_DIAG && FIT_DIAG.flat),
+      inkAdj: num($("peInkAdj") && $("peInkAdj").value, 0),
+      paint: (S.rub.paint || []).length,
+      rubName: (S.rub && S.rub.name) || "",
+      app: APP_VER,
+      at: new Date().toISOString()
+    }
+  };
+}
+async function takuSave(){
+  if (!PE){ return; }
+  if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
+  var sh = takuShot();
+  if (!sh){ msg("切り出せませんでした。", true); return; }
+  try {
+    var id = await takuAdd(sh);
+    var n = await takuCount();
+    msg("学習用に保存しました（" + (sh.meta.char || "?") + "／通算 " + n + " 組）。", false);
+    takuShow();
+    return id;
+  } catch(e){
+    msg("学習用に保存できませんでした（" + ((e && e.message) || "空き容量が足りないかもしれません") + "）。", true);
+  }
+}
+async function takuShow(){
+  var el = $("peTakuInfo"); if (!el) return;
+  var n = 0;
+  try { n = await takuCount(); } catch(e){}
+  el.textContent = n ? "学習用データ " + n + " 組（この端末に貯まっています）"
+                     : "学習用データはまだありません";
+}
+
+/* --- ZIP（つめ込みなし。PNG はもう縮んでいるので、そのまま並べる） --- */
+var CRC_T = null;
+function crc32(u8){
+  if (!CRC_T){
+    CRC_T = new Uint32Array(256);
+    for (var n = 0; n < 256; n++){
+      var c = n;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      CRC_T[n] = c >>> 0;
+    }
+  }
+  var crc = 0xFFFFFFFF;
+  for (var i = 0; i < u8.length; i++) crc = CRC_T[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function zipMake(files){
+  var u16 = function(n){ return [n & 255, (n >> 8) & 255]; };
+  var u32 = function(n){ return [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]; };
+  var parts = [], cen = [], off = 0, enc = new TextEncoder();
+  files.forEach(function(f){
+    var nm = enc.encode(f.name), crc = crc32(f.data), L = f.data.length;
+    var lh = new Uint8Array([].concat([0x50,0x4b,0x03,0x04], u16(20), u16(0), u16(0), u16(0), u16(0),
+                                      u32(crc), u32(L), u32(L), u16(nm.length), u16(0)));
+    parts.push(lh, nm, f.data);
+    cen.push(new Uint8Array([].concat([0x50,0x4b,0x01,0x02], u16(20), u16(20), u16(0), u16(0),
+                                      u16(0), u16(0), u32(crc), u32(L), u32(L),
+                                      u16(nm.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(off))),
+             nm);
+    off += lh.length + nm.length + L;
+  });
+  var cst = off;
+  cen.forEach(function(b){ parts.push(b); off += b.length; });
+  parts.push(new Uint8Array([].concat([0x50,0x4b,0x05,0x06], u16(0), u16(0),
+                                      u16(files.length), u16(files.length),
+                                      u32(off - cst), u32(cst), u16(0))));
+  return new Blob(parts, { type: "application/zip" });
+}
+function dataUrlBytes(u){
+  var b = atob(String(u).split(",")[1] || ""), a = new Uint8Array(b.length);
+  for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+  return a;
+}
+async function takuExport(){
+  var rows;
+  try { rows = await takuAll(); } catch(e){ rows = []; }
+  if (!rows.length){ msg("学習用データがありません。", true); return; }
+  var files = [], enc = new TextEncoder();
+  var csv = ["id,char,font,side_mm,thresh,ink_adj,paint,app,at"];
+  rows.forEach(function(r){
+    var id = "pair_" + String(r.id).padStart(5, "0");
+    files.push({ name: "pairs/" + id + "_raw.png",  data: dataUrlBytes(r.raw) });
+    files.push({ name: "pairs/" + id + "_mask.png", data: dataUrlBytes(r.mask) });
+    files.push({ name: "pairs/" + id + "_hint.png", data: dataUrlBytes(r.hint) });
+    files.push({ name: "pairs/" + id + "_meta.json",
+                 data: enc.encode(JSON.stringify(r.meta, null, 1)) });
+    var m = r.meta || {};
+    csv.push([id, m.char, m.font, m.sideMm, m.thresh, m.inkAdj, m.paint, m.app, m.at]
+             .map(function(v){ return '"' + String(v === undefined || v === null ? "" : v).replace(/"/g, '""') + '"'; })
+             .join(","));
+  });
+  files.push({ name: "index.csv", data: enc.encode("﻿" + csv.join("\r\n")) });
+  files.push({ name: "README.txt", data: enc.encode(
+    "拓本クリーン化 AI の学習用データ\n\n" +
+    "pairs/pair_NNNNN_raw.png   拓本の切り抜き（" + TAKU_N + "×" + TAKU_N + "・白黒の濃淡）\n" +
+    "pairs/pair_NNNNN_mask.png  正解（墨＝白・地＝黒）。人が筆で直したもの\n" +
+    "pairs/pair_NNNNN_hint.png  そのとき合わせていたフォントの字形（学習の手がかり用）\n" +
+    "pairs/pair_NNNNN_meta.json 文字・フォント名・実寸・しきい値など\n\n" +
+    "3 枚は同じ正方形から作ってあるので、1 画素もずれずに重なります。\n" +
+    "hint を入力の 2 枚目に使うときは、学習中に 3 割ほど白紙に差し替えてください。\n" +
+    "そうしないと、拓本を見ずに hint を写すだけのモデルになります。\n") });
+  var bl = zipMake(files);
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(bl);
+  a.download = "takuhon_pairs_" + new Date().toISOString().slice(0,10).replace(/-/g,"") + ".zip";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 4000);
+  msg(rows.length + " 組を書き出しました。", false);
+}
+
 /* ===== テスト：拓本に合わせる（v20.27） =====================================
    彫ってある字（拓本）に、これから彫る字の輪郭を寄せる。ここでやるのは
    「字ぜんたいを一つの変形で動かす」ところまで。点は 1 つも動かさない。
@@ -12473,6 +12703,7 @@ function openPathEditor(gi, ci){
   $("peChar").textContent = Array.from(ch)[0] || "";
   $("pathEd").hidden = false;
   peRender();
+  takuShow();
 }
 function closePathEditor(){ peMenuClose(); PE = null; $("pathEd").hidden = true; }
 
@@ -13656,6 +13887,15 @@ $("peInkClr").onclick = function(){
   msg(n + " 本の塗りを消しました。拾い方は元どおりです。");
 };
 $("peBrush").onchange = function(){ peRender(); };
+$("peTaku").onclick    = function(){ takuSave(); };
+$("peTakuOut").onclick = function(){ takuExport(); };
+$("peTakuClr").onclick = function(){
+  takuCount().then(function(n){
+    if (!n){ msg("学習用データはありません。", true); return; }
+    if (!confirm(n + " 組の学習用データを消します。書き出していないと戻せません。よろしいですか。")) return;
+    takuClear().then(function(){ msg("学習用データを消しました。"); takuShow(); });
+  });
+};
 $("peInkAdj").onchange = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peInkAdj").oninput  = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peW").oninput = function(e){

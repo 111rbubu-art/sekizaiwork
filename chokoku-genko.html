@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.64</title>
+<title>彫刻原稿 v20.65</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1212,9 +1212,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           </div>
           <p class="hint" id="peInkInfo" style="margin:3px 0 0;"></p>
           <button class="mini" id="peTaku" style="margin-top:5px;">この字を学習用に保存</button>
+          <button class="mini" id="peTakuPush" style="margin-top:4px;">この端末の分を共有フォルダーへ送る</button>
           <div class="g2" style="margin-top:4px;">
-            <button class="mini" id="peTakuOut">学習用を書き出す</button>
-            <button class="mini" id="peTakuClr">学習用を消す</button>
+            <button class="mini" id="peTakuOut">この端末の分を書き出す</button>
+            <button class="mini" id="peTakuClr">この端末の分を消す</button>
           </div>
           <p class="hint" id="peTakuInfo" style="margin:3px 0 0;"></p>
         </div>
@@ -1926,7 +1927,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.64";
+var APP_VER = "v20.65";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11518,6 +11519,45 @@ function takuDB(){
     r.onerror   = function(){ rej(r.error); };
   });
 }
+/* 共有フォルダー（テンプレートと同じ所）の下の「拓本学習データ」。
+   無ければ作る。ここに 1 文字＝1 つの ZIP で置く（v20.65）。 */
+var TAKU_DIR = "拓本学習データ";
+var TAKU_SPID = "";
+async function takuDirId(){
+  if (TAKU_SPID) return TAKU_SPID;
+  var pid = await fontDirId(true);
+  var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + pid +
+    "/children?$top=200&$select=id,name,folder");
+  var hit = (r.value || []).filter(function(x){ return x.folder && sameName(x.name, TAKU_DIR); })[0];
+  if (hit){ TAKU_SPID = hit.id; return TAKU_SPID; }
+  var made = await graph("/drives/" + SP.cfg.driveId + "/items/" + pid + "/children",
+    { method: "POST", json: { name: TAKU_DIR, folder: {},
+                              "@microsoft.graph.conflictBehavior": "rename" } });
+  TAKU_SPID = made.id;
+  return TAKU_SPID;
+}
+/* 1 文字ぶんを 1 つの ZIP にまとめる（中身は書き出しと同じ並び） */
+function takuZipOne(sh, id){
+  var enc = new TextEncoder();
+  return zipMake([
+    { name: "raw.png",   data: dataUrlBytes(sh.raw) },
+    { name: "mask.png",  data: dataUrlBytes(sh.mask) },
+    { name: "hint.png",  data: dataUrlBytes(sh.hint) },
+    { name: "meta.json", data: enc.encode(JSON.stringify(
+        Object.assign({ id: id || "" }, sh.meta), null, 1)) }
+  ]);
+}
+function takuName(sh){
+  var t = String(sh.meta.at || "").replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  var ch = String(sh.meta.char || "字").replace(/[\\/:*?"<>|]/g, "_");
+  return "pair_" + t + "_" + ch + ".zip";
+}
+async function takuPutSP(sh){
+  var dir = await takuDirId();
+  var nm = takuName(sh);
+  await spPutIn(dir, nm, takuZipOne(sh, nm.replace(/\.zip$/, "")), "application/zip");
+  return nm;
+}
 async function takuAdd(rec){
   var db = await takuDB();
   return new Promise(function(res, rej){
@@ -11624,22 +11664,62 @@ async function takuSave(){
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
   var sh = takuShot();
   if (!sh){ msg("切り出せませんでした。", true); return; }
+  /* つながっていれば共有フォルダー（テンプレートと同じ所）へ。
+     つながっていなければ この端末に貯めて、あとで送る。テンプレートと同じ考え方。 */
+  if (fontDirReady()){
+    try {
+      msg("共有フォルダーに保存しています…", false, true);
+      var nm = await takuPutSP(sh);
+      msg("共有フォルダーに保存しました（" + nm + "）。", false);
+      takuShow();
+      return nm;
+    } catch(e){
+      msg("共有フォルダーに保存できませんでした：" + spErrText(e) +
+          "／この端末に貯めます。", true, true);
+    }
+  }
   try {
     var id = await takuAdd(sh);
     var n = await takuCount();
-    msg("学習用に保存しました（" + (sh.meta.char || "?") + "／通算 " + n + " 組）。", false);
+    msg("この端末に貯めました（" + (sh.meta.char || "?") + "／" + n + " 組）。" +
+        "［共有フォルダーへ送る］でまとめて送れます。", false);
     takuShow();
     return id;
-  } catch(e){
-    msg("学習用に保存できませんでした（" + ((e && e.message) || "空き容量が足りないかもしれません") + "）。", true);
+  } catch(e2){
+    msg("学習用に保存できませんでした（" + ((e2 && e2.message) || "空き容量が足りないかもしれません") + "）。", true);
   }
+}
+/* この端末に貯まっている分を、まとめて共有フォルダーへ送る */
+async function takuPush(){
+  if (!fontDirReady()){ msg("本体アプリから開くと、共有フォルダーへ送れます。", true); return; }
+  var rows;
+  try { rows = await takuAll(); } catch(e){ rows = []; }
+  if (!rows.length){ msg("この端末に貯まっている分はありません。", true); return; }
+  var ok = 0, ng = 0, lastErr = "";
+  for (var i = 0; i < rows.length; i++){
+    msg("共有フォルダーへ送っています… " + (i+1) + " / " + rows.length, false, true);
+    try { await takuPutSP(rows[i]); ok++; }
+    catch(e){ ng++; lastErr = spErrText(e); }
+  }
+  if (ok && !ng){
+    await takuClear();
+    msg(ok + " 組を共有フォルダーへ送りました（この端末の分は消しました）。", false);
+  } else {
+    msg(ok + " 組を送りました。" + ng + " 組は送れませんでした（" + lastErr +
+        "）。送れなかった分はこの端末に残しています。", true, true);
+  }
+  takuShow();
 }
 async function takuShow(){
   var el = $("peTakuInfo"); if (!el) return;
   var n = 0;
   try { n = await takuCount(); } catch(e){}
-  el.textContent = n ? "学習用データ " + n + " 組（この端末に貯まっています）"
-                     : "学習用データはまだありません";
+  var where = fontDirReady()
+    ? "保存先は共有フォルダーの「" + FONT_DIR + "/" + TAKU_DIR + "」です。"
+    : "本体アプリから開いていないので、この端末に貯めます。";
+  el.textContent = where + (n ? "この端末に未送信 " + n + " 組。" : "");
+  var pb = $("peTakuPush");
+  if (pb) pb.disabled = !n || !fontDirReady();
 }
 
 /* --- ZIP（つめ込みなし。PNG はもう縮んでいるので、そのまま並べる） --- */
@@ -13889,6 +13969,7 @@ $("peInkClr").onclick = function(){
 $("peBrush").onchange = function(){ peRender(); };
 $("peTaku").onclick    = function(){ takuSave(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
+$("peTakuPush").onclick = function(){ takuPush(); };
 $("peTakuClr").onclick = function(){
   takuCount().then(function(n){
     if (!n){ msg("学習用データはありません。", true); return; }

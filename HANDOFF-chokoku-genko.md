@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-09　**chokoku-genko.html = v20.64**／**index_b.html = v1.9.424**／**tekkyo.html = v3.5**
+最終更新: 2026-09-09　**chokoku-genko.html = v20.65**／**index_b.html = v1.9.424**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -1513,8 +1513,18 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
   - 3 枚とも**「字の座標の正方形」（字の枠を正方形にして 2 割ふくらませた所）から
     同じ写し方で作る**ので、1 画素もずれずに重なる。実測で、mask が白の所の raw の
     明るさ 196／黒の所 96 と、はっきり分かれることを確認（ずれていれば両方 129 になる）
-  - 置き場は**この端末の IndexedDB**（`chokoku_taku` / `pairs`）。
+  - **置き場は共有フォルダー**（v20.65）。テンプレートと同じ
+    `/業務アプリ/アプリ使用フォント` の下に **`拓本学習データ`** を作り、
+    **1 文字＝1 つの ZIP**（`pair_YYYYMMDD-HHMMSS_字.zip`／中身は
+    `raw.png`・`mask.png`・`hint.png`・`meta.json`）で置く。
+    テンプレートと同じ `fontDirId(true)`＋`spPutIn()` を使う
+  - **つながっていないときは この端末の IndexedDB**（`chokoku_taku` / `pairs`）に貯め、
+    ［この端末の分を共有フォルダーへ送る］でまとめて送る（送れた分だけ端末から消す）。
+    テンプレートの `tplStore()` と同じ考え方。
     フォントの置き場（`chokoku` / `kv`）とは別の DB なので、互いに影響しない
+  - **注意：共有フォルダーへの実際の書き込みは、この場では試せていない**
+    （Graph の呼び出しを差し替えて、行き先・ファイル名・種類・大きさが
+    正しく組み立てられることまでは確かめた）。実機で 1 文字ためすこと
   - ［学習用を書き出す］で **ZIP**（つめ込みなし・自前の `zipMake`）。
     `pairs/pair_NNNNN_{raw,mask,hint}.png` ＋ `_meta.json` ＋ `index.csv` ＋ `README.txt`。
     `unzip -t` が通ることを確認済み

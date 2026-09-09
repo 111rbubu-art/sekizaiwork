@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.51</title>
+<title>彫刻原稿 v20.52</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1207,6 +1207,9 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="chk" style="margin-bottom:5px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> テスト：拾った墨のふちを出す</label>
         <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
         <button class="mini" id="peFitW" style="margin-top:4px;">テスト：画線の太さを拓本に合わせる</button>
+        <label class="f" style="margin-top:5px;"><span>点の間隔 mm</span>
+          <input type="number" id="peStep" value="0.5" step="0.1" min="0.1" max="5"></label>
+        <button class="mini" id="peDense" style="margin-top:4px;">テスト：この間隔で点を増やす（寄せる前に）</button>
         <button class="mini" id="peFitSnap" style="margin-top:4px;">テスト：縁を拓本に寄せる（点を選んでいれば その点だけ）</button>
         <label class="f" style="margin-top:5px;"><span>離れていると見なす mm</span>
           <input type="number" id="peFar" value="0.3" step="0.05" min="0.02" max="5"></label>
@@ -1910,7 +1913,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.51";
+var APP_VER = "v20.52";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11731,6 +11734,8 @@ function fitInkBox(contours){
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
 }
 var FIT_DIAG = null;      /* テスト用：しきい値などの内訳 */
+var FIT_LAM = 1.5;        /* 縁に寄せるときの「なめらかさ」。大きいほど、拓本の擦れに引っぱられない */
+var FIT_BLUR = 1;         /* 墨の縁をならす幅（ます）。大きいほど、拓本のギザギザを拾わない */
 /* 解析につかう格子。ふち出しと合わせ込みで同じものを使う */
 function fitGrid(){
   var bb = fitInkBox(PE.contours); if (!bb) return null;
@@ -11872,6 +11877,39 @@ function fitSample(m, G, x, y){
   if (gx < 0 || gy < 0 || gx >= G.w || gy >= G.h) return 0;
   return m[gy*G.w + gx];
 }
+/* 墨のますを、まわり 3×3 でならした「濃さ 0〜1」の面にする（v20.52）。
+   ますは 0.1mm ほどあるので、縁を「ますの真ん中」で決めると
+   点ごとに 0.05mm ほどの食いちがいが出て、寄せたあとの輪貨がギザギザになる。
+   ならした面の「0.5 になる所」を線で割り出すと、ますより細かく縁を決められる。 */
+function fitSoft(ink, G, R){
+  var w = G.w, h = G.h, f = new Float32Array(w*h), x, y, i, j;
+  R = R || 1;
+  for (y = 0; y < h; y++){
+    for (x = 0; x < w; x++){
+      var s = 0, c = 0;
+      for (j = -R; j <= R; j++){
+        for (i = -R; i <= R; i++){
+          var xx = x + i, yy = y + j;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          s += ink[yy*w + xx] ? 1 : 0; c++;
+        }
+      }
+      f[y*w + x] = c ? s / c : 0;
+    }
+  }
+  return f;
+}
+function fitSampleS(f, G, x, y){
+  var gx = (x - G.x0) / G.cell - 0.5, gy = (G.y1 - y) / G.cell - 0.5;
+  var x0 = Math.floor(gx), y0 = Math.floor(gy), tx = gx - x0, ty = gy - y0;
+  function at(a, b){
+    if (a < 0) a = 0; if (b < 0) b = 0;
+    if (a >= G.w) a = G.w - 1; if (b >= G.h) b = G.h - 1;
+    return f[b*G.w + a];
+  }
+  return at(x0,y0)*(1-tx)*(1-ty) + at(x0+1,y0)*tx*(1-ty) +
+         at(x0,y0+1)*(1-tx)*ty   + at(x0+1,y0+1)*tx*ty;
+}
 function peFitEdgeSnap(){
   if (!PE) return;
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
@@ -11923,66 +11961,98 @@ function peFitEdgeSnap(){
     PE.sel.forEach(function(q){ only[q.c + "/" + q.n] = 1; });
   }
 
+  /* 縁へ寄せる量を、点ごとに測る（v20.52）。
+     測れた点だけを動かし、測れなかった点をその場に留めると、
+     となり合う点の動きが食い違って、輪郭に角ができる（＝字の形が崩れる）。
+     そこで「測れた量」を手がかりに、輪郭ぜんたいの動きをなめらかに解く。
+       ・測れた点  … その量に近づける
+       ・測れない点… となりの動きから受け継ぐ（＝つられて動く）
+       ・選んでいない点 … 0 で固定（そのかわり、そのとなりは 0 へなだらかに戻る）
+     u[i] = (cf・d + λ(u[i-1] + u[i+1])) / (cf + 2λ) をくり返すだけ。 */
+  if (!PE.inkC.soft || PE.inkC.softR !== FIT_BLUR){ PE.inkC.soft = fitSoft(ink, G, FIT_BLUR); PE.inkC.softR = FIT_BLUR; }
+  var soft = PE.inkC.soft;
+  var LAM = FIT_LAM, ITER = 120, mmU = G.mmCell / G.cell;
   var next = PE.contours.map(function(c, cidx){
-    var n = c.length, i, dsp = new Array(n), nor = new Array(n);
+    var n = c.length, i, j;
+    if (n < 3){ keptN += n; return c; }
+    var nor = new Array(n), sgn = new Array(n), lock = new Array(n),
+        d = new Float64Array(n), cf = new Float64Array(n), known = 0;
+
+    /* ① 輪郭に垂直な向きと、その外向き（字の中でない方が外） */
     for (i = 0; i < n; i++){
-      if (only && !only[cidx + "/" + i]){ dsp[i] = null; continue; }   /* 選んでいない点は動かさない */
       var p = c[i], a = c[(i-1+n)%n], b = c[(i+1)%n];
       var tx = b.x - a.x, ty = b.y - a.y, L = Math.sqrt(tx*tx + ty*ty);
-      if (L < 1e-9){ dsp[i] = null; continue; }
-      var nx = ty / L, ny = -tx / L;             /* 輪郭に垂直 */
-      /* 外向きを決める。字の中でない方が外 */
+      if (L < 1e-9){ nor[i] = null; sgn[i] = 0; continue; }
+      nor[i] = [ty / L, -tx / L];
       var pr = G.cell * 2;
-      var iA = fitSample(g0, G, p.x + nx*pr, p.y + ny*pr);
-      var iB = fitSample(g0, G, p.x - nx*pr, p.y - ny*pr);
-      if (iA === iB){ dsp[i] = null; continue; } /* 角など、決められない所は動かさない */
-      if (iA){ nx = -nx; ny = -ny; }
-      nor[i] = [nx, ny];
-      /* 墨の縁を探す。向きは決め打ちにする。
+      var iA = fitSample(g0, G, p.x + nor[i][0]*pr, p.y + nor[i][1]*pr);
+      var iB = fitSample(g0, G, p.x - nor[i][0]*pr, p.y - nor[i][1]*pr);
+      sgn[i] = (iA === iB) ? 0 : (iA ? -1 : 1);
+      if (sgn[i]) known++;
+    }
+    if (!known){ keptN += n; return c; }          /* 外向きが決まらない輪郭は触らない */
+    /* 角など、外向きを決められなかった点は、となりから受け継ぐ（2周なめる） */
+    var last = 0;
+    for (j = 0; j < n*2; j++){
+      var k2 = j % n;
+      if (sgn[k2]) last = sgn[k2]; else if (last) sgn[k2] = last;
+    }
+    for (i = 0; i < n; i++) if (nor[i] && sgn[i] < 0){ nor[i] = [-nor[i][0], -nor[i][1]]; }
+
+    /* ② 墨の縁までの距離を測る。向きは決め打ちにする。
          「いちばん近い縁」を内外どちらでも探すと、細い画では
          向かい側の縁に飛び移って、画がつぶれてしまう。
            ・いま墨の中にいる → 外へ、墨が切れる所まで
-           ・いま墨の外にいる → 内へ、墨に入る所まで
-         見つからなければ動かさない。 */
-      var hit = null, t, d;
-      if (fitSample(ink, G, p.x, p.y)){
-        for (t = STEP; t <= RANGE; t += STEP){
-          d = t * G.cell;
-          if (!fitSample(ink, G, p.x + nx*d, p.y + ny*d)){ hit = d - G.cell*STEP/2; break; }
-        }
-      } else {
-        for (t = STEP; t <= RANGE_IN; t += STEP){
-          d = -t * G.cell;
-          if (fitSample(ink, G, p.x + nx*d, p.y + ny*d)){ hit = d + G.cell*STEP/2; break; }
-        }
-      }
-      dsp[i] = hit;
-    }
-    /* 隣とかけ離れた動きは捨てる */
+           ・いま墨の外にいる → 内へ、墨に入る所まで */
     for (i = 0; i < n; i++){
-      if (dsp[i] === null) continue;
-      var sum = 0, cnt = 0, j;
+      lock[i] = !!(only && !only[cidx + "/" + i]);
+      if (lock[i] || !nor[i]) continue;
+      var q = c[i], nx = nor[i][0], ny = nor[i][1], hit = null, t, dd;
+      var v0 = fitSampleS(soft, G, q.x, q.y), inside = v0 >= 0.5;
+      var dir = inside ? 1 : -1, lim = inside ? RANGE : RANGE_IN;
+      var pT = 0, pV = v0;
+      for (t = STEP; t <= lim; t += STEP){
+        dd = dir * t * G.cell;
+        var v = fitSampleS(soft, G, q.x + nx*dd, q.y + ny*dd);
+        if (inside ? (v < 0.5) : (v >= 0.5)){
+          var fr = (v === pV) ? 0.5 : (0.5 - pV) / (v - pV);
+          if (!(fr >= 0)) fr = 0; if (fr > 1) fr = 1;
+          hit = dir * (pT + fr*STEP) * G.cell;     /* ますより細かく、縁の位置を割り出す */
+          break;
+        }
+        pT = t; pV = v;
+      }
+      if (hit !== null){ d[i] = hit; cf[i] = 1; }
+    }
+
+    /* ③ となりとかけ離れた量は、手がかりから外す（拓本の擦れ・欠け） */
+    for (i = 0; i < n; i++){
+      if (!cf[i]) continue;
+      var sum = 0, cnt = 0;
       for (j = -2; j <= 2; j++){
         if (!j) continue;
-        var v = dsp[(i + j + n) % n];
-        if (v !== null){ sum += v; cnt++; }
+        var m2 = (i + j + n) % n;
+        if (cf[m2]){ sum += d[m2]; cnt++; }
       }
-      if (cnt && Math.abs(dsp[i] - sum/cnt) > LIM * G.cell) dsp[i] = null;
+      if (cnt && Math.abs(d[i] - sum/cnt) > LIM * G.cell) cf[i] = 0;
     }
-    /* 軽くならす（動かす量だけ。位置そのものはならさない） */
-    var sm = dsp.slice();
-    for (i = 0; i < n; i++){
-      if (dsp[i] === null) continue;
-      var pv = dsp[(i-1+n)%n], nv = dsp[(i+1)%n], w = 2, s = dsp[i]*2;
-      if (pv !== null){ s += pv; w++; }
-      if (nv !== null){ s += nv; w++; }
-      sm[i] = s / w;
+
+    /* ④ なめらかに解く */
+    var u = new Float64Array(n);
+    for (i = 0; i < n; i++) u[i] = lock[i] ? 0 : d[i];
+    for (j = 0; j < ITER; j++){
+      for (i = 0; i < n; i++){
+        if (lock[i]){ u[i] = 0; continue; }
+        u[i] = (cf[i]*d[i] + LAM*(u[(i-1+n)%n] + u[(i+1)%n])) / (cf[i] + 2*LAM);
+      }
     }
+
     return c.map(function(p, i2){
-      if (sm[i2] === null || !nor[i2]){ keptN++; return p; }
-      var dx = nor[i2][0] * sm[i2], dy = nor[i2][1] * sm[i2];
-      if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) movedN++;
-      if (sm[i2] < -RANGE * G.cell) pulledN++;      /* 遠くから引き戻した点 */
+      if (lock[i2] || !nor[i2] || !u[i2]){ keptN++; return p; }
+      if (Math.abs(u[i2]) * mmU < 0.005){ keptN++; return p; }
+      var dx = nor[i2][0] * u[i2], dy = nor[i2][1] * u[i2];
+      movedN++;
+      if (u[i2] < -RANGE * G.cell) pulledN++;      /* 遠くから引き戻した点 */
       var q = { x: p.x + dx, y: p.y + dy };
       if (p.i) q.i = [p.i[0] + dx, p.i[1] + dy];   /* ハンドルも同じだけ動かす */
       if (p.o) q.o = [p.o[0] + dx, p.o[1] + dy];
@@ -13319,6 +13389,51 @@ function thinFlatNodes(c, tol){
   return out.length > 2 ? out : c;
 }
 
+/* 輪郭に点を増やす（v20.52）。
+   フォントの字は、直線の所には両はしにしか点がない。
+   点が無い所は、拓本の縁がどれだけずれていても寄せようがないので、
+   まず決めた間隔で点を打ち直してから［縁に寄せる］を押す。
+   区間を半分に割るだけなので、形はまったく変わらない（曲線もそのまま）。 */
+function densifyContours(cts, stepU){
+  return cts.map(function(c0){
+    var c = c0.map(function(p){
+      return { x:p.x, y:p.y, i:p.i ? [p.i[0],p.i[1]] : null, o:p.o ? [p.o[0],p.o[1]] : null };
+    });
+    var guard = 0;
+    for (var j = 0; j < c.length && guard < 20000; j++){
+      var a = c[j], b = c[(j+1) % c.length];
+      var p1 = a.o || [a.x,a.y], p2 = b.i || [b.x,b.y];
+      var L = Math.sqrt(Math.pow(p1[0]-a.x,2) + Math.pow(p1[1]-a.y,2)) +
+              Math.sqrt(Math.pow(p2[0]-p1[0],2) + Math.pow(p2[1]-p1[1],2)) +
+              Math.sqrt(Math.pow(b.x-p2[0],2) + Math.pow(b.y-p2[1],2));
+      if (L > stepU * 1.5){ splitSegAt(c, j, 0.5); j--; guard++; }
+    }
+    return c;
+  });
+}
+function peDensify(){
+  if (!PE) return;
+  var info = $("peFitInfo");
+  var mm = Math.max(0.1, num($("peStep") && $("peStep").value, 0.5));
+  var mpu = peMmPerUnit();
+  if (!mpu){ msg("字の大きさが分からないので、間隔を決められません。", true); return; }
+  var p0 = PE.contours.reduce(function(a, c){ return a + c.length; }, 0);
+  var out = densifyContours(PE.contours, mm / mpu);
+  var p1 = out.reduce(function(a, c){ return a + c.length; }, 0);
+  if (p1 <= p0){
+    if (info) info.textContent = "すでに " + mm + "mm より細かく点が並んでいます（" + p0 + " 点）。";
+    msg("点は増えませんでした。", false); return;
+  }
+  peSnap();
+  PE.contours = out;
+  PE.sel = []; PE.selC = [];
+  peRender();
+  if (info) info.textContent = "およそ " + mm + "mm ごとに点を打ち直しました（" + p0 + " → " + p1 + " 点）。" +
+    "形は変えていません。このあと［縁を拓本に寄せる］を押すと、細かく寄ります。" +
+    "点が多すぎたら、取り消しで戻せます。";
+  msg("点を増やしました（" + p0 + " → " + p1 + "）。", false);
+}
+
 /* 引いた線に沿って、決めた幅の隙間をあける */
 function peSlit(A, B, mm){
   var vx = B.x - A.x, vy = B.y - A.y, L = Math.sqrt(vx*vx + vy*vy);
@@ -13423,6 +13538,7 @@ $("peRedC").onclick = function(){
 $("peRub").onchange = function(){ peRender(); };
 $("peFitTest").onclick = function(){ peFitTest(); };
 $("peFitW").onclick = function(){ peFitWeight(); };
+$("peDense").onclick = function(){ peDensify(); };
 $("peFitSnap").onclick = function(){ peFitEdgeSnap(); };
 $("peFitFar").onclick = function(){ peFitPickFar(); };
 $("peFitEdge").onchange = function(){ peRender(); };

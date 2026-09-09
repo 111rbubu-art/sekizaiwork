@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.42</title>
+<title>彫刻原稿 v20.43</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1178,6 +1178,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <button class="mini pt" data-t="oval">丸を置く</button>
           <button class="mini pt" data-t="cut">線で切る</button>
         </div>
+        <label class="f" style="margin-top:5px;"><span>線で切るときの隙間 mm（0＝ただ切る）</span>
+          <input type="number" id="peGap" value="0" step="0.1" min="0" max="5"></label>
 
         <h3 class="sec">操作（押すと 1回だけ）</h3>
         <button class="mini" id="peDelN">選んだ点を消す</button>
@@ -1909,7 +1911,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.42";
+var APP_VER = "v20.43";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13127,12 +13129,100 @@ function splitSegAt(c, j, t){
   c.splice(j + 1, 0, { x: mid[0], y: mid[1], i: curve ? r0 : null, o: curve ? q2 : null });
   return j + 1;
 }
+
+/* 字の 1 単位が何 mm か。隙間の幅を mm で指定するために使う。 */
+function peMmPerUnit(){
+  if (!PE) return 0;
+  var g = S.groups[PE.gi], rows = layout(), r = rows && rows[PE.gi];
+  if (g && r){
+    var AD = adjOf(g, PE.ci);
+    var hh = AD.hmm > 0 ? AD.hmm : r.h * AD.sc;
+    if (hh > 0 && PE.upem) return hh / PE.upem;
+  }
+  if (PE.rub && PE.rub.ky) return mmPerPx() / Math.abs(PE.rub.ky);
+  return 0;
+}
+
+/* 帯（四角）のぶんを、輪郭から削り取る。
+   筆が離れている所（「口」の左上のような隙間）を作るため。
+   輪郭を 2つに分けるのではなく、面を削るので、線が反対側まで
+   抜けていなくても、抜けていても、そのとおりに隙間があく。 */
+function cutSlitContours(contours, band){
+  if (typeof polygonClipping === "undefined") return null;
+  var provs = {};
+  var rings = contours.map(function(c, ci){ return flattenP(c, ci, 28, provs); });
+  var areas = rings.map(ringArea);
+  var big = 0;
+  areas.forEach(function(a, i){ if (Math.abs(a) > Math.abs(areas[big])) big = i; });
+  var outSign = areas[big] >= 0 ? 1 : -1;
+  var isHole = areas.map(function(a){ return (a >= 0 ? 1 : -1) !== outSign; });
+  var holeOf = {};
+  rings.forEach(function(o, j){
+    if (!isHole[j]) return;
+    var best = -1;
+    rings.forEach(function(r, i){
+      if (i === j || isHole[i] || !pointInRing(o[0], r)) return;
+      if (best < 0 || Math.abs(areas[i]) < Math.abs(areas[best])) best = i;
+    });
+    if (best >= 0) (holeOf[best] = holeOf[best] || []).push(j);
+  });
+  var mp = [];
+  rings.forEach(function(r, i){
+    if (isHole[i]) return;
+    mp.push([r].concat((holeOf[i] || []).map(function(j){ return rings[j]; })));
+  });
+  if (!mp.length) return null;
+  /* 帯が形に当たっていないなら、何もしない。
+     そのまま引き算すると、当たっていなくても重なりが 1つにまとめられてしまい、
+     触っていないのに形（点の並び）が変わってしまう。 */
+  try {
+    var hit = polygonClipping.intersection(mp, [[band]]);
+    if (!hit || !hit.length) return null;
+  } catch(e){ return null; }
+  var res;
+  try { res = polygonClipping.difference(mp, [[band]]); } catch(e){ return null; }
+  if (!res || !res.length) return null;
+  var out = [];
+  res.forEach(function(poly){
+    poly.forEach(function(ring){
+      var c = ringToContour(ring, provs, contours);
+      if (!c){
+        c = [];
+        for (var k = 0; k < ring.length - 1; k++) c.push({ x: ring[k][0], y: ring[k][1], i:null, o:null });
+        c = simplifyContour(c, 0.5);
+      }
+      if (c.length > 2) out.push(c);
+    });
+  });
+  return out.length ? out : null;
+}
+
+/* 引いた線に沿って、決めた幅の隙間をあける */
+function peSlit(A, B, mm){
+  var vx = B.x - A.x, vy = B.y - A.y, L = Math.sqrt(vx*vx + vy*vy);
+  if (L < 1e-6){ msg("線が短すぎます。", true); return; }
+  var mpu = peMmPerUnit();
+  if (!mpu){ msg("字の大きさが分からないので、隙間の幅を決められません。", true); return; }
+  var hw = (mm / mpu) / 2;                       /* 幅の半分（字の単位） */
+  var nx = -vy / L * hw, ny = vx / L * hw;
+  var band = [[A.x+nx, A.y+ny], [B.x+nx, B.y+ny], [B.x-nx, B.y-ny], [A.x-nx, A.y-ny], [A.x+nx, A.y+ny]];
+  var out = cutSlitContours(PE.contours, band);
+  if (!out){ msg("線が輪郭に当たっていません。", true); return; }
+  var n0 = PE.contours.length;
+  peSnap();
+  PE.contours = out;
+  PE.sel = []; PE.selC = [];
+  msg("幅 " + mm + "mm の隙間をあけました（輪郭 " + n0 + " → " + out.length + "）。", false);
+}
+
 /* 引いた線で輪郭を切る。線は引いたところだけ。外へは延ばさない。
    閉じた形を 2 つに分けるには、線が画を またいで 反対側まで 抜けている
    必要がある（入って出る＝2回横切る）。中で止まった線は、切り込みにしか
    ならず、形は 1 つのままなので切れない。
    画を 2つ以上またいだ線は、いちばん長くまたいだ所で切る（v20.42）。 */
 function peCut(A, B){
+  var gap = num($("peGap") && $("peGap").value, 0);
+  if (gap > 0){ peSlit(A, B, gap); return; }     /* 隙間をあける方 */
   var done = 0, skip = 0, half = 0, out = [];
   var vx = B.x - A.x, vy = B.y - A.y, L = Math.sqrt(vx*vx + vy*vy);
   if (L < 1e-6){ msg("線が短すぎます。", true); return; }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.41</title>
+<title>彫刻原稿 v20.42</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1909,7 +1909,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.41";
+var APP_VER = "v20.42";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13127,43 +13127,37 @@ function splitSegAt(c, j, t){
   c.splice(j + 1, 0, { x: mid[0], y: mid[1], i: curve ? r0 : null, o: curve ? q2 : null });
   return j + 1;
 }
-/* 引いた線で輪郭を切る。
-   線は、引いたところから字の外まで まっすぐ延ばして使う（v20.41）。
-   端が画の中で止まっていても切れるようにするため。
-   切る場所は、引いた線のまん中をはさむ 2 か所。だから、線のまん中が
-   画の中に入ってさえいれば切れる。よその画まで切れることはない。 */
+/* 引いた線で輪郭を切る。線は引いたところだけ。外へは延ばさない。
+   閉じた形を 2 つに分けるには、線が画を またいで 反対側まで 抜けている
+   必要がある（入って出る＝2回横切る）。中で止まった線は、切り込みにしか
+   ならず、形は 1 つのままなので切れない。
+   画を 2つ以上またいだ線は、いちばん長くまたいだ所で切る（v20.42）。 */
 function peCut(A, B){
-  var done = 0, skip = 0, out = [];
+  var done = 0, skip = 0, half = 0, out = [];
   var vx = B.x - A.x, vy = B.y - A.y, L = Math.sqrt(vx*vx + vy*vy);
   if (L < 1e-6){ msg("線が短すぎます。", true); return; }
-  var bb = fitInkBox(PE.contours);
-  var far = bb ? (Math.sqrt(bb.w*bb.w + bb.h*bb.h) + L) * 1.2 : L * 20;
-  var ex = vx / L * far, ey = vy / L * far;
-  var EA = { x: A.x - ex, y: A.y - ey }, EB = { x: B.x + ex, y: B.y + ey };
-  /* 延ばした線の上で、引いた線はどこからどこまでか（0〜1 に直して） */
-  var EL = far * 2 + L, uA = far / EL, uB = (far + L) / EL;
 
   PE.contours.forEach(function(c){
     var hits = [], j;
     for (j = 0; j < c.length; j++){
       var a = c[j], b = c[(j+1) % c.length];
       var p1 = a.o || [a.x,a.y], p2 = b.i || [b.x,b.y];
-      segCross(a, b, p1, p2, EA, EB).forEach(function(q){
+      segCross(a, b, p1, p2, A, B).forEach(function(q){
         if (q.u > 0 && q.u < 1) hits.push({ j:j, t:q.t, u:q.u });
       });
     }
-    if (hits.length < 2){ if (hits.length) skip++; out.push(c); return; }
-    /* 延ばした線は字の外から来るので、横切るたびに 中・外・中… と入れ替わる。
-       つまり 1番目と2番目、3番目と4番目… の間が「画の中」。
-       そのうち、引いた線といちばん重なっている所を切る。
-       ＝ 引いた線が触れている画だけが切れる。 */
+    if (hits.length < 2){ if (hits.length) half++; out.push(c); return; }
+    /* 線の始まりが画の中かどうかで、どの区間が「画の中」かが決まる。
+       あとは横切るたびに 中・外・中… と入れ替わる。 */
     hits.sort(function(x, y){ return x.u - y.u; });
+    var ring = flattenContour(c, 8);
+    var k0 = pointInRing([A.x, A.y], ring) ? 1 : 0;
     var pick = null, best = 0, k;
-    for (k = 0; k + 1 < hits.length; k += 2){
-      var ov = Math.min(hits[k+1].u, uB) - Math.max(hits[k].u, uA);
+    for (k = k0; k + 1 < hits.length; k += 2){
+      var ov = hits[k+1].u - hits[k].u;
       if (ov > best){ best = ov; pick = [hits[k], hits[k+1]]; }
     }
-    if (!pick){ skip++; out.push(c); return; }   /* 引いた線が この輪郭の中を通っていない */
+    if (!pick){ half++; out.push(c); return; }
     hits = pick;
     hits.sort(function(x, y){ return (x.j - y.j) || (x.t - y.t); });
     var cc = JSON.parse(JSON.stringify(c));
@@ -13183,11 +13177,17 @@ function peCut(A, B){
     c2[c2.length-1].o = null; c2[0].i = null;
     out.push(c1, c2); done++;
   });
-  if (!done){ msg(skip ? "切りたい画の中を通るように、線を引いてください。" : "線が輪郭に当たっていません。", true); return; }
+  if (!done){
+    msg(half ? "この線では 2 つに分かれません。画をまたいで、反対側まで抜けるように引いてください。"
+             : "線が輪郭に当たっていません。", true);
+    return;
+  }
   peSnap();
   PE.contours = out;
   PE.sel = []; PE.selC = [];
-  msg(done + " つの輪郭を切りました。" + (skip ? "（" + skip + " つは横切り方が合わず、そのままです）" : ""));
+  msg(done + " つの輪郭を切りました。" +
+      (half ? "（" + half + " つは、線が反対側まで抜けていないので そのままです）" : "") +
+      (skip ? "（" + skip + " つは、切ると点が足りなくなるので そのままです）" : ""));
 }
 
 

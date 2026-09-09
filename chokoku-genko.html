@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.54</title>
+<title>彫刻原稿 v20.55</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1918,7 +1918,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.54";
+var APP_VER = "v20.55";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11957,9 +11957,13 @@ function peFitEdgeSnap(){
   var RANGE   = Math.max(2, Math.max(0.05, num($("peOut") && $("peOut").value, 0.35)) / G.mmCell);
   var RANGE_IN = Math.max(2, 1.5 / G.mmCell);
   var STEP  = 0.5;                               /* ますの半分きざみ */
-  var LIM   = 0.8 / (G.mmCell || 1);             /* 隣とこれ以上ちがったら捨てる（0.8mm）。
-                                                     大きくはみ出した所は、まとまって引き戻すため */
-  var movedN = 0, keptN = 0, pulledN = 0, skipIn = 0, skipOut = 0, noEdgeN = 0;
+  /* 隣とこれ以上ちがったら捨てる。既定は 0.8mm。
+     ［外へ広げる上限］を大きくしたのに、この値が 0.8mm のままだと、
+     せっかく測れた大きな動きが「となりとかけ離れている」として全部捨てられ、
+     上限を上げても何も動かない、ということが起きる（v20.55）。 */
+  var LIM   = Math.max(0.8, num($("peOut") && $("peOut").value, 0.35) * 0.6) / (G.mmCell || 1);
+  var movedN = 0, keptN = 0, pulledN = 0, skipIn = 0, skipOut = 0, noEdgeN = 0,
+      measN = 0, outlierN = 0, lockN = 0;
   /* どこにある点を寄せるか（v20.53）。
      墨の中にある点は「外へ広げる」動き、外にある点は「内へ引き戻す」動きになる。
      拓本の擦れや地の斑を拾っていると、外の点が斑に引っぱられて形が崩れるので、
@@ -12019,7 +12023,8 @@ function peFitEdgeSnap(){
            ・いま墨の外にいる → 内へ、墨に入る所まで */
     for (i = 0; i < n; i++){
       lock[i] = !!(only && !only[cidx + "/" + i]);
-      if (lock[i] || !nor[i]) continue;
+      if (lock[i]){ lockN++; continue; }
+      if (!nor[i]) continue;
       var q = c[i], nx = nor[i][0], ny = nor[i][1], hit = null, t, dd;
       var v0 = fitSampleS(soft, G, q.x, q.y), inside = v0 >= 0.5;
       if (side === "in" && !inside){ lock[i] = true; skipOut++; continue; }
@@ -12037,8 +12042,8 @@ function peFitEdgeSnap(){
         }
         pT = t; pV = v;
       }
-      if (hit !== null){ d[i] = hit; cf[i] = 1; }
-      else if (inside) noEdgeN++;                  /* 上限まで探しても、墨の縁に届かなかった */
+      if (hit !== null){ d[i] = hit; cf[i] = 1; measN++; }
+      else noEdgeN++;                              /* 上限まで探しても、墨の縁に届かなかった */
     }
 
     /* ③ となりとかけ離れた量は、手がかりから外す（拓本の擦れ・欠け） */
@@ -12050,7 +12055,7 @@ function peFitEdgeSnap(){
         var m2 = (i + j + n) % n;
         if (cf[m2]){ sum += d[m2]; cnt++; }
       }
-      if (cnt && Math.abs(d[i] - sum/cnt) > LIM * G.cell) cf[i] = 0;
+      if (cnt && Math.abs(d[i] - sum/cnt) > LIM * G.cell){ cf[i] = 0; outlierN++; }
     }
 
     /* ④ なめらかに解く */
@@ -12078,14 +12083,22 @@ function peFitEdgeSnap(){
 
   var g1 = fitGlyphMask(next, G);
   var after = g1 ? fitIoU(g1, ink) : 0;
+  /* なぜ動かなかったのかが分かるように、点の内訳を出す（v20.55）。
+     動かない理由は 4 つあり、どれに当たったのかは数を見ないと分からない。 */
+  var whyTxt = "【内訳】ぜんぶ " + (movedN + keptN) + " 点＝" +
+    "動いた " + movedN +
+    (skipOut ? "／墨の外にあって対象外 " + skipOut : "") +
+    (skipIn  ? "／墨の中にあって対象外 " + skipIn  : "") +
+    (lockN   ? "／選んでいないので固定 " + lockN   : "") +
+    (noEdgeN ? "／" + num($("peOut") && $("peOut").value, 0.35) + "mm 探しても墨の縁に届かない " + noEdgeN : "") +
+    (outlierN ? "／となりとかけ離れていたので捨てた " + outlierN : "") + "。";
   if (after <= before + 0.002){
     if (info) info.textContent = "一致 " + Math.round(before*100) + "%。" +
       (side === "in" ? "墨の中にある点を" : side === "out" ? "墨の外にある点を" : "") +
-      (only ? "選んだ点を" : "") + "寄せても良くなりませんでした" +
-      (noEdgeN ? "（外へ " + num($("peOut") && $("peOut").value, 0.35) + "mm 広げても墨の縁に届かない点が " +
-        noEdgeN + " ありました。［外へ広げる上限 mm］を大きくしてみてください）" : "") +
-      "（動かせた点 " + movedN + " ／ " + (movedN + keptN) + "）。" +
-      "位置と太さを先に合わせてから、もう一度お試しください。";
+      (only ? "選んだ点を" : "") + "寄せても良くなりませんでした（形はもとのままです）。" +
+      (measN ? "測れた " + measN + " 点のとおりに動かすと、かえって一致が下がりました。" +
+               "［外へ広げる上限 mm］を小さくして、少しずつ寄せてみてください。"
+             : "動かす手がかりが 1 点も取れませんでした。") + whyTxt;
     msg("これ以上よくなりませんでした。", true);
     return;
   }
@@ -12102,9 +12115,7 @@ function peFitEdgeSnap(){
     (only ? "選んだ " + PE.sel.length : String(movedN + keptN)) + "。" +
     (baked ? "（太さの ±% は形に取り込みました）" : "") +
     (pulledN ? "うち " + pulledN + " 点は、はみ出していたので引き戻しました。" : "") +
-    (noEdgeN ? "外へ " + num($("peOut") && $("peOut").value, 0.35) + "mm 広げても墨の縁に届かない " + noEdgeN +
-       " 点は、動かしていません（もっと広げたいときは［外へ広げる上限 mm］を大きく）。" : "") +
-    "（もう一度押すと、さらに寄ります）";
+    "（もう一度押すと、さらに寄ります）" + whyTxt;
   msg("縁に寄せました。一致 " + Math.round(before*100) + "% → " + Math.round(after*100) + "%。", false);
 }
 
@@ -12485,9 +12496,11 @@ function peRender(){
           '<line x1="' + (n.x-q) + '" y1="' + (n.y-q) + '" x2="' + (n.x+q) + '" y2="' + (n.y+q) + '"/>' +
           '<line x1="' + (n.x+q) + '" y1="' + (n.y-q) + '" x2="' + (n.x-q) + '" y2="' + (n.y+q) + '"/></g>');
       } else {
-        o.push('<rect x="' + (n.x - r*1.7) + '" y="' + (n.y - r*1.7) + '" width="' + (r*3.4) +
-          '" height="' + (r*3.4) + '" fill="' + (onN ? "#DC2616" : "#fff") +
-          '" stroke="' + (onN ? "#DC2616" : "#1B6FD6") + '" stroke-width="' + (r*0.7) +
+        /* 点の四角は画面のじゃまにならない大きさに（v20.55 で 6 割へ）。
+           つかむ範囲（下の pehit）は変えていないので、つかみやすさはそのまま */
+        o.push('<rect x="' + (n.x - r*1.02) + '" y="' + (n.y - r*1.02) + '" width="' + (r*2.04) +
+          '" height="' + (r*2.04) + '" fill="' + (onN ? "#DC2616" : "#fff") +
+          '" stroke="' + (onN ? "#DC2616" : "#1B6FD6") + '" stroke-width="' + (r*0.45) +
           '" opacity="' + ((PE.tool === "sel" || PE.tool === "add") ? 1 : 0.35) + '"/>');
       }
       hitsN.push('<rect class="pehit" data-c="' + cidx + '" data-n="' + nidx +

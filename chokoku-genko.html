@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.46</title>
+<title>彫刻原稿 v20.47</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1207,10 +1207,11 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="chk" style="margin-bottom:5px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> テスト：拾った墨のふちを出す</label>
         <button class="mini" id="peFitTest">テスト：この字を拓本に合わせる</button>
         <button class="mini" id="peFitW" style="margin-top:4px;">テスト：画線の太さを拓本に合わせる</button>
-        <button class="mini" id="peFitSnap" style="margin-top:4px;">テスト：縁を拓本に寄せる</button>
+        <button class="mini" id="peFitSnap" style="margin-top:4px;">テスト：縁を拓本に寄せる（点を選んでいれば その点だけ）</button>
         <label class="f" style="margin-top:5px;"><span>離れていると見なす mm</span>
           <input type="number" id="peFar" value="0.3" step="0.05" min="0.02" max="5"></label>
-        <button class="mini" id="peFitFar" style="margin-top:4px;">テスト：まだ離れている点だけ選ぶ</button>
+        <label class="chk" style="margin-top:4px;"><input type="checkbox" id="peFarOnly" style="width:auto;"> 範囲で選ぶとき、離れている点だけ選ぶ</label>
+        <button class="mini" id="peFitFar" style="margin-top:4px;">テスト：字ぜんたいから、離れている点だけ選ぶ</button>
         <p class="hint" id="peFitInfo" style="margin:2px 0 0;">まず［拓本を動かす］で、彫ってある同じ字をこの字の下に重ねてください。そのうえで押すと、位置・大きさ・縦横比・傾きを自動で合わせます。点は動きません。取り消しで戻せます。</p>
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
         <h3 class="sec">戻す</h3>
@@ -1909,7 +1910,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.46";
+var APP_VER = "v20.47";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11822,10 +11823,10 @@ function peFitEdgeSnap(){
 
   /* 太さの ±% を入れてあるなら、先に形へ取り込む。
      そうしないと「見えている形」と「動かす形」が食い違う。 */
-  var wp = num(PE.wpct, 0);
+  var wp = num(PE.wpct, 0), baked = false;
   if (wp){
     var d0 = weightDelta(PE.contours, wp);
-    if (d0){ PE.contours = offsetContours(PE.contours, d0); }
+    if (d0){ PE.contours = offsetContours(PE.contours, d0); baked = true; }
     PE.wpct = 0; if ($("peW")) $("peW").value = 0;
   }
 
@@ -11857,10 +11858,19 @@ function peFitEdgeSnap(){
   var LIM   = 0.8 / (G.mmCell || 1);             /* 隣とこれ以上ちがったら捨てる（0.8mm）。
                                                      大きくはみ出した所は、まとまって引き戻すため */
   var movedN = 0, keptN = 0, pulledN = 0;
+  /* 点を選んでいるときは、その点だけを寄せる。
+     字ぜんたいを一度に寄せると、拓本の擦れや欠けに引っぱられて形が崩れる。
+     気になる所だけ枠で囲んで選び、そこだけ寄せるのが安全（v20.47）。 */
+  var only = null;
+  if (PE.sel && PE.sel.length){
+    only = {};
+    PE.sel.forEach(function(q){ only[q.c + "/" + q.n] = 1; });
+  }
 
-  var next = PE.contours.map(function(c){
+  var next = PE.contours.map(function(c, cidx){
     var n = c.length, i, dsp = new Array(n), nor = new Array(n);
     for (i = 0; i < n; i++){
+      if (only && !only[cidx + "/" + i]){ dsp[i] = null; continue; }   /* 選んでいない点は動かさない */
       var p = c[i], a = c[(i-1+n)%n], b = c[(i+1)%n];
       var tx = b.x - a.x, ty = b.y - a.y, L = Math.sqrt(tx*tx + ty*ty);
       if (L < 1e-9){ dsp[i] = null; continue; }
@@ -11927,7 +11937,8 @@ function peFitEdgeSnap(){
   var g1 = fitGlyphMask(next, G);
   var after = g1 ? fitIoU(g1, ink) : 0;
   if (after <= before + 0.002){
-    if (info) info.textContent = "一致 " + Math.round(before*100) + "%。寄せても良くなりませんでした" +
+    if (info) info.textContent = "一致 " + Math.round(before*100) + "%。" +
+      (only ? "選んだ点を" : "") + "寄せても良くなりませんでした" +
       "（動かせた点 " + movedN + " ／ " + (movedN + keptN) + "）。" +
       "位置と太さを先に合わせてから、もう一度お試しください。";
     msg("これ以上よくなりませんでした。", true);
@@ -11935,10 +11946,13 @@ function peFitEdgeSnap(){
   }
   peSnap();
   PE.contours = next;
-  PE.sel = []; PE.selC = [];
+  if (!only){ PE.sel = []; PE.selC = []; }     /* 選んで寄せたときは、選んだままにしておく */
   peRender();
-  if (info) info.textContent = "縁に寄せました。一致 " + Math.round(before*100) + "% → " +
-    Math.round(after*100) + "%。動かした点 " + movedN + " ／ " + (movedN + keptN) + "。" +
+  if (info) info.textContent = (only ? "選んだ点だけ、" : "") + "縁に寄せました。一致 " +
+    Math.round(before*100) + "% → " +
+    Math.round(after*100) + "%。動かした点 " + movedN + " ／ " +
+    (only ? "選んだ " + PE.sel.length : String(movedN + keptN)) + "。" +
+    (baked ? "（太さの ±% は形に取り込みました）" : "") +
     (pulledN ? "うち " + pulledN + " 点は、はみ出していたので引き戻しました。" : "") +
     "（拓本の縁が見つからなかった点は、そのままにしてあります。もう一度押すと、さらに寄ります）";
   msg("縁に寄せました。一致 " + Math.round(before*100) + "% → " + Math.round(after*100) + "%。", false);
@@ -11975,6 +11989,23 @@ function fitEdgeDist(ink, G){
   return d;
 }
 
+/* いまの字について、点が拓本の縁からどれだけ離れているかを測る道具。
+   格子ごとの距離を 1回だけ作って使い回す（拓本の位置が変わるまで）。 */
+function fitFarTool(){
+  if (!PE || !PE.rub || !RUB.data) return null;
+  var P = fitPrep(); if (!P) return null;
+  if (FIT_DIAG && FIT_DIAG.warnFlip) return null;
+  if (!PE.inkC.dist) PE.inkC.dist = fitEdgeDist(P.ink, P.G);
+  var G = P.G, d = PE.inkC.dist;
+  return function(p){
+    var gx = Math.round((p.x - G.x0) / G.cell - 0.5);
+    var gy = Math.round((G.y1 - p.y) / G.cell - 0.5);
+    if (gx < 0 || gy < 0 || gx >= G.w || gy >= G.h) return 1e9;
+    return d[gy*G.w + gx] * G.mmCell;             /* mm */
+  };
+}
+function farLimit(){ return Math.max(0.02, num($("peFar") && $("peFar").value, 0.3)); }
+
 /* テスト：まだ離れている点だけを選ぶ（v20.40）。
    縁に寄せると、届く所は合うが、大きく離れた所は取り残される。
    合っている点は選ばない＝つかんでも動かないので、そのまま留め置ける。
@@ -11991,15 +12022,14 @@ function peFitPickFar(){
     if (info) info.textContent = "白黒が逆に読まれているようです。拓本の画面で［反転］を確かめてください。";
     msg("拓本の白黒が逆かもしれません。", true); return;
   }
-  var lim = Math.max(0.02, num($("peFar") && $("peFar").value, 0.3));   /* これより離れていたら選ぶ */
-  var d = fitEdgeDist(ink, G);
+  var lim = farLimit();                       /* これより離れていたら選ぶ */
+  var dist = fitFarTool();
+  if (!dist){ msg("拓本から墨を見つけられませんでした。", true); return; }
   var sel = [], near = 0, far = 0, sum = 0, worst = 0;
   PE.contours.forEach(function(c, ci){
     c.forEach(function(p, ni){
-      var gx = Math.round((p.x - G.x0) / G.cell - 0.5);
-      var gy = Math.round((G.y1 - p.y) / G.cell - 0.5);
-      if (gx < 0 || gy < 0 || gx >= G.w || gy >= G.h) return;
-      var mm = d[gy*G.w + gx] * G.mmCell;
+      var mm = dist(p);
+      if (mm >= 1e9) return;
       if (mm > lim){ sel.push({ c: ci, n: ni }); far++; sum += mm; if (mm > worst) worst = mm; }
       else near++;
     });
@@ -13042,9 +13072,14 @@ function peSelectIn(m, base){
   var sel = (base || []).slice();
   var has = {};
   sel.forEach(function(s){ has[s.c + "/" + s.n] = 1; });
+  /* ［離れている点だけ］が入っていれば、枠の中でも、拓本の縁に合っている点は
+     選ばない。選ばれていない点は動かないので、合っている所は留め置ける。 */
+  var far = ($("peFarOnly") && $("peFarOnly").checked) ? fitFarTool() : null;
+  var lim = farLimit();
   PE.contours.forEach(function(c, ci){
     c.forEach(function(n, ni){
       if (n.x < x1 || n.x > x2 || n.y < y1 || n.y > y2) return;
+      if (far && far(n) <= lim) return;
       var k = ci + "/" + ni;
       if (has[k]) return;
       has[k] = 1; sel.push({ c: ci, n: ni });

@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-09　**chokoku-genko.html = v20.65**／**index_b.html = v1.9.424**／**tekkyo.html = v3.5**
+最終更新: 2026-09-09　**chokoku-genko.html = v20.66**／**index_b.html = v1.9.424**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -1528,6 +1528,15 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
   - ［学習用を書き出す］で **ZIP**（つめ込みなし・自前の `zipMake`）。
     `pairs/pair_NNNNN_{raw,mask,hint}.png` ＋ `_meta.json` ＋ `index.csv` ＋ `README.txt`。
     `unzip -t` が通ることを確認済み
+  - **hint は「人が直す前」の形**（v20.66。`PE.fitSnap`＝［② 拓本に大まかに合わせる］の
+    直後の形を覚えておく。無ければ画面を開いたときの形 `PE.base`、それも無ければ いまの形。
+    どれを使ったかは `meta.hintFrom` に fit／open／now で入る）。
+    **直したあとの形を hint にすると、それは答えそのもの**なので、
+    拓本を見ずに hint を写すだけのモデルになる。v20.65 まではそうなっていた
+  - 切り出す正方形も hint と同じ形から決めるので、**直しても raw・mask・hint は動かない**
+    （実測で、点を大きく動かしても 3 枚とも 1 バイトも変わらないことを確認）
+  - 「この字だけ ±%」は形に入っていないので、hint を焼くときに足す（v20.66。
+    それまでは画面の太さと hint の太さが食い違っていた）。`meta.wpct` にも入れる
   - **hint を学習の入力 2 枚目に使うときは、学習中に 3 割ほど白紙に差し替えること**
     （そうしないと、拓本を見ずに hint を写すだけのモデルになる）。README.txt にも書いてある
 - **拾った墨を筆で直せる**（`S.rub.paint`／v20.63。［墨を消す］［墨を足す］）。

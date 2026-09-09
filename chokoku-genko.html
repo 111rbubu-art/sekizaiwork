@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.65</title>
+<title>彫刻原稿 v20.66</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1927,7 +1927,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.65";
+var APP_VER = "v20.66";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11604,9 +11604,24 @@ function takuShot(){
   if (!PE || !PE.rub || !RUB.data) return null;
   var P = fitPrep(); if (!P) return null;
   var G = P.G, ink = P.ink;
-  var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
+  /* hint に使う形（v20.66）。
+       ① ［拓本に大まかに合わせる］の直後の形（いちばん良い。＝直す前）
+       ② それが無ければ、この画面を開いたときの形
+       ③ どちらも無ければ いまの形
+     ①②は「人が直す前」なので、答えを写しただけの hint にならない。
+     切り出す正方形も同じ形から決めるので、同じ字を何度保存しても同じ場所が切れる。 */
+  var hintFrom = "now", hc = PE.contours;
+  if (PE.fitSnap){ try { hc = JSON.parse(PE.fitSnap); hintFrom = "fit"; } catch(e){} }
+  else if (PE.base){ try { hc = JSON.parse(PE.base); hintFrom = "open"; } catch(e2){} }
+  /* 「この字だけ ±%」は形に入っていないので、ここで足す（見えている太さに合わせる） */
+  var wp = num(PE.wpct, 0);
+  if (wp){
+    var dw = weightDelta(hc, wp);
+    if (dw){ var hc2 = offsetContours(hc, dw); if (hc2 && hc2.length) hc = hc2; }
+  }
+  var g0 = fitGlyphMask(hc, G); if (!g0) return null;
   var Mi = mInv(peRubMat()); if (!Mi) return null;
-  var bb = fitInkBox(PE.contours); if (!bb) return null;
+  var bb = fitInkBox(hc); if (!bb) return null;
   var side = Math.max(bb.w, bb.h) * 1.2;
   var cx = bb.x + bb.w/2, cy = bb.y + bb.h/2;
   var x0 = cx - side/2, y1 = cy + side/2;       /* 左上（字の座標。y は上向き） */
@@ -11649,6 +11664,8 @@ function takuShot(){
       upem: PE.upem,
       font: (AD && AD.path && AD.path.name) || (g && g.font) || "",
       group: PE.gi, index: PE.ci,
+      hintFrom: hintFrom,           /* fit=大まかに合わせた直後／open=開いたとき／now=いまの形 */
+      wpct: wp,
       thresh: (FIT_DIAG && FIT_DIAG.T) || null,
       flat: !!(FIT_DIAG && FIT_DIAG.flat),
       inkAdj: num($("peInkAdj") && $("peInkAdj").value, 0),
@@ -11718,6 +11735,9 @@ async function takuShow(){
     ? "保存先は共有フォルダーの「" + FONT_DIR + "/" + TAKU_DIR + "」です。"
     : "本体アプリから開いていないので、この端末に貯めます。";
   el.textContent = where + (n ? "この端末に未送信 " + n + " 組。" : "");
+  if (PE && !PE.fitSnap && PE.rub)
+    el.textContent += "（［② 拓本に大まかに合わせる］を押してから保存すると、" +
+      "手がかりの絵が「直す前の形」になります）";
   var pb = $("peTakuPush");
   if (pb) pb.disabled = !n || !fontDirReady();
 }
@@ -11787,7 +11807,11 @@ async function takuExport(){
     "拓本クリーン化 AI の学習用データ\n\n" +
     "pairs/pair_NNNNN_raw.png   拓本の切り抜き（" + TAKU_N + "×" + TAKU_N + "・白黒の濃淡）\n" +
     "pairs/pair_NNNNN_mask.png  正解（墨＝白・地＝黒）。人が筆で直したもの\n" +
-    "pairs/pair_NNNNN_hint.png  そのとき合わせていたフォントの字形（学習の手がかり用）\n" +
+    "pairs/pair_NNNNN_hint.png  フォントの字形（学習の手がかり用）。\n" +
+    "                           人が直す前＝［拓本に大まかに合わせる］の直後の形です。\n" +
+    "                           直したあとの形ではありません（それは答えそのものなので）。\n" +
+    "                           meta.json の hintFrom が fit なら直後の形、open なら\n" +
+    "                           画面を開いたときの形、now ならいまの形です。\n" +
     "pairs/pair_NNNNN_meta.json 文字・フォント名・実寸・しきい値など\n\n" +
     "3 枚は同じ正方形から作ってあるので、1 画素もずれずに重なります。\n" +
     "hint を入力の 2 枚目に使うときは、学習中に 3 割ほど白紙に差し替えてください。\n" +
@@ -12721,6 +12745,11 @@ function peFitTest(){
   /* 合わせたあとに拓本を動かすと、合わせた意味がなくなるので押せなくする（v20.58）。
      ［1つ戻す］で合わせる前に戻せば、また動かせる。 */
   PE.rubLock = true;
+  /* このときの形を覚えておく（v20.66）。学習用データの hint は、
+     人が直したあとの形ではなく「直す前・大まかに合わせた形」でなければならない。
+     直したあとの形を hint にすると、それは答えそのものなので、
+     拓本を見ずに hint を写すだけのモデルになる。 */
+  PE.fitSnap = JSON.stringify(PE.contours);
   if (PE.tool === "rubmv") PE.tool = "sel";
   peRender();
   var hitLim = (Math.abs(best.sx-1) > lim.sx - 1e-6) || (Math.abs(best.sy-1) > lim.sy - 1e-6) ||

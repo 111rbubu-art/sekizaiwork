@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.62</title>
+<title>彫刻原稿 v20.63</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1199,6 +1199,19 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="chk" style="margin-bottom:2px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> 拓本の縁（拾った墨）</label>
         <label class="f" style="margin:0 0 4px 18px;"><span>拾う量 ±</span>
           <input type="number" id="peInkAdj" value="0" step="5" min="-60" max="60"></label>
+        <div style="margin:0 0 4px 18px;">
+          <div class="g2" style="margin-bottom:4px;">
+            <button class="mini pt" data-t="inkdel">墨を消す</button>
+            <button class="mini pt" data-t="inkadd">墨を足す</button>
+          </div>
+          <label class="f" style="margin-bottom:4px;"><span>筆の太さ mm</span>
+            <input type="number" id="peBrush" value="1" step="0.2" min="0.1" max="10"></label>
+          <div class="g2">
+            <button class="mini" id="peInkUndo">塗りを1つ戻す</button>
+            <button class="mini" id="peInkClr">塗りを消す</button>
+          </div>
+          <p class="hint" id="peInkInfo" style="margin:3px 0 0;"></p>
+        </div>
         <label class="chk" style="margin-bottom:6px;"><input type="checkbox" id="peGhost" checked style="width:auto;"> 元の形を薄く出す</label>
         <h3 class="sec">拓本に合わせる</h3>
         <button class="mini pt" data-t="rubmv">① 拓本を動かす</button>
@@ -1907,7 +1920,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.62";
+var APP_VER = "v20.63";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11843,6 +11856,64 @@ function fitGrid(){
 
 /* 解析は「この字＋この拓本の置き場所」につき 1回だけ。あとは使い回す。
    輪郭を動かすたびに拾い直していたころは、寄せるたびに目標が動いていた。 */
+/* --- 拾った墨を手で直す「塗り」（v20.63） ---
+   拾い方をいくら工夫しても、紙のふち・石の地・となりの字は残る。
+   そこを人が消す（／足す）ための塗り。
+   ・持ち方は「拓本の画素の座標での丸」（{x,y,r,m}。m は 0=消す／1=足す）。
+     字の座標ではなく拓本の座標なので、**字を動かしても、拡大しても、
+     別の字を編集しても、同じ場所を指したまま**になる
+   ・案件（JSON）に一緒に保存されるので、次に開いても残る
+   ・1本も無ければ、拾い方は今までとまったく同じ（＝現状を壊さない） */
+var RUBPAINT_V = 0;
+function rubPaint(){ if (!S.rub.paint) S.rub.paint = []; return S.rub.paint; }
+function rubPaintBump(){ RUBPAINT_V++; if (PE) PE.inkC = null; }
+/* 字の座標（y は上向き）→ 拓本の画素 */
+function peToRubPx(p){
+  var M = peRubMat(), Mi = M && mInv(M);
+  if (!Mi) return null;
+  return mApp(Mi, p.x, -p.y);
+}
+/* 筆の太さ（mm）→ 拓本の画素 */
+function rubBrushPx(){
+  var mm = Math.max(0.1, num($("peBrush") && $("peBrush").value, 1.0));
+  var mpp = mmPerPx();
+  return (mpp && mpp > 0) ? (mm / mpp) : 6;
+}
+/* 拾った墨に、塗りを重ねる。塗りが無ければ そのまま返す（作り直さない） */
+function fitApplyPaint(G, ink){
+  var ps = rubPaint();
+  if (!ps.length) return ink;
+  var M = peRubMat(), Mi = M && mInv(M);
+  if (!Mi) return ink;
+  /* この字の枠にかかる塗りだけを見る。拓本ぜんたいの塗りを毎回なめると、
+     本数が増えたときに描き直しが重くなる。 */
+  var cs = [[G.x0, G.y1], [G.x0 + G.w*G.cell, G.y1],
+            [G.x0, G.y1 - G.h*G.cell], [G.x0 + G.w*G.cell, G.y1 - G.h*G.cell]];
+  var bx1 = 1e18, by1 = 1e18, bx2 = -1e18, by2 = -1e18;
+  cs.forEach(function(c){
+    var q0 = mApp(Mi, c[0], -c[1]);
+    if (q0.x < bx1) bx1 = q0.x; if (q0.x > bx2) bx2 = q0.x;
+    if (q0.y < by1) by1 = q0.y; if (q0.y > by2) by2 = q0.y;
+  });
+  ps = ps.filter(function(st){
+    return st.x + st.r >= bx1 && st.x - st.r <= bx2 &&
+           st.y + st.r >= by1 && st.y - st.r <= by2;
+  });
+  if (!ps.length) return ink;
+  var out = new Uint8Array(ink), w = G.w, h = G.h, k;
+  for (var gy = 0; gy < h; gy++){
+    var uy = G.y1 - (gy + 0.5) * G.cell;
+    for (var gx = 0; gx < w; gx++){
+      var ux = G.x0 + (gx + 0.5) * G.cell;
+      var q = mApp(Mi, ux, -uy), i0 = gy*w + gx;
+      for (k = ps.length - 1; k >= 0; k--){        /* あとに塗った方が上 */
+        var st = ps[k], dx = q.x - st.x, dy = q.y - st.y;
+        if (dx*dx + dy*dy <= st.r*st.r){ out[i0] = st.m ? 1 : 0; break; }
+      }
+    }
+  }
+  return out;
+}
 function fitPrep(){
   if (!PE || !PE.rub || !RUB.data) return null;
   var G = fitGrid(); if (!G) return null;
@@ -11853,11 +11924,17 @@ function fitPrep(){
              rotOff().x, rotOff().y, RUB.W, RUB.H].join("/");
   if (PE.inkC && PE.inkC.key === key){
     FIT_DIAG = PE.inkC.diag;
+    if (PE.inkC.paintV !== RUBPAINT_V){          /* 塗りが変わったので重ね直す */
+      PE.inkC.ink = fitApplyPaint(PE.inkC.G, PE.inkC.ink0);
+      PE.inkC.paintV = RUBPAINT_V;
+      PE.inkC.soft = null;
+    }
     return { G: PE.inkC.G, ink: PE.inkC.ink, again: true };
   }
   var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
-  var ink = fitInkMask(G, g0); if (!ink) return null;
-  PE.inkC = { key: key, G: G, ink: ink, diag: FIT_DIAG };
+  var ink0 = fitInkMask(G, g0); if (!ink0) return null;
+  var ink = fitApplyPaint(G, ink0);
+  PE.inkC = { key: key, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG, paintV: RUBPAINT_V };
   return { G: G, ink: ink, again: false };
 }
 
@@ -12577,6 +12654,13 @@ function peRender(){
       return q ? "（" + Math.round(q.x2-q.x1) + " × " + Math.round(q.y2-q.y1) + " 単位）" : "";
     })() +
     (PE.selC.length ? "　輪郭 " + PE.selC.map(function(i){ return i+1; }).join(",") : "");
+  var ii = $("peInkInfo");
+  if (ii){
+    var np = (S.rub.paint || []).length;
+    ii.textContent = np
+      ? "塗り " + np + " 本（拓本に付きます。案件と一緒に保存されます）"
+      : "拾いすぎ・拾い足りない所を、筆でなぞって直せます。字の形は変わりません。";
+  }
   var wi = $("peWInfo");
   if (wi){
     var tp = peTotalPct();
@@ -12615,7 +12699,8 @@ function peRender(){
 }
 /* いまのモードの名前 */
 var PE_MODE = { sel:"選ぶ・動かす", box:"輪郭を選択", add:"点を足す", del:"点を消す",
-                oval:"丸を置く", cut:"線で切る", rubmv:"拓本を動かす" };
+                oval:"丸を置く", cut:"線で切る", rubmv:"拓本を動かす",
+                inkdel:"墨を消す", inkadd:"墨を足す" };
 /* モードの札とポインタ（v10.8）。選ぶ・動かすのときは何も出さない。 */
 /* いまいじっている字が、共有フォルダーで何という名前かを出す（v11.2） */
 function peNameShow(){
@@ -12946,7 +13031,7 @@ function peBind(svg){
   Array.prototype.forEach.call(svg.querySelectorAll(".pehit"), function(el){
     el.addEventListener("pointerdown", function(ev){
       if (ev.button !== undefined && ev.button !== 0) return;   /* 中・右は別あつかい */
-      if (PE.tool === "rubmv" || PE.tool === "cut" || peDrawTool()) return;  /* 台紙側で受ける */
+      if (PE.tool === "rubmv" || PE.tool === "cut" || peInkTool() || peDrawTool()) return;  /* 台紙側で受ける */
       var c = +el.dataset.c, n = +el.dataset.n, hnd = el.dataset.h || null;
       /* ［輪郭を選択］では、点の上から引いても囲みになる。
          ただし、すでに選んである点をつかんだときは、そのまま動かせる（v18.2）。 */
@@ -12998,7 +13083,7 @@ function peBind(svg){
   Array.prototype.forEach.call(svg.querySelectorAll(".pehitc"), function(el){
     el.addEventListener("pointerdown", function(ev){
       if (ev.button !== undefined && ev.button !== 0) return;
-      if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "box" || peDrawTool()) return;
+      if (PE.tool === "rubmv" || PE.tool === "cut" || PE.tool === "box" || peInkTool() || peDrawTool()) return;
       ev.preventDefault(); ev.stopPropagation();
       var c = +el.dataset.c;
       if (PE.tool === "add"){ peSnap(); peAddNode(c, toPt(ev)); peRender(); return; }
@@ -13040,7 +13125,7 @@ function peBind(svg){
   svg.addEventListener("pointerdown", function(ev){
     if (ev.button !== undefined && ev.button !== 0) return;
     peMenuClose();
-    if (PE.tool !== "rubmv" && PE.tool !== "cut" && PE.tool !== "box" && !peDrawTool() &&
+    if (PE.tool !== "rubmv" && PE.tool !== "cut" && PE.tool !== "box" && !peInkTool() && !peDrawTool() &&
         ev.target.closest(".pehit, .pehitc, .pecor")) return;
     if (PE.tool === "rubmv"){
       if (!PE.rub) return;
@@ -13058,6 +13143,33 @@ function peBind(svg){
       }
       window.addEventListener("pointermove", mv1);
       window.addEventListener("pointerup", up1);
+      return;
+    }
+    if (peInkTool()){
+      /* 拾った墨を、筆で消す／足す（v20.63）。
+         塗るのは拓本の座標なので、字を動かしても付いてこない。
+         輪郭には いっさい触らないので、字の形は変わらない。 */
+      if (!PE.rub){ msg("この字には拓本が敷けません。", true); return; }
+      ev.preventDefault();
+      if (!$("peFitEdge").checked){          /* 何を消しているか見えないと危ないので、自動で出す */
+        $("peFitEdge").checked = true;
+      }
+      var md = (PE.tool === "inkadd") ? 1 : 0, rp = rubBrushPx(), last = null;
+      function dab(e){
+        var q = peToRubPx(toPt(e)); if (!q) return;
+        if (last && Math.abs(q.x-last.x) < rp*0.4 && Math.abs(q.y-last.y) < rp*0.4) return;
+        last = q;
+        rubPaint().push({ x: q.x, y: q.y, r: rp, m: md });
+        rubPaintBump(); peRender();
+      }
+      dab(ev);
+      function up3(){
+        window.removeEventListener("pointermove", dab);
+        window.removeEventListener("pointerup", up3);
+        persist();
+      }
+      window.addEventListener("pointermove", dab);
+      window.addEventListener("pointerup", up3);
       return;
     }
     if (PE.tool === "cut"){
@@ -13158,6 +13270,8 @@ function peBind(svg){
 /* 形をひとつ足す道具かどうか（いまは丸だけ）。
    この道具のときは、点や輪郭の上を押しても台紙側で受けて、新しい形を引ける。 */
 function peDrawTool(){ return PE && PE.tool === "oval"; }
+/* 墨を塗る道具かどうか（拾った墨だけを直す。輪郭には触らない） */
+function peInkTool(){ return PE && (PE.tool === "inkdel" || PE.tool === "inkadd"); }
 
 /* 押した所にいちばん近い「一辺」（となり合う 2 点の間）を探す（v18.2）。
    ［輪郭を選択］で、囲みの一辺をワンクリックで選べるようにするため。
@@ -13528,6 +13642,20 @@ $("peFitTest").onclick = function(){ peFitTest(); };
 $("peFitW").onclick = function(){ peFitWeight(); };
 $("peFitEdge").onchange = function(){ peRender(); };
 $("peShowPt").onchange = function(){ peRender(); };
+$("peInkUndo").onclick = function(){
+  var ps = rubPaint();
+  if (!ps.length){ msg("塗りはありません。", true); return; }
+  ps.pop(); rubPaintBump(); persist(); peRender();
+  msg("塗りを1つ戻しました（残り " + ps.length + "）。");
+};
+$("peInkClr").onclick = function(){
+  var ps = rubPaint();
+  if (!ps.length){ msg("塗りはありません。", true); return; }
+  var n = ps.length;
+  S.rub.paint = []; rubPaintBump(); persist(); peRender();
+  msg(n + " 本の塗りを消しました。拾い方は元どおりです。");
+};
+$("peBrush").onchange = function(){ peRender(); };
 $("peInkAdj").onchange = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peInkAdj").oninput  = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peW").oninput = function(e){

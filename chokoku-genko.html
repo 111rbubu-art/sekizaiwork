@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.70</title>
+<title>彫刻原稿 v20.71</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1940,7 +1940,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.70";
+var APP_VER = "v20.71";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12296,7 +12296,11 @@ function fitGrid(){
    ・1本も無ければ、拾い方は今までとまったく同じ（＝現状を壊さない） */
 var RUBPAINT_V = 0;
 function rubPaint(){ if (!S.rub.paint) S.rub.paint = []; return S.rub.paint; }
-function rubPaintBump(){ RUBPAINT_V++; if (PE) PE.inkC = null; }
+/* 塗りが変わった合図。**拾った墨まで捨ててはいけない**（v20.71）。
+   捨てると、筆を 1 回動かすたびに しきい値・形態処理・塊の選り分けを
+   ぜんぶやり直すことになり、こまかい設定では目に見えて重くなる。
+   拾った墨（`ink0`）はそのまま取っておき、塗りだけ重ね直す。 */
+function rubPaintBump(){ RUBPAINT_V++; }
 /* 字の座標（y は上向き）→ 拓本の画素 */
 function peToRubPx(p){
   var M = peRubMat(), Mi = M && mInv(M);
@@ -12320,6 +12324,33 @@ function rubBrushPx(){
   return (mpp && mpp > 0) ? (mm / mpp) : 6;
 }
 /* 拾った墨に、塗りを重ねる。塗りが無ければ そのまま返す（作り直さない） */
+/* 足した塗りだけを、その丸のまわりのますにだけ重ねる（v20.71）。
+   ぜんぶのますをなめ直さないので、筆を引いている間が軽い。 */
+function fitPaintAdd(G, out, strokes){
+  var M = peRubMat(), Mi = M && mInv(M);
+  if (!Mi || !M || !strokes.length) return out;
+  var w = G.w, h = G.h;
+  strokes.forEach(function(st){
+    /* 丸の中心を字の座標へ。半径は字の単位に直す（拓本の画素 × ky） */
+    var c = mApp(M, st.x, st.y);           /* c.x=字のx、c.y=-字のy */
+    var ky = Math.abs(num(PE.rub && PE.rub.ky, 0)) || 1;
+    var R = st.r * ky * 1.5;               /* 少し広めに見て、取りこぼさない */
+    var ux = c.x, uy = -c.y;
+    var gx1 = Math.max(0, Math.floor((ux - R - G.x0) / G.cell));
+    var gx2 = Math.min(w - 1, Math.ceil((ux + R - G.x0) / G.cell));
+    var gy1 = Math.max(0, Math.floor((G.y1 - (uy + R)) / G.cell));
+    var gy2 = Math.min(h - 1, Math.ceil((G.y1 - (uy - R)) / G.cell));
+    for (var gy = gy1; gy <= gy2; gy++){
+      var vy = G.y1 - (gy + 0.5) * G.cell;
+      for (var gx = gx1; gx <= gx2; gx++){
+        var vx = G.x0 + (gx + 0.5) * G.cell;
+        var q = mApp(Mi, vx, -vy), dx = q.x - st.x, dy = q.y - st.y;
+        if (dx*dx + dy*dy <= st.r*st.r) out[gy*w + gx] = st.m ? 1 : 0;
+      }
+    }
+  });
+  return out;
+}
 function fitApplyPaint(G, ink){
   var ps = rubPaint();
   if (!ps.length) return ink;
@@ -12366,7 +12397,14 @@ function fitPrep(){
   if (PE.inkC && PE.inkC.key === key){
     FIT_DIAG = PE.inkC.diag;
     if (PE.inkC.paintV !== RUBPAINT_V){          /* 塗りが変わったので重ね直す */
-      PE.inkC.ink = fitApplyPaint(PE.inkC.G, PE.inkC.ink0);
+      var ps0 = rubPaint(), nOld = PE.inkC.paintN;
+      if (nOld !== undefined && ps0.length > nOld && PE.inkC.ink !== PE.inkC.ink0){
+        /* 足しただけなら、足した分のまわりだけ塗り直す（軽い） */
+        fitPaintAdd(PE.inkC.G, PE.inkC.ink, ps0.slice(nOld));
+      } else {
+        PE.inkC.ink = fitApplyPaint(PE.inkC.G, PE.inkC.ink0);
+      }
+      PE.inkC.paintN = ps0.length;
       PE.inkC.paintV = RUBPAINT_V;
       PE.inkC.soft = null;
     }
@@ -12375,7 +12413,8 @@ function fitPrep(){
   var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
   var ink0 = fitInkMask(G, g0); if (!ink0) return null;
   var ink = fitApplyPaint(G, ink0);
-  PE.inkC = { key: key, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG, paintV: RUBPAINT_V };
+  PE.inkC = { key: key, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG,
+              paintV: RUBPAINT_V, paintN: rubPaint().length };
   return { G: G, ink: ink, again: false };
 }
 
@@ -12383,7 +12422,16 @@ function fitPrep(){
    合わせ込みが変な動きをしたとき、拓本を読めていないのか、
    拾い方が悪いのかを、目で切り分けるため。 */
 function fitEdgeLayer(){
-  var P = fitPrep(); if (!P) return "";
+  var u = fitEdgeURL(); if (!u) return "";
+  return '<image id="peEdgeImg" href="' + u.url + '" x="' + u.x + '" y="' + u.y +
+    '" width="' + u.w + '" height="' + u.h + '" preserveAspectRatio="none"' +
+    ' style="image-rendering:pixelated"/>';
+}
+/* 拾った墨の絵だけを作る（v20.71）。
+   筆を引いている間は、この絵の href を書き換えるだけにする。
+   画面ぜんたいを作り直すと、拓本の写真（数 MB の data URL）まで読み直しになって重い。 */
+function fitEdgeURL(){
+  var P = fitPrep(); if (!P) return null;
   var G = P.G, ink = P.ink;
   var w = G.w, h = G.h;
   var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
@@ -12412,10 +12460,8 @@ function fitEdgeLayer(){
     (FIT_DIAG.warnFlip
       ? "【白黒が逆かもしれません。拓本の画面で［反転］を確かめてください】"
       : "赤いふちが彫ってある字をなぞっていれば、拓本は正しく読めています。");
-  return '<image href="' + cv.toDataURL("image/png") + '" x="' + G.x0.toFixed(1) +
-    '" y="' + (-G.y1).toFixed(1) + '" width="' + (w*G.cell).toFixed(1) +
-    '" height="' + (h*G.cell).toFixed(1) + '" preserveAspectRatio="none"' +
-    ' style="image-rendering:pixelated"/>';
+  return { url: cv.toDataURL("image/png"), x: G.x0.toFixed(1), y: (-G.y1).toFixed(1),
+           w: (w*G.cell).toFixed(1), h: (h*G.cell).toFixed(1) };
 }
 
 /* テスト：画線の太さを拓本に合わせる（v20.36）。
@@ -13632,19 +13678,41 @@ function peBind(svg){
       if (!$("peFitEdge").checked){          /* 何を消しているか見えないと危ないので、自動で出す */
         $("peFitEdge").checked = true;
       }
-      var md = (PE.tool === "inkadd") ? 1 : 0, rp = rubBrushPx(), last = null;
+      var md = (PE.tool === "inkadd") ? 1 : 0, rp = rubBrushPx(), last = null, raf = 0;
+      /* 描き直しは 1 コマに 1 回にまとめる（v20.71）。
+         ポインタは 1 秒に何十回も動くので、そのたびに作り直すと追いつかない。 */
+      function draw(){
+        raf = 0;
+        /* 拾った墨の絵だけ差し替える。画面ぜんたいは作り直さない（v20.71）。
+           作り直すと、拓本の写真の読み直しで 1 回 60ms 以上かかる。 */
+        var st2 = $("peStage"), img = st2 && st2.querySelector("#peEdgeImg");
+        if (img){
+          var u = fitEdgeURL();
+          if (u) img.setAttribute("href", u.url);
+        } else {
+          peRender();
+        }
+        var c = st2 && st2.querySelector("#peBrushC");
+        if (c && last2){ c.setAttribute("cx", last2.x); c.setAttribute("cy", -last2.y); }
+      }
+      var last2 = null;
       function dab(e){
-        var q = peToRubPx(toPt(e)); if (!q) return;
+        var pt = toPt(e), q = peToRubPx(pt); if (!q) return;
+        last2 = pt;
         if (last && Math.abs(q.x-last.x) < rp*0.4 && Math.abs(q.y-last.y) < rp*0.4) return;
         last = q;
         rubPaint().push({ x: q.x, y: q.y, r: rp, m: md });
-        rubPaintBump(); peRender();
+        rubPaintBump();
+        if (!raf) raf = requestAnimationFrame(draw);
       }
       dab(ev);
       function up3(){
         window.removeEventListener("pointermove", dab);
         window.removeEventListener("pointerup", up3);
-        persist();
+        if (raf){ cancelAnimationFrame(raf); raf = 0; }
+        /* 指を離したときだけ、画面ぜんたいを作り直す（塗りの本数の表示などを合わせる）。
+           1 回だけなので気にならない。引いている間は絵の差し替えだけ。 */
+        peRender(); persist();
       }
       window.addEventListener("pointermove", dab);
       window.addEventListener("pointerup", up3);

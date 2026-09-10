@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.81</title>
+<title>彫刻原稿 v20.84</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1950,7 +1950,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.81";
+var APP_VER = "v20.84";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -8467,6 +8467,291 @@ function detectColumns(setFirst){
   return runs;
 }
 
+
+/* ===== 行の見立て（v20.83）=========================================
+   彫ってある 1 行から、客観的な数字を出す。人が見た目で決めていた
+   「前の行と同じくらい」を、数字で確かめられるようにする。
+
+   出すもの（すべて mm。較正した縮尺で換算する）
+     ・字の高さ・幅（中央値）        ・字送り（中心の間隔）・字間（すき間）
+     ・画線の太さ（墨の連なりの中央値）・行の中心
+     ・傾き（字の中心を縦にたどった線の傾き）と、そのばらつき
+
+   傾きは「字の中心を y でたどる」ので、かすれや欠けに強い。
+   1 文字ずつの塊を見つける所は、拓本解析（rubAnalyze）と同じ道具を使う。 */
+function _med(a){
+  if (!a || !a.length) return 0;
+  var b = a.slice().sort(function(x, y){ return x - y; }), m = b.length >> 1;
+  return (b.length % 2) ? b[m] : (b[m-1] + b[m]) / 2;
+}
+/* 帯の中を 2 画素に 1 つで拾って、白黒のますにする（v20.83／v20.84）。
+   投影（よこ 1 列ぶんの合計）だけで字の上下・左右を決めると、
+   地のざらつきに埋もれて字の高さが半分になったりする。
+   墨の塊そのものを見た方が確かなので、いったん白黒にしてから塊で数える。
+   墨の見え方は 3 段構え（上にあるものから使う。v20.84）。
+     ① RUB.clean … AI（U-Net）が起こした墨。まだ無いときは飛ばす
+     ② しきい値＋［拾う量］
+   そのうえに、人が筆で直した所を重ね、［縁のならし］でならす。
+   1 字ずつの拾い方と同じ道具・同じ設定なので、手で直した分がそのまま行の見立てにも効く。 */
+function rubBandMask(q, t, step){
+  var d = RUB.data.data, W = RUB.W, H = RUB.H, r = S.rub;
+  var w = Math.ceil((q.x2 - q.x1) / step), h = Math.ceil((q.y2 - q.y1) / step);
+  var m = new Uint8Array(w * h);
+  /* 拾う量（＋で減らす）。1 字ずつの［拾う量］と同じ向きにそろえる */
+  var adj = num(r.inkAdj, num($("peInkAdj") && $("peInkAdj").value, 0));
+  var t2 = r.invert ? (t + adj) : (t - adj);
+  /* AI（U-Net）が起こした墨があれば、しきい値より先にそれを使う。
+     拓本ぜんたいと同じ大きさの 0/1 の並びを RUB.clean に入れておけばよい。 */
+  var C = (RUB.clean && RUB.clean.length === W*H) ? RUB.clean : null;
+  for (var gy = 0; gy < h; gy++){
+    var y = q.y1 + gy * step;
+    for (var gx = 0; gx < w; gx++){
+      var x = q.x1 + gx * step, k0 = gy*w + gx;
+      if (C){ m[k0] = C[y*W + x] ? 1 : 0; continue; }
+      var p = (y*W + x) * 4;
+      var l = d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114;
+      if (isInk(l, t2, r.invert)) m[k0] = 1;
+    }
+  }
+  /* 人が筆で直した所（墨を足す／消す）を重ねる。塗りは拓本の画素で覚えてあるので、
+     どの字を編集していても、同じ場所に効く。 */
+  var ps = rubPaint();
+  if (ps.length){
+    var kk;
+    for (var gy2 = 0; gy2 < h; gy2++){
+      var y2 = q.y1 + gy2 * step;
+      for (var gx2 = 0; gx2 < w; gx2++){
+        var x2 = q.x1 + gx2 * step;
+        for (kk = ps.length - 1; kk >= 0; kk--){     /* あとに塗った方が上 */
+          var st = ps[kk], dx = x2 - st.x, dy = y2 - st.y;
+          if (dx*dx + dy*dy <= st.r*st.r){ m[gy2*w + gx2] = st.m ? 1 : 0; break; }
+        }
+      }
+    }
+  }
+  /* 縁をならす（1 字ずつの［縁のならし］と同じ mm を使う） */
+  var mpp = mmPerPx(), sm = Math.max(0, Math.min(2, num(r.inkSmooth, 0)));
+  if (sm > 0 && mpp) m = fitSmoothMask(m, w, h, sm / (mpp * step));
+  return { m: m, w: w, h: h, step: step, x0: q.x1, y0: q.y1 };
+}
+/* 塊を拾う（4 つながり）。小さすぎるものは地のざらつきとして捨てる。 */
+function rubBlobs(M, minCells){
+  var m = M.m, w = M.w, h = M.h, seen = new Uint8Array(w*h);
+  var st = new Int32Array(w*h), out = [];
+  for (var s0 = 0; s0 < w*h; s0++){
+    if (!m[s0] || seen[s0]) continue;
+    var top = 0, cnt = 0, x1 = 1e9, x2 = -1, y1 = 1e9, y2 = -1, edge = 0;
+    st[top++] = s0; seen[s0] = 1;
+    while (top){
+      var i = st[--top], x = i % w, y = (i - x) / w;
+      cnt++;
+      if (x < x1) x1 = x; if (x > x2) x2 = x;
+      if (y < y1) y1 = y; if (y > y2) y2 = y;
+      var l = (x > 0 && m[i-1]), rr = (x < w-1 && m[i+1]);
+      var u = (y > 0 && m[i-w]), dn = (y < h-1 && m[i+w]);
+      if (!l || !rr || !u || !dn) edge++;
+      if (l && !seen[i-1]){ seen[i-1] = 1; st[top++] = i-1; }
+      if (rr && !seen[i+1]){ seen[i+1] = 1; st[top++] = i+1; }
+      if (u && !seen[i-w]){ seen[i-w] = 1; st[top++] = i-w; }
+      if (dn && !seen[i+w]){ seen[i+w] = 1; st[top++] = i+w; }
+    }
+    if (cnt >= minCells)
+      out.push({ n: cnt, edge: edge, x1: x1, x2: x2, y1: y1, y2: y2,
+                 cy: (y1 + y2) / 2, cx: (x1 + x2) / 2 });
+  }
+  return out;
+}
+function rubLineMeasure(){
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
+  var r = S.rub, t = thr(), mpp = mmPerPx(), q = clampRange();
+  if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return null; }
+  var bandW = q.x2 - q.x1;
+
+  /* 字送りは、よこの墨の量の自己相関で出す。地が汚れていても並びの周期は残る */
+  var prof = projY(q.x1, q.x2, t);
+  var sm = new Float32Array(RUB.H), win = Math.max(2, Math.round(bandW * 0.02)), y, k;
+  for (y = q.y1; y < q.y2; y++){
+    var ss = 0, cn = 0;
+    for (k = -win; k <= win; k++){
+      var yy = y + k;
+      if (yy >= q.y1 && yy < q.y2){ ss += prof[yy]; cn++; }
+    }
+    sm[y] = cn ? ss / cn : 0;
+  }
+  var pitch = estimatePitch(sm, q.y1, q.y2, Math.max(6, Math.round(bandW * 0.45)),
+                            Math.round(bandW * 2.6));
+  if (!pitch || pitch < 4){
+    msg("字の並び（字送り）を読めませんでした。範囲を 1 行だけにしてください。", true); return null;
+  }
+
+  /* 墨の塊を拾う。1 画素おきに見る（速さのため。0.17mm きざみでも十分） */
+  var step = 2;
+  var M = rubBandMask(q, t, step);
+  var cell = mpp * step;
+  /* 細いつながりを切る（縮めてから広げる）。地の粒どうしが橋でつながると、
+     行ぜんたいが 1 つの塊になってしまう（v20.83）。 */
+  var op = Math.max(1, Math.round(0.15 / cell));
+  M.m = fitMorph(fitMorph(M.m, M.w, M.h, -op), M.w, M.h, op);
+  /* 彫った画は 2mm 角より小さくならない。それ未満は地のざらつき */
+  var minMm2 = 2.0;
+  var blobs = rubBlobs(M, Math.max(4, Math.round(minMm2 / (cell * cell))));
+  /* 字送りより背の高い塊は、字ではない（枠線・紙のふち・つながった地） */
+  var tall = Math.round(pitch / step * 1.3);
+  blobs = blobs.filter(function(b2){ return (b2.y2 - b2.y1) <= tall; });
+  if (blobs.length < 2){ msg("墨の塊を見つけられませんでした。しきい値を確かめてください。", true); return null; }
+  /* 行から離れた塊は落とす。1 字の幅は字送りと同じくらいなので、
+     大きい塊の中心を行の中心とみて、その ±0.7 字ぶんに入るものだけ残す。 */
+  var big = blobs.slice().sort(function(a2, b2){ return b2.n - a2.n; }).slice(0, Math.max(3, Math.round(blobs.length * 0.3)));
+  var midX = _med(big.map(function(b2){ return b2.cx; }));
+  var halfX = (pitch / step) * 0.7;
+  blobs = blobs.filter(function(b2){ return Math.abs(b2.cx - midX) <= halfX; });
+  if (blobs.length < 2){ msg("墨の塊を見つけられませんでした。しきい値を確かめてください。", true); return null; }
+
+  /* 塊を「字の ます」に振り分ける。ます は 字送りで区切る。
+     ずらし方は、区切り目に塊がまたがる数がいちばん少ない所を選ぶ。 */
+  var pitG = pitch / step, best = 0, bestBad = Infinity, off, bad, i, bl;
+  for (off = 0; off < pitG; off += Math.max(1, pitG / 40)){
+    bad = 0;
+    for (i = 0; i < blobs.length; i++){
+      bl = blobs[i];
+      var k1 = Math.floor((bl.y1 - off) / pitG), k2 = Math.floor((bl.y2 - off) / pitG);
+      if (k1 !== k2) bad++;
+    }
+    if (bad < bestBad){ bestBad = bad; best = off; }
+  }
+  var cells = {};
+  for (i = 0; i < blobs.length; i++){
+    bl = blobs[i];
+    var ki = Math.floor((bl.cy - best) / pitG);
+    (cells[ki] = cells[ki] || []).push(bl);
+  }
+
+  /* ます ごとに 1 字としてまとめる。墨の少ない ます は空きとして落とす */
+  var keys = Object.keys(cells).map(Number).sort(function(a, b){ return a - b; });
+  var areas = keys.map(function(kk){
+    return cells[kk].reduce(function(a, b2){ return a + b2.n; }, 0);
+  });
+  var medArea = _med(areas);
+  var items = [];
+  keys.forEach(function(kk, idx){
+    var g = cells[kk];
+    if (areas[idx] < medArea * 0.3) return;                 /* 空き・ごみ */
+    var x1 = 1e9, x2 = -1, y1 = 1e9, y2 = -1, area = 0, edge = 0;
+    g.forEach(function(b2){
+      if (b2.x1 < x1) x1 = b2.x1; if (b2.x2 > x2) x2 = b2.x2;
+      if (b2.y1 < y1) y1 = b2.y1; if (b2.y2 > y2) y2 = b2.y2;
+      area += b2.n; edge += b2.edge;
+    });
+    items.push({
+      y0: q.y1 + y1 * step, y1: q.y1 + (y2 + 1) * step,
+      h: (y2 - y1 + 1) * step, w: (x2 - x1 + 1) * step,
+      cx: q.x1 + (x1 + x2) / 2 * step, cy: q.y1 + (y1 + y2) / 2 * step,
+      ink: edge ? (2 * area / edge) * step : 0, blobs: g.length
+    });
+  });
+  if (items.length < 2){ msg("字を 2 つ以上見つけられませんでした。範囲を確かめてください。", true); return null; }
+
+  /* 傾き：中心 x を 中心 y で回した最小二乗。右へ倒れていれば ＋ */
+  var n = items.length, sx = 0, sy = 0, sxy = 0, syy = 0;
+  items.forEach(function(it){ sx += it.cx; sy += it.cy; });
+  var mx = sx / n, my = sy / n;
+  items.forEach(function(it){ sxy += (it.cy - my) * (it.cx - mx); syy += (it.cy - my) * (it.cy - my); });
+  var slope = (syy > 1e-9) ? sxy / syy : 0;
+  var deg = Math.atan(slope) * 180 / Math.PI;
+  var resid = _med(items.map(function(it){ return Math.abs((it.cx - mx) - slope * (it.cy - my)); }));
+
+  var pitches = [], gaps = [];
+  for (i = 1; i < n; i++){
+    pitches.push(items[i].cy - items[i-1].cy);
+    gaps.push(items[i].y0 - items[i-1].y1);
+  }
+  var hs = items.map(function(it){ return it.h; });
+  return {
+    n: n, at: new Date().toLocaleString("ja-JP"),
+    band: { L: q.x1, R: q.x2 },
+    hMm: _med(hs) * mpp,
+    wMm: _med(items.map(function(it){ return it.w; })) * mpp,
+    inkMm: _med(items.map(function(it){ return it.ink; })) * mpp,
+    pitchMm: (pitches.length ? _med(pitches) : pitch) * mpp,
+    gapMm: _med(gaps) * mpp,
+    cxMm: mx * mpp,
+    topMm: items[0].y0 * mpp,
+    botMm: items[n-1].y1 * mpp,
+    deg: deg, residMm: resid * mpp,
+    hMinMm: Math.min.apply(null, hs) * mpp,
+    hMaxMm: Math.max.apply(null, hs) * mpp,
+    items: items.map(function(it){
+      return { hMm: it.h * mpp, wMm: it.w * mpp, inkMm: it.ink * mpp,
+               cxMm: it.cx * mpp, cyMm: it.cy * mpp,
+               /* 画面に枠を出すための画素の位置 */
+               px: { x: it.cx - it.w/2, y: it.y0, w: it.w, h: it.h } };
+    })
+  };
+}
+/* 見立てて、控えに積む（新しいものが先頭。6 行ぶんまで） */
+function rubLineTake(){
+  var m = rubLineMeasure();
+  if (!m) return;
+  if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
+  S.rub.lines.unshift(m);
+  if (S.rub.lines.length > 6) S.rub.lines.length = 6;
+  persist(); rubPanel(); rubRender();
+  msg("この行を見立てました（字 " + m.n + "）。傾き " + m.deg.toFixed(2) + "°。");
+}
+/* 見立てた傾きを、回転補正に入れる */
+function rubLineFixRot(){
+  var L = (S.rub.lines || [])[0];
+  if (!L){ msg("先に［この行を見立てる］を押してください。", true); return; }
+  var was = num(S.rub.rot, 0);
+  S.rub.rot = Math.round((was - L.deg) * 100) / 100;
+  A = null; RUB.mask = null;
+  rebuildRub(); syncOriginY(); renderAll(); rubPanel(); rubRender(); persist();
+  msg("角度を " + was.toFixed(2) + "° → " + S.rub.rot.toFixed(2) + "° にしました。もう一度見立てて確かめてください。");
+}
+/* 見立ての表（1 行ぶん＋ 1 つ前との比べ） */
+function rubLineHtml(){
+  var ls = S.rub.lines || [];
+  if (!ls.length)
+    return '<p class="hint" style="margin:4px 0 0;">彫ってある行の範囲（左右の線）を合わせてから押すと、' +
+           '字の大きさ・字送り・画線の太さ・傾きを mm で出します。' +
+           '別の行でもう一度押すと、前の行と比べます。' +
+           '墨の見え方は［拾う量］［縁のならし］［筆］の設定をそのまま使います。' +
+           '数値が合わないときは、まずその 3 つで墨を整えてください。</p>';
+  var a = ls[0], b = ls[1];
+  function d1(v){ return (v === undefined || v === null) ? "−" : v.toFixed(2); }
+  function cmp(x, y, unit){
+    if (b === undefined) return "";
+    var dd = x - y;
+    var col = Math.abs(dd) < 0.15 ? "var(--muted)" : "var(--shu)";
+    return '<span style="color:' + col + ';">（前の行 ' + d1(y) + unit +
+           '／差 ' + (dd >= 0 ? "＋" : "−") + Math.abs(dd).toFixed(2) + unit + '）</span>';
+  }
+  var h = '<div class="fixrow"><span>字の数</span><b>' + a.n + ' 字</b></div>' +
+    '<div class="fixrow"><span>字の高さ</span><b>' + d1(a.hMm) + ' mm ' +
+      (b ? cmp(a.hMm, b.hMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>字の幅</span><b>' + d1(a.wMm) + ' mm ' +
+      (b ? cmp(a.wMm, b.wMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>画線の太さ</span><b>' + d1(a.inkMm) + ' mm ' +
+      (b ? cmp(a.inkMm, b.inkMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>字送り</span><b>' + d1(a.pitchMm) + ' mm ' +
+      (b ? cmp(a.pitchMm, b.pitchMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>字間</span><b>' + d1(a.gapMm) + ' mm ' +
+      (b ? cmp(a.gapMm, b.gapMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>行の中心</span><b>' + d1(a.cxMm) + ' mm ' +
+      (b ? cmp(a.cxMm, b.cxMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>頭〜脚</span><b>' + d1(a.topMm) + ' 〜 ' + d1(a.botMm) + ' mm ' +
+      (b ? cmp(a.topMm, b.topMm, "mm") : "") + '</b></div>' +
+    '<div class="fixrow"><span>傾き</span><b>' + a.deg.toFixed(2) + '°　' +
+      '<span style="color:var(--muted);">ばらつき ' + d1(a.residMm) + 'mm</span></b></div>' +
+    '<div class="fixrow"><span>高さのばらつき</span><b>' + d1(a.hMinMm) + ' 〜 ' + d1(a.hMaxMm) + ' mm</b></div>';
+  if (Math.abs(a.deg) > 0.05)
+    h += '<button class="mini" id="btnLineRot" style="margin-top:6px;">この傾きで回転補正する（' +
+         (a.deg >= 0 ? "−" : "＋") + Math.abs(a.deg).toFixed(2) + '°）</button>';
+  h += '<p class="hint" style="margin:6px 0 0;">見立てた行：' + ls.length +
+       '（新しい順に 6 行まで覚えます）。差が 0.15mm より大きいところは色を変えています。</p>';
+  return h;
+}
+
 /* --- 解析本体 --------------------------------------------------
    文字を1つずつ拾うのではなく、大きな空きでグループに切る。
    彫刻の字は画が離れるので文字単位の検出は不安定だが、
@@ -10248,6 +10533,19 @@ function rubRender(){
         (W*0.0015) + '"/>');
     });
   }
+  /* 行の見立ての枠（v20.83）。数字だけでは合っているか分からないので、
+     どこを 1 字として測ったかを目で確かめられるようにする。 */
+  var LN = (S.rub.lines || [])[0];
+  if (LN && LN.items){
+    LN.items.forEach(function(it, i){
+      var b = it.px; if (!b) return;
+      o.push('<rect x="' + b.x.toFixed(1) + '" y="' + b.y.toFixed(1) + '" width="' + b.w.toFixed(1) +
+        '" height="' + b.h.toFixed(1) + '" fill="rgba(27,111,214,.10)" stroke="#1B6FD6" stroke-width="' +
+        (W*0.002) + '"/>');
+      o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
+        '" fill="#1B6FD6" font-size="' + (W*0.022) + '" text-anchor="end">' + (i+1) + '</text>');
+    });
+  }
   if (A && $("rShowGroups").checked){
     A.groups.forEach(function(g, i){
       o.push('<rect x="' + (r.bandL - W*0.02) + '" y="' + g.y0 + '" width="' + (r.bandR-r.bandL + W*0.04) +
@@ -10845,8 +11143,14 @@ function rubPanel(){
       (dpi ? (r.lenAuto ? "（解像度どおり）" : "（手で入力）") : ""));
     h += '<div class="fixrow" id="rLenDevRow"><span>歪みの補正</span><b id="rLenDev"></b></div>';
     h += '<div class="fixrow"><span>縮尺</span><b id="rLenScale"></b></div>';
+    /* ---- 行の見立て（v20.83） ---- */
+    h += '<h3 class="sec" style="margin-top:14px;">行の見立て</h3>';
+    h += '<button class="mini" id="btnLineTake">この行を見立てる</button>';
+    h += rubLineHtml();
   }
   $("rubFix").innerHTML = h;
+  var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
+  var br = $("btnLineRot");  if (br) br.onclick = rubLineFixRot;
   var bf = $("rFix");
   if (bf) bf.onclick = function(){ (view === "rub") ? endFix() : startFix(); };
   rubCalInfo();

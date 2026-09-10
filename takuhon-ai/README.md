@@ -11,6 +11,38 @@
 
 ---
 
+## 0. いま何が入っているかを調べる（触らない）
+
+すでに Gemma や Dify が動いているパソコンに足す場合は、先にこれを実行して結果を見る。
+
+```bash
+bash check-env.sh
+```
+
+見るところ
+
+| 出るもの | 意味 |
+|---|---|
+| `docker ps` に ollama / dify / open-webui | **Docker で動いている**。このサーバーも Docker で立てるなら `docker-compose.yml` を使う |
+| `ollama list` に gemma | Ollama で動いている。ポートは 11434 |
+| GPU を使っているプロセス | VRAM の残りを見る。3090 は 24GB |
+| 待ち受けポート | **8077 が空いているか**。埋まっていたら別の番号にする |
+
+**いま動いているものは触らない。** とくに Dify の `docker compose down -v` は
+データが消えるので絶対に打たない。このサーバーは別のまとまり（`-p takuhon`）で立てる。
+
+### VRAM の目安（3090・24GB）
+
+| | 使う量 |
+|---|---|
+| Gemma 3 4B（Ollama・4bit） | 4〜6GB |
+| Gemma 3 12B（4bit） | 9〜12GB |
+| 拓本クリーン化：推論 | 1〜2GB |
+| 拓本クリーン化：学習（`--bs 4`） | 4〜6GB |
+
+推論だけなら同居して余裕がある。**学習は夜間に回す**前提なら競合しない。
+昼に学習を回したい場合は `--bs 2` に落とすか、Gemma を一度止める。
+
 ## 1. 下準備（1 回だけ）
 
 ```bash
@@ -89,6 +121,25 @@ sudo systemctl daemon-reload && sudo systemctl enable --now takuhon-ai
 sudo cp takuhon-train.service takuhon-train.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now takuhon-train.timer
 ```
+
+## 5b. Docker で動かす場合
+
+すでに何でも Docker で動かしているなら、こちらでもよい。
+
+```bash
+# 先に NVIDIA Container Toolkit（1 回だけ）
+sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+
+cd /opt/takuhon-ai
+docker compose -p takuhon up -d --build
+docker compose -p takuhon logs -f
+```
+
+- **必ず `-p takuhon` を付ける**（Dify などのまとまりと混ぜない）
+- `dataset/` と `runs/` はホスト側に置いてある。コンテナを作り直しても消えない
+- 学習は `docker compose -p takuhon exec takuhon-ai python train.py --epochs 60`
+- **`down -v` は打たない**
 
 ## 6. 呼び方
 

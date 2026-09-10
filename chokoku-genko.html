@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.78</title>
+<title>彫刻原稿 v20.79</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -657,6 +657,11 @@
   #peMenu button{width:100%;margin-bottom:4px;text-align:left;padding:6px 10px;}
   #peMenu .sep{height:1px;background:var(--line);margin:7px 0;}
   #pathEd .pebox.max{width:100% !important;height:100% !important;}
+  /* 窓の下いっぱいの知らせ帯（v20.79）。拾った墨の内訳や合わせ込みの結果を、
+     サイドバーの細い所ではなく、横いっぱいで読めるようにする */
+  #pathEd .pemsg{flex:0 0 auto;border-top:1px solid var(--line);background:var(--surface);
+    padding:8px 14px;font-size:11.5px;line-height:1.55;color:var(--muted);
+    max-height:96px;overflow-y:auto;}
   #pathEd .peside{flex:0 0 208px;border-left:1px solid var(--line);background:var(--surface);
     padding:12px;overflow-y:auto;}
   /* 表示の入切は、絵のすぐ左に置く（v20.78）。作業中に何度も触るため */
@@ -1209,7 +1214,6 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="f" style="margin-top:5px;"><span>この字だけ ±%</span>
           <input type="number" id="peW" value="0" step="2" min="-30" max="30"></label>
         <p class="hint" id="peWInfo" style="margin-top:0;"></p>
-        <p class="hint" id="peFitInfo" style="margin:4px 0 0;">まず①で、彫ってある同じ字をこの字の下に重ねます。②で拾った墨を直し、③を押します。そのあとは、直したい点を選んで<b>右クリック</b>［選んだ点を拓本に寄せる］。墨の中にある点は外へ、外にある点は内へ、点ごとに向きを決めて寄せます。</p>
 
         <h3 class="sec">④ 手で直す</h3>
         <div id="peTools">
@@ -1225,6 +1229,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <input type="number" id="peIn" value="1.5" step="0.1" min="0.05" max="30"></label>
         <button class="mini" id="peRedC" style="margin-top:5px;">選んだ輪郭を 赤／黒 に</button>
         <p class="hint" id="peRedInfo" style="margin:2px 0 6px;"></p>
+        <button class="mini" id="peSmooth">縁をなだらかにする</button>
         <button class="mini" id="peUnion">重なりを1つにする</button>
 
         <h3 class="sec">AI学習</h3>
@@ -1250,6 +1255,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <div class="hint" id="peName" style="margin-top:4px;" hidden></div>
       </div>
     </div>
+      <div id="peFitInfo" class="pemsg">まず①で、彫ってある同じ字をこの字の下に重ねます。②で拾った墨を直し、③を押します。そのあとは、直したい点を選んで<b>右クリック</b>［選んだ点を拓本に寄せる］。</div>
   </div>
 </div>
 <input type="file" id="fFont" accept=".ttf,.otf,.ttc,.otc" multiple hidden>
@@ -1942,7 +1948,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.78";
+var APP_VER = "v20.79";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14024,6 +14030,59 @@ function peSelectIn(m, base){
   }).map(Number);
 }
 
+/* 縁をなだらかにする（v20.79）。
+   拓本に寄せたあとの輪郭は、拓本のふちの粗さを拾って波打つことがある。
+   となりの点との「まん中」へ少しずつ寄せると、山と谷がならされて、
+   彫ったときに引っかからない線になる。
+   ・点を選んでいれば その点だけ。選んでいなければ字ぜんたい
+   ・両はしを固定して 2 回まわす。1 回で寄せる量は半分まで（形が痩せないように）
+   ・ハンドル（曲がり具合）も同じだけ動かす */
+function peSmoothEdge(){
+  if (!PE) return;
+  var only = null;
+  if (PE.sel && PE.sel.length){
+    only = {};
+    PE.sel.forEach(function(q){ only[q.c + "/" + q.n] = 1; });
+  }
+  var K = 0.5, ROUND = 2, moved = 0, tot = 0;
+  var next = PE.contours.map(function(c, ci){
+    var n = c.length;
+    if (n < 5) return c;
+    var pts = c.map(function(p){
+      return { x:p.x, y:p.y, i:p.i ? [p.i[0],p.i[1]] : null, o:p.o ? [p.o[0],p.o[1]] : null };
+    });
+    for (var r = 0; r < ROUND; r++){
+      var src = pts.map(function(p){ return { x:p.x, y:p.y }; });
+      for (var i = 0; i < n; i++){
+        tot++;
+        if (only && !only[ci + "/" + i]) continue;
+        var a = src[(i-1+n)%n], b = src[(i+1)%n];
+        var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        var dx = (mx - src[i].x) * K, dy = (my - src[i].y) * K;
+        if (!dx && !dy) continue;
+        pts[i].x += dx; pts[i].y += dy;
+        if (pts[i].i){ pts[i].i[0] += dx; pts[i].i[1] += dy; }
+        if (pts[i].o){ pts[i].o[0] += dx; pts[i].o[1] += dy; }
+      }
+    }
+    return pts;
+  });
+  var n0 = 0;
+  PE.contours.forEach(function(c, ci){
+    c.forEach(function(p, i){
+      var q = next[ci][i];
+      if (q && (Math.abs(q.x - p.x) > 1e-6 || Math.abs(q.y - p.y) > 1e-6)) n0++;
+    });
+  });
+  if (!n0){ msg("なだらかにする所がありませんでした。", true); return; }
+  peSnap();
+  PE.contours = next;
+  peRender();
+  var el = $("peFitInfo");
+  if (el) el.textContent = (only ? "選んだ点だけ、" : "") + "縁をなだらかにしました（" + n0 + " 点）。" +
+    "もう一度押すと、さらになだらかになります。効かせすぎたら［1つ戻す］で戻せます。";
+  msg("縁をなだらかにしました（" + n0 + " 点）。");
+}
 /* 節点を消す（3 点未満になる輪郭は消す） */
 function peDeleteNode(c, n){
   var ct = PE.contours[c]; if (!ct) return;
@@ -14233,6 +14292,7 @@ Array.prototype.forEach.call(document.querySelectorAll("#pathEd .pt"), function(
   b.onclick = function(){ if (!PE) return;
     /* モードを変えても、選んだ分はこわさない（v18.3） */
     PE.tool = (PE.tool === b.dataset.t) ? "sel" : b.dataset.t;
+    if (PE.tool === "inkdel" || PE.tool === "inkadd") peInkShowOn();
     peRender(); };
 });
 /* 作字の画面から、この字だけ共有フォルダーへ。
@@ -14345,8 +14405,13 @@ function peInkRefresh(){
     peRender();
   }
 }
-$("peInkFine").onchange = function(){ peInkRefresh(); };
-$("peInkAdj").onchange = function(){ peInkRefresh(); };
+$("peInkFine").onchange = function(){ peInkShowOn(); peInkRefresh(); };
+function peInkShowOn(){
+  var e = $("peFitEdge");
+  if (e && !e.checked){ e.checked = true; peRender(); }   /* 何を拾っているか見えないと決められない */
+}
+$("peInkAdj").onchange = function(){ peInkShowOn(); peInkRefresh(); };
+$("peInkAdj").onfocus  = function(){ peInkShowOn(); };
 $("peW").oninput = function(e){
   if (!PE) return;
   PE.wpct = Math.max(-30, Math.min(30, num(e.target.value, 0)));
@@ -14361,6 +14426,7 @@ $("peBig").onclick = function(){
   $("peBig").textContent = box.classList.contains("max") ? "元の大きさ" : "最大化";
   setTimeout(peRender, 30);
 };
+$("peSmooth").onclick = function(){ peSmoothEdge(); };
 $("peUnion").onclick = function(){
   if (!PE) return;
   var u = unionContours(PE.contours);

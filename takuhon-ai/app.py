@@ -3,6 +3,12 @@
   POST /api/takuhon/clean      切り抜きを渡すと、墨の白黒マスク（PNG）を返す
   POST /api/takuhon/feedback   人が直した正解を貯める（学習は回さない。すぐ返す）
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
+  GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
+  GET  /api/takuhon/curve      1 エポックごとの成績（いまの回）
+  GET  /api/takuhon/history    世代の記録（history.jsonl）
+  GET  /api/takuhon/pairs      貯まった組の一覧（字・日付・手がかりの有無）
+  GET  /api/takuhon/img/...    組の画像（生／正解／手がかり／AI の出力）
+  GET  /                       見るための画面（dash.html）
   GET  /health                 生きているか
 
 考え方
@@ -14,6 +20,8 @@
 """
 import json
 import os
+import re
+import subprocess
 import time
 from datetime import datetime
 
@@ -21,7 +29,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 
 import data as D
@@ -31,6 +39,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATASET = os.path.join(ROOT, "dataset", "pairs")
 RUNS = os.path.join(ROOT, "runs")
 CURRENT = os.path.join(RUNS, "current.pth")
+VALDIR = os.path.join(ROOT, "dataset", "val")
+SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
 os.makedirs(DATASET, exist_ok=True)
 os.makedirs(RUNS, exist_ok=True)
 
@@ -134,3 +144,133 @@ async def feedback(
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     return {"status": "saved", "saved_id": name, "pairs": len(D.list_pairs(DATASET))}
+
+
+# ----- 見るための口（モニタリング）。読むだけで、学習には触らない ------------
+
+def _read_json(path, dflt=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return dflt
+
+
+def _read_jsonl(path, limit=None):
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    out.append(json.loads(ln))
+                except ValueError:
+                    pass
+    except OSError:
+        return []
+    return out[-limit:] if limit else out
+
+
+def _gpu():
+    """GPU の使われ具合。nvidia-smi が無くても黙って None を返す。"""
+    try:
+        q = "utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
+        r = subprocess.run(["nvidia-smi", "--query-gpu=" + q,
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=3)
+        v = [x.strip() for x in r.stdout.strip().split("\n")[0].split(",")]
+        return {"util": float(v[0]), "usedMB": float(v[1]), "totalMB": float(v[2]),
+                "tempC": float(v[3]), "watt": float(v[4])}
+    except Exception:
+        return None
+
+
+def _set_dir(which):
+    return DATASET if which == "pairs" else VALDIR if which == "val" else None
+
+
+@app.get("/api/takuhon/progress")
+def progress():
+    """学習の途中経過。**画面のログは夜に流れて消える**ので、ここから読む。"""
+    p = _read_json(os.path.join(RUNS, "progress.json"), {"state": "none"})
+    p["gpu"] = _gpu()
+    return p
+
+
+@app.get("/api/takuhon/curve")
+def curve():
+    return {"points": _read_jsonl(os.path.join(RUNS, "curve.jsonl"))}
+
+
+@app.get("/api/takuhon/history")
+def history():
+    return {"items": _read_jsonl(os.path.join(RUNS, "history.jsonl"), 60)}
+
+
+@app.get("/api/takuhon/pairs")
+def pairs(which: str = "pairs", limit: int = 60, offset: int = 0):
+    """貯まった組の一覧。新しいものが先。"""
+    root = _set_dir(which)
+    if root is None:
+        return JSONResponse({"error": "bad_set"}, status_code=400)
+    ds = D.list_pairs(root)
+    ds.sort(key=lambda d: os.path.getmtime(d), reverse=True)
+    total = len(ds)
+    out = []
+    for d in ds[offset:offset + limit]:
+        meta = _read_json(os.path.join(d, "meta.json"), {}) or {}
+        out.append({
+            "id": os.path.basename(d), "set": which,
+            "char": meta.get("char", ""), "at": meta.get("at", ""),
+            "hint1": os.path.exists(os.path.join(d, "hint1.png")),
+            "hint2": os.path.exists(os.path.join(d, "hint2.png")) or
+                     os.path.exists(os.path.join(d, "hint.png")),
+        })
+    chars = {}
+    for d in ds:
+        c = (_read_json(os.path.join(d, "meta.json"), {}) or {}).get("char", "")
+        if c:
+            chars[c] = chars.get(c, 0) + 1
+    return {"total": total, "items": out,
+            "chars": sorted(chars.items(), key=lambda kv: -kv[1])[:40]}
+
+
+@app.get("/api/takuhon/img/{which}/{pid}/{kind}.png")
+def img(which: str, pid: str, kind: str):
+    """組の画像を 1 枚返す。kind は raw / mask / hint1 / hint2 / ai。
+
+    ai は **いまのモデルにその組を通した結果**。正解と見くらべるためのもの。
+    """
+    root = _set_dir(which)
+    ok = root is not None and SAFE.match(pid) and kind in ("raw", "mask", "hint1", "hint2", "ai")
+    if not ok:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    d = os.path.join(root, pid)
+    if kind != "ai":
+        f = os.path.join(d, kind + ".png")
+        if kind == "hint2" and not os.path.exists(f):
+            f = os.path.join(d, "hint.png")          # 古い書き出し
+        if not os.path.exists(f):
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return FileResponse(f, media_type="image/png")
+    _reload_if_new()
+    if not INFO["loaded"]:
+        return JSONResponse({"error": "no_model"}, status_code=503)
+    it = D.load_pair(d)
+    if not it:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    x = D.to_input(it["raw"], it["hint1"], it["hint2"])
+    with torch.no_grad():
+        y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
+    return Response(content=D.png_bytes((y > 0.5).astype(np.float32)),
+                    media_type="image/png")
+
+
+@app.get("/")
+def dash():
+    f = os.path.join(ROOT, "dash.html")
+    if not os.path.exists(f):
+        return JSONResponse({"error": "no_dash"}, status_code=404)
+    return FileResponse(f, media_type="text/html; charset=utf-8")

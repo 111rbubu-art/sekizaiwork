@@ -1,0 +1,324 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>拓本クリーン化 ― 状況</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  学習と貯まり具合を見るための画面。読むだけで、学習には触らない。
+  外の部品は一切使わない（社内のパソコンはインターネットに出さないため）。
+  グラフも自前の SVG。
+-->
+<style>
+:root{
+  --bg:#f7f7f5; --card:#fff; --line:#e3e3df; --ink:#22221f; --muted:#77776f;
+  --shu:#c0392b; --ao:#2c6fbb; --midori:#2f8f5b; --ki:#b8860b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.7 system-ui,-apple-system,"Noto Sans JP",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:19px;margin:0 0 2px;font-weight:700}
+h2{font-size:15px;margin:26px 0 10px;font-weight:700}
+.sub{color:var(--muted);font-size:12px;margin:0 0 18px}
+.row{display:flex;flex-wrap:wrap;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.k{font-size:11.5px;color:var(--muted);margin-bottom:3px}
+.v{font-size:22px;font-weight:700;letter-spacing:.01em}
+.v small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+.tag{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11.5px;
+  font-weight:700;vertical-align:2px}
+.t-run{background:#e8f1fb;color:var(--ao)}
+.t-ok{background:#e7f3ec;color:var(--midori)}
+.t-no{background:#fbeceb;color:var(--shu)}
+.t-off{background:#eee;color:var(--muted)}
+.bar{height:9px;background:#ececea;border-radius:99px;overflow:hidden;margin:9px 0 6px}
+.bar>i{display:block;height:100%;background:var(--ao);width:0;transition:width .4s}
+table{border-collapse:collapse;width:100%;font-size:13px;background:var(--card)}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:right;white-space:nowrap}
+th{background:#fafaf8;font-weight:600;color:var(--muted);font-size:11.5px}
+td.l,th.l{text-align:left}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.pair{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px}
+.pair .ims{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.pair img{width:100%;aspect-ratio:1;object-fit:contain;background:#fbfbf9;
+  border:1px solid var(--line);border-radius:4px;image-rendering:pixelated;cursor:zoom-in}
+.pair .noai{display:grid;place-items:center;aspect-ratio:1;background:#fbfbf9;
+  border:1px dashed var(--line);border-radius:4px;color:var(--muted);font-size:10.5px}
+.pair .cap{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:10.5px;
+  color:var(--muted);text-align:center;margin-top:3px}
+.pair .ttl{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.pair .ch{font-size:17px;font-weight:700}
+.pair .at{font-size:10.5px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 0}
+.chip{background:var(--card);border:1px solid var(--line);border-radius:99px;
+  padding:2px 10px;font-size:12.5px}
+.chip b{font-weight:700}
+button,select{font:inherit;padding:5px 12px;border:1px solid var(--line);
+  background:var(--card);border-radius:7px;cursor:pointer;color:inherit}
+button:hover{background:#f1f1ee}
+.hint{color:var(--muted);font-size:12px}
+.err{color:var(--shu)}
+#zoom{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;place-items:center;
+  z-index:9;cursor:zoom-out}
+#zoom img{max-width:92vw;max-height:92vh;background:#fff;image-rendering:pixelated}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}
+.legend i{display:inline-block;width:16px;height:3px;vertical-align:3px;margin-right:5px}
+@media(max-width:520px){.v{font-size:19px}}
+</style>
+
+<div class="wrap">
+  <h1>拓本クリーン化 ― 状況</h1>
+  <p class="sub" id="head">読み込み中…</p>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>学習の様子</h2>
+  <div class="card" id="train"></div>
+
+  <h2>成績のうつり変わり</h2>
+  <div class="card">
+    <div id="chart"></div>
+    <div class="legend">
+      <span><i style="background:var(--shu)"></i>誤り（loss）小さいほど良い</span>
+      <span><i style="background:var(--ao)"></i>一致・手がかり無し</span>
+      <span><i style="background:var(--midori)"></i>一致・手がかりあり</span>
+    </div>
+  </div>
+
+  <h2>世代の記録</h2>
+  <div id="hist"></div>
+
+  <h2>貯まったデータ</h2>
+  <div class="row" style="align-items:center;margin-bottom:10px">
+    <select id="which">
+      <option value="pairs">学習用（dataset/pairs）</option>
+      <option value="val">検証用（dataset/val）</option>
+    </select>
+    <button id="more">もっと見る</button>
+    <span class="hint" id="pcount"></span>
+  </div>
+  <div id="chars" class="chips"></div>
+  <div class="grid" id="pairs" style="margin-top:12px"></div>
+</div>
+
+<div id="zoom"><img alt=""></div>
+
+<script>
+/* 数字の見せ方をそろえる小道具 */
+function n2(v){ return (v===null||v===undefined) ? "―" : (+v).toFixed(2); }
+function n3(v){ return (v===null||v===undefined) ? "―" : (+v).toFixed(3); }
+function pct(v){ return (v===null||v===undefined) ? "―" : Math.round(v*100)+"%"; }
+function mmss(s){
+  if (s===null||s===undefined) return "―";
+  s = Math.max(0, Math.round(s));
+  var h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return h ? (h+"時間 "+m+"分") : (m ? (m+"分") : (s+"秒"));
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
+  function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+async function get(u){ var r = await fetch(u, {cache:"no-store"}); return r.json(); }
+
+/* ---- 上の札 ---- */
+function cards(st, pg){
+  var g = pg.gpu, m = st.model || {};
+  var box = [];
+  box.push(["いまのモデル",
+    m.loaded ? ('<span class="tag t-ok">あり</span>')
+             : ('<span class="tag ' + (m.why && m.why.indexOf("まだ") < 0 ? "t-no" : "t-off") +
+                '">まだ無い</span>'),
+    m.loaded ? ("step " + (m.step||0) + "／" + (m.at||""))
+             : (m.why || "学習すると出ます")]);
+  box.push(["一致（手がかり無し）", pct(m.iou_nohint!==undefined ? m.iou_nohint : m.iou),
+    "本番の実力。ここを見る"]);
+  box.push(["学習用のデータ", st.pairs + '<small>組</small>',
+    "検証用 " + st.val + " 組（学習には使わない）"]);
+  if (g) box.push(["GPU", Math.round(g.util) + '<small>%</small>',
+    Math.round(g.usedMB/1024*10)/10 + " / " + Math.round(g.totalMB/1024) +
+    "GB　" + Math.round(g.tempC) + "℃　" + Math.round(g.watt) + "W"]);
+  else box.push(["GPU", '<span class="tag t-off">見えない</span>', st.cuda || st.device]);
+  document.getElementById("cards").innerHTML = box.map(function(b){
+    return '<div class="card"><div class="k">' + b[0] + '</div><div class="v">' + b[1] +
+           '</div><div class="hint">' + esc(b[2]) + '</div></div>';
+  }).join("");
+}
+
+/* ---- 学習の様子 ---- */
+function train(pg){
+  var el = document.getElementById("train"), s = pg.state;
+  if (s === "none" || !s){
+    el.innerHTML = '<span class="tag t-off">まだ回していません</span>' +
+      '<p class="hint" style="margin:8px 0 0">' +
+      'データを 8 組ためてから <code>python3 train.py --epochs 60</code> を回すと、' +
+      'ここに途中経過が出ます。夜に自動で回した分も、朝ここで読めます。</p>';
+    return;
+  }
+  var tag = s==="running" ? '<span class="tag t-run">学習中</span>'
+          : s==="done"    ? '<span class="tag t-ok">終わりました</span>'
+          : s==="failed"  ? '<span class="tag t-no">落ちました</span>'
+          :                 '<span class="tag t-off">止めました</span>';
+  var p = pg.epochs ? (pg.epoch||0)/pg.epochs : 0;
+  var h = tag + ' <b style="margin-left:6px">' + (pg.epoch||0) + ' / ' + (pg.epochs||"―") +
+          '</b> <span class="hint">回め</span>';
+  h += '<div class="bar"><i style="width:' + (p*100).toFixed(1) + '%"></i></div>';
+  var line = [];
+  line.push("誤り " + n3(pg.loss));
+  line.push("一致（手がかり無し） " + pct(pg.iou_nohint));
+  line.push("一致（手がかりあり） " + pct(pg.iou));
+  if (s === "running") line.push("残り およそ " + mmss(pg.etaSec));
+  if (pg.secPerEpoch) line.push("1 回 " + n2(pg.secPerEpoch) + " 秒");
+  h += '<div class="hint">' + line.join("　／　") + '</div>';
+  h += '<div class="hint">はじめ ' + esc(pg.started||"―") + '　最後の書き込み ' +
+       esc(pg.at||"―") + '　学習 ' + (pg.pairs||0) + ' 組／検証 ' + (pg.val||0) + ' 組</div>';
+  if (pg.why){
+    var cl = (pg.swapped === true) ? "t-ok" : (s === "failed" ? "t-no" : "t-off");
+    h += '<p style="margin:9px 0 0"><span class="tag ' + cl + '">結果</span> ' +
+         esc(pg.why) + '</p>';
+  }
+  el.innerHTML = h;
+}
+
+/* ---- 折れ線（自前の SVG。外の部品は使わない） ---- */
+function chart(pts){
+  var el = document.getElementById("chart");
+  pts = (pts||[]).filter(function(p){ return p.ep > 0; });
+  if (pts.length < 2){
+    el.innerHTML = '<p class="hint" style="margin:0">' +
+      '2 回ぶん貯まると線になります。</p>'; return;
+  }
+  var W = 1000, H = 240, L = 44, R = 44, T = 14, B = 26;
+  var xs = pts.map(function(p){ return p.ep; });
+  var ex = Math.max.apply(null, xs), sx = Math.min.apply(null, xs);
+  var ls = pts.map(function(p){ return p.loss; }).filter(function(v){ return v!=null; });
+  var lmax = ls.length ? Math.max.apply(null, ls) : 1;
+  function X(ep){ return L + (ep - sx) / Math.max(1, ex - sx) * (W - L - R); }
+  function Yl(v){ return T + (1 - v / (lmax || 1)) * (H - T - B); }   /* 誤り：左目盛り */
+  function Yi(v){ return T + (1 - v) * (H - T - B); }                 /* 一致：右目盛り 0〜1 */
+  function path(key, Y){
+    /* 測っていない回は**飛ばしてつなぐ**。一致は 5 回ごとにしか測らないので、
+       そこで線を切ると点だけになってしまう。 */
+    var d = "", on = false;
+    pts.forEach(function(p){
+      var v = p[key];
+      if (v === null || v === undefined) return;
+      d += (on ? "L" : "M") + X(p.ep).toFixed(1) + " " + Y(v).toFixed(1) + " ";
+      on = true;
+    });
+    return d;
+  }
+  function dots(key, Y, col){
+    return pts.filter(function(p){ return p[key] != null; }).map(function(p){
+      return '<circle cx="' + X(p.ep).toFixed(1) + '" cy="' + Y(p[key]).toFixed(1) +
+             '" r="3" fill="' + col + '"><title>' + p.ep + ' 回め：' +
+             (key === "loss" ? n3(p[key]) : pct(p[key])) + '</title></circle>';
+    }).join("");
+  }
+  var gy = "", i;
+  for (i = 0; i <= 4; i++){
+    var y = T + i / 4 * (H - T - B), v = 1 - i / 4;
+    gy += '<line x1="' + L + '" y1="' + y + '" x2="' + (W-R) + '" y2="' + y +
+          '" stroke="#ececea"/>' +
+          '<text x="' + (W-R+6) + '" y="' + (y+4) + '" font-size="11" fill="#77776f">' +
+          Math.round(v*100) + '%</text>' +
+          '<text x="' + (L-8) + '" y="' + (y+4) + '" font-size="11" fill="#77776f" ' +
+          'text-anchor="end">' + (v*lmax).toFixed(2) + '</text>';
+  }
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto">' +
+    gy +
+    '<path d="' + path("loss", Yl) + '" fill="none" stroke="var(--shu)" stroke-width="2"/>' +
+    '<path d="' + path("iou_nohint", Yi) + '" fill="none" stroke="var(--ao)" stroke-width="2"/>' +
+    '<path d="' + path("iou", Yi) + '" fill="none" stroke="var(--midori)" stroke-width="2" ' +
+    'stroke-dasharray="4 3"/>' +
+    dots("iou_nohint", Yi, "var(--ao)") + dots("iou", Yi, "var(--midori)") +
+    '<text x="' + L + '" y="' + (H-6) + '" font-size="11" fill="#77776f">' + sx + ' 回め</text>' +
+    '<text x="' + (W-R) + '" y="' + (H-6) + '" font-size="11" fill="#77776f" ' +
+    'text-anchor="end">' + ex + ' 回め</text>' +
+    '</svg>';
+}
+
+/* ---- 世代の記録 ---- */
+function hist(items){
+  var el = document.getElementById("hist");
+  if (!items.length){
+    el.innerHTML = '<p class="hint" style="margin:0">まだ 1 世代も作っていません。</p>'; return;
+  }
+  var rows = items.slice().reverse().map(function(it, i, arr){
+    var prev = arr[i+1];
+    var d = (prev && it.iou_nohint != null && prev.iou_nohint != null)
+          ? (it.iou_nohint - prev.iou_nohint) : null;
+    var col = d === null ? "var(--muted)" : (d >= 0 ? "var(--midori)" : "var(--shu)");
+    return '<tr><td class="l">' + esc(it.at) + '</td><td>' + (it.pairs||0) + '</td>' +
+      '<td>' + (it.step||0) + '</td><td>' + pct(it.iou) + '</td>' +
+      '<td><b>' + pct(it.iou_nohint) + '</b></td>' +
+      '<td style="color:' + col + '">' + (d === null ? "―" :
+        (d >= 0 ? "＋" : "−") + Math.abs(d*100).toFixed(1) + "pt") + '</td>' +
+      '<td class="l hint">' + esc(it.file) + '</td></tr>';
+  }).join("");
+  el.innerHTML = '<table><tr><th class="l">日時</th><th>学習</th><th>step</th>' +
+    '<th>一致<br>手がかりあり</th><th>一致<br>手がかり無し</th><th>前回との差</th>' +
+    '<th class="l">ファイル</th></tr>' + rows + '</table>';
+}
+
+/* ---- 貯まったデータ ---- */
+var LIMIT = 24;
+async function pairs(reset){
+  if (reset) LIMIT = 24;
+  var w = document.getElementById("which").value;
+  var d = await get("/api/takuhon/pairs?which=" + w + "&limit=" + LIMIT);
+  document.getElementById("pcount").textContent =
+    d.total + " 組のうち " + d.items.length + " 組を出しています";
+  document.getElementById("chars").innerHTML = (d.chars||[]).map(function(c){
+    return '<span class="chip">' + esc(c[0]) + ' <b>' + c[1] + '</b></span>';
+  }).join("") || '<span class="hint">字の記録がありません</span>';
+  document.getElementById("pairs").innerHTML = d.items.map(function(it){
+    var b = "/api/takuhon/img/" + it.set + "/" + encodeURIComponent(it.id) + "/";
+    return '<div class="pair"><div class="ttl">' +
+      '<span class="ch">' + (esc(it.char) || '<span class="hint">字不明</span>') + '</span>' +
+      '<span class="at">' + esc((it.at||"").replace("T", " ")) + '</span></div>' +
+      '<div class="ims">' +
+        '<img src="' + b + 'raw.png" alt="拓本">' +
+        '<img src="' + b + 'mask.png" alt="人が直した正解">' +
+        '<img src="' + b + 'ai.png" alt="AI" onerror="noAi(this)">' +
+      '</div><div class="cap"><span>拓本</span><span>正解</span><span>AI</span></div>' +
+      '<div class="hint" style="margin-top:4px;font-size:10.5px">' +
+        (it.hint1 ? "手1 " : "") + (it.hint2 ? "手2 " : "") + esc(it.id) + '</div></div>';
+  }).join("") || '<p class="hint">まだ 1 組もありません。</p>';
+}
+
+/* モデルがまだ無い（503）ときは、壊れた絵ではなく「まだ」と出す */
+function noAi(img){
+  var d = document.createElement("div");
+  d.className = "noai"; d.textContent = "モデル待ち";
+  img.replaceWith(d);
+}
+
+/* ---- 拡大 ---- */
+var zoom = document.getElementById("zoom");
+document.addEventListener("click", function(e){
+  if (e.target.tagName === "IMG" && e.target.closest(".pair")){
+    zoom.querySelector("img").src = e.target.src;
+    zoom.style.display = "grid";
+  } else if (e.target.closest("#zoom")) zoom.style.display = "none";
+});
+
+/* ---- 読み直し ---- */
+async function tick(){
+  try{
+    var st = await get("/api/takuhon/status");
+    var pg = await get("/api/takuhon/progress");
+    var cv = await get("/api/takuhon/curve");
+    var hs = await get("/api/takuhon/history");
+    cards(st, pg); train(pg); chart(cv.points); hist(hs.items);
+    document.getElementById("head").innerHTML =
+      esc(st.cuda || st.device) + '　<span class="hint">' +
+      new Date().toLocaleTimeString("ja-JP") + ' に読みました（5 秒ごと）</span>';
+  } catch(e){
+    document.getElementById("head").innerHTML =
+      '<span class="err">サーバーにつながりません（' + esc(e.message) + '）</span>';
+  }
+}
+document.getElementById("more").onclick = function(){ LIMIT += 24; pairs(); };
+document.getElementById("which").onchange = function(){ pairs(true); };
+tick(); pairs(true);
+setInterval(tick, 5000);
+setInterval(function(){ if (document.visibilityState === "visible") pairs(); }, 30000);
+</script>

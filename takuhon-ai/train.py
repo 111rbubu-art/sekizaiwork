@@ -16,6 +16,7 @@ import json
 import os
 import random
 import shutil
+import time
 from datetime import datetime
 
 import numpy as np
@@ -33,6 +34,33 @@ CURRENT = os.path.join(RUNS, "current.pth")
 
 HINT_DROP1 = 0.4     # 元のフォントの字形を白紙にする割合
 HINT_DROP2 = 0.4     # 合わせたあとの字形を白紙にする割合
+
+
+PROGRESS = os.path.join(RUNS, "progress.json")
+CURVE = os.path.join(RUNS, "curve.jsonl")
+
+
+def put_progress(**kw):
+    """いまの様子を runs/progress.json に置く（見るための画面が読む）。
+
+    夜に回すと画面のログは流れて消える。**朝に何が起きたか分かる**ように、
+    1 エポックごとに上書きする。書けなくても学習は止めない。
+    """
+    try:
+        kw["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(PROGRESS, "w", encoding="utf-8") as f:
+            json.dump(kw, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def put_curve(rec, fresh=False):
+    """1 エポックぶんの成績を積む。fresh なら新しい回として書き直す。"""
+    try:
+        with open(CURVE, "w" if fresh else "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def dice_bce(logit, y):
@@ -107,8 +135,11 @@ def main():
     tr = load_all(D.list_pairs(TRAIN_DIR))
     va = load_all(D.list_pairs(VAL_DIR))
     print(f"学習 {len(tr)} 組 ／ 検証 {len(va)} 組 ／ {device}")
+    started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if len(tr) < 8:
         print("学習用が少なすぎます（8 組以上ためてください）。やめます。")
+        put_progress(state="stopped", why="学習用が少なすぎます（8 組以上）",
+                     pairs=len(tr), val=len(va), started=started)
         return
 
     net = UNet(base=a.base).to(device)
@@ -123,6 +154,12 @@ def main():
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
     step = step0
+    t0 = time.time()
+    put_progress(state="running", epoch=0, epochs=a.epochs, pairs=len(tr), val=len(va),
+                 started=started, device=str(device), bs=a.bs, lr=a.lr,
+                 prev=best_prev, pid=os.getpid())
+    put_curve({"ep": 0}, fresh=True)          # 新しい回。前の回の線は消す
+    v1 = v0 = None
     for ep in range(1, a.epochs + 1):
         net.train()
         tot, nb = 0.0, 0
@@ -134,12 +171,20 @@ def main():
             scaler.scale(loss).backward()
             scaler.step(opt); scaler.update()
             tot += loss.item(); nb += 1; step += 1
+        avg = tot / max(1, nb)
         if ep % 5 == 0 or ep == a.epochs:
             v1 = val_score(net, va, device, True)
             v0 = val_score(net, va, device, False)
-            print(f"epoch {ep:3d}  loss {tot/max(1,nb):.4f}  "
+            print(f"epoch {ep:3d}  loss {avg:.4f}  "
                   f"一致(手がかりあり) {v1 if v1 is None else round(v1,3)}  "
                   f"一致(手がかり無し) {v0 if v0 is None else round(v0,3)}")
+        sec = (time.time() - t0) / ep
+        put_curve({"ep": ep, "loss": round(avg, 5), "iou": v1, "iou_nohint": v0})
+        put_progress(state="running", epoch=ep, epochs=a.epochs, loss=round(avg, 5),
+                     iou=v1, iou_nohint=v0, pairs=len(tr), val=len(va), step=step,
+                     started=started, device=str(device), bs=a.bs, lr=a.lr,
+                     prev=best_prev, secPerEpoch=round(sec, 2),
+                     etaSec=int(sec * (a.epochs - ep)), pid=os.getpid())
 
     v1 = val_score(net, va, device, True)
     v0 = val_score(net, va, device, False)
@@ -151,14 +196,23 @@ def main():
     print("世代を残しました:", gen)
 
     # 検証が無い／良くなった ときだけ差し替える。悪くなったら据え置き。
+    done = dict(state="done", epoch=a.epochs, epochs=a.epochs, iou=v1, iou_nohint=v0,
+                pairs=len(tr), val=len(va), step=step, started=started,
+                device=str(device), prev=best_prev, gen=os.path.basename(gen))
     if not va:
         print("検証用が無いので、差し替えません。dataset/val に 10 組ほど移してください。")
+        put_progress(swapped=False,
+                     why="検証用が無いので差し替えません（dataset/val に 10 組ほど）", **done)
         return
     if best_prev is None or (v0 is not None and v0 >= best_prev - 1e-4):
         shutil.copyfile(gen, CURRENT)
         print(f"current.pth を差し替えました（手がかり無しの一致 {best_prev} → {round(v0,3)}）")
+        put_progress(swapped=True,
+                     why="良くなったので差し替えました（%s → %s）" % (best_prev, round(v0, 3)), **done)
     else:
         print(f"悪くなったので据え置きます（{best_prev} → {round(v0,3)}）")
+        put_progress(swapped=False,
+                     why="悪くなったので据え置きました（%s → %s）" % (best_prev, round(v0, 3)), **done)
     with open(os.path.join(RUNS, "history.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps({"at": at, "step": step, "iou": v1, "iou_nohint": v0,
                             "pairs": len(tr), "file": os.path.basename(gen)},
@@ -166,4 +220,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:                    # 落ちたことも画面に残す（夜に回すので）
+        put_progress(state="failed", why=f"{type(e).__name__}: {e}")
+        raise

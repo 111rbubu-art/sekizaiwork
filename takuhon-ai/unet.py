@@ -49,14 +49,33 @@ class UNet(nn.Module):
 
 
 def load_model(path, device, in_ch=3, base=32):
-    """学習済みがあれば読む。無ければまっさらな重みを返す。"""
-    net = UNet(in_ch=in_ch, base=base).to(device)
-    info = {"loaded": False, "path": str(path), "step": 0, "iou": None, "at": None}
+    """学習済みがあれば読む。無ければまっさらな重みを返す。
+
+    **モデルの大きさ（base）は、しまってある値に従う。**
+    `train.py --base 16` のように変えて学習すると、決め打ちで組んだ型とは
+    かたちが合わず、黙って「モデルが無い」ことになってしまう（実際になった）。
+    読めなかったときは**理由を info["why"] に残す**。
+    黙って何も出ないと、原因の見当がつかないため。
+    """
+    info = {"loaded": False, "path": str(path), "step": 0, "iou": None,
+            "iou_nohint": None, "pairs": None, "at": None, "base": base, "why": None}
+    ck = None
     try:
         ck = torch.load(path, map_location=device)
-        net.load_state_dict(ck["model"])
-        info.update(loaded=True, step=ck.get("step", 0), iou=ck.get("iou"), at=ck.get("at"))
-    except Exception:
-        pass
+        base = int(ck.get("base", base))
+    except FileNotFoundError:
+        info["why"] = "まだ学習していません"
+    except Exception as e:
+        info["why"] = f"読めませんでした（{type(e).__name__}: {e}）"
+    net = UNet(in_ch=in_ch, base=base).to(device)
+    info["base"] = base
+    if ck is not None:
+        try:
+            net.load_state_dict(ck["model"])
+            info.update(loaded=True, step=ck.get("step", 0), iou=ck.get("iou"),
+                        iou_nohint=ck.get("iou_nohint"), pairs=ck.get("pairs"),
+                        at=ck.get("at"), why=None)
+        except Exception as e:
+            info["why"] = f"かたちが合いません（{type(e).__name__}: {str(e)[:120]}）"
     net.eval()
     return net, info

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.72</title>
+<title>彫刻原稿 v20.73</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1940,7 +1940,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.72";
+var APP_VER = "v20.73";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12221,6 +12221,43 @@ function fitMoments(m, G){
   return { x: G.x0 + (mx+0.5)*G.cell, y: G.y1 - (my+0.5)*G.cell,
            sx: Math.sqrt(vx/n)*G.cell, sy: Math.sqrt(vy/n)*G.cell, n: n };
 }
+/* 一致を測る窓（v20.73）。
+   紙のふち・石の地・となりの行など、字から遠い所の墨まで入れて一致を測ると、
+   輪郭がぴったり重なっていても「一致 11%」のような小さな数字になる
+   （合わせた面積＝分母が、遠くの塊のぶんだけ膨らむため）。
+   測るのは、字の枠を広げた四角の中だけにする。
+   探すときの上限（字の 60%）より広く取ってあるので、合わせ込みの邪魔はしない。 */
+function fitInkWin(ink, G, contours, inflate){
+  var bb = fitInkBox(contours); if (!bb) return ink;
+  var inf = (inflate === undefined) ? Math.max(bb.w, bb.h) * 0.45 : inflate;
+  var x1 = bb.x - inf, x2 = bb.x + bb.w + inf;
+  var y1 = bb.y - inf, y2 = bb.y + bb.h + inf;
+  var gx1 = Math.max(0, Math.floor((x1 - G.x0) / G.cell));
+  var gx2 = Math.min(G.w - 1, Math.ceil((x2 - G.x0) / G.cell));
+  var gy1 = Math.max(0, Math.floor((G.y1 - y2) / G.cell));
+  var gy2 = Math.min(G.h - 1, Math.ceil((G.y1 - y1) / G.cell));
+  if (gx1 <= 0 && gy1 <= 0 && gx2 >= G.w-1 && gy2 >= G.h-1) return ink;  /* 全部入る */
+  var out = new Uint8Array(G.w * G.h), n = 0;
+  for (var y = gy1; y <= gy2; y++)
+    for (var x = gx1; x <= gx2; x++){
+      var i = y*G.w + x;
+      if (ink[i]){ out[i] = 1; n++; }
+    }
+  return n ? out : ink;
+}
+/* 字のまわりだけで見た一致（v20.73）。
+   人が画面で見て「合っている」と感じるのはこちら。
+   字をふくらませた範囲の中だけで、重なりを測る。 */
+function fitIoUNear(m, ink, G, mm){
+  var r = Math.max(2, Math.round((mm || 2) / (G.mmCell || 1)));
+  var near = fitMorph(m, G.w, G.h, r);
+  var and = 0, or = 0;
+  for (var i = 0, n = m.length; i < n; i++){
+    if (!near[i]) continue;
+    if (m[i] | ink[i]){ or++; if (m[i] & ink[i]) and++; }
+  }
+  return or ? and / or : 0;
+}
 /* 重なり具合（重なった面積 ÷ 合わせた面積） */
 function fitIoU(a, b){
   var and = 0, or = 0;
@@ -12474,7 +12511,7 @@ function peFitWeight(){
   var info = $("peFitInfo");
   var P = fitPrep();
   if (!P){ msg("拓本から墨を見つけられませんでした。", true); return; }
-  var G = P.G, ink = P.ink;
+  var G = P.G, ink = fitInkWin(P.ink, G, PE.contours);   /* 一致は字のまわりだけで測る（v20.73） */
   var g0 = fitGlyphMask(PE.contours, G);
   if (!g0){ msg("形を読めませんでした。", true); return; }
   if (FIT_DIAG && FIT_DIAG.warnFlip){
@@ -12589,7 +12626,7 @@ function peFitEdgeSnap(){
 
   var P = fitPrep();
   if (!P){ msg("拓本から墨を見つけられませんでした。", true); return; }
-  var G = P.G, ink = P.ink;
+  var G = P.G, ink = fitInkWin(P.ink, G, PE.contours);
   var g0 = fitGlyphMask(PE.contours, G); if (!g0){ msg("形を読めませんでした。", true); return; }
   if (FIT_DIAG && FIT_DIAG.warnFlip){
     if (info) info.textContent = "白黒が逆に読まれているようです。拓本の画面で［反転］を確かめてください。";
@@ -12609,6 +12646,7 @@ function peFitEdgeSnap(){
   }
 
   var before = fitIoU(g0, ink);
+  var nearB0 = fitIoUNear(g0, ink, G, 2);      /* 画面に出す一致（字のまわりだけ・v20.73） */
   /* 探す距離。外へ広げる向き（墨の中から外へ）は、遠くまで見ると
      細い画で向かい側の縁に飛び移って画がつぶれるので、既定は控えめ。
      ここまで探して縁が見つからない点は「動かさない」ので、
@@ -12746,6 +12784,7 @@ function peFitEdgeSnap(){
 
   var g1 = fitGlyphMask(next, G);
   var after = g1 ? fitIoU(g1, ink) : 0;
+  var nearA0 = g1 ? fitIoUNear(g1, ink, G, 2) : 0;
   /* なぜ動かなかったのかが分かるように、点の内訳を出す（v20.55）。
      動かない理由は 4 つあり、どれに当たったのかは数を見ないと分からない。 */
   function whyTxt(word){ return "【内訳】ぜんぶ " + (movedN + keptN) + " 点＝" +
@@ -12755,7 +12794,7 @@ function peFitEdgeSnap(){
     (noEdgeIn ? "／内へ " + num($("peIn") && $("peIn").value, 1.5) + "mm 探しても墨に届かない " + noEdgeIn : "") +
     (outlierN ? "／となりとかけ離れていたので捨てた " + outlierN : "") + "。"; }
   if (after <= before + 0.002){
-    if (info) info.textContent = "一致 " + Math.round(before*100) + "%。" +
+    if (info) info.textContent = "一致 " + Math.round(nearB0*100) + "%。" +
       (only ? "選んだ点を" : "") + "寄せても良くなりませんでした（形はもとのままです）。" +
       (measN ? "測れた " + measN + " 点のとおりに動かすと、かえって一致が下がりました。" +
                "【外へ広げる上限 mm】【内へ引き戻す上限 mm】を小さくして、少しずつ寄せてみてください。"
@@ -12774,13 +12813,13 @@ function peFitEdgeSnap(){
   if (!only){ PE.sel = []; PE.selC = []; }     /* 選んで寄せたときは、選んだままにしておく */
   peRender();
   if (info) info.textContent = (only ? "選んだ点だけ、" : "") + "縁に寄せました。一致 " +
-    Math.round(before*100) + "% → " +
-    Math.round(after*100) + "%。動かした点 " + movedN + " ／ " +
+    Math.round(nearB0*100) + "% → " +
+    Math.round(nearA0*100) + "%。動かした点 " + movedN + " ／ " +
     (only ? "選んだ " + PE.sel.length : String(movedN + keptN)) + "。" +
     (baked ? "（太さの ±% は形に取り込みました）" : "") +
     (pulledN ? "うち " + pulledN + " 点は、はみ出していたので引き戻しました。" : "") +
     "（もう一度押すと、さらに寄ります）" + whyTxt("動いた");
-  msg("縁に寄せました。一致 " + Math.round(before*100) + "% → " + Math.round(after*100) + "%。", false);
+  msg("縁に寄せました。一致 " + Math.round(nearB0*100) + "% → " + Math.round(nearA0*100) + "%。", false);
 }
 
 
@@ -12789,8 +12828,10 @@ function peFitTest(){
   if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
   var P = fitPrep();
   if (!P){ msg("拓本から墨を見つけられませんでした。", true); return; }
-  var G = P.G, ink = P.ink, bb = G.bb;
+  var G = P.G, bb = G.bb;
   if (!bb){ msg("形がありません。", true); return; }
+  /* 一致は「字のまわり」だけで測る（v20.73） */
+  var ink = fitInkWin(P.ink, G, PE.contours);
 
   var g0 = fitGlyphMask(PE.contours, G);
   if (!g0){ msg("形を読めませんでした。", true); return; }
@@ -12885,7 +12926,7 @@ function peFitTest(){
   if (bestS <= before + 0.005){
     if (info) info.textContent = "一致 " + Math.round(before*100) + "%。動かしても良くなりませんでした。" +
       "拓本の位置がずれているか、この字は擦れているかもしれません。";
-    msg("これ以上よくなりませんでした（一致 " + Math.round(before*100) + "%）。", true);
+    msg("これ以上よくなりませんでした（一致 " + Math.round(fitIoUNear(g0, ink, G, 2)*100) + "%）。", true);
     return;
   }
   /* 合わせ終わっても重なりが浅いままなら、動かさない（v20.61）。
@@ -12896,10 +12937,6 @@ function peFitTest(){
      止めてしまうと、彫りが細い字や、書体がかなり違う字で先に進めなくなる。
      おかしければ［1つ戻す］で戻せるので、判断は人に任せる。 */
   var farJump = (Math.abs(best.dx) > bb.w * 0.2) || (Math.abs(best.dy) > bb.h * 0.2);
-  var warnLow = (bestS < 0.35 && farJump)
-    ? "【一致 " + Math.round(bestS*100) + "% と低いまま、大きく動かしました。" +
-      "下にあるのが同じ字か確かめてください。ちがえば［1つ戻す］で戻せます】"
-    : "";
   peSnap();
   PE.contours = fitApply(PE.contours, best, cx, cy);   /* 太さ（wt）は掛けない */
   PE.inkC = null;      /* 大きく動いたので、墨は新しい位置で拾い直す（以後は使い回す） */
@@ -12916,7 +12953,17 @@ function peFitTest(){
   peRender();
   var hitLim = (Math.abs(best.sx-1) > lim.sx - 1e-6) || (Math.abs(best.sy-1) > lim.sy - 1e-6) ||
                (Math.abs(best.dx) > lim.dx - 1e-6) || (Math.abs(best.dy) > lim.dy - 1e-6);
-  if (info) info.textContent = "一致 " + Math.round(before*100) + "% → " + Math.round(bestS*100) + "%。" +
+  /* 出す一致は「字のまわりだけで見た一致」（v20.73）。
+     紙のふちや遠くの塊まで分母に入れると、画面ではぴったり合っているのに
+     一致 11% のような数字になり、良し悪しが分からなくなる。 */
+  var gN = fitGlyphMask(PE.contours, G);
+  var nearB = fitIoUNear(g0, ink, G, 2);
+  var nearA = gN ? fitIoUNear(gN, ink, G, 2) : 0;
+  var warnLow = (nearA < 0.35 && farJump)
+    ? "【一致 " + Math.round(nearA*100) + "% と低いまま、大きく動かしました。" +
+      "下にあるのが同じ字か確かめてください。ちがえば［1つ戻す］で戻せます】"
+    : "";
+  if (info) info.textContent = "一致 " + Math.round(nearB*100) + "% → " + Math.round(nearA*100) + "%。" +
     warnLow + warnRatio +
     (hitLim ? "【動かせる上限まで振り切りました。拓本の位置を確かめてください】" : "") +
     "（動かした量：よこ " + best.dx.toFixed(0) + "・たて " + best.dy.toFixed(0) + " 単位、" +
@@ -12926,7 +12973,7 @@ function peFitTest(){
       ? "／彫ってある画は、いまの字より約 " + Math.abs(Math.round(best.wt) * 2 * G.mmCell).toFixed(1) +
         "mm " + (best.wt > 0 ? "太い" : "細い") + "です（太さはまだ変えていません）"
       : "");
-  msg("拓本に合わせました。一致 " + Math.round(before*100) + "% → " + Math.round(bestS*100) + "%。", false);
+  msg("拓本に合わせました。一致 " + Math.round(nearB*100) + "% → " + Math.round(nearA*100) + "%。", false);
 }
 
 /* --- 編集画面 --- */

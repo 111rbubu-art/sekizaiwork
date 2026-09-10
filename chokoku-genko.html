@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.68</title>
+<title>彫刻原稿 v20.69</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1222,6 +1222,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <button class="mini" id="peTakuOut">この端末の分を書き出す</button>
           <button class="mini" id="peTakuClr">この端末の分を消す</button>
         </div>
+        <label class="chk" style="margin-top:4px;"><input type="checkbox" id="peTakuHide" checked style="width:auto;"> まわりの字を隠して切り出す</label>
+        <label class="f" style="margin-top:4px;"><span>字のまわり 残す mm</span>
+          <input type="number" id="peTakuPad" value="1.5" step="0.5" min="0" max="20"></label>
+        <button class="mini" id="peInkClrNear" style="margin-top:4px;">この字のまわりの塗りだけ消す</button>
         <p class="hint" id="peTakuInfo" style="margin:3px 0 0;"></p>
         <label class="chk" style="margin-bottom:6px;"><input type="checkbox" id="peGhost" checked style="width:auto;"> 元の形を薄く出す</label>
         <h3 class="sec">拓本に合わせる</h3>
@@ -1931,7 +1935,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.68";
+var APP_VER = "v20.69";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11515,7 +11519,9 @@ var TAKU_README = [
 "拓本クリーン化 AI の学習用データ",
 "",
 "■ 1 組のファイル（まとめて書き出したときは pairs/pair_NNNNN_ が頭に付きます）",
-"  raw.png    拓本の切り抜き（512×512・白黒の濃淡）＝入力",
+"  raw.png    拓本の切り抜き（512×512・白黒の濃淡）＝入力。",
+"             meta.json の hideOut が true なら、この字のまわり（padMm）より外は",
+"             紙の色で塗ってあります＝となりの字は写っていません",
 "  mask.png   正解（墨＝白・地＝黒）。人が筆で直したもの",
 "  hint1.png  手がかり①：元のフォントそのままの字形。合わせ込みはしていないので、",
 "             分かるのは「どの字か・どの書体か」だけ。無いこともあります",
@@ -11532,7 +11538,11 @@ var TAKU_README = [
 "   hint1・hint2 をそれぞれ 3〜5 割ほど、わざと まっ黒に差し替えて覚えさせてください。",
 "   これをしないと、拓本を見ずに手がかりを写すだけのモデルになります。",
 "   検証は「手がかり無し」でも必ず測ってください。",
-"4) 正解 mask.png は、人が最後に直した結果です。hint2 は直す前の形なので、",
+"4) hideOut が true の組は、この字のまわりより外を紙の色で塗ってあります",
+"   （行が詰まっていて、となりの字が写り込むのを防ぐため）。",
+"   **推論のときも同じように隠して渡してください。** 学習と本番で切り方が違うと、",
+"   塗りつぶしの境目をモデルが手がかりにしてしまい、本番で外れます。",
+"5) 正解 mask.png は、人が最後に直した結果です。hint2 は直す前の形なので、",
 "   両者は一致しません（一致していたら、それは答えを写しているということです）。",
 ""].join("\n");
 var TAKU_N = 512;                       /* 1 辺の画素数 */
@@ -11676,6 +11686,19 @@ function takuShot(){
   var iR = xR.createImageData(N, N), iM = xM.createImageData(N, N),
       iH1 = xH1.createImageData(N, N), iH2 = xH2.createImageData(N, N);
   var px = RUB.data.data, W = RUB.W, H = RUB.H;
+  /* まわりの字を隠す（v20.69）。
+     行が詰まっていると、切り抜きの四角に となりの字が入ってしまう。
+     学習用の絵に よその字が写っていると、どれがこの字なのか決まらないので、
+     この字の枠から決めた幅だけ残して、外は紙の色で塗りつぶす。
+     正解（mask）も同じ所で切るので、よその字を筆で消して回る必要はない。 */
+  var hide = !$("peTakuHide") || $("peTakuHide").checked;
+  var mpu = peMmPerUnit();
+  var padU = (mpu ? Math.max(0, num($("peTakuPad") && $("peTakuPad").value, 1.5)) / mpu
+                  : side * 0.05);
+  var kx1 = bb.x - padU, kx2 = bb.x + bb.w + padU;
+  var ky1 = bb.y - padU, ky2 = bb.y + bb.h + padU;
+  var vals = new Float32Array(N*N), inks = new Uint8Array(N*N),
+      keep = new Uint8Array(N*N), paper = 0, nPaper = 0;
   for (var py = 0; py < N; py++){
     var uy = y1 - (py + 0.5) * st;
     for (var pxi = 0; pxi < N; pxi++){
@@ -11686,14 +11709,27 @@ function takuShot(){
         var p2 = (Y*W + X) * 4;
         v = Math.round(px[p2]*0.299 + px[p2+1]*0.587 + px[p2+2]*0.114);
       }
-      iR.data[o] = iR.data[o+1] = iR.data[o+2] = v; iR.data[o+3] = 255;
-      var m = fitSample(ink, G, ux, uy) ? 255 : 0;     /* 墨＝白 */
-      iM.data[o] = iM.data[o+1] = iM.data[o+2] = m; iM.data[o+3] = 255;
+      var k0 = py*N + pxi;
+      vals[k0] = v;
+      inks[k0] = fitSample(ink, G, ux, uy) ? 1 : 0;
+      keep[k0] = (!hide || (ux >= kx1 && ux <= kx2 && uy >= ky1 && uy <= ky2)) ? 1 : 0;
+      if (keep[k0] && !inks[k0]){ paper += v; nPaper++; }   /* 紙の色（この字のまわり） */
       var a1 = (g1 && fitSample(g1, G, ux, uy)) ? 255 : 0;
       iH1.data[o] = iH1.data[o+1] = iH1.data[o+2] = a1; iH1.data[o+3] = 255;
       var a2 = (g2 && fitSample(g2, G, ux, uy)) ? 255 : 0;
       iH2.data[o] = iH2.data[o+1] = iH2.data[o+2] = a2; iH2.data[o+3] = 255;
     }
+  }
+  /* 紙の色を決めてから、raw と mask を書く。隠す所は紙の色・墨なしにする。 */
+  var pv = nPaper ? Math.round(paper / nPaper) : 255;
+  var hidden = 0;
+  for (var k1 = 0; k1 < N*N; k1++){
+    var o2 = k1*4, on = keep[k1];
+    if (!on) hidden++;
+    var vv = on ? vals[k1] : pv;
+    iR.data[o2] = iR.data[o2+1] = iR.data[o2+2] = vv; iR.data[o2+3] = 255;
+    var mm2 = (on && inks[k1]) ? 255 : 0;
+    iM.data[o2] = iM.data[o2+1] = iM.data[o2+2] = mm2; iM.data[o2+3] = 255;
   }
   xR.putImageData(iR, 0, 0); xM.putImageData(iM, 0, 0);
   xH1.putImageData(iH1, 0, 0); xH2.putImageData(iH2, 0, 0);
@@ -11715,6 +11751,10 @@ function takuShot(){
       hint1: !!g1,                  /* 元のフォントそのまま */
       hint2: !!g2,                  /* ［② 拓本に大まかに合わせる］の直後。無いこともある */
       boxFrom: h2c ? "fit" : "now", /* 切り出す正方形をどの形から決めたか */
+      hideOut: !!hide,              /* まわりの字を隠したか */
+      padMm: hide ? num($("peTakuPad") && $("peTakuPad").value, 1.5) : null,
+      hiddenPct: Math.round(hidden * 100 / (N*N)),
+      paper: pv,
       wpct: wp,
       thresh: (FIT_DIAG && FIT_DIAG.T) || null,
       flat: !!(FIT_DIAG && FIT_DIAG.flat),
@@ -14083,6 +14123,33 @@ $("peBrush").oninput  = function(){ peRender(); };
 $("peTaku").onclick    = function(){ takuSave(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuPush").onclick = function(){ takuPush(); };
+/* いま見ている字のまわりに塗った分だけを消す（v20.69）。
+   塗りは拓本に付くので、よその字を消したまま忘れると、その字を編集するときに困る。 */
+$("peInkClrNear").onclick = function(){
+  if (!PE || !PE.rub){ msg("この字には拓本が敷けません。", true); return; }
+  var ps = rubPaint();
+  if (!ps.length){ msg("塗りはありません。", true); return; }
+  var bb = fitInkBox(PE.contours);
+  var Mi = mInv(peRubMat());
+  if (!bb || !Mi){ msg("いまの字の場所が分かりません。", true); return; }
+  var side = Math.max(bb.w, bb.h) * 1.2;
+  var cx = bb.x + bb.w/2, cy = bb.y + bb.h/2;
+  var cs = [[cx-side/2, cy+side/2], [cx+side/2, cy+side/2],
+            [cx-side/2, cy-side/2], [cx+side/2, cy-side/2]];
+  var x1 = 1e18, y1 = 1e18, x2 = -1e18, y2 = -1e18;
+  cs.forEach(function(c){
+    var q = mApp(Mi, c[0], -c[1]);
+    if (q.x < x1) x1 = q.x; if (q.x > x2) x2 = q.x;
+    if (q.y < y1) y1 = q.y; if (q.y > y2) y2 = q.y;
+  });
+  var left = ps.filter(function(st){
+    return !(st.x >= x1 && st.x <= x2 && st.y >= y1 && st.y <= y2);
+  });
+  var n = ps.length - left.length;
+  if (!n){ msg("この字のまわりに塗りはありません。", true); return; }
+  S.rub.paint = left; rubPaintBump(); persist(); peRender();
+  msg("この字のまわりの塗り " + n + " 本を消しました（ほかの所の " + left.length + " 本は残っています）。");
+};
 $("peTakuClr").onclick = function(){
   takuCount().then(function(n){
     if (!n){ msg("学習用データはありません。", true); return; }

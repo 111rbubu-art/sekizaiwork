@@ -11,11 +11,32 @@
 
 ---
 
-## 0. いま何が入っているかを調べる（触らない）
+## 0. ファイルを持ってくる（いちばん最初）
+
+このフォルダーは GitHub の `111rbubu-art/sekizaiwork` の中にある。
+**パソコンにはまだ無い**ので、まず落としてくる。
+
+```bash
+sudo apt update && sudo apt install -y git          # git が無ければ
+sudo mkdir -p /opt/takuhon-ai && sudo chown $USER: /opt/takuhon-ai
+
+git clone --depth 1 https://github.com/111rbubu-art/sekizaiwork.git ~/sekizaiwork-tmp
+cp -r ~/sekizaiwork-tmp/takuhon-ai/. /opt/takuhon-ai/
+rm -rf ~/sekizaiwork-tmp
+
+cd /opt/takuhon-ai && ls
+# app.py  train.py  unet.py  data.py  check-env.sh  README.md … が並べば OK
+```
+
+あとで新しくするときは、同じ `git clone` → `cp -r` をもう一度やればよい
+（`runs/` と `data/` は上書きされない）。
+
+## 1. いま何が入っているかを調べる（触らない）
 
 すでに Gemma や Dify が動いているパソコンに足す場合は、先にこれを実行して結果を見る。
 
 ```bash
+cd /opt/takuhon-ai
 bash check-env.sh
 ```
 
@@ -43,7 +64,7 @@ bash check-env.sh
 推論だけなら同居して余裕がある。**学習は夜間に回す**前提なら競合しない。
 昼に学習を回したい場合は `--bs 2` に落とすか、Gemma を一度止める。
 
-## 1. 下準備（1 回だけ）
+## 2. 下準備（1 回だけ）
 
 ```bash
 # ドライバーが入っているか確認。表に RTX 3090 と CUDA Version が出れば OK
@@ -53,12 +74,9 @@ nvidia-smi
 sudo ubuntu-drivers autoinstall && sudo reboot
 ```
 
-## 2. 置き場所とパッケージ
+## 3. パッケージ
 
 ```bash
-sudo mkdir -p /opt/takuhon-ai && sudo chown $USER: /opt/takuhon-ai
-# このフォルダーの中身を /opt/takuhon-ai へコピーする
-cp -r ./* /opt/takuhon-ai/
 cd /opt/takuhon-ai
 
 sudo apt update && sudo apt install -y python3-venv python3-pip
@@ -75,7 +93,7 @@ python3 -c "import torch;print(torch.cuda.is_available(), torch.cuda.get_device_
 # → True NVIDIA GeForce RTX 3090
 ```
 
-## 3. 学習用データを入れる
+## 4. 学習用データを入れる
 
 共有フォルダー `/業務アプリ/アプリ使用フォント/拓本学習データ` の ZIP を
 このパソコンへ落として、
@@ -88,7 +106,7 @@ python3 import_pairs.py ~/Downloads/拓本学習データ --val 10
 - `dataset/pairs/` … 学習用
 - `dataset/val/` … 検証用。**一度決めたら動かさない**（毎回同じ物差しで測るため）
 
-## 4. 学習
+## 5. 学習
 
 ```bash
 python3 train.py --epochs 60
@@ -105,7 +123,7 @@ python3 train.py --epochs 60
 | 一致（手がかりあり） | フォントの字形を渡したとき |
 | **一致（手がかり無し）** | **渡さないとき。本番の最低条件。差し替えの判断はこちらで見る** |
 
-## 5. サーバーを動かす
+## 6. サーバーを動かす
 
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8077
@@ -122,7 +140,7 @@ sudo cp takuhon-train.service takuhon-train.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now takuhon-train.timer
 ```
 
-## 5b. Docker で動かす場合
+## 6b. Docker で動かす場合
 
 すでに何でも Docker で動かしているなら、こちらでもよい。
 
@@ -141,7 +159,7 @@ docker compose -p takuhon logs -f
 - 学習は `docker compose -p takuhon exec takuhon-ai python train.py --epochs 60`
 - **`down -v` は打たない**
 
-## 6. 呼び方
+## 7. 呼び方
 
 ```bash
 # 生きているか

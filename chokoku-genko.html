@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.66</title>
+<title>彫刻原稿 v20.67</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1927,7 +1927,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.66";
+var APP_VER = "v20.67";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11507,6 +11507,30 @@ function simplifyContour(c, tol){
      hint … いま合わせているフォントの字形（学習で手がかりに使える）
    3 枚は「字の座標の正方形」から作るので、必ず 1 画素もずれずに重なる。
    置き場はこの端末の IndexedDB。あとで ZIP にまとめて書き出す。 */
+var TAKU_README = [
+"拓本クリーン化 AI の学習用データ",
+"",
+"■ 1 組のファイル（まとめて書き出したときは pairs/pair_NNNNN_ が頭に付きます）",
+"  raw.png    拓本の切り抜き（512×512・白黒の濃淡）＝入力",
+"  mask.png   正解（墨＝白・地＝黒）。人が筆で直したもの",
+"  hint1.png  手がかり①：元のフォントそのままの字形。合わせ込みはしていないので、",
+"             分かるのは「どの字か・どの書体か」だけ。無いこともあります",
+"  hint2.png  手がかり②：拓本にだいたい合わせたあとの字形。位置・大きさまで分かる。",
+"             作業者が合わせ込みを押していない組には入っていません",
+"  meta.json  文字・フォント名・実寸・しきい値・塗り本数など。",
+"             hint1 / hint2 の有無も入っています",
+"",
+"■ 大事なこと",
+"1) すべて同じ正方形から作ってあるので、1 画素もずれずに重なります。",
+"2) hint2.png は無い組があります。**hint が 1 枚も無くても学習が回る作り**にしてください。",
+"   （足りない手がかりは、まっ黒（全部 0）の面で埋めるのが簡単です）",
+"3) 本番では手がかり無しで動けるのが理想です。そのため学習中は、",
+"   hint1・hint2 をそれぞれ 3〜5 割ほど、わざと まっ黒に差し替えて覚えさせてください。",
+"   これをしないと、拓本を見ずに手がかりを写すだけのモデルになります。",
+"   検証は「手がかり無し」でも必ず測ってください。",
+"4) 正解 mask.png は、人が最後に直した結果です。hint2 は直す前の形なので、",
+"   両者は一致しません（一致していたら、それは答えを写しているということです）。",
+""].join("\n");
 var TAKU_N = 512;                       /* 1 辺の画素数 */
 function takuDB(){
   return new Promise(function(res, rej){
@@ -11538,14 +11562,19 @@ async function takuDirId(){
 }
 /* 1 文字ぶんを 1 つの ZIP にまとめる（中身は書き出しと同じ並び） */
 function takuZipOne(sh, id){
-  var enc = new TextEncoder();
-  return zipMake([
-    { name: "raw.png",   data: dataUrlBytes(sh.raw) },
-    { name: "mask.png",  data: dataUrlBytes(sh.mask) },
-    { name: "hint.png",  data: dataUrlBytes(sh.hint) },
-    { name: "meta.json", data: enc.encode(JSON.stringify(
-        Object.assign({ id: id || "" }, sh.meta), null, 1)) }
-  ]);
+  var enc = new TextEncoder(), fs = [
+    { name: "raw.png",  data: dataUrlBytes(sh.raw) },
+    { name: "mask.png", data: dataUrlBytes(sh.mask) }
+  ];
+  /* 手がかりは無いこともある。無ければ入れない（学習は無しでも回せる作りにする） */
+  if (sh.hint1) fs.push({ name: "hint1.png", data: dataUrlBytes(sh.hint1) });
+  if (sh.hint2) fs.push({ name: "hint2.png", data: dataUrlBytes(sh.hint2) });
+  if (!sh.hint1 && !sh.hint2 && sh.hint)          /* v20.66 までに貯めた分 */
+    fs.push({ name: "hint2.png", data: dataUrlBytes(sh.hint) });
+  fs.push({ name: "meta.json", data: enc.encode(JSON.stringify(
+    Object.assign({ id: id || "" }, sh.meta), null, 1)) });
+  fs.push({ name: "README.txt", data: enc.encode(TAKU_README) });
+  return zipMake(fs);
 }
 function takuName(sh){
   var t = String(sh.meta.at || "").replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -11604,22 +11633,31 @@ function takuShot(){
   if (!PE || !PE.rub || !RUB.data) return null;
   var P = fitPrep(); if (!P) return null;
   var G = P.G, ink = P.ink;
-  /* hint に使う形（v20.66）。
-       ① ［拓本に大まかに合わせる］の直後の形（いちばん良い。＝直す前）
-       ② それが無ければ、この画面を開いたときの形
-       ③ どちらも無ければ いまの形
-     ①②は「人が直す前」なので、答えを写しただけの hint にならない。
-     切り出す正方形も同じ形から決めるので、同じ字を何度保存しても同じ場所が切れる。 */
-  var hintFrom = "now", hc = PE.contours;
-  if (PE.fitSnap){ try { hc = JSON.parse(PE.fitSnap); hintFrom = "fit"; } catch(e){} }
-  else if (PE.base){ try { hc = JSON.parse(PE.base); hintFrom = "open"; } catch(e2){} }
-  /* 「この字だけ ±%」は形に入っていないので、ここで足す（見えている太さに合わせる） */
+  /* 手がかりの絵は 2 枚（v20.67）。どちらも「人が直す前」の形。
+       hint1 … 元のフォントそのまま（`PE.base`＝この字をフォントから起こした形）。
+                合わせ込みもしていないので、分かるのは「どの字か・どの書体か」だけ
+       hint2 … ［② 拓本に大まかに合わせる］の直後の形（`PE.fitSnap`）。
+                拓本の上のだいたいの位置まで分かる。②を押していなければ **無し**
+     hint2 が無い組もあるので、**学習は hint2 が無くても回せる作りにすること**。
+     さらに、本番では手がかり無しで動けるのが理想なので、
+     学習中は hint1・hint2 とも ある割合で白紙に差し替えて覚えさせる（README にも書いた）。 */
+  var h2c = null;
+  if (PE.fitSnap){ try { h2c = JSON.parse(PE.fitSnap); } catch(e){} }
+  var h1c = null;
+  if (PE.base){ try { h1c = JSON.parse(PE.base); } catch(e2){} }
+  /* 切り出す正方形を決める形。②のあとの形がいちばん確か。
+     無ければ いまの形（元のフォントは合わせ込み前なので、位置の基準には使わない）。 */
+  var hc = h2c || PE.contours;
+  /* 「この字だけ ±%」は形に入っていないので、hint2 にだけ足す（見えている太さに合わせる）。
+     hint1 は「フォントそのまま」なので足さない。 */
   var wp = num(PE.wpct, 0);
-  if (wp){
-    var dw = weightDelta(hc, wp);
-    if (dw){ var hc2 = offsetContours(hc, dw); if (hc2 && hc2.length) hc = hc2; }
+  if (wp && h2c){
+    var dw = weightDelta(h2c, wp);
+    if (dw){ var t2 = offsetContours(h2c, dw); if (t2 && t2.length) h2c = t2; }
   }
   var g0 = fitGlyphMask(hc, G); if (!g0) return null;
+  var g1 = h1c ? fitGlyphMask(h1c, G) : null;
+  var g2 = h2c ? fitGlyphMask(h2c, G) : null;
   var Mi = mInv(peRubMat()); if (!Mi) return null;
   var bb = fitInkBox(hc); if (!bb) return null;
   var side = Math.max(bb.w, bb.h) * 1.2;
@@ -11628,9 +11666,11 @@ function takuShot(){
   var N = TAKU_N, st = side / N;
 
   function cv(){ var c = document.createElement("canvas"); c.width = N; c.height = N; return c; }
-  var cR = cv(), cM = cv(), cH = cv();
-  var xR = cR.getContext("2d"), xM = cM.getContext("2d"), xH = cH.getContext("2d");
-  var iR = xR.createImageData(N, N), iM = xM.createImageData(N, N), iH = xH.createImageData(N, N);
+  var cR = cv(), cM = cv(), cH1 = cv(), cH2 = cv();
+  var xR = cR.getContext("2d"), xM = cM.getContext("2d"),
+      xH1 = cH1.getContext("2d"), xH2 = cH2.getContext("2d");
+  var iR = xR.createImageData(N, N), iM = xM.createImageData(N, N),
+      iH1 = xH1.createImageData(N, N), iH2 = xH2.createImageData(N, N);
   var px = RUB.data.data, W = RUB.W, H = RUB.H;
   for (var py = 0; py < N; py++){
     var uy = y1 - (py + 0.5) * st;
@@ -11645,17 +11685,21 @@ function takuShot(){
       iR.data[o] = iR.data[o+1] = iR.data[o+2] = v; iR.data[o+3] = 255;
       var m = fitSample(ink, G, ux, uy) ? 255 : 0;     /* 墨＝白 */
       iM.data[o] = iM.data[o+1] = iM.data[o+2] = m; iM.data[o+3] = 255;
-      var g = fitSample(g0, G, ux, uy) ? 255 : 0;
-      iH.data[o] = iH.data[o+1] = iH.data[o+2] = g; iH.data[o+3] = 255;
+      var a1 = (g1 && fitSample(g1, G, ux, uy)) ? 255 : 0;
+      iH1.data[o] = iH1.data[o+1] = iH1.data[o+2] = a1; iH1.data[o+3] = 255;
+      var a2 = (g2 && fitSample(g2, G, ux, uy)) ? 255 : 0;
+      iH2.data[o] = iH2.data[o+1] = iH2.data[o+2] = a2; iH2.data[o+3] = 255;
     }
   }
-  xR.putImageData(iR, 0, 0); xM.putImageData(iM, 0, 0); xH.putImageData(iH, 0, 0);
+  xR.putImageData(iR, 0, 0); xM.putImageData(iM, 0, 0);
+  xH1.putImageData(iH1, 0, 0); xH2.putImageData(iH2, 0, 0);
   var g = S.groups[PE.gi], AD = g ? adjOf(g, PE.ci) : null;
   var mpu = peMmPerUnit();
   return {
     raw: cR.toDataURL("image/png"),
     mask: cM.toDataURL("image/png"),
-    hint: cH.toDataURL("image/png"),
+    hint1: g1 ? cH1.toDataURL("image/png") : null,
+    hint2: g2 ? cH2.toDataURL("image/png") : null,
     meta: {
       char: $("peChar") ? $("peChar").textContent : "",
       n: N,
@@ -11664,7 +11708,9 @@ function takuShot(){
       upem: PE.upem,
       font: (AD && AD.path && AD.path.name) || (g && g.font) || "",
       group: PE.gi, index: PE.ci,
-      hintFrom: hintFrom,           /* fit=大まかに合わせた直後／open=開いたとき／now=いまの形 */
+      hint1: !!g1,                  /* 元のフォントそのまま */
+      hint2: !!g2,                  /* ［② 拓本に大まかに合わせる］の直後。無いこともある */
+      boxFrom: h2c ? "fit" : "now", /* 切り出す正方形をどの形から決めたか */
       wpct: wp,
       thresh: (FIT_DIAG && FIT_DIAG.T) || null,
       flat: !!(FIT_DIAG && FIT_DIAG.flat),
@@ -11737,7 +11783,7 @@ async function takuShow(){
   el.textContent = where + (n ? "この端末に未送信 " + n + " 組。" : "");
   if (PE && !PE.fitSnap && PE.rub)
     el.textContent += "（［② 拓本に大まかに合わせる］を押してから保存すると、" +
-      "手がかりの絵が「直す前の形」になります）";
+      "手がかり②（合わせたあとの字形）も一緒に入ります。無くても学習はできます）";
   var pb = $("peTakuPush");
   if (pb) pb.disabled = !n || !fontDirReady();
 }
@@ -11789,33 +11835,26 @@ async function takuExport(){
   try { rows = await takuAll(); } catch(e){ rows = []; }
   if (!rows.length){ msg("学習用データがありません。", true); return; }
   var files = [], enc = new TextEncoder();
-  var csv = ["id,char,font,side_mm,thresh,ink_adj,paint,app,at"];
+  var csv = ["id,char,font,side_mm,hint1,hint2,thresh,ink_adj,paint,app,at"];
   rows.forEach(function(r){
     var id = "pair_" + String(r.id).padStart(5, "0");
     files.push({ name: "pairs/" + id + "_raw.png",  data: dataUrlBytes(r.raw) });
     files.push({ name: "pairs/" + id + "_mask.png", data: dataUrlBytes(r.mask) });
-    files.push({ name: "pairs/" + id + "_hint.png", data: dataUrlBytes(r.hint) });
+    if (r.hint1) files.push({ name: "pairs/" + id + "_hint1.png", data: dataUrlBytes(r.hint1) });
+    if (r.hint2) files.push({ name: "pairs/" + id + "_hint2.png", data: dataUrlBytes(r.hint2) });
+    if (!r.hint1 && !r.hint2 && r.hint)
+      files.push({ name: "pairs/" + id + "_hint2.png", data: dataUrlBytes(r.hint) });
     files.push({ name: "pairs/" + id + "_meta.json",
                  data: enc.encode(JSON.stringify(r.meta, null, 1)) });
     var m = r.meta || {};
-    csv.push([id, m.char, m.font, m.sideMm, m.thresh, m.inkAdj, m.paint, m.app, m.at]
+    csv.push([id, m.char, m.font, m.sideMm,
+              (m.hint1 || r.hint1) ? 1 : 0, (m.hint2 || r.hint2 || r.hint) ? 1 : 0,
+              m.thresh, m.inkAdj, m.paint, m.app, m.at]
              .map(function(v){ return '"' + String(v === undefined || v === null ? "" : v).replace(/"/g, '""') + '"'; })
              .join(","));
   });
   files.push({ name: "index.csv", data: enc.encode("﻿" + csv.join("\r\n")) });
-  files.push({ name: "README.txt", data: enc.encode(
-    "拓本クリーン化 AI の学習用データ\n\n" +
-    "pairs/pair_NNNNN_raw.png   拓本の切り抜き（" + TAKU_N + "×" + TAKU_N + "・白黒の濃淡）\n" +
-    "pairs/pair_NNNNN_mask.png  正解（墨＝白・地＝黒）。人が筆で直したもの\n" +
-    "pairs/pair_NNNNN_hint.png  フォントの字形（学習の手がかり用）。\n" +
-    "                           人が直す前＝［拓本に大まかに合わせる］の直後の形です。\n" +
-    "                           直したあとの形ではありません（それは答えそのものなので）。\n" +
-    "                           meta.json の hintFrom が fit なら直後の形、open なら\n" +
-    "                           画面を開いたときの形、now ならいまの形です。\n" +
-    "pairs/pair_NNNNN_meta.json 文字・フォント名・実寸・しきい値など\n\n" +
-    "3 枚は同じ正方形から作ってあるので、1 画素もずれずに重なります。\n" +
-    "hint を入力の 2 枚目に使うときは、学習中に 3 割ほど白紙に差し替えてください。\n" +
-    "そうしないと、拓本を見ずに hint を写すだけのモデルになります。\n") });
+  files.push({ name: "README.txt", data: enc.encode(TAKU_README) });
   var bl = zipMake(files);
   var a = document.createElement("a");
   a.href = URL.createObjectURL(bl);

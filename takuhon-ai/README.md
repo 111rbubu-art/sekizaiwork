@@ -182,6 +182,48 @@ curl -X POST http://localhost:8077/api/takuhon/feedback \
 - 返す PNG のヘッダーに `X-Model-Step` / `X-Model-At` / `X-Infer-Ms` が入る
 - **学習済みが無いときは 503**。呼ぶ側は、いままでのしきい値処理へ戻すこと
 
+## つまずいたところ（2026-09-10・実際に直した記録）
+
+`nvidia-smi` が **NVIDIA-SMI has failed** としか言わず、GPU が使えなかった。
+板（RTX 3090）は `lspci` で見えていて、セキュアブートも切ってあった。
+
+**原因**：22.04 → 24.04 にアップグレードしたときの**置き去りのドライバー**。
+
+- 入っていたのは `nvidia-driver-595-open` の **`595.91.07-0ubuntu0.22.04.1`**
+  （＝ CUDA リポジトリの `ubuntu2204` 版）
+- そのリポジトリは `cuda-ubuntu2204-x86_64.list**.distUpgrade**` に改名されて
+  **無効**になっていた。＝ **後ろ盾を失った荷物**
+- ドライバーの部品は「カーネルごとの作り置き」で入っており、**138 用まで**しか無い。
+  DKMS が入っていないので誰も作り直さない。カーネルが **139** に上がって置き去りになった
+- Ubuntu 純正の部品は **595.84** 用。**版が違うので混ぜられない**
+  （`依存: nvidia-kernel-common-595 (<= 595.84-1)` で弾かれる）
+
+**直し方**：置き去りを捨てて、Ubuntu 純正に揃える。リポジトリの差し替えは要らなかった。
+
+```bash
+# 消す顔ぶれを先に見る。nvidia-container-toolkit が入っていないことを確かめる
+dpkg -l | awk '$3 ~ /22\.04/ && $2 ~ /nvidia/ {print $2, $3}'
+
+# TTY（Ctrl+Alt+F3）から、purge → install → reboot を一気に流す
+sudo apt purge -y $(dpkg -l | awk '$3 ~ /22\.04/ && $2 ~ /nvidia/ {print $2}')
+sudo apt autoremove -y
+sudo apt install -y nvidia-driver-595-open
+sudo reboot
+```
+
+**結果**：Driver 595.84 / CUDA 13.2 / 3090 24GB が見えるようになった。
+`cuda-toolkit-12-4` と `nvidia-container-toolkit`（Docker から GPU を使う部品）は
+**purge の対象外**なので、Dify・Ollama 側は無傷。
+
+**次からは起きない**。純正は noble-updates が面倒を見るので、カーネル更新のときに
+部品も一緒に付いてくる。
+
+### 見分けかた（また似たことが起きたら）
+
+`bash check-env.sh` が `nvidia-smi` の失敗を見つけると、
+**板が見えているか（lspci）／deb が入っているか／カーネルに読まれているか（lsmod・dkms）／
+セキュアブート／ヘッダー**を分けて出す。どこで止まっているかはそこで分かる。
+
 ## 守ること
 
 1. **推論は学習と同じ切り方で渡す**（512×512・まわりの字を隠す）。

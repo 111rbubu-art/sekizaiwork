@@ -7,9 +7,26 @@ line "OS"
 . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"; uname -r
 
 line "GPU"
-nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv 2>/dev/null || echo "nvidia-smi が無い"
+nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv 2>/dev/null || echo "nvidia-smi が使えない"
 echo "-- GPU を使っているプロセス --"
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null
+
+# nvidia-smi が動かないときの見分け。板が挿さっているか／ドライバーが入っているか／
+# カーネルに読まれているか／セキュアブートで止められていないか、を分けて見る
+if ! nvidia-smi >/dev/null 2>&1; then
+  echo "-- 板が見えているか（lspci） --"
+  lspci 2>/dev/null | grep -i 'vga\|3d\|nvidia' || echo "見あたらない"
+  echo "-- ドライバーの deb が入っているか --"
+  dpkg -l 2>/dev/null | grep -i 'nvidia-driver\|nvidia-dkms' | awk '{print $1, $2, $3}' || echo "入っていない"
+  echo "-- カーネルに読まれているか（lsmod） --"
+  lsmod 2>/dev/null | grep -i nvidia || echo "読まれていない"
+  echo "-- DKMS の作り直しの状態 --"
+  dkms status 2>/dev/null || echo "dkms が無い"
+  echo "-- セキュアブート --"
+  mokutil --sb-state 2>/dev/null || echo "mokutil が無い"
+  echo "-- いまのカーネルと、入っているヘッダー --"
+  uname -r; dpkg -l 2>/dev/null | grep linux-headers | awk '{print $2}' | tail -3
+fi
 
 line "Docker のコンテナ"
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo "docker が無い／権限が無い"

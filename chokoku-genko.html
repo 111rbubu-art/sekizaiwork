@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.69</title>
+<title>彫刻原稿 v20.70</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1202,6 +1202,11 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <label class="chk" style="margin-bottom:2px;"><input type="checkbox" id="peFitEdge" style="width:auto;"> 拓本の縁（拾った墨）</label>
         <label class="f" style="margin:0 0 4px 18px;"><span>拾う量 ±</span>
           <input type="number" id="peInkAdj" value="0" step="5" min="-60" max="60"></label>
+        <label class="f" style="margin:0 0 4px 18px;"><span>墨のこまかさ</span>
+          <select id="peInkFine">
+            <option value="1">標準（速い）</option>
+            <option value="2">こまかい（写真の限界まで）</option>
+          </select></label>
         <div style="margin:0 0 4px 18px;">
           <div class="g2" style="margin-bottom:4px;">
             <button class="mini pt" data-t="inkdel">墨を消す</button>
@@ -1935,7 +1940,7 @@ function $(id){ return document.getElementById(id); }
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.69";
+var APP_VER = "v20.70";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11756,6 +11761,9 @@ function takuShot(){
       hiddenPct: Math.round(hidden * 100 / (N*N)),
       paper: pv,
       wpct: wp,
+      fine: num(($("peInkFine") && $("peInkFine").value), 1),
+      mmCell: G.mmCell ? +G.mmCell.toFixed(4) : null,
+      mmPerPx: mmPerPx() ? +mmPerPx().toFixed(4) : null,
       thresh: (FIT_DIAG && FIT_DIAG.T) || null,
       flat: !!(FIT_DIAG && FIT_DIAG.flat),
       inkAdj: num($("peInkAdj") && $("peInkAdj").value, 0),
@@ -12252,6 +12260,7 @@ function fitInkBox(contours){
 }
 var FIT_DIAG = null;      /* テスト用：しきい値などの内訳 */
 var FIT_LAM = 1.5;        /* 縁に寄せるときの「なめらかさ」。大きいほど、拓本の擦れに引っぱられない */
+var FIT_FINE = 1;         /* 墨のますの細かさ。1=これまで／2,3=細かい（重い） */
 var FIT_BLUR = 1;         /* 墨の縁をならす幅（ます）。大きいほど、拓本のギザギザを拾わない */
 /* 解析につかう格子。ふち出しと合わせ込みで同じものを使う */
 function fitGrid(){
@@ -12262,9 +12271,13 @@ function fitGrid(){
      使い回す（fitPrep）。輪郭を動かすたびに決め直していたころは、
      寄せるたびに枠も ますの大きさも動き、拾った墨まで変わっていた（v20.39）。 */
   var pad = (bb.w + bb.h) * 0.45;
-  var cell = Math.max((bb.w + 2*pad)/256, Math.abs(PE.rub.kx) || 1);
-  var w = Math.max(32, Math.min(320, Math.round((bb.w + 2*pad)/cell)));
-  var h = Math.max(32, Math.min(320, Math.round((bb.h + 2*pad)/cell)));
+  /* ますの細かさ（v20.70）。1 = これまで。
+     ますは「拓本の画素 1 つ」より細かくはできない（そこが元の写真の限界）ので、
+     いくら上げても頭打ちになる。上げるほど拾い直しと合わせ込みが重くなる。 */
+  var F = Math.max(1, Math.min(3, num(($("peInkFine") && $("peInkFine").value) || FIT_FINE, 1)));
+  var cell = Math.max((bb.w + 2*pad)/(256*F), Math.abs(PE.rub.kx) || 1);
+  var w = Math.max(32, Math.min(Math.round(320*F), Math.round((bb.w + 2*pad)/cell)));
+  var h = Math.max(32, Math.min(Math.round(320*F), Math.round((bb.h + 2*pad)/cell)));
   var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   return { cv:cv, ctx:cv.getContext("2d", { willReadFrequently:true }),
            w:w, h:h, cell:cell, x0:bb.x - pad, y1:bb.y + bb.h + pad, bb:bb,
@@ -12348,6 +12361,7 @@ function fitPrep(){
   var key = [PE.gi, PE.ci, PE.upem, R.dx, R.dy, R.k, R.kx, R.ky, R.ax, R.ay,
              S.rub.invert, S.rub.thresh, S.rub.rot, S.rub.flip180,
              num($("peInkAdj") && $("peInkAdj").value, 0),
+             ($("peInkFine") && $("peInkFine").value) || 1,
              rotOff().x, rotOff().y, RUB.W, RUB.H].join("/");
   if (PE.inkC && PE.inkC.key === key){
     FIT_DIAG = PE.inkC.diag;
@@ -12393,7 +12407,8 @@ function fitEdgeLayer(){
     (FIT_DIAG.flat ? "紙のむらをならしてから拾いました　" : "") +
     (FIT_DIAG.dropBig ? "大きすぎる塊（紙のふち・石の地）を " +
        (FIT_DIAG.dropBig * G.mmCell * G.mmCell).toFixed(0) + "mm² 落としました　" : "") +
-    "1ますは " + G.mmCell.toFixed(3) + "mm。" +
+    "1ますは " + G.mmCell.toFixed(3) + "mm" +
+    (mmPerPx() ? "（写真の 1 画素は " + mmPerPx().toFixed(3) + "mm）" : "") + "。" +
     (FIT_DIAG.warnFlip
       ? "【白黒が逆かもしれません。拓本の画面で［反転］を確かめてください】"
       : "赤いふちが彫ってある字をなぞっていれば、拓本は正しく読めています。");
@@ -14157,6 +14172,7 @@ $("peTakuClr").onclick = function(){
     takuClear().then(function(){ msg("学習用データを消しました。"); takuShow(); });
   });
 };
+$("peInkFine").onchange = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peInkAdj").onchange = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peInkAdj").oninput  = function(){ if (PE) PE.inkC = null; peRender(); };
 $("peW").oninput = function(e){

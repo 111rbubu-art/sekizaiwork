@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-11　**chokoku-genko.html = v20.86**／**index_b.html = v1.9.425**／**tekkyo.html = v3.5**
+最終更新: 2026-09-11　**chokoku-genko.html = v20.86**／**index_b.html = v1.9.426**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -1683,6 +1683,22 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
     絵の上での ← →（資料の送り）、絵の上での Backspace（点を消す）は**今までどおり効く**
   - Escape だけを拾っている残りの処理（グループ menu・備考メモ・SVG・拓本 menu・
     開始画面・作字一覧）は、入力欄で Esc を押しても害が無いので、そのままにしてある
+- **AI（Ollama）の接続先を全員で共有し、届かないときは知らせる**（v1.9.426）。
+  - **`ai_endpoint_openai` を `SP_UI_KEYS` に載せた**。一人が入れれば全員に届く。
+    **APIキー（`ai_apikey_*`）は今までどおり端末ごと**で、共有しない
+  - **［💬 AIチャット］が［⚠️ AIチャット］（橙）に変わる**（`aiPingCheck` / `aiPingPaint`）。
+    メニューを出したときと、チャットを開くときに、`/api/tags` を静かに叩いて確かめる。
+    6 秒で打ち切る。**provider が Ollama のときだけ**見る（Claude などは確かめない）
+  - **つながらないときの助言を、接続先に合わせて出す**（`aiNetHint`）。
+    これまでは何が起きても「OLLAMA_ORIGINS=* で起動してください」と出していたが、
+    実際に起きた原因は **どちらも CORS ではなかった**：
+    ① この端末の Tailscale が動いていない ② トンネル（cloudflared）が落ちて HTML が返る。
+    接続先が `…ts.net` なら Tailscale の確かめ方、そうでなければトンネルの確かめ方を出す。
+    設定の［接続テスト］とチャットの窓、**両方**で同じ助言が出る
+  - 経緯（2026-09-11）：`cloudflared.service` が `disabled` のままで、再起動で上がらず
+    `ai.shojisekizai.jp` が **530（元のサーバーに届かない）**。アプリには
+    「Failed to fetch」→「`Unexpected token '<'`（Cloudflare のエラー画面 HTML）」と出た。
+    **Tailscale の `…ts.net` に切り替えて復旧**。この経路には Dify も Open WebUI も無関係
 - **ビューアーから拓本AIの状況を開ける**（`index_b.html` v1.9.425／`openTakuhonAi`）。
   メニュー上部の **［🧠 拓本AI］**。会社のパソコンで動いている `takuhon-ai` の
   状況画面（`http://…:8077/`）を別窓で開く。

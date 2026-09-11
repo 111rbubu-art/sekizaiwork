@@ -1981,6 +1981,62 @@ function _setProviderEndpoint(provider, ep) {
   if (ep) localStorage.setItem('ai_endpoint_' + provider, ep);
   else localStorage.removeItem('ai_endpoint_' + provider);
 }
+/* つながらなかったときの助言（v1.9.426）。
+   これまでは何が起きても「OLLAMA_ORIGINS=* で起動してください」と出していたが、
+   実際に起きた原因はどちらも CORS ではなかった。
+     ・この端末の Tailscale が動いていない（接続先が …ts.net のとき）
+     ・トンネル（cloudflared）が落ちて、JSON ではなく HTML のエラー画面が返る
+   何を確かめればよいかを、いまの接続先に合わせて出す。 */
+function aiIsTailscale(ep){ return /\.ts\.net(?::\d+)?(?:\/|$)/i.test(String(ep || '')); }
+function aiNetHint(err) {
+  var ep = '', m = String((err && err.message) || err || '');
+  try { ep = getAICfg().endpoint || ''; } catch (e) {}
+  var html = /Unexpected token '<'|is not valid JSON|<!doctype/i.test(m);
+  var net  = /Failed to fetch|NetworkError|Load failed|aborted|AbortError/i.test(m);
+  if (!html && !net) return '';
+  var L = [];
+  if (html) L.push('JSONではなくHTMLが返りました。入口（トンネル）が落ちているか、ログイン画面が返っています。');
+  if (aiIsTailscale(ep)) {
+    L.push('接続先は Tailscale の住所です：' + ep);
+    L.push('① この端末の Tailscale が動いていて、サインインしているか（タスクトレイのアイコンを確認）');
+    L.push('② LLMサーバー側の Tailscale も動いているか');
+    L.push('③ それでも駄目なら、ブラウザで ' + ep + '/api/tags を開いてみる');
+  } else {
+    L.push('接続先に届いていません：' + (ep || '（未設定）'));
+    L.push('① トンネル（cloudflared など）が動いているか');
+    L.push('② エンドポイントの末尾に「/」が付いていないか');
+    L.push('③ Ollama の OLLAMA_ORIGINS に、このサイトが入っているか');
+  }
+  return '\n\n【確かめること】\n' + L.join('\n');
+}
+/* 届くかどうかを静かに確かめて、メニューの［AIチャット］に出す（v1.9.426）。
+   送ってから気づくのでは遅いので、**開いた時点で分かる**ようにする。 */
+var _aiPing = null;                 /* null=未確認 ／ true=届く ／ false=届かない */
+function aiPingPaint() {
+  var b = document.getElementById('menu-ai-chat'); if (!b) return;
+  var bad = (_aiPing === false), ep = '';
+  try { ep = getAICfg().endpoint || ''; } catch (e) {}
+  b.textContent = bad ? '⚠️ AIチャット' : '💬 AIチャット';
+  b.style.background = bad ? 'rgba(217,119,6,0.45)' : 'rgba(255,255,255,0.12)';
+  b.title = bad
+    ? ('AIサーバーに届きません（' + ep + '）。' +
+       (aiIsTailscale(ep) ? 'この端末の Tailscale が動いているか確かめてください。'
+                          : 'トンネルが動いているか確かめてください。'))
+    : '';
+}
+function aiPingCheck() {
+  var cfg = null;
+  try { cfg = getAICfg(); } catch (e) {}
+  /* Ollama（この画面では provider="openai"）のときだけ見る。
+     Claude など外のサービスは、こちらで確かめる筋合いがない。 */
+  if (!cfg || cfg.provider !== 'openai' || !cfg.endpoint) { _aiPing = null; aiPingPaint(); return Promise.resolve(null); }
+  var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+  var tm = setTimeout(function(){ try { ctl && ctl.abort(); } catch (e) {} }, 6000);
+  return fetch(cfg.endpoint + '/api/tags', { method:'GET', signal: ctl ? ctl.signal : undefined })
+    .then(function(r){ return r.ok; })
+    .catch(function(){ return false; })
+    .then(function(ok){ clearTimeout(tm); _aiPing = !!ok; aiPingPaint(); return _aiPing; });
+}
 function getAICfg() {
   var s = null;
   try { s = JSON.parse(localStorage.getItem('ai_cfg_v1')); } catch(e) {}
@@ -4579,7 +4635,8 @@ function testAIConnection() {
             if (result) { result.style.color='#1a7a3a'; result.textContent = '✅ LLM 接続成功\nモデル: ' + (names.join(', ') || '(一覧なし)') + '\n↑ モデル名フィールドに補完候補を追加しました'; }
           })
           .catch(function(err) {
-            if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + '\n\n【CORS対策】Ollamaを以下のオプション付きで起動してください:\nWindows: set OLLAMA_ORIGINS=* && ollama serve\nMac/Linux: OLLAMA_ORIGINS=* ollama serve'; }
+            if (result) { result.style.color='#c00'; result.textContent = '❌ 接続失敗\n' + (err.message || err) + aiNetHint(err); }
+            _aiPing = false; aiPingPaint();
           });
       })
       .finally(function(){ if(btn){ btn.disabled=false; btn.textContent='🔌 接続テスト'; } });
@@ -5711,6 +5768,7 @@ function _fetchStoneImages(imagePaths) {
   .catch(function(e) { console.warn('[石目画像] 全体エラー:', e); return []; });
 }
 function openAIChat() {
+  aiPingCheck();          /* 開くたびに確かめ直す（直ったときも札が戻る） */
   // 既に開いていれば前面に
   if (_aiChatWin && !_aiChatWin.closed) {
     try { _aiChatWin.focus(); return; } catch(e) {}
@@ -5890,7 +5948,7 @@ function openAIChat() {
   'try{' +
     'window.opener.callAIChat(sys,userPrompt,' +
       'function(t){if(firstChunk){aiDiv.textContent="";firstChunk=false;}full+=t;var disp=_stripThink(full);aiDiv.textContent=disp||"⏳ 考え中…";var m=document.getElementById("msgs");m.scrollTop=m.scrollHeight;},' +
-      'function(err){clearInterval(_st);snd.disabled=false;snd.textContent="送信";if(err){aiDiv.textContent="❌ エラー: "+(err.message||err);aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);_renderLinks(clean,aiDiv);_hist.push({role:"assistant",content:clean});' +
+      'function(err){clearInterval(_st);snd.disabled=false;snd.textContent="送信";if(err){var _h="";try{_h=window.opener.aiNetHint(err)||"";}catch(e){}aiDiv.textContent="❌ エラー: "+(err.message||err)+_h;aiDiv.classList.add("me");_hist.pop();}else{var clean=_stripThink(full);_renderLinks(clean,aiDiv);_hist.push({role:"assistant",content:clean});' +
       'var _imgP=window.opener&&window.opener._aiImagePromise;' +
       'if(_imgP){window.opener._aiImagePromise=null;_imgP.then(function(imgs){' +
         'if(!imgs||!imgs.length)return;' +
@@ -6610,7 +6668,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.425';
+var APP_VERSION = 'v1.9.426';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -6881,6 +6939,7 @@ function startApp() {
   document.getElementById('menu-user-name').textContent = name ? 'ログイン中：' + name : '';
   document.getElementById('menu-screen').classList.remove('hidden');
   renderTopLinks(); // トップ画面の外部リンクボタンを生成
+  aiPingCheck();    // AIサーバーに届くか静かに確かめる（届かなければボタンで知らせる）
   currentListMode = 'noukotsu';
   // Googleカレンダー認証リダイレクト戻りを検知
   // （_gcalTokenはMSAL初期化前に取得済み。location.hashはMSALが既に消去している）
@@ -23349,7 +23408,8 @@ var SP_UI_KEYS = [
   'folder_cfg_v1',
   'ai_tables_v1',     // AIが参照する資料（全社員で共通）
   'fontEditorUrl',    // フォント編集のURL（一人が入れれば全員に届く）
-  'takuhonAiUrl'      // 拓本AIの状況画面のURL（同上）
+  'takuhonAiUrl',     // 拓本AIの状況画面のURL（同上）
+  'ai_endpoint_openai' // AI（Ollama）の接続先（同上。APIキーは端末ごとのまま）
 ];
 var _spUiSaveTimer = null;
 function loadSettingsFromSP(){

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.88</title>
+<title>彫刻原稿 v20.89</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1211,14 +1211,23 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <button class="mini" id="peInkClr">塗りをぜんぶ消す（拓本ぜんたい）</button>
         <p class="hint" id="peInkInfo" style="margin:3px 0 0;"></p>
 
-        <h3 class="sec">③ 字を拓本に合わせる</h3>
+        <h3 class="sec">③ 拓本をなぞる</h3>
+        <button class="mini primary" id="peTrace">墨の縁から この字を作る</button>
+        <label class="f" style="margin-top:5px;"><span>縁の細かさ mm</span>
+          <input type="number" id="peTraceTol" value="0.05" step="0.01" min="0.01" max="1"></label>
+        <label class="f" style="margin-top:4px;"><span>捨てる島 mm²</span>
+          <input type="number" id="peTraceMin" value="0.3" step="0.1" min="0" max="20"></label>
+        <p class="hint" style="margin:3px 0 0;">彫ってある字を<b>そのまま</b>この字の形にします。
+          前の行と同じ字を合わせるときに使います。押す前に、②で墨を整えてください。</p>
+
+        <h3 class="sec">④ 字を拓本に合わせる</h3>
         <button class="mini" id="peFitTest">大まかに合わせる（学習用に自動保存）</button>
         <button class="mini" id="peFitW" style="margin-top:4px;">画線の太さを拓本に合わせる</button>
         <label class="f" style="margin-top:5px;"><span>この字だけ ±%</span>
           <input type="number" id="peW" value="0" step="2" min="-30" max="30"></label>
         <p class="hint" id="peWInfo" style="margin-top:0;"></p>
 
-        <h3 class="sec">④ 手で直す</h3>
+        <h3 class="sec">⑤ 手で直す</h3>
         <div id="peTools">
           <button class="mini pt primary" data-t="sel">選ぶ・動かす</button>
           <button class="mini pt" data-t="add">点を足す</button>
@@ -1962,7 +1971,7 @@ function typingIn(e){
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.88";
+var APP_VER = "v20.89";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12886,6 +12895,142 @@ function fitPrep(){
   return { G: G, ink: ink, again: false };
 }
 
+/* === 墨の縁から作字をつくる（なぞり。v20.89） ==========================
+   目的は「前の行と同じ字を、彫ってある形のまま新しい行に使う」こと。
+   詳しくは takuhon-ai/SPEC-輪郭と補正.md。
+
+   ます目（0/1、のちに AI の 0〜1 の濃淡）→ 0.5 の等高線 → 輪郭線。
+   マーチングスクエアで、**ますの間を線形に割って**交点を出すので、
+   ます目（0.0835mm）より細かい縁が取れる。濃淡のまま渡せばさらに滑らかになる。
+
+   ますの値は「ますの真ん中」にあるものとして扱う。
+   ます (i,j) の真ん中 ＝ 字の座標 ( x0 + (i+0.5)*cell , y1 - (j+0.5)*cell )。 */
+var MS_SEG = [
+  [], [[3,0]], [[0,1]], [[3,1]],
+  [[1,2]], null, [[0,2]], [[3,2]],
+  [[2,3]], [[2,0]], null, [[2,1]],
+  [[1,3]], [[1,0]], [[0,3]], []
+];
+/* 交点を出す。e は 0=上 1=右 2=下 3=左。t はしきい（0.5） */
+function msPt(i, j, e, a, b, c, d, t){
+  function f(v0, v1){ var dv = v1 - v0; return (Math.abs(dv) < 1e-9) ? 0.5 : (t - v0) / dv; }
+  if (e === 0) return [i + f(a, b), j];
+  if (e === 1) return [i + 1, j + f(b, c)];
+  if (e === 2) return [i + f(d, c), j + 1];
+  return [i, j + f(a, d)];
+}
+/* ます目 → 閉じた輪（ます座標）。外はぜんぶ 0 とみなすので、端に接する形も閉じる。 */
+function traceLoops(m, w, h, t){
+  t = (t === undefined) ? 0.5 : t;
+  function v(i, j){ return (i < 0 || j < 0 || i >= w || j >= h) ? 0 : m[j*w + i]; }
+  var segs = [], i, j;
+  for (j = -1; j < h; j++){
+    for (i = -1; i < w; i++){
+      var a = v(i, j), b = v(i+1, j), c = v(i+1, j+1), d = v(i, j+1);
+      var idx = (a > t ? 1 : 0) | (b > t ? 2 : 0) | (c > t ? 4 : 0) | (d > t ? 8 : 0);
+      var tb = MS_SEG[idx];
+      if (tb === null){
+        /* 鞍点。まん中の値で、どちらのつなぎ方かを決める */
+        var mid = (a + b + c + d) / 4;
+        if (idx === 5) tb = (mid > t) ? [[3,0],[1,2]] : [[3,2],[1,0]];
+        else           tb = (mid > t) ? [[2,1],[0,3]] : [[0,1],[2,3]];
+      }
+      for (var k = 0; k < tb.length; k++){
+        segs.push([ msPt(i, j, tb[k][0], a, b, c, d, t),
+                    msPt(i, j, tb[k][1], a, b, c, d, t) ]);
+      }
+    }
+  }
+  /* つなぐ。端の座標を鍵にして、次の線を探す */
+  function key(p){ return p[0].toFixed(4) + "," + p[1].toFixed(4); }
+  var from = {};
+  segs.forEach(function(sg){ (from[key(sg[0])] = from[key(sg[0])] || []).push(sg); });
+  var used = new Set(), loops = [];
+  segs.forEach(function(sg){
+    if (used.has(sg)) return;
+    var pts = [sg[0]], cur = sg, guard = 0;
+    while (cur && !used.has(cur) && guard++ < 400000){
+      used.add(cur);
+      pts.push(cur[1]);
+      var nx = (from[key(cur[1])] || []).filter(function(x){ return !used.has(x); })[0];
+      cur = nx;
+    }
+    if (pts.length > 3) loops.push(pts);
+  });
+  return loops;
+}
+/* 点を間引く（ダグラス・ポイカー）。ずれが tol 以内なら同じ点とみなす */
+function rdp(pts, tol){
+  if (pts.length < 3) return pts.slice();
+  var keep = new Uint8Array(pts.length); keep[0] = keep[pts.length-1] = 1;
+  var st = [[0, pts.length-1]];
+  while (st.length){
+    var se = st.pop(), s = se[0], e = se[1];
+    var x1 = pts[s][0], y1 = pts[s][1], x2 = pts[e][0], y2 = pts[e][1];
+    var dx = x2 - x1, dy = y2 - y1, L = Math.sqrt(dx*dx + dy*dy) || 1e-9;
+    var far = -1, fd = tol;
+    for (var i = s+1; i < e; i++){
+      var d = Math.abs((pts[i][0]-x1)*dy - (pts[i][1]-y1)*dx) / L;
+      if (d > fd){ fd = d; far = i; }
+    }
+    if (far > 0){ keep[far] = 1; st.push([s, far]); st.push([far, e]); }
+  }
+  var out = [];
+  for (var k = 0; k < pts.length; k++) if (keep[k]) out.push(pts[k]);
+  return out;
+}
+/* 閉じた輪に間引きを掛ける。始点と終点が同じだと、その 2 点を結ぶ線が
+   長さ 0 になって「どの点も線の上」と判定され、**輪ごと消える**（実測で 2 点になった）。
+   いちばん遠い点で 2 つに割ってから掛ける。 */
+function rdpClosed(pts, tol){
+  var n = pts.length;
+  if (n < 4) return pts.slice();
+  var same = (pts[0][0] === pts[n-1][0] && pts[0][1] === pts[n-1][1]);
+  var ring = same ? pts.slice(0, n-1) : pts.slice();
+  var far = 0, fd = -1;
+  for (var i = 1; i < ring.length; i++){
+    var dx = ring[i][0] - ring[0][0], dy = ring[i][1] - ring[0][1], d = dx*dx + dy*dy;
+    if (d > fd){ fd = d; far = i; }
+  }
+  var a = rdp(ring.slice(0, far + 1), tol);
+  var b = rdp(ring.slice(far).concat([ring[0]]), tol);
+  return a.concat(b.slice(1, b.length - 1));
+}
+function polyArea(pts){
+  var a = 0;
+  for (var i = 0, n = pts.length; i < n; i++){
+    var p = pts[i], q = pts[(i+1) % n];
+    a += p[0]*q[1] - q[0]*p[1];
+  }
+  return a / 2;
+}
+/* 墨のます目から、作字の輪郭（PE.contours の形）を作る。
+     smoothMm … 縁の細かさ。これ以内のでこぼこは同じ点にまとめる
+     minMm2   … これより小さい島・穴は捨てる（地のごみ） */
+function traceToContours(G, ink, smoothMm, minMm2){
+  var mmCell = G.mmCell || 0;
+  if (!mmCell) return null;
+  var loops = traceLoops(ink, G.w, G.h, 0.5);
+  var tolCells = Math.max(0.01, (smoothMm || 0.05) / mmCell);
+  var minCells = Math.max(1, (minMm2 || 0.3) / (mmCell * mmCell));
+  var out = [];
+  loops.forEach(function(lp){
+    if (Math.abs(polyArea(lp)) < minCells) return;      /* 小さい島・小さい穴は捨てる */
+    var sm = rdpClosed(lp, tolCells);
+    if (sm.length > 2 && sm[0][0] === sm[sm.length-1][0] && sm[0][1] === sm[sm.length-1][1])
+      sm.pop();                                          /* 閉じているので終点は要らない */
+    if (sm.length < 3) return;
+    out.push(sm.map(function(p){
+      /* ます (i,j) の値は「ますの真ん中」にあるものとして扱っているので、
+         字の座標に直すときは **半ますぶん足す**。
+         忘れると輪郭が 0.5 ます（0.04mm）ずれる（実測で一致が 96.7% → 99.4%）。 */
+      return { x: G.x0 + (p[0] + 0.5) * G.cell,
+               y: G.y1 - (p[1] + 0.5) * G.cell, i: null, o: null };
+    }));
+  });
+  return out.length ? out : null;
+}
+
 /* テスト：拾った墨のふちを、拓本の上に赤で出す。
    合わせ込みが変な動きをしたとき、拓本を読めていないのか、
    拾い方が悪いのかを、目で切り分けるため。 */
@@ -14789,6 +14934,44 @@ $("peInkClr").onclick = function(){
 $("peBrush").onchange = function(){ peRender(); };
 $("peBrush").oninput  = function(){ peRender(); };
 $("peTaku").onclick    = function(){ takuSave(); };
+/* 墨の縁から、この字の形を作る（なぞり。v20.89）。
+   彫ってある字を**そのまま**使う。前の行と同じ字を合わせるときの本筋
+   （takuhon-ai/SPEC-輪郭と補正.md）。
+   結果は 3 つの数で知らせる。
+     ・点の数        … 多すぎるとプロッターが遅く、角がなまる
+     ・墨との一致    … なぞれているか
+     ・元の形との一致 … どれだけ字らしさから離れたか（低くて当たり前。参考値） */
+function traceGo(){
+  if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+  var P = fitPrep();
+  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  var tol = Math.max(0.01, num($("peTraceTol") && $("peTraceTol").value, 0.05));
+  var mn  = Math.max(0,    num($("peTraceMin") && $("peTraceMin").value, 0.3));
+  var cs = traceToContours(P.G, P.ink, tol, mn);
+  if (!cs){ msg("墨が見つかりませんでした。②で拾う量を確かめてください。", true); return; }
+  var nPt = cs.reduce(function(a, c){ return a + c.length; }, 0);
+  var old = PE.contours;
+  var gOld = fitGlyphMask(old, P.G);
+  peSnap();                                  /* 1 手で戻せるようにしてから差し替える */
+  PE.contours = cs;
+  PE.sel = []; PE.selC = []; PE.marq = null;
+  var gNew = fitGlyphMask(cs, P.G);
+  var mm = P.G.mmCell || 0;
+  var okInk = gNew ? fitIoUNear(gNew, P.ink, P.G, 2) : 0;
+  var okOld = (gNew && gOld) ? fitIoU(gNew, gOld) : 0;
+  peRender();
+  var line = "墨の縁からこの字を作りました。【内訳】点 " + nPt + " 個（輪 " + cs.length + " 本）" +
+      "／墨との一致 " + Math.round(okInk*100) + "%" +
+      "／元の形との一致 " + Math.round(okOld*100) + "%" +
+      "（低くて構いません。彫ってある形に変わったということです）" +
+      "／1 ます " + (mm ? mm.toFixed(4) : "?") + "mm。" +
+      (cs.length > 3 ? "輪が " + cs.length + " 本あります。地のごみが残っている見込みです。" +
+        "②で墨を消すか、［捨てる島 mm²］を上げてください。" : "") +
+      "気に入らなければ［↶ 1つ戻す］で戻せます。";
+  var el = $("peFitInfo"); if (el) el.textContent = line;   /* 窓の下の帯に出す */
+  msg("墨の縁からこの字を作りました（点 " + nPt + " 個）。", false);
+}
+$("peTrace").onclick = function(){ traceGo(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuClr").onclick = function(){
   takuCount().then(function(n){

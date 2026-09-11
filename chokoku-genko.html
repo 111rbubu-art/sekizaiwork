@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.86</title>
+<title>彫刻原稿 v20.87</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1962,7 +1962,7 @@ function typingIn(e){
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.86";
+var APP_VER = "v20.87";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12130,7 +12130,14 @@ async function takuSave(quiet){
     try {
       if (!quiet) msg("共有フォルダーに保存しています…", false, true);
       var nm = await takuPutSP(sh);
-      msg("学習用に保存しました（" + nm + "）。", false);
+      var ai = "";
+      try {
+        var j = await takuPostAI(sh);
+        if (j) ai = "／拓本AIへも送りました（サーバーに " + (j.pairs || "?") + " 組）";
+      } catch(e3){
+        ai = "／拓本AIへは送れませんでした（" + ((e3 && e3.message) || "") + "）";
+      }
+      msg("学習用に保存しました（" + nm + "）" + ai + "。", !!ai && ai.indexOf("送れません") > 0);
       takuShow();
       return nm;
     } catch(e){
@@ -12141,14 +12148,51 @@ async function takuSave(quiet){
   try {
     var id = await takuAdd(sh);
     var n = await takuCount();
+    var ai2 = "";
+    try {
+      var j2 = await takuPostAI(sh);
+      if (j2) ai2 = "／拓本AIへは送りました";
+    } catch(e4){}
     msg("学習用に保存しました（" + (sh.meta.char || "?") + "／この端末に " + n + " 組。" +
-        "つながったときに自動で送ります）。", false);
+        "つながったときに自動で送ります" + ai2 + "）。", false);
     takuShow();
     return id;
   } catch(e2){
     if (!quiet) msg("学習用に保存できませんでした（" +
       ((e2 && e2.message) || "空き容量が足りないかもしれません") + "）。", true);
   }
+}
+/* --- 拓本AI のサーバーへ直接送る（v20.87） ---------------------------
+   共有フォルダー（SharePoint）への保存は**今までどおり**。控えは二重に持つ。
+   そのうえで、学習させるサーバーへ 1 組ずつ送る。ZIP を書き出して手で運ぶ手間が消える。
+   住所は本体アプリの［🧠 拓本AI］と同じ `takuhonAiUrl` を読む（同じ出所なので読める）。
+   **https でないと送れない**。この画面は https なので、http のサーバーへは
+   ブラウザが混在内容として止める。`tailscale serve --https=8443` で https にすること。 */
+function takuApiBase(){
+  var u = "";
+  try { u = String(localStorage.getItem("takuhonAiUrl") || ""); } catch(e){}
+  u = u.trim()
+       .replace(/^[\s"'\u201c\u201d\u2018\u2019\u300c\u300e<\uff1c]+/, "")
+       .replace(/[\s"'\u201c\u201d\u2018\u2019\u300d\u300f>\uff1e]+$/, "")
+       .replace(/\/+$/, "");
+  if (!u) return "";
+  if (location.protocol === "https:" && /^http:/i.test(u)) return "";   /* 混在内容で送れない */
+  return u;
+}
+function takuBlob(dataUrl){ return new Blob([dataUrlBytes(dataUrl)], { type: "image/png" }); }
+async function takuPostAI(sh){
+  var base = takuApiBase(); if (!base) return null;
+  var fd = new FormData();
+  fd.append("raw_image", takuBlob(sh.raw), "raw.png");
+  fd.append("corrected_image", takuBlob(sh.mask), "mask.png");
+  if (sh.hint1) fd.append("hint1", takuBlob(sh.hint1), "hint1.png");
+  var h2 = sh.hint2 || sh.hint;                       /* v20.66 までに貯めた分 */
+  if (h2) fd.append("hint2", takuBlob(h2), "hint2.png");
+  fd.append("char_hint", (sh.meta && sh.meta.char) || "");
+  fd.append("key", sh.key || takuKey(sh));            /* 同じ字なら上書きされる */
+  var r = await fetch(base + "/api/takuhon/feedback", { method: "POST", body: fd });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
 }
 /* この端末に貯まっている分を、まとめて共有フォルダーへ送る */
 async function takuPush(){
@@ -12178,7 +12222,11 @@ async function takuShow(){
   var where = fontDirReady()
     ? "保存先は共有フォルダーの「" + FONT_DIR + "/" + TAKU_DIR + "」です。"
     : "本体アプリから開いていないので、この端末に貯めます（つながったときに自動で送ります）。";
-  el.textContent = where + (n ? "この端末に未送信 " + n + " 組。" : "");
+  var base = takuApiBase();
+  var aiWhere = base ? "拓本AIのサーバー（" + base + "）へも同時に送ります。"
+    : "拓本AIのサーバーへは送っていません（本体アプリの［🧠 拓本AI］に " +
+      "https の住所を入れると、保存と同時に送ります）。";
+  el.textContent = where + (n ? "この端末に未送信 " + n + " 組。" : "") + aiWhere;
   if (PE && !PE.fitSnap && PE.rub)
     el.textContent += "（［② 拓本に大まかに合わせる］を押してから保存すると、" +
       "手がかり②（合わせたあとの字形）も一緒に入ります。無くても学習はできます）";

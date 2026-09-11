@@ -57,6 +57,19 @@ button,select{font:inherit;padding:5px 12px;border:1px solid var(--line);
   background:var(--card);border-radius:7px;cursor:pointer;color:inherit}
 button:hover{background:#f1f1ee}
 .hint{color:var(--muted);font-size:12px}
+.ops{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.ops label{font-size:11.5px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+.ops input[type=number]{width:82px;font:inherit;padding:5px 8px;border:1px solid var(--line);
+  border-radius:7px;background:var(--card);color:inherit}
+.ops .chk{flex-direction:row;align-items:center;gap:6px;font-size:12.5px;color:var(--ink)}
+button.go{background:var(--ao);border-color:var(--ao);color:#fff;font-weight:700}
+button.go:hover{filter:brightness(1.08);background:var(--ao)}
+button.danger{color:var(--shu);border-color:#e6c9c6}
+button:disabled{opacity:.45;cursor:default}
+pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-radius:8px;
+  font-size:11.5px;line-height:1.5;max-height:210px;overflow:auto;white-space:pre-wrap}
+.note{font-size:12px;background:#fff8e8;border:1px solid #f0e2c0;border-radius:8px;
+  padding:8px 11px;color:#6b5a2a;margin:10px 0 0}
 .err{color:var(--shu)}
 #zoom{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;place-items:center;
   z-index:9;cursor:zoom-out}
@@ -74,6 +87,49 @@ button:hover{background:#f1f1ee}
 
   <h2>学習の様子</h2>
   <div class="card" id="train"></div>
+
+  <h2>操作</h2>
+  <div class="card">
+    <div style="font-weight:700;font-size:13px;margin-bottom:7px;">① データを入れる</div>
+    <div class="ops">
+      <label>彫刻原稿アプリの ZIP（まとめて選べます）
+        <input type="file" id="zip" accept=".zip" multiple></label>
+      <label>入れ先
+        <select id="zipWhich">
+          <option value="pairs">学習用</option>
+          <option value="val">検証用（学習に使わない）</option>
+        </select></label>
+      <button id="btnImport">取り込む</button>
+      <span style="flex:1"></span>
+      <label>検証用へ移す 組数<input type="number" id="mvN" value="10" min="0" max="500"></label>
+      <button id="btnMove">学習用から移す</button>
+    </div>
+    <p class="hint" style="margin:7px 0 0">検証用は<b>学習に使いません</b>。
+      そこでの成績が「本番の実力」になります。10 組ほど取り分けてください。</p>
+
+    <div style="font-weight:700;font-size:13px;margin:16px 0 7px;">② 学習を回す</div>
+    <div class="ops">
+      <label>回数<input type="number" id="ep" value="60" min="1" max="2000"></label>
+      <label>一度に見る枚数<input type="number" id="bs" value="4" min="1" max="32"></label>
+      <label>モデルの大きさ<input type="number" id="base" value="32" min="4" max="64" step="4"></label>
+      <label class="chk"><input type="checkbox" id="test"> 試すだけ（8 組未満でも回す）</label>
+      <button class="go" id="btnTrain">学習を始める</button>
+      <button id="btnStop">止める</button>
+    </div>
+    <p class="hint" style="margin:7px 0 0">
+      ふだんは<b>そのまま［学習を始める］</b>で構いません。
+      ［試すだけ］は<b>動くかどうかを見るため</b>のもので、8 組未満でも回し、
+      検証をしないままモデルを差し替えます（1 組で試すときは回数 200 くらい必要です）。</p>
+    <pre class="log" id="tlog" hidden></pre>
+
+    <div style="font-weight:700;font-size:13px;margin:16px 0 7px;">③ 片づけ</div>
+    <div class="ops">
+      <button class="danger" id="btnDelModel">いまのモデルを消す</button>
+      <button class="danger" id="btnDelData">貯めたデータを消す</button>
+    </div>
+    <p class="hint" style="margin:7px 0 0"><b>取り消せません。</b>
+      世代（runs/model_*.pth）は残るので、モデルは後から戻せます。</p>
+  </div>
 
   <h2>成績のうつり変わり</h2>
   <div class="card">
@@ -145,6 +201,12 @@ function cards(st, pg){
 /* ---- 学習の様子 ---- */
 function train(pg){
   var el = document.getElementById("train"), s = pg.state;
+  if (s === "starting"){
+    el.innerHTML = '<span class="tag t-run">支度中</span> <span class="hint">' +
+      esc(pg.why || "支度をしています") + '</span>' +
+      '<div class="bar"><i style="width:6%"></i></div>';
+    return;
+  }
   if (s === "none" || !s){
     el.innerHTML = '<span class="tag t-off">まだ回していません</span>' +
       '<p class="hint" style="margin:8px 0 0">' +
@@ -300,6 +362,98 @@ document.addEventListener("click", function(e){
   } else if (e.target.closest("#zoom")) zoom.style.display = "none";
 });
 
+/* ---- 操作（ターミナルを開かずに済ませる） ---- */
+function busy(on){
+  ["btnImport","btnMove","btnTrain","btnDelModel","btnDelData"].forEach(function(id){
+    var b = document.getElementById(id); if (b) b.disabled = !!on;
+  });
+}
+async function post(url, fd){
+  var r = await fetch(url, { method:"POST", body: fd });
+  var j = null;
+  try { j = await r.json(); } catch(e) {}
+  if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status));
+  return j;
+}
+document.getElementById("btnImport").onclick = async function(){
+  var f = document.getElementById("zip").files;
+  if (!f.length){ alert("ZIP を選んでください。"); return; }
+  var fd = new FormData();
+  for (var i = 0; i < f.length; i++) fd.append("files", f[i]);
+  fd.append("which", document.getElementById("zipWhich").value);
+  busy(true);
+  try {
+    var j = await post("/api/takuhon/import", fd);
+    var m = j.added + " 組を入れました（学習 " + j.pairs + " 組／検証 " + j.val + " 組）";
+    if (j.bad && j.bad.length) m += "\n読めなかったもの：" + j.bad.map(function(b){ return b.name; }).join(", ");
+    alert(m);
+    document.getElementById("zip").value = "";
+    tick(); pairs(true);
+  } catch(e){ alert("取り込めませんでした：" + e.message); }
+  busy(false);
+};
+document.getElementById("btnMove").onclick = async function(){
+  var n = +document.getElementById("mvN").value || 0;
+  if (!n) return;
+  if (!confirm(n + " 組を検証用へ移します。よろしいですか。")) return;
+  busy(true);
+  try {
+    var j = await post("/api/takuhon/move_val", new URLSearchParams({ n: n }));
+    alert(j.moved + " 組を移しました（学習 " + j.pairs + " 組／検証 " + j.val + " 組）");
+    tick(); pairs(true);
+  } catch(e){ alert("移せませんでした：" + e.message); }
+  busy(false);
+};
+document.getElementById("btnTrain").onclick = async function(){
+  var fd = new URLSearchParams({
+    epochs: document.getElementById("ep").value,
+    bs: document.getElementById("bs").value,
+    base: document.getElementById("base").value,
+    test: document.getElementById("test").checked ? "true" : "false"
+  });
+  busy(true);
+  try {
+    await post("/api/takuhon/train", fd);
+    tick(); logPoll();
+  } catch(e){
+    alert(e.message === "already_running" ? "もう学習が走っています。" : ("始められませんでした：" + e.message));
+  }
+  busy(false);
+};
+document.getElementById("btnStop").onclick = async function(){
+  if (!confirm("学習を止めます。そこまでの分は残りません。よろしいですか。")) return;
+  try { await post("/api/takuhon/train/stop", new URLSearchParams()); tick(); }
+  catch(e){ alert("止められませんでした：" + e.message); }
+};
+function del(what, name){
+  return async function(){
+    if (!confirm(name + "を消します。取り消せません。よろしいですか。")) return;
+    var w = prompt("消してよければ「けす」と入れてください。");
+    if (w === null) return;
+    busy(true);
+    try {
+      await post("/api/takuhon/reset", new URLSearchParams({ what: what, confirm: w }));
+      tick(); pairs(true);
+    } catch(e){
+      alert(e.message === "need_confirm" ? "「けす」と入れなかったので、何もしていません。"
+           : e.message === "running" ? "学習中は消せません。先に止めてください。"
+           : ("消せませんでした：" + e.message));
+    }
+    busy(false);
+  };
+}
+document.getElementById("btnDelModel").onclick = del("model", "いまのモデル");
+document.getElementById("btnDelData").onclick  = del("data",  "貯めたデータ（学習用・検証用とも）");
+
+/* 学習中は、画面のログも出す（何で止まったかが分かる） */
+async function logPoll(){
+  try {
+    var d = await get("/api/takuhon/trainlog?lines=40");
+    var el = document.getElementById("tlog");
+    if (d.lines && d.lines.length){ el.hidden = false; el.textContent = d.lines.join("\n"); el.scrollTop = el.scrollHeight; }
+  } catch(e){}
+}
+
 /* ---- 読み直し ---- */
 async function tick(){
   try{
@@ -320,5 +474,7 @@ document.getElementById("more").onclick = function(){ LIMIT += 24; pairs(); };
 document.getElementById("which").onchange = function(){ pairs(true); };
 tick(); pairs(true);
 setInterval(tick, 5000);
+setInterval(logPoll, 5000);
+logPoll();
 setInterval(function(){ if (document.visibilityState === "visible") pairs(); }, 30000);
 </script>

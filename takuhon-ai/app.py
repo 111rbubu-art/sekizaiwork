@@ -9,6 +9,10 @@
   GET  /api/takuhon/pairs      貯まった組の一覧（字・日付・手がかりの有無）
   GET  /api/takuhon/img/...    組の画像（生／正解／手がかり／AI の出力）
   GET  /                       見るための画面（dash.html）
+  POST /api/takuhon/import     ZIP を受け取って dataset へ入れる（画面から）
+  POST /api/takuhon/train      学習を始める（画面から。1 つずつしか走らせない）
+  POST /api/takuhon/train/stop 学習を止める
+  GET  /api/takuhon/trainlog   学習の画面ログ（うしろの方だけ）
   GET  /health                 生きているか
 
 考え方
@@ -21,8 +25,12 @@
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
+import sys
 import time
+import zipfile
 from datetime import datetime
 
 import numpy as np
@@ -40,6 +48,8 @@ DATASET = os.path.join(ROOT, "dataset", "pairs")
 RUNS = os.path.join(ROOT, "runs")
 CURRENT = os.path.join(RUNS, "current.pth")
 VALDIR = os.path.join(ROOT, "dataset", "val")
+TRAINLOG = os.path.join(RUNS, "train.log")
+TRAINPID = os.path.join(RUNS, "train.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
 os.makedirs(DATASET, exist_ok=True)
 os.makedirs(RUNS, exist_ok=True)
@@ -62,6 +72,11 @@ def _reload_if_new():
     try:
         m = os.path.getmtime(CURRENT)
     except OSError:
+        # モデルを消したのに、覚えている分を手放していなかった（実測）。
+        # 画面には「あり」と出たまま、答えも返り続けてしまう。
+        if INFO.get("loaded"):
+            NET, INFO = load_model(CURRENT, DEVICE)
+            LOADED_AT = time.time()
         return
     if m > LOADED_AT:
         NET, INFO = load_model(CURRENT, DEVICE)
@@ -195,6 +210,15 @@ def _set_dir(which):
 def progress():
     """学習の途中経過。**画面のログは夜に流れて消える**ので、ここから読む。"""
     p = _read_json(os.path.join(RUNS, "progress.json"), {"state": "none"})
+    # 「学習中」のまま止まっていることがある（強制終了・パソコンの再起動）。
+    # pid が居なければ、そう見せる。ずっと「学習中」と出ていると、待ってしまう。
+    r = _running()
+    if r and r.get("state") == "starting" and p.get("state") != "running":
+        # 始めたばかり。torch の読み込みで十数秒かかるので、そう見せる
+        p = {"state": "starting", "pid": r["pid"], "why": "支度をしています（十数秒かかります）"}
+    elif p.get("state") == "running" and not r:
+        p["state"] = "failed"
+        p["why"] = p.get("why") or "途中で終わっています（止められたか、落ちました）"
     p["gpu"] = _gpu()
     return p
 
@@ -274,3 +298,183 @@ def dash():
     if not os.path.exists(f):
         return JSONResponse({"error": "no_dash"}, status_code=404)
     return FileResponse(f, media_type="text/html; charset=utf-8")
+
+
+# ----- 画面から動かすための口（v2）。--------------------------------------
+#   ターミナルを開かずに、ZIP の取り込みと学習ができるようにする。
+#   **受け取るのは数と真偽だけ**。文字列をそのままコマンドに渡すことはしない。
+
+def _alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _running():
+    """いま学習が走っているか。
+
+    **progress.json だけでは足りない**。train.py は torch の読み込みに
+    十数秒かかり、その間 progress.json はまだ無い。そこを見ていなかったので、
+    続けて押すと 2 つ走ってしまった（実測）。**始めた時点で pid を置く**。
+    """
+    try:
+        pid = int(open(TRAINPID, encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid and _alive(pid):
+        p = _read_json(os.path.join(RUNS, "progress.json"), {}) or {}
+        if p.get("pid") != pid:
+            p = {"state": "starting", "pid": pid}
+        return p
+    p = _read_json(os.path.join(RUNS, "progress.json"), {}) or {}
+    if p.get("state") == "running" and p.get("pid") and _alive(p["pid"]):
+        return p
+    return None
+
+
+@app.post("/api/takuhon/import")
+async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pairs")):
+    """彫刻原稿アプリが出した ZIP を受け取って、そのまま dataset へ入れる。
+
+    中身の取り出し方は import_pairs.py と同じ。**ZIP の中の名前は信じない**
+    （`../` などで外へ書き出されないよう、末尾の名前だけを使う）。
+    """
+    root = _set_dir(which)
+    if root is None:
+        return JSONResponse({"error": "bad_set"}, status_code=400)
+    import io as _io
+    made, bad = set(), []
+    for up in files:
+        raw = await up.read()
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.splitext(os.path.basename(up.filename or "zip"))[0])[:80] or "zip"
+        try:
+            with zipfile.ZipFile(_io.BytesIO(raw)) as z:
+                names = [n for n in z.namelist() if not n.endswith("/")]
+                flat = [n for n in names if n.startswith("pairs/")]
+                if flat:                               # まとめ書き出し
+                    for n in flat:
+                        b = os.path.basename(n)
+                        parts = b.split("_")
+                        if len(parts) < 3:
+                            continue
+                        pid = parts[0] + "_" + parts[1]
+                        part = b.split("_", 2)[-1]
+                        if part not in ("raw.png", "mask.png", "hint1.png", "hint2.png",
+                                        "hint.png", "meta.json"):
+                            continue
+                        d = os.path.join(root, re.sub(r"[^A-Za-z0-9._-]", "_", pid))
+                        os.makedirs(d, exist_ok=True)
+                        open(os.path.join(d, part), "wb").write(z.read(n))
+                        made.add(pid)
+                else:                                  # 1 文字＝1 つ
+                    for n in names:
+                        b = os.path.basename(n)
+                        if b in ("raw.png", "mask.png", "hint1.png", "hint2.png",
+                                 "hint.png", "meta.json"):
+                            d = os.path.join(root, stem)
+                            os.makedirs(d, exist_ok=True)
+                            open(os.path.join(d, b), "wb").write(z.read(n))
+                            made.add(stem)
+        except Exception as e:
+            bad.append({"name": up.filename, "why": f"{type(e).__name__}: {e}"})
+    return {"added": len(made), "bad": bad,
+            "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+
+
+@app.post("/api/takuhon/move_val")
+def move_val(n: int = Form(...)):
+    """学習用から検証用へ、○ 組を移す（学習には使わない分を取り分ける）。"""
+    n = max(0, min(500, int(n)))
+    have = [d for d in D.list_pairs(DATASET)]
+    os.makedirs(VALDIR, exist_ok=True)
+    moved = 0
+    for d in have:
+        if moved >= n:
+            break
+        try:
+            shutil.move(d, os.path.join(VALDIR, os.path.basename(d)))
+            moved += 1
+        except OSError:
+            pass
+    return {"moved": moved, "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+
+
+@app.post("/api/takuhon/train")
+def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
+                test: bool = Form(False)):
+    """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。"""
+    if _running():
+        return JSONResponse({"error": "already_running"}, status_code=409)
+    epochs = max(1, min(2000, int(epochs)))
+    bs = max(1, min(32, int(bs)))
+    base = max(4, min(64, int(base)))
+    cmd = [sys.executable, os.path.join(ROOT, "train.py"),
+           "--epochs", str(epochs), "--bs", str(bs), "--base", str(base)]
+    if test:                       # 「試すだけ」。8 組未満でも回し、検証なしでも差し替える
+        cmd += ["--min", "1", "--swap-anyway"]
+    os.makedirs(RUNS, exist_ok=True)
+    log = open(TRAINLOG, "w", encoding="utf-8")
+    pr = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                          start_new_session=True)
+    try:
+        with open(TRAINPID, "w", encoding="utf-8") as f:
+            f.write(str(pr.pid))
+    except OSError:
+        pass
+    return {"started": True, "pid": pr.pid, "cmd": " ".join(cmd[1:]), "test": bool(test)}
+
+
+@app.post("/api/takuhon/train/stop")
+def train_stop():
+    p = _running()
+    if not p:
+        return {"stopped": False, "why": "走っていません"}
+    try:
+        os.kill(int(p["pid"]), signal.SIGTERM)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    try:
+        os.remove(TRAINPID)
+    except OSError:
+        pass
+    p2 = dict(p); p2["state"] = "stopped"; p2["why"] = "画面から止めました"
+    p2.setdefault("epochs", 0); p2.setdefault("epoch", 0)
+    try:
+        with open(os.path.join(RUNS, "progress.json"), "w", encoding="utf-8") as f:
+            json.dump(p2, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+    return {"stopped": True}
+
+
+@app.get("/api/takuhon/trainlog")
+def trainlog(lines: int = 40):
+    try:
+        with open(TRAINLOG, encoding="utf-8", errors="replace") as f:
+            ls = f.read().splitlines()
+    except OSError:
+        return {"lines": []}
+    return {"lines": ls[-max(1, min(300, lines)):]}
+
+
+@app.post("/api/takuhon/reset")
+def reset(what: str = Form(...), confirm: str = Form("")):
+    """試した分を片づける。**取り消せない**ので、合言葉を求める。"""
+    if confirm != "けす":
+        return JSONResponse({"error": "need_confirm"}, status_code=400)
+    if _running():
+        return JSONResponse({"error": "running"}, status_code=409)
+    done = []
+    if what in ("model", "all"):
+        try:
+            os.remove(CURRENT); done.append("いまのモデル")
+        except OSError:
+            pass
+    if what in ("data", "all"):
+        for root in (DATASET, VALDIR):
+            for d in D.list_pairs(root):
+                shutil.rmtree(d, ignore_errors=True)
+        done.append("貯めたデータ")
+    return {"done": done, "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}

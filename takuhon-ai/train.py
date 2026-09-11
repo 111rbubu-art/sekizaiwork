@@ -125,6 +125,12 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--base", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
+    # 下の 2 つは「動くかどうか試す」ためのもの。ふだんは使わない。
+    # 8 組未満で学習しても、まともなモデルにはならない（下限はその歯止め）。
+    ap.add_argument("--min", type=int, default=8,
+                    help="学習に要る組数の下限（試すときだけ 1 などに下げる）")
+    ap.add_argument("--swap-anyway", action="store_true",
+                    help="検証用が無くても current.pth を差し替える（試すときだけ）")
     a = ap.parse_args()
 
     os.makedirs(RUNS, exist_ok=True)
@@ -136,11 +142,13 @@ def main():
     va = load_all(D.list_pairs(VAL_DIR))
     print(f"学習 {len(tr)} 組 ／ 検証 {len(va)} 組 ／ {device}")
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if len(tr) < 8:
-        print("学習用が少なすぎます（8 組以上ためてください）。やめます。")
-        put_progress(state="stopped", why="学習用が少なすぎます（8 組以上）",
+    if len(tr) < max(1, a.min):
+        print(f"学習用が少なすぎます（{a.min} 組以上ためてください）。やめます。")
+        put_progress(state="stopped", why=f"学習用が少なすぎます（{a.min} 組以上）",
                      pairs=len(tr), val=len(va), started=started)
         return
+    if len(tr) < 8:
+        print(f"※ {len(tr)} 組しかありません。**動くかどうかを試すだけ**の学習です。")
 
     net = UNet(base=a.base).to(device)
     step0, best_prev = 0, None
@@ -200,6 +208,12 @@ def main():
                 pairs=len(tr), val=len(va), step=step, started=started,
                 device=str(device), prev=best_prev, gen=os.path.basename(gen))
     if not va:
+        if getattr(a, "swap_anyway", False):
+            shutil.copyfile(gen, CURRENT)
+            print("検証をしていませんが、試すために current.pth を差し替えました。")
+            put_progress(swapped=True,
+                         why="検証なしで差し替えました（試すため。--swap-anyway）", **done)
+            return
         print("検証用が無いので、差し替えません。dataset/val に 10 組ほど移してください。")
         put_progress(swapped=False,
                      why="検証用が無いので差し替えません（dataset/val に 10 組ほど）", **done)

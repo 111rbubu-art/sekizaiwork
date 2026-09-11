@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.89</title>
+<title>彫刻原稿 v20.90</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1202,6 +1202,16 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <input type="number" id="peInkAdj" value="0" step="5" min="-60" max="60"></label>
         <label class="f" style="margin:0 0 5px 0;"><span>縁のならし mm</span>
           <input type="number" id="peInkSmooth" value="0" step="0.05" min="0" max="2"></label>
+        <h3 class="sec" style="margin-top:8px;">墨訂正</h3>
+        <select id="peInkFix" style="margin-bottom:5px;">
+          <option value="">えらぶ…</option>
+          <option value="del0.7">0.7 消す</option>
+          <option value="del0.5">0.5 消す</option>
+          <option value="del0.3">0.3 消す</option>
+          <option value="add0.7">0.7 足す</option>
+          <option value="add0.5">0.5 足す</option>
+          <option value="add0.3">0.3 足す</option>
+        </select>
         <div class="g2" style="margin-bottom:4px;">
           <button class="mini pt" data-t="inkdel">墨を消す</button>
           <button class="mini pt" data-t="inkadd">墨を足す</button>
@@ -1217,6 +1227,12 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <input type="number" id="peTraceTol" value="0.05" step="0.01" min="0.01" max="1"></label>
         <label class="f" style="margin-top:4px;"><span>捨てる島 mm²</span>
           <input type="number" id="peTraceMin" value="0.3" step="0.1" min="0" max="20"></label>
+        <label class="chk" style="margin-top:5px;"><input type="checkbox" id="peFixOn" checked
+          style="width:auto;"> フォントで補正する</label>
+        <label class="f" style="margin-top:4px;"><span>太さの補正 mm まで</span>
+          <input type="number" id="peFixThick" value="0.3" step="0.05" min="0" max="2"></label>
+        <label class="f" style="margin-top:4px;"><span>欠けの補完 mm² まで</span>
+          <input type="number" id="peFixFill" value="1" step="0.5" min="0" max="50"></label>
         <p class="hint" style="margin:3px 0 0;">彫ってある字を<b>そのまま</b>この字の形にします。
           前の行と同じ字を合わせるときに使います。押す前に、②で墨を整えてください。</p>
 
@@ -1971,7 +1987,7 @@ function typingIn(e){
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.89";
+var APP_VER = "v20.90";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13004,6 +13020,216 @@ function polyArea(pts){
   }
   return a / 2;
 }
+/* === フォントで補正する（v20.90。SPEC-輪郭と補正.md の「作る順番 2」）=====
+   拓本を信じきらない。拓本を採るときのかすれ・石の劣化で、**彫ってある形そのもの**が
+   欠けていることがある。フォントを**骨格**として使い、おかしい所だけ直す。
+
+   いちばん大事なのは **1 画ずつの癖を消さないこと**。職人の癖こそが手本なので、
+   （あ）（い）（え）は**フォントの位置をいっさい使わない**。拓本の画そのものに沿って
+   だけ直す。フォントの位置を使うのは（う）欠けを足すときだけ。
+
+   上限（既定）：太さ 0.3mm ／ 欠け 1mm² ／ 画を探す範囲は字の 15%。
+   上限を超えたら**直さず、そう知らせる**。黙って直さない。 */
+
+/* いちばん近い地までの距離（ます数）。太さを測るのに使う。
+   斜めを 1.41 とみた 2 回なめの近似（十分な精度で、速い）。 */
+function fitDist(m, w, h){
+  var INF = 1e9, d = new Float32Array(w*h), x, y, i;
+  for (i = 0; i < w*h; i++) d[i] = m[i] ? INF : 0;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++){
+    i = y*w + x; if (!d[i]) continue;
+    var v = d[i];
+    if (x > 0)            v = Math.min(v, d[i-1] + 1);
+    if (y > 0)            v = Math.min(v, d[i-w] + 1);
+    if (x > 0 && y > 0)   v = Math.min(v, d[i-w-1] + 1.41421);
+    if (x < w-1 && y > 0) v = Math.min(v, d[i-w+1] + 1.41421);
+    d[i] = v;
+  }
+  for (y = h-1; y >= 0; y--) for (x = w-1; x >= 0; x--){
+    i = y*w + x; if (!d[i]) continue;
+    var v2 = d[i];
+    if (x < w-1)            v2 = Math.min(v2, d[i+1] + 1);
+    if (y < h-1)            v2 = Math.min(v2, d[i+w] + 1);
+    if (x < w-1 && y < h-1) v2 = Math.min(v2, d[i+w+1] + 1.41421);
+    if (x > 0 && y < h-1)   v2 = Math.min(v2, d[i+w-1] + 1.41421);
+    d[i] = v2;
+  }
+  return d;
+}
+/* 塊ごとに分けて返す（4 つながり）。それぞれ 画素の並びと、ふちの様子を持つ。 */
+function fitParts(m, w, h){
+  var seen = new Uint8Array(w*h), st = new Int32Array(w*h), out = [];
+  for (var s0 = 0; s0 < w*h; s0++){
+    if (!m[s0] || seen[s0]) continue;
+    var top = 0, px = [];
+    st[top++] = s0; seen[s0] = 1;
+    while (top){
+      var i = st[--top], x = i % w, y = (i - x) / w;
+      px.push(i);
+      if (x > 0   && m[i-1] && !seen[i-1]){ seen[i-1] = 1; st[top++] = i-1; }
+      if (x < w-1 && m[i+1] && !seen[i+1]){ seen[i+1] = 1; st[top++] = i+1; }
+      if (y > 0   && m[i-w] && !seen[i-w]){ seen[i-w] = 1; st[top++] = i-w; }
+      if (y < h-1 && m[i+w] && !seen[i+w]){ seen[i+w] = 1; st[top++] = i+w; }
+    }
+    out.push(px);
+  }
+  return out;
+}
+/* 元のフォントの字形を、いまの墨に合わせて格子へ写す（骨格として使うため）。
+   合わせるのは**外枠だけ**（拡大・平行移動）。要る精度は「どの画とどの画が同じか
+   分かる」程度なので、これで足りる。人が押す必要はない。 */
+function fitFontMask(G, ink){
+  if (!PE) return null;
+  var g = S.groups[PE.gi]; if (!g) return null;
+  var bare = Array.from(String(splitChars(g.text)[PE.ci] || ""))[0];
+  if (!bare) return null;
+  var fi = fontIdxOf(g, PE.ci), ax = axesOf(g, PE.ci);
+  var gid = FR(fi) ? shapeOne(bare, ax, fi) : null;
+  if (!gid) return null;
+  var cs = parsePath(glyphPath(gid, ax, fi));
+  if (!cs || !cs.length) return null;
+  /* 墨の外枠（ます）→ 字の座標 */
+  var x1 = 1e9, x2 = -1, y1 = 1e9, y2 = -1;
+  for (var j = 0; j < G.h; j++) for (var i2 = 0; i2 < G.w; i2++){
+    if (!ink[j*G.w + i2]) continue;
+    if (i2 < x1) x1 = i2; if (i2 > x2) x2 = i2;
+    if (j < y1) y1 = j;  if (j > y2) y2 = j;
+  }
+  if (x2 < 0) return null;
+  var iL = G.x0 + x1 * G.cell, iR = G.x0 + (x2+1) * G.cell;
+  var iT = G.y1 - y1 * G.cell, iB = G.y1 - (y2+1) * G.cell;
+  var bb = fitInkBox(cs); if (!bb || bb.w < 1e-6 || bb.h < 1e-6) return null;
+  var sx = (iR - iL) / bb.w, sy = (iT - iB) / bb.h;
+  /* 極端な倍率は、墨が荒れているということ。そのときは等倍で置くだけにする */
+  if (!(sx > 0.5 && sx < 2 && sy > 0.5 && sy < 2)){ sx = 1; sy = 1; }
+  var cx0 = (iL + iR)/2, cy0 = (iT + iB)/2;
+  var fx0 = bb.x + bb.w/2, fy0 = bb.y + bb.h/2;
+  var moved = cs.map(function(c){
+    return c.map(function(p){
+      function T(q){ return q ? [cx0 + (q[0]-fx0)*sx, cy0 + (q[1]-fy0)*sy] : null; }
+      return { x: cx0 + (p.x-fx0)*sx, y: cy0 + (p.y-fy0)*sy, i: T(p.i), o: T(p.o) };
+    });
+  });
+  return fitGlyphMask(moved, G);
+}
+/* 本体。直したます目と、何をどれだけ直したかを返す。 */
+function traceFix(G, ink, opt){
+  opt = opt || {};
+  var w = G.w, h = G.h, mm = G.mmCell || 0, i;
+  if (!mm) return { ink: ink, rep: null };
+  var capThick = (opt.capThickMm !== undefined) ? opt.capThickMm : 0.3;
+  var capFill  = (opt.capFillMm2  !== undefined) ? opt.capFillMm2  : 1.0;
+  var farPct   = (opt.farPct      !== undefined) ? opt.farPct      : 0.15;
+  var cellMm2 = mm * mm;
+  var F = fitFontMask(G, ink);
+  var out = new Uint8Array(ink);
+  var rep = { thick: 0, fill: 0, drop: 0, skip: 0, skipMax: 0, target: 0, font: !!F };
+  /* フォントから「字の 15%」以内。**画がありうる所**の目安。
+     位置を寄せるためではなく、**地のざらつきまで太らせない**ための囲い。
+     これを入れないと、地の粒を細い画と見て太らせ、輪が増えた（実測で 3 本 → 7 本）。 */
+  var side0 = Math.max(1, Math.min(w, h));
+  var near = F ? fitMorph(F, w, h, Math.max(2, Math.round(side0 * farPct))) : null;
+
+  /* 先に、小さすぎる塊を落とす（v20.90）。**太らせるより前**にやるのが肝心。
+     あとにすると、地の粒が太って「島」の判定をすり抜け、輪が増える
+     （実測：先に落とさないと 3 本 → 7 本になった）。
+     彫った画は、決めた広さより小さくならない。 */
+  var minPart = (opt.minPartMm2 !== undefined) ? opt.minPartMm2 : 2.0;
+  if (minPart > 0){
+    var before0 = 0; for (i = 0; i < w*h; i++) before0 += out[i];
+    out = fitDropSmall(out, w, h, Math.max(1, Math.round(minPart / cellMm2)));
+    var after0 = 0; for (i = 0; i < w*h; i++) after0 += out[i];
+    rep.drop += (before0 - after0);
+  }
+
+  /* 目あて（画線の太さ）。行の見立てが実測していれば、それを使う。
+     フォントの太さは書体の都合で決まっているだけなので、当てにしない。 */
+  var d = fitDist(out, w, h);
+  var ths = [];
+  for (i = 0; i < w*h; i++) if (out[i] && d[i] > 1) ths.push(d[i] * 2 * mm);
+  var L0 = (S.rub && S.rub.lines && S.rub.lines[0]) ? S.rub.lines[0] : null;
+  var tgt = (L0 && L0.inkMm) ? L0.inkMm : _med(ths);
+  rep.target = tgt || 0;
+
+  /* （あ）明らかに細い … その画を **その場で** 太らせる。フォントの位置は使わない。
+
+     太さは **画の芯（尾根）で測る**。1 ますごとの「地までの距離」で測ると、
+     太い画でも縁の画素は距離が小さいので「細い」と判定され、
+     **太い画まで太ってしまう**（実測で 2.0mm の画が 2.6mm になった）。
+     芯から、目あての太さの半分まで丸を置き直すと、太い画には何も起きない。 */
+  if (tgt > 0 && capThick > 0){
+    var half = (tgt / 2) / mm;                 /* 目あての半分（ます） */
+    var capC = (capThick / 2) / mm;            /* 足してよい半径（ます） */
+    for (i = 0; i < w*h; i++){
+      if (!out[i] || d[i] < 0.8) continue;
+      if (near && !near[i]) continue;           /* 字から離れた所は太らせない */
+      var x0 = i % w, y0 = (i - x0) / w;
+      /* 芯（まわりより奥にある所）だけを種にする */
+      var isRidge = true;
+      if (x0 > 0   && d[i-1] > d[i] + 0.01) isRidge = false;
+      if (x0 < w-1 && d[i+1] > d[i] + 0.01) isRidge = false;
+      if (y0 > 0   && d[i-w] > d[i] + 0.01) isRidge = false;
+      if (y0 < h-1 && d[i+w] > d[i] + 0.01) isRidge = false;
+      if (!isRidge) continue;
+      if (d[i] * 2 * mm >= tgt * 0.85) continue;      /* 細くない */
+      var R = Math.min(half, d[i] + capC);            /* 上限を超えて太らせない */
+      var Ri = Math.floor(R);
+      if (Ri <= d[i]) continue;
+      for (var yy = Math.max(0, y0-Ri); yy <= Math.min(h-1, y0+Ri); yy++){
+        for (var xx = Math.max(0, x0-Ri); xx <= Math.min(w-1, x0+Ri); xx++){
+          var dx = xx - x0, dy = yy - y0;
+          if (dx*dx + dy*dy > R*R) continue;
+          var k2 = yy*w + xx;
+          if (!out[k2]){ out[k2] = 1; rep.thick++; }
+        }
+      }
+    }
+  }
+
+  /* （い）（う）途切れ・欠け … フォントにあって拓本に無い所。
+     外まわりの太さの違いまで足さないよう、**まわりを墨に囲まれた所だけ**見る。 */
+  if (F){
+    var gap = new Uint8Array(w*h);
+    for (i = 0; i < w*h; i++) gap[i] = (F[i] && !out[i]) ? 1 : 0;
+    var parts = fitParts(gap, w, h);
+    var capCells = capFill / cellMm2;
+    parts.forEach(function(px){
+      /* ふちのうち、墨に接している割合。低ければ「字の外まわり」＝太さの違い */
+      var touch = 0, edge = 0;
+      px.forEach(function(k){
+        var x = k % w, y = (k - x) / w;
+        [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].forEach(function(q){
+          if (q[0] < 0 || q[1] < 0 || q[0] >= w || q[1] >= h) return;
+          var kk = q[1]*w + q[0];
+          if (gap[kk]) return;
+          edge++;
+          if (out[kk]) touch++;
+        });
+      });
+      if (!edge || touch / edge < 0.6) return;      /* 囲まれていない。外まわり */
+      if (px.length > capCells){                    /* 上限を超える。直さず知らせる */
+        rep.skip++;
+        rep.skipMax = Math.max(rep.skipMax, px.length * cellMm2);
+        return;
+      }
+      px.forEach(function(k){ out[k] = 1; });
+      rep.fill += px.length;
+    });
+
+    /* （え）余計なもの … フォントから字の 15% より離れた塊は、地のごみとみなす */
+    var junk = new Uint8Array(w*h);
+    for (i = 0; i < w*h; i++) junk[i] = (out[i] && !near[i]) ? 1 : 0;
+    fitParts(junk, w, h).forEach(function(px){
+      px.forEach(function(k){ out[k] = 0; });
+      rep.drop += px.length;
+    });
+  }
+  rep.thickMm2 = rep.thick * cellMm2;
+  rep.fillMm2  = rep.fill  * cellMm2;
+  rep.dropMm2  = rep.drop  * cellMm2;
+  return { ink: out, rep: rep };
+}
+
 /* 墨のます目から、作字の輪郭（PE.contours の形）を作る。
      smoothMm … 縁の細かさ。これ以内のでこぼこは同じ点にまとめる
      minMm2   … これより小さい島・穴は捨てる（地のごみ） */
@@ -14842,6 +15068,7 @@ Array.prototype.forEach.call(document.querySelectorAll("#pathEd .pt"), function(
   b.onclick = function(){ if (!PE) return;
     /* モードを変えても、選んだ分はこわさない（v18.3） */
     PE.tool = (PE.tool === b.dataset.t) ? "sel" : b.dataset.t;
+    var sel = $("peInkFix"); if (sel) sel.value = "";   /* えらびと食い違わないように */
     if (PE.tool === "inkdel" || PE.tool === "inkadd") peInkShowOn();
     peRender(); };
 });
@@ -14947,7 +15174,19 @@ function traceGo(){
   if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
   var tol = Math.max(0.01, num($("peTraceTol") && $("peTraceTol").value, 0.05));
   var mn  = Math.max(0,    num($("peTraceMin") && $("peTraceMin").value, 0.3));
-  var cs = traceToContours(P.G, P.ink, tol, mn);
+  /* フォントで補正してから、なぞる（v20.90）。
+     拓本のかすれ・石の劣化で欠けている所を、フォントを骨格として直す。
+     **1 画ずつの癖は消さない**（拓本の画そのものに沿ってだけ直す）。 */
+  var ink = P.ink, fx = null;
+  if ($("peFixOn") && $("peFixOn").checked){
+    var R = traceFix(P.G, P.ink, {
+      capThickMm: num($("peFixThick") && $("peFixThick").value, 0.3),
+      capFillMm2: num($("peFixFill") && $("peFixFill").value, 1),
+      minPartMm2: mn            /* ［捨てる島 mm²］。太らせる前に落とす */
+    });
+    if (R && R.ink){ ink = R.ink; fx = R.rep; }
+  }
+  var cs = traceToContours(P.G, ink, tol, mn);
   if (!cs){ msg("墨が見つかりませんでした。②で拾う量を確かめてください。", true); return; }
   var nPt = cs.reduce(function(a, c){ return a + c.length; }, 0);
   var old = PE.contours;
@@ -14957,7 +15196,7 @@ function traceGo(){
   PE.sel = []; PE.selC = []; PE.marq = null;
   var gNew = fitGlyphMask(cs, P.G);
   var mm = P.G.mmCell || 0;
-  var okInk = gNew ? fitIoUNear(gNew, P.ink, P.G, 2) : 0;
+  var okInk = gNew ? fitIoUNear(gNew, ink, P.G, 2) : 0;
   var okOld = (gNew && gOld) ? fitIoU(gNew, gOld) : 0;
   peRender();
   var line = "墨の縁からこの字を作りました。【内訳】点 " + nPt + " 個（輪 " + cs.length + " 本）" +
@@ -14967,10 +15206,31 @@ function traceGo(){
       "／1 ます " + (mm ? mm.toFixed(4) : "?") + "mm。" +
       (cs.length > 3 ? "輪が " + cs.length + " 本あります。地のごみが残っている見込みです。" +
         "②で墨を消すか、［捨てる島 mm²］を上げてください。" : "") +
+      (fx ? "【フォントで直した分】太らせた " + fx.thickMm2.toFixed(1) + " mm²" +
+            "（目あての太さ " + (fx.target ? fx.target.toFixed(2) : "?") + " mm）" +
+            "／欠けを埋めた " + fx.fillMm2.toFixed(1) + " mm²" +
+            "／地のごみを捨てた " + fx.dropMm2.toFixed(1) + " mm²" +
+            (fx.skip ? "／**上限を超えたので直さなかった所が " + fx.skip + " か所**" +
+                       "（最大 " + fx.skipMax.toFixed(1) + " mm²）。目で確かめてください" : "") +
+            (fx.font ? "" : "／フォントが読めないので、太さだけ直しました") + "。"
+          : "") +
       "気に入らなければ［↶ 1つ戻す］で戻せます。";
   var el = $("peFitInfo"); if (el) el.textContent = line;   /* 窓の下の帯に出す */
   msg("墨の縁からこの字を作りました（点 " + nPt + " 個）。", false);
 }
+/* ［墨訂正］のえらび（v20.90）。筆の太さと「消す／足す」を一度に決める。
+   太さを打ち直して、ボタンを押して…を毎回やるのが面倒だったため。 */
+$("peInkFix").onchange = function(){
+  var v = this.value; if (!v) return;
+  var mode = v.slice(0, 3) === "del" ? "inkdel" : "inkadd";
+  var mm = parseFloat(v.slice(3));
+  if (!PE){ this.value = ""; msg("作字の画面を開いてから選んでください。", true); return; }
+  var b = $("peBrush"); if (b) b.value = mm;
+  PE.tool = mode;
+  peInkShowOn();                     /* 何を消す／足すのか見えないと決められない */
+  peRender();
+  msg((mode === "inkdel" ? "墨を消す" : "墨を足す") + "・筆 " + mm + "mm にしました。");
+};
 $("peTrace").onclick = function(){ traceGo(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuClr").onclick = function(){

@@ -33,7 +33,11 @@ RUNS = os.path.join(ROOT, "runs")
 CURRENT = os.path.join(RUNS, "current.pth")
 
 HINT_DROP1 = 0.4     # 元のフォントの字形を白紙にする割合
-HINT_DROP2 = 0.4     # 合わせたあとの字形を白紙にする割合
+# 手がかり②（拓本に大まかに合わせたあとの字形）は、彫刻原稿アプリ v20.88 から
+# **渡していない**。あれは「フォントを寄せた、微妙にずれた形」で正解ではなく、
+# それに引っ張られると彫ってある形から離れるため（SPEC-輪郭と補正.md）。
+# 古い組には入っていることがあるので、読む所は残す。**常に白紙にして使わない**。
+HINT_DROP2 = 1.0
 
 
 PROGRESS = os.path.join(RUNS, "progress.json")

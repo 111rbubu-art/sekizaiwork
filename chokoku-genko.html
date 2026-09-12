@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.5</title>
+<title>彫刻原稿 v21.6</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2051,7 +2051,8 @@ function typingIn(e){
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
-var APP_VER = "v21.5";
+var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
+var APP_VER = "v21.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13411,6 +13412,33 @@ async function traceAskAI(G, ink, stage){
   }
 }
 
+/* 節点が「元の墨のふち」からどれだけ離れているかを測る（v21.6）。
+   フォント補正を入れると、わざと墨からずらす（かすれで欠けた所を直すため）。
+   **どれだけずらしたのかを mm で言わないと、「なぜずれているのか」が分からない**。 */
+function traceDevMm(G, ink, contours){
+  var w = G.w, h = G.h, i, x, y;
+  var edge = new Uint8Array(w*h);
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++){
+    i = y*w + x; if (!ink[i]) continue;
+    if (x === 0 || y === 0 || x === w-1 || y === h-1 ||
+        !ink[i-1] || !ink[i+1] || !ink[i-w] || !ink[i+w]) edge[i] = 1;
+  }
+  var inv = new Uint8Array(w*h);
+  for (i = 0; i < w*h; i++) inv[i] = edge[i] ? 0 : 1;
+  var d = fitDist(inv, w, h), ds = [];
+  (contours || []).forEach(function(c){ c.forEach(function(n){
+    var gx = Math.round((n.x - G.x0) / G.cell - 0.5);
+    var gy = Math.round((G.y1 - n.y) / G.cell - 0.5);
+    if (gx < 0 || gy < 0 || gx >= w || gy >= h) return;
+    var k = gy*w + gx;
+    ds.push((edge[k] ? 0 : d[k]) * G.mmCell);
+  }); });
+  if (!ds.length) return null;
+  ds.sort(function(a, b){ return a - b; });
+  return { mid: ds[(ds.length/2)|0], max: ds[ds.length-1],
+           p90: ds[Math.floor(ds.length*0.9)] };
+}
+
 /* 墨のます目から、作字の輪郭（PE.contours の形）を作る。
      smoothMm … 縁の細かさ。これ以内のでこぼこは同じ点にまとめる
      minMm2   … これより小さい島・穴は捨てる（地のごみ） */
@@ -13666,7 +13694,11 @@ function fitEdgeURL(){
   cx.putImageData(id, 0, 0);
   var n = 0;
   for (var k = 0; k < ink.length; k++) n += ink[k];
-  var fi = $("peFitInfo");
+  /* **なぞった結果の帯を、上書きしないこと**（v21.6）。
+     拾った墨の層は描き直すたびにここへ書くので、
+     ［現トレースから字を作る］の結果（点の数・ずれ・直した分）が
+     一瞬で消えていた。墨の方をいじったときだけ、また書く。 */
+  var fi = PE_INFO_HOLD ? null : $("peFitInfo");
   if (fi && FIT_DIAG) fi.textContent =
     "拾った墨：" + (n * G.mmCell * G.mmCell).toFixed(0) + " mm²　" +
     "しきい値 " + FIT_DIAG.T + "（地 " + FIT_DIAG.lo + "／墨 " + FIT_DIAG.hi + "）　" +
@@ -14217,6 +14249,7 @@ function openPathEditor(gi, ci){
          aiShape: false };        /* ［AI 書体補正］の入切 */
   $("peW").value = PE.wpct;
   if ($("peEdgeOp")) $("peEdgeOp").value = PE.edgeOp;
+  PE_INFO_HOLD = false;
   peViewPreset(!!ep);             /* ［表示］を、字ができているかどうかで決める */
   peTab(1);                       /* 開いたときは、いつも１［作成］から */
   peAiShapeShow();
@@ -15732,6 +15765,13 @@ async function traceGo(){
         "②の［消す］（0.7／0.5／0.3）で、いらない墨を消してください。" : "") +
 
       (aiNote ? "【AI】" + aiNote + "。" : "") +
+      (fx ? (function(){
+              var dv = traceDevMm(P.G, P.ink, cs);
+              return dv ? "【墨のふちからのずれ】中央 " + dv.mid.toFixed(2) + "mm／" +
+                          "9 割が " + dv.p90.toFixed(2) + "mm 以内／最大 " +
+                          dv.max.toFixed(2) + "mm（フォント補正を切れば墨どおりになります）。"
+                        : "";
+            })() : "") +
       (fx ? "【フォントで直した分】太らせた " + fx.thickMm2.toFixed(1) + " mm²" +
             "（目あての太さ " + (fx.target ? fx.target.toFixed(2) : "?") + " mm）" +
             "／欠けを埋めた " + fx.fillMm2.toFixed(1) + " mm²" +
@@ -15744,6 +15784,7 @@ async function traceGo(){
           : "") +
       "気に入らなければ［↶ 1つ戻す］で戻せます。";
   var el = $("peFitInfo"); if (el) el.textContent = line;   /* 窓の下の帯に出す */
+  PE_INFO_HOLD = true;              /* 墨の説明で上書きさせない */
   msg("現トレースから字を作りました（点 " + nPt + " 個）。", false);
 }
 /* ［消す］［足す］のえらび（v20.96）。
@@ -15849,6 +15890,7 @@ $("peTakuClr").onclick = function(){
    画面ぜんたいを作り直すと、拓本の写真の読み直しで 65ms 余計にかかる。 */
 function peInkRefresh(){
   if (!PE) return;
+  PE_INFO_HOLD = false;              /* 墨をいじったので、墨の説明に戻す */
   PE.inkC = null;
   var st = $("peStage"), img = st && st.querySelector("#peEdgeImg");
   if (img){

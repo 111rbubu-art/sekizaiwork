@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.1</title>
+<title>彫刻原稿 v21.2</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -665,7 +665,7 @@
   #pathEd .peside{flex:0 0 208px;border-left:1px solid var(--line);background:var(--surface);
     padding:12px;overflow-y:auto;}
   /* 表示の入切は、絵のすぐ左に置く（v20.78）。作業中に何度も触るため */
-  #pathEd .peleft{flex:0 0 150px;border-right:1px solid var(--line);background:var(--surface);
+  #pathEd .peleft{flex:0 0 168px;border-right:1px solid var(--line);background:var(--surface);
     padding:12px 10px;overflow-y:auto;}
   #pathEd .peleft h3.sec{margin-top:0;}
   #pathEd .peleft .chk{margin-bottom:6px;}
@@ -673,6 +673,10 @@
   /* タブは横に並べる（上の指定を打ち消す） */
   #peTabs{margin-bottom:6px;}
   #peTabs button{width:auto;flex:1;margin:0;text-align:center;padding:5px 4px;font-size:11px;}
+  /* 「画線（この字）」の下にあるものは、1 文字ぶん右へ寄せる */
+  #pathEd .peleft label.chk.pesub{padding-left:16px;}
+  #pathEd .peleft label.chk.pesub input:disabled{opacity:.4;}
+  #pathEd .peleft label.chk.pesub.off{opacity:.45;}
   /* 消す／塗る のえらびは横に並べる */
   #pathEd .peside .peg2{display:flex;gap:6px;}
   #pathEd .peside .peg2 select{flex:1;min-width:0;margin:0;}
@@ -1194,9 +1198,12 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       <div class="peleft">
         <h3 class="sec">表示</h3>
         <label class="chk"><input type="checkbox" id="peShowInk" checked style="width:auto;"> 画線（この字）</label>
-        <label class="chk"><input type="checkbox" id="peFill" checked style="width:auto;"> 塗りつぶし</label>
-        <label class="chk"><input type="checkbox" id="peShowPt" checked style="width:auto;"> ポイント（点）</label>
-        <label class="chk"><input type="checkbox" id="peGhost" checked style="width:auto;"> 元の形を薄く出す</label>
+        <!-- 下の 3 つは「画線（この字）」の下にあるもの。
+             画線を切ると、いっしょに切れて、触れなくなる（v21.2）。
+             字を出していないのに「塗りつぶし」だけ入っている、が起きないように。 -->
+        <label class="chk pesub"><input type="checkbox" id="peFill" checked style="width:auto;"> 塗りつぶし</label>
+        <label class="chk pesub"><input type="checkbox" id="peShowPt" checked style="width:auto;"> ポイント（点）</label>
+        <label class="chk pesub"><input type="checkbox" id="peGhost" checked style="width:auto;"> 元の形を薄く出す</label>
         <label class="chk"><input type="checkbox" id="peRub" style="width:auto;"> 拓本</label>
         <label class="f" style="margin:0 0 6px 16px;"><span>濃さ</span>
           <input type="range" id="peRubOp" min="0.15" max="1" step="0.05" value="0.5"></label>
@@ -2033,7 +2040,7 @@ function typingIn(e){
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
-var APP_VER = "v21.1";
+var APP_VER = "v21.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13996,12 +14003,14 @@ function openPathEditor(gi, ci){
                           （これから拓本から作るので、フォントの形は邪魔になる）
    ただし**拓本が無い字**では、それだと何も見えないので、字の線を出す。 */
 function peViewPreset(made){
+  peSubWas = null;                    /* 覚えていた入切は、字を開き直したら忘れる */
   var hasRub = !!(PE && PE.rub && RUB.img);
   function set(id, on){ var el = $(id); if (el) el.checked = !!on; }
   if (!hasRub){                       /* 拓本が無い＝ふつうの作字。今までどおり */
     set("peShowInk", true); set("peFill", true); set("peShowPt", true);
     set("peGhost", !made);
     set("peRub", false); set("peFitEdge", false);
+    peInkGroupSync();
     return;
   }
   if (made){
@@ -14013,6 +14022,7 @@ function peViewPreset(made){
     set("peGhost", false);
     set("peRub", true);  set("peFitEdge", true);
   }
+  peInkGroupSync();
 }
 function closePathEditor(){ peMenuClose(); PE = null; $("pathEd").hidden = true; }
 
@@ -15393,7 +15403,32 @@ $("peFitTest").onclick = function(){ peFitTest(); };
 $("peFitW").onclick = function(){ peFitWeight(); };
 $("peFitEdge").onchange = function(){ peRender(); };
 $("peShowPt").onchange = function(){ peRender(); };
-$("peShowInk").onchange = function(){ peRender(); };
+/* 「画線（この字）」と、その下の 3 つを連動させる（v21.2）。
+   字を出していないのに「塗りつぶし」だけ入っている、という状態をなくす。
+   切るときは入切を覚えておいて、入に戻したときに元どおりにする。 */
+var PE_SUB = ["peFill", "peShowPt", "peGhost"];
+var peSubWas = null;
+function peInkGroupSync(fromUser){
+  var on = !$("peShowInk") || $("peShowInk").checked;
+  if (fromUser){
+    if (!on){
+      peSubWas = PE_SUB.map(function(id){ var e = $(id); return !!(e && e.checked); });
+      PE_SUB.forEach(function(id){ var e = $(id); if (e) e.checked = false; });
+    } else {
+      PE_SUB.forEach(function(id, i){
+        var e = $(id); if (!e) return;
+        e.checked = peSubWas ? peSubWas[i] : true;
+      });
+      peSubWas = null;
+    }
+  }
+  PE_SUB.forEach(function(id){
+    var e = $(id); if (!e) return;
+    e.disabled = !on;
+    if (e.parentNode) e.parentNode.className = "chk pesub" + (on ? "" : " off");
+  });
+}
+$("peShowInk").onchange = function(){ peInkGroupSync(true); peRender(); };
 
 $("peTaku").onclick    = function(){ takuSave(); };
 /* 墨の縁から、この字の形を作る（なぞり。v20.89）。

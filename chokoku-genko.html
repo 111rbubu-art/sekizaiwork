@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.3</title>
+<title>彫刻原稿 v21.4</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1258,11 +1258,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
 
           <h3 class="sec">③ 形状補正</h3>
           <label class="f"><span>縁を広げる mm</span>
-            <input type="number" id="peGrow" value="0.05" step="0.05" min="-2" max="2"></label>
-          <button class="mini" id="peGrowGo">いまの形を広げる</button>
-          <p class="hint" style="margin:2px 0 5px;">押すと<b>その場で</b>縁を外へ動かします
-            （内へは −）。押すたびに、そのぶんずつ広がります。
-            画の太さは、この <b>2 倍</b>。戻すのは［↶ 1つ戻す］。</p>
+            <input type="number" id="peGrow" value="0" step="0.05" min="-2" max="2"></label>
+          <p class="hint" style="margin:2px 0 5px;">数字を変えると<b>その場で</b>縁が外へ動きます
+            （内へは −）。この数字は<b>いま広げている量</b>なので、0 に戻せば元どおりです。
+            画の太さは、この <b>2 倍</b>。</p>
           <button class="mini" id="peAiShape">AI 書体補正</button>
 
           <h3 class="sec">④ 字を作る</h3>
@@ -2051,7 +2050,7 @@ function typingIn(e){
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
-var APP_VER = "v21.3";
+var APP_VER = "v21.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14182,10 +14181,12 @@ function openPathEditor(gi, ci){
          view: { z: 1, dx: 0, dy: 0 },
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null,
          brushMm: 0.5,            /* ［消す］［塗る］のえらびで決まる筆の太さ */
+         growMm: 0,               /* いま縁を広げている量 mm */
          edgeOp: 1,               /* 拾った墨の濃さ */
          aiShape: false };        /* ［AI 書体補正］の入切 */
   $("peW").value = PE.wpct;
   if ($("peEdgeOp")) $("peEdgeOp").value = PE.edgeOp;
+  if ($("peGrow")) $("peGrow").value = 0;
   peViewPreset(!!ep);             /* ［表示］を、字ができているかどうかで決める */
   peTab(1);                       /* 開いたときは、いつも１［作成］から */
   peAiShapeShow();
@@ -15677,6 +15678,7 @@ async function traceGo(){
   var kind = ($("peTraceKind") && $("peTraceKind").value) || "line";
   var corner = num($("peTraceCorner") && $("peTraceCorner").value, 40);
   var cs = traceToContours(P.G, ink, tol, mn, kind, corner);
+  var grow = Math.max(-2, Math.min(2, num($("peGrow") && $("peGrow").value, 0)));
   if (!cs){ msg("墨が見つかりませんでした。②で拾う量を確かめてください。", true); return; }
 
   var nPt = cs.reduce(function(a, c){ return a + c.length; }, 0);
@@ -15684,6 +15686,9 @@ async function traceGo(){
   var gOld = fitGlyphMask(old, P.G);
   peSnap();                                  /* 1 手で戻せるようにしてから差し替える */
   PE.contours = cs;
+  PE.growMm = 0;                             /* 作り直したので、広げた分は消えている */
+  if (grow) peGrowApply(grow, true);         /* ［縁を広げる］の数字は そのまま効かせる */
+  cs = PE.contours;
   PE.sel = []; PE.selC = []; PE.marq = null;
   var gNew = fitGlyphMask(cs, P.G);
   var mm = P.G.mmCell || 0;
@@ -15783,27 +15788,36 @@ function peAiShapeShow(){
   b.textContent = on ? "AI 書体補正：入" : "AI 書体補正";
   b.className = on ? "mini primary" : "mini";
 }
-/* ［いまの形を広げる］（v21.1）。押した瞬間に、いまの輪郭の縁を外へ動かす。
+/* ［縁を広げる mm］（v21.4）。**数字を変えたら、その場で動く**
+   （ほかの数字の欄と同じ扱い。ボタンを押させない）。
+   この数字は「いま広げている量」なので、**差のぶんだけ**動かす。
+   0 に戻せば元どおりになる（実測でぴったり戻ることを確かめてある）。
+
    **mm で指定する**（％だと画の太さによって動く量が変わり、
    「拾い方の癖でいつも同じだけ内側に入る」という実際と合わない）。
-   **歯止めは掛けない**（目で見て決める、という取り決め）。押すたびに重ねて効く。 */
-function peGrowGo(){
-  if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
-  var mm = num($("peGrow") && $("peGrow").value, 0);
-  if (!mm){ msg("広げる mm を入れてください（内へ動かすときは −）。", true); return; }
+   **歯止めは掛けない**（目で見て決める、という取り決め）。 */
+function peGrowApply(want, quiet){
+  if (!PE) return;
   var mpu = peMmPerUnit();
   if (!mpu){ msg("この字の大きさが分からないので、広げられません。", true); return; }
-  peSnap();                                  /* ［↶ 1つ戻す］で戻せるようにしてから */
-  var cs = offsetContours(PE.contours, mm / mpu);
+  var now = num(PE.growMm, 0);
+  var d = want - now;
+  if (Math.abs(d) < 1e-9) return;
+  if (!quiet) peSnap();                      /* ［↶ 1つ戻す］で戻せるようにしてから */
+  var cs = offsetContours(PE.contours, d / mpu);
   if (!cs || !cs.length){ msg("広げられませんでした。", true); return; }
   PE.contours = cs;
+  PE.growMm = want;
   PE.sel = []; PE.selC = []; PE.marq = null;
   peRender();
-  msg("縁を " + (mm > 0 ? "外へ " : "内へ ") + Math.abs(mm).toFixed(2) + "mm 動かしました" +
-      "（画の太さで " + (Math.abs(mm) * 2).toFixed(2) + "mm）。");
+  if (!quiet)
+    msg(want ? ("縁を " + (want > 0 ? "外へ " : "内へ ") + Math.abs(want).toFixed(2) +
+                "mm 広げています（画の太さで " + (Math.abs(want) * 2).toFixed(2) + "mm）。")
+             : "広げるのをやめ、元の形に戻しました。");
 }
-$("peGrowGo").onclick = peGrowGo;
-$("peGrow").onkeydown = function(e){ if (e.key === "Enter"){ e.preventDefault(); peGrowGo(); } };
+$("peGrow").onchange = function(e){
+  peGrowApply(Math.max(-2, Math.min(2, num(e.target.value, 0))));
+};
 $("peTrace").onclick = function(){ traceGo(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuClr").onclick = function(){

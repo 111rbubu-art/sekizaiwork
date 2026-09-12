@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.4</title>
+<title>彫刻原稿 v21.5</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1259,9 +1259,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <h3 class="sec">③ 形状補正</h3>
           <label class="f"><span>縁を広げる mm</span>
             <input type="number" id="peGrow" value="0" step="0.05" min="-2" max="2"></label>
-          <p class="hint" style="margin:2px 0 5px;">数字を変えると<b>その場で</b>縁が外へ動きます
-            （内へは −）。この数字は<b>いま広げている量</b>なので、0 に戻せば元どおりです。
-            画の太さは、この <b>2 倍</b>。</p>
+          <p class="hint" style="margin:2px 0 5px;">数字を変えると<b>その場で</b>
+            <b>拾った墨</b>の縁が外へ動きます（内へは −）。かすれて細く拾えた字を、
+            まとめて太らせるときに。<b>画の太さは、この 2 倍</b>になります。
+            0 に戻せば元どおり。この墨から④で字を作ります。</p>
           <button class="mini" id="peAiShape">AI 書体補正</button>
 
           <h3 class="sec">④ 字を作る</h3>
@@ -2050,7 +2051,7 @@ function typingIn(e){
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
-var APP_VER = "v21.4";
+var APP_VER = "v21.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12611,13 +12612,22 @@ function fitInkOne(G, glyph0, val0, out, got, inkDark, flat){
      ○mm より小さい出っぱり・へこみが消え、大きくするほど丸くなる。 */
   var sm0 = Math.max(0, Math.min(2, num($("peInkSmooth") && $("peInkSmooth").value, 0)));
   if (sm0 > 0 && G.mmCell) m1 = fitSmoothMask(m1, w, h, sm0 / G.mmCell);
+  /* ［縁を広げる mm］（v21.5）。拓本の墨の縁を、そのぶん外へ動かす。
+     かすれで細って拾えている字を、まとめて太らせるためのもの。
+     **ます 1 つきざみしか動かせない**（墨は ます目の 0/1 なので、
+     半ますだけ広げることができない）。**ます目に丸めて、実際に動いた量を残す**。
+     1 ますは［墨のこまかさ］と字の大きさで決まる（0.08〜0.15mm ほど）。 */
+  var gw0 = Math.max(-2, Math.min(2, num($("peGrow") && $("peGrow").value, 0)));
+  var gwC = (gw0 && G.mmCell) ? Math.round(gw0 / G.mmCell) : 0;
+  if (gwC) m1 = fitGrowMask(m1, w, h, gwC);
   var big = fitDropBig(m1, w, h, Math.round(nG * 2.5)), nb = 0;
   for (i = 0; i < w*h; i++) nb += big[i];
   var dropped = 0;
   if (nb >= nG * 0.3 && nb < n1){ dropped = n1 - nb; m1 = big; n1 = nb; }
   return { m: m1,
            d: { T: Math.round(T), lo: lo, hi: hi, mmCell: G.mmCell, dark: inkDark, flat: !!flat,
-                dropBig: dropped, smooth: sm0 } };
+                dropBig: dropped, smooth: sm0,
+                grow: gw0, growC: gwC, growMm: +(gwC * G.mmCell).toFixed(3) } };
 }
 /* 決めた広さより大きい塊を落とす（v20.61） */
 function fitDropBig(m, w, h, maxCells){
@@ -12956,6 +12966,7 @@ function fitPrep(){
              S.rub.invert, S.rub.thresh, S.rub.rot, S.rub.flip180,
              num($("peInkAdj") && $("peInkAdj").value, 0),
              num($("peInkSmooth") && $("peInkSmooth").value, 0),
+             num($("peGrow") && $("peGrow").value, 0),
              ($("peInkFine") && $("peInkFine").value) || FIT_FINE,
              rotOff().x, rotOff().y, RUB.W, RUB.H].join("/");
   if (PE.inkC && PE.inkC.key === key){
@@ -13126,6 +13137,24 @@ function fitDist(m, w, h){
     d[i] = v2;
   }
   return d;
+}
+/* 墨の縁を、まわりへ ○ ます 広げる（マイナスなら狭める）。v21.5
+   ここは**拓本をなぞっている段の話**なので、広げるのは
+   **フォントの輪郭ではなく、拾った墨そのもの**。
+   四角い窓（fitMorph）だと斜めが √2 倍ふくらむので、**距離で見る**。 */
+function fitGrowMask(m, w, h, r){
+  if (!r) return m;
+  var out = new Uint8Array(w*h), i, n = w*h;
+  if (r > 0){
+    var inv = new Uint8Array(n);
+    for (i = 0; i < n; i++) inv[i] = m[i] ? 0 : 1;
+    var d1 = fitDist(inv, w, h);            /* 地のますから、墨までの距離 */
+    for (i = 0; i < n; i++) out[i] = (m[i] || d1[i] <= r) ? 1 : 0;
+  } else {
+    var d2 = fitDist(m, w, h), rr = -r;     /* 墨のますから、地までの距離 */
+    for (i = 0; i < n; i++) out[i] = (m[i] && d2[i] > rr) ? 1 : 0;
+  }
+  return out;
 }
 /* 塊ごとに分けて返す（4 つながり）。それぞれ 画素の並びと、ふちの様子を持つ。 */
 function fitParts(m, w, h){
@@ -13647,6 +13676,9 @@ function fitEdgeURL(){
     (FIT_DIAG.dropBig * G.mmCell * G.mmCell >= 1
        ? "大きすぎる塊（紙のふち・石の地）を " +
          (FIT_DIAG.dropBig * G.mmCell * G.mmCell).toFixed(0) + "mm² 落としました　" : "") +
+    (FIT_DIAG.grow ? "縁を " + (FIT_DIAG.growMm > 0 ? "外へ " : "内へ ") +
+       Math.abs(FIT_DIAG.growMm).toFixed(3) + "mm（" + Math.abs(FIT_DIAG.growC) +
+       " ます）動かしました　" : "") +
     "1ますは " + G.mmCell.toFixed(3) + "mm" +
     (mmPerPx() ? "（写真の 1 画素は " + mmPerPx().toFixed(3) + "mm）" : "") + "。" +
     (FIT_DIAG.warnFlip
@@ -14181,12 +14213,10 @@ function openPathEditor(gi, ci){
          view: { z: 1, dx: 0, dy: 0 },
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null,
          brushMm: 0.5,            /* ［消す］［塗る］のえらびで決まる筆の太さ */
-         growMm: 0,               /* いま縁を広げている量 mm */
          edgeOp: 1,               /* 拾った墨の濃さ */
          aiShape: false };        /* ［AI 書体補正］の入切 */
   $("peW").value = PE.wpct;
   if ($("peEdgeOp")) $("peEdgeOp").value = PE.edgeOp;
-  if ($("peGrow")) $("peGrow").value = 0;
   peViewPreset(!!ep);             /* ［表示］を、字ができているかどうかで決める */
   peTab(1);                       /* 開いたときは、いつも１［作成］から */
   peAiShapeShow();
@@ -15678,7 +15708,7 @@ async function traceGo(){
   var kind = ($("peTraceKind") && $("peTraceKind").value) || "line";
   var corner = num($("peTraceCorner") && $("peTraceCorner").value, 40);
   var cs = traceToContours(P.G, ink, tol, mn, kind, corner);
-  var grow = Math.max(-2, Math.min(2, num($("peGrow") && $("peGrow").value, 0)));
+
   if (!cs){ msg("墨が見つかりませんでした。②で拾う量を確かめてください。", true); return; }
 
   var nPt = cs.reduce(function(a, c){ return a + c.length; }, 0);
@@ -15686,9 +15716,6 @@ async function traceGo(){
   var gOld = fitGlyphMask(old, P.G);
   peSnap();                                  /* 1 手で戻せるようにしてから差し替える */
   PE.contours = cs;
-  PE.growMm = 0;                             /* 作り直したので、広げた分は消えている */
-  if (grow) peGrowApply(grow, true);         /* ［縁を広げる］の数字は そのまま効かせる */
-  cs = PE.contours;
   PE.sel = []; PE.selC = []; PE.marq = null;
   var gNew = fitGlyphMask(cs, P.G);
   var mm = P.G.mmCell || 0;
@@ -15788,36 +15815,27 @@ function peAiShapeShow(){
   b.textContent = on ? "AI 書体補正：入" : "AI 書体補正";
   b.className = on ? "mini primary" : "mini";
 }
-/* ［縁を広げる mm］（v21.4）。**数字を変えたら、その場で動く**
-   （ほかの数字の欄と同じ扱い。ボタンを押させない）。
-   この数字は「いま広げている量」なので、**差のぶんだけ**動かす。
-   0 に戻せば元どおりになる（実測でぴったり戻ることを確かめてある）。
-
-   **mm で指定する**（％だと画の太さによって動く量が変わり、
-   「拾い方の癖でいつも同じだけ内側に入る」という実際と合わない）。
-   **歯止めは掛けない**（目で見て決める、という取り決め）。 */
-function peGrowApply(want, quiet){
-  if (!PE) return;
-  var mpu = peMmPerUnit();
-  if (!mpu){ msg("この字の大きさが分からないので、広げられません。", true); return; }
-  var now = num(PE.growMm, 0);
-  var d = want - now;
-  if (Math.abs(d) < 1e-9) return;
-  if (!quiet) peSnap();                      /* ［↶ 1つ戻す］で戻せるようにしてから */
-  var cs = offsetContours(PE.contours, d / mpu);
-  if (!cs || !cs.length){ msg("広げられませんでした。", true); return; }
-  PE.contours = cs;
-  PE.growMm = want;
-  PE.sel = []; PE.selC = []; PE.marq = null;
-  peRender();
-  if (!quiet)
-    msg(want ? ("縁を " + (want > 0 ? "外へ " : "内へ ") + Math.abs(want).toFixed(2) +
-                "mm 広げています（画の太さで " + (Math.abs(want) * 2).toFixed(2) + "mm）。")
-             : "広げるのをやめ、元の形に戻しました。");
-}
-$("peGrow").onchange = function(e){
-  peGrowApply(Math.max(-2, Math.min(2, num(e.target.value, 0))));
+/* ［縁を広げる mm］（v21.5）。**拾った墨の縁**を、そのぶん外へ動かす
+   （内へは −）。ここは拓本をなぞっている段なので、動かすのは
+   **フォントの輪郭ではなく、拓本から拾った墨**。
+   ほかの数字の欄（拾う量・縁のならし）と同じで、変えたその場で効く。 */
+$("peGrow").onchange = function(){
+  peInkShowOn();                   /* 何が広がったのか見えないと決められない */
+  peInkKeep(); peInkRefresh();
+  /* **ます 1 つきざみしか動かせない**ので、実際に動いた量を必ず言う。
+     0.05mm と入れても、ます目が 0.147mm なら 動かないことがある。 */
+  var want = num($("peGrow").value, 0), d = FIT_DIAG || {};
+  if (!want){ msg("縁を広げるのをやめました。"); return; }
+  if (!d.growC)
+    msg("ます目が " + (d.mmCell ? d.mmCell.toFixed(3) : "?") + "mm なので、" +
+        Math.abs(want).toFixed(2) + "mm では動きません。" +
+        "ます目より大きい数字にするか、［設定］の［墨のこまかさ］を「こまかい」にしてください。", true);
+  else
+    msg("拾った墨の縁を " + (d.growMm > 0 ? "外へ " : "内へ ") +
+        Math.abs(d.growMm).toFixed(3) + "mm（" + Math.abs(d.growC) + " ます）動かしました" +
+        "（画の太さで " + Math.abs(d.growMm * 2).toFixed(3) + "mm）。");
 };
+$("peGrow").onfocus  = function(){ peInkShowOn(); };
 $("peTrace").onclick = function(){ traceGo(); };
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuClr").onclick = function(){
@@ -15849,6 +15867,7 @@ function peInkShowOn(){
 function peInkKeep(){
   S.rub.inkAdj    = num($("peInkAdj") && $("peInkAdj").value, 0);
   S.rub.inkSmooth = num($("peInkSmooth") && $("peInkSmooth").value, 0);
+  S.rub.inkGrow   = num($("peGrow") && $("peGrow").value, 0);
   S.rub.inkFine   = num($("peInkFine") && $("peInkFine").value, FIT_FINE);
   persist();
 }

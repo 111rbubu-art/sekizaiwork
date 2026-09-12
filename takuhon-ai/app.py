@@ -393,15 +393,20 @@ def img(which: str, pid: str, kind: str):
         if not os.path.exists(f):
             return JSONResponse({"error": "not_found"}, status_code=404)
         return FileResponse(f, media_type="image/png")
-    _reload_if_new()
-    if not INFO["loaded"]:
-        return JSONResponse({"error": "no_model"}, status_code=503)
+    # **②の組は、②のモデルに通す。** ①のモデルで出していたので、
+    # ②の答え合わせ（拓本／正解／AI の 3 枚くらべ）が意味を成していなかった。
+    sh = which in ("shape", "shape_val")
+    _reload2_if_new() if sh else _reload_if_new()
+    net, info = (NET2, INFO2) if sh else (NET, INFO)
+    if not info["loaded"]:
+        return JSONResponse({"error": "no_model_shape" if sh else "no_model"}, status_code=503)
     it = D.load_pair(d)
     if not it:
         return JSONResponse({"error": "not_found"}, status_code=404)
-    x = D.to_input(it["raw"], it["hint1"], it["hint2"])
+    # ②は手がかりを見ない（学習のときと同じ渡し方にする）
+    x = D.to_input(it["raw"], None, None) if sh else D.to_input(it["raw"], it["hint1"], it["hint2"])
     with torch.no_grad():
-        y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
+        y = torch.sigmoid(net(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
     return Response(content=D.png_bytes((y > 0.5).astype(np.float32)),
                     media_type="image/png")
 

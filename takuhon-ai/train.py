@@ -156,7 +156,11 @@ def main():
     os.makedirs(RUNS, exist_ok=True)
     train_dir = a.data or TRAIN_DIR
     val_dir = a.valdata or VAL_DIR
-    cur = os.path.join(RUNS, a.name + ".pth")
+    # **サーバーが見に行く名前に合わせる。** --name shape のとき shape.pth に
+    # しまっていたが、サーバーは current_shape.pth を見ている。
+    # そのため、②を学習しても「モデルがありません」のままだった（実測で判明）。
+    cur = os.path.join(RUNS, ("current" if a.name == "current"
+                              else "current_" + a.name) + ".pth")
     if a.size:
         D.N = a.size
     global PROGRESS, CURVE, HINT_DROP1, HINT_DROP2

@@ -505,21 +505,28 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
 
 
 @app.post("/api/takuhon/move_val")
-def move_val(n: int = Form(...)):
-    """学習用から検証用へ、○ 組を移す（学習には使わない分を取り分ける）。"""
+def move_val(n: int = Form(...), which: str = Form("ink")):
+    """学習用から検証用へ、○ 組を移す（学習には使わない分を取り分ける）。
+
+    which="ink"   … dataset/pairs → dataset/val
+    which="shape" … dataset/shape → dataset/shape_val
+    **画面で見ている側のものを動かす。** 混ざると、どちらの検証か分からなくなる。
+    """
     n = max(0, min(500, int(n)))
-    have = [d for d in D.list_pairs(DATASET)]
-    os.makedirs(VALDIR, exist_ok=True)
+    src, dst = (SHAPE, SHAPE_VAL) if which == "shape" else (DATASET, VALDIR)
+    have = [d for d in D.list_pairs(src)]
+    os.makedirs(dst, exist_ok=True)
     moved = 0
     for d in have:
         if moved >= n:
             break
         try:
-            shutil.move(d, os.path.join(VALDIR, os.path.basename(d)))
+            shutil.move(d, os.path.join(dst, os.path.basename(d)))
             moved += 1
         except OSError:
             pass
-    return {"moved": moved, "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+    return {"moved": moved, "which": which,
+            "pairs": len(D.list_pairs(src)), "val": len(D.list_pairs(dst))}
 
 
 @app.post("/api/takuhon/train")
@@ -595,24 +602,38 @@ def trainlog(lines: int = 40, which: str = "ink"):
 
 
 @app.post("/api/takuhon/reset")
-def reset(what: str = Form(...), confirm: str = Form("")):
-    """試した分を片づける。**取り消せない**ので、合言葉を求める。"""
+def reset(what: str = Form(...), confirm: str = Form(""), which: str = Form("ink")):
+    """試した分を片づける。**取り消せない**ので、合言葉を求める。
+
+    **①②のどちらを消すのかを受け取る。** モデルも置き場所も別なので、
+    言われた側だけを消す（①のつもりで②が残る、の逆をなくす）。
+    """
     if confirm != "けす":
         return JSONResponse({"error": "need_confirm"}, status_code=400)
     if _running():
         return JSONResponse({"error": "running"}, status_code=409)
+    sh = (which == "shape")
+    model = CURRENT2 if sh else CURRENT
+    dirs = (SHAPE, SHAPE_VAL) if sh else (DATASET, VALDIR)
+    who = "② 整える" if sh else "① 読む"
     done = []
     if what in ("model", "all"):
         try:
-            os.remove(CURRENT); done.append("いまのモデル")
+            os.remove(model); done.append(who + "のモデル")
+        except OSError:
+            pass
+        # 途中の保存も一緒に消す。残っていると、次の学習が勝手に続きから始まる。
+        try:
+            os.remove(os.path.join(RUNS, "last_%s.pth" % _nm(which)))
         except OSError:
             pass
     if what in ("data", "all"):
-        for root in (DATASET, VALDIR):
+        for root in dirs:
             for d in D.list_pairs(root):
                 shutil.rmtree(d, ignore_errors=True)
-        done.append("貯めたデータ")
-    return {"done": done, "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+        done.append(who + "の貯めたデータ")
+    return {"done": done, "which": which,
+            "pairs": len(D.list_pairs(dirs[0])), "val": len(D.list_pairs(dirs[1]))}
 
 
 # ----- ②「整える」（書体の癖）。フォントから学習データを自動で作る -----------

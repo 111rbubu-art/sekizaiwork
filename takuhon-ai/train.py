@@ -129,6 +129,12 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--base", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
+    # 学習する中身を選べるようにする（v2）。②「整える」は別のデータ・別のモデル。
+    ap.add_argument("--data", default="", help="学習用のフォルダー（既定 dataset/pairs）")
+    ap.add_argument("--valdata", default="", help="検証用のフォルダー（既定 dataset/val）")
+    ap.add_argument("--name", default="current",
+                    help="モデルの名前。current.pth / current_shape.pth のように分ける")
+    ap.add_argument("--size", type=int, default=0, help="1 辺の画素数（既定 512）")
     # 下の 2 つは「動くかどうか試す」ためのもの。ふだんは使わない。
     # 8 組未満で学習しても、まともなモデルにはならない（下限はその歯止め）。
     ap.add_argument("--min", type=int, default=8,
@@ -138,12 +144,17 @@ def main():
     a = ap.parse_args()
 
     os.makedirs(RUNS, exist_ok=True)
+    train_dir = a.data or TRAIN_DIR
+    val_dir = a.valdata or VAL_DIR
+    cur = os.path.join(RUNS, a.name + ".pth")
+    if a.size:
+        D.N = a.size
     rng = random.Random(a.seed)
     torch.manual_seed(a.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tr = load_all(D.list_pairs(TRAIN_DIR))
-    va = load_all(D.list_pairs(VAL_DIR))
+    tr = load_all(D.list_pairs(train_dir))
+    va = load_all(D.list_pairs(val_dir))
     print(f"学習 {len(tr)} 組 ／ 検証 {len(va)} 組 ／ {device}")
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if len(tr) < max(1, a.min):
@@ -156,8 +167,8 @@ def main():
 
     net = UNet(base=a.base).to(device)
     step0, best_prev = 0, None
-    if os.path.exists(CURRENT):
-        ck = torch.load(CURRENT, map_location=device)
+    if os.path.exists(cur):
+        ck = torch.load(cur, map_location=device)
         net.load_state_dict(ck["model"])
         step0 = ck.get("step", 0)
         best_prev = ck.get("iou_nohint")
@@ -202,8 +213,10 @@ def main():
     v0 = val_score(net, va, device, False)
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     ck = {"model": net.state_dict(), "step": step, "at": at,
-          "iou": v1, "iou_nohint": v0, "base": a.base, "pairs": len(tr)}
-    gen = os.path.join(RUNS, "model_" + datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
+          "iou": v1, "iou_nohint": v0, "base": a.base, "pairs": len(tr),
+          "name": a.name, "size": D.N}
+    gen = os.path.join(RUNS, "model_" + a.name + "_" +
+                       datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
     torch.save(ck, gen)
     print("世代を残しました:", gen)
 
@@ -213,8 +226,8 @@ def main():
                 device=str(device), prev=best_prev, gen=os.path.basename(gen))
     if not va:
         if getattr(a, "swap_anyway", False):
-            shutil.copyfile(gen, CURRENT)
-            print("検証をしていませんが、試すために current.pth を差し替えました。")
+            shutil.copyfile(gen, cur)
+            print("検証をしていませんが、試すために " + os.path.basename(cur) + " を差し替えました。")
             put_progress(swapped=True,
                          why="検証なしで差し替えました（試すため。--swap-anyway）", **done)
             return
@@ -223,8 +236,8 @@ def main():
                      why="検証用が無いので差し替えません（dataset/val に 10 組ほど）", **done)
         return
     if best_prev is None or (v0 is not None and v0 >= best_prev - 1e-4):
-        shutil.copyfile(gen, CURRENT)
-        print(f"current.pth を差し替えました（手がかり無しの一致 {best_prev} → {round(v0,3)}）")
+        shutil.copyfile(gen, cur)
+        print(f"{os.path.basename(cur)} を差し替えました（手がかり無しの一致 {best_prev} → {round(v0,3)}）")
         put_progress(swapped=True,
                      why="良くなったので差し替えました（%s → %s）" % (best_prev, round(v0, 3)), **done)
     else:
@@ -233,7 +246,8 @@ def main():
                      why="悪くなったので据え置きました（%s → %s）" % (best_prev, round(v0, 3)), **done)
     with open(os.path.join(RUNS, "history.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps({"at": at, "step": step, "iou": v1, "iou_nohint": v0,
-                            "pairs": len(tr), "file": os.path.basename(gen)},
+                            "pairs": len(tr), "file": os.path.basename(gen),
+                            "name": a.name},
                            ensure_ascii=False) + "\n")
 
 

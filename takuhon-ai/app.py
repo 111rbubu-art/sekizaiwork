@@ -48,8 +48,13 @@ DATASET = os.path.join(ROOT, "dataset", "pairs")
 RUNS = os.path.join(ROOT, "runs")
 CURRENT = os.path.join(RUNS, "current.pth")
 VALDIR = os.path.join(ROOT, "dataset", "val")
+SHAPE = os.path.join(ROOT, "dataset", "shape")            # ②「整える」の学習用
+SHAPE_VAL = os.path.join(ROOT, "dataset", "shape_val")    # ②「整える」の検証用
+FONTS = os.path.join(ROOT, "fonts")                       # 彫っている書体の置き場
 TRAINLOG = os.path.join(RUNS, "train.log")
 TRAINPID = os.path.join(RUNS, "train.pid")
+SYNTHLOG = os.path.join(RUNS, "synth.log")
+SYNTHPID = os.path.join(RUNS, "synth.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
 os.makedirs(DATASET, exist_ok=True)
 os.makedirs(RUNS, exist_ok=True)
@@ -99,12 +104,19 @@ def health():
 def status():
     _reload_if_new()
     n = len(D.list_pairs(DATASET))
+    sh = None
+    try:
+        sh = _read_json(os.path.join(RUNS, "shape_info.json"), None)
+    except Exception:
+        sh = None
     return {
         "device": str(DEVICE),
         "cuda": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "model": INFO,
         "pairs": n,
-        "val": len(D.list_pairs(os.path.join(ROOT, "dataset", "val"))),
+        "val": len(D.list_pairs(VALDIR)),
+        "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
+                  "model": _shape_info()},
     }
 
 
@@ -203,7 +215,8 @@ def _gpu():
 
 
 def _set_dir(which):
-    return DATASET if which == "pairs" else VALDIR if which == "val" else None
+    return {"pairs": DATASET, "val": VALDIR,
+            "shape": SHAPE, "shape_val": SHAPE_VAL}.get(which)
 
 
 @app.get("/api/takuhon/progress")
@@ -403,8 +416,12 @@ def move_val(n: int = Form(...)):
 
 @app.post("/api/takuhon/train")
 def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
-                test: bool = Form(False)):
-    """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。"""
+                test: bool = Form(False), which: str = Form("ink"), size: int = Form(0)):
+    """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。
+
+    which="ink"   … ①拓本を読む（dataset/pairs → current.pth）
+    which="shape" … ②書体らしく整える（dataset/shape → current_shape.pth）
+    """
     if _running():
         return JSONResponse({"error": "already_running"}, status_code=409)
     epochs = max(1, min(2000, int(epochs)))
@@ -412,6 +429,10 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
     base = max(4, min(64, int(base)))
     cmd = [sys.executable, os.path.join(ROOT, "train.py"),
            "--epochs", str(epochs), "--bs", str(bs), "--base", str(base)]
+    if which == "shape":
+        cmd += ["--data", SHAPE, "--valdata", SHAPE_VAL, "--name", "shape"]
+    if size:
+        cmd += ["--size", str(max(64, min(1024, int(size))))]
     if test:                       # 「試すだけ」。8 組未満でも回し、検証なしでも差し替える
         cmd += ["--min", "1", "--swap-anyway"]
     os.makedirs(RUNS, exist_ok=True)
@@ -423,7 +444,8 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
             f.write(str(pr.pid))
     except OSError:
         pass
-    return {"started": True, "pid": pr.pid, "cmd": " ".join(cmd[1:]), "test": bool(test)}
+    return {"started": True, "pid": pr.pid, "cmd": " ".join(cmd[1:]),
+            "test": bool(test), "which": which}
 
 
 @app.post("/api/takuhon/train/stop")
@@ -478,3 +500,103 @@ def reset(what: str = Form(...), confirm: str = Form("")):
                 shutil.rmtree(d, ignore_errors=True)
         done.append("貯めたデータ")
     return {"done": done, "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+
+
+# ----- ②「整える」（書体の癖）。フォントから学習データを自動で作る -----------
+
+def _shape_info():
+    """②のモデルの様子（読み込みはしない。ファイルを見るだけ）。"""
+    p = os.path.join(RUNS, "current_shape.pth")
+    if not os.path.exists(p):
+        return None
+    try:
+        ck = torch.load(p, map_location="cpu")
+        return {"step": ck.get("step", 0), "at": ck.get("at"), "iou": ck.get("iou"),
+                "iou_nohint": ck.get("iou_nohint"), "base": ck.get("base"),
+                "size": ck.get("size"), "pairs": ck.get("pairs")}
+    except Exception as e:
+        return {"why": f"{type(e).__name__}: {e}"}
+
+
+def _synth_running():
+    try:
+        pid = int(open(SYNTHPID, encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        return 0
+    return pid if _alive(pid) else 0
+
+
+@app.get("/api/takuhon/fonts")
+def fonts():
+    os.makedirs(FONTS, exist_ok=True)
+    out = []
+    for n in sorted(os.listdir(FONTS)):
+        if n.lower().endswith((".ttf", ".otf", ".ttc", ".otc")):
+            out.append({"name": n, "mb": round(os.path.getsize(os.path.join(FONTS, n))/1048576, 1)})
+    return {"items": out}
+
+
+@app.post("/api/takuhon/font")
+async def font_put(file: UploadFile = File(...)):
+    """彫っている書体を置く。**この書体の癖を覚えさせる**ので、本物を入れること。"""
+    os.makedirs(FONTS, exist_ok=True)
+    nm = re.sub(r"[^A-Za-z0-9._\-]", "_", os.path.basename(file.filename or "font.ttf"))[:120]
+    if not nm.lower().endswith((".ttf", ".otf", ".ttc", ".otc")):
+        return JSONResponse({"error": "bad_kind"}, status_code=400)
+    open(os.path.join(FONTS, nm), "wb").write(await file.read())
+    return {"saved": nm, "items": fonts()["items"]}
+
+
+@app.post("/api/takuhon/synth")
+def synth_start(font: str = Form(...), n: int = Form(2000), val: int = Form(150),
+                fresh: bool = Form(True)):
+    """フォントから、②の学習データを作る。**こちらのデータは 1 組も要らない。**"""
+    if _synth_running():
+        return JSONResponse({"error": "already_running"}, status_code=409)
+    if not SAFE.match(font):
+        return JSONResponse({"error": "bad_font"}, status_code=400)
+    fp = os.path.join(FONTS, font)
+    if not os.path.exists(fp):
+        return JSONResponse({"error": "no_font"}, status_code=404)
+    n = max(10, min(20000, int(n)))
+    val = max(0, min(n // 2, int(val)))
+    if fresh:                                  # 作り直し。前の分は消す
+        for d in (SHAPE, SHAPE_VAL):
+            shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(RUNS, exist_ok=True)
+    log = open(SYNTHLOG, "w", encoding="utf-8")
+    pr = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "make_synth.py"), "--font", fp,
+         "--n", str(n), "--val", str(val), "--out", SHAPE],
+        cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        open(SYNTHPID, "w", encoding="utf-8").write(str(pr.pid))
+    except OSError:
+        pass
+    return {"started": True, "pid": pr.pid, "font": font, "n": n, "val": val}
+
+
+@app.post("/api/takuhon/synth/stop")
+def synth_stop():
+    pid = _synth_running()
+    if not pid:
+        return {"stopped": False, "why": "走っていません"}
+    try:
+        os.kill(pid, signal.SIGTERM)
+        os.remove(SYNTHPID)
+    except Exception:
+        pass
+    return {"stopped": True}
+
+
+@app.get("/api/takuhon/synthstat")
+def synth_stat():
+    lines = []
+    try:
+        with open(SYNTHLOG, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()[-6:]
+    except OSError:
+        pass
+    return {"running": bool(_synth_running()),
+            "pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
+            "lines": lines}

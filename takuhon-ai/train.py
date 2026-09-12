@@ -168,11 +168,20 @@ def main():
     net = UNet(base=a.base).to(device)
     step0, best_prev = 0, None
     if os.path.exists(cur):
-        ck = torch.load(cur, map_location=device)
-        net.load_state_dict(ck["model"])
-        step0 = ck.get("step", 0)
-        best_prev = ck.get("iou_nohint")
-        print(f"続きから：step {step0}／前回の一致（手がかり無し） {best_prev}")
+        # **かたちが合わないときは、はじめから**。--base を変えて回すと、前のモデルを
+        # そのまま読もうとして落ちていた（実測：base 16 のあと base 8 で size mismatch）。
+        try:
+            ck = torch.load(cur, map_location=device)
+            if int(ck.get("base", a.base)) != int(a.base):
+                raise ValueError("base %s → %s" % (ck.get("base"), a.base))
+            net.load_state_dict(ck["model"])
+            step0 = ck.get("step", 0)
+            best_prev = ck.get("iou_nohint")
+            print(f"続きから：step {step0}／前回の一致（手がかり無し） {best_prev}")
+        except Exception as e:
+            print("前のモデルは使いません（%s）。はじめから学習します。" % e)
+            net = UNet(base=a.base).to(device)
+            step0, best_prev = 0, None
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))

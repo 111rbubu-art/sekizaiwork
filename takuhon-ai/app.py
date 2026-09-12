@@ -500,8 +500,12 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
                             made.add(stem)
         except Exception as e:
             bad.append({"name": up.filename, "why": f"{type(e).__name__}: {e}"})
-    return {"added": len(made), "bad": bad,
-            "pairs": len(D.list_pairs(DATASET)), "val": len(D.list_pairs(VALDIR))}
+    # **入れた先の数を返す。** ①の数を返していたので、②へ入れても
+    # 「学習 0 組」と出て、入ったのかどうか分からなかった。
+    sh = which in ("shape", "shape_val")
+    a, b = (SHAPE, SHAPE_VAL) if sh else (DATASET, VALDIR)
+    return {"added": len(made), "bad": bad, "which": which,
+            "pairs": len(D.list_pairs(a)), "val": len(D.list_pairs(b))}
 
 
 @app.post("/api/takuhon/move_val")

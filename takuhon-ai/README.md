@@ -333,6 +333,22 @@ sudo cp takuhon-train.service takuhon-train.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now takuhon-train.timer
 ```
 
+### GPU の電力の上限を下げる（学習中に落ちるとき）
+
+**`nvidia-smi -pl` は、再起動すると元に戻る。** 停電で落ちて立ち上げ直すと
+上限は 350W のまま——では意味がないので、起動のたびに掛け直す。
+
+```bash
+sudo cp nvidia-powerlimit.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now nvidia-powerlimit
+nvidia-smi -q -d POWER | grep "Power Limit"     # 300W になっていれば入った
+```
+
+3090 は学習中、一瞬だけ上限をはるかに超えて電気を引く（数ミリ秒）。
+電源ユニットの保護が働くと、**記録を残す間もなく**落ちる
+（2026-09-12 に 2 回）。300W で性能は数 % しか落ちない。
+まだ落ちるなら 275 → 250 と下げる。
+
 ## 6b. Docker で動かす場合
 
 すでに何でも Docker で動かしているなら、こちらでもよい。

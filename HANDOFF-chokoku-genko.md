@@ -1926,6 +1926,9 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
 - **AIサーバー（Ubuntu）が 2026-09-12 12:49 ごろ、突然落ちた**。`journalctl -b -1` の
   終わりに**片づけの記録がいっさい無い**（`Stopping…`／`Reached target Shutdown` が無い）ので、
   ソフトではなく**電気が切れた**側。学習中に何度も起きるなら電源の容量を疑う
+  - **同じ日にもう一度落ちた。** `nvidia-smi -pl` は**再起動で元に戻る**ので、
+    一度下げても意味がない。`takuhon-ai/nvidia-powerlimit.service` を入れて、
+    起動のたびに 300W を掛け直すこと
   - 対策として `train.py` を**1 エポックごとに `runs/last_<名前>.pth` へ保存**するようにした。
     同じ `--name` で回し直せば続きから。それまでは**最後に 1 回しか保存しておらず、
     落ちると学習が丸ごと消えていた**

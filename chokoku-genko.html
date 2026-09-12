@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.2</title>
+<title>彫刻原稿 v21.3</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1219,9 +1219,9 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
              1 枚に全部出していたころは、上から下まで探さないと
              次にすることが分からなかった。 -->
         <div class="tabs" id="peTabs">
-          <button data-p="1" class="on">１ 作成</button>
-          <button data-p="2">２ 修正</button>
-          <button data-p="3">３ 設定</button>
+          <button data-p="1" class="on">作成</button>
+          <button data-p="2">修正</button>
+          <button data-p="3">設定</button>
         </div>
 
         <div id="peP1">
@@ -1266,7 +1266,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <button class="mini" id="peAiShape">AI 書体補正</button>
 
           <h3 class="sec">④ 字を作る</h3>
-          <button class="mini primary" id="peTrace">墨の縁から この字を作る</button>
+          <button class="mini primary" id="peTrace">現トレースから字を作る</button>
           <p class="hint" style="margin:3px 0 0;">彫ってある字を<b>そのまま</b>この字の形にします。
             前の行と同じ字を合わせるときに使います。押す前に、②で墨を整えてください。</p>
         </div>
@@ -1313,6 +1313,17 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <h3 class="sec">なぞり</h3>
           <label class="f"><span>縁の細かさ mm</span>
             <input type="number" id="peTraceTol" value="0.15" step="0.01" min="0.01" max="1"></label>
+          <label class="f" style="margin-top:5px;"><span>なぞりの形</span>
+            <select id="peTraceKind">
+              <option value="line">まっすぐ（点だけ）</option>
+              <option value="curve">傾き付き（フォントと同じ）</option>
+            </select></label>
+          <label class="f" style="margin-top:4px;"><span>角とみなす角度</span>
+            <input type="number" id="peTraceCorner" value="40" step="5" min="10" max="90"></label>
+          <p class="hint" style="margin:3px 0 0;"><b>傾き付き</b>にすると、点に傾き（ハンドル）が
+            付いて、フォントと同じ形になります。点はぐっと減り、縁はなめらかになります。
+            ただし<b>角の見つけ方を誤ると、とめ・はらいが丸まります</b>。
+            角が丸いときは［角とみなす角度］を小さく、ぎざぎざが残るときは大きくしてください。</p>
           <p class="hint" id="peAspect" style="margin:5px 0 0;" hidden></p>
 
           <h3 class="sec">拓本の読み取り</h3>
@@ -2040,7 +2051,7 @@ function typingIn(e){
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
-var APP_VER = "v21.2";
+var APP_VER = "v21.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13375,25 +13386,217 @@ async function traceAskAI(G, ink, stage){
 /* 墨のます目から、作字の輪郭（PE.contours の形）を作る。
      smoothMm … 縁の細かさ。これ以内のでこぼこは同じ点にまとめる
      minMm2   … これより小さい島・穴は捨てる（地のごみ） */
-function traceToContours(G, ink, smoothMm, minMm2){
+/* ---- 点の並びを「傾き付き」（3 次ベジエ）に当てはめる（v21.3）-------------
+   フォントは「点＋傾き」でできている。なぞった形は点だけなので、
+   ここで傾きを付けて、フォントと同じ形にする。
+
+   やり方は決まった手順（Schneider 1990）：
+     ①角を先に見つける（彫りの転折・とめは、角のままでないといけない）
+     ②角と角の間を 1 本の曲線で当てはめてみる
+     ③いちばん離れている所が決めた誤差を超えたら、そこで分けて、また当てはめる
+   **角を見誤ると、とめ・はらいが丸まる**ので、角の見つけ方が肝心。 */
+function vSub(a, b){ return [a[0]-b[0], a[1]-b[1]]; }
+function vLen(a){ return Math.hypot(a[0], a[1]); }
+function vUnit(a){ var n = vLen(a); return n > 1e-12 ? [a[0]/n, a[1]/n] : [0, 0]; }
+function vDot(a, b){ return a[0]*b[0] + a[1]*b[1]; }
+function vMad(p, v, k){ return [p[0] + v[0]*k, p[1] + v[1]*k]; }
+function bezAt(b, t){
+  var mt = 1 - t, a0 = mt*mt*mt, a1 = 3*mt*mt*t, a2 = 3*mt*t*t, a3 = t*t*t;
+  return [b[0][0]*a0 + b[1][0]*a1 + b[2][0]*a2 + b[3][0]*a3,
+          b[0][1]*a0 + b[1][1]*a1 + b[2][1]*a2 + b[3][1]*a3];
+}
+/* 道のりで 0〜1 を割りふる（最初の当てはめの目安） */
+function chordU(pts){
+  var u = [0], i;
+  for (i = 1; i < pts.length; i++) u.push(u[i-1] + vLen(vSub(pts[i], pts[i-1])));
+  var last = u[u.length-1] || 1;
+  for (i = 0; i < u.length; i++) u[i] /= last;
+  return u;
+}
+/* 端の傾きを決めておいて、真ん中の 2 点を最小二乗で出す */
+function bezFit(pts, u, t1, t2){
+  var n = pts.length, C = [[0,0],[0,0]], X = [0,0], i;
+  var p0 = pts[0], p3 = pts[n-1];
+  for (i = 0; i < n; i++){
+    var t = u[i], mt = 1 - t;
+    var b0 = mt*mt*mt, b1 = 3*mt*mt*t, b2 = 3*mt*t*t, b3 = t*t*t;
+    var a1 = [t1[0]*b1, t1[1]*b1], a2 = [t2[0]*b2, t2[1]*b2];
+    C[0][0] += vDot(a1, a1); C[0][1] += vDot(a1, a2);
+    C[1][0] = C[0][1];       C[1][1] += vDot(a2, a2);
+    var tmp = vSub(pts[i], [p0[0]*(b0+b1) + p3[0]*(b2+b3),
+                            p0[1]*(b0+b1) + p3[1]*(b2+b3)]);
+    X[0] += vDot(a1, tmp); X[1] += vDot(a2, tmp);
+  }
+  var det = C[0][0]*C[1][1] - C[1][0]*C[0][1];
+  var a = det !== 0 ? (X[0]*C[1][1] - X[1]*C[0][1]) / det : 0;
+  var b = det !== 0 ? (C[0][0]*X[1] - C[1][0]*X[0]) / det : 0;
+  var seg = vLen(vSub(p3, p0));
+  /* 解が出ないときは、端から 1/3 の所に置く（よくある逃げ方） */
+  if (!isFinite(a) || !isFinite(b) || a < 1e-6 * seg || b < 1e-6 * seg){ a = b = seg / 3; }
+  return [p0, vMad(p0, t1, a), vMad(p3, t2, b), p3];
+}
+function bezMaxErr(pts, u, bz){
+  var max = 0, at = Math.floor(pts.length / 2);
+  for (var i = 1; i < pts.length - 1; i++){
+    var q = bezAt(bz, u[i]);
+    var d = (q[0]-pts[i][0])*(q[0]-pts[i][0]) + (q[1]-pts[i][1])*(q[1]-pts[i][1]);
+    if (d > max){ max = d; at = i; }
+  }
+  return { err: Math.sqrt(max), at: at };
+}
+/* 当てはめ直し（各点の t を、いちばん近い所へ寄せる） */
+function bezReparam(pts, u, bz){
+  var out = [], i;
+  for (i = 0; i < pts.length; i++){
+    var t = u[i], p = pts[i];
+    var q = bezAt(bz, t);
+    var d1 = [3*(bz[1][0]-bz[0][0]), 3*(bz[1][1]-bz[0][1])];
+    var d2 = [3*(bz[2][0]-bz[1][0]), 3*(bz[2][1]-bz[1][1])];
+    var d3 = [3*(bz[3][0]-bz[2][0]), 3*(bz[3][1]-bz[2][1])];
+    var mt = 1 - t;
+    var q1 = [d1[0]*mt*mt + d2[0]*2*mt*t + d3[0]*t*t,
+              d1[1]*mt*mt + d2[1]*2*mt*t + d3[1]*t*t];
+    var e1 = [2*(d2[0]-d1[0]), 2*(d2[1]-d1[1])];
+    var e2 = [2*(d3[0]-d2[0]), 2*(d3[1]-d2[1])];
+    var q2 = [e1[0]*mt + e2[0]*t, e1[1]*mt + e2[1]*t];
+    var num = (q[0]-p[0])*q1[0] + (q[1]-p[1])*q1[1];
+    var den = q1[0]*q1[0] + q1[1]*q1[1] + (q[0]-p[0])*q2[0] + (q[1]-p[1])*q2[1];
+    out.push(den === 0 ? t : Math.max(0, Math.min(1, t - num/den)));
+  }
+  return out;
+}
+/* ひとつながりの点の並びを、曲線の並びに当てはめる（足りなければ割って繰り返す） */
+function fitCubicRun(pts, t1, t2, tol, out, depth){
+  var n = pts.length;
+  if (n < 2) return;
+  if (n === 2){
+    var d = vLen(vSub(pts[1], pts[0])) / 3;
+    out.push([pts[0], vMad(pts[0], t1, d), vMad(pts[1], t2, d), pts[1]]);
+    return;
+  }
+  var u = chordU(pts), bz = bezFit(pts, u, t1, t2);
+  var e = bezMaxErr(pts, u, bz);
+  if (e.err <= tol){ out.push(bz); return; }
+  if (e.err <= tol * 4 && depth < 24){          /* 惜しいときは当てはめ直す */
+    for (var k = 0; k < 4; k++){
+      u = bezReparam(pts, u, bz);
+      bz = bezFit(pts, u, t1, t2);
+      e = bezMaxErr(pts, u, bz);
+      if (e.err <= tol){ out.push(bz); return; }
+    }
+  }
+  if (depth > 24){ out.push(bz); return; }      /* 念のための歯止め */
+  var at = Math.max(1, Math.min(n - 2, e.at));
+  var tc = vUnit(vSub(pts[at-1], pts[at+1]));   /* 割る所の傾き（左右で向きを逆に） */
+  fitCubicRun(pts.slice(0, at + 1), t1, tc, tol, out, depth + 1);
+  fitCubicRun(pts.slice(at), [-tc[0], -tc[1]], t2, tol, out, depth + 1);
+}
+/* 角を見つける。ぎざぎざに引きずられないよう、**少し離れた点**との向きで測る。 */
+function findCorners(pts, win, cosLim){
+  var n = pts.length, mark = new Array(n), i;
+  for (i = 0; i < n; i++) mark[i] = false;
+  for (i = 0; i < n; i++){
+    var a = i, b = i, da = 0, db = 0;
+    while (da < win){
+      var a2 = (a - 1 + n) % n; da += vLen(vSub(pts[a], pts[a2])); a = a2;
+      if (a === i) break;
+    }
+    while (db < win){
+      var b2 = (b + 1) % n; db += vLen(vSub(pts[b], pts[b2])); b = b2;
+      if (b === i) break;
+    }
+    var v1 = vUnit(vSub(pts[i], pts[a])), v2 = vUnit(vSub(pts[b], pts[i]));
+    if (vDot(v1, v2) < cosLim) mark[i] = true;
+  }
+  /* 隣り合う角は 1 つにまとめる（同じ角を何度も立てない） */
+  var out = [];
+  for (i = 0; i < n; i++){
+    if (!mark[i]) continue;
+    if (out.length && (i - out[out.length-1]) <= 1) continue;
+    out.push(i);
+  }
+  return out;
+}
+/* 閉じた輪を、傾き付きの節点の並びにする */
+function traceCurveNodes(loop, tol, cornerDeg, win){
+  var pts = [], i;
+  for (i = 0; i < loop.length; i++){
+    var p = loop[i];
+    if (!pts.length || vLen(vSub(p, pts[pts.length-1])) > 1e-9) pts.push(p);
+  }
+  if (pts.length > 2 && vLen(vSub(pts[0], pts[pts.length-1])) < 1e-9) pts.pop();
+  var n = pts.length;
+  if (n < 4) return null;
+  /* 前後の向きが cornerDeg 度より大きく変わる点を、角とみなす */
+  var cosLim = Math.cos((cornerDeg || 40) * Math.PI / 180);
+  var cor = findCorners(pts, win, cosLim);
+  if (cor.length < 2){                       /* 角が無い輪は、向かい合う 2 点で割る */
+    cor = [0, Math.floor(n / 2)];
+  }
+  var segs = [];
+  for (i = 0; i < cor.length; i++){
+    var a = cor[i], b = cor[(i + 1) % cor.length];
+    var run = [];
+    var k = a;
+    for (;;){ run.push(pts[k]); if (k === b) break; k = (k + 1) % n; }
+    if (run.length >= 2) segs.push(run);
+  }
+  var beziers = [];
+  segs.forEach(function(run){
+    var t1 = vUnit(vSub(run[1], run[0]));
+    var t2 = vUnit(vSub(run[run.length-2], run[run.length-1]));
+    fitCubicRun(run, t1, t2, tol, beziers, 0);
+  });
+  if (!beziers.length) return null;
+  /* 曲線の並び → 節点の並び（節点は前の曲線の終点＝次の曲線の始点） */
+  var nodes = beziers.map(function(bz, idx){
+    var prev = beziers[(idx - 1 + beziers.length) % beziers.length];
+    return { x: bz[0][0], y: bz[0][1], i: [prev[2][0], prev[2][1]], o: [bz[1][0], bz[1][1]] };
+  });
+  return nodes;
+}
+
+function traceToContours(G, ink, smoothMm, minMm2, kind, cornerDeg){
   var mmCell = G.mmCell || 0;
   if (!mmCell) return null;
   var loops = traceLoops(ink, G.w, G.h, 0.5);
   var tolCells = Math.max(0.01, (smoothMm || 0.05) / mmCell);
   var minCells = Math.max(1, (minMm2 || 0.3) / (mmCell * mmCell));
+  var curve = (kind === "curve");
   var out = [];
+  /* ます (i,j) の値は「ますの真ん中」にあるものとして扱っているので、
+     字の座標に直すときは **半ますぶん足す**。
+     忘れると輪郭が 0.5 ます（0.04mm）ずれる（実測で一致が 96.7% → 99.4%）。 */
+  function toGlyph(p){
+    return [G.x0 + (p[0] + 0.5) * G.cell, G.y1 - (p[1] + 0.5) * G.cell];
+  }
   loops.forEach(function(lp){
     if (Math.abs(polyArea(lp)) < minCells) return;      /* 小さい島・小さい穴は捨てる */
+    if (curve){
+      /* 傾き付き（フォントと同じ）。**先に少しだけ間引く**（ます 1 つきざみの
+         ぎざぎざをそのまま当てはめると、角だらけになって曲線にならない）。 */
+      /* **ます目より細かい話にしてはいけない。** マーチングスクエアの縁は
+         半ますきざみの階段なので、それより細かい誤差を求めると
+         階段のかどを「角」と取り違えて、曲線にならない
+         （実測：0.05mm にすると 墨との一致が 94% → 79% に落ちた）。 */
+      var pre = rdpClosed(lp, Math.max(tolCells / 3, 0.4));
+      if (pre.length > 2 && pre[0][0] === pre[pre.length-1][0] &&
+          pre[0][1] === pre[pre.length-1][1]) pre.pop();
+      if (pre.length < 4) return;
+      var gp = pre.map(toGlyph);
+      var tolU = Math.max(tolCells, 0.6) * G.cell;      /* 誤差（字の単位） */
+      var nd = traceCurveNodes(gp, tolU, cornerDeg || 40,
+                               Math.max(tolU * 4, G.cell * 3));
+      if (nd && nd.length >= 2) out.push(nd);
+      return;
+    }
     var sm = rdpClosed(lp, tolCells);
     if (sm.length > 2 && sm[0][0] === sm[sm.length-1][0] && sm[0][1] === sm[sm.length-1][1])
       sm.pop();                                          /* 閉じているので終点は要らない */
     if (sm.length < 3) return;
     out.push(sm.map(function(p){
-      /* ます (i,j) の値は「ますの真ん中」にあるものとして扱っているので、
-         字の座標に直すときは **半ますぶん足す**。
-         忘れると輪郭が 0.5 ます（0.04mm）ずれる（実測で一致が 96.7% → 99.4%）。 */
-      return { x: G.x0 + (p[0] + 0.5) * G.cell,
-               y: G.y1 - (p[1] + 0.5) * G.cell, i: null, o: null };
+      var q = toGlyph(p);
+      return { x: q[0], y: q[1], i: null, o: null };
     }));
   });
   return out.length ? out : null;
@@ -15471,7 +15674,9 @@ async function traceGo(){
     });
     if (R && R.ink){ ink = R.ink; fx = R.rep; }
   }
-  var cs = traceToContours(P.G, ink, tol, mn);
+  var kind = ($("peTraceKind") && $("peTraceKind").value) || "line";
+  var corner = num($("peTraceCorner") && $("peTraceCorner").value, 40);
+  var cs = traceToContours(P.G, ink, tol, mn, kind, corner);
   if (!cs){ msg("墨が見つかりませんでした。②で拾う量を確かめてください。", true); return; }
 
   var nPt = cs.reduce(function(a, c){ return a + c.length; }, 0);
@@ -15485,11 +15690,12 @@ async function traceGo(){
   var okInk = gNew ? fitIoUNear(gNew, ink, P.G, 2) : 0;
   var okOld = (gNew && gOld) ? fitIoU(gNew, gOld) : 0;
   peRender();
-  var line = "墨の縁からこの字を作りました。【内訳】点 " + nPt + " 個（輪 " + cs.length + " 本）" +
+  var line = "現トレースから字を作りました。【内訳】点 " + nPt + " 個（輪 " + cs.length + " 本）" +
       "／墨との一致 " + Math.round(okInk*100) + "%" +
       "／元の形との一致 " + Math.round(okOld*100) + "%" +
       "（低くて構いません。彫ってある形に変わったということです）" +
-      "／1 ます " + (mm ? mm.toFixed(4) : "?") + "mm。" +
+      "／1 ます " + (mm ? mm.toFixed(4) : "?") + "mm" +
+      (kind === "curve" ? "／**傾き付き（フォントと同じ）**" : "／まっすぐ（点だけ）") + "。" +
       (cs.length > 3 ? "輪が " + cs.length + " 本あります。地のごみが残っている見込みです。" +
         "②の［消す］（0.7／0.5／0.3）で、いらない墨を消してください。" : "") +
 
@@ -15506,7 +15712,7 @@ async function traceGo(){
           : "") +
       "気に入らなければ［↶ 1つ戻す］で戻せます。";
   var el = $("peFitInfo"); if (el) el.textContent = line;   /* 窓の下の帯に出す */
-  msg("墨の縁からこの字を作りました（点 " + nPt + " 個）。", false);
+  msg("現トレースから字を作りました（点 " + nPt + " 個）。", false);
 }
 /* ［消す］［足す］のえらび（v20.96）。
    「消す」と「足す」を別々のえらびにした。太さ（0.7/0.5/0.3）も一度に決まるので、

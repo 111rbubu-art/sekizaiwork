@@ -61,23 +61,32 @@ def _nm(which):
     return "shape" if which == "shape" else "current"
 
 
+def _retire_old():
+    """①②で共用していたころの記録を、わきへどける。
+
+    **①のものとして拾ってはいけない。** 実際に、②の学習（フォントの癖・1850 組）が
+    ①「読む（拓本）」の欄に「27 / 40 回め」と出て、
+    「拓本の学習はしていないはずだが？」と迷わせた（2026-09-12）。
+    どちらの学習だったかは記録に残っていないので、**分かる名前にして外す**のが正しい。
+    """
+    for a, b in (("progress.json", "progress_old.json"),
+                 ("curve.jsonl", "curve_old.jsonl")):
+        src, dst = os.path.join(RUNS, a), os.path.join(RUNS, b)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                os.rename(src, dst)
+                print("①②を分ける前の記録を %s へどけました（どちらの学習か分からないため）" % b)
+            except OSError:
+                pass
+
+
 def _progress_path(which):
-    """①「読む」と②「整える」を**混ぜない**。名前ごとに別のファイル。
-    共用にしていたころは、画面にどちらの数字が出ているのか分からなかった。
-    古い書き方（progress.json）しか無いときは、①のものとして拾う。"""
-    p = os.path.join(RUNS, "progress_%s.json" % _nm(which))
-    if os.path.exists(p) or which == "shape":
-        return p
-    old = os.path.join(RUNS, "progress.json")
-    return old if os.path.exists(old) else p
+    """①「読む」と②「整える」を**混ぜない**。名前ごとに別のファイル。"""
+    return os.path.join(RUNS, "progress_%s.json" % _nm(which))
 
 
 def _curve_path(which):
-    p = os.path.join(RUNS, "curve_%s.jsonl" % _nm(which))
-    if os.path.exists(p) or which == "shape":
-        return p
-    old = os.path.join(RUNS, "curve.jsonl")
-    return old if os.path.exists(old) else p
+    return os.path.join(RUNS, "curve_%s.jsonl" % _nm(which))
 
 
 def _log_path(which):
@@ -87,6 +96,7 @@ SYNTHPID = os.path.join(RUNS, "synth.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
 os.makedirs(DATASET, exist_ok=True)
 os.makedirs(RUNS, exist_ok=True)
+_retire_old()
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NET, INFO = load_model(CURRENT, DEVICE)

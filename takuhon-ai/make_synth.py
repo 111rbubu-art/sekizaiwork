@@ -16,6 +16,10 @@
 
   **劣化で太さを系統的に変えない**。変えると「太さを元に戻す」ことを覚えてしまい、
   拓本の太さを無視するようになる。太さの違いは**崩しの側**（正解にも効く）でつける。
+
+  **太さが変えられるフォント（可変フォント）なら、太さは軸で変える。**
+  輪郭を足して太らせると角が丸くなり、はらい・とめの形まで変わってしまう。
+  軸で変えれば、その書体を作った人が持っている**本当の形**を、太さごとに学べる。
 """
 import argparse
 import json
@@ -67,11 +71,42 @@ def warp(a, dx, dy):
             a[y1, x0]*(1-fx)*fy     + a[y1, x1]*fx*fy)
 
 
-def render(font, ch, size, stroke=0):
-    """字を 1 枚描く（白が墨）。stroke は輪郭に足す太さ（角は立ったまま太る）。"""
+def wght_axis(font):
+    """太さを変えられるフォント（可変フォント）なら、その軸を返す。
+
+    楷書体で「太さが変えられる」ものは、**その書体を作った人が太さごとに
+    本当の形を持っている**。stroke_width で輪郭を足して太らせるのとは別物で、
+    足す方は角が丸くなり、はらい・とめの形も崩れる。
+    軸があるなら、そちらを使うこと（＝書体の癖をそのまま学べる）。
+    """
+    try:
+        f = ImageFont.truetype(font, 64)
+        for i, ax in enumerate(f.get_variation_axes() or []):
+            nm = ax.get("name")
+            nm = nm.decode("ascii", "ignore") if isinstance(nm, bytes) else str(nm or "")
+            if "weight" in nm.lower() or nm in ("ウエイト", "太さ"):
+                return {"i": i, "name": nm, "min": float(ax["minimum"]),
+                        "max": float(ax["maximum"]), "def": float(ax["default"]),
+                        "all": f.get_variation_axes()}
+    except Exception:
+        pass
+    return None
+
+
+def render(font, ch, size, stroke=0, wght=None, ax=None):
+    """字を 1 枚描く（白が墨）。
+
+    wght … 可変フォントの太さ軸の値（あるときは **stroke は使わない**）
+    stroke … 輪郭に足す太さ（可変フォントでないときの代わり。角は立ったまま太る）
+    """
     im = Image.new("L", (size, size), 0)
     d = ImageDraw.Draw(im)
     f = ImageFont.truetype(font, int(size * 0.78))
+    if wght is not None and ax is not None:
+        vals = [a["default"] for a in ax["all"]]
+        vals[ax["i"]] = wght
+        f.set_variation_by_axes(vals)
+        stroke = 0
     d.text((size//2, size//2), ch, font=f, fill=255, anchor="mm",
            stroke_width=int(stroke), stroke_fill=255)
     return np.asarray(im, dtype=np.float32) / 255.0
@@ -218,6 +253,8 @@ def main():
     ap.add_argument("--val", type=int, default=0, help="検証用へ取り分ける組数")
     ap.add_argument("--chars", default="", help="使う字（既定は墓石でよく使う字）")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-wght", action="store_true",
+                    help="太さの軸を使わない（可変フォントでも、輪郭を足して太らせる）")
     a = ap.parse_args()
 
     chars = a.chars or (
@@ -227,6 +264,14 @@ def main():
         "俗名享年行年満歳没　建之施主納骨　仁義礼智信忠孝　遠久誉勘")
     chars = [c for c in chars if c.strip()]
 
+    ax = None if a.no_wght else wght_axis(a.font)
+    if ax:
+        print("太さを変えられるフォントです（%s：%g〜%g）。"
+              "**太さは軸で変えます**（輪郭を足して太らせません）。"
+              % (ax["name"], ax["min"], ax["max"]))
+    else:
+        print("太さの軸はありません。太さの違いは輪郭を足して作ります。")
+
     rng = np.random.default_rng(a.seed)
     prng = random.Random(a.seed)
     os.makedirs(a.out, exist_ok=True)
@@ -234,8 +279,13 @@ def main():
     for i in range(a.n):
         ch = prng.choice(chars)
         stroke = prng.choice([0, 0, 0, 1, 2, 3])          # 太さの違いは**崩しの側**
+        wg = None
+        if ax:
+            # 軸があるなら、その書体が本当に持っている太さから選ぶ。
+            wg = prng.uniform(ax["min"], ax["max"])
+            stroke = 0
         try:
-            g = render(a.font, ch, BIG, stroke)
+            g = render(a.font, ch, BIG, stroke, wg, ax)
         except Exception as e:
             print("描けません:", ch, e); continue
         if g.max() < 0.5:
@@ -244,7 +294,8 @@ def main():
         tgt = fit_box(q, N)                                # 正解（角は立っている）
         tgt = (tgt > 0.5).astype(np.float32)
         inp, drep = degrade(tgt, rng)                      # 入力（劣化）
-        hint = fit_box(render(a.font, ch, BIG, 0), N)      # 崩していないフォント
+        # 手がかりは**同じ太さの**、崩していない字（②の学習では使っていない）
+        hint = fit_box(render(a.font, ch, BIG, 0, wg, ax), N)
         hint = (hint > 0.5).astype(np.float32)
         if tgt.sum() < 200 or inp.sum() < 100:
             continue
@@ -255,6 +306,7 @@ def main():
         Image.fromarray((hint*255).astype(np.uint8)).save(os.path.join(d, "hint1.png"))
         with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
             json.dump({"char": ch, "synth": True, "stroke": stroke,
+                       "wght": (round(wg, 1) if wg is not None else None),
                        "quirk": qrep, "degrade": drep,
                        "font": os.path.basename(a.font)}, f, ensure_ascii=False, indent=1)
         made += 1

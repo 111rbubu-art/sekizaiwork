@@ -41,6 +41,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 
 import data as D
+import make_synth as MS
 from unet import load_model
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -634,7 +635,17 @@ def fonts():
     out = []
     for n in sorted(os.listdir(FONTS)):
         if n.lower().endswith((".ttf", ".otf", ".ttc", ".otc")):
-            out.append({"name": n, "mb": round(os.path.getsize(os.path.join(FONTS, n))/1048576, 1)})
+            p = os.path.join(FONTS, n)
+            it = {"name": n, "mb": round(os.path.getsize(p)/1048576, 1), "wght": None}
+            # 太さを変えられる書体かどうかを見せる。変えられるなら、
+            # 太さは**軸**で変える（輪郭を足して太らせない）。
+            try:
+                ax = MS.wght_axis(p)
+                if ax:
+                    it["wght"] = {"name": ax["name"], "min": ax["min"], "max": ax["max"]}
+            except Exception:
+                pass
+            out.append(it)
     return {"items": out}
 
 

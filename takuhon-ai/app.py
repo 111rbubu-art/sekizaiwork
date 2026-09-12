@@ -430,7 +430,9 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
     cmd = [sys.executable, os.path.join(ROOT, "train.py"),
            "--epochs", str(epochs), "--bs", str(bs), "--base", str(base)]
     if which == "shape":
-        cmd += ["--data", SHAPE, "--valdata", SHAPE_VAL, "--name", "shape"]
+        # ②では手がかり（フォント）を見せない。見せると「フォントを描けば正解に近い」
+        # という近道を覚え、彫った職人の癖を消す動きになる。
+        cmd += ["--data", SHAPE, "--valdata", SHAPE_VAL, "--name", "shape", "--nohint"]
     if size:
         cmd += ["--size", str(max(64, min(1024, int(size))))]
     if test:                       # 「試すだけ」。8 組未満でも回し、検証なしでも差し替える

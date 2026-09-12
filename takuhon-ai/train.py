@@ -135,6 +135,12 @@ def main():
     ap.add_argument("--name", default="current",
                     help="モデルの名前。current.pth / current_shape.pth のように分ける")
     ap.add_argument("--size", type=int, default=0, help="1 辺の画素数（既定 512）")
+    # ②「整える」では手がかり（フォント）を**一切見せない**。
+    # ②の仕事は「与えられた形の縁を整える」ことで、どの字かを当てる必要がない。
+    # 見せると「フォントをそのまま描けば正解に近い」という近道を覚えかねず、
+    # それは彫った職人の癖を消す動き（＝手で変形させるのと同じ）になる。
+    ap.add_argument("--nohint", action="store_true",
+                    help="手がかりを一切使わない（②「整える」はこちら）")
     # 下の 2 つは「動くかどうか試す」ためのもの。ふだんは使わない。
     # 8 組未満で学習しても、まともなモデルにはならない（下限はその歯止め）。
     ap.add_argument("--min", type=int, default=8,
@@ -149,6 +155,11 @@ def main():
     cur = os.path.join(RUNS, a.name + ".pth")
     if a.size:
         D.N = a.size
+    if a.nohint:
+        global HINT_DROP1, HINT_DROP2
+        HINT_DROP1 = 1.0
+        HINT_DROP2 = 1.0
+        print("手がかりは使いません（--nohint）。")
     rng = random.Random(a.seed)
     torch.manual_seed(a.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

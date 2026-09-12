@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v20.90</title>
+<title>彫刻原稿 v20.91</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1227,6 +1227,13 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <input type="number" id="peTraceTol" value="0.05" step="0.01" min="0.01" max="1"></label>
         <label class="f" style="margin-top:4px;"><span>捨てる島 mm²</span>
           <input type="number" id="peTraceMin" value="0.3" step="0.1" min="0" max="20"></label>
+        <label class="f" style="margin-top:5px;"><span>AI に通す</span>
+          <select id="peAiStage">
+            <option value="">使わない</option>
+            <option value="ink">① 読む（拓本→綺麗な墨）</option>
+            <option value="shape">② 整える（書体らしく）</option>
+            <option value="both">①＋② 両方</option>
+          </select></label>
         <label class="chk" style="margin-top:5px;"><input type="checkbox" id="peFixOn" checked
           style="width:auto;"> フォントで補正する</label>
         <label class="f" style="margin-top:4px;"><span>太さの補正 mm まで</span>
@@ -1987,7 +1994,7 @@ function typingIn(e){
 /* sticky を立てると、次に msg を出すまで消えない。
    読み込み中・保存中のように、いつ終わるか分からないものに使う。 */
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
-var APP_VER = "v20.90";
+var APP_VER = "v20.91";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13149,6 +13156,11 @@ function traceFix(G, ink, opt){
   for (i = 0; i < w*h; i++) if (out[i] && d[i] > 1) ths.push(d[i] * 2 * mm);
   var L0 = (S.rub && S.rub.lines && S.rub.lines[0]) ? S.rub.lines[0] : null;
   var tgt = (L0 && L0.inkMm) ? L0.inkMm : _med(ths);
+  /* 画の太さが、字そのものの 1/3 を超えることはない。
+     墨が塊になってしまったとき（AI がまだ学習不足のときなど）、
+     ここが途方もない値になり、字が真っ黒に太ってしまう。 */
+  var tgtMax = Math.min(w, h) * mm / 3;
+  if (!isFinite(tgt) || tgt <= 0 || tgt > tgtMax){ rep.wideTgt = tgt || 0; tgt = 0; }
   rep.target = tgt || 0;
 
   /* （あ）明らかに細い … その画を **その場で** 太らせる。フォントの位置は使わない。
@@ -13228,6 +13240,82 @@ function traceFix(G, ink, opt){
   rep.fillMm2  = rep.fill  * cellMm2;
   rep.dropMm2  = rep.drop  * cellMm2;
   return { ink: out, rep: rep };
+}
+
+/* 拾った墨を、拓本AI のサーバーに通してもらう（v20.91）。
+   送るのは「いまのます目」を 512×512 にした絵。返ってくるのは**濃淡**（確からしさ）
+   なので、ます目より細かい縁が取れる（SPEC-輪郭と補正.md）。
+   **つながらなくても作業は止めない**。そのまま今までどおりなぞる。 */
+function traceMaskToPng(G, ink, n){
+  var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+  var cx = cv.getContext("2d"), id = cx.createImageData(n, n), d = id.data;
+  for (var y = 0; y < n; y++){
+    var gy = Math.min(G.h - 1, Math.floor(y * G.h / n));
+    for (var x = 0; x < n; x++){
+      var gx = Math.min(G.w - 1, Math.floor(x * G.w / n));
+      var v = ink[gy*G.w + gx] ? 255 : 0, i = (y*n + x) * 4;
+      d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
+    }
+  }
+  cx.putImageData(id, 0, 0);
+  return new Promise(function(res){ cv.toBlob(res, "image/png"); });
+}
+function traceAiToMask(G, img, n){
+  var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+  var cx = cv.getContext("2d");
+  cx.drawImage(img, 0, 0, n, n);
+  var d = cx.getImageData(0, 0, n, n).data;
+  var out = new Uint8Array(G.w * G.h);
+  for (var gy = 0; gy < G.h; gy++){
+    var y = Math.min(n - 1, Math.floor(gy * n / G.h));
+    for (var gx = 0; gx < G.w; gx++){
+      var x = Math.min(n - 1, Math.floor(gx * n / G.w));
+      out[gy*G.w + gx] = (d[(y*n + x)*4] > 127) ? 1 : 0;
+    }
+  }
+  return out;
+}
+async function traceAskAI(G, ink, stage){
+  var base = takuApiBase();
+  if (!base) return { note: "サーバーの住所が入っていないので、AI は使いませんでした" };
+  var N = 512;
+  try {
+    var blob = await traceMaskToPng(G, ink, N);
+    var fd = new FormData();
+    fd.append("file", blob, "raw.png");
+    fd.append("stage", stage);
+    fd.append("soft", "false");          /* いまは 0/1 で受ける。濃淡は次の段で使う */
+    var t0 = Date.now();
+    var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+    if (!r.ok){
+      var why = "HTTP " + r.status;
+      try { var j = await r.json(); why = j.detail || j.error || why; } catch(e){}
+      return { note: "AI は使えませんでした（" + why + "）" };
+    }
+    var ms = r.headers.get("X-Infer-Ms") || "?";
+    var at = r.headers.get("X-Model-At") || "";
+    var buf = await r.blob();
+    var img = await new Promise(function(res, rej){
+      var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+      im.src = URL.createObjectURL(buf);
+    });
+    var m = traceAiToMask(G, img, N);
+    var n0 = 0, n1 = 0, i;
+    for (i = 0; i < ink.length; i++){ n0 += ink[i]; n1 += m[i]; }
+    var mm2 = (G.mmCell || 0) * (G.mmCell || 0);
+    var nm = (stage === "shape" ? "② 整える" : stage === "both" ? "①＋②" : "① 読む");
+    /* **墨がほとんど消えたら、使わない。**（学習が足りないモデルだと真っ黒が返る。
+       そのまま通すと「墨が見つかりません」しか出ず、原因が分からなくなる） */
+    if (n1 === 0 || n1 < n0 * 0.1)
+      return { note: nm + " の出した墨が少なすぎるので、使いませんでした（墨 " +
+                     (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) +
+                     " mm²）。そのモデルはまだ学習が足りない見込みです" };
+    return { ink: m,
+             note: nm + " を通しました（" + ms + "ms／" + (at || "版不明") + "）。墨 " +
+                   (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" };
+  } catch(e){
+    return { note: "AI につながりませんでした（" + ((e && e.message) || e) + "）" };
+  }
 }
 
 /* 墨のます目から、作字の輪郭（PE.contours の形）を作る。
@@ -15168,12 +15256,23 @@ $("peTaku").onclick    = function(){ takuSave(); };
      ・点の数        … 多すぎるとプロッターが遅く、角がなまる
      ・墨との一致    … なぞれているか
      ・元の形との一致 … どれだけ字らしさから離れたか（低くて当たり前。参考値） */
-function traceGo(){
+async function traceGo(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+  var aiNote = "";
   var P = fitPrep();
   if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
   var tol = Math.max(0.01, num($("peTraceTol") && $("peTraceTol").value, 0.05));
   var mn  = Math.max(0,    num($("peTraceMin") && $("peTraceMin").value, 0.3));
+  /* 拓本AI に通してから、なぞる（v20.91）。
+     ① 読む（拓本→綺麗な墨）／② 整える（書体らしく）／両方 を選べる。
+     サーバーが無い・モデルが無いときは、**そのまま今までどおり**進む（作業を止めない）。 */
+  var stage = ($("peAiStage") && $("peAiStage").value) || "";
+  if (stage){
+    var got = await traceAskAI(P.G, P.ink, stage);
+    if (got && got.ink){ P = { G: P.G, ink: got.ink }; aiNote = got.note; }
+    else aiNote = (got && got.note) || "";
+  }
+
   /* フォントで補正してから、なぞる（v20.90）。
      拓本のかすれ・石の劣化で欠けている所を、フォントを骨格として直す。
      **1 画ずつの癖は消さない**（拓本の画そのものに沿ってだけ直す）。 */
@@ -15206,12 +15305,15 @@ function traceGo(){
       "／1 ます " + (mm ? mm.toFixed(4) : "?") + "mm。" +
       (cs.length > 3 ? "輪が " + cs.length + " 本あります。地のごみが残っている見込みです。" +
         "②で墨を消すか、［捨てる島 mm²］を上げてください。" : "") +
+      (aiNote ? "【AI】" + aiNote + "。" : "") +
       (fx ? "【フォントで直した分】太らせた " + fx.thickMm2.toFixed(1) + " mm²" +
             "（目あての太さ " + (fx.target ? fx.target.toFixed(2) : "?") + " mm）" +
             "／欠けを埋めた " + fx.fillMm2.toFixed(1) + " mm²" +
             "／地のごみを捨てた " + fx.dropMm2.toFixed(1) + " mm²" +
             (fx.skip ? "／**上限を超えたので直さなかった所が " + fx.skip + " か所**" +
                        "（最大 " + fx.skipMax.toFixed(1) + " mm²）。目で確かめてください" : "") +
+            (fx.wideTgt ? "／**画の太さが測れませんでした**（" + fx.wideTgt.toFixed(1) +
+                          " mm と出ました）。墨が塊になっている見込みです。太らせるのはやめました" : "") +
             (fx.font ? "" : "／フォントが読めないので、太さだけ直しました") + "。"
           : "") +
       "気に入らなければ［↶ 1つ戻す］で戻せます。";

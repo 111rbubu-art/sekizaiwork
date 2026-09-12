@@ -351,6 +351,10 @@ curl http://localhost:8077/api/takuhon/status
 curl -X POST http://localhost:8077/api/takuhon/clean \
   -F file=@raw.png -F hint1=@hint1.png -F hint2=@hint2.png -o mask.png
 
+# ②「整える」に通す（書体らしい形へ）。①＋② は stage=both
+curl -X POST http://localhost:8077/api/takuhon/clean \
+  -F file=@raw.png -F stage=shape -o mask.png
+
 # 人が直した正解を貯める（同じ key なら上書き）
 curl -X POST http://localhost:8077/api/takuhon/feedback \
   -F raw_image=@raw.png -F corrected_image=@mask.png \
@@ -360,6 +364,15 @@ curl -X POST http://localhost:8077/api/takuhon/feedback \
 - `hint1` / `hint2` は**無くてよい**（無い前提で学習してある）
 - 返す PNG のヘッダーに `X-Model-Step` / `X-Model-At` / `X-Infer-Ms` が入る
 - **学習済みが無いときは 503**。呼ぶ側は、いままでのしきい値処理へ戻すこと
+- `stage` は `ink`（既定・① 読む）／`shape`（② 整える）／`both`（①のあと②）。
+  ①は `runs/current.pth`、②は `runs/current_shape.pth` を使う。**別のモデル**なので、
+  ②が無ければ `no_model_shape` で 503（①だけは今までどおり動く）
+- **②には手がかりを渡さない**。サーバー側で捨てている
+  （フォントを描き写す近道を覚えさせないため）
+- `soft=true` にすると **0/1 ではなく濃淡**が返る。輪郭をたどるときは、
+  ます目より細かい縁が取れるので本来はこちら（アプリはいまのところ 0/1 で受けている）
+- **置き直したモデルは、日付が古くても読む**。`cp` でしまい直すと日付が元のままのことがあり、
+  「置いたのに、いつまでも『モデルがありません』」になった（v2026-09-12 で直した）
 
 ## つまずいたところ（2026-09-10・実際に直した記録）
 

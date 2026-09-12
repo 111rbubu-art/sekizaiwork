@@ -90,13 +90,22 @@ os.makedirs(RUNS, exist_ok=True)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NET, INFO = load_model(CURRENT, DEVICE)
 LOADED_AT = time.time()
+# ②「整える」のモデル（書体の癖）。①とは別物なので、別に持つ。
+CURRENT2 = os.path.join(RUNS, "current_shape.pth")
+NET2, INFO2 = load_model(CURRENT2, DEVICE)
+LOADED_AT2 = time.time()
 
 app = FastAPI(title="拓本クリーン化")
 # 社内のブラウザ（彫刻原稿アプリ）から呼ぶので、同じ LAN からは通す。
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-    expose_headers=["X-Model-Step", "X-Model-At", "X-Model-Loaded"],
+    expose_headers=["X-Model-Step", "X-Model-At", "X-Model-Loaded",
+                    "X-Stage", "X-Soft", "X-Infer-Ms"],
 )
+
+
+# 読めなかったファイルを、要求のたびに読み直さないための覚え書き（path → 日付）。
+TRIED = {}
 
 
 def _reload_if_new():
@@ -111,9 +120,29 @@ def _reload_if_new():
             NET, INFO = load_model(CURRENT, DEVICE)
             LOADED_AT = time.time()
         return
-    if m > LOADED_AT:
+    # **持っていないときは、日付が古くても読む。**
+    # cp でしまい直すと日付が元のままのことがあり、
+    # 「置いたのに、いつまでも『モデルがありません』」になった。
+    if m > LOADED_AT or (not INFO.get("loaded") and TRIED.get(CURRENT) != m):
+        TRIED[CURRENT] = m
         NET, INFO = load_model(CURRENT, DEVICE)
-        LOADED_AT = m
+        LOADED_AT = max(m, LOADED_AT)
+
+
+def _reload2_if_new():
+    """②のモデルも、新しくなっていたら読み直す。"""
+    global NET2, INFO2, LOADED_AT2
+    try:
+        m = os.path.getmtime(CURRENT2)
+    except OSError:
+        if INFO2.get("loaded"):
+            NET2, INFO2 = load_model(CURRENT2, DEVICE)
+            LOADED_AT2 = time.time()
+        return
+    if m > LOADED_AT2 or (not INFO2.get("loaded") and TRIED.get(CURRENT2) != m):
+        TRIED[CURRENT2] = m
+        NET2, INFO2 = load_model(CURRENT2, DEVICE)
+        LOADED_AT2 = max(m, LOADED_AT2)
 
 
 def _read_gray(b, size=D.N):
@@ -144,7 +173,7 @@ def status():
         "pairs": n,
         "val": len(D.list_pairs(VALDIR)),
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
-                  "model": _shape_info()},
+                  "model": _shape_info(), "loaded": bool(INFO2.get("loaded"))},
     }
 
 
@@ -154,23 +183,50 @@ async def clean(
     hint1: UploadFile = File(None),
     hint2: UploadFile = File(None),
     thresh: float = Form(0.5),
+    stage: str = Form("ink"),
+    soft: bool = Form(False),
 ):
-    _reload_if_new()
-    if not INFO["loaded"]:
-        # まだ学習していない。呼ぶ側は今までのしきい値処理に戻すこと。
-        return JSONResponse({"error": "no_model", "detail": "学習済みモデルがありません"}, status_code=503)
+    """拓本の切り抜きを、AI に通して返す。
+
+    stage="ink"   … ① 読む（拓本 → 綺麗な墨）
+    stage="shape" … ② 整える（綺麗な墨 → 書体らしい形）
+    stage="both"  … ①のあと②（本番はこれ）
+
+    soft=true なら **0/1 ではなく濃淡（確からしさ）** を返す。
+    0.5 で切ってしまうと、輪郭をたどるときに ます目より細かい情報を捨ててしまう
+    （SPEC-輪郭と補正.md）。なぞるときは soft で受け取ること。
+    """
+    _reload_if_new(); _reload2_if_new()
+    want1 = stage in ("ink", "both")
+    want2 = stage in ("shape", "both")
+    if want1 and not INFO["loaded"]:
+        return JSONResponse({"error": "no_model", "detail": "①「読む」のモデルがありません"},
+                            status_code=503)
+    if want2 and not INFO2["loaded"]:
+        return JSONResponse({"error": "no_model_shape", "detail": "②「整える」のモデルがありません"},
+                            status_code=503)
     raw = _read_gray(await file.read())
     h1 = _read_gray(await hint1.read()) if hint1 is not None else None
     h2 = _read_gray(await hint2.read()) if hint2 is not None else None
-    x = D.to_input(raw, h1, h2)
     t0 = time.time()
+    y = raw
     with torch.no_grad():
-        y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
+        if want1:
+            x = D.to_input(raw, h1, h2)
+            y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
+        if want2:
+            # ②は手がかりを見ない（フォントを描き写す近道を覚えさせないため）
+            x2 = D.to_input(y, None, None)
+            y = torch.sigmoid(NET2(torch.from_numpy(x2[None]).to(DEVICE)))[0, 0].cpu().numpy()
     ms = int((time.time() - t0) * 1000)
-    png = D.png_bytes((y > float(thresh)).astype(np.float32))
+    out = y.astype(np.float32) if soft else (y > float(thresh)).astype(np.float32)
+    png = D.png_bytes(out)
+    I = INFO2 if want2 else INFO
     return Response(content=png, media_type="image/png", headers={
-        "X-Model-Step": str(INFO.get("step", 0)),
-        "X-Model-At": str(INFO.get("at") or ""),
+        "X-Stage": stage,
+        "X-Soft": "1" if soft else "0",
+        "X-Model-Step": str(I.get("step", 0)),
+        "X-Model-At": str(I.get("at") or ""),
         "X-Infer-Ms": str(ms),
     })
 

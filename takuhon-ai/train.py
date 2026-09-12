@@ -215,7 +215,10 @@ def main():
     last = os.path.join(RUNS, "last_" + a.name + ".pth")
     ep0 = 0
     if a.fresh and os.path.exists(last):
-        os.remove(last); print("途中の保存を捨てました（--fresh）。")
+        os.remove(last)
+        try: os.remove(last[:-4] + ".json")
+        except OSError: pass
+        print("途中の保存を捨てました（--fresh）。")
     elif os.path.exists(last):
         try:
             lk = torch.load(last, map_location=device)
@@ -243,10 +246,20 @@ def main():
                     "epoch": ep, "step": step, "base": a.base, "size": D.N,
                     "name": a.name, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, tmp)
         os.replace(tmp, last)          # 置き換えは一瞬なので、途中で落ちても壊れない
+        # 画面が 5 秒ごとに読む用の、軽い覚え書き（.pth を毎回開くのは重い）
+        try:
+            with open(last[:-4] + ".json", "w", encoding="utf-8") as f:
+                json.dump({"epoch": ep, "epochs": a.epochs, "base": a.base, "bs": a.bs,
+                           "size": D.N, "name": a.name,
+                           # ［試すだけ］で回していたかどうか。続きも同じ条件で回す
+                           "test": bool(getattr(a, "swap_anyway", False) or a.min < 8),
+                           "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f)
+        except OSError:
+            pass
 
     t0 = time.time()
     put_progress(state="running", epoch=0, epochs=a.epochs, pairs=len(tr), val=len(va),
-                 started=started, device=str(device), bs=a.bs, lr=a.lr,
+                 started=started, device=str(device), bs=a.bs, lr=a.lr, base=a.base,
                  prev=best_prev, pid=os.getpid())
     if not ep0:
         put_curve({"ep": 0}, fresh=True)      # 新しい回。前の回の線は消す
@@ -274,7 +287,7 @@ def main():
         put_curve({"ep": ep, "loss": round(avg, 5), "iou": v1, "iou_nohint": v0})
         put_progress(state="running", epoch=ep, epochs=a.epochs, loss=round(avg, 5),
                      iou=v1, iou_nohint=v0, pairs=len(tr), val=len(va), step=step,
-                     started=started, device=str(device), bs=a.bs, lr=a.lr,
+                     started=started, device=str(device), bs=a.bs, lr=a.lr, base=a.base,
                      prev=best_prev, secPerEpoch=round(sec, 2), resumedFrom=(ep0 or None),
                      etaSec=int(sec * (a.epochs - ep)), pid=os.getpid())
 
@@ -288,8 +301,9 @@ def main():
                        datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
     torch.save(ck, gen)
     print("世代を残しました:", gen)
-    if os.path.exists(last):
-        os.remove(last)                        # 終わったので、途中の保存は要らない
+    for f in (last, last[:-4] + ".json"):
+        if os.path.exists(f):
+            os.remove(f)                       # 終わったので、途中の保存は要らない
 
     # 検証が無い／良くなった ときだけ差し替える。悪くなったら据え置き。
     done = dict(state="done", epoch=a.epochs, epochs=a.epochs, iou=v1, iou_nohint=v0,

@@ -330,6 +330,14 @@ def progress(which: str = "ink"):
         p["state"] = "failed"
         p["why"] = p.get("why") or "途中で終わっています（止められたか、落ちました）"
     p["gpu"] = _gpu()
+    # **途中の保存があるか。** 停電で落ちたあと、続きから回せるかどうかを画面に出す。
+    lp = os.path.join(RUNS, "last_%s.pth" % _nm(which))
+    if os.path.exists(lp):
+        # 中身は軽い覚え書きから読む（.pth は大きいので、5 秒ごとに開かない）
+        j = _read_json(lp[:-4] + ".json", {}) or {}
+        p["resume"] = {"epoch": j.get("epoch"), "epochs": j.get("epochs"),
+                       "base": j.get("base"), "bs": j.get("bs"),
+                       "test": bool(j.get("test")), "at": j.get("at")}
     return p
 
 
@@ -632,10 +640,11 @@ def reset(what: str = Form(...), confirm: str = Form(""), which: str = Form("ink
         except OSError:
             pass
         # 途中の保存も一緒に消す。残っていると、次の学習が勝手に続きから始まる。
-        try:
-            os.remove(os.path.join(RUNS, "last_%s.pth" % _nm(which)))
-        except OSError:
-            pass
+        for f in ("last_%s.pth" % _nm(which), "last_%s.json" % _nm(which)):
+            try:
+                os.remove(os.path.join(RUNS, f))
+            except OSError:
+                pass
     if what in ("data", "all"):
         for root in dirs:
             for d in D.list_pairs(root):

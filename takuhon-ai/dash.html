@@ -76,6 +76,12 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
 #zoom img{max-width:92vw;max-height:92vh;background:#fff;image-rendering:pixelated}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}
 .legend i{display:inline-block;width:16px;height:3px;vertical-align:3px;margin-right:5px}
+.seg{margin-left:12px;font-weight:400;font-size:12px;display:inline-flex;gap:0;
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;vertical-align:2px}
+.segb{border:0;border-radius:0;padding:4px 12px;background:var(--card);cursor:pointer;
+  font:inherit;color:var(--muted)}
+.segb.on{background:var(--ao);color:#fff;font-weight:700}
+.segb+.segb{border-left:1px solid var(--line)}
 @media(max-width:520px){.v{font-size:19px}}
 </style>
 
@@ -85,7 +91,11 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
 
   <div class="cards" id="cards"></div>
 
-  <h2>学習の様子</h2>
+  <h2>学習の様子
+    <span class="seg" id="segWrap">
+      <button class="segb on" data-w="ink">① 読む（拓本）</button>
+      <button class="segb" data-w="shape">② 整える（書体）</button>
+    </span></h2>
   <div class="card" id="train"></div>
 
   <h2>操作</h2>
@@ -170,7 +180,7 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       世代（runs/model_*.pth）は残るので、モデルは後から戻せます。</p>
   </div>
 
-  <h2>成績のうつり変わり</h2>
+  <h2>成績のうつり変わり<span class="hint" id="chartWho" style="font-weight:400;margin-left:8px;"></span></h2>
   <div class="card">
     <div id="chart"></div>
     <div class="legend">
@@ -180,7 +190,7 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
     </div>
   </div>
 
-  <h2>世代の記録</h2>
+  <h2>世代の記録<span class="hint" id="histWho" style="font-weight:400;margin-left:8px;"></span></h2>
   <div id="hist"></div>
 
   <h2>貯まったデータ</h2>
@@ -567,20 +577,45 @@ document.getElementById("btnDelData").onclick  = del("data",  "貯めたデー�
 /* 学習中は、画面のログも出す（何で止まったかが分かる） */
 async function logPoll(){
   try {
-    var d = await get("/api/takuhon/trainlog?lines=40");
+    var d = await get("/api/takuhon/trainlog?lines=40&which=" + WHICH);
     var el = document.getElementById("tlog");
     if (d.lines && d.lines.length){ el.hidden = false; el.textContent = d.lines.join("\n"); el.scrollTop = el.scrollHeight; }
   } catch(e){}
 }
 
 /* ---- 読み直し ---- */
+var WHICH = "ink";                 /* いま見ているのは ①読む か ②整える か */
+var _segLock = false;              /* 人が選んだら、自動の切り替えはやめる */
+Array.prototype.forEach.call(document.querySelectorAll("#segWrap .segb"), function(b){
+  b.onclick = function(){
+    if (event && event.isTrusted) _segLock = true;   /* 人が押したときだけ固定 */
+    WHICH = b.dataset.w;
+    Array.prototype.forEach.call(document.querySelectorAll("#segWrap .segb"), function(x){
+      x.className = "segb" + (x === b ? " on" : "");
+    });
+    tick(); logPoll();
+  };
+});
 async function tick(){
   try{
+    var q = "?which=" + WHICH;
     var st = await get("/api/takuhon/status");
-    var pg = await get("/api/takuhon/progress");
-    var cv = await get("/api/takuhon/curve");
-    var hs = await get("/api/takuhon/history");
+    var pg = await get("/api/takuhon/progress" + q);
+    var cv = await get("/api/takuhon/curve" + q);
+    var hs = await get("/api/takuhon/history" + q);
     cards(st, pg); train(pg); chart(cv.points); hist(hs.items);
+    /* 走っているのが今見ていない方なら、そちらへ自動で切り替える */
+    if (pg.state !== "running" && pg.state !== "starting" && !_segLock){
+      var other = (WHICH === "ink") ? "shape" : "ink";
+      var o = await get("/api/takuhon/progress?which=" + other);
+      if (o.state === "running" || o.state === "starting"){
+        var b2 = document.querySelector('#segWrap .segb[data-w="' + other + '"]');
+        if (b2) b2.click();
+      }
+    }
+    var who = (WHICH === "shape") ? "② 整える（書体の癖）" : "① 読む（拓本）";
+    var cw = document.getElementById("chartWho"); if (cw) cw.textContent = who;
+    var hw = document.getElementById("histWho");  if (hw) hw.textContent = who;
     document.getElementById("head").innerHTML =
       esc(st.cuda || st.device) + '　<span class="hint">' +
       new Date().toLocaleTimeString("ja-JP") + ' に読みました（5 秒ごと）</span>';

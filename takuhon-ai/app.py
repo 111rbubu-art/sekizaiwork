@@ -53,6 +53,34 @@ SHAPE_VAL = os.path.join(ROOT, "dataset", "shape_val")    # ②「整える」�
 FONTS = os.path.join(ROOT, "fonts")                       # 彫っている書体の置き場
 TRAINLOG = os.path.join(RUNS, "train.log")
 TRAINPID = os.path.join(RUNS, "train.pid")
+
+
+def _nm(which):
+    """画面の①②を、モデルの名前に直す。"""
+    return "shape" if which == "shape" else "current"
+
+
+def _progress_path(which):
+    """①「読む」と②「整える」を**混ぜない**。名前ごとに別のファイル。
+    共用にしていたころは、画面にどちらの数字が出ているのか分からなかった。
+    古い書き方（progress.json）しか無いときは、①のものとして拾う。"""
+    p = os.path.join(RUNS, "progress_%s.json" % _nm(which))
+    if os.path.exists(p) or which == "shape":
+        return p
+    old = os.path.join(RUNS, "progress.json")
+    return old if os.path.exists(old) else p
+
+
+def _curve_path(which):
+    p = os.path.join(RUNS, "curve_%s.jsonl" % _nm(which))
+    if os.path.exists(p) or which == "shape":
+        return p
+    old = os.path.join(RUNS, "curve.jsonl")
+    return old if os.path.exists(old) else p
+
+
+def _log_path(which):
+    return os.path.join(RUNS, "train_%s.log" % _nm(which))
 SYNTHLOG = os.path.join(RUNS, "synth.log")
 SYNTHPID = os.path.join(RUNS, "synth.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
@@ -220,12 +248,14 @@ def _set_dir(which):
 
 
 @app.get("/api/takuhon/progress")
-def progress():
+def progress(which: str = "ink"):
     """学習の途中経過。**画面のログは夜に流れて消える**ので、ここから読む。"""
-    p = _read_json(os.path.join(RUNS, "progress.json"), {"state": "none"})
+    p = _read_json(_progress_path(which), {"state": "none"})
     # 「学習中」のまま止まっていることがある（強制終了・パソコンの再起動）。
     # pid が居なければ、そう見せる。ずっと「学習中」と出ていると、待ってしまう。
     r = _running()
+    if r and r.get("which") and r.get("which") != which:
+        r = None                       # いま走っているのは、もう片方
     if r and r.get("state") == "starting" and p.get("state") != "running":
         # 始めたばかり。torch の読み込みで十数秒かかるので、そう見せる
         p = {"state": "starting", "pid": r["pid"], "why": "支度をしています（十数秒かかります）"}
@@ -237,13 +267,17 @@ def progress():
 
 
 @app.get("/api/takuhon/curve")
-def curve():
-    return {"points": _read_jsonl(os.path.join(RUNS, "curve.jsonl"))}
+def curve(which: str = "ink"):
+    return {"points": _read_jsonl(_curve_path(which))}
 
 
 @app.get("/api/takuhon/history")
-def history():
-    return {"items": _read_jsonl(os.path.join(RUNS, "history.jsonl"), 60)}
+def history(which: str = "ink"):
+    nm = _nm(which)
+    got = _read_jsonl(os.path.join(RUNS, "history.jsonl"))
+    # 名前が入っていない古い記録は、①のものとして扱う
+    got = [x for x in got if (x.get("name") or "current") == nm]
+    return {"items": got[-60:]}
 
 
 @app.get("/api/takuhon/pairs")
@@ -332,18 +366,25 @@ def _running():
     十数秒かかり、その間 progress.json はまだ無い。そこを見ていなかったので、
     続けて押すと 2 つ走ってしまった（実測）。**始めた時点で pid を置く**。
     """
+    pid, which = 0, "ink"
     try:
-        pid = int(open(TRAINPID, encoding="utf-8").read().strip())
-    except (OSError, ValueError):
+        t = open(TRAINPID, encoding="utf-8").read().split()
+        pid = int(t[0])
+        if len(t) > 1:
+            which = t[1]
+    except (OSError, ValueError, IndexError):
         pid = 0
     if pid and _alive(pid):
-        p = _read_json(os.path.join(RUNS, "progress.json"), {}) or {}
+        p = _read_json(_progress_path(which), {}) or {}
         if p.get("pid") != pid:
             p = {"state": "starting", "pid": pid}
+        p["which"] = which
         return p
-    p = _read_json(os.path.join(RUNS, "progress.json"), {}) or {}
-    if p.get("state") == "running" and p.get("pid") and _alive(p["pid"]):
-        return p
+    for w in ("ink", "shape"):
+        p = _read_json(_progress_path(w), {}) or {}
+        if p.get("state") == "running" and p.get("pid") and _alive(p["pid"]):
+            p["which"] = w
+            return p
     return None
 
 
@@ -438,12 +479,12 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
     if test:                       # 「試すだけ」。8 組未満でも回し、検証なしでも差し替える
         cmd += ["--min", "1", "--swap-anyway"]
     os.makedirs(RUNS, exist_ok=True)
-    log = open(TRAINLOG, "w", encoding="utf-8")
+    log = open(_log_path(which), "w", encoding="utf-8")
     pr = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                           start_new_session=True)
     try:
         with open(TRAINPID, "w", encoding="utf-8") as f:
-            f.write(str(pr.pid))
+            f.write("%d %s" % (pr.pid, which))       # どちらを走らせているかも残す
     except OSError:
         pass
     return {"started": True, "pid": pr.pid, "cmd": " ".join(cmd[1:]),
@@ -474,9 +515,12 @@ def train_stop():
 
 
 @app.get("/api/takuhon/trainlog")
-def trainlog(lines: int = 40):
+def trainlog(lines: int = 40, which: str = "ink"):
+    p = _log_path(which)
+    if not os.path.exists(p):
+        p = TRAINLOG                      # 古い書き方
     try:
-        with open(TRAINLOG, encoding="utf-8", errors="replace") as f:
+        with open(p, encoding="utf-8", errors="replace") as f:
             ls = f.read().splitlines()
     except OSError:
         return {"lines": []}

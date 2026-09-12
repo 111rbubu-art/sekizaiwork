@@ -301,6 +301,19 @@ docker compose -p takuhon logs -f
 - 学習は `docker compose -p takuhon exec takuhon-ai python train.py --epochs 60`
 - **`down -v` は打たない**
 
+## 6d. ①と②は、画面の上でも分かれている
+
+学習の様子・グラフ・世代の記録・画面ログは、**①「読む」と②「整える」で別々**。
+見出しの右の **［① 読む（拓本）｜② 整える（書体）］** で切り替える。
+**どちらの数字を見ているのか、常に見出しに出る。**
+
+- 走っている方が、見ていない側だったときは**自動でそちらへ切り替わる**
+  （人が押したあとは固定される。勝手に動かない）
+- 記録は名前ごとに分けて持つ
+  （`runs/progress_current.json` / `progress_shape.json`、`curve_*.jsonl`、
+  `train_*.log`、`history.jsonl` は `name` で選り分け）
+- **名前の入っていない古い記録は①のもの**として扱う
+
 ## 6c. 状況を見る画面（モニタリング）
 
 サーバーを動かしたまま、ブラウザで **`http://localhost:8077/`**

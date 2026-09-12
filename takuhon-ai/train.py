@@ -40,7 +40,9 @@ HINT_DROP1 = 0.4     # 元のフォントの字形を白紙にする割合
 HINT_DROP2 = 1.0
 
 
-PROGRESS = os.path.join(RUNS, "progress.json")
+# ①「読む」と②「整える」を**混ぜない**。名前ごとに別のファイルへ書く。
+# 共用にしていたころは、画面にどちらの数字が出ているのか分からなかった。
+PROGRESS = os.path.join(RUNS, "progress.json")     # 名前が決まったら差し替える
 CURVE = os.path.join(RUNS, "curve.jsonl")
 
 
@@ -155,8 +157,10 @@ def main():
     cur = os.path.join(RUNS, a.name + ".pth")
     if a.size:
         D.N = a.size
+    global PROGRESS, CURVE, HINT_DROP1, HINT_DROP2
+    PROGRESS = os.path.join(RUNS, "progress_%s.json" % a.name)
+    CURVE = os.path.join(RUNS, "curve_%s.jsonl" % a.name)
     if a.nohint:
-        global HINT_DROP1, HINT_DROP2
         HINT_DROP1 = 1.0
         HINT_DROP2 = 1.0
         print("手がかりは使いません（--nohint）。")

@@ -149,6 +149,8 @@ def main():
                     help="学習に要る組数の下限（試すときだけ 1 などに下げる）")
     ap.add_argument("--swap-anyway", action="store_true",
                     help="検証用が無くても current.pth を差し替える（試すときだけ）")
+    ap.add_argument("--fresh", action="store_true",
+                    help="**途中の保存を捨てて**、はじめから学習する")
     a = ap.parse_args()
 
     os.makedirs(RUNS, exist_ok=True)
@@ -201,13 +203,51 @@ def main():
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
     step = step0
+
+    # ---- 途中の保存（v3）------------------------------------------------
+    # **1 エポックごとにしまう。** これが無いと、停電やサーバーの落ちで
+    # 何時間ぶんの学習が丸ごと消える（実測：2026-09-12 に電源が落ちて 1 回ぶん失った）。
+    # 書いている途中に落ちても壊れないよう、**別名で書いてから置き換える**。
+    last = os.path.join(RUNS, "last_" + a.name + ".pth")
+    ep0 = 0
+    if a.fresh and os.path.exists(last):
+        os.remove(last); print("途中の保存を捨てました（--fresh）。")
+    elif os.path.exists(last):
+        try:
+            lk = torch.load(last, map_location=device)
+            if int(lk.get("base", a.base)) != int(a.base):
+                raise ValueError("base %s → %s" % (lk.get("base"), a.base))
+            if int(lk.get("size", D.N)) != int(D.N):
+                raise ValueError("大きさ %s → %s" % (lk.get("size"), D.N))
+            if int(lk.get("epoch", 0)) >= a.epochs:
+                raise ValueError("もう %s 回まで終わっています" % lk.get("epoch"))
+            net.load_state_dict(lk["model"])
+            opt.load_state_dict(lk["opt"])
+            if lk.get("scaler"):
+                scaler.load_state_dict(lk["scaler"])
+            ep0 = int(lk.get("epoch", 0))
+            step = int(lk.get("step", step))
+            print("途中から続けます：%d 回めまで終わっています（%s）" % (ep0, lk.get("at")))
+        except Exception as e:
+            print("途中の保存は使いません（%s）。はじめから学習します。" % e)
+            ep0 = 0
+
+    def save_last(ep):
+        tmp = last + ".tmp"
+        torch.save({"model": net.state_dict(), "opt": opt.state_dict(),
+                    "scaler": scaler.state_dict() if device.type == "cuda" else None,
+                    "epoch": ep, "step": step, "base": a.base, "size": D.N,
+                    "name": a.name, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, tmp)
+        os.replace(tmp, last)          # 置き換えは一瞬なので、途中で落ちても壊れない
+
     t0 = time.time()
     put_progress(state="running", epoch=0, epochs=a.epochs, pairs=len(tr), val=len(va),
                  started=started, device=str(device), bs=a.bs, lr=a.lr,
                  prev=best_prev, pid=os.getpid())
-    put_curve({"ep": 0}, fresh=True)          # 新しい回。前の回の線は消す
+    if not ep0:
+        put_curve({"ep": 0}, fresh=True)      # 新しい回。前の回の線は消す
     v1 = v0 = None
-    for ep in range(1, a.epochs + 1):
+    for ep in range(ep0 + 1, a.epochs + 1):
         net.train()
         tot, nb = 0.0, 0
         for x, y in batches(tr, a.bs, rng):
@@ -225,12 +265,13 @@ def main():
             print(f"epoch {ep:3d}  loss {avg:.4f}  "
                   f"一致(手がかりあり) {v1 if v1 is None else round(v1,3)}  "
                   f"一致(手がかり無し) {v0 if v0 is None else round(v0,3)}")
-        sec = (time.time() - t0) / ep
+        save_last(ep)                          # ここまでは、落ちても残る
+        sec = (time.time() - t0) / max(1, ep - ep0)
         put_curve({"ep": ep, "loss": round(avg, 5), "iou": v1, "iou_nohint": v0})
         put_progress(state="running", epoch=ep, epochs=a.epochs, loss=round(avg, 5),
                      iou=v1, iou_nohint=v0, pairs=len(tr), val=len(va), step=step,
                      started=started, device=str(device), bs=a.bs, lr=a.lr,
-                     prev=best_prev, secPerEpoch=round(sec, 2),
+                     prev=best_prev, secPerEpoch=round(sec, 2), resumedFrom=(ep0 or None),
                      etaSec=int(sec * (a.epochs - ep)), pid=os.getpid())
 
     v1 = val_score(net, va, device, True)
@@ -243,6 +284,8 @@ def main():
                        datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
     torch.save(ck, gen)
     print("世代を残しました:", gen)
+    if os.path.exists(last):
+        os.remove(last)                        # 終わったので、途中の保存は要らない
 
     # 検証が無い／良くなった ときだけ差し替える。悪くなったら据え置き。
     done = dict(state="done", epoch=a.epochs, epochs=a.epochs, iou=v1, iou_nohint=v0,

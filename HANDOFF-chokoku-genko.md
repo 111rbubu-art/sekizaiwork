@@ -1923,6 +1923,13 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
 - `gaichu-portal/index.php`(v1.2.2)、`upload.php`(v18)、`submit.php`(v3) のアップロード
 - 工事関連データタブの「彫刻記入用紙返却／彫刻校正確定／彫刻納品」ゾーン
 
+- **AIサーバー（Ubuntu）が 2026-09-12 12:49 ごろ、突然落ちた**。`journalctl -b -1` の
+  終わりに**片づけの記録がいっさい無い**（`Stopping…`／`Reached target Shutdown` が無い）ので、
+  ソフトではなく**電気が切れた**側。学習中に何度も起きるなら電源の容量を疑う
+  - 対策として `train.py` を**1 エポックごとに `runs/last_<名前>.pth` へ保存**するようにした。
+    同じ `--name` で回し直せば続きから。それまでは**最後に 1 回しか保存しておらず、
+    落ちると学習が丸ごと消えていた**
+
 ## 触ってはいけないもの
 
 - `docker compose down -v`（Dify のデータが消える）

@@ -70,7 +70,8 @@ def _retire_old():
     どちらの学習だったかは記録に残っていないので、**分かる名前にして外す**のが正しい。
     """
     for a, b in (("progress.json", "progress_old.json"),
-                 ("curve.jsonl", "curve_old.jsonl")):
+                 ("curve.jsonl", "curve_old.jsonl"),
+                 ("train.log", "train_old.log")):
         src, dst = os.path.join(RUNS, a), os.path.join(RUNS, b)
         if os.path.exists(src) and not os.path.exists(dst):
             try:
@@ -607,9 +608,13 @@ def train_stop():
 
 @app.get("/api/takuhon/trainlog")
 def trainlog(lines: int = 40, which: str = "ink"):
+    """①②で**別々**の画面ログ。
+
+    **無いときに古い train.log を出してはいけない。**
+    ②「整える」を回したログが、①「読む（拓本）」の欄に出て、
+    「拓本の学習はしていないのに 1850 組と出ている」と迷わせた（2026-09-13）。
+    """
     p = _log_path(which)
-    if not os.path.exists(p):
-        p = TRAINLOG                      # 古い書き方
     try:
         with open(p, encoding="utf-8", errors="replace") as f:
             ls = f.read().splitlines()

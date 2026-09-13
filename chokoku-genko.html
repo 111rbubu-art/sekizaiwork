@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.10</title>
+<title>彫刻原稿 v21.11</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2049,7 +2049,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.10";
+var APP_VER = "v21.11";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13193,21 +13193,57 @@ function fitGrowMask(m, w, h, r){
    これが「AI 書体補正をかけると画がくっついて団子になる」の元。
    学習と**同じ切り取り方**にそろえる。 */
 var TRACE_PAD = 0.06;              /* make_synth.py fit_box(pad=0.06) と同じ */
-/* 墨の四角 → 正方形 → 絵の 88%。戻すときに使う写し方も一緒に返す */
+/* 枠は **字（＝正解の側）の四角** から取る（v21.11。**墨の四角ではない**）。
+
+   `make_synth.py` はこの順で作っている。
+     tgt = fit_box(崩した字)      … **正解**を枠の 88% に置く
+     inp = degrade(tgt)           … その**中で**欠けさせる（枠は動かさない）
+   つまり学習の入力は「正解の枠の中にある、**88% より小さい**墨」。
+   ところが v21.10 は**拾った墨の四角**を 88% に伸ばしていた。
+   かすれて短く拾えた墨ほど大きく引き伸ばされ、そのうえ AI が
+   「画をあるべき長さまで伸ばす」ので、二重に伸びて枠からはみ出していた
+   （本人の指摘「かなり伸ばしてしまっていますが 予定無いですか」）。
+
+   こちらで「正解の枠」に当たるのは、**いまの字の輪郭**（`G.bb`。
+   フォントから起こして拓本に合わせてある）。ここを枠にすれば、
+   墨がかすれていても枠は動かず、学習と同じ見え方になる。
+
+   ただし輪郭がまだ拓本に合っていない（墨が大きくはみ出す）ことはある。
+   はみ出しが 25% までなら枠を広げて墨を入れ、それ以上なら
+   **字の枠のまま**にする（遠くの地のごみで枠が壊れるのを防ぐ）。 */
 function traceBox(G, ink, n){
-  var w = G.w, h = G.h, x, y, i;
-  var x1 = 1e9, x2 = -1, y1 = 1e9, y2 = -1;
+  var w = G.w, h = G.h, x, y;
+  var ix1 = 1e9, ix2 = -1, iy1 = 1e9, iy2 = -1;
   for (y = 0; y < h; y++) for (x = 0; x < w; x++){
     if (!ink[y*w + x]) continue;
-    if (x < x1) x1 = x; if (x > x2) x2 = x;
-    if (y < y1) y1 = y; if (y > y2) y2 = y;
+    if (x < ix1) ix1 = x; if (x > ix2) ix2 = x;
+    if (y < iy1) iy1 = y; if (y > iy2) iy2 = y;
   }
-  if (x2 < 0) return null;
+  if (ix2 < 0) return null;
+  var x1 = ix1, x2 = ix2, y1 = iy1, y2 = iy2, from = "墨の四角";
+  var bb = G.bb;
+  if (bb && G.cell){                                  /* 字の四角（ます目の座標） */
+    var gx1 = (bb.x - G.x0) / G.cell, gx2 = (bb.x + bb.w - G.x0) / G.cell;
+    var gy1 = (G.y1 - bb.y - bb.h) / G.cell, gy2 = (G.y1 - bb.y) / G.cell;
+    var side0 = Math.max(gx2 - gx1, gy2 - gy1);
+    if (side0 > 2){
+      var ux1 = Math.min(gx1, ix1), ux2 = Math.max(gx2, ix2);
+      var uy1 = Math.min(gy1, iy1), uy2 = Math.max(gy2, iy2);
+      var over = Math.max(ux2 - ux1, uy2 - uy1) / side0;
+      var use = (over <= 1.25);                       /* 墨のはみ出しが 25% まで */
+      x1 = Math.round(use ? ux1 : gx1); x2 = Math.round(use ? ux2 : gx2);
+      y1 = Math.round(use ? uy1 : gy1); y2 = Math.round(use ? uy2 : gy2);
+      from = use ? "字の四角（墨のはみ出しを入れた）" : "字の四角";
+    }
+  }
   var bw = x2 - x1 + 1, bh = y2 - y1 + 1, side = Math.max(bw, bh);
   var inner = Math.round(n * (1 - TRACE_PAD * 2));
+  /* 墨が枠のどれだけを占めているか。学習の入力も 88% より小さいのがふつう */
+  var fill = Math.max(ix2 - ix1 + 1, iy2 - iy1 + 1) / side;
   return { sx0: x1 - Math.floor((side - bw) / 2),   /* 正方形の左上（ます目の座標） */
            sy0: y1 - Math.floor((side - bh) / 2),
-           side: side, s: inner / side, off: Math.floor((n - inner) / 2), n: n };
+           side: side, s: inner / side, off: Math.floor((n - inner) / 2), n: n,
+           from: from, fill: fill };
 }
 function traceMaskToPng(G, ink, n, B){
   var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
@@ -13283,9 +13319,10 @@ async function traceAskAI(G, ink, stage){
     return { ink: m,
              note: nm + " を通しました（" + ms + "ms／" + (at || "版不明") + "）。墨 " +
                    (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" +
-                   "／学習と同じ切り取り（字を枠の " +
-                   Math.round((1 - TRACE_PAD*2) * 100) + "% に、" +
-                   "ます目 1 つが " + B.s.toFixed(2) + " 画素）" };
+                   "／枠は" + B.from + "（絵の " +
+                   Math.round((1 - TRACE_PAD*2) * 100) + "%。墨はその " +
+                   Math.round(B.fill * 100) + "%、ます目 1 つが " +
+                   B.s.toFixed(2) + " 画素）" };
   } catch(e){
     return { note: "AI につながりませんでした（" + ((e && e.message) || e) + "）" };
   }

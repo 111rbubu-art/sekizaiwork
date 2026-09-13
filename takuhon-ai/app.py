@@ -95,6 +95,33 @@ def _log_path(which):
 SYNTHLOG = os.path.join(RUNS, "synth.log")
 SYNTHPID = os.path.join(RUNS, "synth.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
+
+
+def _pair_dir(root, pid):
+    """組のフォルダーを、名前から安全に引く。無ければ None。
+
+    **日本語の名前を弾かないこと**（2026-09-13 の不具合）。
+    ①「読む」の組は、彫刻原稿アプリが `pair_<家名>_g0-3_<字>` という名前で
+    送ってくる（`feedback` は `ord(c) > 127` を通すので、そのまま保存される）。
+    ところが絵を返す口は ASCII だけの `SAFE` で見ていたので、
+    **①の組の絵がぜんぶ 400 になって、1 枚も出なかった**。
+    ②（合成）の組は `syn_00001` と ASCII なので出ていた。それで
+    「②は出るのに①は出ない」という見え方になっていた。
+
+    名前の中身で決めるのはやめて、**出来上がった道が root の中に居るか**で見る。
+    こうすれば、どんな字が入っていても通り、`..` や `/` では外へ出られない。
+    """
+    if not root or not pid or len(pid) > 200:
+        return None
+    if "/" in pid or "\\" in pid or "\0" in pid or pid in (".", ".."):
+        return None
+    d = os.path.realpath(os.path.join(root, pid))
+    r = os.path.realpath(root)
+    if d != r and not d.startswith(r + os.sep):
+        return None
+    return d if os.path.isdir(d) else None
+
+
 os.makedirs(DATASET, exist_ok=True)
 os.makedirs(RUNS, exist_ok=True)
 _retire_old()
@@ -395,10 +422,9 @@ def img(which: str, pid: str, kind: str):
     ai は **いまのモデルにその組を通した結果**。正解と見くらべるためのもの。
     """
     root = _set_dir(which)
-    ok = root is not None and SAFE.match(pid) and kind in ("raw", "mask", "hint1", "hint2", "ai")
-    if not ok:
+    d = _pair_dir(root, pid)
+    if d is None or kind not in ("raw", "mask", "hint1", "hint2", "ai"):
         return JSONResponse({"error": "bad_request"}, status_code=400)
-    d = os.path.join(root, pid)
     if kind != "ai":
         f = os.path.join(d, kind + ".png")
         if kind == "hint2" and not os.path.exists(f):

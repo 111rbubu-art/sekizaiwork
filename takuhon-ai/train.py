@@ -277,10 +277,14 @@ def main():
             tot += loss.item(); nb += 1; step += 1
         avg = tot / max(1, nb)
         if ep % 5 == 0 or ep == a.epochs:
-            v1 = val_score(net, va, device, True)
+            # **手がかりを使わない学習（②）では、「手がかりあり」を測らない。**
+            # 一度も見せていないものを本番で見せることになるので、
+            # 数字が下がる（実測：手がかりあり 0.794／手がかり無し 0.877）。
+            # 意味の無い数字が並ぶと、どちらを見ればよいのか分からなくなる。
+            v1 = None if a.nohint else val_score(net, va, device, True)
             v0 = val_score(net, va, device, False)
-            print(f"epoch {ep:3d}  loss {avg:.4f}  "
-                  f"一致(手がかりあり) {v1 if v1 is None else round(v1,3)}  "
+            print(f"epoch {ep:3d}  loss {avg:.4f}  " +
+                  (f"一致(手がかりあり) {round(v1,3)}  " if v1 is not None else "") +
                   f"一致(手がかり無し) {v0 if v0 is None else round(v0,3)}")
         save_last(ep)                          # ここまでは、落ちても残る
         sec = (time.time() - t0) / max(1, ep - ep0)
@@ -291,7 +295,7 @@ def main():
                      prev=best_prev, secPerEpoch=round(sec, 2), resumedFrom=(ep0 or None),
                      etaSec=int(sec * (a.epochs - ep)), pid=os.getpid())
 
-    v1 = val_score(net, va, device, True)
+    v1 = None if a.nohint else val_score(net, va, device, True)
     v0 = val_score(net, va, device, False)
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     ck = {"model": net.state_dict(), "step": step, "at": at,

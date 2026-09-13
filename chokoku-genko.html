@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.14</title>
+<title>彫刻原稿 v21.15</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2036,7 +2036,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.14";
+var APP_VER = "v21.15";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7251,6 +7251,7 @@ function rotOff(){
 }
 /* 角度を v にする。回した分だけ、回転中心が動かないように off を足し直す。 */
 function setRot(v){
+  var f0 = rubFrameSt();
   var W = RUB.W || (RUB.img ? RUB.img.naturalWidth : 0);
   var H = RUB.H || (RUB.img ? RUB.img.naturalHeight : 0);
   var cx = W/2, cy = H/2;
@@ -7261,8 +7262,49 @@ function setRot(v){
   S.rub.off = { x: +(c*ax - sn*ay + p.x - cx).toFixed(3),
                 y: +(sn*ax + c*ay + p.y - cy).toFixed(3) };
   S.rub.rot = +num(v,0).toFixed(2);
+  rubPaintRemap(f0, rubFrameSt());        /* 塗りも一緒に動かす */
 }
-function resetRot(){ S.rub.rot = 0; S.rub.off = { x:0, y:0 }; }
+function resetRot(){
+  var f0 = rubFrameSt();
+  S.rub.rot = 0; S.rub.off = { x:0, y:0 };
+  rubPaintRemap(f0, rubFrameSt());
+}
+/* --- 回転を変えたら、塗りも一緒に動かす（v21.15） ---------------------
+   ［消す］［塗る］の丸は「拓本の画素」で持っている（`S.rub.paint`）。
+   ところがその画素の枠は、**回転をかけたあとの絵**（`rebuildRub()` が
+   `translate(off) → 中心まわりに rot 回転 → 画像を置く` で作る）。
+   だから回転や 180°反転を変えると、**絵だけが動いて塗りが置き去りになり**、
+   消した所・足した所がずれる（本人の指摘）。
+   角度を変えるときは、塗りを
+     いまの枠 → 元の写真の座標 → 新しい枠
+   と移し替える。こうすれば、塗りは写真の同じ場所を指したままになる。 */
+function rubFrameSt(){
+  var o = rotOff();
+  return { rot: rubRotDeg(), ox: o.x, oy: o.y,
+           cx: (RUB.W || 0) / 2, cy: (RUB.H || 0) / 2 };
+}
+function rubPtToSrc(x, y, f){             /* 枠 → 元の写真 */
+  var a = -f.rot * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+  var dx = x - f.ox - f.cx, dy = y - f.oy - f.cy;
+  return { x: c*dx - sn*dy + f.cx, y: sn*dx + c*dy + f.cy };
+}
+function rubPtFromSrc(x, y, f){           /* 元の写真 → 枠 */
+  var a = f.rot * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+  var dx = x - f.cx, dy = y - f.cy;
+  return { x: c*dx - sn*dy + f.cx + f.ox, y: sn*dx + c*dy + f.cy + f.oy };
+}
+function rubPaintRemap(f0, f1){
+  if (!f0 || !f1 || !RUB.W) return 0;
+  if (f0.rot === f1.rot && f0.ox === f1.ox && f0.oy === f1.oy) return 0;
+  var ps = (S.rub && S.rub.paint) || [];
+  if (!ps.length) return 0;
+  ps.forEach(function(st){
+    var sp = rubPtToSrc(st.x, st.y, f0), q = rubPtFromSrc(sp.x, sp.y, f1);
+    st.x = +q.x.toFixed(2); st.y = +q.y.toFixed(2);
+  });
+  rubPaintBump();                         /* 拾った墨に塗り直させる */
+  return ps.length;
+}
 
 function rebuildRub(){
   if (!RUB.img) return;
@@ -7296,9 +7338,11 @@ function rubFlip180(){
   var r = S.rub, W = RUB.W, H = RUB.H;
   var mx = function(v){ return W - num(v, 0); };   /* 左右を裏返す */
   var my = function(v){ return H - num(v, 0); };   /* 上下を裏返す */
+  var f0 = rubFrameSt();
 
   r.flip180 = !r.flip180;
   r.pivot = null; r.off = { x:0, y:0 };            /* 回転の中心は取り直す */
+  rubPaintRemap(f0, rubFrameSt());                 /* 塗りも一緒に裏返す（v21.15） */
 
   var t = r.calTop; r.calTop = my(r.calBot); r.calBot = my(t);
   var l = r.bandL;  r.bandL  = mx(r.bandR);  r.bandR  = mx(l);
@@ -8793,8 +8837,9 @@ function rubLineTake(){
 function rubLineFixRot(){
   var L = (S.rub.lines || [])[0];
   if (!L){ msg("先に［この行を見立てる］を押してください。", true); return; }
-  var was = num(S.rub.rot, 0);
+  var was = num(S.rub.rot, 0), f0 = rubFrameSt();
   S.rub.rot = Math.round((was - L.deg) * 100) / 100;
+  rubPaintRemap(f0, rubFrameSt());        /* 塗りも一緒に動かす */
   A = null; RUB.mask = null;
   rebuildRub(); syncOriginY(); renderAll(); rubPanel(); rubRender(); persist();
   msg("角度を " + was.toFixed(2) + "° → " + S.rub.rot.toFixed(2) + "° にしました。もう一度見立てて確かめてください。");

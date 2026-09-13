@@ -6683,7 +6683,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.428';
+var APP_VERSION = 'v1.9.429';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11020,10 +11020,21 @@ var _koujiThumbMapLoading = false;
    あわせて、**large（最大 800px）ではなく 176px の方**をもらう。
    枠は 104px なので large は無駄で、通信量が 10 倍ほど違う。 */
 function _lthumbKey(fp){ return 'lthumb:' + String(fp || ''); }
+/* **取っておくのは「未完了」のものだけ**（本人の取り決め。v1.9.429）。
+   終わった案件のサムネまで貯めると、手元がふくらむだけで、もう開かない。
+     工事 … endinfo（最終チェック）が入っていたら 完了
+     納骨 … _x524a__x9664_ が true なら 完了 */
+function _lthumbUndone(it){
+  if (!it) return false;
+  if (it['endinfo']) return false;
+  if (it['_x524a__x9664_'] === true) return false;
+  return true;
+}
 /* サムネの住所（CDN）から絵を落として、手元に取っておく。
-   落とせなければ、今までどおり住所をそのまま使う。 */
-function _lthumbFetch(fp, url){
-  if (!fp || !url) return Promise.resolve(url);
+   落とせなければ、今までどおり住所をそのまま使う。
+   keep が false なら、取っておかない（絵も落とさない。住所のまま出す）。 */
+function _lthumbFetch(fp, url, keep){
+  if (!fp || !url || !keep) return Promise.resolve(url);
   return fetch(url).then(function(r){ return r.ok ? r.blob() : null; })
     .then(function(b){
       if (!b || !b.size) return url;
@@ -11061,14 +11072,15 @@ function _loadKoujiListThumbs() {
   _applyKoujiThumbs();                 // 取得済みは即反映
   if (_koujiThumbMapLoading) return;
 
-  // itemId → Folder_Pass のマップ（allItemsから）
-  var idToPass = {};
+  // itemId → Folder_Pass のマップ（allItemsから）。未完了かどうかも一緒に。
+  var idToPass = {}, idUndone = {};
   for (var i = 0; i < allItems.length; i++) {
     var it = allItems[i];
     var id = String(it['id'] || '');
     if (!id) continue;
     var fp = _koujiItemFolderPass(it);
     if (fp) idToPass[id] = fp;
+    idUndone[id] = _lthumbUndone(it);
   }
   // 表示中かつ未取得・フォルダーありのアイテムを収集（重複排除）
   var pending = [], seen = {};
@@ -11088,10 +11100,10 @@ function _loadKoujiListThumbs() {
     _applyKoujiThumbs();
     pending = pending.filter(function(id){ return !(id in _koujiThumbMap); });
     if (!pending.length){ _koujiThumbMapLoading = false; return; }
-    return _koujiFetchThumbs(pending, idToPass);
+    return _koujiFetchThumbs(pending, idToPass, idUndone);
   }).catch(function(){ _koujiThumbMapLoading = false; });
 }
-function _koujiFetchThumbs(pending, idToPass){
+function _koujiFetchThumbs(pending, idToPass, idUndone){
   return getToken().then(function(resp) {
     var token = resp.accessToken;
     // 20件ずつ $batch に分割
@@ -11120,10 +11132,11 @@ function _koujiFetchThumbs(pending, idToPass){
             var u = _lthumbPick(res.body.thumbnails && res.body.thumbnails[0]);
             if (u){
               _koujiThumbMap[res.id] = u;                 /* まず住所で出す */
-              _lthumbFetch(idToPass[res.id], u).then(function(su){
-                _koujiThumbMap[res.id] = su;              /* 取っておけたら、そちらに差し替え */
-                _applyKoujiThumbs();
-              });
+              _lthumbFetch(idToPass[res.id], u, idUndone && idUndone[res.id])
+                .then(function(su){
+                  _koujiThumbMap[res.id] = su;            /* 取っておけたら、そちらに差し替え */
+                  _applyKoujiThumbs();
+                });
             } else {
               _koujiThumbMap[res.id] = 'none';
             }
@@ -24186,13 +24199,14 @@ function _loadNokListThumbs() {
   _applyNokThumbs();                 // 取得済みは即反映
   if (_nokThumbMapLoading) return;
 
-  var idToPass = {};
+  var idToPass = {}, idUndone = {};
   for (var i = 0; i < allItems.length; i++) {
     var it = allItems[i];
     var id = String(it['id'] || '');
     if (!id) continue;
     var fp = _koujiItemFolderPass(it);
     if (fp) idToPass[id] = fp;
+    idUndone[id] = _lthumbUndone(it);
   }
   var pending = [], seen = {};
   for (var k = 0; k < imgs.length; k++) {
@@ -24211,10 +24225,10 @@ function _loadNokListThumbs() {
     _applyNokThumbs();
     pending = pending.filter(function(id){ return !(id in _nokThumbMap); });
     if (!pending.length){ _nokThumbMapLoading = false; return; }
-    return _nokFetchThumbs(pending, idToPass);
+    return _nokFetchThumbs(pending, idToPass, idUndone);
   }).catch(function(){ _nokThumbMapLoading = false; });
 }
-function _nokFetchThumbs(pending, idToPass){
+function _nokFetchThumbs(pending, idToPass, idUndone){
   return getToken().then(function(resp) {
     var token = resp.accessToken;
     var chunks = [];
@@ -24237,10 +24251,11 @@ function _nokFetchThumbs(pending, idToPass){
             var u = _lthumbPick(res.body.thumbnails && res.body.thumbnails[0]);
             if (u){
               _nokThumbMap[res.id] = u;                   /* まず住所で出す */
-              _lthumbFetch(idToPass[res.id], u).then(function(su){
-                _nokThumbMap[res.id] = su;                /* 取っておけたら、そちらに差し替え */
-                _applyNokThumbs();
-              });
+              _lthumbFetch(idToPass[res.id], u, idUndone && idUndone[res.id])
+                .then(function(su){
+                  _nokThumbMap[res.id] = su;              /* 取っておけたら、そちらに差し替え */
+                  _applyNokThumbs();
+                });
             } else {
               _nokThumbMap[res.id] = 'none';
             }
@@ -26937,7 +26952,13 @@ function _uploadKoujiThumbBlob(blob, baseName) {
     var blobUrl = URL.createObjectURL(blob);
     _koujiThumbMap[String(itemId)] = blobUrl;
     _nokThumbMap[String(itemId)] = blobUrl;
-    try { _attPut(_lthumbKey(folderPass), blob); } catch(e) {}   /* 手元の分も入れ替える */
+    /* 手元の分も入れ替える（未完了のものだけ取っておく決まり） */
+    try {
+      if (typeof currentItem === 'undefined' || _lthumbUndone(currentItem))
+        _attPut(_lthumbKey(folderPass), blob);
+      else
+        _attDrop(_lthumbKey(folderPass));
+    } catch(e) {}
     var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"], img.nok-list-thumb[data-item-id="' + itemId + '"]');
     if (cur) {
       cur.onerror = null; cur.src = blobUrl; cur.style.display = '';

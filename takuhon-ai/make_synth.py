@@ -156,10 +156,42 @@ def quirk(a, rng):
 
 # ---- 劣化（＝入力の側。太さは系統的に変えない） ---------------------------
 
+def gap_keep(a, r=9, m=2):
+    """正解の**すき間の芯**を返す（画と画の間の、細い地）。
+
+    ここをふさいでしまうと、AI は「無いものを描き起こす」しかなくなり、
+    **字を丸暗記する**（実測：入力に無い切れ込みが、出力に出てきた）。
+    それは「拓本の形をそのまま使う」という狙いの逆。
+    だから **劣化させても、すき間の芯だけは地のまま残す**。
+
+    r  … このます数より狭いすき間を守る（閉じ処理の半径）
+    m  … すき間の両側に、これだけ太ってよい余地を残す
+    """
+    ink = (a > 0.5)
+    c = _erode(_dilate(ink, r), r)              # 閉じる＝細いすき間が墨で埋まる
+    g = _dilate(ink, m)                         # 両側に残す余地
+    return (c & ~g).astype(np.float32)          # ふさがれた細いすき間の芯
+
+
+def _dilate(m, r):
+    """ひとまわり大きくする（ひし形。PIL の窓より 20 倍ほど速い）。"""
+    b = m
+    for _ in range(int(r)):
+        b = (b
+             | np.pad(b, ((1, 0), (0, 0)))[:-1, :] | np.pad(b, ((0, 1), (0, 0)))[1:, :]
+             | np.pad(b, ((0, 0), (1, 0)))[:, :-1] | np.pad(b, ((0, 0), (0, 1)))[:, 1:])
+    return b
+
+
+def _erode(m, r):
+    return ~_dilate(~m, r)
+
+
 def degrade(a, rng):
     """拓本を採ったときの荒れ・石の劣化を真似る。
 
     **太さは系統的に変えない**。角を丸める・縁を波打たせる・欠けさせる・かすれさせる。
+    **すき間はふさがない**（ふさぐと、AI が字を丸暗記して描き起こすようになる）。
     """
     h, w = a.shape
     rep = {}
@@ -239,6 +271,13 @@ def degrade(a, rng):
             b = stamp(b, 1, 0.010, 0.028, 0, True)
         else:
             break
+    # ⑦ **すき間の芯は、最後に必ず地へ戻す**。
+    #    ぼかし・盛り・面積合わせで細いすき間がふさがると、
+    #    AI は「入力に無い切れ込みを描き起こす」＝字を丸暗記する方へ行く。
+    keep = gap_keep(a)
+    n_fix = int(((b > 0.5) & (keep > 0.5)).sum())
+    b = np.where(keep > 0.5, 0.0, b).astype(np.float32)
+    rep["gapfix"] = n_fix
     rep["area"] = round(float(b.sum()) / max(1.0, float(a.sum())), 3)
     rep["bumps"] = bumps
     return b, rep
@@ -253,6 +292,8 @@ def main():
     ap.add_argument("--val", type=int, default=0, help="検証用へ取り分ける組数")
     ap.add_argument("--chars", default="", help="使う字（既定は墓石でよく使う字）")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--valevery", type=int, default=7,
+                    help="検証用に取り分ける字の割合（既定 7 字に 1 字）")
     ap.add_argument("--no-wght", action="store_true",
                     help="太さの軸を使わない（可変フォントでも、輪郭を足して太らせる）")
     a = ap.parse_args()
@@ -263,6 +304,15 @@ def main():
         "令和平成昭和大正明治元　院居士信士信女大姉禅定門禅定尼童子童女"
         "俗名享年行年満歳没　建之施主納骨　仁義礼智信忠孝　遠久誉勘")
     chars = [c for c in chars if c.strip()]
+    # **検証用は、学習で一度も見ていない字にする**（v2026-09-13）。
+    # 同じ字から取り分けていたので、**丸暗記していても成績が良く出ていた**。
+    # 何字かに 1 字を検証用へ取り分ければ、「覚えただけ」なら成績が落ちる。
+    va_chars, tr_chars = [], []
+    step = max(2, int(a.valevery))
+    for i, c in enumerate(chars):
+        (va_chars if (a.val > 0 and i % step == 0) else tr_chars).append(c)
+    if not tr_chars:
+        tr_chars, va_chars = chars, []
 
     ax = None if a.no_wght else wght_axis(a.font)
     if ax:
@@ -275,9 +325,12 @@ def main():
     rng = np.random.default_rng(a.seed)
     prng = random.Random(a.seed)
     os.makedirs(a.out, exist_ok=True)
+    if va_chars:
+        print("学習に使う字 %d／検証にだけ使う字 %d（%s …）"
+              % (len(tr_chars), len(va_chars), "".join(va_chars[:8])))
     made = 0
     for i in range(a.n):
-        ch = prng.choice(chars)
+        ch = prng.choice(tr_chars)
         stroke = prng.choice([0, 0, 0, 1, 2, 3])          # 太さの違いは**崩しの側**
         wg = None
         if ax:
@@ -314,15 +367,42 @@ def main():
             print("…", made, "組")
     print("%d 組を作りました → %s" % (made, a.out))
 
-    if a.val > 0:
-        import shutil
+    # 検証用は**別に作る**（学習で見ていない字だけで）。
+    # 学習した分から取り分けると、丸暗記していても成績が良く出てしまう。
+    if a.val > 0 and va_chars:
         vdir = a.out + "_val"
         os.makedirs(vdir, exist_ok=True)
-        ds = sorted(d for d in os.listdir(a.out) if os.path.isdir(os.path.join(a.out, d)))
-        prng.shuffle(ds)
-        for d in ds[:a.val]:
-            shutil.move(os.path.join(a.out, d), os.path.join(vdir, d))
-        print("検証用に %d 組を移しました → %s" % (min(a.val, len(ds)), vdir))
+        vmade = 0
+        for i in range(a.val * 3):
+            if vmade >= a.val:
+                break
+            ch = prng.choice(va_chars)
+            wg = prng.uniform(ax["min"], ax["max"]) if ax else None
+            stroke = 0 if ax else prng.choice([0, 0, 0, 1, 2, 3])
+            try:
+                g = render(a.font, ch, BIG, stroke, wg, ax)
+            except Exception:
+                continue
+            if g.max() < 0.5:
+                continue
+            q, qrep = quirk(g, rng)
+            tgt = (fit_box(q, N) > 0.5).astype(np.float32)
+            inp, drep = degrade(tgt, rng)
+            hint = (fit_box(render(a.font, ch, BIG, 0, wg, ax), N) > 0.5).astype(np.float32)
+            if tgt.sum() < 200 or inp.sum() < 100:
+                continue
+            d = os.path.join(vdir, "val_%05d" % i)
+            os.makedirs(d, exist_ok=True)
+            Image.fromarray((inp*255).astype(np.uint8)).save(os.path.join(d, "raw.png"))
+            Image.fromarray((tgt*255).astype(np.uint8)).save(os.path.join(d, "mask.png"))
+            Image.fromarray((hint*255).astype(np.uint8)).save(os.path.join(d, "hint1.png"))
+            with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump({"char": ch, "synth": True, "unseen": True, "stroke": stroke,
+                           "wght": (round(wg, 1) if wg is not None else None),
+                           "quirk": qrep, "degrade": drep,
+                           "font": os.path.basename(a.font)}, f, ensure_ascii=False, indent=1)
+            vmade += 1
+        print("検証用に %d 組を作りました（**学習で見ていない字だけ**） → %s" % (vmade, vdir))
 
 
 if __name__ == "__main__":

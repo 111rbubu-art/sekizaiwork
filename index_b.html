@@ -6683,7 +6683,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.427';
+var APP_VERSION = 'v1.9.428';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -6712,6 +6712,9 @@ window._thumbRetry = _thumbRetry;
 // SharePointの通常ダウンロード(/content)経由でblob取得にフォールバックする。
 function _listThumbError(img) {
   if (!img || !img.src) return;
+  /* 手元に取っておいた絵（blob:）は、?_r= を付けて取り直すことができない。
+     取っておいた絵が読めないときは、取っておいた分を捨ててダウンロードに回す。 */
+  if (img.src.indexOf('blob:') === 0) { _thumbBlobFallback(img); return; }
   var n = parseInt(img.dataset.retry || '0', 10);
   if (n >= 3) { _thumbBlobFallback(img); return; }   // CDN3回失敗→ダウンロード方式へ
   img.dataset.retry = String(n + 1);
@@ -11007,6 +11010,47 @@ var KOUJI_THUMB_NAME = '_リストサムネ.png';     // 各フォルダー内�
 var _koujiThumbMap = {};          // {itemId: thumbUrl | 'none'}（未取得は未定義）
 var _koujiThumbMapLoading = false;
 
+/* ===== リストサムネを手元に取っておく（v1.9.428）==========================
+   これまでは、開くたびに
+     ① Graph の $batch でサムネの住所を聞く（20 件ずつ）
+     ② その住所（CDN）から絵を落とす
+   を毎回やり直していた。住所は 1 時間ほどで切れるので取っておけないが、
+   **絵そのものは取っておける**（添付と同じ IndexedDB。30 日）。
+   2 回目からは①②とも要らなくなり、開いた瞬間に出る。
+   あわせて、**large（最大 800px）ではなく 176px の方**をもらう。
+   枠は 104px なので large は無駄で、通信量が 10 倍ほど違う。 */
+function _lthumbKey(fp){ return 'lthumb:' + String(fp || ''); }
+/* サムネの住所（CDN）から絵を落として、手元に取っておく。
+   落とせなければ、今までどおり住所をそのまま使う。 */
+function _lthumbFetch(fp, url){
+  if (!fp || !url) return Promise.resolve(url);
+  return fetch(url).then(function(r){ return r.ok ? r.blob() : null; })
+    .then(function(b){
+      if (!b || !b.size) return url;
+      _attPut(_lthumbKey(fp), b);
+      return URL.createObjectURL(b);
+    })
+    .catch(function(){ return url; });
+}
+/* 手元にある絵を先に出す。出せたものは、聞きに行かなくてよい。 */
+function _lthumbPreload(ids, idToPass, map){
+  var jobs = ids.map(function(id){
+    var fp = idToPass[id];
+    if (!fp) return null;
+    return _attGet(_lthumbKey(fp)).then(function(b){
+      if (b && b.size) map[id] = URL.createObjectURL(b);
+    }).catch(function(){});
+  }).filter(Boolean);
+  return Promise.all(jobs);
+}
+/* もらったサムネのうち、枠に合う大きさを選ぶ（large は大きすぎる） */
+function _lthumbPick(t){
+  if (!t) return '';
+  return (t.c240x240 && t.c240x240.url) || (t.medium && t.medium.url) ||
+         (t.small && t.small.url) || (t.large && t.large.url) || '';
+}
+var LTHUMB_EXPAND = '$expand=thumbnails($select=c240x240,medium,small)';
+
 function _koujiItemFolderPass(item) {
   return item && (item['Folder_Pass'] || item['FolderPass']) || '';
 }
@@ -11039,7 +11083,16 @@ function _loadKoujiListThumbs() {
   if (!pending.length) return;
   _koujiThumbMapLoading = true;
 
-  getToken().then(function(resp) {
+  /* まず手元にある絵を出す。残った分だけ、聞きに行く（v1.9.428） */
+  _lthumbPreload(pending, idToPass, _koujiThumbMap).then(function(){
+    _applyKoujiThumbs();
+    pending = pending.filter(function(id){ return !(id in _koujiThumbMap); });
+    if (!pending.length){ _koujiThumbMapLoading = false; return; }
+    return _koujiFetchThumbs(pending, idToPass);
+  }).catch(function(){ _koujiThumbMapLoading = false; });
+}
+function _koujiFetchThumbs(pending, idToPass){
+  return getToken().then(function(resp) {
     var token = resp.accessToken;
     // 20件ずつ $batch に分割
     var chunks = [];
@@ -11051,7 +11104,7 @@ function _loadKoujiListThumbs() {
         return {
           id: id,
           method: 'GET',
-          url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&$expand=thumbnails'
+          url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&' + LTHUMB_EXPAND
         };
       });
       return fetch('https://graph.microsoft.com/v1.0/$batch', {
@@ -11064,9 +11117,16 @@ function _loadKoujiListThumbs() {
       }).then(function(data) {
         (data.responses || []).forEach(function(res) {
           if (res.status === 200 && res.body) {
-            var t = res.body.thumbnails && res.body.thumbnails[0];
-            var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
-            _koujiThumbMap[res.id] = u || 'none';
+            var u = _lthumbPick(res.body.thumbnails && res.body.thumbnails[0]);
+            if (u){
+              _koujiThumbMap[res.id] = u;                 /* まず住所で出す */
+              _lthumbFetch(idToPass[res.id], u).then(function(su){
+                _koujiThumbMap[res.id] = su;              /* 取っておけたら、そちらに差し替え */
+                _applyKoujiThumbs();
+              });
+            } else {
+              _koujiThumbMap[res.id] = 'none';
+            }
           } else if (res.status === 404) {
             _koujiThumbMap[res.id] = 'none';   // サムネ未登録（確定）
           }
@@ -24146,7 +24206,16 @@ function _loadNokListThumbs() {
   if (!pending.length) return;
   _nokThumbMapLoading = true;
 
-  getToken().then(function(resp) {
+  /* まず手元にある絵を出す。残った分だけ、聞きに行く（v1.9.428） */
+  _lthumbPreload(pending, idToPass, _nokThumbMap).then(function(){
+    _applyNokThumbs();
+    pending = pending.filter(function(id){ return !(id in _nokThumbMap); });
+    if (!pending.length){ _nokThumbMapLoading = false; return; }
+    return _nokFetchThumbs(pending, idToPass);
+  }).catch(function(){ _nokThumbMapLoading = false; });
+}
+function _nokFetchThumbs(pending, idToPass){
+  return getToken().then(function(resp) {
     var token = resp.accessToken;
     var chunks = [];
     for (var c = 0; c < pending.length; c += 20) chunks.push(pending.slice(c, c + 20));
@@ -24154,7 +24223,8 @@ function _loadNokListThumbs() {
     function runChunk(ids) {
       var requests = ids.map(function(id) {
         var rel = (idToPass[id] + '/' + KOUJI_THUMB_NAME).split('/').map(encodeURIComponent).join('/');
-        return { id: id, method: 'GET', url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&$expand=thumbnails' };
+        return { id: id, method: 'GET',
+                 url: '/drives/' + DRIVE_ID + '/root:' + rel + ':?$select=id,name&' + LTHUMB_EXPAND };
       });
       return fetch('https://graph.microsoft.com/v1.0/$batch', {
         method: 'POST',
@@ -24164,9 +24234,16 @@ function _loadNokListThumbs() {
       .then(function(data) {
         (data.responses || []).forEach(function(res) {
           if (res.status === 200 && res.body) {
-            var t = res.body.thumbnails && res.body.thumbnails[0];
-            var u = t && ((t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url));
-            _nokThumbMap[res.id] = u || 'none';
+            var u = _lthumbPick(res.body.thumbnails && res.body.thumbnails[0]);
+            if (u){
+              _nokThumbMap[res.id] = u;                   /* まず住所で出す */
+              _lthumbFetch(idToPass[res.id], u).then(function(su){
+                _nokThumbMap[res.id] = su;                /* 取っておけたら、そちらに差し替え */
+                _applyNokThumbs();
+              });
+            } else {
+              _nokThumbMap[res.id] = 'none';
+            }
           } else if (res.status === 404) {
             _nokThumbMap[res.id] = 'none';
           }
@@ -26860,6 +26937,7 @@ function _uploadKoujiThumbBlob(blob, baseName) {
     var blobUrl = URL.createObjectURL(blob);
     _koujiThumbMap[String(itemId)] = blobUrl;
     _nokThumbMap[String(itemId)] = blobUrl;
+    try { _attPut(_lthumbKey(folderPass), blob); } catch(e) {}   /* 手元の分も入れ替える */
     var cur = document.querySelector('img.kouji-list-thumb[data-item-id="' + itemId + '"], img.nok-list-thumb[data-item-id="' + itemId + '"]');
     if (cur) {
       cur.onerror = null; cur.src = blobUrl; cur.style.display = '';

@@ -371,6 +371,10 @@ def pairs(which: str = "pairs", limit: int = 60, offset: int = 0):
         out.append({
             "id": os.path.basename(d), "set": which,
             "char": meta.get("char", ""), "at": meta.get("at", ""),
+            # **絵の版**。作り直すと同じ名前で中身だけ変わるので、
+            # これを絵の住所に付けないと、**ブラウザが古い絵を出し続ける**
+            # （実測：作り直したのに、拓本と正解だけ前の字のままだった）。
+            "mt": int(os.path.getmtime(d)),
             "hint1": os.path.exists(os.path.join(d, "hint1.png")),
             "hint2": os.path.exists(os.path.join(d, "hint2.png")) or
                      os.path.exists(os.path.join(d, "hint.png")),

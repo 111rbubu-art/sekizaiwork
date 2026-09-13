@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.16</title>
+<title>彫刻原稿 v21.17</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2036,7 +2036,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.16";
+var APP_VER = "v21.17";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13539,6 +13539,29 @@ function fitCubicRun(pts, t1, t2, tol, out, depth){
   fitCubicRun(pts.slice(0, at + 1), t1, tc, tol, out, depth + 1);
   fitCubicRun(pts.slice(at), [-tc[0], -tc[1]], t2, tol, out, depth + 1);
 }
+/* ひとつながりの端の傾き。`win` ぶん離れた点まで見て向きを出す（v21.17）。
+   run の 3 分の 1 より先までは見ない（短いひとつながりを鈍らせないため）。
+   `atStart` が false のときは、終点から**さかのぼる**向きを返す
+   （3 次ベジエの終わりの手は、その向きに伸ばす）。 */
+function runTangent(run, atStart, win){
+  var n = run.length;
+  if (n < 2) return [0, 0];
+  var i0 = atStart ? 0 : n - 1, step = atStart ? 1 : -1;
+  var total = 0, k;
+  for (k = 1; k < n; k++) total += vLen(vSub(run[k], run[k-1]));
+  var lim = Math.min(Math.max(win || 0, 1e-9), total / 3);
+  var p0 = run[i0], i = i0, d = 0, last = run[i0 + step];
+  for (;;){
+    var j = i + step;
+    if (j < 0 || j >= n) break;
+    d += vLen(vSub(run[j], run[i]));
+    i = j; last = run[j];
+    if (d >= lim) break;
+  }
+  var v = vSub(last, p0);
+  if (vLen(v) < 1e-9) v = vSub(run[i0 + step], p0);
+  return vUnit(v);
+}
 /* 角を見つける。ぎざぎざに引きずられないよう、**少し離れた点**との向きで測る。 */
 function findCorners(pts, win, cosLim){
   var n = pts.length, mark = new Array(n), i;
@@ -13591,8 +13614,15 @@ function traceCurveNodes(loop, tol, cornerDeg, win){
   }
   var beziers = [];
   segs.forEach(function(run){
-    var t1 = vUnit(vSub(run[1], run[0]));
-    var t2 = vUnit(vSub(run[run.length-2], run[run.length-1]));
+    /* 端の傾きは、**となりの 1 点だけで決めてはいけない**（v21.17）。
+       もとがます目の階段なので、角のすぐ先の 1 歩がななめだと、
+       そこだけ 45° の傾きになる。曲線の形は端の傾きで決まるので、
+       **まっすぐなはずの縁が大きくふくらむ**（実測：十字で 45° ずれ、
+       縁が 7〜10 ます ふくらみ、墨との一致 79%。まっすぐなら 99%）。
+       少し離れた点まで見て、階段のぎざぎざに引きずられないようにする
+       （角を見つけるときと同じ考え方）。 */
+    var t1 = runTangent(run, true, win);
+    var t2 = runTangent(run, false, win);
     fitCubicRun(run, t1, t2, tol, beziers, 0);
   });
   if (!beziers.length) return null;

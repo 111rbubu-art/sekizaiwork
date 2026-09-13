@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.15</title>
+<title>彫刻原稿 v21.16</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2036,7 +2036,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.15";
+var APP_VER = "v21.16";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12657,8 +12657,7 @@ function fitInkOne(G, glyph0, val0, out, got, inkDark, flat){
      **ます 1 つきざみしか動かせない**（墨は ます目の 0/1 なので、
      半ますだけ広げることができない）。**ます目に丸めて、実際に動いた量を残す**。
      1 ますは［墨のこまかさ］と字の大きさで決まる（0.08〜0.15mm ほど）。 */
-  var gw0 = Math.max(-2, Math.min(2, num($("peGrow") && $("peGrow").value, 0)));
-  var gwC = (gw0 && G.mmCell) ? Math.round(gw0 / G.mmCell) : 0;
+  var gw0 = peGrowMm(), gwC = peGrowCells(G);
   if (gwC) m1 = fitGrowMask(m1, w, h, gwC);
   var big = fitDropBig(m1, w, h, Math.round(nG * 2.5)), nb = 0;
   for (i = 0; i < w*h; i++) nb += big[i];
@@ -13002,13 +13001,17 @@ function fitPrep(raw){
   if (!PE || !PE.rub || !RUB.data) return null;
   var G = fitGrid(); if (!G) return null;
   var R = PE.rub;
-  var key = [PE.gi, PE.ci, PE.upem, R.dx, R.dy, R.k, R.kx, R.ky, R.ax, R.ay,
+  /* ［縁を広げる］だけは別に持つ（v21.16）。
+     AI 書体補正のあとに広げても**補正前に戻らない**ようにするため。
+     ほかの拾い方（しきい・ならし・こまかさ…）が変われば AI の結果は捨てるが、
+     広げるは AI の出した墨に**そのまま足せる**（ふちを動かすだけなので）。 */
+  var keyNG = [PE.gi, PE.ci, PE.upem, R.dx, R.dy, R.k, R.kx, R.ky, R.ax, R.ay,
              S.rub.invert, S.rub.thresh, S.rub.rot, S.rub.flip180,
              num($("peInkAdj") && $("peInkAdj").value, 0),
              num($("peInkSmooth") && $("peInkSmooth").value, 0),
-             num($("peGrow") && $("peGrow").value, 0),
              ($("peInkFine") && $("peInkFine").value) || FIT_FINE,
              rotOff().x, rotOff().y, RUB.W, RUB.H].join("/");
+  var key = keyNG + "/g" + peGrowMm();
   if (PE.inkC && PE.inkC.key === key){
     FIT_DIAG = PE.inkC.diag;
     if (PE.inkC.paintV !== RUBPAINT_V){          /* 塗りが変わったので重ね直す */
@@ -13028,7 +13031,7 @@ function fitPrep(raw){
   var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
   var ink0 = fitInkMask(G, g0); if (!ink0) return null;
   var ink = fitApplyPaint(G, ink0);
-  PE.inkC = { key: key, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG,
+  PE.inkC = { key: key, keyNG: keyNG, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG,
               paintV: RUBPAINT_V, paintN: rubPaint().length };
   return fitAiInk({ G: G, ink: ink, again: false }, raw);
 }
@@ -13042,20 +13045,35 @@ function fitPrep(raw){
 function fitAiInk(P, raw){
   if (!P || !PE || !PE.aiInk) return P;
   if (raw) return P;                 /* 生の墨がほしい所（学習用に保存・AI に渡す元） */
-  /* 墨の拾い方が変わったら、AI の結果はもう今の墨のものではない。捨てる。 */
-  if (!PE.inkC || PE.aiInk.key !== PE.inkC.key){
+  /* 拾い方が変わったら、AI の結果はもう今の墨のものではない。捨てる。
+     ただし［縁を広げる］は別（下で足し直す）。 */
+  if (!PE.inkC || PE.aiInk.keyNG !== PE.inkC.keyNG){
     PE.aiInk = null;
     PE.aiDrop = true;                /* 帯の方で 1 回だけ知らせる */
     return P;
   }
   /* ［消す］［塗る］は**AI のあとにも効く**（v21.12）。
      AI の出した墨（`ink0`）の上に、塗りをかけ直すだけ。
-     塗りは「丸を置く」ものなので、前からある丸をもう一度かけても結果は変わらない。 */
-  if (PE.aiInk.pv !== RUBPAINT_V || !PE.aiInk.ink){
-    PE.aiInk.ink = fitApplyPaint(P.G, PE.aiInk.ink0);
+     塗りは「丸を置く」ものなので、前からある丸をもう一度かけても結果は変わらない。
+     ［縁を広げる］も同じく AI のあとに効く（v21.16）。
+     AI にかけたときの広げ量との**差だけ**、AI の墨のふちを動かす。 */
+  var G = P.G, cNow = peGrowCells(G);
+  if (PE.aiInk.pv !== RUBPAINT_V || PE.aiInk.gwC !== cNow || !PE.aiInk.ink){
+    var d = cNow - num(PE.aiInk.gwC0, 0);
+    var base = d ? fitGrowMask(PE.aiInk.ink0, G.w, G.h, d) : PE.aiInk.ink0;
+    PE.aiInk.ink = fitApplyPaint(G, base);
     PE.aiInk.pv  = RUBPAINT_V;
+    PE.aiInk.gwC = cNow;
   }
-  return { G: P.G, ink: PE.aiInk.ink, again: P.again, ai: true };
+  return { G: G, ink: PE.aiInk.ink, again: P.again, ai: true };
+}
+/* ［縁を広げる］の mm と、それが ます いくつぶんか。fitInkMask と同じ出し方 */
+function peGrowMm(){
+  return Math.max(-2, Math.min(2, num($("peGrow") && $("peGrow").value, 0)));
+}
+function peGrowCells(G){
+  var mm = peGrowMm();
+  return (mm && G && G.mmCell) ? Math.round(mm / G.mmCell) : 0;
 }
 
 /* === 墨の縁から作字をつくる（なぞり。v20.89） ==========================
@@ -15848,7 +15866,8 @@ async function peAiShapeGo(){
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
   /* いま画面に出ている墨の拾い方と対で覚える。拾い方が変われば fitAiInk が捨てる。
      `ink0` は塗りをかける前の、AI が出したそのもの。 */
-  PE.aiInk  = { key: (PE.inkC && PE.inkC.key) || "", pv: -1, ink0: got.ink, ink: null };
+  PE.aiInk  = { keyNG: (PE.inkC && PE.inkC.keyNG) || "", pv: -1, ink0: got.ink, ink: null,
+                gwC0: peGrowCells(P.G), gwC: null };   /* 通したときの広げ量を覚える */
   PE.aiDrop = false;
   peInkShowOn();                    /* 何が変わったのか見えないと決められない */
   PE_INFO_HOLD = false;

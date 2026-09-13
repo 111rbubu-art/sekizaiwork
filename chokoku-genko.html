@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.8</title>
+<title>彫刻原稿 v21.9</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1264,6 +1264,11 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
             まとめて太らせるときに。<b>画の太さは、この 2 倍</b>になります。
             0 に戻せば元どおり。この墨から④で字を作ります。</p>
           <button class="mini" id="peAiShape">AI 書体補正</button>
+          <p class="hint" style="margin:3px 0 0;">押すと<b>その場で</b>、拾った墨を
+            <b>② 整える（書体らしく）</b>に通したものに<b>差し替えます</b>。
+            <b>もう一度押せば元の墨に戻ります。</b>
+            ④はそのとき見えている墨で字を作ります。
+            拾い方や［消す］［塗る］を変えると、自動で切に戻ります。</p>
 
           <h3 class="sec">④ 字を作る</h3>
           <button class="mini primary" id="peTrace">現トレースから字を作る</button>
@@ -2044,7 +2049,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.8";
+var APP_VER = "v21.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12976,14 +12981,32 @@ function fitPrep(){
       PE.inkC.paintV = RUBPAINT_V;
       PE.inkC.soft = null;
     }
-    return { G: PE.inkC.G, ink: PE.inkC.ink, again: true };
+    return fitAiInk({ G: PE.inkC.G, ink: PE.inkC.ink, again: true });
   }
   var g0 = fitGlyphMask(PE.contours, G); if (!g0) return null;
   var ink0 = fitInkMask(G, g0); if (!ink0) return null;
   var ink = fitApplyPaint(G, ink0);
   PE.inkC = { key: key, G: G, ink0: ink0, ink: ink, diag: FIT_DIAG,
               paintV: RUBPAINT_V, paintN: rubPaint().length };
-  return { G: G, ink: ink, again: false };
+  return fitAiInk({ G: G, ink: ink, again: false });
+}
+/* ［AI 書体補正］が入のあいだは、**拾った墨そのものを AI の出したものに差し替える**
+   （v21.9）。前は「④を押したときだけ中で通す」だったので、何がどう変わるのか
+   画面で見えなかった。いまは押した時点で墨の絵が変わり、もう一度押せば元に戻る。
+
+   墨の拾い方（拾う量・ならし・縁を広げる…）や［消す］［塗る］を変えると、
+   AI に渡した墨と今の墨が別物になる。そのときは**黙って差し替えを続けない**で、
+   入切を切に落として元の墨に戻す（見えているものと、④で作るものを必ず同じにする）。 */
+function fitAiInk(P){
+  if (!P || !PE || !PE.aiInk) return P;
+  var stale = !PE.inkC || PE.aiInk.key !== PE.inkC.key || PE.aiInk.pv !== RUBPAINT_V;
+  if (stale){
+    PE.aiInk = null; PE.aiShape = false;
+    peAiShapeShow();
+    PE.aiDrop = true;                /* 帯の方で 1 回だけ知らせる */
+    return P;
+  }
+  return { G: P.G, ink: PE.aiInk.ink, again: P.again, ai: true };
 }
 
 /* === 墨の縁から作字をつくる（なぞり。v20.89） ==========================
@@ -13523,6 +13546,10 @@ function fitEdgeURL(){
      一瞬で消えていた。墨の方をいじったときだけ、また書く。 */
   var fi = PE_INFO_HOLD ? null : $("peFitInfo");
   if (fi && FIT_DIAG) fi.textContent =
+    (PE && PE.aiDrop
+      ? "【墨の拾い方が変わったので、［AI 書体補正］を切にしました。" +
+        "もう一度押すと、いまの墨で通し直します】　" : "") +
+    (PE && PE.aiShape && PE.aiInk ? "【② 整える を通した墨です】　" : "") +
     "拾った墨：" + (n * G.mmCell * G.mmCell).toFixed(0) + " mm²　" +
     "しきい値 " + FIT_DIAG.T + "（地 " + FIT_DIAG.lo + "／墨 " + FIT_DIAG.hi + "）　" +
     (FIT_DIAG.dark ? "白地に黒の字" : "黒地に白の字") + "として読みました（拓本の［反転］の設定どおり）　" +
@@ -13539,6 +13566,7 @@ function fitEdgeURL(){
     (FIT_DIAG.warnFlip
       ? "【白黒が逆かもしれません。拓本の画面で［反転］を確かめてください】"
       : "赤いふちが彫ってある字をなぞっていれば、拓本は正しく読めています。");
+  if (fi && PE) PE.aiDrop = false;        /* 知らせたので下げる */
   return { url: cv.toDataURL("image/png"), x: G.x0.toFixed(1), y: (-G.y1).toFixed(1),
            w: (w*G.cell).toFixed(1), h: (h*G.cell).toFixed(1) };
 }
@@ -14069,7 +14097,9 @@ function openPathEditor(gi, ci){
          rub: peRubFit(gi, ci, F, gid, ax, fi), cut: null,
          brushMm: 0.5,            /* ［消す］［塗る］のえらびで決まる筆の太さ */
          edgeOp: 1,               /* 拾った墨の濃さ */
-         aiShape: false };        /* ［AI 書体補正］の入切 */
+         aiShape: false,          /* ［AI 書体補正］の入切 */
+         aiInk: null,             /* 入のあいだ、これが拾った墨の代わりになる */
+         aiDrop: false };         /* 墨が変わって 切に落としたことを 1 回知らせる */
   $("peW").value = PE.wpct;
   if ($("peEdgeOp")) $("peEdgeOp").value = PE.edgeOp;
   PE_INFO_HOLD = false;
@@ -15538,16 +15568,11 @@ async function traceGo(){
      ただし**中では効かせ続ける**。0 にすると、フォント補正の「太らせる前に
      小さすぎる塊を落とす」が働かず、地の粒が太って輪が増える（実測 3 本 → 7 本）。 */
   var mn  = TRACE_MIN_MM2;
-  /* 拓本AI に通してから、なぞる（v20.91）。
-     ① 読む（拓本→綺麗な墨）／② 整える（書体らしく）／両方 を選べる。
-     サーバーが無い・モデルが無いときは、**そのまま今までどおり**進む（作業を止めない）。 */
-  /* ［AI 書体補正］が入のときだけ、②「整える」に通す（v20.96） */
-  var stage = (PE && PE.aiShape) ? "shape" : "";
-  if (stage){
-    var got = await traceAskAI(P.G, P.ink, stage);
-    if (got && got.ink){ P = { G: P.G, ink: got.ink }; aiNote = got.note; }
-    else aiNote = (got && got.note) || "";
-  }
+  /* 拓本AI（v20.91／v21.9）。
+     ［AI 書体補正］が入なら、fitPrep が返す墨は**もう②「整える」を通したもの**
+     （画面に出ているものと同じ）。ここで通し直さない。
+     入っていなければ、拾ったままの墨をなぞる。 */
+  if (P.ai) aiNote = "② 整える を通した墨からなぞりました（画面に出ているものと同じ）";
 
   /* **フォントで補正するのはやめた**（v21.7）。
      かすれを直すつもりで、墨のふちから 最大 0.44mm ずらしていた（実測）。
@@ -15647,19 +15672,55 @@ $("peAiTrace").onclick = function(){
   msg("［AI お任せ］は、①「読む」のモデルができてから使えます。" +
       "いまは下の［トレース訂正］で整えてください。", true);
 };
-/* ［AI 書体補正］… ②「整える」に通すかどうかの入切。④を押したときに効く。 */
-$("peAiShape").onclick = function(){
+/* ［AI 書体補正］… ②「整える」に通した墨に、その場で差し替える入切（v21.9）。
+   押すと拾った墨が変わり、もう一度押すと元に戻る。④はそのとき見えている墨を使う。 */
+$("peAiShape").onclick = function(){ peAiShapeGo(); };
+async function peAiShapeGo(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
-  PE.aiShape = !PE.aiShape;
+  var b = $("peAiShape");
+  if (PE.aiShape || PE.aiInk){            /* もう一度押した → 元に戻す */
+    PE.aiShape = false; PE.aiInk = null; PE.aiDrop = false;
+    peAiShapeShow();
+    PE_INFO_HOLD = false;
+    peEdgeRedraw();
+    msg("［AI 書体補正］を切にしました。拾ったままの墨に戻しました。");
+    return;
+  }
+  var P = fitPrep();
+  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
+  var got;
+  try { got = await traceAskAI(P.G, P.ink, "shape"); }
+  finally { if (b) b.disabled = false; }
+  if (!got || !got.ink){
+    peAiShapeShow();
+    msg("［AI 書体補正］は かかりませんでした。" + ((got && got.note) || ""), true);
+    return;
+  }
+  /* いま画面に出ている墨（＝AI に渡した墨）と対で覚える。
+     どちらかが変われば fitAiInk が切に落とす。 */
+  PE.aiInk  = { key: (PE.inkC && PE.inkC.key) || "", pv: RUBPAINT_V, ink: got.ink };
+  PE.aiShape = true; PE.aiDrop = false;
   peAiShapeShow();
-  msg(PE.aiShape ? "［AI 書体補正］を入にしました。④を押すと、書体らしく整えてから作ります。"
-                 : "［AI 書体補正］を切にしました。");
-};
+  peInkShowOn();                    /* 何が変わったのか見えないと決められない */
+  PE_INFO_HOLD = false;
+  peEdgeRedraw();
+  msg("［AI 書体補正］を入にしました。" + (got.note || "") +
+      "。もう一度押すと元に戻ります。この墨から④で字を作ります。");
+}
 function peAiShapeShow(){
   var b = $("peAiShape"); if (!b) return;
-  var on = !!(PE && PE.aiShape);
-  b.textContent = on ? "AI 書体補正：入" : "AI 書体補正";
+  var on = !!(PE && PE.aiShape && PE.aiInk);
+  b.textContent = on ? "AI 書体補正：入（もう一度押すと元へ）" : "AI 書体補正";
   b.className = on ? "mini primary" : "mini";
+}
+/* 拾った墨の絵だけ描き直す。**取り置き（PE.inkC）と AI の差し替えは消さない**ので、
+   peInkRefresh（拾い方が変わったとき用）とは別にしてある。 */
+function peEdgeRedraw(){
+  if (!PE) return;
+  var st = $("peStage"), img = st && st.querySelector("#peEdgeImg");
+  var u = img ? fitEdgeURL() : null;
+  if (u) img.setAttribute("href", u.url); else peRender();
 }
 /* ［縁を広げる mm］（v21.5）。**拾った墨の縁**を、そのぶん外へ動かす
    （内へは −）。ここは拓本をなぞっている段なので、動かすのは

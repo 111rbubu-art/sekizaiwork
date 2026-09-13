@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.9</title>
+<title>彫刻原稿 v21.10</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2049,7 +2049,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.9";
+var APP_VER = "v21.10";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13177,30 +13177,67 @@ function fitGrowMask(m, w, h, r){
    送るのは「いまのます目」を 512×512 にした絵。返ってくるのは**濃淡**（確からしさ）
    なので、ます目より細かい縁が取れる（SPEC-輪郭と補正.md）。
    **つながらなくても作業は止めない**。そのまま今までどおりなぞる。 */
-function traceMaskToPng(G, ink, n){
+/* AI に渡す絵の作り方（v21.10。**ここを間違えると AI は何もできない**）。
+
+   学習の絵は `make_synth.py fit_box()` で作っている。
+     ・字のまわりを**ぴったり切って**、長い方に合わせた**正方形**に入れ直す
+     ・絵の **88%**（まわり 6% ずつ空け）の大きさに置く
+   つまり AI は「枠いっぱいに、縦横の比を保って置かれた字」しか見たことがない。
+
+   ところが v21.9 まで、ここは**ます目の枠（字のまわりに 45% の余白）を
+   そのまま 512 に伸ばして**渡していた。すると
+     ・字は絵の **3 割ほど**の大きさにしかならない（学習は 9 割）。
+       画の太さが**画素で 2〜3 倍ちがう**。U-Net は大きさを選ぶので、
+       細い線は線と見なされず、太らせて塊にしてしまう
+     ・枠が正方形でないと**縦横の比まで崩れる**
+   これが「AI 書体補正をかけると画がくっついて団子になる」の元。
+   学習と**同じ切り取り方**にそろえる。 */
+var TRACE_PAD = 0.06;              /* make_synth.py fit_box(pad=0.06) と同じ */
+/* 墨の四角 → 正方形 → 絵の 88%。戻すときに使う写し方も一緒に返す */
+function traceBox(G, ink, n){
+  var w = G.w, h = G.h, x, y, i;
+  var x1 = 1e9, x2 = -1, y1 = 1e9, y2 = -1;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++){
+    if (!ink[y*w + x]) continue;
+    if (x < x1) x1 = x; if (x > x2) x2 = x;
+    if (y < y1) y1 = y; if (y > y2) y2 = y;
+  }
+  if (x2 < 0) return null;
+  var bw = x2 - x1 + 1, bh = y2 - y1 + 1, side = Math.max(bw, bh);
+  var inner = Math.round(n * (1 - TRACE_PAD * 2));
+  return { sx0: x1 - Math.floor((side - bw) / 2),   /* 正方形の左上（ます目の座標） */
+           sy0: y1 - Math.floor((side - bh) / 2),
+           side: side, s: inner / side, off: Math.floor((n - inner) / 2), n: n };
+}
+function traceMaskToPng(G, ink, n, B){
   var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
   var cx = cv.getContext("2d"), id = cx.createImageData(n, n), d = id.data;
   for (var y = 0; y < n; y++){
-    var gy = Math.min(G.h - 1, Math.floor(y * G.h / n));
+    var gy = Math.floor(B.sy0 + (y - B.off) / B.s);
     for (var x = 0; x < n; x++){
-      var gx = Math.min(G.w - 1, Math.floor(x * G.w / n));
-      var v = ink[gy*G.w + gx] ? 255 : 0, i = (y*n + x) * 4;
-      d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
+      var gx = Math.floor(B.sx0 + (x - B.off) / B.s);
+      var ok = (gx >= 0 && gy >= 0 && gx < G.w && gy < G.h && ink[gy*G.w + gx]);
+      var i = (y*n + x) * 4;
+      d[i] = d[i+1] = d[i+2] = ok ? 255 : 0; d[i+3] = 255;
     }
   }
   cx.putImageData(id, 0, 0);
   return new Promise(function(res){ cv.toBlob(res, "image/png"); });
 }
-function traceAiToMask(G, img, n){
+/* AI の返した絵を、渡したときと**同じ写し方の逆**でます目へ戻す。
+   まわり 6% の余白にはみ出した分も、ます目には余白があるので受け取れる。 */
+function traceAiToMask(G, img, n, B){
   var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
   var cx = cv.getContext("2d");
   cx.drawImage(img, 0, 0, n, n);
   var d = cx.getImageData(0, 0, n, n).data;
   var out = new Uint8Array(G.w * G.h);
   for (var gy = 0; gy < G.h; gy++){
-    var y = Math.min(n - 1, Math.floor(gy * n / G.h));
+    var y = Math.floor(B.off + (gy - B.sy0 + 0.5) * B.s);
+    if (y < 0 || y >= n) continue;
     for (var gx = 0; gx < G.w; gx++){
-      var x = Math.min(n - 1, Math.floor(gx * n / G.w));
+      var x = Math.floor(B.off + (gx - B.sx0 + 0.5) * B.s);
+      if (x < 0 || x >= n) continue;
       out[gy*G.w + gx] = (d[(y*n + x)*4] > 127) ? 1 : 0;
     }
   }
@@ -13211,7 +13248,9 @@ async function traceAskAI(G, ink, stage){
   if (!base) return { note: "サーバーの住所が入っていないので、AI は使いませんでした" };
   var N = 512;
   try {
-    var blob = await traceMaskToPng(G, ink, N);
+    var B = traceBox(G, ink, N);
+    if (!B) return { note: "墨が無いので、AI には渡しませんでした" };
+    var blob = await traceMaskToPng(G, ink, N, B);
     var fd = new FormData();
     fd.append("file", blob, "raw.png");
     fd.append("stage", stage);
@@ -13230,7 +13269,7 @@ async function traceAskAI(G, ink, stage){
       var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
       im.src = URL.createObjectURL(buf);
     });
-    var m = traceAiToMask(G, img, N);
+    var m = traceAiToMask(G, img, N, B);
     var n0 = 0, n1 = 0, i;
     for (i = 0; i < ink.length; i++){ n0 += ink[i]; n1 += m[i]; }
     var mm2 = (G.mmCell || 0) * (G.mmCell || 0);
@@ -13243,7 +13282,10 @@ async function traceAskAI(G, ink, stage){
                      " mm²）。そのモデルはまだ学習が足りない見込みです" };
     return { ink: m,
              note: nm + " を通しました（" + ms + "ms／" + (at || "版不明") + "）。墨 " +
-                   (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" };
+                   (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" +
+                   "／学習と同じ切り取り（字を枠の " +
+                   Math.round((1 - TRACE_PAD*2) * 100) + "% に、" +
+                   "ます目 1 つが " + B.s.toFixed(2) + " 画素）" };
   } catch(e){
     return { note: "AI につながりませんでした（" + ((e && e.message) || e) + "）" };
   }

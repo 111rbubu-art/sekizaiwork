@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.18</title>
+<title>彫刻原稿 v21.19</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -185,6 +185,9 @@
   #inlineEd textarea{width:100%;font-size:15px;line-height:1.6;resize:vertical;min-height:56px;}
   #inlineEd .tip{font-size:10.5px;color:var(--muted);margin-top:5px;}
   #stagewrap.grabbing,#rubwrap.grabbing{cursor:grabbing;}
+  /* 紙の左右の余白（動かせる逃げ場）。幅は JS が入れる（shSideRoom） */
+  #stagepad{display:flex;justify-content:center;width:max-content;min-width:100%;
+    box-sizing:border-box;}
   #stage{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.16);margin:0 auto;
     -webkit-user-select:none;user-select:none;}
   #stage.nopaper{background:none;box-shadow:none;}
@@ -726,6 +729,7 @@
     #panes{display:block;}
     /* 拓本タブで印刷しても、シートは必ず出す */
     #stagewrap{display:block !important;padding:0;overflow:visible;position:static;cursor:auto;}
+    #stagepad{display:block !important;padding:0 !important;width:auto;min-width:0;}
     #stage{margin:0;box-shadow:none;background:#fff;}
     #stage svg{display:block;}
     *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
@@ -1070,7 +1074,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       <div id="panes">
         <div id="stagewrap">
           <div id="selBox" hidden></div>
-          <div id="stage"></div>
+          <!-- 紙の左右に「動かせる余白」を持たせるための入れ物（v21.19）。
+               余白は #stagepad に付ける。#stagewrap（スクロールする側）に
+               付けると、入れ物そのものが太って窓からはみ出す。 -->
+          <div id="stagepad"><div id="stage"></div></div>
           <div id="inlineEd" hidden>
             <div class="lab" id="edLab"></div>
             <textarea id="edText" rows="2"></textarea>
@@ -2038,7 +2045,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.18";
+var APP_VER = "v21.19";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3347,6 +3354,45 @@ function renderStage(){
 
   /* カットできない縁・グループの重なりの知らせは出さない。
      ゴムシートは、出力の下見と文字の位置合わせだけにする。 */
+  if (!printMode) shSideRoom();
+}
+
+/* --- ゴムシートを左右に動かせるようにする（v21.19） --------------------
+   まん中ボタンで掴んで動かす仕組みは、はじめから左右にも効いている。
+   効かなかったのは**動かせる余地が無かった**から。
+   ゴムシート（紙）は細長い（90mm × 700mm）ので、ふつうの拡大率では
+   紙が窓より狭く、左右には 1px も動かせなかった（実測：100%・400% とも 0px。
+   900% まで上げて初めて 212px 動いた）。
+
+   そこで、紙の左右に余白を持たせる。余白は
+     余白 ＝ 窓の幅 − 紙の幅 ÷ 2
+   にする。こうすると動かせる量が **いつも窓 1つぶん**になり、
+   拡大率によらず同じ感じで動かせる（紙を窓の端まで寄せられる）。
+
+   余白は左右で同じにするので、**紙は窓のまん中に出たまま**になる。
+   ただし「まん中」は `scrollLeft` が 0 ではなく、動かせる量の半分の所。
+   ですので、描き直すたびに『まん中＋人が動かしたぶん』へ置き直す
+   （`shPanX`。人が動かした量は覚えておく）。 */
+var shPanX = 0;                     /* まん中から、人がどれだけ左右へ動かしたか */
+var shRoomOn = false;
+function shMidX(el){ return Math.max(0, (el.scrollWidth - el.clientWidth) / 2); }
+function shSideRoom(){
+  var el = $("stagewrap"), pad = $("stagepad"), st = $("stage");
+  if (!el || !pad || !st) return;
+  var sw = st.offsetWidth;
+  var want = Math.max(24, Math.round(el.clientWidth - sw / 2));
+  var cur = parseFloat(pad.style.paddingLeft || "") || 0;
+  if (Math.abs(cur - want) >= 1){
+    pad.style.paddingLeft = want + "px";
+    pad.style.paddingRight = want + "px";
+  }
+  shRoomOn = true;
+  el.scrollLeft = shMidX(el) + shPanX;
+}
+/* 人が動かしたぶんを覚える。描き直しで元へ戻ってしまわないように。 */
+function shPanKeep(){
+  var el = $("stagewrap"); if (!el || !shRoomOn) return;
+  shPanX = el.scrollLeft - shMidX(el);
 }
 
 /* --- ガイドライン（親）とセンターライン（子） --- */
@@ -5912,6 +5958,13 @@ function makePannable(id){
   }, { passive:false });
 }
 makePannable("stagewrap");
+/* ゴムシートを左右に動かしたら、その量を覚えておく（描き直しで戻さないため） */
+(function(){
+  var el = $("stagewrap"), t;
+  el.addEventListener("scroll", function(){
+    clearTimeout(t); t = setTimeout(shPanKeep, 120);
+  }, { passive: true });
+})();
 makePannable("rubwrap");
 makePannable("demowrap");
 makePannable("bothwrap");

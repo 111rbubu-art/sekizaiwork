@@ -97,6 +97,18 @@ SYNTHPID = os.path.join(RUNS, "synth.pid")
 SAFE = re.compile(r"^[A-Za-z0-9._\-]{1,120}$")
 
 
+def _keep_name(s):
+    """フォルダーの名前を作る。**日本語は残す**（`feedback` と同じ決まり）。
+
+    `/`・`\\`・空白などだけを `_` に替え、`..` は使わせない。
+    ここで日本語を潰すと、別の案件どうしが同じ名前になってぶつかる。
+    """
+    s = "".join(c if (c.isalnum() or c in "-_." or ord(c) > 127) else "_"
+                for c in (s or ""))[:120]
+    s = s.strip(".") or "zip"
+    return s
+
+
 def _pair_dir(root, pid):
     """組のフォルダーを、名前から安全に引く。無ければ None。
 
@@ -513,7 +525,7 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
     made, bad = set(), []
     for up in files:
         raw = await up.read()
-        stem = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.splitext(os.path.basename(up.filename or "zip"))[0])[:80] or "zip"
+        stem = _keep_name(os.path.splitext(os.path.basename(up.filename or "zip"))[0])
         try:
             with zipfile.ZipFile(_io.BytesIO(raw)) as z:
                 names = [n for n in z.namelist() if not n.endswith("/")]
@@ -534,6 +546,21 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
                         open(os.path.join(d, part), "wb").write(z.read(n))
                         made.add(pid)
                 else:                                  # 1 文字＝1 つ
+                    # **名前は meta.json の key を先に見る**（2026-09-14）。
+                    # 共有フォルダーに置く ZIP は `pair_<家名>_g0-3_<字>.zip` で、
+                    # 日本語が入っている。前はそれを `_` に潰していたので、
+                    # 家名の字数と 行・番号が同じなら**別の案件どうしがぶつかって
+                    # 上書きし合っていた**（例：久ヶ山の石 と 田中山の大 が同じ名前）。
+                    for n in names:
+                        if os.path.basename(n) != "meta.json":
+                            continue
+                        try:
+                            k = (json.loads(z.read(n).decode("utf-8")) or {}).get("key", "")
+                            if k:
+                                stem = _keep_name(k)
+                        except Exception:
+                            pass
+                        break
                     for n in names:
                         b = os.path.basename(n)
                         if b in ("raw.png", "mask.png", "hint1.png", "hint2.png",

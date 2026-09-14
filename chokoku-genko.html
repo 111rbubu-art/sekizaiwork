@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.20</title>
+<title>彫刻原稿 v21.21</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -185,9 +185,9 @@
   #inlineEd textarea{width:100%;font-size:15px;line-height:1.6;resize:vertical;min-height:56px;}
   #inlineEd .tip{font-size:10.5px;color:var(--muted);margin-top:5px;}
   #stagewrap.grabbing,#rubwrap.grabbing{cursor:grabbing;}
-  /* 紙の左右の余白（動かせる逃げ場）。幅は JS が入れる（shSideRoom） */
-  #stagepad{display:flex;justify-content:center;width:max-content;min-width:100%;
-    box-sizing:border-box;}
+  /* 紙の左右の余白（動かせる逃げ場）。幅は JS が入れる（sideRoom） */
+  #stagepad,#bothpad,#demopad{display:flex;justify-content:center;width:max-content;
+    min-width:100%;box-sizing:border-box;}
   #stage{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.16);margin:0 auto;
     -webkit-user-select:none;user-select:none;}
   #stage.nopaper{background:none;box-shadow:none;}
@@ -729,7 +729,8 @@
     #panes{display:block;}
     /* 拓本タブで印刷しても、シートは必ず出す */
     #stagewrap{display:block !important;padding:0;overflow:visible;position:static;cursor:auto;}
-    #stagepad{display:block !important;padding:0 !important;width:auto;min-width:0;}
+    #stagepad,#bothpad,#demopad{display:block !important;padding:0 !important;
+      width:auto;min-width:0;}
     #stage{margin:0;box-shadow:none;background:#fff;}
     #stage svg{display:block;}
     *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
@@ -1092,8 +1093,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <div id="rubLenBox" hidden><div class="inner"><span>実測した文字全長 mm</span>
             <input type="number" id="rLen" step="0.1" placeholder="現場で測った値"></div></div>
         </div>
-        <div id="demowrap"><div id="demostage"></div></div>
-        <div id="bothwrap"><div id="bothstage"></div></div>
+        <div id="demowrap"><div id="demopad"><div id="demostage"></div></div></div>
+        <div id="bothwrap"><div id="bothpad"><div id="bothstage"></div></div></div>
       </div>
     </div>
 
@@ -2045,7 +2046,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.20";
+var APP_VER = "v21.21";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -3354,45 +3355,53 @@ function renderStage(){
 
   /* カットできない縁・グループの重なりの知らせは出さない。
      ゴムシートは、出力の下見と文字の位置合わせだけにする。 */
-  if (!printMode) shSideRoom();
+  if (!printMode) sideRoom("stagewrap");
 }
 
-/* --- ゴムシートを左右に動かせるようにする（v21.19） --------------------
+/* --- どの画面も、いつでも左右に動かせるようにする（v21.19／v21.21 で 3 画面へ） ---
    まん中ボタンで掴んで動かす仕組みは、はじめから左右にも効いている。
    効かなかったのは**動かせる余地が無かった**から。
    ゴムシート（紙）は細長い（90mm × 700mm）ので、ふつうの拡大率では
    紙が窓より狭く、左右には 1px も動かせなかった（実測：100%・400% とも 0px。
-   900% まで上げて初めて 212px 動いた）。
+   900% まで上げて初めて 212px 動いた）。校正・確認資料も同じ。
 
-   そこで、紙の左右に余白を持たせる。余白は
-     余白 ＝ 窓の幅 − 紙の幅 ÷ 2
+   そこで、絵の左右に余白を持たせる。余白は
+     余白 ＝ 窓の幅 − 絵の幅 ÷ 2
    にする。こうすると動かせる量が **いつも窓 1つぶん**になり、
-   拡大率によらず同じ感じで動かせる（紙を窓の端まで寄せられる）。
+   拡大率によらず同じ感じで動かせる（絵を窓の端まで寄せられる）。
 
-   余白は左右で同じにするので、**紙は窓のまん中に出たまま**になる。
+   余白は左右で同じにするので、**絵は窓のまん中に出たまま**になる。
    ただし「まん中」は `scrollLeft` が 0 ではなく、動かせる量の半分の所。
    ですので、描き直すたびに『まん中＋人が動かしたぶん』へ置き直す
-   （`shPanX`。人が動かした量は覚えておく）。 */
-var shPanX = 0;                     /* まん中から、人がどれだけ左右へ動かしたか */
-var shRoomOn = false;
-function shMidX(el){ return Math.max(0, (el.scrollWidth - el.clientWidth) / 2); }
-function shSideRoom(){
-  var el = $("stagewrap"), pad = $("stagepad"), st = $("stage");
-  if (!el || !pad || !st) return;
-  var sw = st.offsetWidth;
-  var want = Math.max(24, Math.round(el.clientWidth - sw / 2));
+   （`panX`。人が動かした量は画面ごとに覚えておく）。
+
+   **余白はスクロールする側（`#○○wrap`）に付けてはいけない。**
+   `clientWidth` は自分の余白を含むので、そこから余白を決めると
+   ふくらみ続ける（実測：24px → 10965px まで暴走した）。 */
+var ROOMS = {
+  stagewrap: { pad: "stagepad", stage: "stage",     panX: 0, on: false },
+  bothwrap:  { pad: "bothpad",  stage: "bothstage", panX: 0, on: false },
+  demowrap:  { pad: "demopad",  stage: "demostage", panX: 0, on: false }
+};
+function roomMidX(el){ return Math.max(0, (el.scrollWidth - el.clientWidth) / 2); }
+function sideRoom(wid){
+  var R = ROOMS[wid]; if (!R) return;
+  var el = $(wid), pad = $(R.pad), st = $(R.stage);
+  if (!el || !pad || !st || !el.clientWidth) return;
+  var want = Math.max(24, Math.round(el.clientWidth - st.offsetWidth / 2));
   var cur = parseFloat(pad.style.paddingLeft || "") || 0;
   if (Math.abs(cur - want) >= 1){
     pad.style.paddingLeft = want + "px";
     pad.style.paddingRight = want + "px";
   }
-  shRoomOn = true;
-  el.scrollLeft = shMidX(el) + shPanX;
+  R.on = true;
+  el.scrollLeft = roomMidX(el) + R.panX;
 }
 /* 人が動かしたぶんを覚える。描き直しで元へ戻ってしまわないように。 */
-function shPanKeep(){
-  var el = $("stagewrap"); if (!el || !shRoomOn) return;
-  shPanX = el.scrollLeft - shMidX(el);
+function roomKeep(wid){
+  var R = ROOMS[wid]; if (!R || !R.on) return;
+  var el = $(wid); if (!el) return;
+  R.panX = el.scrollLeft - roomMidX(el);
 }
 
 /* --- ガイドライン（親）とセンターライン（子） --- */
@@ -5952,7 +5961,7 @@ function makePannable(id){
 
        前は `scrollLeft` の倍率計算で寄せていたが、ゴムシートは
        拡大率によって左右の余白（`#stagepad`）が変わるうえ、
-       描き直しの最後に `shSideRoom()` が `scrollLeft` を置き直すので、
+       描き直しの最後に `sideRoom()` が `scrollLeft` を置き直すので、
        左右だけマウスの先から外れていた。
 
        倍率の計算はやめて、**紙のどこを指していたか**を覚え、
@@ -5966,19 +5975,22 @@ function makePannable(id){
     var fy = (b0 && b0.height > 1) ? (e.clientY - b0.top)  / b0.height : null;
     setZoom(Z[which] * (e.deltaY < 0 ? 1.15 : 0.87), which);
     var b1 = st ? st.getBoundingClientRect() : null;
-    if (b1 && fx !== null) el.scrollLeft += (b1.left + fx * b1.width)  - e.clientX;
-    if (b1 && fy !== null) el.scrollTop  += (b1.top  + fy * b1.height) - e.clientY;
-    if (id === "stagewrap") shPanKeep();   /* 動かした分として覚える（戻されないように） */
+    /* 描き直しで絵が消えることがある（中身が無い校正・確認資料）。
+       その場合は寄せない。0 幅で割り当てると、とんでもない所へ飛ぶ。 */
+    if (b1 && fx !== null && b1.width  > 1) el.scrollLeft += (b1.left + fx * b1.width)  - e.clientX;
+    if (b1 && fy !== null && b1.height > 1) el.scrollTop  += (b1.top  + fy * b1.height) - e.clientY;
+    roomKeep(id);                          /* 動かした分として覚える（戻されないように） */
   }, { passive:false });
 }
 makePannable("stagewrap");
-/* ゴムシートを左右に動かしたら、その量を覚えておく（描き直しで戻さないため） */
-(function(){
-  var el = $("stagewrap"), t;
+/* 左右に動かしたら、その量を覚えておく（描き直しで戻さないため）。3 画面ぜんぶ。 */
+Object.keys(ROOMS).forEach(function(wid){
+  var el = $(wid); if (!el) return;
+  var t;
   el.addEventListener("scroll", function(){
-    clearTimeout(t); t = setTimeout(shPanKeep, 120);
+    clearTimeout(t); t = setTimeout(function(){ roomKeep(wid); }, 120);
   }, { passive: true });
-})();
+});
 makePannable("rubwrap");
 makePannable("demowrap");
 makePannable("bothwrap");
@@ -9546,6 +9558,7 @@ function renderDemo(){
       (demoClean ? "" : hits.join("")) +
     '</svg>';
   bindDemoDrag(st.querySelector("svg"));
+  sideRoom("demowrap");
 }
 
 /* --- 構成表示（画面のタブでは「校正」）---------------------------
@@ -10401,6 +10414,7 @@ function renderBoth(){
       (typeof docOvHits === "function" ? docOvHits() : "") +
     '</svg>';
   bindBothDrag(st.querySelector("svg"));
+  sideRoom("bothwrap");
 }
 
 /* 画面の位置を、シートの mm に直す。

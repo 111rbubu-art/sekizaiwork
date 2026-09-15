@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.23</title>
+<title>彫刻原稿 v21.24</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -384,10 +384,10 @@
   .tabs button{border:0;border-radius:0;padding:5px 14px;background:var(--surface);
     color:var(--muted);font-weight:600;}
   .tabs button.on{background:var(--ink);color:#fff;}
-  /* 拓本をまだ取り込んでいないときの［拓本補正］。灰色にして、まだ中身が無いと知らせる。
-     **押せなくはしない**。押すと左の［拓本］が開いて、そこから取り込めるため。 */
-  .tabs button.empty{color:#B3BBC2;}
-  .tabs button.empty.on{background:#9AA4AC;color:#fff;}
+  /* 拓本をまだ取り込んでいないときの［拓本補正］。灰色にして、押せなくする
+     （中身が無いので開いても意味がない。本人の指示）。
+     拓本は左の［拓本］から取り込む。 */
+  .tabs button:disabled{color:#B3BBC2;cursor:default;background:var(--surface);}
   /* ①赤を出力・②黒を出力は、となりのタブと**同じ高さ**にする（本人の指示）。
      タブは 1px の枠＋上下 5px の余白。ふつうのボタンは 7px なので 4px 高かった。 */
   #pvbar #btnPrintRed,#pvbar #btnPrintBlk{padding:5px 14px;}
@@ -2052,7 +2052,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.23";
+var APP_VER = "v21.24";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7518,7 +7518,7 @@ function setView(v){
   document.body.classList.remove("view-sheet","view-rub","view-both","view-demo");
   document.body.classList.add("view-" + v);
   $("viewSheet").className = v === "sheet" ? "on" : "";
-  $("viewRub").className   = (v === "rub" ? "on" : "");
+  $("viewRub").className   = v === "rub"   ? "on" : "";
   rubTabSync();
   $("viewBoth").className  = v === "both"  ? "on" : "";
   $("viewDemo").className  = v === "demo"  ? "on" : "";
@@ -7531,8 +7531,8 @@ function setView(v){
    view の切り替えだけでなく、取り込み・取り消しでも呼ぶこと（`rubPanel()` から）。 */
 function rubTabSync(){
   var b = $("viewRub"); if (!b) return;
-  var on = /(^|\s)on(\s|$)/.test(b.className);
-  b.className = (on ? "on" : "") + (RUB.img ? "" : " empty");
+  b.disabled = !RUB.img;
+  b.title = RUB.img ? "" : "拓本をまだ取り込んでいません。左の［拓本］から取り込んでください。";
 }
 $("viewSheet").onclick = function(){ setView("sheet"); };
 /* ［拓本補正］は、左の［拓本］も一緒に開く（v21.23。本人の指示）。
@@ -8946,6 +8946,29 @@ function rubLineMeasure(){
                px: { x: it.cx - it.w/2, y: it.y0, w: it.w, h: it.h } };
     })
   };
+}
+/* 帯を、いちばん近い列（彫ってある 1 行）にぴたりと合わせる（v21.24）。
+   手で動かしてもよいが、列は機械の方が正確に見つけられる。 */
+function rubBandFit(){
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  var runs = detectColumns(false);
+  if (!runs || !runs.length){
+    msg("列を見つけられませんでした。帯のつまみを手で動かして、1 行だけに合わせてください。", true);
+    return;
+  }
+  var r = S.rub, mid = (num(r.bandL, 0) + num(r.bandR, 0)) / 2;
+  var best = runs[0], bd = Infinity;
+  runs.forEach(function(x){
+    var d = Math.abs((x.a + x.b) / 2 - mid);
+    if (d < bd){ bd = d; best = x; }
+  });
+  var pad = Math.round((best.b - best.a) * 0.08);       /* 少しだけ余裕を持たせる */
+  r.bandL = Math.max(0, Math.round(best.a - pad));
+  r.bandR = Math.min(RUB.W, Math.round(best.b + pad));
+  A = null; RUB.mask = null;
+  persist(); rubPanel(); rubRender();
+  msg("帯を列に合わせました（幅 " + (r.bandR - r.bandL) + " px）。" +
+      "ほかの列にしたいときは、帯をその列の近くまで動かして、もう一度押してください。");
 }
 /* 見立てて、控えに積む（新しいものが先頭。6 行ぶんまで） */
 function rubLineTake(){
@@ -10917,6 +10940,30 @@ function rubRender(){
   });
 
 
+  /* 見立てる帯（左右の範囲）。ここに入っている **1 行だけ**を測る（v21.24）。
+     しきい値も、列の検出も、［この行を見立てる］も、ぜんぶこの帯の中だけを見る。
+     ところが v21.23 まで、**帯を動かす操作が画面のどこにも無かった**
+     （取り込んだときに 幅の 5%〜35% に置かれるだけ）。
+     2 行入っていると字送りが読めないので、つかんで動かせるようにする。 */
+  var bq = clampRange(), bkn = W * 0.05;
+  o.push('<rect x="' + bq.x1 + '" y="' + bq.y1 + '" width="' + (bq.x2 - bq.x1) +
+    '" height="' + (bq.y2 - bq.y1) + '" fill="rgba(27,111,214,.07)" stroke="#1B6FD6" ' +
+    'stroke-width="' + (W*0.002) + '" stroke-dasharray="' + (W*0.02) + ' ' + (W*0.014) +
+    '" pointer-events="none"/>');
+  o.push('<text x="' + ((bq.x1 + bq.x2) / 2) + '" y="' + (bq.y1 - bkn * 1.15) +
+    '" fill="#1B6FD6" font-size="' + (bkn * 0.62) + '" font-weight="700" text-anchor="middle" ' +
+    'pointer-events="none" stroke="#fff" stroke-width="' + (W*0.003) +
+    '" paint-order="stroke">見立てる帯（1 行だけ入れる）</text>');
+  [["bandL", bq.x1], ["bandR", bq.x2]].forEach(function(pair){
+    var yk = bq.y1 - bkn * 0.75;
+    o.push('<rect x="' + (pair[1] - bkn/2) + '" y="' + yk + '" width="' + bkn + '" height="' + bkn +
+      '" rx="' + (bkn*0.25) + '" fill="#1B6FD6" stroke="#fff" stroke-width="' + (W*0.004) +
+      '" pointer-events="none"/>');
+    hits.push('<rect class="hitx" data-k="' + pair[0] + '" x="' + (pair[1] - bkn*0.85) +
+      '" y="' + (yk - bkn*0.35) + '" width="' + (bkn*1.7) + '" height="' + (bkn*1.7) +
+      '" fill="transparent"/>');
+  });
+
   /* 回転のとき、傾きを見比べるための縦の基準線 */
   /* 縦の基準線は、回転の中心をそのまま通す。線に触るところは作らない。
      中心の印をつかんで動かせば、線も一緒に動く。 */
@@ -11173,6 +11220,12 @@ function bindDrag(svg){
           r[k] = Math.max(0, Math.min(RUB.H, Math.round(q.y)));
           if (r.lenAuto && num(r.dpi,0)) r.realLen = lenFromDpi();
           RUB.mask = null; syncOriginY(); renderCols(); renderList(); renderStage(); rubRender(); rubPanel();
+        } else if (k === "bandL" || k === "bandR"){
+          /* 帯は 左 < 右 のまま。細くしすぎると、しきい値も読めなくなる。 */
+          var bx = Math.max(0, Math.min(RUB.W, Math.round(q.x))), MINB = Math.round(RUB.W * 0.01) + 8;
+          if (k === "bandL") r.bandL = Math.min(bx, num(r.bandR, RUB.W) - MINB);
+          else               r.bandR = Math.max(bx, num(r.bandL, 0) + MINB);
+          A = null; RUB.mask = null; rubRender(); rubPanel();
         } else {
           r[k] = Math.max(0, Math.min(RUB.W, Math.round(q.x)));
           RUB.mask = null; rubRender(); rubPanel();
@@ -11417,12 +11470,16 @@ function rubPanel(){
     h += '<div class="fixrow"><span>縮尺</span><b id="rLenScale"></b></div>';
     /* ---- 行の見立て（v20.83） ---- */
     h += '<h3 class="sec" style="margin-top:14px;">行の見立て</h3>';
-    h += '<button class="mini" id="btnLineTake">この行を見立てる</button>';
+    h += '<p class="hint" style="margin:0 0 5px;">絵の上の<b>青い帯</b>を、' +
+      '測りたい<b>1 行だけ</b>に合わせてから押してください（帯の上のつまみをつかんで動かします）。</p>';
+    h += '<div class="g2"><button class="mini" id="btnBandFit">帯をこの列に合わせる</button>' +
+      '<button class="mini" id="btnLineTake">この行を見立てる</button></div>';
     h += rubLineHtml();
   }
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
+  var bb2 = $("btnBandFit"); if (bb2) bb2.onclick = rubBandFit;
   var br = $("btnLineRot");  if (br) br.onclick = rubLineFixRot;
   var bf = $("rFix");
   if (bf) bf.onclick = function(){ (view === "rub") ? endFix() : startFix(); };

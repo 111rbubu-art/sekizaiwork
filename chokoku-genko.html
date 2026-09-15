@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.42</title>
+<title>彫刻原稿 v21.43</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2097,7 +2097,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.42";
+var APP_VER = "v21.43";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13702,13 +13702,26 @@ function traceAiToMask(G, img, n, B){
   cx.drawImage(img, 0, 0, n, n);
   var d = cx.getImageData(0, 0, n, n).data;
   var out = new Uint8Array(G.w * G.h);
+  /* **画素の間を割って読む**（v21.43）。前は いちばん近い画素を そのまま取っていたので、
+     AI の画素の角がそのまま段々になって残っていた。
+     まわり 4 つの濃さから、その場所の濃さを割り出す（たて・よことも線形）。 */
+  function at(x, y){
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x > n - 1) x = n - 1; if (y > n - 1) y = n - 1;
+    var x0 = Math.floor(x), y0 = Math.floor(y);
+    var x1 = Math.min(n - 1, x0 + 1), y1 = Math.min(n - 1, y0 + 1);
+    var fx = x - x0, fy = y - y0;
+    var a = d[(y0*n + x0)*4], b = d[(y0*n + x1)*4];
+    var c = d[(y1*n + x0)*4], e = d[(y1*n + x1)*4];
+    return (a*(1-fx) + b*fx) * (1-fy) + (c*(1-fx) + e*fx) * fy;
+  }
   for (var gy = 0; gy < G.h; gy++){
-    var y = Math.floor(B.off + (gy - B.sy0 + 0.5) * B.s);
-    if (y < 0 || y >= n) continue;
+    var y = B.off + (gy - B.sy0 + 0.5) * B.s - 0.5;
+    if (y < -1 || y > n) continue;
     for (var gx = 0; gx < G.w; gx++){
-      var x = Math.floor(B.off + (gx - B.sx0 + 0.5) * B.s);
-      if (x < 0 || x >= n) continue;
-      out[gy*G.w + gx] = (d[(y*n + x)*4] > 127) ? 1 : 0;
+      var x = B.off + (gx - B.sx0 + 0.5) * B.s - 0.5;
+      if (x < -1 || x > n) continue;
+      out[gy*G.w + gx] = (at(x, y) > 127.5) ? 1 : 0;
     }
   }
   return out;
@@ -13724,7 +13737,15 @@ async function traceAskAI(G, ink, stage){
     var fd = new FormData();
     fd.append("file", blob, "raw.png");
     fd.append("stage", stage);
-    fd.append("soft", "false");          /* いまは 0/1 で受ける。濃淡は次の段で使う */
+    /* **濃淡（確からしさ）で受け取る**（v21.43。本人の問い
+       「AIの書体補正時にガタガタをなくすことはできますか」）。
+       0/1 に潰して受け取ると、縁が**AI の画素の角**でしか決まらない。
+       512 の絵は字の 88% ぶんなので、1 画素は 25mm の字で 0.055mm ほど。
+       その角がそのまま段々になって残っていた。
+       濃淡のまま受け取り、下の `traceAiToMask` で**画素の間を割って**
+       縁の場所を決めれば、画素より細かい所に縁が来る。
+       サーバーが古くて 0/1 を返しても、そのまま動く（割る先が 0 か 255 になるだけ）。 */
+    fd.append("soft", "true");
     var t0 = Date.now();
     var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
     if (!r.ok){

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.24</title>
+<title>彫刻原稿 v21.25</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2052,7 +2052,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.24";
+var APP_VER = "v21.25";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -6997,6 +6997,7 @@ function loadRubImageQuiet(src, done){
     rebuildRub();
     if (!RUB.data){ if (done) done(false); return; }
     S.rub.src = src;
+    S.rub.imgW = RUB.W; S.rub.imgH = RUB.H;   /* 入れ直しの見分けに使う（v21.25） */
     S.rubX = null;                    /* 別の拓本になったら、置き場所は決め直す（v12.8） */
     if (!S.rub.calBot){ S.rub.calTop = Math.round(RUB.H*0.06); S.rub.calBot = Math.round(RUB.H*0.94); }
     if (!S.rub.bandR){ S.rub.bandL = Math.round(RUB.W*0.05); S.rub.bandR = Math.round(RUB.W*0.35); }
@@ -8510,35 +8511,75 @@ function lenFromDpi(){
 }
 
 /* --- 画像の取り込み --- */
+/* 案件に補正（角度・較正・帯・塗り…）が入っているか。
+   絵だけ無くなった案件かどうかを見分けるのに使う。 */
+function rubHasWork(){
+  var r = S.rub || {};
+  return !!(num(r.calBot, 0) || num(r.realLen, 0) || num(r.rot, 0) ||
+            num(r.thresh, 0) || r.crop || (r.paint || []).length ||
+            (r.lines || []).length);
+}
 function loadRubImage(src, srcName){
   var im = new Image();
   im.onload = function(){
+    /* **絵だけ入れ直すのか、別の拓本に取り替えるのか**（v21.25）。
+
+       案件（JSON）には補正が入っているのに、絵だけ読めていないことがある
+       （別のパソコン・別のブラウザで開いた、取り置きが消えた など）。
+       そこで［SP取込］で**元の JPEG を選び直す**のは「入れ直し」であって、
+       取り替えではない。ところが今までは、読み込んだら必ず
+       **角度・較正線・帯・センターラインの位置を初期値に戻して**いたので、
+       せっかくの補正がぜんぶ消えていた。
+
+       見分け方：**いま絵が無く、案件に補正が入っていれば「入れ直し」**。
+       さらに、絵の大きさが前と違えば別物なので、そのときは取り替え扱いにする
+       （較正線も帯も塗りも「画素の位置」で持っているため）。 */
+    var had = !!RUB.img;
+    var r = S.rub;
+    var keep = !had && rubHasWork();
+    if (keep && num(r.imgW, 0) && num(r.imgH, 0) &&
+        (r.imgW !== im.naturalWidth || r.imgH !== im.naturalHeight)) keep = false;
+
     RUB.img = im;
-    S.rub.rot = 0; S.rub.off = { x:0, y:0 }; S.rub.pivot = null;
+    if (!keep){ r.rot = 0; r.off = { x:0, y:0 }; r.pivot = null; }
     rebuildRub();
     if (!RUB.data){ msg("画像を読めませんでした。", true); return; }
-    var r = S.rub;
-    r.calTop = Math.round(RUB.H*0.06); r.calBot = Math.round(RUB.H*0.94);
-    r.bandL = Math.round(RUB.W*0.05);  r.bandR = Math.round(RUB.W*0.95);
-    autoFrame();                       /* 紙の白フチや黒帯を範囲から外す */
-    /* センターラインはガイドラインの本数だけ。無ければ作らない。 */
-    r.centersPx = (S.centers || []).map(function(){ return Math.round((r.bandL + r.bandR) / 2); });
+    var sizeChanged = (num(r.imgW, 0) && num(r.imgW, 0) !== RUB.W);
+    r.imgW = RUB.W; r.imgH = RUB.H;      /* 次に入れ直すときの見分けに使う */
+    if (!keep){
+      r.calTop = Math.round(RUB.H*0.06); r.calBot = Math.round(RUB.H*0.94);
+      r.bandL = Math.round(RUB.W*0.05);  r.bandR = Math.round(RUB.W*0.95);
+      autoFrame();                       /* 紙の白フチや黒帯を範囲から外す */
+      /* センターラインはガイドラインの本数だけ。無ければ作らない。 */
+      r.centersPx = (S.centers || []).map(function(){ return Math.round((r.bandL + r.bandR) / 2); });
+    }
     r.src = src;
     r.srcName = srcName || "";     /* どのファイルから取り込んだか。表示だけに使う */
     /* 画像に書かれている解像度を読む。長さ調整はここからの微調整になる。 */
     var dp = dpiFromDataURL(src);
     r.dpi = dp ? dp.x : 0;
     r.dpiSrc = dp ? dp.src : "";
-    r.lenAuto = true;
-    if (r.dpi) r.realLen = lenFromDpi();
+    if (!keep){
+      r.lenAuto = true;
+      if (r.dpi) r.realLen = lenFromDpi();
+    }
     saveRubCache(src);
-    A = null;
-    detectColumns(true);
-    framesFitRub();               /* 枠の文字のはじまりを、拓本の頭にそろえる */
-    r.centersPx = (S.centers || []).map(function(){ return Math.round((r.bandL + r.bandR) / 2); });
-    if (view !== "demo") setView("both");
-    setSub("rub"); rubPanel(); renderMenuCounts(); persist();
-    msg("拓本を読み込みました。上端・下端を合わせて実測長を入力してください。");
+    A = null; RUB.mask = null;
+    if (!keep){
+      detectColumns(true);
+      framesFitRub();             /* 枠の文字のはじまりを、拓本の頭にそろえる */
+      r.centersPx = (S.centers || []).map(function(){ return Math.round((r.bandL + r.bandR) / 2); });
+      if (view !== "demo") setView("both");
+    }
+    setSub("rub"); rubPanel(); renderMenuCounts(); syncOriginY();
+    renderAll(); persist();
+    if (keep)
+      msg("拓本の絵を入れ直しました。角度 " + num(r.rot, 0).toFixed(2) + "°・較正・帯・塗りは" +
+          "そのまま使っています。合っているか確かめてください。", false);
+    else if (sizeChanged)
+      msg("前と大きさの違う拓本なので、補正（角度・較正・帯）は作り直しました。", true);
+    else
+      msg("拓本を読み込みました。上端・下端を合わせて実測長を入力してください。");
   };
   im.onerror = function(){ msg("画像を読めませんでした。", true); };
   im.src = src;

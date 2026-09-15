@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.39</title>
+<title>彫刻原稿 v21.40</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2092,7 +2092,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.39";
+var APP_VER = "v21.40";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13398,15 +13398,33 @@ function fitAiInk(P, raw){
      塗りは「丸を置く」ものなので、前からある丸をもう一度かけても結果は変わらない。
      ［縁を広げる］も同じく AI のあとに効く（v21.16）。
      AI にかけたときの広げ量との**差だけ**、AI の墨のふちを動かす。 */
-  var G = P.G, cNow = peGrowCells(G);
-  if (PE.aiInk.pv !== RUBPAINT_V || PE.aiInk.gwC !== cNow || !PE.aiInk.ink){
-    var d = cNow - num(PE.aiInk.gwC0, 0);
-    var base = d ? fitGrowMask(PE.aiInk.ink0, G.w, G.h, d) : PE.aiInk.ink0;
-    PE.aiInk.ink = fitApplyPaint(G, base);
-    PE.aiInk.pv  = RUBPAINT_V;
-    PE.aiInk.gwC = cNow;
+  var G = P.G, cNow = peGrowCells(G), A = PE.aiInk, ps = rubPaint();
+  /* 作り直し。［縁を広げる］の差をかけてから、塗りをぜんぶ重ねる。 */
+  function rebuild(){
+    var d = cNow - num(A.gwC0, 0);
+    var base = d ? fitGrowMask(A.ink0, G.w, G.h, d) : A.ink0;
+    A.ink = fitApplyPaint(G, base);
+    /* 塗りが 1 本も無いときは、`fitApplyPaint` が**同じ配列をそのまま返す**。
+       あとで足した分だけ塗り直す（下の軽い道）で書き換えるので、
+       ここで写しを取っておかないと AI の元の墨（`ink0`）を壊してしまう。 */
+    if (A.ink === base) A.ink = new Uint8Array(base);
+    A.gwC = cNow; A.pv = RUBPAINT_V; A.paintN = ps.length;
   }
-  return { G: G, ink: PE.aiInk.ink, again: P.again, ai: true };
+  if (!A.ink || A.gwC !== cNow){ rebuild(); }
+  else if (A.pv !== RUBPAINT_V){
+    /* **足しただけなら、足した分のまわりだけ塗り直す**（v21.40。本人の指摘
+       「AI書体補正の後に、手動で補正を行うと重いです」）。
+       前は筆を一引きするたびに ます目をぜんぶ塗り直していた
+       （実測：760×900 ます で 1 手 89ms、一引き 30 手で 2.7 秒）。
+       拾ったままの墨の方は はじめからこの軽い道を通っていた（`fitPrep`）。 */
+    if (A.paintN !== undefined && ps.length > A.paintN){
+      fitPaintAdd(G, A.ink, ps.slice(A.paintN));
+      A.paintN = ps.length; A.pv = RUBPAINT_V;
+    } else {
+      rebuild();                      /* 戻した・減ったときは作り直す */
+    }
+  }
+  return { G: G, ink: A.ink, again: P.again, ai: true };
 }
 /* ［縁を広げる］の mm と、それが ます いくつぶんか。fitInkMask と同じ出し方 */
 function peGrowMm(){

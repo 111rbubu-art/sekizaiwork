@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.73</title>
+<title>彫刻原稿 v21.74</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2203,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.73";
+var APP_VER = "v21.74";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10472,6 +10472,7 @@ function rgOpen(i){
          step: 1, raw: rubCropCv(cx0, cy0, side),
          ink: k.m, inkFrom: k.from, shape: null,
          tool: "paint", brush: 10, undo: [], busy: false,
+         view: { z: 1, dx: 0, dy: 0 },      /* ズーム（v21.74。本人の指示） */
          saved1: false, saved2: false };
   rubSelItem = i;
   $("regWin").hidden = false;
@@ -10508,17 +10509,18 @@ function rgEdge(m, N){
   }
   return f;
 }
-/* 描き直す。①は拓本の上に**青**で墨、②は**緑の形＋縁取りの輪郭（朱）**。 */
-function rgRender(){
-  if (!RG) return;
-  var cv = $("rgCv"); if (!cv) return;
-  var N = RG.n, g = cv.getContext("2d");
+/* 描き直す。①は拓本の上に**青**で墨、②は**緑の形＋縁取りの輪郭（朱）**。
+   絵は 512 の下敷き（`RG.buf`）にいったん作り、そこから**拡大して写す**
+   （v21.74。本人の指示「ズームも出来るようにして」）。
+   ます目のまま大きくしたいので、なめらか化は切る。 */
+function rgBuf(){
+  var N = RG.n;
+  if (!RG.buf){ RG.buf = document.createElement("canvas"); RG.buf.width = N; RG.buf.height = N; }
+  var g = RG.buf.getContext("2d");
+  g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, N, N);
-  if (RG.step === 1){
-    g.drawImage(RG.raw, 0, 0);
-  } else {
-    g.fillStyle = "#fff"; g.fillRect(0, 0, N, N);
-  }
+  if (RG.step === 1){ g.drawImage(RG.raw, 0, 0); }
+  else { g.fillStyle = "#fff"; g.fillRect(0, 0, N, N); }
   var cur = rgCur();
   if (cur){
     /* ②では、直す前の**縁取りの輪郭**を朱の線で重ねる（v21.73。本人の指示）。
@@ -10539,12 +10541,45 @@ function rgRender(){
     }
     g.putImageData(im, 0, 0);
   }
+  return RG.buf;
+}
+/* 見えている所が絵からはみ出さないように直す */
+function rgClampView(){
+  var v = RG.view, N = RG.n;
+  v.z = Math.max(1, Math.min(12, v.z));
+  var w = N / v.z;
+  v.dx = Math.max(0, Math.min(N - w, v.dx));
+  v.dy = Math.max(0, Math.min(N - w, v.dy));
+}
+function rgRender(){
+  if (!RG) return;
+  var cv = $("rgCv"); if (!cv) return;
+  var N = RG.n, g = cv.getContext("2d"), v = RG.view;
+  rgClampView();
+  var buf = rgBuf();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, N, N);
+  g.imageSmoothingEnabled = false;
+  g.setTransform(v.z, 0, 0, v.z, -v.dx * v.z, -v.dy * v.z);
+  g.drawImage(buf, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
   var it = rgItem(), L = rubCol();
   var n = (L && L.items) ? L.items.length : 0;
   $("rgWho").textContent = (RG.i + 1) + " / " + n + " 字目" +
     (it && it.pick ? "　「" + it.pick + "」" : "　（字は未定）");
   rgSide();
 }
+/* 指している所を動かさずに、拡大・縮小する（作字の画面と同じ考え方）。 */
+function rgZoomAt(ix, iy, k){
+  var v = RG.view, z0 = v.z;
+  v.z = Math.max(1, Math.min(12, v.z * k));
+  if (v.z === z0) return;
+  /* 指していた絵の点が、同じ場所に来るように左上をずらす */
+  v.dx = ix - (ix - v.dx) * (z0 / v.z);
+  v.dy = iy - (iy - v.dy) * (z0 / v.z);
+  rgRender();
+}
+function rgZoomReset(){ RG.view = { z: 1, dx: 0, dy: 0 }; rgRender(); }
 function rgSide(){
   var el = $("rgSide"); if (!el || !RG) return;
   var it = rgItem(), cs = (it && it.cands) || [];
@@ -10565,6 +10600,17 @@ function rgSide(){
     '<label>筆の太さ<input type="range" id="rgBr" min="2" max="60" value="' + RG.brush + '"></label>' +
     '<span class="hint">' + RG.brush + '</span>' +
     '<button class="mini" id="rgUndo"' + (RG.undo.length ? "" : " disabled") + '>戻す</button>' +
+    '</div>';
+  /* ズーム（v21.74。本人の指示「ズームも出来るようにして」）。
+     細かい所は、大きくしないと筆が置けない。 */
+  h += '<div class="row">' +
+    '<span class="hint">大きさ</span>' +
+    '<button class="mini" id="rgZo">−</button>' +
+    '<b>' + (Math.round(RG.view.z * 10) / 10) + '倍</b>' +
+    '<button class="mini" id="rgZi">＋</button>' +
+    '<button class="mini" id="rgZr">全体</button>' +
+    '<button class="mini' + (RG.tool === "pan" ? " primary" : "") + '" id="rgTm">動かす</button>' +
+    '<span class="hint">ころがしても大きくなります（Shift を押しながら引くと動きます）</span>' +
     '</div>';
   if (RG.step === 1){
     h += '<div class="row"><span class="hint">この字：</span>' +
@@ -10602,10 +10648,22 @@ function rgSide(){
     (mmPerPx() ? "（" + (RG.side * mmPerPx()).toFixed(1) + "mm）" : "") +
     '／墨の出どころ：' + (RG.inkFrom === "trace" ? "AI お任せ" : "しきい値") + '</p>';
   el.innerHTML = h;
+  var cv0 = $("rgCv");
+  if (cv0) cv0.style.cursor = (RG.tool === "pan") ? "grab" : "crosshair";
   var tp = $("rgTp"); if (tp) tp.onclick = function(){ RG.tool = "paint"; rgSide(); };
   var te = $("rgTe"); if (te) te.onclick = function(){ RG.tool = "erase"; rgSide(); };
   var br = $("rgBr"); if (br) br.oninput = function(){ RG.brush = num(br.value, 10); rgSide(); };
   var un = $("rgUndo"); if (un) un.onclick = rgUndo;
+  var tm = $("rgTm"); if (tm) tm.onclick = function(){
+    RG.tool = (RG.tool === "pan") ? "paint" : "pan"; rgSide();
+  };
+  var zi = $("rgZi"); if (zi) zi.onclick = function(){
+    rgZoomAt(RG.view.dx + RG.n/RG.view.z/2, RG.view.dy + RG.n/RG.view.z/2, 1.5);
+  };
+  var zo = $("rgZo"); if (zo) zo.onclick = function(){
+    rgZoomAt(RG.view.dx + RG.n/RG.view.z/2, RG.view.dy + RG.n/RG.view.z/2, 1/1.5);
+  };
+  var zr = $("rgZr"); if (zr) zr.onclick = rgZoomReset;
   var s1 = $("rgS1"); if (s1) s1.onclick = function(){ rgSave(1); };
   var s2 = $("rgS2"); if (s2) s2.onclick = function(){ rgSave(2); };
   var g2 = $("rgGo2"); if (g2) g2.onclick = rgShape;
@@ -10656,22 +10714,44 @@ function bindRegWin(){
   var cv = $("rgCv"); if (!cv) return;
   var down = false;
   function at(e){
-    var b = cv.getBoundingClientRect();
-    return { x: (e.clientX - b.left) * RG.n / (b.width || 1),
-             y: (e.clientY - b.top) * RG.n / (b.height || 1) };
+    var b = cv.getBoundingClientRect(), v = RG.view || { z: 1, dx: 0, dy: 0 };
+    return { x: v.dx + (e.clientX - b.left) * RG.n / (b.width || 1) / v.z,
+             y: v.dy + (e.clientY - b.top) * RG.n / (b.height || 1) / v.z };
   }
+  var pan = null;
+  /* **動かす**（v21.74）。［動かす］を選ぶか、**まん中ボタン**・**右ボタン**・
+     **Shift を押しながら**引いても送れる。拡大したまま筆を使えるようにするため。 */
+  function panMode(e){ return RG.tool === "pan" || e.shiftKey || e.button === 1 || e.button === 2; }
+  cv.addEventListener("contextmenu", function(e){ e.preventDefault(); });
   cv.addEventListener("pointerdown", function(e){
     if (!RG) return;
-    down = true; cv.setPointerCapture(e.pointerId);
+    cv.setPointerCapture(e.pointerId); e.preventDefault();
+    if (panMode(e)){ pan = { x: e.clientX, y: e.clientY, dx: RG.view.dx, dy: RG.view.dy }; return; }
+    down = true;
     rgSnap();
-    var p = at(e); rgPaintAt(p.x, p.y); rgRender(); e.preventDefault();
-  });
-  cv.addEventListener("pointermove", function(e){
-    if (!RG || !down) return;
     var p = at(e); rgPaintAt(p.x, p.y); rgRender();
   });
-  cv.addEventListener("pointerup", function(){ down = false; });
-  cv.addEventListener("pointercancel", function(){ down = false; });
+  cv.addEventListener("pointermove", function(e){
+    if (!RG) return;
+    if (pan){
+      var b = cv.getBoundingClientRect(), k = RG.n / (b.width || 1) / RG.view.z;
+      RG.view.dx = pan.dx - (e.clientX - pan.x) * k;
+      RG.view.dy = pan.dy - (e.clientY - pan.y) * k;
+      rgRender();
+      return;
+    }
+    if (!down) return;
+    var p2 = at(e); rgPaintAt(p2.x, p2.y); rgRender();
+  });
+  cv.addEventListener("pointerup", function(){ down = false; pan = null; });
+  cv.addEventListener("pointercancel", function(){ down = false; pan = null; });
+  /* ころがすと、**指している所を中心に**大きくなる */
+  cv.addEventListener("wheel", function(e){
+    if (!RG) return;
+    e.preventDefault();
+    var p = at(e);
+    rgZoomAt(p.x, p.y, e.deltaY < 0 ? 1.2 : 1/1.2);
+  }, { passive: false });
   var x = $("rgX"); if (x) x.onclick = rgClose;
   var pv = $("rgPrevB"); if (pv) pv.onclick = function(){ if (RG) rgOpen(RG.i - 1); };
   var nx = $("rgNextB"); if (nx) nx.onclick = function(){ if (RG) rgOpen(RG.i + 1); };

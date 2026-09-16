@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.69</title>
+<title>彫刻原稿 v21.70</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2168,7 +2168,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.69";
+var APP_VER = "v21.70";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9332,10 +9332,81 @@ function rubBandFit(){
    **ここでは測らない。** 出てきた墨を絵として重ねて出すだけ。
    モデルがいまどこまで読めているかを、目で見て確かめるためのもの。
    傾き・字送りの見立ては、この墨が使えるようになってから足す。 */
+/* 帯の中の「墨のある所」を測る（v21.70。本人の指摘
+   「拓本ぜんたいを通すで読めず、列の数を入れても読めず」）。
+
+   **［列の数］で等分に割った帯は、字よりずっと広い。**
+   広いまま字送りを測ると下限（帯の幅の 0.45 倍）が本当の字送りより大きくなり、
+   **読めない**。読めたように見えても、AI に渡す窓が字数個ぶんになって
+   **一面が青くなるだけ**で 1 字も切れない。
+   そこで、帯の中で墨が立っている所だけを取り出し、そこを列とみなす。
+
+   地のざらつきは全体を底上げするので、**下から 2 割の高さを地とみなして引き**、
+   残りの山のうち、いちばん高い所からつながっている所を列とする。 */
+function rubInkSpan(q, t){
+  if (!RUB.data) return null;
+  var xp = projX(q.y1, q.y2, t), x;
+  var w = q.x2 - q.x1;
+  if (w < 8) return null;
+  var win = Math.max(1, Math.round(w * 0.02));
+  var sm = new Float32Array(RUB.W), k;
+  for (x = q.x1; x < q.x2; x++){
+    var ss = 0, cn = 0;
+    for (k = -win; k <= win; k++){
+      var xx = x + k;
+      if (xx >= q.x1 && xx < q.x2){ ss += xp[xx]; cn++; }
+    }
+    sm[x] = cn ? ss / cn : 0;
+  }
+  var srt = [];
+  for (x = q.x1; x < q.x2; x++) srt.push(sm[x]);
+  srt.sort(function(a2, b2){ return a2 - b2; });
+  var base = srt[Math.floor(srt.length * 0.2)];
+  var top = srt[srt.length - 1];
+  if (!(top > base)) return null;
+  var lim = base + (top - base) * 0.3;
+  /* 墨の立っている所を拾い、**小さなへこみはまたぐ**（v21.70）。
+     字の中にはすき間があるので、一続きだけを見ると列が細く出る。 */
+  var segs = [], st = -1;
+  for (x = q.x1; x < q.x2; x++){
+    if (sm[x] > lim){ if (st < 0) st = x; }
+    else if (st >= 0){ segs.push([st, x - 1]); st = -1; }
+  }
+  if (st >= 0) segs.push([st, q.x2 - 1]);
+  if (!segs.length) return null;
+  var gap = Math.max(4, Math.round(w * 0.12)), mg = [segs[0]], i2;
+  for (i2 = 1; i2 < segs.length; i2++){
+    if (segs[i2][0] - mg[mg.length-1][1] <= gap) mg[mg.length-1][1] = segs[i2][1];
+    else mg.push(segs[i2]);
+  }
+  var px = q.x1;
+  for (x = q.x1; x < q.x2; x++) if (sm[x] > sm[px]) px = x;
+  var hit = null;
+  for (i2 = 0; i2 < mg.length; i2++) if (px >= mg[i2][0] && px <= mg[i2][1]) hit = mg[i2];
+  if (!hit || hit[1] - hit[0] < 6) return null;
+  /* **細くなりすぎたら、あきらめる**（v21.70）。同じ字が縦にそろっていると
+     たての画の所だけが飛び出し、そこだけを列とみてしまう
+     （実測：幅 226px の行が 29px になった）。帯の 4 分の 1 を下限にする。 */
+  if ((hit[1] - hit[0] + 1) < w * 0.25) return null;
+  return { x1: hit[0], x2: hit[1] + 1 };
+}
+/* 帯を、中の墨にぴたりと寄せる（v21.70）。等分に割った帯や、
+   人が大まかに動かした帯を、そのまま AI に渡さないための仕上げ。 */
+function rubBandSnap(q, t){
+  var sp = rubInkSpan(q, t);
+  if (!sp) return q;
+  var pad = Math.round((sp.x2 - sp.x1) * 0.1);
+  var x1 = Math.max(q.x1, sp.x1 - pad), x2 = Math.min(q.x2, sp.x2 + pad);
+  if (x2 - x1 < 8) return q;
+  return { x1: x1, x2: x2, y1: q.y1, y2: q.y2 };
+}
 function rubPitchPx(q, t){
-  var bandW = q.x2 - q.x1;
+  /* **字送りの上下限は「墨の幅」から決める**（v21.70）。帯の幅から決めると、
+     帯が字より広いとき（等分に割った列など）下限が本当の字送りを追い越す。 */
+  var sp0 = rubInkSpan(q, t);
+  var bandW = sp0 ? (sp0.x2 - sp0.x1) : (q.x2 - q.x1);
   var prof = projY(q.x1, q.x2, t);
-  var sm = new Float32Array(RUB.H), win = Math.max(2, Math.round(bandW * 0.02)), y, k;
+  var sm = new Float32Array(RUB.H), win = Math.max(2, Math.round((q.x2 - q.x1) * 0.02)), y, k;
   for (y = q.y1; y < q.y2; y++){
     var ss = 0, cn = 0;
     for (k = -win; k <= win; k++){
@@ -9424,15 +9495,19 @@ function rubAiTrimCols(gmap, aw, ah){
   return [kL, kR];
 }
 var AIBAND_BUSY = false;
+/* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
+   「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
+function aiBandNo(t){ RUB.aiWhy = t; msg(t, true); }
 async function rubAiBand(){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   var base = takuApiBase();
-  if (!base){ msg("［設定］に拓本AIの住所を入れてください。", true); return; }
+  RUB.aiWhy = "";
+  if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
   var q = clampRange(), t = thr(), mpp = mmPerPx();
   var pitch = rubPitchPx(q, t);
   if (!pitch || pitch < 8){
-    msg("字の並び（字送り）を読めませんでした。帯を 1 行だけに合わせてください。", true); return;
+    aiBandNo("字の並び（字送り）を読めませんでした。帯を 1 行だけに合わせてください。"); return;
   }
   /* **帯が広すぎたら断る**（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
      帯が字 2 つぶんより広いと、窓が拓本の幅いっぱいになり、
@@ -9440,11 +9515,25 @@ async function rubAiBand(){
   /* 1 列ぶんの帯は、字送りの 1.2〜1.4 倍ていど。1.8 倍を超えていたら、
      **列が切れていない**とみる（実測：3 列を丸ごと帯にすると、
      字送りの見当が 2 倍にずれて 2.2 倍では通ってしまった）。 */
+  /* **断る前に、帯を中の墨に寄せてみる**（v21.70）。手で大まかに合わせた帯や、
+     等分に割った帯は字より広い。寄せれば通ることが多いので、
+     いきなり断らずに、まず寄せてから見直す。寄せた帯は画面にも残す。 */
   if ((q.x2 - q.x1) > pitch * 1.8){
-    msg("帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
+    var qs2 = rubBandSnap(q, t);
+    if (qs2 && (qs2.x2 - qs2.x1) < (q.x2 - q.x1) - 4){
+      S.rub.bandL = qs2.x1; S.rub.bandR = qs2.x2;
+      A = null; RUB.mask = null;
+      q = clampRange();
+      var p2 = rubPitchPx(q, t);
+      if (p2 && p2 >= 8) pitch = p2;
+      rubPanel(); rubRender();
+    }
+  }
+  if ((q.x2 - q.x1) > pitch * 1.8){
+    aiBandNo("帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
         Math.round(q.x2 - q.x1) + "px）。**1 行だけ**に絞ってください。" +
         "［近い列に合わせる］か［列を探す］、それでも切れないときは［列の数］を入れて" +
-        "［拓本ぜんたいを通す］を使ってください。", true);
+        "［拓本ぜんたいを通す］を使ってください。");
     return;
   }
   /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
@@ -9453,8 +9542,8 @@ async function rubAiBand(){
   var cx0 = (q.x1 + q.x2) / 2 - side / 2;
   var ys = [];
   for (var y = q.y1 - side * 0.15; y < q.y2; y += stepY) ys.push(y);
-  if (!ys.length){ msg("帯が短すぎます。", true); return; }
-  if (ys.length > 80){ msg("帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。", true); return; }
+  if (!ys.length){ aiBandNo("帯が短すぎます。"); return; }
+  if (ys.length > 80){ aiBandNo("帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。"); return; }
 
   /* 重ねる先。大きい拓本でも重くならないよう、長い方を 2000 までに落とす。 */
   var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H));
@@ -9509,7 +9598,7 @@ async function rubAiBand(){
     if (bt){ bt.disabled = false; bt.textContent = "帯を AI に通す"; }
   }
   ag.restore();
-  if (!ok){ msg("AI に通せませんでした（" + (why || "?") + "）", true); return; }
+  if (!ok){ aiBandNo("AI に通せませんでした（" + (why || "?") + "）"); return; }
 
   /* 白黒の濃さを、そのまま**青の濃さ**にして重ねる。拓本の絵が透けて見えるように。
      色を付ける前に、**濃さのまま取っておく**（v21.55）。見立てはこれを使う。 */
@@ -9604,12 +9693,16 @@ function _corrAt(sm, a, b, L){
 function rubBestLag(sm, a, b, L0, minL){
   if (!L0) return 0;
   var best = _corrAt(sm, a, b, L0), pick = L0;
-  [2, 3, 4].forEach(function(k){
+  [4, 3, 2].forEach(function(k){
     var L = Math.round(L0 / k);
-    if (L < Math.max(4, minL || 4)) return;
+    if (L >= pick || L < Math.max(4, minL || 4)) return;
     var c = _corrAt(sm, a, b, L);
-    /* **同じくらい合えば短い方**。9 割を目安にする */
-    if (c > 0 && c >= best * 0.92 && L < pick) pick = L;
+    /* **本当の周期なら、その 1.5 倍の所では合わない**（山と谷が入れちがう）。
+       のっぺりしていれば、ただの偶然。ここで見分ける（v21.70。実測：
+       本当の字送り 150px の所で 合い 0.24、1.5 倍の 222px では 0.09。
+       2 倍の 297px は 0.30 で、合いの大きさだけでは 2 倍の方が勝ってしまう）。 */
+    var mid = _corrAt(sm, a, b, Math.round(L * 1.5));
+    if (c > 0.12 && c >= best * 0.6 && c >= mid + 0.08) pick = L;
   });
   return pick;
 }
@@ -9630,7 +9723,7 @@ function rubColsWanted(){
   var n = Math.max(0, Math.min(24, num(S.rub.colN, 0)));
   /* **1 本でも通す**（v21.68）。範囲を決めれば、その中が 1 列ということもある。
      「拓本ぜんたいが 1 本の列」は上の `wide` で外してあるので、ここは 1 本でよい。 */
-  if (!n && good.length >= 1) return good;
+  if (!n && good.length >= 1){ RUB.colsSplit = false; return good; }
   var guessed = 0;
   if (!n){
     /* **列の間隔から本数を見当づける**（v21.69。本人の指摘
@@ -9646,6 +9739,7 @@ function rubColsWanted(){
     guessed = cp;
   }
   /* 等分に割る。少しだけ重ねて、はらいが落ちないようにする。 */
+  RUB.colsSplit = true;                    /* 等分に割った印（v21.70） */
   var out = [], w = full / n;
   for (var i = 0; i < n; i++){
     var a = ar.x1 + w * i, b = a + w;
@@ -9678,27 +9772,41 @@ async function rubAllGo(){
   /* **たての範囲も、指定された所に合わせる**（v21.68）。
      頭・脚（較正の線）は元に戻すので、較正はくずれない。 */
   if (!ar2.all){ S.rub.calTop = ar2.y1; S.rub.calBot = ar2.y2; }
-  var ok = 0, ng = 0;
+  var ok = 0, ng = 0, whys = [];
   for (var i = 0; i < runs.length; i++){
     var c = runs[i];
     var pad = Math.round((c.b - c.a) * 0.08);
     S.rub.bandL = Math.max(0, Math.round(c.a - pad));
     S.rub.bandR = Math.min(RUB.W, Math.round(c.b + pad));
+    /* **等分に割ったときだけ、帯を中の墨に寄せる**（v21.70。本人の指摘
+       「列の数を入れても読めず」）。等分の帯は字よりずっと広く、広いまま
+       AI に渡すと窓が字数個ぶんになって**一面が青くなるだけ**で切れない。
+       列を見つけられているときの帯はもともと列ぴったりなので、さわらない。 */
+    if (RUB.colsSplit){
+      var qs = rubBandSnap({ x1: S.rub.bandL, x2: S.rub.bandR, y1: ar2.y1, y2: ar2.y2 }, thr());
+      if (qs){ S.rub.bandL = qs.x1; S.rub.bandR = qs.x2; }
+    }
     A = null; RUB.mask = null;
     msg("列 " + (i+1) + " / " + runs.length + " を通しています…", false, true);
-    RUB.aiBand = null;
+    RUB.aiBand = null; RUB.aiWhy = "";
     await rubAiBand();
-    if (!RUB.aiBand){ ng++; continue; }
+    if (!RUB.aiBand){ ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?")); continue; }
     var got = rubLineTakeAi();
-    if (got) ok++; else ng++;
+    if (got) ok++;
+    else { ng++; whys.push((i+1) + "列目：AI の墨から字を切り分けられませんでした"); }
   }
   S.rub.bandL = b0.L; S.rub.bandR = b0.R;
   S.rub.calTop = b0.T; S.rub.calBot = b0.B;
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
+  /* **読めなかった列は、理由まで出す**（v21.70。本人の報告
+     「拓本ぜんたいを通すで読めず、列の数を入れても読めず」）。
+     どこで止まったのか分からないと、こちらも人も直しようがない。 */
   msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
       (ng ? "／" + ng + " 列は読めませんでした" : "") + "）。" +
-      "列を押すと、その列の枠を直せます。");
+      (whys.length ? "理由：" + whys.slice(0, 4).join("／") +
+        (whys.length > 4 ? " ほか" : "") + "。" : "") +
+      "列を押すと、その列の枠を直せます。", ok === 0);
 }
 function rubAiBandClear(){
   RUB.aiBand = null;
@@ -10426,20 +10534,24 @@ function estimatePitch(prof, a, b, minL, maxL){
   if (len < minL * 2) return 0;
   maxL = Math.min(maxL, Math.floor(len / 2));
   if (maxL <= minL) return 0;
+  /* **地のざらつきを引く**（v21.70。本人の指摘「列の数を入れても読めず」）。
+     石の地や紙の目があると、墨の量がどこも底上げされる。底上げされた並びは
+     **どの間隔でもよく合って**しまい、いちばん合う所がでたらめになる。
+     実測（地がざらざらの拓本に似せた絵。本当の字送り 150px）：**884px** と出た。
+     **平均を引いて**、出っぱり・へこみだけで合わせると、そこが直る。 */
+  var pf = new Float64Array(len), i, mean = 0;
+  for (i = a; i < b; i++) mean += prof[i];
+  mean /= len;
+  for (i = a; i < b; i++) pf[i - a] = prof[i] - mean;
   var best = -1, bestL = 0;
   for (var L = minL; L <= maxL; L++){
-    var s = 0, s1 = 0, s2 = 0, c = 0;
-    for (var i = a; i + L < b; i++){
-      var x = prof[i], y = prof[i+L];
-      s += x*y; s1 += x*x; s2 += y*y; c++;
-    }
-    if (c < 8) continue;
-    var d = Math.sqrt(s1 * s2);
-    if (!d) continue;
-    var v = s / d;
+    var v = _corrAt(pf, 0, len, L);
     if (v > best){ best = v; bestL = L; }
   }
-  return best > 0.25 ? bestL : 0;
+  if (!(best > 0.2)) return 0;
+  /* **周期の取り違えを直す**。自己相関は本当の周期の 2 倍・3 倍でもよく合う。
+     半分・1/3・1/4 も確かめて、同じくらい合うなら短い方を採る（v21.70）。 */
+  return rubBestLag(pf, 0, len, bestL, minL);
 }
 
 /* デモ画面を、操作用の枠を消して拡大した JPEG にする。Blob で返す。 */

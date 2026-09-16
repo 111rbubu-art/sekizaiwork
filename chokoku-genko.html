@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.66</title>
+<title>彫刻原稿 v21.68</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2168,7 +2168,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.66";
+var APP_VER = "v21.68";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9434,6 +9434,19 @@ async function rubAiBand(){
   if (!pitch || pitch < 8){
     msg("字の並び（字送り）を読めませんでした。帯を 1 行だけに合わせてください。", true); return;
   }
+  /* **帯が広すぎたら断る**（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
+     帯が字 2 つぶんより広いと、窓が拓本の幅いっぱいになり、
+     **全面が青くなるだけで 1 字も切れない**。 */
+  /* 1 列ぶんの帯は、字送りの 1.2〜1.4 倍ていど。1.8 倍を超えていたら、
+     **列が切れていない**とみる（実測：3 列を丸ごと帯にすると、
+     字送りの見当が 2 倍にずれて 2.2 倍では通ってしまった）。 */
+  if ((q.x2 - q.x1) > pitch * 1.8){
+    msg("帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
+        Math.round(q.x2 - q.x1) + "px）。**1 行だけ**に絞ってください。" +
+        "［近い列に合わせる］か［列を探す］、それでも切れないときは［列の数］を入れて" +
+        "［拓本ぜんたいを通す］を使ってください。", true);
+    return;
+  }
   /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
   var side = Math.max(pitch * 1.15, (q.x2 - q.x1));
   var stepY = Math.max(8, side * 0.5);
@@ -9532,6 +9545,48 @@ async function rubAiBand(){
       (why ? "途中で止まりました：" + why + "。" : "") +
       "青いところが AI の読んだ墨です。［AI の墨を消す］で消えます。");
 }
+/* 通す列を決める（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
+
+   **列の切り分けに失敗していた。** 石の地が一面に散っている拓本では、
+   列と列の間でも墨の量が落ちきらないので、`detectColumns` が
+   **拓本ぜんたいを 1 本の列**として返すことがある。そのまま通すと
+   窓が拓本の幅いっぱいになり、**全面が青くなるだけで 1 字も切れない**。
+
+   そこで、**広すぎる列は列とみなさない**。見つからなければ
+   ［列の数］で等分に割る（墓誌のように等間隔なら、これで十分合う）。 */
+function rubColsWanted(){
+  /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
+     拓本の取り方で端の行が見切れていることがあるので、そこを外せるようにする。 */
+  var ar = rubArea(), full = ar.x2 - ar.x1;
+  var runs = (detectColumns(false) || []).filter(function(c){
+    var mid = (c.a + c.b) / 2;
+    return mid >= ar.x1 && mid <= ar.x2;
+  });
+  var pit = 0;
+  try { pit = rubPitchPx({ x1: ar.x1, x2: ar.x2, y1: ar.y1, y2: ar.y2 }, thr()) || 0; } catch(e){}
+  var wide = Math.max(full * 0.55, pit ? pit * 1.8 : 0);
+  var good = runs.filter(function(c){ return (c.b - c.a) <= wide; });
+  /* **［列の数］を入れてあれば、そちらが優先**（v21.67）。
+     自動で切れているように見えても、人が数を知っているならその方が確か。 */
+  var n = Math.max(0, Math.min(24, num(S.rub.colN, 0)));
+  /* **1 本でも通す**（v21.68）。範囲を決めれば、その中が 1 列ということもある。
+     「拓本ぜんたいが 1 本の列」は上の `wide` で外してあるので、ここは 1 本でよい。 */
+  if (!n && good.length >= 1) return good;
+  if (!n){
+    msg("列を切り分けられませんでした（石の地が一面にあると、列の切れ目が読めません）。" +
+        "メニューの［列の数］に本数を入れてから、もう一度押してください。", true);
+    return null;
+  }
+  /* 等分に割る。少しだけ重ねて、はらいが落ちないようにする。 */
+  var out = [], w = full / n;
+  for (var i = 0; i < n; i++){
+    var a = ar.x1 + w * i, b = a + w;
+    out.push({ a: Math.max(ar.x1, Math.round(a - w*0.06)),
+               b: Math.min(ar.x2, Math.round(b + w*0.06)) });
+  }
+  RUB.cols = out;
+  return out;
+}
 /* 拓本ぜんたい（列をぜんぶ）を、通して見立てる（v21.66。本人の指示
    「1 行だけでなく全体的に見れるようにして」）。
    列を見つけ、1 列ずつ **帯を合わせ → AI に通し → 見立てる** をくり返す。 */
@@ -9539,15 +9594,16 @@ async function rubAllGo(){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
-  var runs = detectColumns(false);
-  if (!runs || !runs.length){
-    msg("列を見つけられませんでした。拓本の範囲としきい値（反転）を確かめてください。", true);
-    return;
-  }
+  var runs = rubColsWanted();
+  if (!runs || !runs.length) return;
   if (runs.length > 12){
     if (!confirm("列が " + runs.length + " 本あります。ぜんぶ通すと時間がかかります。続けますか。")) return;
   }
-  var b0 = { L: S.rub.bandL, R: S.rub.bandR };
+  var ar2 = rubArea();
+  var b0 = { L: S.rub.bandL, R: S.rub.bandR, T: S.rub.calTop, B: S.rub.calBot };
+  /* **たての範囲も、指定された所に合わせる**（v21.68）。
+     頭・脚（較正の線）は元に戻すので、較正はくずれない。 */
+  if (!ar2.all){ S.rub.calTop = ar2.y1; S.rub.calBot = ar2.y2; }
   var ok = 0, ng = 0;
   for (var i = 0; i < runs.length; i++){
     var c = runs[i];
@@ -9563,6 +9619,7 @@ async function rubAllGo(){
     if (got) ok++; else ng++;
   }
   S.rub.bandL = b0.L; S.rub.bandR = b0.R;
+  S.rub.calTop = b0.T; S.rub.calBot = b0.B;
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
   msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
@@ -9878,12 +9935,39 @@ function rubLineRestat(){
    押している間だけ、絵の上のドラッグが「回す」ではなく「枠を描く」になる。
    回しながら枠を描くことはないので、取り合いにならないよう入切で分ける。 */
 var rubBoxDraw = false;
+/* **通す範囲**を描くモード（v21.68。本人の指示「範囲指定させて、その中の全行を
+   取得する様にして」）。拓本の取り方で端の行が見切れていることがあるので、
+   通す所を人が決められるようにする。 */
+var rubAreaDraw = false;
 function rubBoxDrawTog(){
   rubBoxDraw = !rubBoxDraw;
+  if (rubBoxDraw) rubAreaDraw = false;
   rubPanel(); rubRender();
   msg(rubBoxDraw
     ? "枠を描く状態にしました。拓本の上で、字をかこむように引いてください。もう一度押すとやめます。"
     : "枠を描くのをやめました。");
+}
+function rubAreaDrawTog(){
+  rubAreaDraw = !rubAreaDraw;
+  if (rubAreaDraw) rubBoxDraw = false;
+  rubPanel(); rubRender();
+  msg(rubAreaDraw
+    ? "通す範囲を描く状態にしました。拓本の上で、**通したい行をまとめて**かこんでください。"
+    : "範囲を描くのをやめました。");
+}
+function rubAreaClear(){
+  S.rub.allBox = null;
+  persist(); rubPanel(); rubRender();
+  msg("通す範囲をやめました。拓本ぜんたいが相手になります。");
+}
+/* 通す範囲（無ければ拓本の枠ぜんたい） */
+function rubArea(){
+  var b = S.rub.allBox;
+  var f = frameX(), q = clampRange();
+  if (!b || !(b.w > 8) || !(b.h > 8))
+    return { x1: f.x1, x2: f.x2, y1: q.y1, y2: q.y2, all: true };
+  return { x1: Math.max(0, b.x), x2: Math.min(RUB.W, b.x + b.w),
+           y1: Math.max(0, b.y), y2: Math.min(RUB.H, b.y + b.h), all: false };
 }
 /* 描き終わった四角を、1 字の枠として足す。 */
 function rubBoxDrawn(x1, y1, x2, y2){
@@ -12152,6 +12236,16 @@ function rubRender(){
         '" y="' + (k[2]-k[4]) + '" width="' + (k[3]*2) + '" height="' + (k[4]*2) + '" fill="transparent"/>';
     });
   }
+  if (S.rub.allBox && S.rub.allBox.w > 8){
+    var ab = S.rub.allBox;
+    o.push('<rect x="' + ab.x + '" y="' + ab.y + '" width="' + ab.w + '" height="' + ab.h +
+      '" fill="none" stroke="#137A52" stroke-width="' + (W*0.005) +
+      '" stroke-dasharray="' + (W*0.02) + ' ' + (W*0.012) + '"/>');
+    o.push('<text x="' + (ab.x + W*0.008) + '" y="' + (ab.y - W*0.008) +
+      '" fill="#137A52" font-size="' + (W*0.026) + '" font-weight="700"' +
+      ' stroke="#fff" stroke-width="' + (W*0.005) + '" paint-order="stroke"' +
+      '>この中を通します</text>');
+  }
   if (rubBoxNow){
     var bn = rubBoxNow;
     o.push('<rect x="' + Math.min(bn.x1,bn.x2) + '" y="' + Math.min(bn.y1,bn.y2) +
@@ -12185,7 +12279,7 @@ function rubRender(){
     maskLayer + '<g pointer-events="none">' + o.join("") + '</g>' +
     /* **回せるのは拓本の絵の上だけ**（v21.26。本人の指摘「枠外でも効くのは
        直感的ではない」）。前は左の余白（GUT）まで受けていた。 */
-    (rubBoxDraw
+    ((rubBoxDraw || rubAreaDraw)
       ? '<rect class="boxhit" x="0" y="0" width="' + W +
         '" height="' + H + '" fill="transparent"/>'
       : (rotMode ? '<rect class="spinhit" x="0" y="0" width="' + W +
@@ -12329,7 +12423,21 @@ function bindBoxDraw(svg){
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
       var b = rubBoxNow; rubBoxNow = null;
-      if (b) rubBoxDrawn(b.x1, b.y1, b.x2, b.y2);
+      if (!b) return;
+      if (rubAreaDraw){
+        var x = Math.min(b.x1, b.x2), y = Math.min(b.y1, b.y2);
+        var w = Math.abs(b.x2 - b.x1), h = Math.abs(b.y2 - b.y1);
+        if (w < 12 || h < 12){ msg("小さすぎます。通したい行をまとめてかこんでください。", true); return; }
+        S.rub.allBox = { x: x, y: y, w: w, h: h };
+        rubAreaDraw = false;
+        persist(); rubPanel(); rubRender();
+        var mpp2 = mmPerPx();
+        msg("通す範囲を決めました" + (mpp2 ? "（" + (w*mpp2).toFixed(0) + " × " +
+            (h*mpp2).toFixed(0) + "mm）" : "") + "。［拓本ぜんたいを通す］で、" +
+            "この中の行だけを通します。");
+        return;
+      }
+      rubBoxDrawn(b.x1, b.y1, b.x2, b.y2);
     }
     window.addEventListener("pointermove", mv);
     window.addEventListener("pointerup", up);
@@ -12730,7 +12838,21 @@ function rubPanel(){
     }
     h += '<p class="hint" style="margin:5px 0 0;">帯（オレンジの範囲）は、絵の上の' +
       '<b>つまみでも動かせます</b>。</p>';
-    h += '<button class="mini primary" id="btnAiAll" style="margin-top:6px;" ' +
+    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
+      'style="margin-top:6px;" title="通したい行をまとめてかこみます。' +
+      '拓本の端で見切れている行を外せます">▣ 通す範囲を決める</button>';
+    if (S.rub.allBox && S.rub.allBox.w > 8){
+      var mp2 = mmPerPx();
+      h += ' <button class="mini" id="btnAreaClr">範囲をやめる</button>' +
+        '<p class="hint" style="margin:3px 0 0;">いまの範囲：' +
+        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
+             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
+        '（緑の四角）</p>';
+    }
+    h += '<div class="fixrow" style="margin-top:6px;"><span>列の数（自動で切れないとき）</span>' +
+      '<b><input type="number" id="rColN" value="' + (num(S.rub.colN, 0) || "") +
+      '" min="0" max="24" step="1" style="width:56px;" placeholder="自動"></b></div>';
+    h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +
       'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
     h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
       'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">この帯だけ通す</button>';
@@ -12779,6 +12901,14 @@ function rubPanel(){
   });
   var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
+  var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;
+  var barc = $("btnAreaClr"); if (barc) barc.onclick = rubAreaClear;
+  var bcn = $("rColN"); if (bcn) bcn.onchange = function(){
+    S.rub.colN = Math.max(0, Math.min(24, num(this.value, 0)));
+    persist();
+    msg(S.rub.colN ? ("列を " + S.rub.colN + " 本として等分に割ります。")
+                   : "列は自動で切り分けます。");
+  };
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
   var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;
   var bcs = $("btnBandCols"); if (bcs) bcs.onclick = function(){

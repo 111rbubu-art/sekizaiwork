@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.49</title>
+<title>彫刻原稿 v21.50</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.49";
+var APP_VER = "v21.50";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7332,7 +7332,8 @@ function sizeText(n){
 /* ============================================================
    11. 拓本 — 読込・較正・解析
    ============================================================ */
-var RUB = { img:null, canvas:null, data:null, W:0, H:0, mask:null };
+var RUB = { img:null, canvas:null, data:null, W:0, H:0, mask:null,
+            aiBand:null };   /* ［帯をAIに通す］の結果（v21.50）。絵の住所と覚え書き */
 /* 前回の続きの拓本。読み込みは済んでいるが、まだ画面には出していないもの。
    別の案件を受け取ったときに捨てられるよう、いったんここで持つ。 */
 var _pendingRubSrc = null;
@@ -9202,6 +9203,146 @@ function rubBandFit(){
   msg("帯を列に合わせました（幅 " + (r.bandR - r.bandL) + " px）。" +
       "ほかの列にしたいときは、帯をその列の近くまで動かして、もう一度押してください。");
 }
+/* ───── 帯を AI に通して見せる（v21.50。本人の指示）─────
+   ①「読む」のモデルは、**字 1 つぶんの切り抜き**で覚えている。
+   行ぜんたいを一度に渡しても、見たことのない絵になって当たらない。
+   そこで **字送りの長さで窓を切り、1 つずつ通して、重ねてつなぐ**。
+   窓は半分ずつ重ねて、つなぎ目で画が切れないようにする（重なりは濃い方を採る）。
+
+   **ここでは測らない。** 出てきた墨を絵として重ねて出すだけ。
+   モデルがいまどこまで読めているかを、目で見て確かめるためのもの。
+   傾き・字送りの見立ては、この墨が使えるようになってから足す。 */
+function rubPitchPx(q, t){
+  var bandW = q.x2 - q.x1;
+  var prof = projY(q.x1, q.x2, t);
+  var sm = new Float32Array(RUB.H), win = Math.max(2, Math.round(bandW * 0.02)), y, k;
+  for (y = q.y1; y < q.y2; y++){
+    var ss = 0, cn = 0;
+    for (k = -win; k <= win; k++){
+      var yy = y + k;
+      if (yy >= q.y1 && yy < q.y2){ ss += prof[yy]; cn++; }
+    }
+    sm[y] = cn ? ss / cn : 0;
+  }
+  return estimatePitch(sm, q.y1, q.y2, Math.max(6, Math.round(bandW * 0.45)),
+                       Math.round(bandW * 2.6));
+}
+/* 拓本の一部（正方形）を、学習に使っているのと同じ **512 の白黒**にする。
+   明るさはそのまま（takuShot と同じ。反転はかけない）。 */
+function rubCropPng(cx0, cy0, side){
+  var N = 512;
+  var c = document.createElement("canvas"); c.width = N; c.height = N;
+  var g = c.getContext("2d");
+  var im = g.createImageData(N, N), o = im.data;
+  var d = RUB.data.data, W = RUB.W, H = RUB.H, st = side / N;
+  for (var py = 0; py < N; py++){
+    var Y = Math.round(cy0 + (py + 0.5) * st);
+    for (var px = 0; px < N; px++){
+      var X = Math.round(cx0 + (px + 0.5) * st), q = (py*N + px) * 4, v = 255;
+      if (X >= 0 && Y >= 0 && X < W && Y < H){
+        var p = (Y*W + X) * 4;
+        v = Math.round(d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114);
+      }
+      o[q] = o[q+1] = o[q+2] = v; o[q+3] = 255;
+    }
+  }
+  g.putImageData(im, 0, 0);
+  return new Promise(function(res){ c.toBlob(res, "image/png"); });
+}
+var AIBAND_BUSY = false;
+async function rubAiBand(){
+  if (AIBAND_BUSY) return;
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  var base = takuApiBase();
+  if (!base){ msg("［設定］に拓本AIの住所を入れてください。", true); return; }
+  var q = clampRange(), t = thr(), mpp = mmPerPx();
+  var pitch = rubPitchPx(q, t);
+  if (!pitch || pitch < 8){
+    msg("字の並び（字送り）を読めませんでした。帯を 1 行だけに合わせてください。", true); return;
+  }
+  /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
+  var side = Math.max(pitch * 1.15, (q.x2 - q.x1));
+  var stepY = Math.max(8, side * 0.5);
+  var cx0 = (q.x1 + q.x2) / 2 - side / 2;
+  var ys = [];
+  for (var y = q.y1 - side * 0.15; y < q.y2; y += stepY) ys.push(y);
+  if (!ys.length){ msg("帯が短すぎます。", true); return; }
+  if (ys.length > 80){ msg("帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。", true); return; }
+
+  /* 重ねる先。大きい拓本でも重くならないよう、長い方を 2000 までに落とす。 */
+  var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H));
+  var acc = document.createElement("canvas");
+  acc.width = Math.max(1, Math.round(RUB.W * SC));
+  acc.height = Math.max(1, Math.round(RUB.H * SC));
+  var ag = acc.getContext("2d");
+  ag.fillStyle = "#000"; ag.fillRect(0, 0, acc.width, acc.height);
+  ag.globalCompositeOperation = "lighten";      /* 重なりは濃い方を採る */
+
+  AIBAND_BUSY = true;
+  var bt = $("btnAiBand"); if (bt){ bt.disabled = true; bt.textContent = "AI に通しています…"; }
+  var t0 = Date.now(), ok = 0, why = "";
+  try {
+    for (var i = 0; i < ys.length; i++){
+      msg("AI に通しています… " + (i+1) + " / " + ys.length, false, true);
+      var blob = await rubCropPng(cx0, ys[i], side);
+      var fd = new FormData();
+      fd.append("file", blob, "raw.png");
+      fd.append("stage", "ink");
+      fd.append("soft", "true");
+      var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+      if (!r.ok){
+        why = "HTTP " + r.status;
+        try { var j = await r.json(); why = j.detail || j.error || why; } catch(e){}
+        break;
+      }
+      var bb = await r.blob();
+      var img = await new Promise(function(res, rej){
+        var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+        im.src = URL.createObjectURL(bb);
+      });
+      ag.drawImage(img, cx0 * SC, ys[i] * SC, side * SC, side * SC);
+      ok++;
+    }
+  } catch(e){
+    why = (e && e.message) || String(e);
+  } finally {
+    AIBAND_BUSY = false;
+    if (bt){ bt.disabled = false; bt.textContent = "帯を AI に通す"; }
+  }
+  if (!ok){ msg("AI に通せませんでした（" + (why || "?") + "）", true); return; }
+
+  /* 白黒の濃さを、そのまま**青の濃さ**にして重ねる。拓本の絵が透けて見えるように。 */
+  var im2 = ag.getImageData(0, 0, acc.width, acc.height), o2 = im2.data, n1 = 0;
+  for (var k2 = 0; k2 < o2.length; k2 += 4){
+    var v2 = o2[k2];
+    o2[k2] = 27; o2[k2+1] = 111; o2[k2+2] = 214;
+    o2[k2+3] = v2 > 20 ? Math.min(230, Math.round(v2 * 0.9)) : 0;
+    if (v2 > 127) n1++;
+  }
+  ag.globalCompositeOperation = "source-over";
+  ag.putImageData(im2, 0, 0);
+  var mmc = mpp ? (mpp / SC) : 0;
+  RUB.aiBand = {
+    url: acc.toDataURL("image/png"),
+    at: new Date().toLocaleString("ja-JP"),
+    n: ok, all: ys.length,
+    pitchMm: mpp ? pitch * mpp : null,
+    inkMm2: mmc ? n1 * mmc * mmc : null,
+    ms: Date.now() - t0,
+    cut: !!why
+  };
+  rubPanel(); rubRender();
+  msg("帯を AI に通しました（" + ok + " / " + ys.length + " か所、" +
+      Math.round((Date.now() - t0)/100)/10 + " 秒）。" +
+      (why ? "途中で止まりました：" + why + "。" : "") +
+      "青いところが AI の読んだ墨です。［AI の墨を消す］で消えます。");
+}
+function rubAiBandClear(){
+  RUB.aiBand = null;
+  rubPanel(); rubRender();
+  msg("AI の墨を消しました。");
+}
+
 /* 見立てて、控えに積む（新しいものが先頭。6 行ぶんまで） */
 function rubLineTake(){
   var m = rubLineMeasure();
@@ -11242,6 +11383,11 @@ function rubRender(){
     var mk = buildMask();
     if (mk) maskLayer = '<image href="' + mk + '" x="0" y="0" width="' + W + '" height="' + H + '" pointer-events="none"/>';
   }
+  /* ［帯を AI に通す］の結果（v21.50）。しきい値の墨（maskLayer）より**上**に重ねる。
+     どちらも出ていると、どちらを見ているのか分からなくなるため。 */
+  if (RUB.aiBand && RUB.aiBand.url)
+    maskLayer += '<image href="' + RUB.aiBand.url + '" x="0" y="0" width="' + W +
+      '" height="' + H + '" pointer-events="none"/>';
   st.style.width = dispW + "px"; st.style.height = "auto";
   st.innerHTML = '<svg width="' + dispW + '" height="' + dispH + '" viewBox="' + (-GUT) + ' 0 ' +
     (W + GUT) + ' ' + H + '">' +
@@ -11696,14 +11842,31 @@ function rubPanel(){
        （v21.27。本人の判断）。それまでは押せないようにしておく。
        中の仕組み（`rubLineMeasure` ほか）は、AI 版の比べ先として残す。 */
     h += '<h3 class="sec" style="margin-top:14px;">AI補正</h3>';
-    h += '<button class="mini" id="btnLineTake" disabled ' +
-      'title="拓本AI に置き換えます。いまは使えません。">この行を見立てる</button>';
-    h += '<p class="hint" style="margin:5px 0 0;">この行を見立てるは、' +
-      '<b>拓本AI に置き換えます</b>。いまは使えません。</p>';
+    /* まずは「通して見せる」だけ（v21.50。本人の了解を得た進め方）。
+       傾き・字送りの見立ては、この墨が使えるようになってから足す。 */
+    h += '<button class="mini" id="btnAiBand" ' +
+      'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">帯を AI に通す</button>';
+    if (RUB.aiBand)
+      h += ' <button class="mini" id="btnAiBandClr">AI の墨を消す</button>';
+    h += '<p class="hint" style="margin:5px 0 0;">帯を <b>1 行だけ</b>に合わせてから押してください。' +
+      '読んだ墨を<b>青</b>で重ねます。ここでは<b>測りません</b>。' +
+      'いまモデルがどこまで読めているかを、目で確かめるためのものです。</p>';
+    if (RUB.aiBand){
+      var ab = RUB.aiBand;
+      h += '<p class="hint" style="margin:4px 0 0;">' + ab.at + '　' +
+        ab.n + ' / ' + ab.all + ' か所　' +
+        (ab.pitchMm ? '字送り ' + ab.pitchMm.toFixed(2) + 'mm　' : '') +
+        (ab.inkMm2 ? '墨 ' + ab.inkMm2.toFixed(0) + 'mm²　' : '') +
+        Math.round(ab.ms/100)/10 + ' 秒</p>';
+    }
+    h += '<button class="mini" id="btnLineTake" disabled style="margin-top:6px;" ' +
+      'title="AI の墨から測る作りは、これから足します。">この行を見立てる</button>';
   }
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
+  var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
+  var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
   var br = $("btnLineRot");  if (br) br.onclick = rubLineFixRot;
   var bf = $("rFix");
   if (bf) bf.onclick = function(){ (view === "rub") ? endFix() : startFix(); };

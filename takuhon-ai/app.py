@@ -417,6 +417,10 @@ def pairs(which: str = "pairs", limit: int = 60, offset: int = 0, only: str = "a
         out.append({
             "id": os.path.basename(d), "set": which,
             "off": D.is_off(d),
+            # どこから作った墨か（彫刻原稿 v21.59 から入る）。
+            # "trace" … ［AI お任せ］が拾ったものを人が直した
+            # "hand"／無し … しきい値で拾ったものを人が直した
+            "inkFrom": meta.get("inkFrom", ""),
             "char": meta.get("char", ""), "at": meta.get("at", ""),
             # **絵の版**。作り直すと同じ名前で中身だけ変わるので、
             # これを絵の住所に付けないと、**ブラウザが古い絵を出し続ける**

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.56</title>
+<title>彫刻原稿 v21.57</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.56";
+var APP_VER = "v21.57";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9257,6 +9257,52 @@ function rubCropPng(cx0, cy0, side){
   g.putImageData(im, 0, 0);
   return new Promise(function(res){ c.toBlob(res, "image/png"); });
 }
+/* 行から外れた墨を落とす（v21.57。本人の画面で、行の左わきに青い塊が出ていた）。
+   帯の中でも、行の左右には 石の地・彫っていない面が入る。そこに出た墨は
+   行ぜんたいに縦につながる塊になりやすく、1 字ずつに切れなくなる。
+   たて 1 列ぶんの墨の量を見て、**いちばん多い所を含むひと続き**だけ残す。
+   残す左右の端を返し、その外は 0 にする（`gmap` はここで書きかえる）。 */
+function rubAiTrimCols(gmap, aw, ah){
+  var x, y;
+  /* **墨の量では見分けられない。** 石の地の塊は、縦に長いぶん量が多いことがある
+     （実測：塊 45,000 に対し 字の列 96,000 だが、たて 1 列ぶんで見ると
+     塊 900 ／ 字の列 800 で、塊の方が多かった）。
+     見分けるのは**切れ目の数**。字の列は 1 列たどると 字の数だけ切れ目があるが、
+     地の塊は のっぺり続くので 1 つしかない。 */
+  var nrun = new Int32Array(aw), ink = new Float32Array(aw), maxR = 0;
+  for (x = 0; x < aw; x++){
+    var k = 0, on = false, cc = 0;
+    for (y = 0; y < ah; y++){
+      var v = gmap[y*aw + x] > 127;
+      if (v){ cc++; if (!on) k++; }
+      on = v;
+    }
+    nrun[x] = k; ink[x] = cc;
+    if (k > maxR) maxR = k;
+  }
+  if (!maxR) return null;
+  var need = Math.max(2, maxR * 0.4);
+  /* 切れ目の多い列が ひと続きになっている所を探し、墨のいちばん多いまとまりを残す */
+  var best = null, cur = null;
+  for (x = 0; x <= aw; x++){
+    var ok = (x < aw) && (nrun[x] >= need);
+    if (ok){
+      if (!cur) cur = { a: x, b: x, sum: 0 };
+      cur.b = x; cur.sum += ink[x];
+    } else if (cur){
+      if (!best || cur.sum > best.sum) best = cur;
+      cur = null;
+    }
+  }
+  if (!best) return null;
+  var pad = Math.round((best.b - best.a + 1) * 0.10);   /* はらいの先のぶん、少し広く */
+  var kL = Math.max(0, best.a - pad), kR = Math.min(aw-1, best.b + pad);
+  for (y = 0; y < ah; y++){
+    var b = y*aw;
+    for (x = 0; x < aw; x++) if (x < kL || x > kR) gmap[b + x] = 0;
+  }
+  return [kL, kR];
+}
 var AIBAND_BUSY = false;
 async function rubAiBand(){
   if (AIBAND_BUSY) return;
@@ -9284,6 +9330,14 @@ async function rubAiBand(){
   acc.height = Math.max(1, Math.round(RUB.H * SC));
   var ag = acc.getContext("2d");
   ag.fillStyle = "#000"; ag.fillRect(0, 0, acc.width, acc.height);
+  /* **帯の外へは描かない**（v21.57。本人の画面で、行の左わきに青い塊が出ていた）。
+     窓は字 1 つより大きいので、帯の外（となりの列・石の地・紙のふち）まで
+     モデルに渡ることになる。そこに出た墨まで受け取ると、
+     行の左右に塊が付いて、1 字ずつに切り分けられなくなる。 */
+  ag.save();
+  ag.beginPath();
+  ag.rect(q.x1 * SC, q.y1 * SC, (q.x2 - q.x1) * SC, (q.y2 - q.y1) * SC);
+  ag.clip();
   ag.globalCompositeOperation = "lighten";      /* 重なりは濃い方を採る */
 
   AIBAND_BUSY = true;
@@ -9317,6 +9371,7 @@ async function rubAiBand(){
     AIBAND_BUSY = false;
     if (bt){ bt.disabled = false; bt.textContent = "帯を AI に通す"; }
   }
+  ag.restore();
   if (!ok){ msg("AI に通せませんでした（" + (why || "?") + "）", true); return; }
 
   /* 白黒の濃さを、そのまま**青の濃さ**にして重ねる。拓本の絵が透けて見えるように。
@@ -9324,11 +9379,15 @@ async function rubAiBand(){
   var im2 = ag.getImageData(0, 0, acc.width, acc.height), o2 = im2.data, n1 = 0;
   var gmap = new Uint8Array(acc.width * acc.height);
   for (var k3 = 0, k4 = 0; k3 < o2.length; k3 += 4, k4++) gmap[k4] = o2[k3];
-  for (var k2 = 0; k2 < o2.length; k2 += 4){
-    var v2 = o2[k2];
-    o2[k2] = 27; o2[k2+1] = 111; o2[k2+2] = 214;
-    o2[k2+3] = v2 > 20 ? Math.min(230, Math.round(v2 * 0.9)) : 0;
-    if (v2 > 127) n1++;
+  /* **行から外れた墨を落とす**（v21.57）。青の絵も同じ所で落とし、
+     見ているものと 測るものを そろえる。 */
+  var keepX = rubAiTrimCols(gmap, acc.width, acc.height);
+  if (keepX){
+    for (var ri3 = 0; ri3 < acc.height; ri3++){
+      var b4 = ri3 * acc.width;
+      for (var ci3 = 0; ci3 < acc.width; ci3++)
+        if (ci3 < keepX[0] || ci3 > keepX[1]) o2[(b4 + ci3) * 4] = 0;
+    }
   }
   ag.globalCompositeOperation = "source-over";
   ag.putImageData(im2, 0, 0);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.72</title>
+<title>彫刻原稿 v21.73</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -691,6 +691,7 @@
   #regWin .rgside{flex:1;min-width:0;overflow:auto;font-size:12.5px;}
   #regWin .rgside .step{font-weight:700;margin:0 0 4px;}
   #regWin .rgside .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;}
+  #regWin .rgside .row label{white-space:nowrap;}
   /* 窓を動かして下の原稿を見られるように、暗幕はうすめ（v11.9） */
   #pathEd{position:fixed;inset:0;background:rgba(20,24,27,.18);z-index:80;
     display:flex;align-items:center;justify-content:center;padding:24px;}
@@ -2202,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.72";
+var APP_VER = "v21.73";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10478,7 +10479,36 @@ function rgOpen(i){
 }
 function rgClose(){ RG = null; $("regWin").hidden = true; }
 function rgCur(){ return RG ? (RG.step === 2 ? RG.shape : RG.ink) : null; }
-/* 描き直す。①は拓本の上に**青**で墨、②は縁取りを薄く敷いて**緑**で形。 */
+/* 形の**輪郭のます**だけを取り出す（v21.73。本人の指示
+   「もう少し、縁取りの状態を目立つようにして輪郭だけ強調させてほしい」）。
+   ②を直すときは、直す前の縁取りが**どこを通っていたか**が分かればよい。
+   塗りつぶしで敷くと、緑と重なって見分けがつかない。**線だけ**にして上に重ねる。 */
+function rgEdge(m, N){
+  var e = new Uint8Array(N*N), x, y;
+  for (y = 0; y < N; y++){
+    for (x = 0; x < N; x++){
+      var k = y*N + x;
+      if (!m[k]) continue;
+      if (x === 0 || y === 0 || x === N-1 || y === N-1 ||
+          !m[k-1] || !m[k+1] || !m[k-N] || !m[k+N]) e[k] = 1;
+    }
+  }
+  /* 1 ます だと細くて見えないので、まわりにも広げる（3 ます ぶんの線にする） */
+  var f = new Uint8Array(N*N);
+  for (y = 0; y < N; y++){
+    for (x = 0; x < N; x++){
+      var k2 = y*N + x;
+      if (!e[k2]) continue;
+      f[k2] = 1;
+      if (x > 0) f[k2-1] = 1;
+      if (x < N-1) f[k2+1] = 1;
+      if (y > 0) f[k2-N] = 1;
+      if (y < N-1) f[k2+N] = 1;
+    }
+  }
+  return f;
+}
+/* 描き直す。①は拓本の上に**青**で墨、②は**緑の形＋縁取りの輪郭（朱）**。 */
 function rgRender(){
   if (!RG) return;
   var cv = $("rgCv"); if (!cv) return;
@@ -10491,16 +10521,21 @@ function rgRender(){
   }
   var cur = rgCur();
   if (cur){
-    var im = g.getImageData(0, 0, N, N), o = im.data, base = RG.step === 2 ? RG.ink : null;
+    /* ②では、直す前の**縁取りの輪郭**を朱の線で重ねる（v21.73。本人の指示）。
+       ［縁取りを出す］を切れば、AI の形だけを見て確かめられる。 */
+    var edge = null;
+    if (RG.step === 2 && RG.showInk !== false){
+      if (!RG.edge) RG.edge = rgEdge(RG.ink, N);
+      edge = RG.edge;
+    }
+    var im = g.getImageData(0, 0, N, N), o = im.data;
     for (var k = 0; k < N*N; k++){
       var q = k*4;
-      if (base && base[k] && !cur[k]){            /* ②：元の縁取りだけの所は薄く */
-        o[q] = 205; o[q+1] = 205; o[q+2] = 205;
-      }
       if (cur[k]){
         if (RG.step === 1){ o[q] = 30; o[q+1] = 110; o[q+2] = 220; }
-        else { o[q] = 20; o[q+1] = 140; o[q+2] = 80; }
+        else { o[q] = 90; o[q+1] = 175; o[q+2] = 125; }   /* 形は うすめの緑 */
       }
+      if (edge && edge[k]){ o[q] = 200; o[q+1] = 40; o[q+2] = 40; }   /* 縁取りの線は朱 */
     }
     g.putImageData(im, 0, 0);
   }
@@ -10520,8 +10555,9 @@ function rgSide(){
   h += '<p class="hint" style="margin:0 0 6px;">' + (RG.step === 1
     ? "青い所が「墨がある」と見た所です。はみ出しは［消す］、足りない所は［塗る］。" +
       "<b>となりの字が入り込んでいたら、消してください。</b>"
-    : "AI が整えた形です。角が丸い・線が太い所を直します。" +
-      "<b>書体の形を写すのではなく、彫ってある形のまま縁を整えます。</b>薄い灰色は直す前の縁取り。") +
+    : "<span style=\'color:#c82828;font-weight:700\'>朱の線</span>が直す前の<b>縁取り</b>、" +
+      "緑が AI の整えた形です。<b>朱の線に沿うように</b>緑を直します。" +
+      "崩れすぎているときは［縁取りから直す］で、縁取りそのものから始められます。") +
     '</p>';
   h += '<div class="row">' +
     '<button class="mini' + (RG.tool === "paint" ? " primary" : "") + '" id="rgTp">塗る</button>' +
@@ -10545,10 +10581,18 @@ function rgSide(){
                  : "登録すると、拓本の切り抜きと この青い形が 1 組になります。") +
       '</p>';
   } else {
+    /* 直す前の縁取りを、どう出すか（v21.73。本人の指示
+       「縁取りの状態を目立つようにして輪郭だけ強調」「チェックの為、非表示も」）。 */
+    h += '<div class="row">' +
+      '<label style="display:flex;align-items:center;gap:5px;white-space:nowrap;">' +
+      '<input type="checkbox" id="rgShowInk"' + (RG.showInk === false ? "" : " checked") + '>' +
+      '<span style="color:#c82828;font-weight:700;">縁取りの輪郭</span>を出す</label>' +
+      '<button class="mini" id="rgFromInk" title="AI の形を捨てて、縁取りそのものから直します">' +
+      '縁取りから直す</button>' +
+      '<button class="mini" id="rgGo2">AI にもう一度通す</button></div>';
     h += '<div class="row">' +
       '<button class="go" id="rgS2">② 整える に登録する</button>' +
-      '<button class="mini" id="rgBack">← ① に戻る</button>' +
-      '<button class="mini" id="rgGo2">AI にもう一度通す</button></div>';
+      '<button class="mini" id="rgBack">← ① に戻る</button></div>';
     h += '<p class="hint" style="margin:2px 0 0;">' +
       (RG.saved2 ? "<b>この字は②に登録ずみです。</b>直して押せば上書きされます。"
                  : "登録すると、縁取りと この緑の形が 1 組になります（拓本から取り出した材料）。") +
@@ -10566,6 +10610,14 @@ function rgSide(){
   var s2 = $("rgS2"); if (s2) s2.onclick = function(){ rgSave(2); };
   var g2 = $("rgGo2"); if (g2) g2.onclick = rgShape;
   var bk = $("rgBack"); if (bk) bk.onclick = function(){ RG.step = 1; RG.undo = []; rgRender(); };
+  var si = $("rgShowInk"); if (si) si.onchange = function(){ RG.showInk = si.checked; rgRender(); };
+  var fi = $("rgFromInk"); if (fi) fi.onclick = function(){
+    if (!RG) return;
+    rgSnap();
+    RG.shape = new Uint8Array(RG.ink);
+    rgRender();
+    msg("縁取りをそのまま形にしました。ここから角を立てて、縁を整えてください。");
+  };
   Array.prototype.forEach.call(el.querySelectorAll(".rgc"), function(b){
     b.onclick = function(){
       var it2 = rgItem(); if (!it2) return;
@@ -10577,6 +10629,7 @@ function rgSide(){
 /* 筆。押している間、丸く塗る／消す。 */
 function rgPaintAt(x, y){
   var cur = rgCur(); if (!cur) return;
+  if (RG.step === 1) RG.edge = null;       /* 縁取りが変われば、輪郭も作り直す */
   var N = RG.n, r = Math.max(1, RG.brush), on = (RG.tool === "paint") ? 1 : 0;
   var x0 = Math.max(0, Math.floor(x - r)), x1 = Math.min(N-1, Math.ceil(x + r));
   var y0 = Math.max(0, Math.floor(y - r)), y1 = Math.min(N-1, Math.ceil(y + r));

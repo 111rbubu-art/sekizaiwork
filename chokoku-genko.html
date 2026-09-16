@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.59</title>
+<title>彫刻原稿 v21.60</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.59";
+var APP_VER = "v21.60";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14234,6 +14234,59 @@ function fitDist(m, w, h){
    ここは**拓本をなぞっている段の話**なので、広げるのは
    **フォントの輪郭ではなく、拾った墨そのもの**。
    四角い窓（fitMorph）だと斜めが √2 倍ふくらむので、**距離で見る**。 */
+/* 小さな穴をふさぐ（v21.60。本人の指摘「書体補正を入れると、文字に穴が空く」）。
+
+   AI の出した墨には、画の中に**閉じた小さな空き**ができることがある。
+   彫りの画にそんな穴は無いので、出たら潰してよい。
+   ただし「日」「口」の中のような**本当の空き**は残す。見分けるのは**広さ**。
+   外（絵のふち）とつながっている地は、そもそも穴ではないので触らない。
+
+   maxCells … これ未満の空きだけ埋める。0 なら何もしない。
+   返すのは、埋めた数と ます数。 */
+function fitFillHoles(m, w, h, maxCells){
+  if (!maxCells || maxCells < 1) return { n: 0, cells: 0 };
+  var n = w*h, seen = new Uint8Array(n), st = new Int32Array(n), sp = 0, i, x, y;
+  /* ① 外とつながっている地を、ふちから塗りつぶして覚える */
+  function push(k){ if (!seen[k] && !m[k]){ seen[k] = 1; st[sp++] = k; } }
+  for (x = 0; x < w; x++){ push(x); push((h-1)*w + x); }
+  for (y = 0; y < h; y++){ push(y*w); push(y*w + w-1); }
+  while (sp){
+    var k0 = st[--sp], kx = k0 % w, ky = (k0 - kx) / w;
+    if (kx > 0)   push(k0-1);
+    if (kx < w-1) push(k0+1);
+    if (ky > 0)   push(k0-w);
+    if (ky < h-1) push(k0+w);
+  }
+  /* ② 残った地が「穴」。ひとかたまりずつ広さを見て、小さければ埋める */
+  var mark = new Uint8Array(n), nHole = 0, nCell = 0;
+  for (i = 0; i < n; i++){
+    if (m[i] || seen[i] || mark[i]) continue;
+    var bag = [], q = [i];
+    mark[i] = 1;
+    while (q.length){
+      var k = q.pop(); bag.push(k);
+      var bx = k % w, by = (k - bx) / w;
+      var nb = [bx > 0 ? k-1 : -1, bx < w-1 ? k+1 : -1,
+                by > 0 ? k-w : -1, by < h-1 ? k+w : -1];
+      for (var j = 0; j < 4; j++){
+        var t = nb[j];
+        if (t >= 0 && !m[t] && !seen[t] && !mark[t]){ mark[t] = 1; q.push(t); }
+      }
+    }
+    if (bag.length < maxCells){
+      for (var b2 = 0; b2 < bag.length; b2++) m[bag[b2]] = 1;
+      nHole++; nCell += bag.length;
+    }
+  }
+  return { n: nHole, cells: nCell };
+}
+/* 何ますぶんを「小さな穴」とみるか。画の中の空きは 2mm² もあれば十分大きい。
+   「日」の中は 25mm の字なら 10mm² を超えるので、間違えて埋めることはない。 */
+function fitHoleCells(G){
+  var mm2 = (G && G.mmCell) ? G.mmCell * G.mmCell : 0;
+  if (!mm2) return 24;                       /* mm が分からないときの目安 */
+  return Math.max(4, Math.round(2.0 / mm2)); /* 2.0mm² 未満を埋める */
+}
 function fitGrowMask(m, w, h, r){
   if (!r) return m;
   var out = new Uint8Array(w*h), i, n = w*h;
@@ -14431,11 +14484,13 @@ async function traceAskShot(G, sh){
       im.src = URL.createObjectURL(buf);
     });
     var m = traceShotToMask(G, img, sh.box);
+    var hf = fitFillHoles(m, G.w, G.h, fitHoleCells(G));   /* 小さな穴を潰す（v21.60） */
     var n1 = 0, i;
     for (i = 0; i < m.length; i++) n1 += m[i];
     if (!n1) return { note: "AI からは墨が返りませんでした（学習がまだ足りていないようです）" };
     var mm2 = (G.mmCell || 0) * (G.mmCell || 0);
     return { ink: m, note: "AI の墨 " + (mm2 ? (n1*mm2).toFixed(1) + "mm²" : n1 + " ます") +
+             (hf.n ? "／小さな穴 " + hf.n + " か所をふさぎました" : "") +
              "（" + ms + "ms" + (at ? "／モデル " + at : "") + "、" +
              (Date.now() - t0) + "ms）" };
   } catch(e){
@@ -14480,6 +14535,7 @@ async function traceAskAI(G, ink, stage){
       im.src = URL.createObjectURL(buf);
     });
     var m = traceAiToMask(G, img, N, B);
+    var hf = fitFillHoles(m, G.w, G.h, fitHoleCells(G));   /* 小さな穴を潰す（v21.60） */
     var n0 = 0, n1 = 0, i;
     for (i = 0; i < ink.length; i++){ n0 += ink[i]; n1 += m[i]; }
     var mm2 = (G.mmCell || 0) * (G.mmCell || 0);
@@ -14496,6 +14552,7 @@ async function traceAskAI(G, ink, stage){
                     sf === "0" ? "／0か1で受け取り（サーバーが古いので縁が段々になります。update.sh を流してください）"
                                : "") + "）。墨 " +
                    (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" +
+                   (hf.n ? "／小さな穴 " + hf.n + " か所をふさぎました" : "") +
                    "／枠は" + B.from + "（絵の " +
                    Math.round((1 - TRACE_PAD*2) * 100) + "%。墨はその " +
                    Math.round(B.fill * 100) + "%、ます目 1 つが " +

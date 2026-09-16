@@ -132,8 +132,21 @@ def main():
     ap.add_argument("--base", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
     # 学習する中身を選べるようにする（v2）。②「整える」は別のデータ・別のモデル。
-    ap.add_argument("--data", default="", help="学習用のフォルダー（既定 dataset/pairs）")
-    ap.add_argument("--valdata", default="", help="検証用のフォルダー（既定 dataset/val）")
+    # **材料を混ぜられるようにする**（2026-09-16。本人の指摘「整える方は
+    # 今までと材料が違うので分けた方がいい。混ぜたもの／今までの物／
+    # 拓本から取り出したもの、どれが一番成績がいいか分からない」）。
+    # コンマで区切れば、いくつでも足せる。検証用も同じ。
+    ap.add_argument("--data", default="",
+                    help="学習用のフォルダー（既定 dataset/pairs）。コンマ区切りで複数可")
+    ap.add_argument("--valdata", default="",
+                    help="検証用のフォルダー（既定 dataset/val）。コンマ区切りで複数可")
+    ap.add_argument("--note", default="",
+                    help="この回の覚え書き（材料など）。世代の記録に残す")
+    # **比べるための回では差し替えない。** 材料をとっかえて成績を見るとき、
+    # 成績のよしあしで勝手に差し替わると、何と何を比べていたのか分からなくなる。
+    # 記録だけ残し、使う版は人が［これを使う］で選ぶ。
+    ap.add_argument("--no-swap", dest="no_swap", action="store_true",
+                    help="成績が良くても current を差し替えない（比べるためだけの回）")
     ap.add_argument("--name", default="current",
                     help="モデルの名前。current.pth / current_shape.pth のように分ける")
     ap.add_argument("--size", type=int, default=0, help="1 辺の画素数（既定 512）")
@@ -174,9 +187,26 @@ def main():
     torch.manual_seed(a.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tr = load_all(D.list_pairs(train_dir))
-    va = load_all(D.list_pairs(val_dir))
+    def dirs_of(spec):
+        """コンマ区切りのフォルダーを、組の一覧にまとめる（重なりは取り除く）。"""
+        out, seen = [], set()
+        for one in str(spec).split(","):
+            one = one.strip()
+            if not one:
+                continue
+            for d in D.list_pairs(one):
+                rp = os.path.realpath(d)
+                if rp in seen:
+                    continue
+                seen.add(rp)
+                out.append(d)
+        return out
+
+    tr = load_all(dirs_of(train_dir))
+    va = load_all(dirs_of(val_dir))
     print(f"学習 {len(tr)} 組 ／ 検証 {len(va)} 組 ／ {device}")
+    if a.note:
+        print("覚え書き:", a.note)
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if len(tr) < max(1, a.min):
         print(f"学習用が少なすぎます（{a.min} 組以上ためてください）。やめます。")
@@ -300,7 +330,8 @@ def main():
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     ck = {"model": net.state_dict(), "step": step, "at": at,
           "iou": v1, "iou_nohint": v0, "base": a.base, "pairs": len(tr),
-          "name": a.name, "size": D.N}
+          "name": a.name, "size": D.N, "note": a.note,
+          "data": train_dir, "valdata": val_dir, "val": len(va)}
     gen = os.path.join(RUNS, "model_" + a.name + "_" +
                        datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
     torch.save(ck, gen)
@@ -334,7 +365,12 @@ def main():
         put_progress(swapped=False,
                      why="検証用が無いので差し替えません（dataset/val に 10 組ほど）", **done)
         return
-    if best_prev is None or (v0 is not None and v0 >= best_prev - 1e-4):
+    if a.no_swap:
+        print("比べるための回なので、差し替えません（--no-swap）。手がかり無しの一致 %s" % round(v0, 3))
+        put_progress(swapped=False,
+                     why="比べるための回なので据え置きました（--no-swap。一致 %s）" % round(v0, 3),
+                     **done)
+    elif best_prev is None or (v0 is not None and v0 >= best_prev - 1e-4):
         shutil.copyfile(gen, cur); mark_cur()
         print(f"{os.path.basename(cur)} を差し替えました（手がかり無しの一致 {best_prev} → {round(v0,3)}）")
         put_progress(swapped=True,
@@ -350,7 +386,8 @@ def main():
         f.write(json.dumps({"at": at, "step": step, "iou": v1, "iou_nohint": v0,
                             "pairs": len(tr), "val": len(va),
                             "file": os.path.basename(gen),
-                            "name": a.name},
+                            "name": a.name, "note": a.note,
+                            "data": train_dir, "valdata": val_dir},
                            ensure_ascii=False) + "\n")
 
 

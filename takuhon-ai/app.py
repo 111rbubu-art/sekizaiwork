@@ -52,6 +52,11 @@ CURRENT = os.path.join(RUNS, "current.pth")
 VALDIR = os.path.join(ROOT, "dataset", "val")
 SHAPE = os.path.join(ROOT, "dataset", "shape")            # ②「整える」の学習用
 SHAPE_VAL = os.path.join(ROOT, "dataset", "shape_val")    # ②「整える」の検証用
+# **拓本から取り出した②の材料は、合成と分けて置く**（2026-09-16。本人の指摘
+# 「整える方は今までと材料が違うので、分けた方がいい」）。
+# 混ぜて学習することも、別々に学習して比べることもできるようにするため。
+SHAPE_RUB = os.path.join(ROOT, "dataset", "shape_rub")          # ②・拓本から取り出した学習用
+SHAPE_RUB_VAL = os.path.join(ROOT, "dataset", "shape_rub_val")  # ②・拓本から取り出した検証用
 FONTS = os.path.join(ROOT, "fonts")                       # 彫っている書体の置き場
 TRAINLOG = os.path.join(RUNS, "train.log")
 TRAINPID = os.path.join(RUNS, "train.pid")
@@ -225,6 +230,8 @@ def status():
         "pairs": n,
         "val": len(D.list_pairs(VALDIR)),
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
+                  "rub": len(D.list_pairs(SHAPE_RUB)),
+                  "rubVal": len(D.list_pairs(SHAPE_RUB_VAL)),
                   "model": _shape_info(), "loaded": bool(INFO2.get("loaded"))},
     }
 
@@ -295,14 +302,15 @@ async def feedback(
 ):
     """人が直した正解を貯める。**同じ key なら上書き**（彫刻原稿アプリと同じ考え方）。
 
-    set="ink"   … ①「読む」用（拓本の切り抜き → 人が直した墨）。dataset/pairs
-    set="shape" … ②「整える」用（人が直した墨 → 人が整えた形）。dataset/shape
+    set="ink"       … ①「読む」用（拓本の切り抜き → 人が直した墨）。dataset/pairs
+    set="shape_rub" … ②「整える」用で、**拓本から取り出したもの**。dataset/shape_rub
+    set="shape"     … ②「整える」用で、合成（フォントを荒らしたもの）。dataset/shape
 
     **1 つの字から 2 つの学習が取れる**（本人の案）。拓本から縁取りを直して①へ、
     その縁取りを整えて②へ。組の作りはどちらも同じ（raw.png ／ mask.png）なので、
     入れ先を分けるだけでよい。
     """
-    root = SHAPE if (set_ or "").strip() == "shape" else DATASET
+    root = {"shape": SHAPE, "shape_rub": SHAPE_RUB}.get((set_ or "").strip(), DATASET)
     name = key.strip() or datetime.now().strftime("pair_%Y%m%d-%H%M%S")
     name = "".join(c for c in name if c.isalnum() or c in "-_." or ord(c) > 127)
     d = os.path.join(root, name)
@@ -316,7 +324,8 @@ async def feedback(
     meta = {"char": char_hint, "key": name, "at": datetime.now().isoformat(timespec="seconds")}
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
-    return {"status": "saved", "saved_id": name, "set": "shape" if root is SHAPE else "ink",
+    return {"status": "saved", "saved_id": name,
+            "set": {SHAPE: "shape", SHAPE_RUB: "shape_rub"}.get(root, "ink"),
             "pairs": len(D.list_pairs(root))}
 
 
@@ -363,7 +372,8 @@ def _gpu():
 
 def _set_dir(which):
     return {"pairs": DATASET, "val": VALDIR,
-            "shape": SHAPE, "shape_val": SHAPE_VAL}.get(which)
+            "shape": SHAPE, "shape_val": SHAPE_VAL,
+            "shape_rub": SHAPE_RUB, "shape_rub_val": SHAPE_RUB_VAL}.get(which)
 
 
 @app.get("/api/takuhon/progress")
@@ -701,8 +711,9 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
             bad.append({"name": up.filename, "why": f"{type(e).__name__}: {e}"})
     # **入れた先の数を返す。** ①の数を返していたので、②へ入れても
     # 「学習 0 組」と出て、入ったのかどうか分からなかった。
-    sh = which in ("shape", "shape_val")
-    a, b = (SHAPE, SHAPE_VAL) if sh else (DATASET, VALDIR)
+    a, b = ((SHAPE, SHAPE_VAL) if which in ("shape", "shape_val") else
+            (SHAPE_RUB, SHAPE_RUB_VAL) if which in ("shape_rub", "shape_rub_val") else
+            (DATASET, VALDIR))
     return {"added": len(made), "bad": bad, "which": which,
             "pairs": len(D.list_pairs(a)), "val": len(D.list_pairs(b))}
 
@@ -711,12 +722,14 @@ async def import_zip(files: list[UploadFile] = File(...), which: str = Form("pai
 def move_val(n: int = Form(...), which: str = Form("ink")):
     """学習用から検証用へ、○ 組を移す（学習には使わない分を取り分ける）。
 
-    which="ink"   … dataset/pairs → dataset/val
-    which="shape" … dataset/shape → dataset/shape_val
+    which="ink"       … dataset/pairs → dataset/val
+    which="shape"     … dataset/shape → dataset/shape_val（合成）
+    which="shape_rub" … dataset/shape_rub → dataset/shape_rub_val（拓本から）
     **画面で見ている側のものを動かす。** 混ざると、どちらの検証か分からなくなる。
     """
     n = max(0, min(500, int(n)))
-    src, dst = (SHAPE, SHAPE_VAL) if which == "shape" else (DATASET, VALDIR)
+    src, dst = {"shape": (SHAPE, SHAPE_VAL),
+                "shape_rub": (SHAPE_RUB, SHAPE_RUB_VAL)}.get(which, (DATASET, VALDIR))
     have = [d for d in D.list_pairs(src)]
     os.makedirs(dst, exist_ok=True)
     moved = 0
@@ -734,11 +747,31 @@ def move_val(n: int = Form(...), which: str = Form("ink")):
 
 @app.post("/api/takuhon/train")
 def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
-                test: bool = Form(False), which: str = Form("ink"), size: int = Form(0)):
+                test: bool = Form(False), which: str = Form("ink"), size: int = Form(0),
+                mix: str = Form("both"), val: str = Form("auto"),
+                noswap: bool = Form(False)):
     """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。
 
     which="ink"   … ①拓本を読む（dataset/pairs → current.pth）
-    which="shape" … ②書体らしく整える（dataset/shape → current_shape.pth）
+    which="shape" … ②書体らしく整える（→ current_shape.pth）
+
+    ②の材料は 2 種類ある（2026-09-16。本人の指摘「整える方は今までと材料が
+    違うので分けた方がいい。混ぜたもの／今までの物／拓本から取り出したもの、
+    どれが一番成績がいいか分からない」）。
+
+    mix="syn"  … 合成だけ（今までの物。dataset/shape）
+    mix="rub"  … 拓本から取り出したものだけ（dataset/shape_rub）
+    mix="both" … 混ぜる（既定）
+
+    **比べるときは、物差し（検証用）を同じにすること。** 材料と一緒に検証用まで
+    変えると、数字が比べられなくなる（本人の指摘「検証用が少ないときと比べて
+    いるので、比較できない」）。
+
+    val="auto"（既定）… 拓本由来の検証があればそれ、無ければ合成
+    val="syn" ／ "rub" ／ "both" … 明に選ぶ
+
+    noswap=true … 成績が良くても差し替えない（比べるためだけの回）。
+    使う版は、あとから［これを使う］で人が選ぶ。
     """
     if _running():
         return JSONResponse({"error": "already_running"}, status_code=409)
@@ -750,7 +783,18 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
     if which == "shape":
         # ②では手がかり（フォント）を見せない。見せると「フォントを描けば正解に近い」
         # という近道を覚え、彫った職人の癖を消す動きになる。
-        cmd += ["--data", SHAPE, "--valdata", SHAPE_VAL, "--name", "shape", "--nohint"]
+        dat = {"syn": [SHAPE], "rub": [SHAPE_RUB]}.get(mix, [SHAPE, SHAPE_RUB])
+        if val == "auto":
+            vd = [SHAPE_RUB_VAL] if D.list_pairs(SHAPE_RUB_VAL) else [SHAPE_VAL]
+        else:
+            vd = {"syn": [SHAPE_VAL], "rub": [SHAPE_RUB_VAL]}.get(val, [SHAPE_VAL, SHAPE_RUB_VAL])
+        note = "材料：" + {"syn": "合成だけ", "rub": "拓本から取り出したものだけ"}.get(mix, "合成＋拓本")
+        note += "／物差し：" + ("拓本" if vd == [SHAPE_RUB_VAL] else
+                                "合成" if vd == [SHAPE_VAL] else "合成＋拓本")
+        cmd += ["--data", ",".join(dat), "--valdata", ",".join(vd),
+                "--name", "shape", "--nohint", "--note", note]
+        if noswap:
+            cmd += ["--no-swap"]
     if size:
         cmd += ["--size", str(max(64, min(1024, int(size))))]
     if test:                       # 「試すだけ」。8 組未満でも回し、検証なしでも差し替える

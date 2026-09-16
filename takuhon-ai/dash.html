@@ -194,6 +194,32 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       <button class="go" id="btnTrainShape">整えるモデルを学習する</button>
       <button id="btnStopS">止める</button>
     </div>
+    <!-- 材料を選べるようにする（2026-09-16。本人の指摘「整える方は今までと材料が
+         違うので分けた方がいい。混ぜたもの／今までの物／拓本から取り出したもの、
+         どれが一番成績がいいか分からない」）。 -->
+    <div class="ops" style="margin-top:8px;">
+      <label>材料
+        <select id="mixS">
+          <option value="both">混ぜる（合成＋拓本）</option>
+          <option value="syn">合成だけ（今までの物）</option>
+          <option value="rub">拓本から取り出したものだけ</option>
+        </select></label>
+      <label>物差し（検証用）
+        <select id="valS">
+          <option value="auto">おまかせ（拓本の検証があればそちら）</option>
+          <option value="rub">拓本の検証だけ</option>
+          <option value="syn">合成の検証だけ</option>
+          <option value="both">両方</option>
+        </select></label>
+      <label style="display:flex;align-items:center;gap:5px;">
+        <input type="checkbox" id="noswapS" checked>比べるだけ（差し替えない）</label>
+      <span class="hint" id="mixInfo"></span>
+    </div>
+    <p class="hint" style="margin:7px 0 0;">
+      <b>比べるときは、物差しを同じにしてください。</b>材料と一緒に検証用まで変えると、
+      数字が比べられなくなります。<b>［比べるだけ］</b>に印を付けておけば、
+      成績が良くても<b>いまの版は差し替わりません</b>。
+      3 回とも回してから、世代の記録を見て［これを使う］で選んでください。</p>
     <p class="hint" style="margin:7px 0 0;">
       見るのは<b>［一致（手がかり無し）］</b>。
       <b>0.82 くらい＝何もしていない</b>（入力を写しただけ）／0.90 前後＝効き始め／
@@ -273,7 +299,7 @@ function cards(st, pg){
   var shp = (WHICH === "shape");
   var m = (shp ? (sh.model || {"loaded": false}) : (st.model || {}));
   if (shp && sh.model) m = Object.assign({loaded: true}, sh.model);
-  var pairs = shp ? (sh.pairs || 0) : st.pairs;
+  var pairs = shp ? ((sh.pairs || 0) + (sh.rub || 0)) : st.pairs;
   var val   = shp ? (sh.val || 0)   : st.val;
   var box = [];
   box.push([sideName(WHICH) + " のモデル",
@@ -287,8 +313,9 @@ function cards(st, pg){
   /* **どちらのデータかを、札そのものに書く。** 数だけだと、
      ①の拓本の組なのか②の書体から作った組なのかが分からない。 */
   box.push([sideName(WHICH) + " のデータ", pairs + '<small>組</small>',
-    (shp ? "自動で作った組（dataset/shape）" : "拓本の組（dataset/pairs）") +
-    "／検証用 " + val + " 組"]);
+    (shp ? ("合成 " + (sh.pairs || 0) + " 組（検証 " + (sh.val || 0) + "）" +
+            "／拓本から " + (sh.rub || 0) + " 組（検証 " + (sh.rubVal || 0) + "）")
+         : ("拓本の組（dataset/pairs）／検証用 " + val + " 組"))]);
   /* もう片方は、目のはしで分かればよい */
   var o = shp ? (st.model || {}) : (sh.model ? Object.assign({loaded: true}, sh.model) : {});
   box.push([sideName(shp ? "ink" : "shape") + '<small>（いま見ていない方）</small>',
@@ -441,7 +468,10 @@ function hist(items){
     /* **検証の組数が同じ世代どうしでないと、差は出さない**（2026-09-16。本人の指摘
        「検証用が少ないときと比べているので、比較できない」）。
        検証用を変えると物差しが変わる。ちがう物差しの数字を引き算しても意味がない。 */
-    var same = prev && (prev.val || 0) === (it.val || 0);
+    /* **物差しは、組数だけでなく「どのフォルダーか」でも見る**（2026-09-16）。
+       ②は材料が 2 種類あるので、同じ組数でも中身がちがうことがある。 */
+    var same = prev && (prev.val || 0) === (it.val || 0)
+                    && (prev.valdata || "") === (it.valdata || "");
     var d = (same && it.iou_nohint != null && prev.iou_nohint != null)
           ? (it.iou_nohint - prev.iou_nohint) : null;
     var col = d === null ? "var(--muted)" : (d >= 0 ? "var(--midori)" : "var(--shu)");
@@ -455,6 +485,7 @@ function hist(items){
       '<td style="color:' + col + '">' + (d === null
         ? (prev && !same ? '<span class="hint" title="検証用の組数がちがうので比べられません">物差しちがい</span>' : "―")
         : (d >= 0 ? "＋" : "−") + Math.abs(d*100).toFixed(1) + "pt") + '</td>' +
+      '<td class="l hint">' + esc(it.note || "") + '</td>' +
       '<td class="l hint">' + esc(it.file) + '</td>' +
       '<td>' + (isNow ? '<span class="hint">使用中</span>'
         : (have[it.file] ? '<button class="mini usemdl" data-f="' + esc(it.file) + '">これを使う</button>'
@@ -463,7 +494,7 @@ function hist(items){
   }).join("");
   el.innerHTML = '<table><tr><th class="l">日時</th><th>学習</th><th>検証</th><th>step</th>' +
     '<th>一致<br>手がかりあり</th><th>一致<br>手がかり無し</th><th>前回との差</th>' +
-    '<th class="l">ファイル</th><th>切替</th></tr>' + rows + '</table>' +
+    '<th class="l">材料・物差し</th><th class="l">ファイル</th><th>切替</th></tr>' + rows + '</table>' +
     '<p class="hint" style="margin:6px 0 0">「検証」の数がちがう世代どうしは、' +
     '<b>物差しがちがうので比べられません</b>。［これを使う］で、成績に関わらず' +
     '手で差し替えられます。</p>';
@@ -761,6 +792,9 @@ document.getElementById("btnTrainShape").onclick = async function(){
     epochs: document.getElementById("epS").value,
     bs: document.getElementById("bsS").value,
     base: document.getElementById("baseS").value,
+    mix: document.getElementById("mixS").value,
+    val: document.getElementById("valS").value,
+    noswap: document.getElementById("noswapS").checked ? "true" : "false",
     test: "false"
   });
   busy(true);
@@ -827,11 +861,18 @@ function sideApply(){
   var t4 = document.getElementById("opsT4");
   if (t4) t4.textContent = sh ? "④ 片づけ（② 整える の分）" : "④ 片づけ（① 読む の分）";
   /* 入れ先と、下の「貯まったデータ」の選びも、同じ側のものだけにする */
-  fillSel("zipWhich", sh ? [["shape", "学習用（dataset/shape）"],
-                            ["shape_val", "検証用（学習に使わない）"]]
+  /* ②は材料が 2 種類ある（合成／拓本から取り出したもの）。**混ざらないように、
+     入れ先も一覧も別々に選べるようにする**（2026-09-16。本人の指摘）。 */
+  fillSel("zipWhich", sh ? [["shape", "合成・学習用（dataset/shape）"],
+                            ["shape_val", "合成・検証用"],
+                            ["shape_rub", "拓本から・学習用（dataset/shape_rub）"],
+                            ["shape_rub_val", "拓本から・検証用"]]
                          : [["pairs", "学習用（dataset/pairs）"],
                             ["val", "検証用（学習に使わない）"]]);
-  fillSel("which", sh ? [["shape", "②整える・学習用"], ["shape_val", "②整える・検証用"]]
+  fillSel("which", sh ? [["shape", "②整える・合成・学習用"],
+                         ["shape_val", "②整える・合成・検証用"],
+                         ["shape_rub", "②整える・拓本から・学習用"],
+                         ["shape_rub_val", "②整える・拓本から・検証用"]]
                       : [["pairs", "学習用（dataset/pairs）"], ["val", "検証用（dataset/val）"]]);
   var mv = document.getElementById("btnMove"); if (mv) mv.textContent = "学習用から移す";
   dataNoteApply();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.74</title>
+<title>彫刻原稿 v21.75</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2203,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.74";
+var APP_VER = "v21.75";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10473,6 +10473,7 @@ function rgOpen(i){
          ink: k.m, inkFrom: k.from, shape: null,
          tool: "paint", brush: 10, undo: [], busy: false,
          view: { z: 1, dx: 0, dy: 0 },      /* ズーム（v21.74。本人の指示） */
+         op: 0.6,                           /* 塗りの濃さ（v21.75。本人の指示） */
          saved1: false, saved2: false };
   rubSelItem = i;
   $("regWin").hidden = false;
@@ -10530,12 +10531,19 @@ function rgBuf(){
       if (!RG.edge) RG.edge = rgEdge(RG.ink, N);
       edge = RG.edge;
     }
+    /* **色は半透明にできる**（v21.75。本人の指示「塗の色も半透明ができるように」）。
+       べた塗りだと、下の拓本が見えないので、直す所の見きわめがつかない。
+       `RG.op` は 0.1〜1.0。縁取りの輪郭（朱）は目印なので、いつも濃いまま。 */
+    var aa = Math.max(0.1, Math.min(1, num(RG.op, 0.6)));
     var im = g.getImageData(0, 0, N, N), o = im.data;
+    var cR = RG.step === 1 ? 30 : 60, cG = RG.step === 1 ? 110 : 160,
+        cB = RG.step === 1 ? 220 : 100;
     for (var k = 0; k < N*N; k++){
       var q = k*4;
       if (cur[k]){
-        if (RG.step === 1){ o[q] = 30; o[q+1] = 110; o[q+2] = 220; }
-        else { o[q] = 90; o[q+1] = 175; o[q+2] = 125; }   /* 形は うすめの緑 */
+        o[q]   = Math.round(o[q]   * (1 - aa) + cR * aa);
+        o[q+1] = Math.round(o[q+1] * (1 - aa) + cG * aa);
+        o[q+2] = Math.round(o[q+2] * (1 - aa) + cB * aa);
       }
       if (edge && edge[k]){ o[q] = 200; o[q+1] = 40; o[q+2] = 40; }   /* 縁取りの線は朱 */
     }
@@ -10551,7 +10559,9 @@ function rgClampView(){
   v.dx = Math.max(0, Math.min(N - w, v.dx));
   v.dy = Math.max(0, Math.min(N - w, v.dy));
 }
-function rgRender(){
+/* **絵だけ描き直す**（v21.75）。筆を動かすたびに横の欄まで作り直すと、
+   つまみ（すべり台）が作り直されて**引いている途中で外れる**。 */
+function rgDraw(){
   if (!RG) return;
   var cv = $("rgCv"); if (!cv) return;
   var N = RG.n, g = cv.getContext("2d"), v = RG.view;
@@ -10567,8 +10577,8 @@ function rgRender(){
   var n = (L && L.items) ? L.items.length : 0;
   $("rgWho").textContent = (RG.i + 1) + " / " + n + " 字目" +
     (it && it.pick ? "　「" + it.pick + "」" : "　（字は未定）");
-  rgSide();
 }
+function rgRender(){ rgDraw(); rgSide(); }
 /* 指している所を動かさずに、拡大・縮小する（作字の画面と同じ考え方）。 */
 function rgZoomAt(ix, iy, k){
   var v = RG.view, z0 = v.z;
@@ -10577,7 +10587,8 @@ function rgZoomAt(ix, iy, k){
   /* 指していた絵の点が、同じ場所に来るように左上をずらす */
   v.dx = ix - (ix - v.dx) * (z0 / v.z);
   v.dy = iy - (iy - v.dy) * (z0 / v.z);
-  rgRender();
+  rgDraw();
+  var zn = $("rgZn"); if (zn) zn.textContent = (Math.round(v.z * 10) / 10) + "倍";
 }
 function rgZoomReset(){ RG.view = { z: 1, dx: 0, dy: 0 }; rgRender(); }
 function rgSide(){
@@ -10598,15 +10609,20 @@ function rgSide(){
     '<button class="mini' + (RG.tool === "paint" ? " primary" : "") + '" id="rgTp">塗る</button>' +
     '<button class="mini' + (RG.tool === "erase" ? " primary" : "") + '" id="rgTe">消す</button>' +
     '<label>筆の太さ<input type="range" id="rgBr" min="2" max="60" value="' + RG.brush + '"></label>' +
-    '<span class="hint">' + RG.brush + '</span>' +
+    '<span class="hint" id="rgBrN">' + RG.brush + '</span>' +
     '<button class="mini" id="rgUndo"' + (RG.undo.length ? "" : " disabled") + '>戻す</button>' +
     '</div>';
+  h += '<div class="row">' +
+    '<label>色の濃さ<input type="range" id="rgOp" min="10" max="100" step="5" value="' +
+    Math.round(num(RG.op, 0.6) * 100) + '"></label>' +
+    '<span class="hint"><b id="rgOpN">' + Math.round(num(RG.op, 0.6) * 100) + '%</b>' +
+    '（うすくすると、下の拓本が透けて見えます）</span></div>';
   /* ズーム（v21.74。本人の指示「ズームも出来るようにして」）。
      細かい所は、大きくしないと筆が置けない。 */
   h += '<div class="row">' +
     '<span class="hint">大きさ</span>' +
     '<button class="mini" id="rgZo">−</button>' +
-    '<b>' + (Math.round(RG.view.z * 10) / 10) + '倍</b>' +
+    '<b id="rgZn">' + (Math.round(RG.view.z * 10) / 10) + '倍</b>' +
     '<button class="mini" id="rgZi">＋</button>' +
     '<button class="mini" id="rgZr">全体</button>' +
     '<button class="mini' + (RG.tool === "pan" ? " primary" : "") + '" id="rgTm">動かす</button>' +
@@ -10652,7 +10668,15 @@ function rgSide(){
   if (cv0) cv0.style.cursor = (RG.tool === "pan") ? "grab" : "crosshair";
   var tp = $("rgTp"); if (tp) tp.onclick = function(){ RG.tool = "paint"; rgSide(); };
   var te = $("rgTe"); if (te) te.onclick = function(){ RG.tool = "erase"; rgSide(); };
-  var br = $("rgBr"); if (br) br.oninput = function(){ RG.brush = num(br.value, 10); rgSide(); };
+  var br = $("rgBr"); if (br) br.oninput = function(){
+    RG.brush = num(br.value, 10);
+    var bn = $("rgBrN"); if (bn) bn.textContent = RG.brush;
+  };
+  var op = $("rgOp"); if (op) op.oninput = function(){
+    RG.op = Math.max(0.1, Math.min(1, num(op.value, 60) / 100));
+    var on = $("rgOpN"); if (on) on.textContent = Math.round(RG.op * 100) + "%";
+    rgDraw();
+  };
   var un = $("rgUndo"); if (un) un.onclick = rgUndo;
   var tm = $("rgTm"); if (tm) tm.onclick = function(){
     RG.tool = (RG.tool === "pan") ? "paint" : "pan"; rgSide();
@@ -10729,7 +10753,7 @@ function bindRegWin(){
     if (panMode(e)){ pan = { x: e.clientX, y: e.clientY, dx: RG.view.dx, dy: RG.view.dy }; return; }
     down = true;
     rgSnap();
-    var p = at(e); rgPaintAt(p.x, p.y); rgRender();
+    var p = at(e); rgPaintAt(p.x, p.y); rgDraw();
   });
   cv.addEventListener("pointermove", function(e){
     if (!RG) return;
@@ -10737,13 +10761,16 @@ function bindRegWin(){
       var b = cv.getBoundingClientRect(), k = RG.n / (b.width || 1) / RG.view.z;
       RG.view.dx = pan.dx - (e.clientX - pan.x) * k;
       RG.view.dy = pan.dy - (e.clientY - pan.y) * k;
-      rgRender();
+      rgDraw();
       return;
     }
     if (!down) return;
-    var p2 = at(e); rgPaintAt(p2.x, p2.y); rgRender();
+    var p2 = at(e); rgPaintAt(p2.x, p2.y); rgDraw();
   });
-  cv.addEventListener("pointerup", function(){ down = false; pan = null; });
+  cv.addEventListener("pointerup", function(){
+    if (down || pan) rgSide();        /* ［戻す］の入切・倍率の数字を直す */
+    down = false; pan = null;
+  });
   cv.addEventListener("pointercancel", function(){ down = false; pan = null; });
   /* ころがすと、**指している所を中心に**大きくなる */
   cv.addEventListener("wheel", function(e){

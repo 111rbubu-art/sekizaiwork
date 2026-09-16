@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.61</title>
+<title>彫刻原稿 v21.62</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.61";
+var APP_VER = "v21.62";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2503,6 +2503,105 @@ function glyphPath(gid, axes, fi){
   glyphCache[key] = p;
   return p;
 }
+/* ───── 墨から「どの字か」の候補を出す（v21.62。本人の案）─────
+
+   拓本の字は、持っているフォントの字形と**形が似ている**。
+   そこで、**フォントに入っている字をぜんぶ**同じ大きさに起こしておき、
+   拾った墨と重ねて、よく合った順に並べる。
+
+   **OCR は使わない。** 石の地・かすれ・楷書や隷書は印刷とはちがい、
+   読み違えたまま静かに登録されるのがいちばん困る。
+   こちらは持っている字形と見くらべるだけなので、
+   **フォントに入っている旧字・異体字はそのまま候補に出る**。
+   人は候補から 1 つ押すだけなので、1 位でなくてよい。
+
+   サーバー側の同じ道具（takuhon-ai/char_guess.py）で測った見当：
+   **ちがう書体で描いた 21 字で、1 位 57%／上位 8 位 95%。** */
+var CG_N = 64;                       /* 見くらべる大きさ（ます） */
+var cgBankCache = {};                /* フォントごとに 1 回だけ作る */
+
+/* その形を、枠いっぱいの CG_N×CG_N に置き直す（大きさと位置のちがいを消す）。
+   `get(x, y)` … 元の絵で墨かどうか。w/h は元の大きさ。 */
+function cgNormFrom(get, w, h){
+  var x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1, x, y;
+  for (y = 0; y < h; y++)
+    for (x = 0; x < w; x++)
+      if (get(x, y)){
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+  if (x1 < x0) return null;
+  var bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  var out = new Uint8Array(CG_N * CG_N), n = 0;
+  for (y = 0; y < CG_N; y++){
+    var sy = y0 + Math.floor((y + 0.5) * bh / CG_N);
+    for (x = 0; x < CG_N; x++){
+      var sx = x0 + Math.floor((x + 0.5) * bw / CG_N);
+      if (get(sx, sy)){ out[y*CG_N + x] = 1; n++; }
+    }
+  }
+  return n ? out : null;
+}
+/* フォントの字を、ぜんぶ同じ形にそろえて並べる（重いので 1 回だけ）。 */
+function cgBank(fi){
+  var F = FR(fi); if (!F) return null;
+  var key = FONTS.indexOf(F);
+  if (cgBankCache[key]) return cgBankCache[key];
+  var us = [];
+  try { us = F.face.collectUnicodes() || []; } catch(e){ us = []; }
+  var cv = document.createElement("canvas"); cv.width = CG_N; cv.height = CG_N;
+  var cx = cv.getContext("2d", { willReadFrequently: true });
+  var chars = [], bank = [];
+  for (var i = 0; i < us.length; i++){
+    var c = us[i];
+    /* 漢字とかなだけ。記号やラテン文字は候補に出しても迷わせるだけ */
+    if (!((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF) ||
+          (c >= 0xF900 && c <= 0xFAFF) || (c >= 0x20000 && c <= 0x2A6DF) ||
+          (c >= 0x3040 && c <= 0x30FF))) continue;
+    var ch = String.fromCodePoint(c);
+    var gid = shapeOne(ch, null, fi); if (gid === null) continue;
+    var d = glyphPath(gid, null, fi); if (!d) continue;
+    var bb = pathBBox(d); if (!bb) continue;
+    var gw = bb.right - bb.left, gh = bb.top - bb.bot;
+    if (gw <= 0 || gh <= 0) continue;
+    cx.clearRect(0, 0, CG_N, CG_N);
+    cx.save();
+    /* 字面の枠を、そのまま CG_N の枠へ（墨と同じそろえ方）。y は上向きなので裏返す */
+    cx.transform(CG_N / gw, 0, 0, -CG_N / gh, -bb.left * CG_N / gw, bb.top * CG_N / gh);
+    cx.fillStyle = "#000";
+    try { cx.fill(new Path2D(d)); } catch(e){}
+    cx.restore();
+    var im = cx.getImageData(0, 0, CG_N, CG_N).data;
+    var m = new Uint8Array(CG_N * CG_N), n = 0;
+    for (var k = 0, q = 3; k < m.length; k++, q += 4)
+      if (im[q] > 127){ m[k] = 1; n++; }
+    if (!n) continue;
+    chars.push(ch); bank.push(m);
+  }
+  var got = { chars: chars, bank: bank,
+              sum: bank.map(function(m2){
+                var t = 0; for (var j = 0; j < m2.length; j++) t += m2[j]; return t; }) };
+  cgBankCache[key] = got;
+  return got;
+}
+/* 墨（ます目の並び）から、似ている字を上位 k 個。 */
+function cgGuess(ink, w, h, fi, k){
+  var B = cgBank(fi); if (!B || !B.chars.length) return [];
+  var q = cgNormFrom(function(x, y){ return ink[y*w + x]; }, w, h);
+  if (!q) return [];
+  var qn = 0, i;
+  for (i = 0; i < q.length; i++) qn += q[i];
+  var out = [];
+  for (var j = 0; j < B.bank.length; j++){
+    var m = B.bank[j], inter = 0;
+    for (i = 0; i < m.length; i++) if (m[i] && q[i]) inter++;
+    var uni = B.sum[j] + qn - inter;
+    out.push({ ch: B.chars[j], iou: uni ? inter / uni : 0 });
+  }
+  out.sort(function(a, b){ return b.iou - a.iou; });
+  return out.slice(0, k || 8);
+}
+
 /* 字面（インク）の外接。曲線は実際にたどって測る。 */
 function glyphInk(gid, axes, fi){
   var F = FR(fi); if (!F) return { top:0, bot:0, left:0, right:0, wf:0.88 };

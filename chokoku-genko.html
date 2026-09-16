@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.55</title>
+<title>彫刻原稿 v21.56</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.55";
+var APP_VER = "v21.56";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9374,6 +9374,182 @@ function rubAiMask(q, step){
   }
   return { m: m, w: w, h: h };
 }
+/* ───── AI の墨を「1 字ずつ」に切り分ける（v21.56。本人の指摘
+   「2文字を1文字としてカウントしている」「文字の大きさは一律ではない」）─────
+
+   前は **字送りで等分**して振り分けていた。だが戒名と命日では字の大きさが
+   ほとんどの場合ちがうので、等分では合わない。詰まっている所では 2 字が
+   1 つの ます に入り、1 字と数えていた。
+
+   AI の墨は地のざらつきが無いので、**切れ目（すき間）でそのまま切れる**。
+   ① よこ 1 行ぶんの墨の量を数える
+   ② 墨のある所（run）を拾う。**すき間が字の高さの 3 割より狭ければ、
+      同じ字の中の空き**とみて つなぐ（「二」「三」のような字のため）
+   ③ それでも **背が中くらいの 1.55 倍より高い塊は、2 字がくっついている**
+      とみて、まん中あたりの いちばん墨の薄い所で割る（割れなくなるまで）
+   字送りは、切り終わってから中心の間隔として出す。等分はもう使わない。 */
+function rubAiSplit(M){
+  var w = M.w, h = M.h, m = M.m, y, x, i;
+  var rows = new Float32Array(h), mx = 0;
+  for (y = 0; y < h; y++){
+    var c = 0;
+    for (x = 0; x < w; x++) if (m[y*w + x]) c++;
+    rows[y] = c; if (c > mx) mx = c;
+  }
+  if (!mx) return { runs: [], rows: rows };
+  var lim = mx * 0.04;                       /* これ未満は「墨なし」とみる */
+  var runs = [], st = -1;
+  for (y = 0; y < h; y++){
+    if (rows[y] > lim){ if (st < 0) st = y; }
+    else if (st >= 0){ runs.push({ a: st, b: y - 1 }); st = -1; }
+  }
+  if (st >= 0) runs.push({ a: st, b: h - 1 });
+  if (runs.length < 2) return { runs: runs, rows: rows };
+
+  var ctr = function(r2){ return (r2.a + r2.b) / 2; };
+  var hOf = function(r2){ return r2.b - r2.a + 1; };
+  /* **そのあたりの字送り**。となりどうしの間隔を、前後 3 つぶん見て
+     まん中の値を採る。行のとちゅうで大きさが変わっても（戒名 → 命日）、
+     その場の間隔で見られる。 */
+  function localPitch(list, k){
+    var d = [];
+    for (var t = Math.max(1, k - 3); t <= Math.min(list.length - 1, k + 3); t++)
+      d.push(ctr(list[t]) - ctr(list[t-1]));
+    if (!d.length) return 0;
+    return _med(d);
+  }
+  /* ① **1 字の中の空きをつなぐ**。
+     「二」「三」「日」のように、1 字の中が離れている字がある。
+     すき間の広さでは字の切れ目と見分けられない（小さい字の字間より広いことがある）。
+     そこで **そのあたりの字送りと比べる**。字送りの半分より近ければ、同じ字の中。 */
+  for (var pass = 0; pass < 6; pass++){
+    if (runs.length < 3) break;
+    var did = false, out = [runs[0]];
+    for (i = 1; i < runs.length; i++){
+      var pit = localPitch(runs, i);
+      var gapC = ctr(runs[i]) - ctr(out[out.length-1]);
+      if (pit > 0 && gapC < pit * 0.55){
+        out[out.length-1] = { a: out[out.length-1].a, b: runs[i].b };
+        did = true;
+      } else out.push(runs[i]);
+    }
+    runs = out;
+    if (!did) break;
+  }
+  /* ② **くっついている 2 字を割る**。
+     そのあたりの字送りの 1.45 倍より背が高ければ、2 字が入っているとみて、
+     まん中あたりの いちばん墨の薄い所で割る。割れなくなるまでくり返す。 */
+  for (var pass2 = 0; pass2 < 6; pass2++){
+    if (runs.length < 2) break;
+    var did2 = false, out2 = [];
+    for (i = 0; i < runs.length; i++){
+      var r3 = runs[i], hh = hOf(r3);
+      var pit2 = localPitch(runs, Math.max(1, Math.min(runs.length - 1, i)));
+      if (!pit2) pit2 = _med(runs.map(hOf)) * 1.3;
+      if (hh > pit2 * 1.45){
+        var lo = r3.a + Math.round(hh * 0.25), hi = r3.b - Math.round(hh * 0.25);
+        var cut = -1, cv = Infinity;
+        for (y = lo; y <= hi; y++) if (rows[y] < cv){ cv = rows[y]; cut = y; }
+        if (cut > r3.a && cut < r3.b){
+          out2.push({ a: r3.a, b: cut - 1 }); out2.push({ a: cut + 1, b: r3.b });
+          did2 = true; continue;
+        }
+      }
+      out2.push(r3);
+    }
+    runs = out2;
+    if (!did2) break;
+  }
+  /* 小さすぎるかけらは落とす（そのあたりの字送りの 2 割未満） */
+  runs = runs.filter(function(r4, k){
+    var pit3 = localPitch(runs, Math.max(1, Math.min(runs.length - 1, k)));
+    return !pit3 || hOf(r4) >= pit3 * 0.20;
+  });
+  return { runs: runs, rows: rows };
+}
+/* 切り分けた run ごとに、1 字ぶんの数字を出す（AI の墨むけ）。 */
+function rubLineCoreAi(M, q, step, mpp){
+  var sp = rubAiSplit(M), runs = sp.runs;
+  if (runs.length < 2){ msg("字を 2 つ以上見つけられませんでした。帯と AI の墨を確かめてください。", true); return null; }
+  var w = M.w, m = M.m, items = [], i, x, y;
+  runs.forEach(function(r5){
+    var x1 = 1e9, x2 = -1, area = 0, edge = 0;
+    for (y = r5.a; y <= r5.b; y++){
+      for (x = 0; x < w; x++){
+        if (!m[y*w + x]) continue;
+        if (x < x1) x1 = x; if (x > x2) x2 = x;
+        area++;
+        /* まわり 4 つのどれかが墨でなければ「縁」。画線の太さを出すのに使う */
+        if (!m[y*w + (x-1)] || !m[y*w + (x+1)] ||
+            y === 0 || !m[(y-1)*w + x] || y === M.h-1 || !m[(y+1)*w + x]) edge++;
+      }
+    }
+    if (x2 < x1) return;
+    items.push({
+      y0: q.y1 + r5.a * step, y1: q.y1 + (r5.b + 1) * step,
+      h: (r5.b - r5.a + 1) * step, w: (x2 - x1 + 1) * step,
+      cx: q.x1 + (x1 + x2) / 2 * step, cy: q.y1 + (r5.a + r5.b) / 2 * step,
+      ink: edge ? (2 * area / edge) * step : 0, blobs: 1
+    });
+  });
+  if (items.length < 2){ msg("字を 2 つ以上見つけられませんでした。", true); return null; }
+
+  var n = items.length, sx = 0, sy = 0, sxy = 0, syy = 0;
+  items.forEach(function(it){ sx += it.cx; sy += it.cy; });
+  var mx2 = sx / n, my = sy / n;
+  items.forEach(function(it){ sxy += (it.cy - my) * (it.cx - mx2); syy += (it.cy - my) * (it.cy - my); });
+  var slope = (syy > 1e-9) ? sxy / syy : 0;
+  var deg = Math.atan(slope) * 180 / Math.PI;
+  var resid = _med(items.map(function(it){ return Math.abs((it.cx - mx2) - slope * (it.cy - my)); }));
+
+  var pitches = [], gaps = [];
+  for (i = 1; i < n; i++){
+    pitches.push(items[i].cy - items[i-1].cy);
+    gaps.push(items[i].y0 - items[i-1].y1);
+  }
+  var hs = items.map(function(it){ return it.h; });
+  /* **大きさの組**（v21.56）。戒名と命日で字の大きさが変わることがほとんど、
+     という本人の話に合わせて、はっきり 2 つに分かれるときは分けて出す。
+     並べた高さの、となりどうしの比がいちばん大きい所で切る。1.25 倍未満なら分けない。 */
+  var sorted = hs.slice().sort(function(a2, b2){ return a2 - b2; });
+  var cutI = -1, cutR = 1.25;
+  for (i = 1; i < sorted.length; i++){
+    var rr = sorted[i] / Math.max(1e-6, sorted[i-1]);
+    if (rr > cutR){ cutR = rr; cutI = i; }
+  }
+  var grp = null;
+  if (cutI > 0 && cutI < sorted.length){
+    var bound = (sorted[cutI] + sorted[cutI-1]) / 2;
+    var small = items.filter(function(it){ return it.h < bound; });
+    var large = items.filter(function(it){ return it.h >= bound; });
+    if (small.length && large.length)
+      grp = [{ n: large.length, hMm: _med(large.map(function(it){ return it.h; })) * mpp,
+               wMm: _med(large.map(function(it){ return it.w; })) * mpp },
+             { n: small.length, hMm: _med(small.map(function(it){ return it.h; })) * mpp,
+               wMm: _med(small.map(function(it){ return it.w; })) * mpp }];
+  }
+  return {
+    n: n, at: new Date().toLocaleString("ja-JP"),
+    band: { L: q.x1, R: q.x2 },
+    hMm: _med(hs) * mpp,
+    wMm: _med(items.map(function(it){ return it.w; })) * mpp,
+    inkMm: _med(items.map(function(it){ return it.ink; })) * mpp,
+    pitchMm: (pitches.length ? _med(pitches) : 0) * mpp,
+    gapMm: (gaps.length ? _med(gaps) : 0) * mpp,
+    cxMm: mx2 * mpp,
+    topMm: items[0].y0 * mpp,
+    botMm: items[n-1].y1 * mpp,
+    deg: deg, residMm: resid * mpp,
+    hMinMm: Math.min.apply(null, hs) * mpp,
+    hMaxMm: Math.max.apply(null, hs) * mpp,
+    sizes: grp,
+    items: items.map(function(it){
+      return { hMm: it.h * mpp, wMm: it.w * mpp, inkMm: it.ink * mpp,
+               cxMm: it.cx * mpp, cyMm: it.cy * mpp,
+               px: { x: it.cx - it.w/2, y: it.y0, w: it.w, h: it.h } };
+    })
+  };
+}
 /* AI の墨で、この行を見立てる（v21.55。本人の確認
    「完ぺきではないですが、文字の輪郭はしっかりとらえています」を受けて）。
    後ろの計算（塊 → ます割り → 傾き）は元の見立てと同じものを使う。 */
@@ -9384,11 +9560,10 @@ function rubLineTakeAi(){
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
   var q = clampRange(), step = 2;
-  var pitch = rubPitchPx(q, thr());
-  if (!pitch || pitch < 4){ msg("字送りを読めませんでした。帯を 1 行だけにしてください。", true); return; }
   var M = rubAiMask(q, step);
   if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
-  var m2 = rubLineCore(M, q, step, pitch, mpp);
+  /* **字送りでの等分はしない**（v21.56）。切れ目でそのまま切る。 */
+  var m2 = rubLineCoreAi(M, q, step, mpp);
   if (!m2) return;
   m2.src = "ai";
   if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
@@ -9438,9 +9613,17 @@ function rubLineHtml(){
     return '<span style="color:' + col + ';">（前の行 ' + d1(y) + unit +
            '／差 ' + (dd >= 0 ? "＋" : "−") + Math.abs(dd).toFixed(2) + unit + '）</span>';
   }
-  var h = '<div class="fixrow"><span>字の数</span><b>' + a.n + ' 字</b></div>' +
-    '<div class="fixrow"><span>字の高さ</span><b>' + d1(a.hMm) + ' mm ' +
-      (b ? cmp(a.hMm, b.hMm, "mm") : "") + '</b></div>' +
+  var h = '<div class="fixrow"><span>字の数</span><b>' + a.n + ' 字</b></div>';
+  /* 大きさが 2 つに分かれたとき（戒名と命日など）は、分けて出す（v21.56。本人の指摘
+     「文字の大きさは一律ではない」）。まとめた中くらいの値だけでは、どちらとも
+     ちがう数字になってしまう。 */
+  if (a.sizes && a.sizes.length === 2)
+    h += '<div class="fixrow"><span>大きさの組</span><b>' +
+      '大 ' + a.sizes[0].n + ' 字 ' + d1(a.sizes[0].hMm) + 'mm　／　' +
+      '小 ' + a.sizes[1].n + ' 字 ' + d1(a.sizes[1].hMm) + 'mm</b></div>';
+  h += '<div class="fixrow"><span>字の高さ</span><b>' + d1(a.hMm) + ' mm ' +
+      (b ? cmp(a.hMm, b.hMm, "mm") : "") +
+      (a.sizes ? '<span style="color:var(--muted);">（ぜんぶのまん中）</span>' : "") + '</b></div>' +
     '<div class="fixrow"><span>字の幅</span><b>' + d1(a.wMm) + ' mm ' +
       (b ? cmp(a.wMm, b.wMm, "mm") : "") + '</b></div>' +
     '<div class="fixrow"><span>画線の太さ</span><b>' + d1(a.inkMm) + ' mm ' +

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.63</title>
+<title>彫刻原稿 v21.64</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -454,6 +454,9 @@
   #rubstage .spinhit{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30' viewBox='0 0 30 30'><g fill='none' stroke='%23fff' stroke-width='5.5' stroke-linecap='round'><path d='M23 15a8 8 0 1 1-2.6-5.9'/></g><path d='M23 15a8 8 0 1 1-2.6-5.9' fill='none' stroke='%231B6FD6' stroke-width='2.8' stroke-linecap='round'/><path d='M14.4 8.4 L22.2 6.6 L21 14.4 Z' fill='%231B6FD6' stroke='%23fff' stroke-width='1.4' stroke-linejoin='round'/></svg>") 15 15, grab;}
   #rubstage.spinning .spinhit,#rubstage.spinning{cursor:grabbing;}
   #rubstage .pivhit{cursor:move;}
+  #rubstage .lihit.m{cursor:move;}
+  #rubstage .lihit.v{cursor:ns-resize;}
+  #rubstage .lihit.h{cursor:ew-resize;}
   /* 字の候補（v21.63）。1 行が「何字目 ＋ 候補 8 つ」 */
   .cand{display:flex;align-items:center;gap:3px;margin:2px 0;flex-wrap:wrap;}
   .cand .no{flex:0 0 18px;font-size:10px;color:var(--muted);text-align:right;}
@@ -2163,7 +2166,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.63";
+var APP_VER = "v21.64";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9402,8 +9405,16 @@ function rubAiTrimCols(gmap, aw, ah){
     }
   }
   if (!best) return null;
-  var pad = Math.round((best.b - best.a + 1) * 0.10);   /* はらいの先のぶん、少し広く */
-  var kL = Math.max(0, best.a - pad), kR = Math.min(aw-1, best.b + pad);
+  /* **はらいの先を切らない**（v21.64。本人の指摘「文字の幅が見切れています」）。
+     切れ目の多い列だけを残すと、はらいの先のような**細く薄い所が落ちる**。
+     芯を決めたあと、**墨が続いているかぎり外へ伸ばす**（となりの列との
+     空きで止まる）。伸ばしすぎないよう、芯の幅の 4 割までにする。 */
+  var span = best.b - best.a + 1, room = Math.round(span * 0.4);
+  var kL = best.a, kR = best.b;
+  while (kL > 0 && best.a - kL < room && ink[kL-1] > 0) kL--;
+  while (kR < aw-1 && kR - best.b < room && ink[kR+1] > 0) kR++;
+  var pad = Math.max(1, Math.round(span * 0.04));       /* ほんの少しだけ余裕 */
+  kL = Math.max(0, kL - pad); kR = Math.min(aw-1, kR + pad);
   for (y = 0; y < ah; y++){
     var b = y*aw;
     for (x = 0; x < aw; x++) if (x < kL || x > kR) gmap[b + x] = 0;
@@ -9443,7 +9454,11 @@ async function rubAiBand(){
      行の左右に塊が付いて、1 字ずつに切り分けられなくなる。 */
   ag.save();
   ag.beginPath();
-  ag.rect(q.x1 * SC, q.y1 * SC, (q.x2 - q.x1) * SC, (q.y2 - q.y1) * SC);
+  /* 帯ぴったりで切ると、**帯からはみ出したはらいが落ちる**（v21.64。本人の指摘）。
+     左右に帯の 2 割ぶん のりしろを取る。行から外れた墨は、このあと
+     `rubAiTrimCols` が落とすので、広めに取っても散らからない。 */
+  var over = (q.x2 - q.x1) * 0.2;
+  ag.rect((q.x1 - over) * SC, q.y1 * SC, (q.x2 - q.x1 + over*2) * SC, (q.y2 - q.y1) * SC);
   ag.clip();
   ag.globalCompositeOperation = "lighten";      /* 重なりは濃い方を採る */
 
@@ -9521,6 +9536,12 @@ function rubAiBandClear(){
   msg("AI の墨を消しました。");
 }
 
+/* 帯を左右に少しだけ広げた範囲（v21.64）。はらいの先まで入れるため。 */
+function rubBandWide(q){
+  var over = Math.round((q.x2 - q.x1) * 0.2);
+  return { x1: Math.max(0, q.x1 - over), x2: Math.min(RUB.W, q.x2 + over),
+           y1: q.y1, y2: q.y2 };
+}
 /* AI が読んだ墨から、見立ての絵（M）を作る（v21.55）。
    `rubAiBand` が取っておいた濃さの並びを、帯の中だけ ます目に読み直す。
    **拾い直しはしない。** AI の出した濃さを 0.5 で切るだけ。 */
@@ -9725,7 +9746,11 @@ function rubLineTakeAi(){
   }
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
-  var q = clampRange(), step = 2;
+  /* **帯より少し広く見る**（v21.64。本人の指摘「文字の幅が見切れています」）。
+     帯からはみ出したはらいまで含めて 1 字の枠を測る。
+     AI の墨は行の外を落としてあるので、広げても となりの列は入ってこない。
+     **見るのも測るのも同じ枠**でないと、ます目と画素の対応がずれる。 */
+  var q = rubBandWide(clampRange()), step = 2;
   var M = rubAiMask(q, step);
   if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
   /* **字送りでの等分はしない**（v21.56）。切れ目でそのまま切る。 */
@@ -9738,6 +9763,71 @@ function rubLineTakeAi(){
   persist(); rubPanel(); rubRender();
   msg("AI の墨で見立てました（字 " + m2.n + " 字／字送り " + m2.pitchMm.toFixed(2) +
       "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。");
+}
+
+/* いま選んでいる 1 字の枠（v21.64）。-1 なら選んでいない。 */
+var rubSelItem = -1;
+/* 枠を直したあと、数字を出し直す（字送り・傾きなどは枠から出している）。 */
+function rubLineRestat(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || !L.items || !L.items.length) return;
+  var mpp = mmPerPx(); if (!mpp) return;
+  /* 上から順に並べ直す。人が動かすと順番が入れ替わることがある */
+  L.items.sort(function(a, b){ return (a.px.y + a.px.h/2) - (b.px.y + b.px.h/2); });
+  var n = L.items.length, i, sx = 0, sy = 0, sxy = 0, syy = 0;
+  var cx = L.items.map(function(it){ return it.px.x + it.px.w/2; });
+  var cy = L.items.map(function(it){ return it.px.y + it.px.h/2; });
+  for (i = 0; i < n; i++){ sx += cx[i]; sy += cy[i]; }
+  var mx = sx/n, my = sy/n;
+  for (i = 0; i < n; i++){ sxy += (cy[i]-my)*(cx[i]-mx); syy += (cy[i]-my)*(cy[i]-my); }
+  var slope = (syy > 1e-9) ? sxy/syy : 0;
+  var hs = L.items.map(function(it){ return it.px.h; });
+  var ws = L.items.map(function(it){ return it.px.w; });
+  var pit = [], gap = [];
+  for (i = 1; i < n; i++){
+    pit.push(cy[i] - cy[i-1]);
+    gap.push(L.items[i].px.y - (L.items[i-1].px.y + L.items[i-1].px.h));
+  }
+  L.n = n;
+  L.hMm = _med(hs) * mpp; L.wMm = _med(ws) * mpp;
+  L.pitchMm = (pit.length ? _med(pit) : 0) * mpp;
+  L.gapMm = (gap.length ? _med(gap) : 0) * mpp;
+  L.cxMm = mx * mpp;
+  L.topMm = L.items[0].px.y * mpp;
+  L.botMm = (L.items[n-1].px.y + L.items[n-1].px.h) * mpp;
+  L.deg = Math.atan(slope) * 180 / Math.PI;
+  L.residMm = _med(L.items.map(function(it, k){
+    return Math.abs((cx[k]-mx) - slope*(cy[k]-my)); })) * mpp;
+  L.hMinMm = Math.min.apply(null, hs) * mpp;
+  L.hMaxMm = Math.max.apply(null, hs) * mpp;
+  L.items.forEach(function(it){
+    it.hMm = it.px.h * mpp; it.wMm = it.px.w * mpp;
+    it.cxMm = (it.px.x + it.px.w/2) * mpp; it.cyMm = (it.px.y + it.px.h/2) * mpp;
+  });
+  L.edited = true;
+}
+/* 枠を足す（いま選んでいる枠の下に、同じ大きさで）。 */
+function rubItemAdd(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || !L.items || !L.items.length){ msg("先に［この行を見立てる］を押してください。", true); return; }
+  var k = (rubSelItem >= 0 && rubSelItem < L.items.length) ? rubSelItem : L.items.length - 1;
+  var b = L.items[k].px;
+  var pit = L.pitchMm && mmPerPx() ? L.pitchMm / mmPerPx() : b.h * 1.2;
+  L.items.splice(k + 1, 0, { px: { x: b.x, y: b.y + pit, w: b.w, h: b.h } });
+  rubSelItem = k + 1;
+  rubLineRestat(); persist(); rubPanel(); rubRender();
+  msg("枠を足しました（" + L.items.length + " 字）。つかんで動かせます。");
+}
+/* いま選んでいる枠を消す。 */
+function rubItemDel(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || !L.items || rubSelItem < 0 || rubSelItem >= L.items.length){
+    msg("消したい枠を、絵の上で押して選んでください。", true); return;
+  }
+  L.items.splice(rubSelItem, 1);
+  rubSelItem = Math.min(rubSelItem, L.items.length - 1);
+  rubLineRestat(); persist(); rubPanel(); rubRender();
+  msg("枠を消しました（" + L.items.length + " 字）。");
 }
 
 /* ───── 学習に登録する（v21.63。本人の案）─────
@@ -9827,6 +9917,15 @@ function rubCandHtml(){
   var L = (S.rub.lines || [])[0];
   if (!L || L.src !== "ai" || !L.items || !L.items.length) return "";
   var h = '<h3 class="sec" style="margin-top:14px;">学習に登録（準備中）</h3>';
+  /* 枠を人が直す（v21.64。本人の指示）。AI の切り分けがずれた所こそ教材になる。 */
+  h += '<p class="hint" style="margin:0 0 4px;">青い枠は<b>つかんで動かせます</b>。' +
+    '中をつかむと動き、<b>4 辺をつかむと大きさ</b>が変わります。' +
+    'ずれている枠は直してください（直した形で登録します）。</p>';
+  h += '<button class="mini" id="btnItemAdd">枠を足す</button>' +
+    ' <button class="mini" id="btnItemDel">選んだ枠を消す</button>' +
+    (rubSelItem >= 0 && rubSelItem < L.items.length
+      ? ' <span class="hint">いま ' + (rubSelItem+1) + ' 字目</span>' : '') +
+    (L.edited ? ' <span class="hint">（直しました）</span>' : '');
   var any = L.items.some(function(it){ return it.cands && it.cands.length; });
   h += '<button class="mini' + (any ? '' : ' primary') + '" id="btnCand" ' +
     'title="1 字ずつの枠の墨を、フォントの字ぜんぶと見くらべて、似ている順に 8 つ出します"' +
@@ -11696,13 +11795,31 @@ function rubRender(){
   var LN = ((S.rub.lines || [])[0] && (S.rub.lines || [])[0].src === "ai")
     ? S.rub.lines[0] : null;
   if (LN && LN.items){
+    /* 枠は**人が直せる**（v21.64。本人の指示「青の四角マスを人で修正できるように」）。
+       AI の切り分けがずれた所こそ、直して登録すれば良い教材になる。
+       中をつかむと動き、4 辺をつかむと大きさが変わる。 */
     LN.items.forEach(function(it, i){
       var b = it.px; if (!b) return;
+      var on = (rubSelItem === i);
       o.push('<rect x="' + b.x.toFixed(1) + '" y="' + b.y.toFixed(1) + '" width="' + b.w.toFixed(1) +
-        '" height="' + b.h.toFixed(1) + '" fill="rgba(27,111,214,.10)" stroke="#1B6FD6" stroke-width="' +
-        (W*0.002) + '"/>');
+        '" height="' + b.h.toFixed(1) + '" fill="rgba(27,111,214,' + (on ? '.20' : '.10') +
+        ')" stroke="' + (on ? '#DC2616' : '#1B6FD6') + '" stroke-width="' +
+        (W * (on ? 0.004 : 0.002)) + '"/>');
       o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
-        '" fill="#1B6FD6" font-size="' + (W*0.022) + '" text-anchor="end">' + (i+1) + '</text>');
+        '" fill="' + (on ? '#DC2616' : '#1B6FD6') + '" font-size="' + (W*0.022) +
+        '" text-anchor="end">' + (i+1) + (it.pick ? " " + esc(it.pick) : "") + '</text>');
+      /* つかむ所。辺は内側 ei ぶんの帯、それより内は「動かす」 */
+      var ei = Math.max(W*0.006, Math.min(b.w, b.h) * 0.22);
+      hits.push('<rect class="lihit m" data-k="li:' + i + ':m" x="' + (b.x+ei) + '" y="' + (b.y+ei) +
+        '" width="' + Math.max(1, b.w-ei*2) + '" height="' + Math.max(1, b.h-ei*2) + '" fill="transparent"/>');
+      hits.push('<rect class="lihit v" data-k="li:' + i + ':t" x="' + b.x + '" y="' + (b.y-ei/2) +
+        '" width="' + b.w + '" height="' + ei + '" fill="transparent"/>');
+      hits.push('<rect class="lihit v" data-k="li:' + i + ':b" x="' + b.x + '" y="' + (b.y+b.h-ei/2) +
+        '" width="' + b.w + '" height="' + ei + '" fill="transparent"/>');
+      hits.push('<rect class="lihit h" data-k="li:' + i + ':l" x="' + (b.x-ei/2) + '" y="' + b.y +
+        '" width="' + ei + '" height="' + b.h + '" fill="transparent"/>');
+      hits.push('<rect class="lihit h" data-k="li:' + i + ':r" x="' + (b.x+b.w-ei/2) + '" y="' + b.y +
+        '" width="' + ei + '" height="' + b.h + '" fill="transparent"/>');
     });
   }
   if (A && $("rShowGroups").checked){
@@ -12104,9 +12221,38 @@ function bindDrag(svg){
          つまみは小さく、絵の上をつかめば回るので、取り違えは起きにくい。 */
       var grp = k.indexOf("grp:") === 0 ? k.split(":") : null;
       var cen = k.indexOf("cen:") === 0 ? +k.split(":")[1] : null;
+      /* 1 字の枠（v21.64）。中をつかめば動き、辺をつかめば大きさが変わる。 */
+      var li = k.indexOf("li:") === 0 ? k.split(":") : null;
+      var li0 = null;
+      if (li){
+        var L0 = (S.rub.lines || [])[0];
+        var it0 = L0 && L0.items && L0.items[+li[1]];
+        if (!it0 || !it0.px) return;
+        rubSelItem = +li[1];
+        li0 = { x: it0.px.x, y: it0.px.y, w: it0.px.w, h: it0.px.h,
+                p0: toPt(ev), it: it0 };
+        rubPanel(); rubRender();
+      }
       if (k === "calTop" || k === "calBot"){ calBusy = true; rubRender(); }
       function move(e){
         var r = S.rub, q = toPt(e);
+        if (li0){
+          var dx = q.x - li0.p0.x, dy = q.y - li0.p0.y, b = li0.it.px;
+          var MIN = 6;
+          if (li[2] === "m"){ b.x = li0.x + dx; b.y = li0.y + dy; }
+          else if (li[2] === "t"){
+            var ny = Math.min(li0.y + dy, li0.y + li0.h - MIN);
+            b.h = li0.y + li0.h - ny; b.y = ny;
+          }
+          else if (li[2] === "b"){ b.h = Math.max(MIN, li0.h + dy); }
+          else if (li[2] === "l"){
+            var nx = Math.min(li0.x + dx, li0.x + li0.w - MIN);
+            b.w = li0.x + li0.w - nx; b.x = nx;
+          }
+          else if (li[2] === "r"){ b.w = Math.max(MIN, li0.w + dx); }
+          rubRender();
+          return;
+        }
         if (cen !== null){
           rubMoveCenPx(cen, q.x);      /* 親を動かせば子も同じだけ（v20.8） */
           syncCenters();
@@ -12134,6 +12280,7 @@ function bindDrag(svg){
         window.removeEventListener("pointerup", up);
         if (calBusy){ calBusy = false; rubRender(); }
         if (grp || cen !== null){ renderStage(); rubPanel(); }
+        if (li0){ rubLineRestat(); rubPanel(); rubRender(); }
         persist();
       }
       window.addEventListener("pointermove", move);
@@ -12430,6 +12577,8 @@ function rubPanel(){
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var bta = $("btnLineTakeAi"); if (bta) bta.onclick = rubLineTakeAi;
   var bcd = $("btnCand"); if (bcd) bcd.onclick = rubCandGo;
+  var bia = $("btnItemAdd"); if (bia) bia.onclick = rubItemAdd;
+  var bid = $("btnItemDel"); if (bid) bid.onclick = rubItemDel;
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .cb"), function(b3){
     b3.onclick = function(){ rubCandPick(+b3.dataset.i, b3.dataset.c); };
   });

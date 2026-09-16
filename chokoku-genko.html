@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.54</title>
+<title>彫刻原稿 v21.55</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.54";
+var APP_VER = "v21.55";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9083,6 +9083,14 @@ function rubLineMeasure(){
      行ぜんたいが 1 つの塊になってしまう（v20.83）。 */
   var op = Math.max(1, Math.round(0.15 / cell));
   M.m = fitMorph(fitMorph(M.m, M.w, M.h, -op), M.w, M.h, op);
+  return rubLineCore(M, q, step, pitch, mpp);
+}
+/* 見立ての後ろ半分（v21.55 で切り出した）。
+   **墨の絵（M）さえあれば同じ**なので、しきい値で拾った墨でも、
+   AI が読んだ墨でも、そのまま使える。
+   前は しきい値の墨に直結していたため、AI の墨で測り直せなかった。 */
+function rubLineCore(M, q, step, pitch, mpp){
+  var cell = mpp * step;
   /* 彫った画は 2mm 角より小さくならない。それ未満は地のざらつき */
   var minMm2 = 2.0;
   var blobs = rubBlobs(M, Math.max(4, Math.round(minMm2 / (cell * cell))));
@@ -9311,8 +9319,11 @@ async function rubAiBand(){
   }
   if (!ok){ msg("AI に通せませんでした（" + (why || "?") + "）", true); return; }
 
-  /* 白黒の濃さを、そのまま**青の濃さ**にして重ねる。拓本の絵が透けて見えるように。 */
+  /* 白黒の濃さを、そのまま**青の濃さ**にして重ねる。拓本の絵が透けて見えるように。
+     色を付ける前に、**濃さのまま取っておく**（v21.55）。見立てはこれを使う。 */
   var im2 = ag.getImageData(0, 0, acc.width, acc.height), o2 = im2.data, n1 = 0;
+  var gmap = new Uint8Array(acc.width * acc.height);
+  for (var k3 = 0, k4 = 0; k3 < o2.length; k3 += 4, k4++) gmap[k4] = o2[k3];
   for (var k2 = 0; k2 < o2.length; k2 += 4){
     var v2 = o2[k2];
     o2[k2] = 27; o2[k2+1] = 111; o2[k2+2] = 214;
@@ -9323,6 +9334,7 @@ async function rubAiBand(){
   ag.putImageData(im2, 0, 0);
   var mmc = mpp ? (mpp / SC) : 0;
   RUB.aiBand = {
+    map: gmap, mw: acc.width, mh: acc.height, sc: SC,   /* 見立て用（色を付ける前の濃さ） */
     url: acc.toDataURL("image/png"),
     at: new Date().toLocaleString("ja-JP"),
     n: ok, all: ys.length,
@@ -9341,6 +9353,50 @@ function rubAiBandClear(){
   RUB.aiBand = null;
   rubPanel(); rubRender();
   msg("AI の墨を消しました。");
+}
+
+/* AI が読んだ墨から、見立ての絵（M）を作る（v21.55）。
+   `rubAiBand` が取っておいた濃さの並びを、帯の中だけ ます目に読み直す。
+   **拾い直しはしない。** AI の出した濃さを 0.5 で切るだけ。 */
+function rubAiMask(q, step){
+  var A2 = RUB.aiBand;
+  if (!A2 || !A2.map) return null;
+  var w = Math.ceil((q.x2 - q.x1) / step), h = Math.ceil((q.y2 - q.y1) / step);
+  var m = new Uint8Array(w * h), sc = A2.sc, mw = A2.mw, mh = A2.mh;
+  for (var gy = 0; gy < h; gy++){
+    var Y = Math.round((q.y1 + gy * step) * sc);
+    if (Y < 0 || Y >= mh) continue;
+    for (var gx = 0; gx < w; gx++){
+      var X = Math.round((q.x1 + gx * step) * sc);
+      if (X < 0 || X >= mw) continue;
+      if (A2.map[Y*mw + X] > 127) m[gy*w + gx] = 1;
+    }
+  }
+  return { m: m, w: w, h: h };
+}
+/* AI の墨で、この行を見立てる（v21.55。本人の確認
+   「完ぺきではないですが、文字の輪郭はしっかりとらえています」を受けて）。
+   後ろの計算（塊 → ます割り → 傾き）は元の見立てと同じものを使う。 */
+function rubLineTakeAi(){
+  if (!RUB.aiBand || !RUB.aiBand.map){
+    msg("先に［帯を AI に通す］を押してください。", true); return;
+  }
+  var mpp = mmPerPx();
+  if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
+  var q = clampRange(), step = 2;
+  var pitch = rubPitchPx(q, thr());
+  if (!pitch || pitch < 4){ msg("字送りを読めませんでした。帯を 1 行だけにしてください。", true); return; }
+  var M = rubAiMask(q, step);
+  if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
+  var m2 = rubLineCore(M, q, step, pitch, mpp);
+  if (!m2) return;
+  m2.src = "ai";
+  if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
+  S.rub.lines.unshift(m2);
+  if (S.rub.lines.length > 6) S.rub.lines.length = 6;
+  persist(); rubPanel(); rubRender();
+  msg("AI の墨で見立てました（字 " + m2.n + " 字／字送り " + m2.pitchMm.toFixed(2) +
+      "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。");
 }
 
 /* 見立てて、控えに積む（新しいものが先頭。6 行ぶんまで） */
@@ -11192,10 +11248,11 @@ function rubRender(){
   }
   /* 行の見立ての枠（v20.83）。数字だけでは合っているか分からないので、
      どこを 1 字として測ったかを目で確かめられるようにする。 */
-  /* 見立ての枠は出さない（v21.27）。この見立ては文字の認識がまるでできて
-     いないので、AI に置き換えるまで止める。古い案件に控えが残っていても、
-     間違った枠を絵に重ねない。 */
-  var LN = null;
+  /* 見立ての枠（v21.55 で戻した）。**AI の墨で見立てた分だけ**出す。
+     しきい値の墨で見立てた古い控え（`src` が無いもの）は、文字の認識が
+     できていないので出さない。間違った枠を絵に重ねないため（v21.27）。 */
+  var LN = ((S.rub.lines || [])[0] && (S.rub.lines || [])[0].src === "ai")
+    ? S.rub.lines[0] : null;
   if (LN && LN.items){
     LN.items.forEach(function(it, i){
       var b = it.px; if (!b) return;
@@ -11915,12 +11972,20 @@ function rubPanel(){
         (ab.inkMm2 ? '墨 ' + ab.inkMm2.toFixed(0) + 'mm²　' : '') +
         Math.round(ab.ms/100)/10 + ' 秒</p>';
     }
-    h += '<button class="mini" id="btnLineTake" disabled style="margin-top:6px;" ' +
-      'title="AI の墨から測る作りは、これから足します。">この行を見立てる</button>';
+    /* AI の墨があるときだけ見立てられる（v21.55）。
+       しきい値の墨で見立てる元の作りは、当たらないので戻さない。 */
+    h += '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
+      (RUB.aiBand ? '' : ' disabled') + ' style="margin-top:6px;" ' +
+      'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
+      '>この行を見立てる</button>';
+    if (!RUB.aiBand)
+      h += '<p class="hint" style="margin:3px 0 0;">先に［帯を AI に通す］を押してください。</p>';
+    if ((S.rub.lines || []).length) h += rubLineHtml();
   }
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
+  var bta = $("btnLineTakeAi"); if (bta) bta.onclick = rubLineTakeAi;
   var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
   var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;

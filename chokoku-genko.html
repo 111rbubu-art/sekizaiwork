@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.68</title>
+<title>彫刻原稿 v21.69</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2168,7 +2168,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.68";
+var APP_VER = "v21.69";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9554,6 +9554,65 @@ async function rubAiBand(){
 
    そこで、**広すぎる列は列とみなさない**。見つからなければ
    ［列の数］で等分に割る（墓誌のように等間隔なら、これで十分合う）。 */
+/* 列と列の間隔を測る（v21.69。本人の指摘「全体を切り分けられませんでした」）。
+
+   **列の切れ目が読めなくても、並びの周期は残る。** たての墨の量（`projX`）の
+   自己相関で、列の間隔を出す。字送りを縦で測るのと同じやり方を、横でやるだけ。
+   これが出れば **本数 ＝ 範囲の幅 ÷ 間隔** で見当づけられるので、
+   人が［列の数］を入れなくても進める。 */
+function rubColPitch(ar){
+  if (!RUB.data) return 0;
+  var t = thrFrame();
+  var xp = projX(ar.y1, ar.y2, t);
+  var w = ar.x2 - ar.x1;
+  var win = Math.max(2, Math.round(w * 0.004));
+  var sm = new Float32Array(RUB.W), x, k;
+  for (x = ar.x1; x < ar.x2; x++){
+    var ss = 0, cn = 0;
+    for (k = -win; k <= win; k++){
+      var xx = x + k;
+      if (xx >= ar.x1 && xx < ar.x2){ ss += xp[xx]; cn++; }
+    }
+    sm[x] = cn ? ss / cn : 0;
+  }
+  /* **地のざらつきを引く**（v21.69）。石の地が一面にあると、たての墨の量が
+     どこも底上げされ、**どの間隔でもよく合う**ようになってしまう（実測：
+     ざらつきを入れると 173px＝ただの雑音と出た）。**平均を引いて**、
+     出っぱり・へこみだけで合わせると、列の間隔だけが残る。 */
+  var mean = 0;
+  for (x = ar.x1; x < ar.x2; x++) mean += sm[x];
+  mean = w > 0 ? mean / w : 0;
+  for (x = ar.x1; x < ar.x2; x++) sm[x] -= mean;
+  var minL = Math.max(10, Math.round(w / 24));
+  var maxL = Math.max(minL + 4, Math.round(w / 1.5));
+  var L0 = estimatePitch(sm, ar.x1, ar.x2, minL, maxL) || 0;
+  return rubBestLag(sm, ar.x1, ar.x2, L0, minL);
+}
+/* **周期の取り違えを直す**（v21.69）。自己相関は、本当の周期の 2 倍・3 倍でも
+   よく合ってしまう（実測：列の間隔 260px を **517px** と出した）。
+   半分・1/3 も確かめて、**同じくらい合うなら短い方**を採る。 */
+function _corrAt(sm, a, b, L){
+  if (!L || L < 2 || a + L >= b) return -1;
+  var s1 = 0, s2 = 0, s3 = 0, n = 0;
+  for (var x = a; x + L < b; x++){
+    var u = sm[x], v = sm[x + L];
+    s1 += u * v; s2 += u * u; s3 += v * v; n++;
+  }
+  if (!n || s2 <= 0 || s3 <= 0) return -1;
+  return s1 / Math.sqrt(s2 * s3);
+}
+function rubBestLag(sm, a, b, L0, minL){
+  if (!L0) return 0;
+  var best = _corrAt(sm, a, b, L0), pick = L0;
+  [2, 3, 4].forEach(function(k){
+    var L = Math.round(L0 / k);
+    if (L < Math.max(4, minL || 4)) return;
+    var c = _corrAt(sm, a, b, L);
+    /* **同じくらい合えば短い方**。9 割を目安にする */
+    if (c > 0 && c >= best * 0.92 && L < pick) pick = L;
+  });
+  return pick;
+}
 function rubColsWanted(){
   /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
      拓本の取り方で端の行が見切れていることがあるので、そこを外せるようにする。 */
@@ -9572,10 +9631,19 @@ function rubColsWanted(){
   /* **1 本でも通す**（v21.68）。範囲を決めれば、その中が 1 列ということもある。
      「拓本ぜんたいが 1 本の列」は上の `wide` で外してあるので、ここは 1 本でよい。 */
   if (!n && good.length >= 1) return good;
+  var guessed = 0;
   if (!n){
-    msg("列を切り分けられませんでした（石の地が一面にあると、列の切れ目が読めません）。" +
-        "メニューの［列の数］に本数を入れてから、もう一度押してください。", true);
-    return null;
+    /* **列の間隔から本数を見当づける**（v21.69。本人の指摘
+       「全体を切り分けられませんでした」）。切れ目が読めなくても、
+       並びの周期は残っているので、そこから本数が出せる。 */
+    var cp = rubColPitch(ar);
+    if (cp > 0) n = Math.max(1, Math.min(24, Math.round(full / cp)));
+    if (!n){
+      msg("列を切り分けられませんでした（石の地が一面にあると、列の切れ目が読めません）。" +
+          "メニューの［列の数］に本数を入れてから、もう一度押してください。", true);
+      return null;
+    }
+    guessed = cp;
   }
   /* 等分に割る。少しだけ重ねて、はらいが落ちないようにする。 */
   var out = [], w = full / n;
@@ -9585,6 +9653,12 @@ function rubColsWanted(){
                b: Math.min(ar.x2, Math.round(b + w*0.06)) });
   }
   RUB.cols = out;
+  if (guessed){
+    var mp3 = mmPerPx();
+    msg("列の切れ目は読めませんでしたが、並びの周期から " + n + " 本と見当をつけました" +
+        (mp3 ? "（列の間隔 " + (guessed * mp3).toFixed(1) + "mm）" : "") +
+        "。ちがうときは［列の数］に本数を入れてください。", false, true);
+  }
   return out;
 }
 /* 拓本ぜんたい（列をぜんぶ）を、通して見立てる（v21.66。本人の指示

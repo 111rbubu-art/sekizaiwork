@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.65</title>
+<title>彫刻原稿 v21.66</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -455,6 +455,7 @@
   #rubstage.spinning .spinhit,#rubstage.spinning{cursor:grabbing;}
   #rubstage .pivhit{cursor:move;}
   #rubstage .boxhit{cursor:crosshair;}
+  #rubstage .colhit{cursor:pointer;}
   #rubstage .lihit.m{cursor:move;}
   #rubstage .lihit.v{cursor:ns-resize;}
   #rubstage .lihit.h{cursor:ew-resize;}
@@ -2167,7 +2168,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.65";
+var APP_VER = "v21.66";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9531,6 +9532,43 @@ async function rubAiBand(){
       (why ? "途中で止まりました：" + why + "。" : "") +
       "青いところが AI の読んだ墨です。［AI の墨を消す］で消えます。");
 }
+/* 拓本ぜんたい（列をぜんぶ）を、通して見立てる（v21.66。本人の指示
+   「1 行だけでなく全体的に見れるようにして」）。
+   列を見つけ、1 列ずつ **帯を合わせ → AI に通し → 見立てる** をくり返す。 */
+async function rubAllGo(){
+  if (AIBAND_BUSY) return;
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
+  var runs = detectColumns(false);
+  if (!runs || !runs.length){
+    msg("列を見つけられませんでした。拓本の範囲としきい値（反転）を確かめてください。", true);
+    return;
+  }
+  if (runs.length > 12){
+    if (!confirm("列が " + runs.length + " 本あります。ぜんぶ通すと時間がかかります。続けますか。")) return;
+  }
+  var b0 = { L: S.rub.bandL, R: S.rub.bandR };
+  var ok = 0, ng = 0;
+  for (var i = 0; i < runs.length; i++){
+    var c = runs[i];
+    var pad = Math.round((c.b - c.a) * 0.08);
+    S.rub.bandL = Math.max(0, Math.round(c.a - pad));
+    S.rub.bandR = Math.min(RUB.W, Math.round(c.b + pad));
+    A = null; RUB.mask = null;
+    msg("列 " + (i+1) + " / " + runs.length + " を通しています…", false, true);
+    RUB.aiBand = null;
+    await rubAiBand();
+    if (!RUB.aiBand){ ng++; continue; }
+    var got = rubLineTakeAi();
+    if (got) ok++; else ng++;
+  }
+  S.rub.bandL = b0.L; S.rub.bandR = b0.R;
+  A = null; RUB.mask = null;
+  persist(); rubPanel(); rubRender();
+  msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
+      (ng ? "／" + ng + " 列は読めませんでした" : "") + "）。" +
+      "列を押すと、その列の枠を直せます。");
+}
 function rubAiBandClear(){
   RUB.aiBand = null;
   rubPanel(); rubRender();
@@ -9743,7 +9781,7 @@ function rubLineCoreAi(M, q, step, mpp){
    後ろの計算（塊 → ます割り → 傾き）は元の見立てと同じものを使う。 */
 function rubLineTakeAi(){
   if (!RUB.aiBand || !RUB.aiBand.map){
-    msg("先に［帯を AI に通す］を押してください。", true); return;
+    msg("先に［帯を AI に通す］を押してください。", true); return null;
   }
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
@@ -9758,19 +9796,48 @@ function rubLineTakeAi(){
   var m2 = rubLineCoreAi(M, q, step, mpp);
   if (!m2) return;
   m2.src = "ai";
-  if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
-  S.rub.lines.unshift(m2);
-  if (S.rub.lines.length > 6) S.rub.lines.length = 6;
+  m2.aiUrl = (RUB.aiBand && RUB.aiBand.url) || "";     /* その列の青い墨（見せる用） */
+  rubColPut(m2);
   persist(); rubPanel(); rubRender();
   msg("AI の墨で見立てました（字 " + m2.n + " 字／字送り " + m2.pitchMm.toFixed(2) +
       "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。");
+  return m2;
+}
+/* 見立てた列を入れる（v21.66）。**同じ帯なら置きかえ**、左から順に並べる。
+   前は新しい順に 6 行ぶん積んでいたが、拓本 1 枚ぶんを一度に見たいので、
+   **列の並び**として持つ方が素直。 */
+function rubColPut(m2){
+  if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
+  var mid = (m2.band.L + m2.band.R) / 2, w = Math.max(8, m2.band.R - m2.band.L);
+  var at = -1;
+  S.rub.lines.forEach(function(L, i){
+    if (!L || !L.band) return;
+    if (Math.abs((L.band.L + L.band.R) / 2 - mid) < w * 0.5) at = i;
+  });
+  if (at >= 0) S.rub.lines[at] = m2; else S.rub.lines.push(m2);
+  S.rub.lines.sort(function(a, b){
+    return ((a.band && a.band.L) || 0) - ((b.band && b.band.L) || 0);
+  });
+  if (S.rub.lines.length > 24) S.rub.lines.length = 24;
+  rubSelCol = S.rub.lines.indexOf(m2);
+  rubSelItem = -1;
 }
 
 /* いま選んでいる 1 字の枠（v21.64）。-1 なら選んでいない。 */
 var rubSelItem = -1;
+/* いま見ている列（v21.66）。`S.rub.lines` を**左からの列の並び**として使う。 */
+var rubSelCol = 0;
+function rubCol(){
+  var ls = S.rub.lines || [];
+  if (rubSelCol < 0 || rubSelCol >= ls.length) rubSelCol = 0;
+  return ls[rubSelCol] || null;
+}
+function rubColsAi(){
+  return (S.rub.lines || []).filter(function(L){ return L && L.src === "ai"; });
+}
 /* 枠を直したあと、数字を出し直す（字送り・傾きなどは枠から出している）。 */
 function rubLineRestat(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items || !L.items.length) return;
   var mpp = mmPerPx(); if (!mpp) return;
   /* 上から順に並べ直す。人が動かすと順番が入れ替わることがある */
@@ -9820,7 +9887,7 @@ function rubBoxDrawTog(){
 }
 /* 描き終わった四角を、1 字の枠として足す。 */
 function rubBoxDrawn(x1, y1, x2, y2){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items){ msg("先に［この行を見立てる］を押してください。", true); return; }
   var x = Math.min(x1, x2), y = Math.min(y1, y2);
   var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
@@ -9838,7 +9905,7 @@ function rubBoxDrawn(x1, y1, x2, y2){
 
 /* 枠を足す（いま選んでいる枠の下に、同じ大きさで）。 */
 function rubItemAdd(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items || !L.items.length){ msg("先に［この行を見立てる］を押してください。", true); return; }
   var k = (rubSelItem >= 0 && rubSelItem < L.items.length) ? rubSelItem : L.items.length - 1;
   var b = L.items[k].px;
@@ -9850,7 +9917,7 @@ function rubItemAdd(){
 }
 /* いま選んでいる枠を消す。 */
 function rubItemDel(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items || rubSelItem < 0 || rubSelItem >= L.items.length){
     msg("消したい枠を、絵の上で押して選んでください。", true); return;
   }
@@ -9883,7 +9950,7 @@ function rubItemInk(it, n){
   return { m: m, n: n };
 }
 function rubCandGo(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || L.src !== "ai" || !L.items || !L.items.length){
     msg("先に［この行を見立てる］を押してください。", true); return;
   }
@@ -9909,14 +9976,14 @@ function rubCandGo(){
   }, 30);
 }
 function rubCandPick(i, ch){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items || !L.items[i]) return;
   L.items[i].pick = (L.items[i].pick === ch) ? "" : ch;
   persist(); rubPanel();
 }
 /* 決まった字を並べた文字列（「?」は分からない字） */
 function rubCandText(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || !L.items) return "";
   return L.items.map(function(it){ return it.pick || "?"; }).join("");
 }
@@ -9933,7 +10000,7 @@ function rubLineTake(){
 }
 /* 見立てた傾きを、回転補正に入れる */
 function rubLineFixRot(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L){ msg("先に［この行を見立てる］を押してください。", true); return; }
   var was = num(S.rub.rot, 0), f0 = rubFrameSt();
   S.rub.rot = Math.round((was - L.deg) * 100) / 100;
@@ -9944,9 +10011,20 @@ function rubLineFixRot(){
 }
 /* 学習に登録する所の見た目（v21.63） */
 function rubCandHtml(){
-  var L = (S.rub.lines || [])[0];
+  var L = rubCol();
   if (!L || L.src !== "ai" || !L.items || !L.items.length) return "";
   var h = '<h3 class="sec" style="margin-top:14px;">学習に登録（準備中）</h3>';
+  /* 列えらび（v21.66）。拓本ぜんたいを通すと、列がいくつも並ぶ。 */
+  var ls = (S.rub.lines || []).filter(function(x){ return x && x.src === "ai"; });
+  if (ls.length > 1){
+    h += '<div class="cand" style="margin-bottom:4px;"><span class="no">列</span>' +
+      (S.rub.lines || []).map(function(x, ci){
+        if (!x || x.src !== "ai") return "";
+        return '<button class="cb colb2' + (ci === rubSelCol ? ' on' : '') +
+          '" data-ci="' + ci + '" title="' + (x.n || 0) + ' 字">' +
+          (ls.indexOf(x) + 1) + '</button>';
+      }).join("") + '</div>';
+  }
   /* 枠を人が直す（v21.64。本人の指示）。AI の切り分けがずれた所こそ教材になる。 */
   h += '<p class="hint" style="margin:0 0 4px;">青い枠は<b>つかんで動かせます</b>。' +
     '中をつかむと動き、<b>4 辺をつかむと大きさ</b>が変わります。' +
@@ -11827,26 +11905,28 @@ function rubRender(){
   /* 見立ての枠（v21.55 で戻した）。**AI の墨で見立てた分だけ**出す。
      しきい値の墨で見立てた古い控え（`src` が無いもの）は、文字の認識が
      できていないので出さない。間違った枠を絵に重ねないため（v21.27）。 */
-  var LN = ((S.rub.lines || [])[0] && (S.rub.lines || [])[0].src === "ai")
-    ? S.rub.lines[0] : null;
-  if (LN && LN.items){
-    /* 枠は**人が直せる**（v21.64。本人の指示「青の四角マスを人で修正できるように」）。
-       AI の切り分けがずれた所こそ、直して登録すれば良い教材になる。
-       中をつかむと動き、4 辺をつかむと大きさが変わる。 */
+  /* 枠は**人が直せる**（v21.64。本人の指示「青の四角マスを人で修正できるように」）。
+     AI の切り分けがずれた所こそ、直して登録すれば良い教材になる。
+     **列はぜんぶ出す**（v21.66）。いま見ている列だけ濃く、ほかは薄く。 */
+  (S.rub.lines || []).forEach(function(LN, ci){
+    if (!LN || LN.src !== "ai" || !LN.items || !LN.items.length) return;
+    var curCol = (ci === rubSelCol);
     LN.items.forEach(function(it, i){
       var b = it.px; if (!b) return;
-      var on = (rubSelItem === i);
+      var on = curCol && (rubSelItem === i);
+      var col = on ? "#DC2616" : (curCol ? "#1B6FD6" : "#8AA7C8");
       o.push('<rect x="' + b.x.toFixed(1) + '" y="' + b.y.toFixed(1) + '" width="' + b.w.toFixed(1) +
-        '" height="' + b.h.toFixed(1) + '" fill="rgba(27,111,214,' + (on ? '.20' : '.10') +
-        ')" stroke="' + (on ? '#DC2616' : '#1B6FD6') + '" stroke-width="' +
-        (W * (on ? 0.004 : 0.002)) + '"/>');
-      o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
-        '" fill="' + (on ? '#DC2616' : '#1B6FD6') + '" font-size="' + (W*0.022) +
-        '" text-anchor="end">' + (i+1) + (it.pick ? " " + esc(it.pick) : "") + '</text>');
-      /* つかむ所。辺は内側 ei ぶんの帯、それより内は「動かす」。
+        '" height="' + b.h.toFixed(1) + '" fill="rgba(27,111,214,' +
+        (on ? '.20' : (curCol ? '.10' : '.05')) + ')" stroke="' + col + '" stroke-width="' +
+        (W * (on ? 0.004 : (curCol ? 0.002 : 0.0014))) + '"/>');
+      if (curCol)
+        o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
+          '" fill="' + col + '" font-size="' + (W*0.022) + '" text-anchor="end">' +
+          (i+1) + (it.pick ? " " + esc(it.pick) : "") + '</text>');
+      /* つかむ所は**いま見ている列だけ**（ほかの列まで触れると押しまちがえる）。
          **枠を描いている間は出さない**（v21.65）。出すと、既にある枠の上から
          描き始められない（つかむ所が上に乗っているため）。 */
-      if (rubBoxDraw) return;
+      if (rubBoxDraw || !curCol) return;
       var ei = Math.max(W*0.006, Math.min(b.w, b.h) * 0.22);
       hits.push('<rect class="lihit m" data-k="li:' + i + ':m" x="' + (b.x+ei) + '" y="' + (b.y+ei) +
         '" width="' + Math.max(1, b.w-ei*2) + '" height="' + Math.max(1, b.h-ei*2) + '" fill="transparent"/>');
@@ -11859,7 +11939,15 @@ function rubRender(){
       hits.push('<rect class="lihit h" data-k="li:' + i + ':r" x="' + (b.x+b.w-ei/2) + '" y="' + b.y +
         '" width="' + ei + '" height="' + b.h + '" fill="transparent"/>');
     });
-  }
+    /* ほかの列は、押すとその列に切り替わる */
+    if (!curCol && !rubBoxDraw){
+      var f0 = LN.items[0].px, fz = LN.items[LN.items.length-1].px;
+      hits.push('<rect class="colhit" data-k="col:' + ci + '" x="' + f0.x + '" y="' + f0.y +
+        '" width="' + Math.max(8, f0.w) + '" height="' + Math.max(8, (fz.y + fz.h) - f0.y) +
+        '" fill="transparent"/>');
+    }
+  });
+
   if (A && $("rShowGroups").checked){
     A.groups.forEach(function(g, i){
       o.push('<rect x="' + (r.bandL - W*0.02) + '" y="' + g.y0 + '" width="' + (r.bandR-r.bandL + W*0.04) +
@@ -12078,7 +12166,15 @@ function rubRender(){
   }
   /* ［帯を AI に通す］の結果（v21.50）。しきい値の墨（maskLayer）より**上**に重ねる。
      どちらも出ていると、どちらを見ているのか分からなくなるため。 */
-  if (RUB.aiBand && RUB.aiBand.url)
+  /* **列ごとに取ってある分もぜんぶ出す**（v21.66。本人の指示「全体的に見れるように」）。 */
+  var aiSeen = {};
+  (S.rub.lines || []).forEach(function(L2){
+    if (!L2 || L2.src !== "ai" || !L2.aiUrl || aiSeen[L2.aiUrl]) return;
+    aiSeen[L2.aiUrl] = 1;
+    maskLayer += '<image href="' + L2.aiUrl + '" x="0" y="0" width="' + W +
+      '" height="' + H + '" pointer-events="none"/>';
+  });
+  if (RUB.aiBand && RUB.aiBand.url && !aiSeen[RUB.aiBand.url])
     maskLayer += '<image href="' + RUB.aiBand.url + '" x="0" y="0" width="' + W +
       '" height="' + H + '" pointer-events="none"/>';
   st.style.width = dispW + "px"; st.style.height = "auto";
@@ -12305,10 +12401,15 @@ function bindDrag(svg){
       var grp = k.indexOf("grp:") === 0 ? k.split(":") : null;
       var cen = k.indexOf("cen:") === 0 ? +k.split(":")[1] : null;
       /* 1 字の枠（v21.64）。中をつかめば動き、辺をつかめば大きさが変わる。 */
+      if (k.indexOf("col:") === 0){        /* ほかの列を押した（v21.66） */
+        rubSelCol = +k.split(":")[1]; rubSelItem = -1;
+        rubPanel(); rubRender(); persist();
+        return;
+      }
       var li = k.indexOf("li:") === 0 ? k.split(":") : null;
       var li0 = null;
       if (li){
-        var L0 = (S.rub.lines || [])[0];
+        var L0 = rubCol();
         var it0 = L0 && L0.items && L0.items[+li[1]];
         if (!it0 || !it0.px) return;
         rubSelItem = +li[1];
@@ -12629,8 +12730,10 @@ function rubPanel(){
     }
     h += '<p class="hint" style="margin:5px 0 0;">帯（オレンジの範囲）は、絵の上の' +
       '<b>つまみでも動かせます</b>。</p>';
-    h += '<button class="mini primary" id="btnAiBand" style="margin-top:6px;" ' +
-      'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">帯を AI に通す</button>';
+    h += '<button class="mini primary" id="btnAiAll" style="margin-top:6px;" ' +
+      'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
+    h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
+      'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">この帯だけ通す</button>';
     if (RUB.aiBand)
       h += ' <button class="mini" id="btnAiBandClr">AI の墨を消す</button>';
     h += '<p class="hint" style="margin:5px 0 0;">帯を <b>1 行だけ</b>に合わせてから押してください。' +
@@ -12660,13 +12763,22 @@ function rubPanel(){
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var bta = $("btnLineTakeAi"); if (bta) bta.onclick = rubLineTakeAi;
   var bcd = $("btnCand"); if (bcd) bcd.onclick = rubCandGo;
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb2"), function(b4){
+    b4.onclick = function(){
+      rubSelCol = +b4.dataset.ci; rubSelItem = -1;
+      persist(); rubPanel(); rubRender();
+    };
+  });
   var bbd = $("btnBoxDraw"); if (bbd) bbd.onclick = rubBoxDrawTog;
   var bia = $("btnItemAdd"); if (bia) bia.onclick = rubItemAdd;
   var bid = $("btnItemDel"); if (bid) bid.onclick = rubItemDel;
-  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .cb"), function(b3){
+  /* 列えらびのボタンも見た目は `.cb` なので、**字の候補の方だけ**を相手にする
+     （v21.66。でないと、あとから配る方が先の割り当てを上書きしてしまう）。 */
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .cb:not(.colb2)"), function(b3){
     b3.onclick = function(){ rubCandPick(+b3.dataset.i, b3.dataset.c); };
   });
   var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
+  var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
   var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;
   var bcs = $("btnBandCols"); if (bcs) bcs.onclick = function(){

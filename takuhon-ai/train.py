@@ -313,9 +313,19 @@ def main():
     done = dict(state="done", epoch=a.epochs, epochs=a.epochs, iou=v1, iou_nohint=v0,
                 pairs=len(tr), val=len(va), step=step, started=started,
                 device=str(device), prev=best_prev, gen=os.path.basename(gen))
+    def mark_cur():
+        """いま使う版が どの世代から来たか を控える（2026-09-16）。
+        画面の世代の記録で「←いま使用中」を出すのに使う。"""
+        try:
+            with open(os.path.join(RUNS, "current_from_%s.json" % a.name), "w",
+                      encoding="utf-8") as f:
+                json.dump({"file": os.path.basename(gen), "at": at, "by": "train"},
+                          f, ensure_ascii=False)
+        except OSError:
+            pass
     if not va:
         if getattr(a, "swap_anyway", False):
-            shutil.copyfile(gen, cur)
+            shutil.copyfile(gen, cur); mark_cur()
             print("検証をしていませんが、試すために " + os.path.basename(cur) + " を差し替えました。")
             put_progress(swapped=True,
                          why="検証なしで差し替えました（試すため。--swap-anyway）", **done)
@@ -325,7 +335,7 @@ def main():
                      why="検証用が無いので差し替えません（dataset/val に 10 組ほど）", **done)
         return
     if best_prev is None or (v0 is not None and v0 >= best_prev - 1e-4):
-        shutil.copyfile(gen, cur)
+        shutil.copyfile(gen, cur); mark_cur()
         print(f"{os.path.basename(cur)} を差し替えました（手がかり無しの一致 {best_prev} → {round(v0,3)}）")
         put_progress(swapped=True,
                      why="良くなったので差し替えました（%s → %s）" % (best_prev, round(v0, 3)), **done)
@@ -334,8 +344,12 @@ def main():
         put_progress(swapped=False,
                      why="悪くなったので据え置きました（%s → %s）" % (best_prev, round(v0, 3)), **done)
     with open(os.path.join(RUNS, "history.jsonl"), "a", encoding="utf-8") as f:
+        # **検証の組数も残す**（2026-09-16。本人の指摘「検証数が無いので、
+        # どれとどれが比較できるものか分からない」）。検証用が変わると
+        # 物差しが変わるので、数がちがう世代どうしは比べられない。
         f.write(json.dumps({"at": at, "step": step, "iou": v1, "iou_nohint": v0,
-                            "pairs": len(tr), "file": os.path.basename(gen),
+                            "pairs": len(tr), "val": len(va),
+                            "file": os.path.basename(gen),
                             "name": a.name},
                            ensure_ascii=False) + "\n")
 

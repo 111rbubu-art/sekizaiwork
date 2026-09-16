@@ -395,6 +395,72 @@ def history(which: str = "ink"):
     return {"items": got[-60:]}
 
 
+def _cur_mark(nm):
+    """いま使っている版が、どの世代から来たか（2026-09-16）。
+
+    **日付では見分けられない。** 差し替えは `copyfile` なので日付が新しくなり、
+    （日付を元のまま写すと、こんどはサーバーが読み直さなくなる。`_reload_if_new`）。
+    そこで、差し替えるたびに名前を控えておく。
+    """
+    return os.path.join(RUNS, "current_from_%s.json" % nm)
+
+
+@app.get("/api/takuhon/models")
+def models(which: str = "ink"):
+    """残っている世代の一覧（2026-09-16。本人の指示「手動で切り替えられるように」）。
+
+    いま使っている版（current）と同じ中身かどうかも返す。
+    """
+    nm = _nm(which)
+    cur = os.path.join(RUNS, "current.pth" if nm == "current" else "current_shape.pth")
+    csz = os.path.getsize(cur) if os.path.exists(cur) else -1
+    cmt = int(os.path.getmtime(cur)) if os.path.exists(cur) else 0
+    from_f = (_read_json(_cur_mark(nm), {}) or {}).get("file", "")
+    out = []
+    for f in sorted(os.listdir(RUNS) if os.path.isdir(RUNS) else []):
+        if not f.startswith("model_") or not f.endswith(".pth"):
+            continue
+        # ①は model_current_… ／②は model_shape_… の名前で残る
+        if not f.startswith("model_%s_" % nm):
+            continue
+        p2 = os.path.join(RUNS, f)
+        out.append({"file": f, "size": os.path.getsize(p2),
+                    "at": int(os.path.getmtime(p2)),
+                    "now": (f == from_f) if from_f else
+                           (os.path.getsize(p2) == csz and abs(int(os.path.getmtime(p2)) - cmt) < 2)})
+    out.sort(key=lambda x: -x["at"])
+    return {"items": out, "which": which, "current": os.path.basename(cur),
+            "currentAt": cmt}
+
+
+@app.post("/api/takuhon/use_model")
+def use_model(which: str = Form("ink"), file: str = Form(...)):
+    """世代を、いま使う版にする（手で差し替える）。
+
+    成績で自動に差し替えるのとは別に、**人が選んで戻せる**ようにしておく。
+    検証用を増やすと物差しが変わり、前の世代と数字で比べられなくなるため
+    （本人の指摘）、そのときは目で見て選ぶしかない。
+    """
+    nm = _nm(which)
+    if not SAFE.match(file) or not file.startswith("model_%s_" % nm) or not file.endswith(".pth"):
+        return JSONResponse({"error": "bad_file"}, status_code=400)
+    src = os.path.realpath(os.path.join(RUNS, file))
+    if not src.startswith(os.path.realpath(RUNS) + os.sep) or not os.path.exists(src):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    dst = os.path.join(RUNS, "current.pth" if nm == "current" else "current_shape.pth")
+    try:
+        # 日付は**新しくして**写す（`_reload_if_new` が日付を見ているため）。
+        # どの世代から来たかは、下の控えで分かるようにする。
+        shutil.copyfile(src, dst)
+        with open(_cur_mark(nm), "w", encoding="utf-8") as f:
+            json.dump({"file": file, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "by": "hand"}, f, ensure_ascii=False)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    # 次の呼び出しで読み直される（_reload_if_new が日時を見ている）
+    return {"ok": True, "file": file, "which": which}
+
+
 @app.get("/api/takuhon/pairs")
 def pairs(which: str = "pairs", limit: int = 60, offset: int = 0, only: str = "all"):
     """貯まった組の一覧。新しいものが先。

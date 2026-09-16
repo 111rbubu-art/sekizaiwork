@@ -426,26 +426,63 @@ function chart(pts){
 }
 
 /* ---- 世代の記録 ---- */
+var MODELS = { items: [], current: "" };
 function hist(items){
   var el = document.getElementById("hist");
   if (!items.length){
     el.innerHTML = '<p class="hint" style="margin:0">まだ 1 世代も作っていません。</p>'; return;
   }
+  var now = {};
+  (MODELS.items || []).forEach(function(m){ if (m.now) now[m.file] = true; });
+  var have = {};
+  (MODELS.items || []).forEach(function(m){ have[m.file] = true; });
   var rows = items.slice().reverse().map(function(it, i, arr){
     var prev = arr[i+1];
-    var d = (prev && it.iou_nohint != null && prev.iou_nohint != null)
+    /* **検証の組数が同じ世代どうしでないと、差は出さない**（2026-09-16。本人の指摘
+       「検証用が少ないときと比べているので、比較できない」）。
+       検証用を変えると物差しが変わる。ちがう物差しの数字を引き算しても意味がない。 */
+    var same = prev && (prev.val || 0) === (it.val || 0);
+    var d = (same && it.iou_nohint != null && prev.iou_nohint != null)
           ? (it.iou_nohint - prev.iou_nohint) : null;
     var col = d === null ? "var(--muted)" : (d >= 0 ? "var(--midori)" : "var(--shu)");
-    return '<tr><td class="l">' + esc(it.at) + '</td><td>' + (it.pairs||0) + '</td>' +
+    var isNow = !!now[it.file];
+    return '<tr' + (isNow ? ' style="background:#eef6ee"' : '') + '>' +
+      '<td class="l">' + esc(it.at) + (isNow ? ' <b style="color:var(--midori)">←いま使用中</b>' : '') + '</td>' +
+      '<td>' + (it.pairs||0) + '</td>' +
+      '<td>' + (it.val == null ? '<span class="hint">?</span>' : it.val) + '</td>' +
       '<td>' + (it.step||0) + '</td><td>' + pct(it.iou) + '</td>' +
       '<td><b>' + pct(it.iou_nohint) + '</b></td>' +
-      '<td style="color:' + col + '">' + (d === null ? "―" :
-        (d >= 0 ? "＋" : "−") + Math.abs(d*100).toFixed(1) + "pt") + '</td>' +
-      '<td class="l hint">' + esc(it.file) + '</td></tr>';
+      '<td style="color:' + col + '">' + (d === null
+        ? (prev && !same ? '<span class="hint" title="検証用の組数がちがうので比べられません">物差しちがい</span>' : "―")
+        : (d >= 0 ? "＋" : "−") + Math.abs(d*100).toFixed(1) + "pt") + '</td>' +
+      '<td class="l hint">' + esc(it.file) + '</td>' +
+      '<td>' + (isNow ? '<span class="hint">使用中</span>'
+        : (have[it.file] ? '<button class="mini usemdl" data-f="' + esc(it.file) + '">これを使う</button>'
+                         : '<span class="hint" title="世代のファイルが残っていません">―</span>')) + '</td>' +
+      '</tr>';
   }).join("");
-  el.innerHTML = '<table><tr><th class="l">日時</th><th>学習</th><th>step</th>' +
+  el.innerHTML = '<table><tr><th class="l">日時</th><th>学習</th><th>検証</th><th>step</th>' +
     '<th>一致<br>手がかりあり</th><th>一致<br>手がかり無し</th><th>前回との差</th>' +
-    '<th class="l">ファイル</th></tr>' + rows + '</table>';
+    '<th class="l">ファイル</th><th>切替</th></tr>' + rows + '</table>' +
+    '<p class="hint" style="margin:6px 0 0">「検証」の数がちがう世代どうしは、' +
+    '<b>物差しがちがうので比べられません</b>。［これを使う］で、成績に関わらず' +
+    '手で差し替えられます。</p>';
+  Array.prototype.forEach.call(el.querySelectorAll(".usemdl"), function(b){
+    b.onclick = function(){ useModel(b.dataset.f); };
+  });
+}
+/* 世代を手で差し替える（2026-09-16。本人の指示）。 */
+async function useModel(file){
+  if (!confirm(file + " を、いま使う版にします。よろしいですか。\n" +
+               "（前の版は世代として残るので、あとから戻せます）")) return;
+  var fd = new FormData();
+  fd.append("which", WHICH === "shape" ? "shape" : "ink");
+  fd.append("file", file);
+  try {
+    await post("/api/takuhon/use_model", fd);
+    await tick();
+    alert("差し替えました。");
+  } catch(e){ alert("差し替えられませんでした：" + e.message); }
 }
 
 /* 続きから回す。止めたとき・落ちたときの設定をそのまま使う。 */
@@ -856,6 +893,8 @@ async function tick(){
     var pg = await get("/api/takuhon/progress" + q);
     var cv = await get("/api/takuhon/curve" + q);
     var hs = await get("/api/takuhon/history" + q);
+    /* 残っている世代（手で差し替えるのに要る。2026-09-16） */
+    try { MODELS = await get("/api/takuhon/models" + q); } catch(e2){ MODELS = { items: [] }; }
     cards(st, pg); train(pg); chart(cv.points); hist(hs.items);
     /* 走っているのが今見ていない方なら、そちらへ自動で切り替える */
     if (pg.state !== "running" && pg.state !== "starting" && !_segLock){

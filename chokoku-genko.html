@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.62</title>
+<title>彫刻原稿 v21.63</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -454,6 +454,14 @@
   #rubstage .spinhit{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30' viewBox='0 0 30 30'><g fill='none' stroke='%23fff' stroke-width='5.5' stroke-linecap='round'><path d='M23 15a8 8 0 1 1-2.6-5.9'/></g><path d='M23 15a8 8 0 1 1-2.6-5.9' fill='none' stroke='%231B6FD6' stroke-width='2.8' stroke-linecap='round'/><path d='M14.4 8.4 L22.2 6.6 L21 14.4 Z' fill='%231B6FD6' stroke='%23fff' stroke-width='1.4' stroke-linejoin='round'/></svg>") 15 15, grab;}
   #rubstage.spinning .spinhit,#rubstage.spinning{cursor:grabbing;}
   #rubstage .pivhit{cursor:move;}
+  /* 字の候補（v21.63）。1 行が「何字目 ＋ 候補 8 つ」 */
+  .cand{display:flex;align-items:center;gap:3px;margin:2px 0;flex-wrap:wrap;}
+  .cand .no{flex:0 0 18px;font-size:10px;color:var(--muted);text-align:right;}
+  .cand .cb{font-size:15px;line-height:1;padding:3px 6px;min-width:28px;border:1px solid var(--line);
+    border-radius:5px;background:var(--surface);cursor:pointer;font-family:inherit;}
+  .cand .cb.on{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:700;}
+  .cand .cb:hover{background:var(--sunk);}
+  .cand .cb.on:hover{background:var(--ink);}
   #rubOvWrap,#shOvWrap{position:sticky;top:0;height:0;z-index:14;overflow:visible;}
   #shOv{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;
     pointer-events:none;padding:6px 8px 0;}
@@ -2155,7 +2163,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.62";
+var APP_VER = "v21.63";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9732,6 +9740,67 @@ function rubLineTakeAi(){
       "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。");
 }
 
+/* ───── 学習に登録する（v21.63。本人の案）─────
+   見立てで 1 字ずつの枠が出たら、その枠の墨から**どの字か の候補**を出し、
+   人が押して決める。決まった字があれば、あとは作字の画面をそのまま使って
+   墨を直し、学習用に保存できる（そこは次の段）。 */
+/* 1 字ぶんの枠から、AI の墨を切り出す。 */
+function rubItemInk(it, n){
+  var A2 = RUB.aiBand;
+  if (!A2 || !A2.map || !it || !it.px) return null;
+  n = n || 96;
+  var b = it.px, sc = A2.sc, mw = A2.mw, mh = A2.mh;
+  var m = new Uint8Array(n*n);
+  for (var y = 0; y < n; y++){
+    var Y = Math.round((b.y + (y + 0.5) * b.h / n) * sc);
+    if (Y < 0 || Y >= mh) continue;
+    for (var x = 0; x < n; x++){
+      var X = Math.round((b.x + (x + 0.5) * b.w / n) * sc);
+      if (X < 0 || X >= mw) continue;
+      if (A2.map[Y*mw + X] > 127) m[y*n + x] = 1;
+    }
+  }
+  return { m: m, n: n };
+}
+function rubCandGo(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || L.src !== "ai" || !L.items || !L.items.length){
+    msg("先に［この行を見立てる］を押してください。", true); return;
+  }
+  if (!RUB.aiBand || !RUB.aiBand.map){
+    msg("先に［帯を AI に通す］を押してください。", true); return;
+  }
+  var F = FR(); if (!F){ msg("先にフォントを読み込んでください。", true); return; }
+  msg("フォントの字を並べています…（はじめの 1 回だけ数秒かかります）", false, true);
+  setTimeout(function(){
+    var t0 = Date.now(), B = cgBank(curFont);
+    if (!B || !B.chars.length){ msg("フォントから字を読めませんでした。", true); return; }
+    var got = 0;
+    L.items.forEach(function(it){
+      var k = rubItemInk(it);
+      if (!k) return;
+      it.cands = cgGuess(k.m, k.n, k.n, curFont, 8).map(function(c){ return c.ch; });
+      if (it.cands.length){ it.pick = it.cands[0]; got++; }
+    });
+    persist(); rubPanel();
+    msg("候補を出しました（" + got + " 字／" +
+        B.chars.length + " 字と見くらべ／" + Math.round((Date.now()-t0)/100)/10 + " 秒）。" +
+        "ちがう字は、その行のボタンを押して選び直してください。");
+  }, 30);
+}
+function rubCandPick(i, ch){
+  var L = (S.rub.lines || [])[0];
+  if (!L || !L.items || !L.items[i]) return;
+  L.items[i].pick = (L.items[i].pick === ch) ? "" : ch;
+  persist(); rubPanel();
+}
+/* 決まった字を並べた文字列（「?」は分からない字） */
+function rubCandText(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || !L.items) return "";
+  return L.items.map(function(it){ return it.pick || "?"; }).join("");
+}
+
 /* 見立てて、控えに積む（新しいものが先頭。6 行ぶんまで） */
 function rubLineTake(){
   var m = rubLineMeasure();
@@ -9753,6 +9822,38 @@ function rubLineFixRot(){
   rebuildRub(); syncOriginY(); renderAll(); rubPanel(); rubRender(); persist();
   msg("角度を " + was.toFixed(2) + "° → " + S.rub.rot.toFixed(2) + "° にしました。もう一度見立てて確かめてください。");
 }
+/* 学習に登録する所の見た目（v21.63） */
+function rubCandHtml(){
+  var L = (S.rub.lines || [])[0];
+  if (!L || L.src !== "ai" || !L.items || !L.items.length) return "";
+  var h = '<h3 class="sec" style="margin-top:14px;">学習に登録（準備中）</h3>';
+  var any = L.items.some(function(it){ return it.cands && it.cands.length; });
+  h += '<button class="mini' + (any ? '' : ' primary') + '" id="btnCand" ' +
+    'title="1 字ずつの枠の墨を、フォントの字ぜんぶと見くらべて、似ている順に 8 つ出します"' +
+    '>字の候補を出す</button>';
+  if (!any){
+    h += '<p class="hint" style="margin:4px 0 0;">枠の墨から「どの字か」を当てます。' +
+      '<b>打ち込みは要りません。</b>出てきた候補から押して選びます。</p>';
+    return h;
+  }
+  h += '<div class="fixrow" style="margin-top:6px;"><span>いまの並び</span><b style="font-size:15px;">' +
+    esc(rubCandText()) + '</b></div>';
+  h += '<p class="hint" style="margin:4px 0 4px;">左の数字はその行の何字目か。' +
+    '<b>濃いボタンがいま選んでいる字</b>です。もう一度押すと「?」（分からない）に戻ります。</p>';
+  L.items.forEach(function(it, i){
+    var cs = it.cands || [];
+    if (!cs.length) return;
+    h += '<div class="cand"><span class="no">' + (i+1) + '</span>' +
+      cs.map(function(ch){
+        return '<button class="cb' + (it.pick === ch ? ' on' : '') +
+          '" data-i="' + i + '" data-c="' + esc(ch) + '">' + esc(ch) + '</button>';
+      }).join("") + '</div>';
+  });
+  h += '<p class="hint" style="margin:5px 0 0;">※ このあと 1 字ずつ作字の画面で墨を直して' +
+    '学習用に保存する流れは、これから作ります。</p>';
+  return h;
+}
+
 /* 見立ての表（1 行ぶん＋ 1 つ前との比べ） */
 function rubLineHtml(){
   var ls = S.rub.lines || [];
@@ -12322,11 +12423,16 @@ function rubPanel(){
     if (!RUB.aiBand)
       h += '<p class="hint" style="margin:3px 0 0;">先に［帯を AI に通す］を押してください。</p>';
     if ((S.rub.lines || []).length) h += rubLineHtml();
+    h += rubCandHtml();
   }
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var bta = $("btnLineTakeAi"); if (bta) bta.onclick = rubLineTakeAi;
+  var bcd = $("btnCand"); if (bcd) bcd.onclick = rubCandGo;
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .cb"), function(b3){
+    b3.onclick = function(){ rubCandPick(+b3.dataset.i, b3.dataset.c); };
+  });
   var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
   var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;

@@ -51,6 +51,15 @@ td.l,th.l{text-align:left}
 .pair .ttl{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
 .pair .ch{font-size:17px;font-weight:700}
 .pair .at{font-size:10.5px;color:var(--muted)}
+/* 使う／使わない（2026-09-16。本人の指示）。
+   消さずに 学習から外せるようにした。外した組は うすくして、はっきり分ける。 */
+.pair.off{background:#f4f4f1;border-style:dashed}
+.pair.off .ims,.pair.off .cap,.pair.off .ch{opacity:.4}
+.pair .use{display:flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer;
+  border:1px solid var(--line);border-radius:99px;padding:1px 9px 1px 6px;background:var(--card)}
+.pair .use input{margin:0;cursor:pointer}
+.pair.off .use{background:#fff3f0;border-color:#e0b5ad;color:#8a3a2a}
+.pair .ttl{gap:8px}
 .chips{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 0}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:99px;
   padding:2px 10px;font-size:12.5px}
@@ -214,8 +223,22 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
   <p class="hint" id="dataNote" style="margin:0 0 8px;"></p>
   <div class="row" style="align-items:center;margin-bottom:10px">
     <select id="which"></select>
+    <select id="only">
+      <option value="all">ぜんぶ出す</option>
+      <option value="on">使う分だけ</option>
+      <option value="off">使わない分だけ</option>
+    </select>
     <button id="more">もっと見る</button>
     <span class="hint" id="pcount"></span>
+  </div>
+  <!-- 使う／使わない をまとめて変える（2026-09-16。本人の指示）。
+       「いま出ている分」だけを相手にする。ぜんぶを一度に変えるのは
+       押しまちがえると大ごとなので、確かめてから。 -->
+  <div class="row" style="align-items:center;margin-bottom:10px">
+    <span class="hint">いま出ている分を</span>
+    <button id="useOn">ぜんぶ使う</button>
+    <button id="useOff">ぜんぶ使わない</button>
+    <span class="hint" id="useNote"></span>
   </div>
   <div id="chars" class="chips"></div>
   <div class="grid" id="pairs" style="margin-top:12px"></div>
@@ -441,9 +464,14 @@ var TRAIN_PG = null;               /* いま出している学習の様子（続
 async function pairs(reset){
   if (reset) LIMIT = 24;
   var w = document.getElementById("which").value;
-  var d = await get("/api/takuhon/pairs?which=" + w + "&limit=" + LIMIT);
+  var only = document.getElementById("only").value;
+  var d = await get("/api/takuhon/pairs?which=" + w + "&limit=" + LIMIT + "&only=" + only);
+  PAIR_NOW = d.items.map(function(x){ return x.id; });
+  /* **学習に入る数を、いちばん先に言う。** 総数だけ出していたので、
+     使わないにした分がどれだけ外れているのか分からなかった。 */
   document.getElementById("pcount").textContent =
-    d.total + " 組のうち " + d.items.length + " 組を出しています";
+    "学習に使う " + d.on + " 組" + (d.off ? "／使わない " + d.off + " 組" : "") +
+    "　（いま " + d.items.length + " 組を出しています。ぜんぶで " + d.total + " 組）";
   document.getElementById("chars").innerHTML = (d.chars||[]).map(function(c){
     return '<span class="chip">' + esc(c[0]) + ' <b>' + c[1] + '</b></span>';
   }).join("") || '<span class="hint">字の記録がありません</span>';
@@ -460,8 +488,12 @@ async function pairs(reset){
        AI の絵はモデルが変わると変わるので、画面を開くたびに取り直す。 */
     var v = "?v=" + (it.mt || 0);
     var va = v + "&r=" + PAGE_V;
-    return '<div class="pair"><div class="ttl">' +
+    return '<div class="pair' + (it.off ? ' off' : '') + '" id="pr-' + esc(it.id) + '"><div class="ttl">' +
       '<span class="ch">' + (esc(it.char) || '<span class="hint">字不明</span>') + '</span>' +
+      '<label class="use" title="外しても消えません。学習に入らなくなるだけです">' +
+        '<input type="checkbox"' + (it.off ? '' : ' checked') +
+        ' onchange="useOne(this,\'' + esc(it.id) + '\')">' +
+        '<span>' + (it.off ? '使わない' : '使う') + '</span></label>' +
       '<span class="at">' + esc((it.at||"").replace("T", " ")) + '</span></div>' +
       '<div class="ims">' +
         '<img src="' + b + 'raw.png' + v + '" alt="' + esc(cap[0]) + '">' +
@@ -473,6 +505,54 @@ async function pairs(reset){
       '<div class="hint" style="margin-top:4px;font-size:10.5px">' +
         (it.hint1 ? "手1 " : "") + (it.hint2 ? "手2 " : "") + esc(it.id) + '</div></div>';
   }).join("") || '<p class="hint">まだ 1 組もありません。</p>';
+}
+
+/* ---- 使う／使わない（2026-09-16。本人の指示）----
+   **消さずに 学習から外す。** 組の中に印のファイルを置くだけなので、いつでも戻せる。 */
+var PAIR_NOW = [];                 /* いま画面に出ている組の名前 */
+async function useSet(ids, off){
+  var fd = new FormData();
+  fd.append("which", document.getElementById("which").value);
+  fd.append("ids", ids);
+  fd.append("off", off ? "true" : "false");
+  return await post("/api/takuhon/pair_off", fd);
+}
+async function useOne(el, id){
+  var off = !el.checked;
+  el.disabled = true;
+  try {
+    var j = await useSet(id, off);
+    var card = document.getElementById("pr-" + id);
+    if (card) card.classList.toggle("off", off);
+    var tx = el.parentNode.querySelector("span");
+    if (tx) tx.textContent = off ? "使わない" : "使う";
+    document.getElementById("useNote").textContent = "学習に使うのは " + j.on + " 組になりました";
+    /* 数の出しなおし。「使う分だけ」などで見ているときは、並びも出しなおす */
+    if (document.getElementById("only").value === "all") pcountOnly(j);
+    else pairs();
+  } catch(e){
+    el.checked = !el.checked;
+    alert("変えられませんでした：" + e.message);
+  } finally { el.disabled = false; }
+}
+function pcountOnly(j){
+  var e = document.getElementById("pcount");
+  if (!e) return;
+  var off = (j.all || 0) - (j.on || 0);
+  e.textContent = "学習に使う " + j.on + " 組" + (off ? "／使わない " + off + " 組" : "") +
+    "　（いま " + PAIR_NOW.length + " 組を出しています。ぜんぶで " + j.all + " 組）";
+}
+async function useMany(off){
+  if (!PAIR_NOW.length){ alert("出ている組がありません。"); return; }
+  if (!confirm("いま出ている " + PAIR_NOW.length + " 組を、ぜんぶ「" +
+               (off ? "使わない" : "使う") + "」にします。よろしいですか。\n" +
+               "（データは消えません。あとから戻せます）")) return;
+  try {
+    var j = await useSet(PAIR_NOW.join(","), off);
+    document.getElementById("useNote").textContent =
+      j.changed + " 組を変えました。学習に使うのは " + j.on + " 組です";
+    await pairs();
+  } catch(e){ alert("変えられませんでした：" + e.message); }
 }
 
 /* モデルがまだ無い（503）ときは、壊れた絵ではなく「まだ」と出す */
@@ -789,6 +869,9 @@ async function tick(){
 }
 document.getElementById("more").onclick = function(){ LIMIT += 24; pairs(); };
 document.getElementById("which").onchange = function(){ dataNoteApply(); pairs(true); };
+document.getElementById("only").onchange = function(){ pairs(true); };
+document.getElementById("useOn").onclick  = function(){ useMany(false); };
+document.getElementById("useOff").onclick = function(){ useMany(true); };
 sideApply(); tick(); pairs(true);
 setInterval(tick, 5000);
 setInterval(logPoll, 5000);

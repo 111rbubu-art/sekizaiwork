@@ -396,19 +396,27 @@ def history(which: str = "ink"):
 
 
 @app.get("/api/takuhon/pairs")
-def pairs(which: str = "pairs", limit: int = 60, offset: int = 0):
-    """貯まった組の一覧。新しいものが先。"""
+def pairs(which: str = "pairs", limit: int = 60, offset: int = 0, only: str = "all"):
+    """貯まった組の一覧。新しいものが先。
+
+    only="all"（既定）… ぜんぶ ／ "on" … 使う分だけ ／ "off" … 使わない分だけ
+    """
     root = _set_dir(which)
     if root is None:
         return JSONResponse({"error": "bad_set"}, status_code=400)
-    ds = D.list_pairs(root)
+    # **「使わない」にした組も出す**（画面で戻せるように）。学習には入らない。
+    ds = D.list_pairs(root, keep_off=True)
     ds.sort(key=lambda d: os.path.getmtime(d), reverse=True)
+    if only in ("on", "off"):
+        ds = [d for d in ds if D.is_off(d) == (only == "off")]
     total = len(ds)
+    nOff = sum(1 for d in D.list_pairs(root, keep_off=True) if D.is_off(d))
     out = []
     for d in ds[offset:offset + limit]:
         meta = _read_json(os.path.join(d, "meta.json"), {}) or {}
         out.append({
             "id": os.path.basename(d), "set": which,
+            "off": D.is_off(d),
             "char": meta.get("char", ""), "at": meta.get("at", ""),
             # **絵の版**。作り直すと同じ名前で中身だけ変わるので、
             # これを絵の住所に付けないと、**ブラウザが古い絵を出し続ける**
@@ -423,8 +431,46 @@ def pairs(which: str = "pairs", limit: int = 60, offset: int = 0):
         c = (_read_json(os.path.join(d, "meta.json"), {}) or {}).get("char", "")
         if c:
             chars[c] = chars.get(c, 0) + 1
-    return {"total": total, "items": out,
+    return {"total": total, "items": out, "only": only,
+            "on": len(D.list_pairs(root)), "off": nOff,
             "chars": sorted(chars.items(), key=lambda kv: -kv[1])[:40]}
+
+
+@app.post("/api/takuhon/pair_off")
+def pair_off(which: str = Form("pairs"), ids: str = Form(""), off: bool = Form(True)):
+    """組を「使わない」にする／戻す（v2026-09-16。本人の指示）。
+
+    **消さない。** 組の中に `off` という空ファイルを置くだけ。
+    `D.list_pairs` がそれを外して返すので、学習も数え上げも、
+    ほかを何も直さずに その組を外せる。戻したいときは ファイルを消す。
+    ids は組の名前を「,」で並べたもの。`*` なら その入れ物ぜんぶ。
+    """
+    root = _set_dir(which)
+    if root is None:
+        return JSONResponse({"error": "bad_set"}, status_code=400)
+    if ids.strip() == "*":
+        want = [os.path.basename(d) for d in D.list_pairs(root, keep_off=True)]
+    else:
+        want = [x.strip() for x in ids.split(",") if x.strip()]
+    done, bad = 0, []
+    for pid in want[:5000]:
+        d = _pair_dir(root, pid)
+        if d is None:
+            bad.append(pid)
+            continue
+        f = os.path.join(d, D.OFF)
+        try:
+            if off:
+                if not os.path.exists(f):
+                    open(f, "w").close()
+            elif os.path.exists(f):
+                os.remove(f)
+            done += 1
+        except OSError as e:
+            bad.append("%s（%s）" % (pid, e))
+    return {"changed": done, "bad": bad, "off": bool(off), "which": which,
+            "on": len(D.list_pairs(root)),
+            "all": len(D.list_pairs(root, keep_off=True))}
 
 
 @app.get("/api/takuhon/img/{which}/{pid}/{kind}.png")
@@ -709,7 +755,9 @@ def reset(what: str = Form(...), confirm: str = Form(""), which: str = Form("ink
                 pass
     if what in ("data", "all"):
         for root in dirs:
-            for d in D.list_pairs(root):
+            # **「使わない」にした組も消す**（keep_off=True）。
+            # ここは片づけなので、外してある分だけ残ると かえって迷う。
+            for d in D.list_pairs(root, keep_off=True):
                 shutil.rmtree(d, ignore_errors=True)
         done.append(who + "の貯めたデータ")
     return {"done": done, "which": which,

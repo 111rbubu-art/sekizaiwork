@@ -51,14 +51,31 @@ def load_pair(d, size=N):
     }
 
 
-def list_pairs(root):
+OFF = "off"                 # この名前の**空ファイル**があれば「使わない」印
+
+
+def is_off(d):
+    """その組が「使わない」にされているか。"""
+    return os.path.exists(os.path.join(d, OFF))
+
+
+def list_pairs(root, keep_off=False):
+    """組の一覧。
+
+    **「使わない」にした組は返さない**（keep_off=True のときだけ返す）。
+    こうしておけば、学習も数え上げも、何も直さずに 使わない分を外せる。
+    消すのとは違い、印のファイルを外せば すぐ戻せる。
+    """
     if not os.path.isdir(root):
         return []
     out = []
     for name in sorted(os.listdir(root)):
         d = os.path.join(root, name)
-        if os.path.isdir(d) and os.path.exists(os.path.join(d, "raw.png")):
-            out.append(d)
+        if not (os.path.isdir(d) and os.path.exists(os.path.join(d, "raw.png"))):
+            continue
+        if not keep_off and is_off(d):
+            continue
+        out.append(d)
     return out
 
 

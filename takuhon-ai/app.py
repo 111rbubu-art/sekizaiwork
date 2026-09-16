@@ -2,6 +2,7 @@
 
   POST /api/takuhon/clean      切り抜きを渡すと、墨の白黒マスク（PNG）を返す
   POST /api/takuhon/feedback   人が直した正解を貯める（学習は回さない。すぐ返す）
+                               set=ink なら①「読む」用、set=shape なら②「整える」用
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
   GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
   GET  /api/takuhon/curve      1 エポックごとの成績（いまの回）
@@ -290,11 +291,21 @@ async def feedback(
     hint2: UploadFile = File(None),
     char_hint: str = Form(""),
     key: str = Form(""),
+    set_: str = Form("ink", alias="set"),
 ):
-    """人が直した正解を貯める。**同じ key なら上書き**（彫刻原稿アプリと同じ考え方）。"""
+    """人が直した正解を貯める。**同じ key なら上書き**（彫刻原稿アプリと同じ考え方）。
+
+    set="ink"   … ①「読む」用（拓本の切り抜き → 人が直した墨）。dataset/pairs
+    set="shape" … ②「整える」用（人が直した墨 → 人が整えた形）。dataset/shape
+
+    **1 つの字から 2 つの学習が取れる**（本人の案）。拓本から縁取りを直して①へ、
+    その縁取りを整えて②へ。組の作りはどちらも同じ（raw.png ／ mask.png）なので、
+    入れ先を分けるだけでよい。
+    """
+    root = SHAPE if (set_ or "").strip() == "shape" else DATASET
     name = key.strip() or datetime.now().strftime("pair_%Y%m%d-%H%M%S")
     name = "".join(c for c in name if c.isalnum() or c in "-_." or ord(c) > 127)
-    d = os.path.join(DATASET, name)
+    d = os.path.join(root, name)
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, "raw.png"), "wb").write(await raw_image.read())
     open(os.path.join(d, "mask.png"), "wb").write(await corrected_image.read())
@@ -305,7 +316,8 @@ async def feedback(
     meta = {"char": char_hint, "key": name, "at": datetime.now().isoformat(timespec="seconds")}
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
-    return {"status": "saved", "saved_id": name, "pairs": len(D.list_pairs(DATASET))}
+    return {"status": "saved", "saved_id": name, "set": "shape" if root is SHAPE else "ink",
+            "pairs": len(D.list_pairs(root))}
 
 
 # ----- 見るための口（モニタリング）。読むだけで、学習には触らない ------------

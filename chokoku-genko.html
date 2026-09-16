@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.50</title>
+<title>彫刻原稿 v21.51</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.50";
+var APP_VER = "v21.51";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11317,11 +11317,33 @@ function rubRender(){
   });
 
 
-  /* 見立てる帯の絵とつまみは外した（v21.28。本人の指摘「見立てる帯の表示が
-     残っています」）。［行の見立て］を止めたので、帯を見せる意味が無くなった。
-     **帯（`S.rub.bandL`／`bandR`）そのものは残っている**。
-     しきい値の自動判定と列の検出は、いまもこの帯の中だけを見ている。
-     AI に置き換えるときは、ここに絵とつまみを戻すこと（v21.24 の作りが元）。 */
+  /* 帯（左右の範囲）の絵とつまみ（v21.51 で戻した。本人の指摘
+     「帯を絞り込むことが出来ないです」）。
+     v21.28 で外したが、［帯を AI に通す］が **1 行だけの帯**を要るようになった。
+     出すのは**この拓本補正の画面だけ**。校正の画面には出さない（v21.28 の指摘）。
+     つまみは `data-k="bandL"／"bandR"` で、bindDrag の受け皿にそのまま乗る。 */
+  if (!rotMode){
+    var bL = Math.min(num(r.bandL, 0), num(r.bandR, 0));
+    var bR = Math.max(num(r.bandL, 0), num(r.bandR, 0));
+    if (bR - bL > 4){
+      o.push('<rect x="' + bL + '" y="0" width="' + (bR - bL) + '" height="' + H +
+        '" fill="#F59E0B" opacity=".10" pointer-events="none"/>');
+      var bkn = W * 0.055, bMidY = H * 0.5;
+      [[bL, "bandL"], [bR, "bandR"]].forEach(function(pair){
+        o.push('<line x1="' + pair[0] + '" y1="0" x2="' + pair[0] + '" y2="' + H +
+          '" stroke="#B45309" stroke-width="' + (W*0.004) + '" opacity=".85" pointer-events="none"/>');
+        o.push('<rect x="' + (pair[0] - bkn/2) + '" y="' + (bMidY - bkn/2) + '" width="' + bkn +
+          '" height="' + bkn + '" rx="' + (bkn*0.2) + '" fill="#B45309" ' +
+          'stroke="#fff" stroke-width="' + (W*0.004) + '" pointer-events="none"/>');
+        hits.push('<rect class="hitx" data-k="' + pair[1] + '" x="' + (pair[0] - bkn*0.7) +
+          '" y="0" width="' + (bkn*1.4) + '" height="' + H + '" fill="transparent"/>');
+      });
+      o.push('<text x="' + ((bL + bR) / 2) + '" y="' + (H * 0.5 - W * 0.045) +
+        '" fill="#B45309" font-size="' + (W*0.035) + '" text-anchor="middle" font-weight="700"' +
+        ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke"' +
+        ' pointer-events="none">帯</text>');
+    }
+  }
 
   /* 回転のとき、傾きを見比べるための縦の基準線 */
   /* 縦の基準線は、回転の中心をそのまま通す。線に触るところは作らない。
@@ -11844,7 +11866,29 @@ function rubPanel(){
     h += '<h3 class="sec" style="margin-top:14px;">AI補正</h3>';
     /* まずは「通して見せる」だけ（v21.50。本人の了解を得た進め方）。
        傾き・字送りの見立ては、この墨が使えるようになってから足す。 */
-    h += '<button class="mini" id="btnAiBand" ' +
+    /* 帯を 1 行に絞る手立て（v21.51。本人の指摘「帯を絞り込むことが出来ないです」）。
+       絵の上のつまみでも動かせるが、押すだけで合う方が早い。 */
+    var bw = Math.abs(num(r.bandR, 0) - num(r.bandL, 0));
+    var bmm = mmPerPx();
+    h += '<div class="fixrow"><span>いまの帯の幅</span><b>' +
+      (bw ? (bmm ? (bw * bmm).toFixed(1) + 'mm（' + Math.round(bw) + 'px）' : Math.round(bw) + 'px')
+          : '—') + '</b></div>';
+    h += '<button class="mini" id="btnBandFit" ' +
+      'title="いまの帯にいちばん近い列（彫ってある1行）に、ぴたりと合わせます">近い列に合わせる</button>' +
+      ' <button class="mini" id="btnBandCols" title="列を探して、番号で選べるようにします">列を探す</button>' +
+      ' <button class="mini" id="btnBandAll" title="帯を拓本の幅いっぱいに戻します">全体に戻す</button>';
+    if (RUB.cols && RUB.cols.length){
+      h += '<div class="chips" style="margin:5px 0 0;">' + RUB.cols.map(function(c, i){
+        var on = (Math.abs(c.a - Math.min(r.bandL, r.bandR)) < 3 &&
+                  Math.abs(c.b - Math.max(r.bandL, r.bandR)) < 3);
+        return '<button class="mini colb' + (on ? ' primary' : '') + '" data-i="' + i + '">' +
+               (i + 1) + '</button>';
+      }).join("") + '</div>';
+      h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
+    }
+    h += '<p class="hint" style="margin:5px 0 0;">帯（オレンジの範囲）は、絵の上の' +
+      '<b>つまみでも動かせます</b>。</p>';
+    h += '<button class="mini primary" id="btnAiBand" style="margin-top:6px;" ' +
       'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">帯を AI に通す</button>';
     if (RUB.aiBand)
       h += ' <button class="mini" id="btnAiBandClr">AI の墨を消す</button>';
@@ -11867,6 +11911,29 @@ function rubPanel(){
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
+  var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;
+  var bcs = $("btnBandCols"); if (bcs) bcs.onclick = function(){
+    var runs = detectColumns(false);
+    A = null; rubPanel(); rubRender();
+    msg(runs && runs.length ? ("列を " + runs.length + " 本見つけました。番号を押すと、その列に帯を合わせます。")
+                            : "列を見つけられませんでした。拓本の範囲としきい値を確かめてください。",
+        !(runs && runs.length));
+  };
+  var bal = $("btnBandAll");  if (bal) bal.onclick = function(){
+    var f = frameX();
+    S.rub.bandL = f.x1; S.rub.bandR = f.x2;
+    A = null; RUB.mask = null; persist(); rubPanel(); rubRender();
+    msg("帯を全体に戻しました。");
+  };
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb"), function(b2){
+    b2.onclick = function(){
+      var c = (RUB.cols || [])[+b2.dataset.i]; if (!c) return;
+      S.rub.bandL = c.a; S.rub.bandR = c.b;
+      A = null; RUB.mask = null; persist(); rubPanel(); rubRender();
+      msg("帯を " + (+b2.dataset.i + 1) + " 本目の列に合わせました（幅 " +
+          Math.round(c.b - c.a) + "px）。");
+    };
+  });
   var br = $("btnLineRot");  if (br) br.onclick = rubLineFixRot;
   var bf = $("rFix");
   if (bf) bf.onclick = function(){ (view === "rub") ? endFix() : startFix(); };

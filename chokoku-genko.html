@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.60</title>
+<title>彫刻原稿 v21.61</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.60";
+var APP_VER = "v21.61";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14280,12 +14280,91 @@ function fitFillHoles(m, w, h, maxCells){
   }
   return { n: nHole, cells: nCell };
 }
+/* **離れている画を、AI につながせない**（v21.61。本人の指摘
+   「この例は、実行すると線がつながります」）。
+
+   ②は「書体らしい形」に寄せるので、**もともと離れている画を つないでしまう**ことがある
+   （行の 彳 と 亍 など）。彫ってある形から離れるので、これは直したい。
+   いっぽう、**石の欠けで途切れた画をつなぐのは正しい**。両方を分けたい。
+
+   分けるのは**すき間の広さ**。
+   ・彫りとして別の画 … 間が広い（0.5mm 以上のはっきりした谷）
+   ・欠けで途切れた   … 間が狭い（0.2〜0.3mm ほど）
+   そこで、**元の墨の「どの塊にいちばん近いか」で地を塗り分け**（ボロノイ）、
+   **ちがう塊どうしの境目**にあたる所のうち、**元の墨から十分離れている**ます だけ
+   AI の墨から削る。狭いすき間は境目でも削らないので、欠けの修復は残る。
+
+   `inM` … 元の墨（人が拾った墨）　`outM` … AI が出した墨（ここを直す）
+   `minGap` … 元の墨からこれ以上離れていたら「広いすき間」とみる（ます） */
+function fitCutBridges(inM, outM, w, h, minGap){
+  if (!minGap || minGap < 1) return { cut: 0 };
+  var n = w*h, lab = new Int32Array(n), dist = new Int32Array(n), i;
+  for (i = 0; i < n; i++){ lab[i] = -1; dist[i] = -1; }
+  /* ① 元の墨を、つながりごとに番号を振る（4 つながり） */
+  var nlab = 0, area = [], q = new Int32Array(n), qs, qe;
+  for (i = 0; i < n; i++){
+    if (!inM[i] || lab[i] >= 0) continue;
+    var id = nlab++; area.push(0);
+    qs = 0; qe = 0; q[qe++] = i; lab[i] = id; dist[i] = 0;
+    while (qs < qe){
+      var k = q[qs++]; area[id]++;
+      var kx = k % w, ky = (k - kx) / w;
+      var nb = [kx > 0 ? k-1 : -1, kx < w-1 ? k+1 : -1,
+                ky > 0 ? k-w : -1, ky < h-1 ? k+w : -1];
+      for (var j = 0; j < 4; j++){
+        var t = nb[j];
+        if (t >= 0 && inM[t] && lab[t] < 0){ lab[t] = id; dist[t] = 0; q[qe++] = t; }
+      }
+    }
+  }
+  if (nlab < 2) return { cut: 0 };
+  /* ② 地を、いちばん近い塊の番号で塗り分ける（距離も一緒に持つ） */
+  qs = 0; qe = 0;
+  for (i = 0; i < n; i++) if (dist[i] === 0) q[qe++] = i;
+  while (qs < qe){
+    var k2 = q[qs++], kx2 = k2 % w, ky2 = (k2 - kx2) / w, d2 = dist[k2] + 1;
+    var nb2 = [kx2 > 0 ? k2-1 : -1, kx2 < w-1 ? k2+1 : -1,
+               ky2 > 0 ? k2-w : -1, ky2 < h-1 ? k2+w : -1];
+    for (var j2 = 0; j2 < 4; j2++){
+      var t2 = nb2[j2];
+      if (t2 >= 0 && dist[t2] < 0){ dist[t2] = d2; lab[t2] = lab[k2]; q[qe++] = t2; }
+    }
+  }
+  /* ③ ちがう塊の境目で、元の墨から十分離れている所を、AI の墨から削る。
+     小さなかけら（ぜんたいの 2% 未満）は塊として数えない。 */
+  var tot = 0;
+  for (i = 0; i < area.length; i++) tot += area[i];
+  var big = area.map(function(a2){ return a2 >= tot * 0.02; });
+  var cut = 0;
+  for (i = 0; i < n; i++){
+    if (!outM[i] || inM[i]) continue;
+    if (dist[i] < minGap) continue;
+    var L = lab[i]; if (L < 0 || !big[L]) continue;
+    var x = i % w, y = (i - x) / w;
+    var nb3 = [x > 0 ? i-1 : -1, x < w-1 ? i+1 : -1,
+               y > 0 ? i-w : -1, y < h-1 ? i+w : -1];
+    for (var j3 = 0; j3 < 4; j3++){
+      var t3 = nb3[j3];
+      if (t3 >= 0 && lab[t3] >= 0 && lab[t3] !== L && big[lab[t3]]){
+        outM[i] = 0; cut++; break;
+      }
+    }
+  }
+  return { cut: cut };
+}
 /* 何ますぶんを「小さな穴」とみるか。画の中の空きは 2mm² もあれば十分大きい。
    「日」の中は 25mm の字なら 10mm² を超えるので、間違えて埋めることはない。 */
 function fitHoleCells(G){
   var mm2 = (G && G.mmCell) ? G.mmCell * G.mmCell : 0;
   if (!mm2) return 24;                       /* mm が分からないときの目安 */
   return Math.max(4, Math.round(2.0 / mm2)); /* 2.0mm² 未満を埋める */
+}
+/* 「広いすき間」とみる境目の深さ（ます）。0.25mm＝すき間の幅で 0.5mm ほど。
+   これより狭い所は、欠けで途切れたものとみて つないだままにする。 */
+function fitGapCells(G){
+  var mm = (G && G.mmCell) ? G.mmCell : 0;
+  if (!mm) return 2;
+  return Math.max(1, Math.round(0.25 / mm));
 }
 function fitGrowMask(m, w, h, r){
   if (!r) return m;
@@ -14535,6 +14614,10 @@ async function traceAskAI(G, ink, stage){
       im.src = URL.createObjectURL(buf);
     });
     var m = traceAiToMask(G, img, N, B);
+    /* **離れている画をつながせない**（v21.61）。元の墨（ink）と見くらべて、
+       広いすき間をまたいで付いた墨だけ削る。②にだけ かける。
+       ①（お任せ）は拾い出しそのものをまかせる所なので、比べる元が無い。 */
+    var cb = fitCutBridges(ink, m, G.w, G.h, fitGapCells(G));
     var hf = fitFillHoles(m, G.w, G.h, fitHoleCells(G));   /* 小さな穴を潰す（v21.60） */
     var n0 = 0, n1 = 0, i;
     for (i = 0; i < ink.length; i++){ n0 += ink[i]; n1 += m[i]; }
@@ -14553,6 +14636,7 @@ async function traceAskAI(G, ink, stage){
                                : "") + "）。墨 " +
                    (n0*mm2).toFixed(0) + " → " + (n1*mm2).toFixed(0) + " mm²" +
                    (hf.n ? "／小さな穴 " + hf.n + " か所をふさぎました" : "") +
+                   (cb.cut ? "／離れている画のつながりを切りました" : "") +
                    "／枠は" + B.from + "（絵の " +
                    Math.round((1 - TRACE_PAD*2) * 100) + "%。墨はその " +
                    Math.round(B.fill * 100) + "%、ます目 1 つが " +

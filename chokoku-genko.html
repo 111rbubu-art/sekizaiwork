@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.48</title>
+<title>彫刻原稿 v21.49</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1347,8 +1347,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
 
           <h3 class="sec">② 拓本トレース</h3>
           <p class="hint" style="margin:0 0 5px;"><b>どちらかで</b>墨を整えます。</p>
-          <button class="mini" id="peAiTrace" disabled
-            title="①「読む」のモデルができてから使えます。いまは下の手動補正で整えてください。">AI お任せ</button>
+          <button class="mini" id="peAiTrace"
+            title="拓本の写真そのものを ①「読む」のモデルに渡して、墨の拾い出しごとまかせます。［↶ 1つ戻す］で戻せます">AI お任せ</button>
           <div class="peor">または</div>
           <h3 class="sec" style="margin-top:0;">手動補正</h3>
           <!-- ＋で拾う量が**減る**（しきいを上げる）ので、「拾う量」は逆に読めた。
@@ -2155,7 +2155,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.48";
+var APP_VER = "v21.49";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12628,6 +12628,9 @@ function takuShot(){
   var g = S.groups[PE.gi], AD = g ? adjOf(g, PE.ci) : null;
   var mpu = peMmPerUnit();
   return {
+    /* 切り抜いた四角の場所（v21.49）。［AI お任せ］が、返ってきた絵を
+       元の ます目へ戻すのに使う。字の座標（y は上向き）。 */
+    box: { x0: x0, y1: y1, side: side, n: N },
     raw: cR.toDataURL("image/png"),
     mask: cM.toDataURL("image/png"),
     hint1: g1 ? cH1.toDataURL("image/png") : null,
@@ -13799,6 +13802,80 @@ function traceAiToMask(G, img, n, B){
     }
   }
   return out;
+}
+/* ［AI お任せ］の返事を ます目へ戻す（v21.49）。
+   ②（整える）は `traceBox` の四角、①（読む）は `takuShot` の四角と、
+   切り抜き方が違うので、戻し方も別にしてある。読み方（画素の間を割る）は同じ。 */
+function traceShotToMask(G, img, box){
+  var n = box.n;
+  var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+  var cx = cv.getContext("2d");
+  cx.drawImage(img, 0, 0, n, n);
+  var d = cx.getImageData(0, 0, n, n).data;
+  var out = new Uint8Array(G.w * G.h);
+  function at(x, y){
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x > n - 1) x = n - 1; if (y > n - 1) y = n - 1;
+    var x0 = Math.floor(x), y0 = Math.floor(y);
+    var x1 = Math.min(n - 1, x0 + 1), y1 = Math.min(n - 1, y0 + 1);
+    var fx = x - x0, fy = y - y0;
+    var a = d[(y0*n + x0)*4], b = d[(y0*n + x1)*4];
+    var c = d[(y1*n + x0)*4], e = d[(y1*n + x1)*4];
+    return (a*(1-fx) + b*fx) * (1-fy) + (c*(1-fx) + e*fx) * fy;
+  }
+  var st = box.side / n;
+  for (var gy = 0; gy < G.h; gy++){
+    var uy = G.y1 - (gy + 0.5) * G.cell;
+    var y = (box.y1 - uy) / st - 0.5;
+    if (y < -1 || y > n) continue;
+    for (var gx = 0; gx < G.w; gx++){
+      var ux = G.x0 + (gx + 0.5) * G.cell;
+      var x = (ux - box.x0) / st - 0.5;
+      if (x < -1 || x > n) continue;
+      out[gy*G.w + gx] = (at(x, y) > 127.5) ? 1 : 0;
+    }
+  }
+  return out;
+}
+/* ［AI お任せ］… ①「読む」のモデルに、**拓本の写真そのもの**を渡す（v21.49）。
+   ②「整える」（＝［AI 書体補正］）は 人が拾った墨を渡すが、こちらは
+   拾う前の写真を渡して、墨の拾い出しごと AI にまかせる。
+   渡す絵は 学習用に貯めているものと**まったく同じ作り**（takuShot）。
+   そうしないと、覚えたときと違う見え方の絵を渡すことになる。 */
+async function traceAskShot(G, sh){
+  var base = takuApiBase();
+  if (!base) return { note: "サーバーの住所が入っていないので、AI は使いませんでした" };
+  try {
+    var fd = new FormData();
+    fd.append("file", takuBlob(sh.raw), "raw.png");
+    if (sh.hint1) fd.append("hint1", takuBlob(sh.hint1), "hint1.png");
+    fd.append("stage", "ink");
+    fd.append("soft", "true");
+    var t0 = Date.now();
+    var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+    if (!r.ok){
+      var why = "HTTP " + r.status;
+      try { var j = await r.json(); why = j.detail || j.error || why; } catch(e){}
+      return { note: "AI は使えませんでした（" + why + "）" };
+    }
+    var ms = r.headers.get("X-Infer-Ms") || "?";
+    var at = r.headers.get("X-Model-At") || "";
+    var buf = await r.blob();
+    var img = await new Promise(function(res, rej){
+      var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+      im.src = URL.createObjectURL(buf);
+    });
+    var m = traceShotToMask(G, img, sh.box);
+    var n1 = 0, i;
+    for (i = 0; i < m.length; i++) n1 += m[i];
+    if (!n1) return { note: "AI からは墨が返りませんでした（学習がまだ足りていないようです）" };
+    var mm2 = (G.mmCell || 0) * (G.mmCell || 0);
+    return { ink: m, note: "AI の墨 " + (mm2 ? (n1*mm2).toFixed(1) + "mm²" : n1 + " ます") +
+             "（" + ms + "ms" + (at ? "／モデル " + at : "") + "、" +
+             (Date.now() - t0) + "ms）" };
+  } catch(e){
+    return { note: "AI につながりませんでした（" + ((e && e.message) || e) + "）" };
+  }
 }
 async function traceAskAI(G, ink, stage){
   var base = takuApiBase();
@@ -16377,9 +16454,40 @@ Array.prototype.forEach.call(document.querySelectorAll("#peTabs button"), functi
   b.onclick = function(){ peTab(+b.dataset.p); };
 });
 
-/* ［AI オート］［AI お任せ］… まだ中身が無いので、**灰色で押せない**（v21.39。
-   本人の指示）。押すと知らせを出す作りだったが、押せるように見える方が紛らわしい。
-   なぜ使えないかは、マウスを乗せたときの説明（title）で出す。 */
+/* ［AI オート］… まだ中身が無いので、**灰色で押せない**（v21.39。本人の指示）。
+   ［AI お任せ］は v21.49 で中身を入れた（①「読む」のモデルが出来たため）。 */
+$("peAiTrace").onclick = function(){ peAiTraceGo(); };
+async function peAiTraceGo(){
+  if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+  if (!PE.rub || !RUB.data){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  var P = fitPrep();
+  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  var sh = takuShot();
+  if (!sh){ msg("拓本を切り出せませんでした。", true); return; }
+  var b = $("peAiTrace");
+  if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
+  var got;
+  try { got = await traceAskShot(P.G, sh); }
+  finally { if (b){ b.disabled = false; peAiTraceShow(); } }
+  if (!got || !got.ink){
+    msg("［AI お任せ］は かかりませんでした。" + ((got && got.note) || ""), true);
+    return;
+  }
+  peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
+  PE.aiInk  = { keyNG: (PE.inkC && PE.inkC.keyNG) || "", pv: -1, ink0: got.ink, ink: null,
+                gwC0: peGrowCells(P.G), gwC: null };
+  PE.aiDrop = false;
+  peInkShowOn();
+  PE_INFO_HOLD = false;
+  peEdgeRedraw();
+  msg("AI お任せで墨を拾いました。" + (got.note || "") +
+      "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。");
+}
+function peAiTraceShow(){
+  var b = $("peAiTrace"); if (!b) return;
+  b.textContent = "AI お任せ";
+  b.className = "mini";
+}
 /* ［AI 書体補正］… 押すと、拾った墨を ②「整える」に通した墨に**差し替える**（v21.12）。
    入切ではない（本人の指示：もう一度押して戻す機能は無くす）。
    戻すのは［↶ 1つ戻す］。そのあと［消す］［塗る］で手直しもできる。 */

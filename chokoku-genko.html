@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.77</title>
+<title>彫刻原稿 v21.78</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2203,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.77";
+var APP_VER = "v21.78";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7729,6 +7729,12 @@ function rubPaintRemap(f0, f1){
   return ps.length;
 }
 
+/* 拓本の「向き」（回転と ずらし）を 1 本の文字列にする（v21.78）。
+   AI の墨・見立ての枠は、この向きの拓本の上で作ったもの。向きが変われば合わない。 */
+function rubGeoKey(){
+  var o = rotOff();
+  return rubRotDeg() + "/" + (+o.x).toFixed(2) + "/" + (+o.y).toFixed(2);
+}
 function rebuildRub(){
   if (!RUB.img) return;
   var W = RUB.img.naturalWidth, H = RUB.img.naturalHeight;
@@ -7751,6 +7757,19 @@ function rebuildRub(){
   RUB.W = W; RUB.H = H; RUB.canvas = c;
   try { RUB.data = cx.getImageData(0, 0, W, H); } catch(e){ RUB.data = null; }
   RUB.mask = null;
+  /* **拓本を回したら、前の向きで作ったものは捨てる**（v21.78。本人の報告
+     「学習に登録でズレていました、回転ズレですかね」）。
+     AI の墨（青）と 1 字ずつの枠は、回す前の拓本の上で作ったもの。
+     そのまま残すと、字と**ずれたまま**登録してしまう。 */
+  var geo = rubGeoKey();
+  if (RUB.aiBand && RUB.aiBand.geo && RUB.aiBand.geo !== geo){
+    RUB.aiBand = null;
+    var ls = (S.rub.lines || []).filter(function(x){ return x && x.src === "ai"; }).length;
+    msg("拓本を回したので、AI の墨" + (ls ? "と見立ての枠" : "") + "は合わなくなりました。" +
+        "消しましたので、もう一度［帯を AI に通す］（または［拓本ぜんたいを通す］）を" +
+        "押してください。", true);
+    (S.rub.lines || []).forEach(function(x){ if (x && x.src === "ai") x.stale = true; });
+  }
 }
 /* 拓本を 180° ひっくり返す。
    スキャナーに上下逆に置いてしまったときの直し。角度の微調整（±15°）とは別。
@@ -9559,6 +9578,7 @@ function rubAiTrimCols(gmap, aw, ah){
   return [kL, kR];
 }
 var AIBAND_BUSY = false;
+var AIBAND_SEQ = 0;      /* AI の墨の通し番号（v21.78） */
 /* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
    「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
 function aiBandNo(t){ RUB.aiWhy = t; msg(t, true); }
@@ -9687,6 +9707,13 @@ async function rubAiBand(noAsk){
   var mmc = mpp ? (mpp / SC) : 0;
   RUB.aiBand = {
     map: gmap, mw: acc.width, mh: acc.height, sc: SC,   /* 見立て用（色を付ける前の濃さ） */
+    /* **どの向きの拓本から作ったか**を刻む（v21.78。本人の報告
+       「学習に登録でズレていました、回転ズレですかね」）。
+       あとから拓本を回すと、この墨だけ前の向きのまま残り、**字とずれる**。 */
+    geo: rubGeoKey(),
+    /* **どの列の墨か**を見分ける通し番号（v21.78）。［拓本ぜんたいを通す］では
+       最後の列の墨だけが残るので、別の列の枠にこれを使うと**よその墨**になる。 */
+    id: (++AIBAND_SEQ),
     url: acc.toDataURL("image/png"),
     at: new Date().toLocaleString("ja-JP"),
     n: ok, all: ys.length,
@@ -10102,6 +10129,8 @@ function rubLineTakeAi(){
   var m2 = rubLineCoreAi(M, q, step, mpp);
   if (!m2) return;
   m2.src = "ai";
+  m2.geo = rubGeoKey();      /* どの向きの拓本で測った枠か（v21.78） */
+  m2.aiId = RUB.aiBand.id || 0;               /* どの墨で測った枠か（v21.78） */
   m2.aiUrl = (RUB.aiBand && RUB.aiBand.url) || "";     /* その列の青い墨（見せる用） */
   rubColPut(m2);
   persist(); rubPanel(); rubRender();
@@ -10444,9 +10473,9 @@ function rubCropCv(cx0, cy0, side){
   return c;
 }
 /* 切り抜きぶんの墨。AI の墨があればそれ、無ければ しきい値で拾う。 */
-function rgInk(cx0, cy0, side){
+function rgInk(cx0, cy0, side, useAi){
   var N = TAKU_N, m = new Uint8Array(N*N), st = side / N;
-  var A2 = RUB.aiBand, y, x;
+  var A2 = (useAi === false) ? null : RUB.aiBand, y, x;
   if (A2 && A2.map){
     for (y = 0; y < N; y++){
       var Y = Math.round((cy0 + (y + 0.5) * st) * A2.sc);
@@ -10500,10 +10529,23 @@ function rgOpen(i){
   i = Math.max(0, Math.min(L.items.length - 1, i | 0));
   var it = L.items[i];
   if (!it || !it.px){ msg("その枠が読めません。", true); return; }
+  /* **向きが変わっていたら、登録させない**（v21.78）。ずれたまま覚えさせると、
+     直すより悪い（まちがった正解を貯めることになる）。 */
+  if (L.stale || (L.geo && L.geo !== rubGeoKey())){
+    msg("この枠は、拓本を回す前に作ったものです。字とずれているので登録できません。" +
+        "もう一度［帯を AI に通す］→［この行を見立てる］をやり直してください。", true);
+    return;
+  }
   /* 切り抜きは**枠の 1.2 倍**（学習に貯めてあるものと同じ切り方。takuShot と合わせる）。 */
   var b = it.px, side = Math.max(b.w, b.h) * 1.2;
   var cx0 = b.x + b.w/2 - side/2, cy0 = b.y + b.h/2 - side/2;
-  var k = rgInk(cx0, cy0, side);
+  /* **その列の墨が残っているときだけ** AI の墨を使う（v21.78。本人の報告
+     「学習に登録でズレていました」）。ほかの列の墨や、回す前の墨を当てると
+     **字とずれた正解**を貯めてしまう。残っていなければ しきい値で拾う。 */
+  var fresh = !!(RUB.aiBand && RUB.aiBand.map &&
+                 RUB.aiBand.geo === rubGeoKey() &&
+                 (!L.aiId || RUB.aiBand.id === L.aiId));
+  var k = rgInk(cx0, cy0, side, fresh);
   RG = { i: i, n: TAKU_N, side: side, cx0: cx0, cy0: cy0,
          step: 1, raw: rubCropCv(cx0, cy0, side),
          ink: k.m, inkFrom: k.from, shape: null,
@@ -10512,6 +10554,10 @@ function rgOpen(i){
          op: 0.6,                           /* 塗りの濃さ（v21.75。本人の指示） */
          saved1: false, saved2: false };
   rubSelItem = i;
+  if (!fresh && RUB.aiBand)
+    msg("この列の AI の墨は残っていません（別の列を通したか、拓本を回しました）。" +
+        "いまはしきい値で拾った墨を出しています。AI の墨から直したいときは、" +
+        "その列の帯に合わせて［帯を AI に通す］をもう一度押してください。", false, true);
   $("regWin").hidden = false;
   rgRender(); rubRender();
 }

@@ -336,6 +336,14 @@ def main():
                        datetime.now().strftime("%Y%m%d-%H%M") + ".pth")
     torch.save(ck, gen)
     print("世代を残しました:", gen)
+    # **この回のうつり変わりも、世代と一緒に残す**（2026-09-17。本人の指示
+    # 「このグラフを、各検証結果毎で出せませんか？」）。curve_<名前>.jsonl は
+    # 次の回で上書きされるので、そのままでは前の回の線が残らない。
+    try:
+        shutil.copyfile(CURVE, os.path.join(
+            RUNS, "curve_" + os.path.basename(gen)[len("model_"):-len(".pth")] + ".jsonl"))
+    except OSError:
+        pass
     for f in (last, last[:-4] + ".json"):
         if os.path.exists(f):
             os.remove(f)                       # 終わったので、途中の保存は要らない

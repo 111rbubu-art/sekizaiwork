@@ -6,6 +6,7 @@
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
   GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
   GET  /api/takuhon/curve      1 エポックごとの成績（いまの回）
+  GET  /api/takuhon/curves     世代ごとの 1 エポックごとの成績（くらべる用）
   GET  /api/takuhon/history    世代の記録（history.jsonl）
   GET  /api/takuhon/pairs      貯まった組の一覧（字・日付・手がかりの有無）
   GET  /api/takuhon/img/...    組の画像（生／正解／手がかり／AI の出力）
@@ -406,6 +407,33 @@ def progress(which: str = "ink"):
 @app.get("/api/takuhon/curve")
 def curve(which: str = "ink"):
     return {"points": _read_jsonl(_curve_path(which))}
+
+
+@app.get("/api/takuhon/curves")
+def curves(which: str = "ink", limit: int = 12):
+    """**世代ごとの「うつり変わり」**（2026-09-17。本人の指示
+    「このグラフを、各検証結果毎で出せませんか？」）。
+
+    `curve_<名前>.jsonl` は走るたびに上書きされるので、train.py が世代を残すとき
+    `curve_<名前>_<日時>.jsonl` に控えを取っている。ここではその控えをぜんぶ返す。
+    いちばん新しい回（いま走っている分）は file="" で先頭に入れる。
+    """
+    nm = _nm(which)
+    live = _read_jsonl(_curve_path(which))
+    out = []
+    pre = "curve_%s_" % nm
+    for f in sorted(os.listdir(RUNS) if os.path.isdir(RUNS) else []):
+        if not (f.startswith(pre) and f.endswith(".jsonl")):
+            continue
+        stem = f[len("curve_"):-len(".jsonl")]          # <名前>_<日時>
+        out.append({"file": "model_%s.pth" % stem,
+                    "at": int(os.path.getmtime(os.path.join(RUNS, f))),
+                    "points": _read_jsonl(os.path.join(RUNS, f))})
+    out.sort(key=lambda x: x["at"])
+    out = out[-max(1, int(limit)):]
+    if live:
+        out.append({"file": "", "at": 0, "live": True, "points": live})
+    return {"items": out}
 
 
 @app.get("/api/takuhon/history")

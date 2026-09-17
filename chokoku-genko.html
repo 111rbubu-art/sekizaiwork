@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.76</title>
+<title>彫刻原稿 v21.77</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2203,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.76";
+var APP_VER = "v21.77";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9455,8 +9455,32 @@ function rubPitchPx(q, t){
     }
     sm[y] = cn ? ss / cn : 0;
   }
-  return estimatePitch(sm, q.y1, q.y2, Math.max(6, Math.round(inkW * 0.45)),
-                       Math.round(band0 * 2.6));
+  var pit = estimatePitch(sm, q.y1, q.y2, Math.max(6, Math.round(inkW * 0.45)),
+                          Math.round(band0 * 2.6));
+  /* **字の大きさで、周期の取り違えを直す**（v21.77。本人の報告
+     「字送り 179px に対して 帯 357px」）。自己相関は本当の周期の 2 倍・3 倍でも、
+     半分でも よく合ってしまい、合い具合の大小だけでは決まらない
+     （実測：本当の字送り 300px で 合い 0.13、2 倍の 600px で 0.44）。
+     そこで **漢字はほぼ正方形**という当たり前を使う。字送りは、ふつう
+     **字の幅の 1.0〜1.5 倍**。見つけた周期の 1/4〜3 倍のうち、
+     **その見当にいちばん近いもの**を採る（合いが 0 に近いものは採らない）。 */
+  if (pit && inkW){
+    var len = q.y2 - q.y1, pf = new Float64Array(len), i2, mean = 0;
+    for (i2 = q.y1; i2 < q.y2; i2++) mean += sm[i2];
+    mean /= len;
+    for (i2 = q.y1; i2 < q.y2; i2++) pf[i2 - q.y1] = sm[i2] - mean;
+    var tgt = inkW * 1.15, best = pit;
+    var gap2 = Math.abs(Math.log(pit / tgt));
+    [0.25, 1/3, 0.5, 2, 3].forEach(function(f){
+      var L = Math.round(pit * f);
+      if (L < 8 || L * 2 > len) return;
+      if (_corrAt(pf, 0, len, L) <= 0.02) return;      /* まるで合わない周期は採らない */
+      var d2 = Math.abs(Math.log(L / tgt));
+      if (d2 < gap2){ gap2 = d2; best = L; }
+    });
+    pit = best;
+  }
+  return pit;
 }
 /* 拓本の一部（正方形）を、学習に使っているのと同じ **512 の白黒**にする。
    明るさはそのまま（takuShot と同じ。反転はかけない）。 */
@@ -9538,7 +9562,7 @@ var AIBAND_BUSY = false;
 /* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
    「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
 function aiBandNo(t){ RUB.aiWhy = t; msg(t, true); }
-async function rubAiBand(){
+async function rubAiBand(noAsk){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   var base = takuApiBase();
@@ -9561,11 +9585,23 @@ async function rubAiBand(){
      こちらで変えてしまうのは行きすぎ**だった。寄せるのは、こちらが等分に割った
      帯（［拓本ぜんたいを通す］）だけにする。 */
   if ((q.x2 - q.x1) > pitch * 1.8){
-    aiBandNo("帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
-        Math.round(q.x2 - q.x1) + "px）。**1 行だけ**に絞ってください。" +
-        "［近い列に合わせる］か［列を探す］、それでも切れないときは［列の数］を入れて" +
-        "［拓本ぜんたいを通す］を使ってください。");
-    return;
+    /* **こちらの見立てが外れることもある**（v21.77。本人の報告）。
+       帯を手で 1 列に合わせてあるのに断られると、進めなくなる。
+       人が押したときは **聞いてから通す**（［拓本ぜんたいを通す］の中では聞かない）。 */
+    /* 聞く窓（confirm）は かざり文字が効かないので、**そのまま読める文**にする。 */
+    var w1 = "帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
+        Math.round(q.x2 - q.x1) + "px）。帯に列が 2 本 入っているかもしれません。";
+    if (noAsk){
+      aiBandNo(w1 + "［列の数］を入れて［拓本ぜんたいを通す］を使ってください。");
+      return;
+    }
+    if (!confirm(w1 + "\n\nもし 1 列だけに合わせてあるなら、こちらの見立て違いです。" +
+                 "このまま通しますか。\n\n" +
+                 "（通すと 1 字ずつに切り分けられないことがあります。" +
+                 "そのときは［列を探す］か［近い列に合わせる］で帯を絞ってください）")){
+      aiBandNo(w1 + "やめました。");
+      return;
+    }
   }
   /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
   var side = Math.max(pitch * 1.15, (q.x2 - q.x1));
@@ -9820,7 +9856,7 @@ async function rubAllGo(){
     A = null; RUB.mask = null;
     msg("列 " + (i+1) + " / " + runs.length + " を通しています…", false, true);
     RUB.aiBand = null; RUB.aiWhy = "";
-    await rubAiBand();
+    await rubAiBand(true);        /* まとめて通すときは聞かない */
     if (!RUB.aiBand){ ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?")); continue; }
     var got = rubLineTakeAi();
     if (got) ok++;
@@ -13634,7 +13670,7 @@ function rubPanel(){
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .cb:not(.colb2)"), function(b3){
     b3.onclick = function(){ rubCandPick(+b3.dataset.i, b3.dataset.c); };
   });
-  var ba = $("btnAiBand");    if (ba) ba.onclick = rubAiBand;
+  var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubAiBand(); };
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;
   var barc = $("btnAreaClr"); if (barc) barc.onclick = rubAreaClear;

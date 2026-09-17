@@ -159,6 +159,10 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       <button class="go" id="btnTrain">学習を始める</button>
       <button id="btnStop">止める</button>
     </div>
+    <!-- 学習中の様子は、いちばん上の［学習の様子］に出るが、押したボタンの所からは
+         遠くて気づかない（2026-09-17。本人の指摘「途中経過の表示が、検証用の下に
+         あり、分かりづらい」）。同じ中身を、ボタンのすぐ下にも出す。 -->
+    <div class="tEcho" hidden></div>
     <p class="hint" style="margin:7px 0 0">
       ふだんは<b>そのまま［学習を始める］</b>で構いません。
       ［試すだけ］は<b>動くかどうかを見るため</b>のもので、8 組未満でも回し、
@@ -199,6 +203,7 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       <button class="go" id="btnTrainShape">整えるモデルを学習する</button>
       <button id="btnStopS">止める</button>
     </div>
+    <div class="tEcho" hidden></div>
     <!-- 材料を選べるようにする（2026-09-16。本人の指摘「整える方は今までと材料が
          違うので分けた方がいい。混ぜたもの／今までの物／拓本から取り出したもの、
          どれが一番成績がいいか分からない」）。 -->
@@ -245,10 +250,11 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
   <div class="card">
     <div id="chart"></div>
     <div class="legend">
-      <span><i style="background:var(--shu)"></i>誤り（loss）小さいほど良い</span>
-      <span><i style="background:var(--ao)"></i>一致・手がかり無し</span>
-      <span><i style="background:var(--midori)"></i>一致・手がかりあり</span>
+      <span><i style="background:var(--shu)"></i><b>誤り</b>（左めもり・小さいほど良い）</span>
+      <span><i style="background:var(--ao)"></i><b>一致・手がかり無し</b>（右めもり・大きいほど良い）</span>
+      <span id="lgGreen"><i style="background:var(--midori)"></i>一致・手がかりあり（右めもり）</span>
     </div>
+    <p class="hint" style="margin:6px 0 0" id="chartNote"></p>
   </div>
 
   <h2>世代の記録<span class="hint" id="histWho" style="font-weight:400;margin-left:8px;"></span></h2>
@@ -397,11 +403,48 @@ function train(pg){
   el.innerHTML = h;
   var rb = document.getElementById("btnResume");
   if (rb) rb.onclick = resumeTrain;      /* 5 秒ごとに描き直すので、毎回つなぐ */
+  tEcho(s, pg);
+}
+/* 学習中の様子を、**押したボタンのすぐ下**にも出す（2026-09-17。本人の指摘
+   「途中経過の表示が、検証用の下にあり、分かりづらい」）。
+   いちばん上の［学習の様子］と同じ中身。走っていないときは出さない。 */
+function tEcho(s, pg){
+  var on = (s === "running" || s === "starting");
+  var p = (pg && pg.epochs) ? (pg.epoch||0)/pg.epochs : 0;
+  var h = "";
+  if (on){
+    h = '<div style="margin-top:9px;padding:8px 11px;border:1px solid var(--line);' +
+        'border-radius:8px;background:#f6faff">' +
+        '<span class="tag t-run">学習中</span> <b style="margin-left:6px">' +
+        ((pg && pg.epoch)||0) + ' / ' + ((pg && pg.epochs)||"―") + '</b> ' +
+        '<span class="hint">回め</span>' +
+        '<div class="bar"><i style="width:' + (p*100).toFixed(1) + '%"></i></div>' +
+        '<div class="hint">誤り ' + n3(pg && pg.loss) +
+        '　／　一致（手がかり無し） ' + pct(pg && pg.iou_nohint) +
+        ((pg && pg.etaSec) ? '　／　残り およそ ' + mmss(pg.etaSec) : "") + '</div></div>';
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".tEcho"), function(el){
+    el.hidden = !on;
+    if (on) el.innerHTML = h;
+  });
 }
 
 /* ---- 折れ線（自前の SVG。外の部品は使わない） ---- */
 function chart(pts){
   var el = document.getElementById("chart");
+  /* **どう読むか**を、そのつど書く（2026-09-17。本人の指摘）。
+     ②は手がかりを使わない学習なので、緑（手がかりあり）は そもそも測っていない。 */
+  /* ②では緑の線は出ないので、説明からも外す（2026-09-17） */
+  var lg = document.getElementById("lgGreen");
+  if (lg) lg.hidden = (WHICH === "shape");
+  var nt = document.getElementById("chartNote");
+  if (nt) nt.innerHTML = (WHICH === "shape")
+    ? '見るのは<b>青い線（一致・手がかり無し）</b>。右めもりで読みます。上がれば良くなっています。' +
+      '赤い線（誤り）は左めもりで、下がるのが良い動き。' +
+      '<b>②では緑の線は出ません</b>（手がかりを見せない学習のため、測っていません）。'
+    : '見るのは<b>青い線（一致・手がかり無し）</b>。右めもりで読みます。' +
+      '赤い線（誤り）は左めもりで、下がるのが良い動き。' +
+      '緑は手がかりを見せたときの一致で、<b>本番の実力ではありません</b>。';
   pts = (pts||[]).filter(function(p){ return p.ep > 0; });
   if (pts.length < 2){
     el.innerHTML = '<p class="hint" style="margin:0">' +
@@ -439,13 +482,23 @@ function chart(pts){
     var y = T + i / 4 * (H - T - B), v = 1 - i / 4;
     gy += '<line x1="' + L + '" y1="' + y + '" x2="' + (W-R) + '" y2="' + y +
           '" stroke="#ececea"/>' +
-          '<text x="' + (W-R+6) + '" y="' + (y+4) + '" font-size="11" fill="#77776f">' +
+          '<text x="' + (W-R+6) + '" y="' + (y+4) + '" font-size="11" fill="var(--ao)">' +
           Math.round(v*100) + '%</text>' +
-          '<text x="' + (L-8) + '" y="' + (y+4) + '" font-size="11" fill="#77776f" ' +
+          '<text x="' + (L-8) + '" y="' + (y+4) + '" font-size="11" fill="var(--shu)" ' +
           'text-anchor="end">' + (v*lmax).toFixed(2) + '</text>';
   }
+  /* **左右の目盛りが何を指しているかを、絵の中に書く**（2026-09-17。本人の指摘
+     「左と右で何を指しているか分からない」）。色も線に合わせる
+     （左＝朱＝誤り／右＝青＝一致）。 */
+  var ax =
+    '<text x="4" y="11" font-size="11" fill="var(--shu)" font-weight="700">' +
+    '← 左めもり：誤り（小さいほど良い）</text>' +
+    '<text x="' + W + '" y="11" font-size="11" fill="var(--ao)" font-weight="700" ' +
+    'text-anchor="end">右めもり：一致（％。大きいほど良い） →</text>' +
+    '<text x="' + ((L + W - R) / 2) + '" y="' + (H-6) + '" font-size="11" ' +
+    'fill="#77776f" text-anchor="middle">← 学習の回数（何回めか） →</text>';
   el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto">' +
-    gy +
+    gy + ax +
     '<path d="' + path("loss", Yl) + '" fill="none" stroke="var(--shu)" stroke-width="2"/>' +
     '<path d="' + path("iou_nohint", Yi) + '" fill="none" stroke="var(--ao)" stroke-width="2"/>' +
     '<path d="' + path("iou", Yi) + '" fill="none" stroke="var(--midori)" stroke-width="2" ' +

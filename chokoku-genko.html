@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.85</title>
+<title>彫刻原稿 v21.86</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1404,7 +1404,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <h3 class="sec">② 拓本トレース</h3>
           <p class="hint" style="margin:0 0 5px;"><b>どちらかで</b>墨を整えます。</p>
           <button class="mini" id="peAiTrace"
-            title="拓本の写真そのものを ①「読む」のモデルに渡して、墨の拾い出しごとまかせます。［↶ 1つ戻す］で戻せます">AI お任せ</button>
+            title="拓本の写真そのものを ①「読む」のモデルに渡して、墨の拾い出しごとまかせます。［↶ 1つ戻す］で戻せます">AI 拓本解析</button>
           <div class="peor">または</div>
           <h3 class="sec" style="margin-top:0;">手動補正</h3>
           <!-- ＋で拾う量が**減る**（しきいを上げる）ので、「拾う量」は逆に読めた。
@@ -2211,7 +2211,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.85";
+var APP_VER = "v21.86";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -18830,84 +18830,47 @@ async function peAiAutoGo(){
   var ub = $("peUndo"); if (ub) ub.disabled = false;
   var d = FIT_DIAG || {};
   var gtxt = d.growC ? ("縁を " + Math.abs(d.growMm).toFixed(3) + "mm（" +
-                        Math.abs(d.growC) + " ます）広げました")
-                     : "縁は ます目より小さいので広がりませんでした";
-  peAutoAsk(gtxt, shot, traceAi);
+                        Math.abs(d.growC) + " ます）拡大")
+                     : "縁は ます目より小さいので拡大なし";
+  /* **画線（この字の線）は消す**（v21.86。本人の指示）。
+     AI の墨と縁取りの線を見て決める場なので、フォントの線は邪魔になる。 */
+  var sw = $("peShowInk");
+  if (sw && sw.checked){ sw.checked = false; peInkGroupSync(true); }
+  /* 通したらすぐ **直せる状態**にする（v21.86。本人の指示
+     「ボタンは取り消すのみ。このまま登録する場合は［現トレースから字を作る］、
+     修正がある場合は手動補正のボタンを押します」）。 */
+  PE_AUTO_TRACE = traceAi || null;
+  PE_AUTO_SHAPEAI = PE.aiInk || null;
+  PE_AUTO_PAINT0 = rubPaint().length;
+  PE_AUTO_VIEW = "shape";
+  /* 登録は ［現トレースから字を作る］ を押したときに、そのときの墨で行う
+     （v21.86）。ここで取っておいた切り抜きは使わない（直されるかもしれないため）。 */
+  PE_AUTO_SHOT = null;
+  peAutoAsk(gtxt);
+  peRender();                         /* 画線を消し、①の青い線を出す */
 }
 /* 確かめの出し入れ（v21.82）。**字の上に窓をかぶせない**ために、
    作字の画面の中（［AI オート］のすぐ下）に出す。 */
 var PE_AUTO_SHOT = null;
 var PE_AUTO_TRACE = null;     /* ①（読む）が出した墨。②に置きかわる前のもの */
 var PE_AUTO_VIEW = "shape";   /* 直しモードで、いま見ているのは ①の墨 か 仕上がりか */
-function peAutoAsk(gtxt, shot, traceAi){
+function peAutoAsk(gtxt){
   var el = $("peAutoAsk"); if (!el) return;
-  PE_AUTO_SHOT = shot || null;
-  PE_AUTO_TRACE = traceAi || null;      /* ①（読む）の墨。直しモードで使う */
-  el.innerHTML = '<b>AI オートを通しました。字を見て決めてください。</b><br>' +
-    '① AI お任せ … 拓本から墨を拾いました<br>' +
-    '② AI 書体補正 … 書体らしい形に整えました<br>' +
+  el.innerHTML = '<b>AI オート完了</b><br>' +
+    '① AI 拓本解析　OK<br>' +
+    '② AI 書体補正　OK<br>' +
     '③ ' + esc(gtxt) + '<br>' +
-    '<span class="hint">登録するのは、<b>縁を広げる前</b>の墨です。</span>' +
-    '<div class="btns"><button class="mini primary" id="peAutoOk">このまま登録する</button>' +
-    '<button class="mini" id="peAutoFix">直してから登録する</button>' +
-    '<button class="mini" id="peAutoNo">取り消す</button></div>';
+    '<span class="hint">' +
+    '<b style="color:#1B6FD6">青＝縁取り</b>／<b style="color:#DC2616">赤＝校正ライン</b>。' +
+    'このままでよければ <b>［現トレースから字を作る］</b>、' +
+    '直すときは <b>［消す］［塗る］</b>。登録は そのときに行います。</span>' +
+    '<div class="btns"><button class="mini" id="peAutoNo">取り消す</button></div>';
   el.hidden = false;
-  var o = $("peAutoOk"), f = $("peAutoFix"), n = $("peAutoNo");
-  if (o) o.onclick = function(){ peAutoSave(PE_AUTO_SHOT); };
-  /* **直してから登録する**（v21.83。本人の指摘「点が出てしまった場合など、
-     手動で修正する場合に、このままにするを押すと、良い物として学習保存されて
-     しまう。戻ると、手作業が増えます」）。
-     AI の結果は**そのまま残す**。人が［消す］［塗る］で直してから、
-     そのときの墨で登録する。やり直しも、直しのやり直しも要らない。 */
-  if (f) f.onclick = function(){ peAutoFixMode(); };
+  var n = $("peAutoNo");
   if (n) n.onclick = function(){
     peAutoAskHide();
     peUndoGo();
     msg("AI オートを取り消しました。押す前の状態に戻しました（学習用にも保存していません）。");
-  };
-}
-/* 直しながら使う、細い帯。［消す］［塗る］の邪魔にならないよう、文言は短く。 */
-function peAutoFixMode(){
-  var el = $("peAutoAsk"); if (!el) return;
-  PE_AUTO_SHOT = null;                 /* 直す前の切り抜きは使わない */
-  PE_AUTO_VIEW = "shape";
-  PE_AUTO_SHAPEAI = PE ? PE.aiInk : null;      /* ②の形（v21.85） */
-  PE_AUTO_PAINT0 = rubPaint().length;          /* ここから先が「人の直し」 */
-  peRender();                                  /* ①の青い線を出す */
-  peAutoFixDraw();
-  msg("AI オートの形はそのままです。［消す］［塗る］で直してから、" +
-      "［いまの墨で登録する］を押してください。直しは①の墨にも効きます。", false, true);
-}
-function peAutoFixDraw(){
-  var el = $("peAutoAsk"); if (!el) return;
-  var ck = (PE_AUTO_VIEW === "trace");
-  el.innerHTML = '<b>直してから登録します。</b><br>' +
-    '出すぎた点やはみ出しを［消す］、足りない所を［塗る］で直してください。<br>' +
-    '<span class="hint">' +
-    '<b style="color:#1B6FD6">青い線＝縁取り（①が読んだ墨）</b>／' +
-    '<b style="color:#DC2616">赤い線＝校正ライン（いまの仕上がり）</b><br>' +
-    '<b>青が動いたら①に、赤だけが動いたら②に</b>登録します（どちらも縁を広げる前）。' +
-    '青が動いたときは、②には登録しません（元の墨が変わっているため）。' +
-    '筆のかすり（0.5% 未満）は「動いていない」とみます。</span>' +
-    '<div class="btns">' +
-    '<button class="mini primary" id="peAutoSaveNow">いまの墨で登録する</button>' +
-    (PE_AUTO_TRACE ? '<button class="mini' + (ck ? " primary" : "") + '" id="peAutoView">' +
-       (ck ? "見ている：①の墨" : "見ている：仕上がり") + '</button>' : "") +
-    '<button class="mini" id="peAutoNo2">取り消す</button></div>';
-  el.hidden = false;
-  var sv = $("peAutoSaveNow"), n2 = $("peAutoNo2"), vw = $("peAutoView");
-  if (sv) sv.onclick = function(){ peAutoSave(null); };
-  /* **どちらの墨を見て直しているのか**を、はっきりさせる（v21.84。本人の指摘）。
-     押すたびに ①の墨（広げる前）と 仕上がり（②＋広げ）を行き来する。
-     直し（消す・塗る）は拓本の画素に付くので、**どちらを見て直しても両方に効く**。 */
-  if (vw) vw.onclick = function(){
-    PE_AUTO_VIEW = (PE_AUTO_VIEW === "trace") ? "shape" : "trace";
-    peAutoViewApply();
-    peAutoFixDraw();
-    msg(PE_AUTO_VIEW === "trace"
-      ? "①「読む」の墨（縁を広げる前）を出しています。**登録されるのは、この墨に直しを当てたもの**です。"
-      : "仕上がり（②「整える」＋縁を広げた形）を出しています。④で字にするのは、この形です。",
-      false, true);
   };
 }
 /* 見るものを差し替える。控え（PE.undo）は触らない。 */
@@ -18942,8 +18905,8 @@ var PE_AUTO_PAINT0 = 0;       /* 直しモードに入ったときの、塗り�
 
    どちらも**縁を広げる前**で残す。`shot` があれば（オート直後）それを使う。 */
 async function peAutoSave(shot){
-  var o = $("peAutoOk"), f = $("peAutoFix"), sv = $("peAutoSaveNow");
-  [o, f, sv].forEach(function(b){ if (b) b.disabled = true; });
+  var no = $("peAutoNo");
+  if (no) no.disabled = true;
   var gEl = $("peGrow"), g0 = gEl ? gEl.value : null;
   var ch = $("peChar") ? $("peChar").textContent : "";
   var note = "", note2 = "";
@@ -18951,8 +18914,8 @@ async function peAutoSave(shot){
     if (shot){                       /* そのまま登録（直していない） */
       try { note = (await takuSave(true, shot)) || ""; } catch(e){ note = ""; }
       peAutoAskHide();
-      msg((note ? note + "（① 読む に、縁を広げる前の形で残しました）。" : "登録できませんでした。") +
-          "気に入らなければ［↶ 1つ戻す］で、AI オートを押す前に戻せます。", !note);
+      msg((note ? note + "（① 読む に、縁を広げる前の形で残しました）。" : "登録できませんでした。"),
+          !note);
       return;
     }
     /* どちらが動いたかを、ます の数で見る */
@@ -19007,7 +18970,7 @@ async function peAutoSave(shot){
              : "直しが無かったので、①に「これでよい」として残しました。") +
         "［↶ 1つ戻す］で、AI オートを押す前に戻せます。", !note);
   } finally {
-    [o, f, sv].forEach(function(b){ if (b) b.disabled = false; });
+    if (no) no.disabled = false;
   }
 }
 function peAutoAskHide(){
@@ -19034,7 +18997,7 @@ async function peAiTraceGo(quiet){
   try { got = await traceAskShot(P.G, sh); }
   finally { if (b){ b.disabled = false; peAiTraceShow(); } }
   if (!got || !got.ink){
-    msg("［AI お任せ］は かかりませんでした。" + ((got && got.note) || ""), true);
+    msg("［AI 拓本解析］は かかりませんでした。" + ((got && got.note) || ""), true);
     return false;
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
@@ -19045,14 +19008,14 @@ async function peAiTraceGo(quiet){
   PE_INFO_HOLD = false;
   peEdgeRedraw();
   if (!quiet)
-    msg("AI お任せで墨を拾いました。" + (got.note || "") +
+    msg("AI 拓本解析で墨を拾いました。" + (got.note || "") +
         "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
         "直したあと［AI 書体補正］を押せば、**この墨が学習用に保存されます**。");
   return true;
 }
 function peAiTraceShow(){
   var b = $("peAiTrace"); if (!b) return;
-  b.textContent = "AI お任せ";
+  b.textContent = "AI 拓本解析";
   b.className = "mini";
 }
 /* ［AI 書体補正］… 押すと、拾った墨を ②「整える」に通した墨に**差し替える**（v21.12）。
@@ -19147,7 +19110,19 @@ $("peGrow").onchange = function(){
         "（画の太さで " + Math.abs(d.growMm * 2).toFixed(3) + "mm）。");
 };
 $("peGrow").onfocus  = function(){ peInkShowOn(); };
-$("peTrace").onclick = function(){ traceGo(); };
+/* ［現トレースから字を作る］（v21.86。本人の指示
+   「このまま登録する場合は、現トレースから字を作るボタンを押します」）。
+   AI オートの結果が出ているときは、**先に学習用へ登録**してから字を作る。
+   どちらに登録するか（①／②）は、直した所で決まる（`peAutoSave`）。 */
+$("peTrace").onclick = async function(){
+  if (PE_AUTO_TRACE){
+    try { await peAutoSave(null); } catch(e){}
+  }
+  /* 字を作るので、画線は出しておく（オートで消していた） */
+  var sw = $("peShowInk");
+  if (sw && !sw.checked){ sw.checked = true; peInkGroupSync(true); }
+  traceGo();
+};
 $("peTakuOut").onclick = function(){ takuExport(); };
 $("peTakuClr").onclick = function(){
   takuCount().then(function(n){

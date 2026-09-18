@@ -315,6 +315,10 @@ async def feedback(
     name = key.strip() or datetime.now().strftime("pair_%Y%m%d-%H%M%S")
     name = "".join(c for c in name if c.isalnum() or c in "-_." or ord(c) > 127)
     d = os.path.join(root, name)
+    # **前の組を置きかえたのかどうかを、必ず返す**（2026-09-18。本人の指摘
+    # 「すでに同じところからの文字があった場合、保存できないのではないですか」）。
+    # 同じ key は上書き（それが狙い）だが、黙って消えると気づけない。
+    replaced = os.path.isdir(d)
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, "raw.png"), "wb").write(await raw_image.read())
     open(os.path.join(d, "mask.png"), "wb").write(await corrected_image.read())
@@ -325,7 +329,7 @@ async def feedback(
     meta = {"char": char_hint, "key": name, "at": datetime.now().isoformat(timespec="seconds")}
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
-    return {"status": "saved", "saved_id": name,
+    return {"status": "saved", "saved_id": name, "replaced": replaced,
             "set": {SHAPE: "shape", SHAPE_RUB: "shape_rub"}.get(root, "ink"),
             "pairs": len(D.list_pairs(root))}
 

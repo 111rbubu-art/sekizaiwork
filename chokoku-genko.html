@@ -2242,7 +2242,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.94";
+var APP_VER = "v21.95";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14816,7 +14816,9 @@ async function takuSave(quiet, shIn){
       var ai = "";
       try {
         var j = await takuPostAI(sh);
-        if (j) ai = "／拓本AIへも送りました（サーバーに " + (j.pairs || "?") + " 組）";
+        ai = j ? ("／拓本AI の【① 読む（dataset/pairs）】へも送りました（サーバーに " +
+                  (j.pairs || "?") + " 組）")
+               : "／" + takuAiOffNote();
       } catch(e3){
         ai = "／拓本AIへは送れませんでした（" + ((e3 && e3.message) || "") + "）";
       }
@@ -14832,14 +14834,24 @@ async function takuSave(quiet, shIn){
   try {
     var id = await takuAdd(sh);
     var n = await takuCount();
-    var ai2 = "";
+    /* **拓本AI へ送れたかどうかを、必ず言う**（v21.95。本人の報告
+       「学習データを保存したが、拓本AI のページからそのデータが確認できません」）。
+       前は送れなくても黙っていたので、この端末に貯まっただけなのに
+       「保存しました」と出て、サーバーに入ったように見えていた。 */
+    var ai2 = "", ng2 = false;
     try {
       var j2 = await takuPostAI(sh);
-      if (j2) ai2 = "／拓本AIへは送りました";
-    } catch(e4){}
+      ai2 = j2 ? ("／拓本AI の【① 読む（dataset/pairs）】へも送りました（サーバーに " +
+                  (j2.pairs || "?") + " 組）")
+               : "／" + takuAiOffNote();
+      ng2 = !j2;
+    } catch(e4){
+      ai2 = "／拓本AIへは送れませんでした（" + ((e4 && e4.message) || "") + "）";
+      ng2 = true;
+    }
     var note2 = "学習用に保存しました（" + (sh.meta.char || "?") + "／この端末に " + n + " 組。" +
         "つながったときに自動で送ります" + ai2 + "）";
-    if (!quiet) msg(note2 + "。", false);
+    if (!quiet) msg(note2 + "。", ng2);
     takuShow();
     return note2;
   } catch(e2){
@@ -14863,6 +14875,17 @@ function takuApiBase(){
   if (!u) return "";
   if (location.protocol === "https:" && /^http:/i.test(u)) return "";   /* 混在内容で送れない */
   return u;
+}
+/* 拓本AI へ送れない理由を、ことばで言う（v21.95） */
+function takuAiOffNote(){
+  var u = "";
+  try { u = String(localStorage.getItem("takuhonAiUrl") || "").trim(); } catch(e){}
+  if (!u) return "拓本AI の住所が入っていないので、サーバーへは送っていません" +
+                 "（本体アプリの［🧠 拓本AI］で住所を入れてください）";
+  if (location.protocol === "https:" && /^http:/i.test(u))
+    return "拓本AI の住所が http なので、サーバーへは送れません" +
+           "（この画面は https。https の住所にしてください）";
+  return "拓本AI へは送っていません";
 }
 function takuBlob(dataUrl){ return new Blob([dataUrlBytes(dataUrl)], { type: "image/png" }); }
 async function takuPostAI(sh){
@@ -15567,7 +15590,11 @@ function fitPrep(raw){
              ($("peInkFine") && $("peInkFine").value) || FIT_FINE,
              rotOff().x, rotOff().y, RUB.W, RUB.H].join("/");
   var key = keyNG + "/g" + peGrowMm();
-  if (PE.inkC && PE.inkC.key === key){
+  /* ます目の枠（`fitGrid`）は `key` に入っていない（輪郭を見ていない）ので、
+     ［パス化］で輪郭が入れかわったときは、**取り置きが前の枠のまま**になる。
+     枠が変わっていたら作り直す（v21.95）。 */
+  if (PE.inkC && PE.inkC.key === key && PE.inkC.G &&
+      PE.inkC.G.w === G.w && PE.inkC.G.h === G.h && PE.inkC.G.x0 === G.x0){
     FIT_DIAG = PE.inkC.diag;
     if (PE.inkC.paintV !== RUBPAINT_V){          /* 塗りが変わったので重ね直す */
       var ps0 = rubPaint(), nOld = PE.inkC.paintN;
@@ -16557,7 +16584,12 @@ function fitEdgeURLOf(aiObj, growVal, col){
   var gEl = $("peGrow"), g0 = gEl ? gEl.value : null, ai0 = PE.aiInk, c0 = PE.inkC;
   var out = null;
   try {
-    PE.aiInk = aiObj || null; PE.inkC = null;
+    /* **取り置きを捨てない**（v21.95。本人の報告「パス化した後、マウス操作が重くなる」）。
+       ここは［縁を広げる 0］の墨を作る所。前は `PE.inkC = null` にしていたので、
+       線を 1 本描き直すたびに しきい値・形態処理・塊の選り分けまで やり直していた
+       （実測 200ms。マウスを動かすたびに これが入るので、はっきり重い）。
+       いまの墨とは別の取り置き（`PE.inkCAlt`）に分けて持ち、使い回す。 */
+    PE.aiInk = aiObj || null; PE.inkC = PE.inkCAlt || null;
     if (gEl && growVal !== undefined && growVal !== null) gEl.value = growVal;
     var P = fitPrep();
     if (P){
@@ -16578,6 +16610,7 @@ function fitEdgeURLOf(aiObj, growVal, col){
     }
   } catch(e){ out = null; }
   finally {
+    PE.inkCAlt = PE.inkC;            /* 次に描くときのために取っておく */
     PE.aiInk = ai0; PE.inkC = c0;
     if (gEl && g0 !== null) gEl.value = g0;
   }
@@ -16607,7 +16640,8 @@ function fitInkCount(aiObj, growVal, paintN){
 }
 /* その切り抜きを、そのまま拓本AI へ送る（v21.85）。①②で入れ先を変える。 */
 async function takuPostPairAI(rawUrl, maskUrl, ch, key, set){
-  var base = takuApiBase(); if (!base) return null;
+  var base = takuApiBase();
+  if (!base) throw new Error(takuAiOffNote());
   if (!askBeforeSave(set === "shape_rub" ? "② 整える（縁取り → 整えた形）" : "① 読む",
                      ch, key, "縁を広げる前の形で保存します")) return null;
   var fd = new FormData();
@@ -18118,14 +18152,11 @@ function peBind(svg){
       function draw(){
         raf = 0;
         /* 拾った墨の絵だけ差し替える。画面ぜんたいは作り直さない（v20.71）。
-           作り直すと、拓本の写真の読み直しで 1 回 60ms 以上かかる。 */
-        var st2 = $("peStage"), img = st2 && st2.querySelector("#peEdgeImg");
-        if (img){
-          var u = fitEdgeURL();
-          if (u) img.setAttribute("href", u.url);
-        } else {
-          peRender();
-        }
+           作り直すと、拓本の写真の読み直しで 1 回 60ms 以上かかる。
+           **色は `peEdgeRedraw` に任せる**（v21.95）。ここも色なしで呼んでいたので、
+           筆を引いている間、青の層が赤くなっていた。 */
+        var st2 = $("peStage");
+        peEdgeRedraw();
         var c = st2 && st2.querySelector("#peBrushC");
         if (c && last2){ c.setAttribute("cx", last2.x); c.setAttribute("cy", -last2.y); }
       }
@@ -19095,7 +19126,8 @@ async function peAutoSave(shot){
       } catch(e2){ note2 = "② 整える へは送れませんでした（" + ((e2 && e2.message) || "") + "）"; }
       peAutoAskHide();
       LASTSAVE_NOTE = (note2 || "② へ登録できませんでした") + "。" +
-          "縁取（赤）は動いていない（" + d1 + " ます）ので、①には登録していません。";
+          "縁取（赤）は動いていない（" + d1 + " ます）ので、①には登録していません。" +
+          (j2 ? SEE_SHAPE : "");
       msg(LASTSAVE_NOTE, !note2);
       return;
     }
@@ -19104,7 +19136,8 @@ async function peAutoSave(shot){
     peAutoAskHide();
     LASTSAVE_NOTE = (note ? note + "（① 読む に、縁を広げる前の形で残しました）。" : "登録できませんでした。") +
         (ch1 ? "縁取（赤）が " + d1 + " ます 動いたので、②には登録していません。"
-             : "直しが無かったので、①に「これでよい」として残しました。");
+             : "直しが無かったので、①に「これでよい」として残しました。") +
+        (note ? SEE_INK : "");
     msg(LASTSAVE_NOTE, !note);
   } finally {
     if (no) no.disabled = false;
@@ -19233,6 +19266,12 @@ async function peAiShapeGo(quiet){
 }
 
 var AUTO_NOTE = "";      /* ［AI オート］が、②で保存した知らせを受け渡す */
+/* **どこを見れば入っているか**（v21.95。本人の報告「拓本AI のページから
+   そのデータが確認できません」）。入れ先が 4 つあるので、登録のたびに言う。 */
+var SEE_INK = "　拓本AI の画面では［① 読む］→［貯まったデータ］の" +
+              "「学習用（dataset/pairs）」に出ます。";
+var SEE_SHAPE = "　拓本AI の画面では［② 整える］→［貯まったデータ］の" +
+                "「②整える・拓本から・学習用」に出ます（合成の分とは別の一覧です）。";
 function peAiShapeShow(){
   var b = $("peAiShape"); if (!b) return;
   b.textContent = "AI 書体補正";
@@ -19338,13 +19377,16 @@ function peInkRefresh(){
   if (!PE) return;
   PE_INFO_HOLD = false;              /* 墨をいじったので、墨の説明に戻す */
   PE.inkC = null;
-  var st = $("peStage"), img = st && st.querySelector("#peEdgeImg");
-  if (img){
-    var u = fitEdgeURL();
-    if (u) img.setAttribute("href", u.url);
-  } else {
+  /* **色は `peEdgeRedraw` に任せる**（v21.95。本人の報告
+     「手動で消したり、塗ったりすると、青線が赤線になり気になります」）。
+     前はここで `fitEdgeURL()` を色なしで呼んでいた。色なしの既定は**赤**なので、
+     青の層（`#peEdgeImg`）に赤い線を描き込んでいた。
+     赤の層（`#peEdgeImg2`）も描き直していなかった。 */
+  var st = $("peStage");
+  if (st && (st.querySelector("#peEdgeImg") || st.querySelector("#peEdgeImg2")))
+    peEdgeRedraw();
+  else
     peRender();
-  }
 }
 function peInkShowOn(){
   var e = $("peFitEdge");

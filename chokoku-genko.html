@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.1";
+var APP_VER = "v22.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10125,6 +10125,218 @@ function rubColsFromCenters(){
     if (out[i].mid - out[i-1].mid < (out[i].b - out[i].a) * 0.4) return null;
   return out;
 }
+/* === いちばん上の 1 行から、列の数と場所を見つける（v22.2。本人の案
+   「まず一番上の文字を AI で通して、文字のセンターが分かれば、行数が分かる」） ===
+
+   なぜこれが要るか：
+   ・拓本は石の地を一面にこするので、**列の切れ目（白いすき間）は無い**
+   ・**校正の列数も当てにならない**。拓本には**すでに彫ってある列**が並んでいて、
+     校正には これから彫る 1 列しか入っていないことがふつう
+     （実測：柴田さんの案件は 拓本 4 列・校正 1 列）
+   そこで、**いちばん上の 1〜2 字ぶんの帯だけ**を見て、字のかたまりを拾い、
+   その**間隔**から列を割り出す。上の行は、どの列にも必ず字があるので使える。
+
+   字の拾い方は 2 とおり：
+   ・**AI**（拓本AI が使えるとき）… 窓を横にずらしながら ①「読む」に通す。いちばん確か
+   ・**手元**… まわりより明るい所＝字（`rubCharProf` と同じ考え方）。
+     ただし地のざらつきも拾うので、**画の太さより小さい塊は捨てる**
+     （実測：塊 3224 個 → 18 個。これをしないと、一面が字に見えて 1 本になる） */
+function _rubCharSide(){
+  var mpp = mmPerPx();
+  if (!mpp) return 0;
+  var rows, w = 0;
+  try { rows = layout(); } catch(e){ rows = []; }
+  (rows || []).forEach(function(r){ if (r && num(r.w, 0) > w) w = num(r.w, 0); });
+  if (!(w > 0)) w = 25;
+  return Math.max(24, Math.round(w / mpp));
+}
+/* 塊（つながった白い所）のうち、小さいものを落とす。帰りは 0/1 の並び。 */
+function _rubDropSmall(bin, w, h, minA){
+  var lab = new Int32Array(w * h), st = new Int32Array(w * h), out = new Uint8Array(w * h);
+  var id = 0, i, x, y;
+  for (i = 0; i < w * h; i++){
+    if (!bin[i] || lab[i]) continue;
+    id++;
+    var sp = 0, n = 0, head = 0;
+    st[sp++] = i; lab[i] = id;
+    var cells = [];
+    while (sp > 0){
+      var k = st[--sp]; cells.push(k); n++;
+      var kx = k % w, ky = (k / w) | 0;
+      if (kx > 0   && bin[k-1] && !lab[k-1]){ lab[k-1] = id; st[sp++] = k-1; }
+      if (kx < w-1 && bin[k+1] && !lab[k+1]){ lab[k+1] = id; st[sp++] = k+1; }
+      if (ky > 0   && bin[k-w] && !lab[k-w]){ lab[k-w] = id; st[sp++] = k-w; }
+      if (ky < h-1 && bin[k+w] && !lab[k+w]){ lab[k+w] = id; st[sp++] = k+w; }
+    }
+    if (n >= minA) for (var c2 = 0; c2 < cells.length; c2++) out[cells[c2]] = 1;
+  }
+  return out;
+}
+/* 横の並び（0〜1）から、列のかたまりを出す */
+function _rubRunsOf(prof, n, side){
+  /* **ならしは、列と列のすき間より細かく**（v22.2）。
+     ±30px でならしたら、70px のすき間が埋まって 2 本の列がつながった
+     （実測：4 本が 2 本になった）。すき間は字の 4 分の 1 ほどなので、
+     ならしはその半分（字の 16 分の 1）にする。 */
+  var k = Math.max(3, Math.round(side / 16)), sm = new Float32Array(n), i, j;
+  for (i = 0; i < n; i++){
+    var ss = 0, cn = 0;
+    for (j = -k; j <= k; j++){ var x = i + j; if (x >= 0 && x < n){ ss += prof[x]; cn++; } }
+    sm[i] = cn ? ss / cn : 0;
+  }
+  var pos = [];
+  for (i = 0; i < n; i++) if (sm[i] > 0) pos.push(sm[i]);
+  if (!pos.length) return [];
+  pos.sort(function(a2, b2){ return a2 - b2; });
+  var med = pos[pos.length >> 1], lim = med * 0.45;
+  var runs = [], st2 = -1;
+  for (i = 0; i < n; i++){
+    if (sm[i] > lim){ if (st2 < 0) st2 = i; }
+    else if (st2 >= 0){ runs.push([st2, i]); st2 = -1; }
+  }
+  if (st2 >= 0) runs.push([st2, n]);
+  var mg = [];
+  runs.forEach(function(r){
+    if (mg.length && r[0] - mg[mg.length-1][1] < side * 0.15) mg[mg.length-1][1] = r[1];
+    else mg.push([r[0], r[1]]);
+  });
+  return mg.filter(function(r){ return (r[1] - r[0]) >= side * 0.4; });
+}
+/* 見つけたかたまりの**間隔**から、帯ぜんたいに列を並べる。
+   上の行でかすれている列（実測：右はしの 1 列）も、間隔から補える。 */
+function _rubColsFromRuns(mg, x1, x2, side){
+  if (!mg.length) return null;
+  var mids = mg.map(function(r){ return (r[0] + r[1]) / 2 + x1; });
+  var w2 = _median(mg.map(function(r){ return r[1] - r[0]; })) || side;
+  if (mids.length < 2){
+    return [{ a: Math.round(mids[0] - w2/2), b: Math.round(mids[0] + w2/2) }];
+  }
+  var gaps = [];
+  for (var i = 1; i < mids.length; i++) gaps.push(mids[i] - mids[i-1]);
+  var pit = _median(gaps);
+  if (!(pit > w2 * 0.6)) pit = w2;
+  /* いちばん左のかたまりから、左右へ間隔ぶんずつ並べる */
+  var c0 = mids[0], out = [], c;
+  for (c = c0; c > x1 - pit * 0.35; c -= pit) out.unshift(c);
+  for (c = c0 + pit; c < x2 + pit * 0.35; c += pit) out.push(c);
+  var half = Math.min(pit, w2 * 1.25) / 2;
+  return out.map(function(cx){
+    return { a: Math.max(x1, Math.round(cx - half)), b: Math.min(x2, Math.round(cx + half)) };
+  }).filter(function(r){ return (r.b - r.a) >= side * 0.45; });
+}
+/* 本体。`useAi` が真なら、拓本AI に通して字を拾う。 */
+async function rubColsScanTop(useAi){
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
+  var mpp = mmPerPx();
+  if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return null; }
+  var ar = rubArea(), side = _rubCharSide();
+  if (!side){ msg("字の大きさが分かりません。", true); return null; }
+  var x1 = ar.x1, x2 = ar.x2;
+  var y1 = ar.y1, y2 = Math.min(RUB.H, ar.y1 + Math.round(side * 2));
+  var w2 = x2 - x1;
+  if (w2 < side){ msg("範囲が字 1 つより狭いです。", true); return null; }
+  var prof = new Float32Array(w2), i, x, y;
+  aiProgOn();
+  try {
+    if (useAi && takuApiBase()){
+      /* 窓を横にずらして、①「読む」に通す */
+      var base = takuApiBase(), step = Math.max(24, Math.round(side * 0.6));
+      var xs = [];
+      for (x = x1; x < x2 - side * 0.35; x += step) xs.push(Math.min(x, x2 - side));
+      var acc = document.createElement("canvas");
+      acc.width = w2; acc.height = y2 - y1;
+      var ag = acc.getContext("2d", { willReadFrequently: true });
+      ag.fillStyle = "#000"; ag.fillRect(0, 0, acc.width, acc.height);
+      ag.globalCompositeOperation = "lighten";
+      for (i = 0; i < xs.length; i++){
+        if (AIPROG_STOP) break;
+        aiProg("いちばん上の行", "AI に通しています " + (i+1) + " / " + xs.length);
+        await uiTick();
+        var blob = await rubCropPng(xs[i], y1, side);
+        var fd = new FormData();
+        fd.append("file", blob, "raw.png");
+        fd.append("stage", "ink"); fd.append("soft", "true");
+        var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var bb = await r.blob();
+        var img = await new Promise(function(res, rej){
+          var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+          im.src = URL.createObjectURL(bb);
+        });
+        ag.drawImage(img, xs[i] - x1, 0, side, side);
+      }
+      var id2 = ag.getImageData(0, 0, acc.width, acc.height), dd = id2.data;
+      for (x = 0; x < w2; x++){
+        var c3 = 0;
+        for (y = 0; y < acc.height; y++) if (dd[(y*w2 + x) * 4] > 100) c3++;
+        prof[x] = c3 / acc.height;
+      }
+    } else {
+      /* 手元で拾う（まわりより明るい所＝字。小さい塊は捨てる） */
+      aiProg("いちばん上の行", "字をさがしています（手元）");
+      await uiTick();
+      var st3 = 2, gw = Math.floor(w2 / st3), gh = Math.floor((y2 - y1) / st3);
+      var d3 = RUB.data.data, W3 = RUB.W, g3 = new Float32Array(gw * gh);
+      for (y = 0; y < gh; y++)
+        for (x = 0; x < gw; x++){
+          var p3 = (((y1 + y*st3) * W3) + (x1 + x*st3)) * 4;
+          g3[y*gw + x] = d3[p3]*0.299 + d3[p3+1]*0.587 + d3[p3+2]*0.114;
+        }
+      var rr = Math.max(4, Math.round(side / st3 / 2));
+      var ii = new Float64Array((gw+1) * (gh+1));
+      for (y = 0; y < gh; y++){
+        var rs = 0;
+        for (x = 0; x < gw; x++){ rs += g3[y*gw + x];
+          ii[(y+1)*(gw+1) + (x+1)] = ii[y*(gw+1) + (x+1)] + rs; }
+      }
+      function bx(xa, ya, xb, yb){
+        xa = Math.max(0, xa); ya = Math.max(0, ya);
+        xb = Math.min(gw, xb); yb = Math.min(gh, yb);
+        var n2 = (xb - xa) * (yb - ya);
+        if (n2 <= 0) return 0;
+        return (ii[yb*(gw+1)+xb] - ii[ya*(gw+1)+xb] - ii[yb*(gw+1)+xa] + ii[ya*(gw+1)+xa]) / n2;
+      }
+      var hp = new Float32Array(gw * gh), ss2 = 0;
+      for (y = 0; y < gh; y++)
+        for (x = 0; x < gw; x++){
+          var v2 = g3[y*gw + x] - bx(x - rr, y - rr, x + rr + 1, y + rr + 1);
+          hp[y*gw + x] = v2; ss2 += v2 * v2;
+        }
+      var sd2 = Math.sqrt(ss2 / (gw * gh)), lim2 = sd2 * 0.8;
+      var bin = new Uint8Array(gw * gh);
+      for (i = 0; i < gw * gh; i++) bin[i] = hp[i] > lim2 ? 1 : 0;
+      var minA = Math.max(9, Math.round(Math.pow(side * 0.12 / st3, 2)));
+      var big = _rubDropSmall(bin, gw, gh, minA);
+      for (x = 0; x < gw; x++){
+        var c4 = 0;
+        for (y = 0; y < gh; y++) if (big[y*gw + x]) c4++;
+        var v3 = c4 / gh;
+        for (i = 0; i < st3; i++) if (x*st3 + i < w2) prof[x*st3 + i] = v3;
+      }
+    }
+  } catch(e){
+    aiProgOff();
+    msg("いちばん上の行を読めませんでした（" + ((e && e.message) || "") + "）。", true);
+    return null;
+  }
+  aiProgOff();
+  var mg = _rubRunsOf(prof, w2, side);
+  var cols = _rubColsFromRuns(mg, x1, x2, side);
+  if (!cols || !cols.length){
+    msg("いちばん上の行から、字のかたまりを見つけられませんでした。" +
+        "［範囲］の上のふちを、いちばん上の字に合わせてみてください。", true);
+    return null;
+  }
+  S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
+                    how: (useAi && takuApiBase()) ? "ai" : "local" };
+  S.rub.colN = cols.length;
+  RUB.cols = cols; RUB.colsSplit = false;
+  persist(); rubPanel(); rubRender();
+  msg("いちばん上の行から、列を " + cols.length + " 本 見つけました（" +
+      cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
+      " px）。ちがうときは［列の数］に本数を入れてください。", false, true);
+  return cols;
+}
 function rubColsWanted(){
   /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
      拓本の取り方で端の行が見切れていることがあるので、そこを外せるようにする。 */
@@ -10146,6 +10358,13 @@ function rubColsWanted(){
      「拓本ぜんたいが 1 本の列」は上の `wide` で外してあるので、ここは 1 本でよい。 */
   /* 切れ目から見つけた列は、**校正の列数と合っているときだけ**そのまま使う（v22.0）。
      合っていなければ、石の地のこすり跡を列と読み違えている見込みが高い。 */
+  /* **いちばん上の行から見つけた列が、いちばん確か**（v22.2。本人の案）。
+     拓本を回していなければ（`geo` が同じ）、そのまま使う。 */
+  var ct2 = S.rub.colsTop;
+  if (!n && ct2 && ct2.geo === rubGeoKey() && ct2.cols && ct2.cols.length){
+    RUB.colsSplit = false; RUB.cols = ct2.cols;
+    return ct2.cols;
+  }
   var plan = rubColNFromPlan();
   /* **センターラインが拓本に合わせてあれば、それがいちばん確か**（v22.1）。
      等分に割ると、範囲に紙の余白やスキャナの黒い所が入っているだけで
@@ -10193,7 +10412,8 @@ function rubColsWanted(){
         " 本として等分に割りました。拓本は石の地を一面にこすってあるので、" +
         "切れ目から列を読むことはできません。" +
         "**等分に割るので、［範囲］（緑の四角）を石の彫ってある面に合わせてください。**" +
-        "ちがうときは［列の数］に本数を入れてください。", false, true);
+        "拓本には**すでに彫ってある列**も並んでいるので、合わないときは" +
+        "［いちばん上の行から列を見つける］を押してください。", false, true);
   } else if (guessed){
     var mp3 = mmPerPx();
     msg("並びの周期から " + n + " 本と見当をつけました" +
@@ -14069,6 +14289,17 @@ function rubPanel(){
     h += '<div class="fixrow" style="margin-top:6px;"><span>列の数（自動で切れないとき）</span>' +
       '<b><input type="number" id="rColN" value="' + (num(S.rub.colN, 0) || "") +
       '" min="0" max="24" step="1" style="width:56px;" placeholder="自動"></b></div>';
+    /* **列さがしは、いちばん上の行から**（v22.2。本人の案）。
+       拓本には すでに彫ってある列が並んでいるので、校正の列数は当てにならない。 */
+    var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
+    h += '<button class="mini" id="btnColsTop" style="margin-top:4px;" ' +
+      'title="いちばん上の 1〜2 字ぶんだけを見て、字のかたまりの間隔から列を割り出します">' +
+      'いちばん上の行から列を見つける</button>';
+    h += '<p class="hint" style="margin:3px 0 0;">' +
+      (ct ? '<b>列 ' + ct.cols.length + ' 本</b>（' + (ct.how === "ai" ? "AI で" : "手元で") +
+            '見つけました）。拓本を回すと、もう一度押してください。'
+          : '拓本には<b>すでに彫ってある列</b>が並んでいるので、校正の列数とは合いません。' +
+            'まず これを押してください。') + '</p>';
     h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +
       'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
     h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
@@ -14121,6 +14352,7 @@ function rubPanel(){
   });
   var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubAiBand(); };
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
+  var bct = $("btnColsTop");  if (bct) bct.onclick = function(){ rubColsScanTop(true); };
   var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;
   var barc = $("btnAreaClr"); if (barc) barc.onclick = rubAreaClear;
   /* **打ったその場で効かせる**（v21.99。本人の報告「認識しませんでした」）。

@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.2";
+var APP_VER = "v22.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9833,7 +9833,7 @@ function rubPitchPlanPx(q){
   return best;
 }
 var AIPROG_COL = "";      /* ［拓本ぜんたいを通す］の中なら「2 / 3」など */
-async function rubAiBand(noAsk){
+async function rubAiBand(noAsk, trusted){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   var base = takuApiBase();
@@ -9871,7 +9871,12 @@ async function rubAiBand(noAsk){
      進めません」）。v21.70 では断る前に帯を墨へ寄せていたが、**人が決めた幅を
      こちらで変えてしまうのは行きすぎ**だった。寄せるのは、こちらが等分に割った
      帯（［拓本ぜんたいを通す］）だけにする。 */
-  if ((q.x2 - q.x1) > pitch * 1.8){
+  /* **こちらが決めた帯は、幅で断らない**（v22.3。本人の報告）。
+     この見張りは「人が 2 列ぶんを帯にしてしまった」ときのためのもの。
+     ［いちばん上の行から列を見つける］や［列を探す］で**1 列と分かっている帯**まで
+     断っていた（実測：字送りを 148px と読みそこねただけで、
+     ちゃんとした 288px の列が門前ばらいになった）。 */
+  if (!trusted && (q.x2 - q.x1) > pitch * 1.8){
     /* **こちらの見立てが外れることもある**（v21.77。本人の報告）。
        帯を手で 1 列に合わせてあるのに断られると、進めなくなる。
        人が押したときは **聞いてから通す**（［拓本ぜんたいを通す］の中では聞かない）。 */
@@ -9972,10 +9977,21 @@ async function rubAiBand(noAsk){
     for (var ri3 = 0; ri3 < acc.height; ri3++){
       var b4 = ri3 * acc.width;
       for (var ci3 = 0; ci3 < acc.width; ci3++)
-        if (ci3 < keepX[0] || ci3 > keepX[1]) o2[(b4 + ci3) * 4] = 0;
+        if (ci3 < keepX[0] || ci3 > keepX[1]) gmap[b4 + ci3] = 0;
     }
   }
+  /* **墨のない所は、すき通らせる**（v22.3。本人の報告「拓本ぜんたいを通すと
+     まっ黒になりました」）。ここは下敷きを黒でぬりつぶして作っているので、
+     そのまま重ねると**拓本の写真がぜんぶ隠れる**。
+     上の但し書きどおり「白黒の濃さを、そのまま青の濃さにして重ねる」に直す。
+     ＝ 色は青、**濃さ（0〜255）はそのまま透け具合**にする。 */
+  for (var k5 = 0, k6 = 0; k5 < o2.length; k5 += 4, k6++){
+    var v5 = gmap[k6];
+    if (v5 > 127) n1++;
+    o2[k5] = 30; o2[k5+1] = 110; o2[k5+2] = 220; o2[k5+3] = v5;
+  }
   ag.globalCompositeOperation = "source-over";
+  ag.clearRect(0, 0, acc.width, acc.height);
   ag.putImageData(im2, 0, 0);
   var mmc = mpp ? (mpp / SC) : 0;
   RUB.aiBand = {
@@ -10329,7 +10345,10 @@ async function rubColsScanTop(useAi){
   }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
                     how: (useAi && takuApiBase()) ? "ai" : "local" };
-  S.rub.colN = cols.length;
+  /* **［列の数］には書かない**（v22.3。本人の報告「拓本ぜんたいを通すと こうなりました」）。
+     書くと `rubColsWanted` が「人が本数を入れた」とみて**等分に割り直し**、
+     せっかく見つけた列の**場所**が捨てられていた
+     （実測：34〜277／277〜541／541〜805／805〜989 → 34〜287／258〜526／… に化けた）。 */
   RUB.cols = cols; RUB.colsSplit = false;
   persist(); rubPanel(); rubRender();
   msg("いちばん上の行から、列を " + cols.length + " 本 見つけました（" +
@@ -10467,7 +10486,13 @@ async function rubAllGo(){
        列を見つけられているときの帯はもともと列ぴったりなので、さわらない。 */
     if (RUB.colsSplit){
       var qs = rubBandSnap({ x1: S.rub.bandL, x2: S.rub.bandR, y1: ar2.y1, y2: ar2.y2 }, thr());
-      if (qs){ S.rub.bandL = qs.x1; S.rub.bandR = qs.x2; }
+      /* **帯が見るまに細くなるときは、寄せない**（v22.3）。拓本は 字が白・地が黒なので、
+         いちばん濃い所は字ではなく**地の濃い所**。そこへ寄ってしまう
+         （実測：帯 253px → 86px。そこから先はぜんぶ おかしくなった）。
+         もとの帯の 6 割より細くなる寄せは、まちがいとみて捨てる。 */
+      if (qs && (qs.x2 - qs.x1) >= (S.rub.bandR - S.rub.bandL) * 0.6){
+        S.rub.bandL = qs.x1; S.rub.bandR = qs.x2;
+      }
     }
     /* **広すぎる列は、字送りのぶんに絞る**（v21.98。実物の拓本で見つけた）。
        拓本は 字のまわりまで ひろく こすってあるので、墨から見つけた列は
@@ -10481,8 +10506,11 @@ async function rubAllGo(){
     aiProg(null, "字送り " + Math.round(pit0) + "px" +
       (mmPerPx() ? "＝" + (pit0 * mmPerPx()).toFixed(1) + "mm" : ""));
     await uiTick();
+    /* **字より細くは絞らない**（v22.3）。字送りを読みそこねた列で、
+       帯が 33px（字の 8 分の 1）まで絞られ、そこから先がぜんぶ壊れていた。 */
     if (pit0 > 0 && (S.rub.bandR - S.rub.bandL) > pit0 * 1.6){
-      var mid0 = (S.rub.bandL + S.rub.bandR) / 2, hw = pit0 * 0.7;
+      var mid0 = (S.rub.bandL + S.rub.bandR) / 2;
+      var hw = Math.max(pit0 * 0.7, _rubCharSide() * 0.6);
       S.rub.bandL = Math.max(0, Math.round(mid0 - hw));
       S.rub.bandR = Math.min(RUB.W, Math.round(mid0 + hw));
       A = null; RUB.mask = null;
@@ -10491,7 +10519,7 @@ async function rubAllGo(){
     msg("列 " + (i+1) + " / " + runs.length + " を通しています…", false, true);
     RUB.aiBand = null; RUB.aiWhy = "";
     AIPROG_COL = (i+1) + " / " + runs.length;
-    await rubAiBand(true);        /* まとめて通すときは聞かない */
+    await rubAiBand(true, true);  /* まとめて通すときは聞かない。帯はこちらが決めた */
     AIPROG_COL = "";
     if (AIPROG_STOP){ stopped = true; break; }     /* 通している途中で中止された */
     if (!RUB.aiBand){ ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?")); continue; }

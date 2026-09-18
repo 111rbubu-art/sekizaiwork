@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.81</title>
+<title>彫刻原稿 v21.82</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -769,6 +769,10 @@
     color:var(--muted);}
   #pathEd .peside .peink button{flex:1;min-width:0;margin:0;}
   #pathEd .peside .peink button.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+  #peAutoAsk{margin:6px 0 2px;padding:7px 9px;border:1px solid #b9cef0;border-radius:8px;
+    background:#eef4fd;font-size:11.5px;line-height:1.55;color:var(--ink);}
+  #peAutoAsk b{font-weight:700}
+  #peAutoAsk .btns{display:flex;gap:6px;margin-top:6px}
   /* 「AI お任せ」と「手動補正」は、どちらかを選ぶもの、と見えるようにする */
   #pathEd .peside .peor{display:flex;align-items:center;gap:6px;margin:2px 0 6px;
     font-size:11px;color:var(--muted);}
@@ -1392,6 +1396,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <button class="mini pt" data-t="rubmv">拓本を動かす</button>
           <button class="mini" id="peAiAuto"
             title="［AI お任せ］→［AI 書体補正］→ 縁を広げる 0.1mm を、続けて通します。あとで確かめて、戻せます">AI オート</button>
+          <!-- 確かめは、**窓ではなくここに出す**（v21.82。本人の指摘「確かめの窓が
+               文字の上で固定なので、そもそも文字の上側が確認できず」）。
+               字が見えないまま「はい／いいえ」を決めさせては、確かめになっていない。 -->
+          <div id="peAutoAsk" hidden></div>
 
           <h3 class="sec">② 拓本トレース</h3>
           <p class="hint" style="margin:0 0 5px;"><b>どちらかで</b>墨を整えます。</p>
@@ -2203,7 +2211,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.81";
+var APP_VER = "v21.82";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -17006,6 +17014,7 @@ function peSnapAi(){
 }
 function openPathEditor(gi, ci){
   var g = S.groups[gi]; if (!g) return;
+  peAutoAskHide();                 /* 前の字の確かめは持ち越さない（v21.82） */
   var chars = splitChars(g.text), ch = chars[ci];
   if (!ch){ msg("その文字がありません。", true); return; }
   var fi = fontIdxOf(g, ci), F = FR(fi);
@@ -17084,7 +17093,7 @@ function peViewPreset(made){
   }
   peInkGroupSync();
 }
-function closePathEditor(){ peMenuClose(); PE = null; $("pathEd").hidden = true; }
+function closePathEditor(){ peMenuClose(); peAutoAskHide(); PE = null; $("pathEd").hidden = true; }
 
 /* この字に効いている太さの合計（手で足した分＋可変軸の分） */
 function peTotalPct(){
@@ -18695,17 +18704,27 @@ async function peAiAutoGo(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
   if (!PE.rub || !RUB.data){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
   if (PE_AUTO) return;
+  peAutoAskHide();
   var b = $("peAiAuto"), gEl = $("peGrow");
   var snap = { ai: PE.aiInk || null, grow: gEl ? gEl.value : 0, auto: true };
   var was = b ? b.textContent : "";
   PE_AUTO = true;
   if (b){ b.disabled = true; b.textContent = "① AI お任せ…"; }
-  var ok = false, note = "", shot = null;
+  var ok = false, shot = null;
   AUTO_NOTE = "";
   try {
+    /* **広げるところから始める**（v21.82。本人の指摘「手で 3 つ通したものと
+       AI オートでは出来上がりがちがう」）。［縁を広げる］の欄は前の字の値が
+       残っているので、そのまま通すと **③で広がらない**（②を通した時点の
+       広げ量を覚えていて、その差ぶんしか動かないため）。
+       いったん 0 に戻してから ①②を通し、最後に 0.1 にする。 */
+    if (gEl && num(gEl.value, 0) !== 0){
+      gEl.value = "0";
+      peInkKeep(); peInkRefresh();
+    }
     if (!(await peAiTraceGo(true))) return;
     /* **広げる前の切り抜き**を、ここで取っておく（v21.81。本人の指示
-       「広がる前の情報を学習して」）。保存するのは「はい」と答えてから。 */
+       「広がる前の情報を学習して」）。保存するのは「このままにする」を押してから。 */
     shot = takuShot();
     if (b) b.textContent = "② AI 書体補正…";
     if (!(await peAiShapeGo(true))) return;
@@ -18715,14 +18734,13 @@ async function peAiAutoGo(){
       gEl.value = "0.1";
       peInkShowOn(); peInkKeep(); peInkRefresh();
     }
-    note = AUTO_NOTE;
     ok = true;
   } finally {
     PE_AUTO = false;
     if (b){ b.disabled = false; b.textContent = was || "AI オート"; }
   }
   if (!ok) return;
-  /* まとめて 1 手ぶんの控え。［↶ 1つ戻す］でも、下の「いいえ」でも元に戻る。 */
+  /* まとめて 1 手ぶんの控え。［↶ 1つ戻す］でも、［取り消す］でも元に戻る。 */
   PE.undo.push(snap);
   if (PE.undo.length > 60) PE.undo.shift();
   var ub = $("peUndo"); if (ub) ub.disabled = false;
@@ -18730,28 +18748,45 @@ async function peAiAutoGo(){
   var gtxt = d.growC ? ("縁を " + Math.abs(d.growMm).toFixed(3) + "mm（" +
                         Math.abs(d.growC) + " ます）広げました")
                      : "縁は ます目より小さいので広がりませんでした";
-  if (!confirm("AI オートを通しました。\n\n" +
-               "　① AI お任せ … 拓本から墨を拾いました\n" +
-               "　② AI 書体補正 … 書体らしい形に整えました\n" +
-               "　③ " + gtxt + "\n\n" +
-               "このままでよろしいですか。\n" +
-               "（はい なら、縁を広げる前の墨を学習用に保存します。" +
-               "いいえ なら、押す前の状態に戻し、保存もしません）")){
+  peAutoAsk(gtxt, shot);
+}
+/* 確かめの出し入れ（v21.82）。**字の上に窓をかぶせない**ために、
+   作字の画面の中（［AI オート］のすぐ下）に出す。 */
+var PE_AUTO_SHOT = null;
+function peAutoAsk(gtxt, shot){
+  var el = $("peAutoAsk"); if (!el) return;
+  PE_AUTO_SHOT = shot || null;
+  el.innerHTML = '<b>AI オートを通しました。字を見て決めてください。</b><br>' +
+    '① AI お任せ … 拓本から墨を拾いました<br>' +
+    '② AI 書体補正 … 書体らしい形に整えました<br>' +
+    '③ ' + esc(gtxt) + '<br>' +
+    '<span class="hint">「このままにする」を押すと、<b>縁を広げる前</b>の墨を' +
+    '学習用に保存します。</span>' +
+    '<div class="btns"><button class="mini primary" id="peAutoOk">このままにする</button>' +
+    '<button class="mini" id="peAutoNo">取り消す</button></div>';
+  el.hidden = false;
+  var o = $("peAutoOk"), n = $("peAutoNo");
+  if (o) o.onclick = async function(){
+    o.disabled = true; n.disabled = true;
+    var sv = "";
+    if (PE_AUTO_SHOT){
+      try { sv = (await takuSave(true, PE_AUTO_SHOT)) || ""; } catch(e){ sv = ""; }
+      if (sv) sv += "（AI お任せから直した墨として、**縁を広げる前**の形で残しました）";
+    }
+    peAutoAskHide();
+    msg((sv ? sv + "。" : "") + "AI オートの形で進みます。" +
+        "気に入らなければ［↶ 1つ戻す］で、押す前に戻せます。" +
+        "よければ ④［現トレースから字を作る］へ。");
+  };
+  if (n) n.onclick = function(){
+    peAutoAskHide();
     peUndoGo();
     msg("AI オートを取り消しました。押す前の状態に戻しました（学習用にも保存していません）。");
-    return;
-  }
-  /* **「はい」と答えてから保存する**（v21.81。本人の指示）。
-     保存するのは、②に通す前・**縁を広げる前**に取っておいた切り抜き。 */
-  var sv = "";
-  if (shot){
-    try { sv = (await takuSave(true, shot)) || ""; } catch(e4){ sv = ""; }
-    if (sv) sv += "（AI お任せから直した墨として、**縁を広げる前**の形で残しました）";
-  }
-  msg((sv ? sv + "。" : "") +
-      "AI オートを通しました（お任せ → 書体補正 → " + gtxt + "）。" +
-      "気に入らなければ［↶ 1つ戻す］で、押す前に戻せます。" +
-      "よければ ④［現トレースから字を作る］へ。");
+  };
+}
+function peAutoAskHide(){
+  var el = $("peAutoAsk"); if (!el) return;
+  el.hidden = true; el.innerHTML = ""; PE_AUTO_SHOT = null;
 }
 $("peAiTrace").onclick = function(){ peAiTraceGo(); };
 /* `quiet` … ［AI オート］から続けて呼ぶとき。知らせを出さず、通ったかどうかを返す。 */

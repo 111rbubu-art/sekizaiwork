@@ -2242,7 +2242,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.93";
+var APP_VER = "v21.94";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -15597,6 +15597,30 @@ function fitPrep(raw){
    墨の拾い方（拾う量・ならし・縁を広げる…）や［消す］［塗る］を変えると、
    AI に渡した墨と今の墨が別物になる。そのときは**黙って差し替えを続けない**で、
    入切を切に落として元の墨に戻す（見えているものと、④で作るものを必ず同じにする）。 */
+/* その ます目の枠を覚えておくための印（v21.94） */
+function fitGridSig(G){
+  return G ? { x0: G.x0, y1: G.y1, cell: G.cell, w: G.w, h: G.h } : null;
+}
+/* 前の枠の ます目（0/1）を、いまの枠の ます目に置き直す（v21.94）。
+   ますの真ん中どうしを字の座標で突き合わせるので、ます目の大きさが
+   変わっていても、同じ形がだいたい同じ所に出る。 */
+function fitInkRegrid(src, gr, G){
+  if (!src || !gr || !gr.cell || !G) return null;
+  if (src.length !== gr.w * gr.h) return null;
+  var out = new Uint8Array(G.w * G.h);
+  for (var gy = 0; gy < G.h; gy++){
+    var vy = G.y1 - (gy + 0.5) * G.cell;
+    var oy = Math.round((gr.y1 - vy) / gr.cell - 0.5);
+    if (oy < 0 || oy >= gr.h) continue;
+    for (var gx = 0; gx < G.w; gx++){
+      var vx = G.x0 + (gx + 0.5) * G.cell;
+      var ox = Math.round((vx - gr.x0) / gr.cell - 0.5);
+      if (ox < 0 || ox >= gr.w) continue;
+      out[gy * G.w + gx] = src[oy * gr.w + ox];
+    }
+  }
+  return out;
+}
 function fitAiInk(P, raw){
   if (!P || !PE || !PE.aiInk) return P;
   if (raw) return P;                 /* 生の墨がほしい所（学習用に保存・AI に渡す元） */
@@ -15613,6 +15637,18 @@ function fitAiInk(P, raw){
      ［縁を広げる］も同じく AI のあとに効く（v21.16）。
      AI にかけたときの広げ量との**差だけ**、AI の墨のふちを動かす。 */
   var G = P.G, cNow = peGrowCells(G), A = PE.aiInk, ps = rubPaint();
+  /* **ます目の枠が変わったときは、AI の墨を置き直す**（v21.94。本人の報告
+     「パス化を押したら、縁取（赤）線がおかしくなりました」）。
+     ［パス化］は `PE.contours` を なぞった輪郭に入れかえるので、枠（fitGrid）の
+     幅・高さ・ます目の大きさが変わる。AI の墨（`ink0`）は前の枠の並びなので、
+     そのまま新しい幅で読むと **1 行ずつずれて横しま** になっていた。
+     枠は `keyNG` に入っていない（輪郭は入っていない）ので、ここで長さを見て気づく。 */
+  if (A.ink0 && A.ink0.length !== G.w * G.h){
+    var rg = fitInkRegrid(A.ink0, A.gr, G);
+    if (!rg){ PE.aiInk = null; PE.aiDrop = true; return P; }
+    if (A.gr && A.gr.cell) A.gwC0 = Math.round(num(A.gwC0, 0) * A.gr.cell / G.cell);
+    A.ink0 = rg; A.gr = fitGridSig(G); A.ink = null; A.gwC = null;
+  }
   /* 作り直し。［縁を広げる］の差をかけてから、塗りをぜんぶ重ねる。 */
   function rebuild(){
     var d = cNow - num(A.gwC0, 0);
@@ -17262,7 +17298,7 @@ function peViewPreset(made){
   }
   peInkGroupSync();
 }
-function closePathEditor(){ peMenuClose(); peAutoAskHide(); PE = null; $("pathEd").hidden = true; }
+function closePathEditor(){ peMenuClose(); peAutoAskHide(); PE_AUTO_OK = false; PE = null; $("pathEd").hidden = true; }
 
 /* この字に効いている太さの合計（手で足した分＋可変軸の分） */
 function peTotalPct(){
@@ -18936,6 +18972,7 @@ async function peAiAutoGo(){
      修正がある場合は手動補正のボタンを押します」）。 */
   PE_AUTO_TRACE = traceAi || null;
   PE_AUTO_SHAPEAI = PE.aiInk || null;
+  PE_AUTO_OK = true;
   PE_AUTO_PAINT0 = rubPaint().length;
   PE_AUTO_VIEW = "shape";
   peTraceEdgeOn();
@@ -18960,6 +18997,7 @@ function peAutoAsk(gtxt){
   el.hidden = false;
   var n = $("peAutoNo");
   if (n) n.onclick = function(){
+    PE_AUTO_OK = false;
     peAutoAskHide();
     peUndoGo();
     msg("AI オートを取り消しました。押す前の状態に戻しました（学習用にも保存していません）。");
@@ -18983,6 +19021,10 @@ function peAutoViewApply(){
   peInkShowOn(); peInkKeep(); peInkRefresh();
 }
 var PE_AUTO_SHAPE = null, PE_AUTO_GROW = null;
+/* ［AI オート］を通したか（v21.94。本人の指示「AIオートも実行したら済を入れて」）。
+   `PE_AUTO_TRACE` は ［パス化］や［取り消す］で消える（確かめの窓を閉じるため）ので、
+   済マーク用には別に持つ。取り消したときと、別の字を開いたときに戻す。 */
+var PE_AUTO_OK = false;
 var PE_AUTO_SHAPEAI = null;   /* ②（整える）が出した形。登録の振り分けに使う */
 var PE_AUTO_PAINT0 = 0;       /* 直しモードに入ったときの、塗りの本数 */
 /* 学習用に登録する（v21.85。本人の決めごと）。
@@ -19097,7 +19139,7 @@ async function peAiTraceGo(quiet){
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
   PE.aiInk  = { keyNG: (PE.inkC && PE.inkC.keyNG) || "", pv: -1, ink0: got.ink, ink: null,
-                gwC0: peGrowCells(P.G), gwC: null, from: "trace" };
+                gwC0: peGrowCells(P.G), gwC: null, from: "trace", gr: fitGridSig(P.G) };
   PE.aiDrop = false;
   peInkShowOn();
   peTraceEdgeOn();                  /* ①の墨ができたので、青い線も出す（v21.88） */
@@ -19173,7 +19215,8 @@ async function peAiShapeGo(quiet){
   /* 入り口は**広げ量 0** でそろえたので、`gwC0` も 0 ます。
      いま［縁を広げる］に入っている分は、このあと差として効く。 */
   PE.aiInk  = { keyNG: keyNG, pv: -1, ink0: got.ink, ink: null,
-                gwC0: 0, gwC: null, from: "shape", base: base || null };
+                gwC0: 0, gwC: null, from: "shape", base: base || null,
+                gr: fitGridSig(P && P.G) };
   PE.aiDrop = false;
   peInkShowOn();                    /* 何が変わったのか見えないと決められない */
   peTraceEdgeOn();                  /* ①の墨（青）も出す（v21.88） */
@@ -19270,7 +19313,8 @@ if ($("peTrace2")) $("peTrace2").onclick = function(){ peTraceGo(); };
    実行されていれば済マークを付けて分かりやすく目立つように」）。 */
 function peStepMark(){
   var tr = peTraceInk(), shp = peShapeInk();
-  [["peAiTrace", "AI 拓本解析", !!tr],
+  [["peAiAuto",  "AI オート",   !!PE_AUTO_OK],
+   ["peAiTrace", "AI 拓本解析", !!tr],
    ["peAiShape", "AI 書体補正", !!shp],
    ["peTrace",  "パス化", !!(PE && PE.traced)],
    ["peTrace2", "パス化", !!(PE && PE.traced)]].forEach(function(a3){

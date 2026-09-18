@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.79</title>
+<title>彫刻原稿 v21.80</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -1390,8 +1390,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
         <div id="peP1">
           <h3 class="sec">① 拓本を合わせる</h3>
           <button class="mini pt" data-t="rubmv">拓本を動かす</button>
-          <button class="mini" id="peAiAuto" disabled
-            title="これから作ります。いまは［拓本を動かす］で手で合わせてください。">AI オート</button>
+          <button class="mini" id="peAiAuto"
+            title="［AI お任せ］→［AI 書体補正］→ 縁を広げる 0.1mm を、続けて通します。あとで確かめて、戻せます">AI オート</button>
 
           <h3 class="sec">② 拓本トレース</h3>
           <p class="hint" style="margin:0 0 5px;"><b>どちらかで</b>墨を整えます。</p>
@@ -2203,7 +2203,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.79";
+var APP_VER = "v21.80";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -16996,6 +16996,7 @@ function peSnapPaint(){
    前の墨（かけていなければ null）をそのまま覚えておけば、1 手で戻せる。 */
 function peSnapAi(){
   if (!PE) return;
+  if (PE_AUTO) return;        /* ［AI オート］は、ぜんぶまとめて 1 手で戻す（v21.80） */
   PE.undo.push({ ai: PE.aiInk || null });
   if (PE.undo.length > 60) PE.undo.shift();
 }
@@ -18424,14 +18425,24 @@ function peShareGo(asNew){
 }
 $("peShare").onclick    = function(){ peShareGo(false); };
 $("peShareNew").onclick = function(){ peShareGo(true); };
-$("peUndo").onclick = function(){
+$("peUndo").onclick = function(){ peUndoGo(); };
+function peUndoGo(){
   if (!PE || !PE.undo.length) return;
   var u = PE.undo.pop();
   if (u && typeof u === "object" && u.ai !== undefined){
-    /* AI 書体補正を 1 手ぶん戻す */
+    /* AI 書体補正（と［AI オート］）を 1 手ぶん戻す */
     PE.aiInk = u.ai; PE.aiDrop = false;
     PE_INFO_HOLD = false;
+    /* ［AI オート］で変えた「縁を広げる」も、一緒に戻す（v21.80） */
+    if (u.grow !== undefined){
+      var gEl = $("peGrow");
+      if (gEl && String(gEl.value) !== String(u.grow)){
+        gEl.value = u.grow;
+        peInkKeep(); peInkRefresh();
+      }
+    }
     peEdgeRedraw();
+    if (u.auto) return;             /* 知らせは、呼んだ側で出す */
     msg(u.ai ? "AI 書体補正を 1 つ前に戻しました。"
              : "AI 書体補正を戻しました。拾ったままの墨です。");
     return;
@@ -18447,7 +18458,7 @@ $("peUndo").onclick = function(){
   PE.contours = JSON.parse((u && u.c !== undefined) ? u.c : u);   /* 古い控えも読める */
   PE.rubLock = false;                 /* 合わせる前に戻したので、また拓本を動かせる（v20.58） */
   PE.sel = []; PE.selC = []; peRender();
-};
+}
 $("peReset").onclick = function(){
   if (!PE) return;
   if (!confirm("編集を捨てて、フォントの元の形に戻します。よろしいですか。")) return;
@@ -18664,14 +18675,78 @@ Array.prototype.forEach.call(document.querySelectorAll("#peTabs button"), functi
 
 /* ［AI オート］… まだ中身が無いので、**灰色で押せない**（v21.39。本人の指示）。
    ［AI お任せ］は v21.49 で中身を入れた（①「読む」のモデルが出来たため）。 */
-$("peAiTrace").onclick = function(){ peAiTraceGo(); };
-async function peAiTraceGo(){
+/* ［AI オート］（v21.80。本人の指示「作字画面のAIオートの有効化してください。
+   AIお任せと、AI書体補正、縁の幅を広げる0.1を実行するイメージです。
+   実行後、確認のメッセージを入れて、戻れるようにもして」）。
+
+   1 字ぶんの手順を、**押すのは 1 回**にまとめる。
+     ① AI お任せ（拓本 → 墨）
+     ② AI 書体補正（墨 → 書体らしい形。ここで学習用にも保存される）
+     ③ 縁を広げる 0.1mm（彫りの当たりを見て、少しだけ太らせる）
+   **戻せることが肝心**なので、3 つまとめて 1 手として控え、
+   通したあとに「このままでよいか」を聞く。いいえなら その場で元どおり。 */
+var PE_AUTO = false;
+$("peAiAuto").onclick = function(){ peAiAutoGo(); };
+async function peAiAutoGo(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
   if (!PE.rub || !RUB.data){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  if (PE_AUTO) return;
+  var b = $("peAiAuto"), gEl = $("peGrow");
+  var snap = { ai: PE.aiInk || null, grow: gEl ? gEl.value : 0, auto: true };
+  var was = b ? b.textContent : "";
+  PE_AUTO = true;
+  if (b){ b.disabled = true; b.textContent = "① AI お任せ…"; }
+  var ok = false, note = "";
+  AUTO_NOTE = "";
+  try {
+    if (!(await peAiTraceGo(true))) return;
+    if (b) b.textContent = "② AI 書体補正…";
+    if (!(await peAiShapeGo(true))) return;
+    if (b) b.textContent = "③ 縁を広げる…";
+    /* 縁を広げるは、数字の欄と同じ道を通す（onchange の中身をそのまま使う）。 */
+    if (gEl){
+      gEl.value = "0.1";
+      peInkShowOn(); peInkKeep(); peInkRefresh();
+    }
+    note = AUTO_NOTE;
+    ok = true;
+  } finally {
+    PE_AUTO = false;
+    if (b){ b.disabled = false; b.textContent = was || "AI オート"; }
+  }
+  if (!ok) return;
+  /* まとめて 1 手ぶんの控え。［↶ 1つ戻す］でも、下の「いいえ」でも元に戻る。 */
+  PE.undo.push(snap);
+  if (PE.undo.length > 60) PE.undo.shift();
+  var ub = $("peUndo"); if (ub) ub.disabled = false;
+  var d = FIT_DIAG || {};
+  var gtxt = d.growC ? ("縁を " + Math.abs(d.growMm).toFixed(3) + "mm（" +
+                        Math.abs(d.growC) + " ます）広げました")
+                     : "縁は ます目より小さいので広がりませんでした";
+  if (!confirm("AI オートを通しました。\n\n" +
+               "　① AI お任せ … 拓本から墨を拾いました\n" +
+               "　② AI 書体補正 … 書体らしい形に整えました\n" +
+               "　③ " + gtxt + "\n\n" +
+               "このままでよろしいですか。\n" +
+               "（いいえ を押すと、押す前の状態に戻します）")){
+    peUndoGo();
+    msg("AI オートを取り消しました。押す前の状態に戻しました。");
+    return;
+  }
+  msg((note ? note + "。" : "") +
+      "AI オートを通しました（お任せ → 書体補正 → " + gtxt + "）。" +
+      "気に入らなければ［↶ 1つ戻す］で、押す前に戻せます。" +
+      "よければ ④［現トレースから字を作る］へ。");
+}
+$("peAiTrace").onclick = function(){ peAiTraceGo(); };
+/* `quiet` … ［AI オート］から続けて呼ぶとき。知らせを出さず、通ったかどうかを返す。 */
+async function peAiTraceGo(quiet){
+  if (!PE){ msg("作字の画面を開いてから押してください。", true); return false; }
+  if (!PE.rub || !RUB.data){ msg("先に拓本を敷いて、この字に重ねてください。", true); return false; }
   var P = fitPrep();
-  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return false; }
   var sh = takuShot();
-  if (!sh){ msg("拓本を切り出せませんでした。", true); return; }
+  if (!sh){ msg("拓本を切り出せませんでした。", true); return false; }
   var b = $("peAiTrace");
   if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
   var got;
@@ -18679,7 +18754,7 @@ async function peAiTraceGo(){
   finally { if (b){ b.disabled = false; peAiTraceShow(); } }
   if (!got || !got.ink){
     msg("［AI お任せ］は かかりませんでした。" + ((got && got.note) || ""), true);
-    return;
+    return false;
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
   PE.aiInk  = { keyNG: (PE.inkC && PE.inkC.keyNG) || "", pv: -1, ink0: got.ink, ink: null,
@@ -18688,9 +18763,11 @@ async function peAiTraceGo(){
   peInkShowOn();
   PE_INFO_HOLD = false;
   peEdgeRedraw();
-  msg("AI お任せで墨を拾いました。" + (got.note || "") +
-      "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
-      "直したあと［AI 書体補正］を押せば、**この墨が学習用に保存されます**。");
+  if (!quiet)
+    msg("AI お任せで墨を拾いました。" + (got.note || "") +
+        "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
+        "直したあと［AI 書体補正］を押せば、**この墨が学習用に保存されます**。");
+  return true;
 }
 function peAiTraceShow(){
   var b = $("peAiTrace"); if (!b) return;
@@ -18701,11 +18778,11 @@ function peAiTraceShow(){
    入切ではない（本人の指示：もう一度押して戻す機能は無くす）。
    戻すのは［↶ 1つ戻す］。そのあと［消す］［塗る］で手直しもできる。 */
 $("peAiShape").onclick = function(){ peAiShapeGo(); };
-async function peAiShapeGo(){
-  if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
+async function peAiShapeGo(quiet){
+  if (!PE){ msg("作字の画面を開いてから押してください。", true); return false; }
   var b = $("peAiShape");
   var P = fitPrep();
-  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
+  if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return false; }
   if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
   /* ここで学習用にも保存する（v21.13。本人の指示「AI 学習用に保存は無しにして、
      AI書体補正を押すと保存される仕組み」）。押すボタンを 1 つ減らし、
@@ -18723,7 +18800,7 @@ async function peAiShapeGo(){
   if (!got || !got.ink){
     msg((svNote ? svNote + "。" : "") +
         "［AI 書体補正］は かかりませんでした。" + ((got && got.note) || ""), true);
-    return;
+    return false;
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
   /* いま画面に出ている墨の拾い方と対で覚える。拾い方が変われば fitAiInk が捨てる。
@@ -18734,11 +18811,15 @@ async function peAiShapeGo(){
   peInkShowOn();                    /* 何が変わったのか見えないと決められない */
   PE_INFO_HOLD = false;
   peEdgeRedraw();
-  msg((svNote ? svNote + "。" : "") +
-      "AI 書体補正をかけました。" + (got.note || "") +
-      "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
-      "この墨から④で字を作ります。");
+  if (!quiet)
+    msg((svNote ? svNote + "。" : "") +
+        "AI 書体補正をかけました。" + (got.note || "") +
+        "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
+        "この墨から④で字を作ります。");
+  AUTO_NOTE = svNote;
+  return true;
 }
+var AUTO_NOTE = "";
 function peAiShapeShow(){
   var b = $("peAiShape"); if (!b) return;
   b.textContent = "AI 書体補正";

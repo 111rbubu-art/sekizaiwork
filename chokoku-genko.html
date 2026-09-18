@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.84</title>
+<title>彫刻原稿 v21.85</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2211,7 +2211,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.84";
+var APP_VER = "v21.85";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -16445,15 +16445,94 @@ function traceToContours(G, ink, smoothMm, minMm2, kind, cornerDeg){
   return out.length ? out : null;
 }
 
+/* **別の墨のふちだけ**を、色を変えて描く（v21.85。本人の案
+   「縁取りラインと、校正ラインを表示させ、校正ラインのみ修正がある場合は②、
+   縁取りまで修正する場合は①」）。
+   `aiObj`／`growVal` を差し替えて `fitPrep` を通し、**ふちの ます だけ**塗る。
+   取り置き（`PE.inkC`）は元に戻すので、画面の墨はこれで変わらない。 */
+function fitEdgeURLOf(aiObj, growVal, col){
+  if (!PE) return null;
+  var gEl = $("peGrow"), g0 = gEl ? gEl.value : null, ai0 = PE.aiInk, c0 = PE.inkC;
+  var out = null;
+  try {
+    PE.aiInk = aiObj || null; PE.inkC = null;
+    if (gEl && growVal !== undefined && growVal !== null) gEl.value = growVal;
+    var P = fitPrep();
+    if (P){
+      var G = P.G, ink = P.ink, w = G.w, h = G.h;
+      var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+      var cx = cv.getContext("2d"), id = cx.createImageData(w, h);
+      for (var y = 0; y < h; y++) for (var x = 0; x < w; x++){
+        var i = y*w + x; if (!ink[i]) continue;
+        var edge = (x === 0 || y === 0 || x === w-1 || y === h-1) ||
+                   !ink[i-1] || !ink[i+1] || !ink[i-w] || !ink[i+w];
+        if (!edge) continue;
+        var q = i*4;
+        id.data[q] = col[0]; id.data[q+1] = col[1]; id.data[q+2] = col[2]; id.data[q+3] = 255;
+      }
+      cx.putImageData(id, 0, 0);
+      out = { url: cv.toDataURL("image/png"), x: G.x0.toFixed(1), y: (-G.y1).toFixed(1),
+              w: (w*G.cell).toFixed(1), h: (h*G.cell).toFixed(1) };
+    }
+  } catch(e){ out = null; }
+  finally {
+    PE.aiInk = ai0; PE.inkC = c0;
+    if (gEl && g0 !== null) gEl.value = g0;
+  }
+  return out;
+}
+/* その墨に、**人の直しが効いているか**を数で見る（v21.85）。
+   直し（消す・塗る）を外した墨と、いまの墨の ます の数をくらべる。 */
+function fitInkCount(aiObj, growVal, paintN){
+  if (!PE) return -1;
+  var gEl = $("peGrow"), g0 = gEl ? gEl.value : null, ai0 = PE.aiInk, c0 = PE.inkC;
+  var ps = rubPaint(), old = null, n = -1;
+  try {
+    if (paintN !== null && paintN !== undefined && ps.length > paintN){
+      old = ps.slice(); ps.length = paintN; rubPaintBump();
+    }
+    PE.aiInk = aiObj || null; PE.inkC = null;
+    if (gEl && growVal !== undefined && growVal !== null) gEl.value = growVal;
+    var P = fitPrep();
+    if (P){ n = 0; for (var k = 0; k < P.ink.length; k++) n += P.ink[k]; }
+  } catch(e){ n = -1; }
+  finally {
+    if (old){ ps.length = 0; Array.prototype.push.apply(ps, old); rubPaintBump(); }
+    PE.aiInk = ai0; PE.inkC = c0;
+    if (gEl && g0 !== null) gEl.value = g0;
+  }
+  return n;
+}
+/* その切り抜きを、そのまま拓本AI へ送る（v21.85）。①②で入れ先を変える。 */
+async function takuPostPairAI(rawUrl, maskUrl, ch, key, set){
+  var base = takuApiBase(); if (!base) return null;
+  var fd = new FormData();
+  fd.append("raw_image", takuBlob(rawUrl), "raw.png");
+  fd.append("corrected_image", takuBlob(maskUrl), "mask.png");
+  fd.append("char_hint", ch || "");
+  fd.append("key", key);
+  fd.append("set", set || "ink");
+  var r = await fetch(base + "/api/takuhon/feedback", { method: "POST", body: fd });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
 /* テスト：拾った墨のふちを、拓本の上に赤で出す。
    合わせ込みが変な動きをしたとき、拓本を読めていないのか、
    拾い方が悪いのかを、目で切り分けるため。 */
 function fitEdgeLayer(){
   var u = fitEdgeURL(); if (!u) return "";
+  /* 直しモードのあいだは、**①（縁取り）の線も青で重ねる**（v21.85。本人の案）。
+     赤＝いまの仕上がり（校正ライン）／青＝①の墨（縁取りライン）。
+     どちらを直したのかが、目で分かる。 */
+  var u2 = (PE_AUTO_TRACE && PE_AUTO_VIEW === "shape")
+    ? fitEdgeURLOf(PE_AUTO_TRACE, "0", [30, 110, 220]) : null;
+  var lay2 = u2 ? ('<image id="peEdgeImg2" href="' + u2.url + '" x="' + u2.x + '" y="' + u2.y +
+    '" width="' + u2.w + '" height="' + u2.h + '" opacity="' + peEdgeOp() +
+    '" preserveAspectRatio="none" style="image-rendering:pixelated"/>') : "";
   /* 濃さは拓本と同じように変えられる（v20.98）。
      拓本の上に赤で重ねているので、拓本が薄いと赤が強すぎ、
      拓本が濃いと赤が埋もれる。両方を見くらべながら決められるようにした。 */
-  return '<image id="peEdgeImg" href="' + u.url + '" x="' + u.x + '" y="' + u.y +
+  return lay2 + '<image id="peEdgeImg" href="' + u.url + '" x="' + u.x + '" y="' + u.y +
     '" width="' + u.w + '" height="' + u.h + '" opacity="' + peEdgeOp() +
     '" preserveAspectRatio="none" style="image-rendering:pixelated"/>';
 }
@@ -18792,6 +18871,9 @@ function peAutoFixMode(){
   var el = $("peAutoAsk"); if (!el) return;
   PE_AUTO_SHOT = null;                 /* 直す前の切り抜きは使わない */
   PE_AUTO_VIEW = "shape";
+  PE_AUTO_SHAPEAI = PE ? PE.aiInk : null;      /* ②の形（v21.85） */
+  PE_AUTO_PAINT0 = rubPaint().length;          /* ここから先が「人の直し」 */
+  peRender();                                  /* ①の青い線を出す */
   peAutoFixDraw();
   msg("AI オートの形はそのままです。［消す］［塗る］で直してから、" +
       "［いまの墨で登録する］を押してください。直しは①の墨にも効きます。", false, true);
@@ -18801,8 +18883,12 @@ function peAutoFixDraw(){
   var ck = (PE_AUTO_VIEW === "trace");
   el.innerHTML = '<b>直してから登録します。</b><br>' +
     '出すぎた点やはみ出しを［消す］、足りない所を［塗る］で直してください。<br>' +
-    '<span class="hint">登録されるのは、いつでも <b>①「読む」の墨（縁を広げる前）＋いまの直し</b> です。' +
-    '②「整える」の形は登録しません（彫ってある形とちがうため）。</span>' +
+    '<span class="hint">' +
+    '<b style="color:#1B6FD6">青い線＝縁取り（①が読んだ墨）</b>／' +
+    '<b style="color:#DC2616">赤い線＝校正ライン（いまの仕上がり）</b><br>' +
+    '<b>青が動いたら①に、赤だけが動いたら②に</b>登録します（どちらも縁を広げる前）。' +
+    '青が動いたときは、②には登録しません（元の墨が変わっているため）。' +
+    '筆のかすり（0.5% 未満）は「動いていない」とみます。</span>' +
     '<div class="btns">' +
     '<button class="mini primary" id="peAutoSaveNow">いまの墨で登録する</button>' +
     (PE_AUTO_TRACE ? '<button class="mini' + (ck ? " primary" : "") + '" id="peAutoView">' +
@@ -18842,38 +18928,87 @@ function peAutoViewApply(){
   peInkShowOn(); peInkKeep(); peInkRefresh();
 }
 var PE_AUTO_SHAPE = null, PE_AUTO_GROW = null;
-/* 学習用に登録する。**縁を広げる前**の墨で残す（v21.81／v21.83）。
-   `shot` があればそれを使い（オート直後）、無ければ**いまの墨**を
-   いったん広げ量 0 に戻して切り出す（人が直したあと）。 */
+var PE_AUTO_SHAPEAI = null;   /* ②（整える）が出した形。登録の振り分けに使う */
+var PE_AUTO_PAINT0 = 0;       /* 直しモードに入ったときの、塗りの本数 */
+/* 学習用に登録する（v21.85。本人の決めごと）。
+
+     **青（縁取り＝①の墨）が動いた** … ①に登録する。②には登録しない
+                                        （入れるものが変わっているので、
+                                          ②の正解としては使えない）
+     **赤（校正ライン＝②の形）だけ動いた** … ②に登録する
+                                        （入れる＝①の墨／正解＝直した形）
+     **どちらも動いていない**（そのまま登録） … ①に登録する
+                                        （AI の墨を「これでよい」と認めた組）
+
+   どちらも**縁を広げる前**で残す。`shot` があれば（オート直後）それを使う。 */
 async function peAutoSave(shot){
   var o = $("peAutoOk"), f = $("peAutoFix"), sv = $("peAutoSaveNow");
   [o, f, sv].forEach(function(b){ if (b) b.disabled = true; });
-  var sh = shot, gEl = $("peGrow"), g0 = gEl ? gEl.value : null;
-  if (!sh){
-    /* **①（読む）の墨に、人の直しを当てたもの**を切り出す（v21.84。本人の指摘）。
-       いま見ているのが②の形でも、登録するのは①の墨。
-       直し（消す・塗る）は拓本の画素に付いているので、そのまま効く。
-       広げ量も 0 に戻して切り出し、終わったら元へ返す。 */
-    var ai0 = PE.aiInk;
+  var gEl = $("peGrow"), g0 = gEl ? gEl.value : null;
+  var ch = $("peChar") ? $("peChar").textContent : "";
+  var note = "", note2 = "";
+  try {
+    if (shot){                       /* そのまま登録（直していない） */
+      try { note = (await takuSave(true, shot)) || ""; } catch(e){ note = ""; }
+      peAutoAskHide();
+      msg((note ? note + "（① 読む に、縁を広げる前の形で残しました）。" : "登録できませんでした。") +
+          "気に入らなければ［↶ 1つ戻す］で、AI オートを押す前に戻せます。", !note);
+      return;
+    }
+    /* どちらが動いたかを、ます の数で見る */
+    var n1 = fitInkCount(PE_AUTO_TRACE, "0", null);
+    var n1b = fitInkCount(PE_AUTO_TRACE, "0", PE_AUTO_PAINT0);
+    var n2 = fitInkCount(PE_AUTO_SHAPEAI, "0", null);
+    var n2b = fitInkCount(PE_AUTO_SHAPEAI, "0", PE_AUTO_PAINT0);
+    /* **筆は丸いので、②だけを直したつもりでも ①の縁に少しかかる**
+       （実測：②だけにある ます を 1 つ消したら、①も 3 ます 動いた）。
+       そこで「動いた」は **0.5%（最低 30 ます）を超えたとき**とする。
+       それ未満は、筆のかすりとみなす。 */
+    function moved(a2, b2){
+      if (!(a2 >= 0 && b2 >= 0)) return false;
+      return Math.abs(a2 - b2) >= Math.max(30, b2 * 0.005);
+    }
+    var ch1 = moved(n1, n1b);
+    var ch2 = moved(n2, n2b);
+    var d1 = (n1 >= 0 && n1b >= 0) ? Math.abs(n1 - n1b) : 0;
+    /* ①の切り抜き（拓本＋①の墨）と、②の切り抜き（同じ枠の②の形） */
+    var shA = null, shB = null, ai0 = PE.aiInk, c0 = PE.inkC;
     try {
-      if (PE_AUTO_TRACE && PE_AUTO_VIEW !== "trace"){ PE.aiInk = PE_AUTO_TRACE; PE.aiDrop = false; }
-      if (gEl && num(g0, 0) !== 0) gEl.value = "0";
-      peInkKeep(); peInkRefresh();
-      sh = takuShot();
+      if (gEl) gEl.value = "0";
+      PE.aiInk = PE_AUTO_TRACE; PE.inkC = null; PE.aiDrop = false;
+      shA = takuShot();
+      if (!ch1 && ch2 && PE_AUTO_SHAPEAI){
+        PE.aiInk = PE_AUTO_SHAPEAI; PE.inkC = null;
+        shB = takuShot();
+      }
     } finally {
-      PE.aiInk = ai0;
+      PE.aiInk = ai0; PE.inkC = c0;
       if (gEl && g0 !== null) gEl.value = g0;
       peInkKeep(); peInkRefresh();
     }
+    if (!ch1 && ch2 && shA && shB){
+      /* ②へ：入れる＝①の墨／正解＝直した形 */
+      var key2 = "shape_" + (shA.key || takuKey(shA));
+      try {
+        var j2 = await takuPostPairAI(shA.mask, shB.mask, ch, key2, "shape_rub");
+        note2 = j2 ? ("② 整える に登録しました（サーバーに " + (j2.pairs || "?") + " 組）") : "";
+      } catch(e2){ note2 = "② 整える へは送れませんでした（" + ((e2 && e2.message) || "") + "）"; }
+      peAutoAskHide();
+      msg((note2 || "② へ登録できませんでした") + "。" +
+          "縁取り（青）は動いていない（" + d1 + " ます）ので、①には登録していません。" +
+          "［↶ 1つ戻す］で、AI オートを押す前に戻せます。", !note2);
+      return;
+    }
+    /* ①へ */
+    if (shA){ try { note = (await takuSave(true, shA)) || ""; } catch(e3){ note = ""; } }
+    peAutoAskHide();
+    msg((note ? note + "（① 読む に、縁を広げる前の形で残しました）。" : "登録できませんでした。") +
+        (ch1 ? "縁取り（青）が " + d1 + " ます 動いたので、②には登録していません。"
+             : "直しが無かったので、①に「これでよい」として残しました。") +
+        "［↶ 1つ戻す］で、AI オートを押す前に戻せます。", !note);
+  } finally {
+    [o, f, sv].forEach(function(b){ if (b) b.disabled = false; });
   }
-  var note = "";
-  if (sh){
-    try { note = (await takuSave(true, sh)) || ""; } catch(e){ note = ""; }
-  }
-  peAutoAskHide();
-  msg((note ? note + "（**縁を広げる前**の形で残しました）。" : "登録できませんでした。") +
-      "気に入らなければ［↶ 1つ戻す］で、AI オートを押す前に戻せます。" +
-      "よければ ④［現トレースから字を作る］へ。", !note);
 }
 function peAutoAskHide(){
   var el = $("peAutoAsk"); if (!el) return;
@@ -18881,6 +19016,8 @@ function peAutoAskHide(){
   if (PE_AUTO_VIEW === "trace" && PE){ PE_AUTO_VIEW = "shape"; peAutoViewApply(); }
   el.hidden = true; el.innerHTML = "";
   PE_AUTO_SHOT = null; PE_AUTO_TRACE = null; PE_AUTO_SHAPE = null; PE_AUTO_GROW = null;
+  PE_AUTO_SHAPEAI = null; PE_AUTO_PAINT0 = 0;
+  if (PE) peRender();                    /* ①の青い線を消す */
 }
 $("peAiTrace").onclick = function(){ peAiTraceGo(); };
 /* `quiet` … ［AI オート］から続けて呼ぶとき。知らせを出さず、通ったかどうかを返す。 */
@@ -18980,7 +19117,14 @@ function peEdgeRedraw(){
   var ub = $("peUndo"); if (ub) ub.disabled = !PE.undo.length;   /* 描き直さないので、ここで */
   var st = $("peStage"), img = st && st.querySelector("#peEdgeImg");
   var u = img ? fitEdgeURL() : null;
-  if (u) img.setAttribute("href", u.url); else peRender();
+  if (u) img.setAttribute("href", u.url); else { peRender(); return; }
+  /* ①（縁取り）の青い線も、一緒に描き直す（v21.85） */
+  var im2 = st && st.querySelector("#peEdgeImg2");
+  if (PE_AUTO_TRACE && PE_AUTO_VIEW === "shape"){
+    var u2 = fitEdgeURLOf(PE_AUTO_TRACE, "0", [30, 110, 220]);
+    if (u2 && im2) im2.setAttribute("href", u2.url);
+    else if (u2 && !im2) peRender();
+  } else if (im2){ peRender(); }
 }
 /* ［縁を広げる mm］（v21.5）。**拾った墨の縁**を、そのぶん外へ動かす
    （内へは −）。ここは拓本をなぞっている段なので、動かすのは

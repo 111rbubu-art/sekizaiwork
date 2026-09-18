@@ -242,6 +242,15 @@
     opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;max-width:80vw;}
   #msg.show{opacity:1;}
   #msg.err{background:var(--shu);}
+  /* 通している間の進み具合（v21.99）。**押したあと止まって見えない**ように、
+     いま何列めの何をしているかを、字で出しつづける。 */
+  #aiProg{position:fixed;right:16px;top:64px;z-index:60;background:#111827;color:#fff;
+    padding:10px 14px;border-radius:9px;font-size:12.5px;min-width:240px;
+    box-shadow:0 6px 20px rgba(0,0,0,.35);}
+  #aiProg .ttl{font-weight:700;margin-bottom:5px;}
+  #aiProg .ln{margin:2px 0;}
+  #aiProg .ln.sub{color:#9CA3AF;font-size:11.5px;}
+  #aiProg button{margin-top:7px;background:#374151;color:#fff;border-color:#4B5563;}
 
   .cstrip{display:flex;flex-wrap:wrap;gap:4px;border:1px solid var(--line);border-radius:7px;
     padding:6px;background:var(--surface);max-height:190px;overflow-y:auto;}
@@ -1273,6 +1282,15 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
 <!-- 押した所のすぐ下に出す、小さな選び窓（保存先など） -->
 <div id="pickMenu" hidden></div>
 <div id="msg"></div>
+<!-- 通している間の進み具合（v21.99。本人の報告「拓本ぜんたいを通すを押すと
+     フリーズしたようになる。動いているならメッセージと解析状況を出して」）。 -->
+<div id="aiProg" hidden>
+  <div class="ttl">拓本を通しています</div>
+  <div class="ln" id="aiProgA">—</div>
+  <div class="ln" id="aiProgB"></div>
+  <div class="ln sub" id="aiProgC"></div>
+  <button class="mini" id="aiProgStop">中止</button>
+</div>
 <div id="charMenu" hidden></div>
 <div id="grpMenu" hidden></div>
 <div id="addMenu" hidden></div>
@@ -2237,11 +2255,36 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.98";
+var APP_VER = "v21.99";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
 } catch(e){}
+/* 進み具合の窓（v21.99）。長い仕事の間、**何をどこまでやっているか**を出す。 */
+var AIPROG_T0 = 0, AIPROG_STOP = false;
+function aiProgOn(){
+  AIPROG_STOP = false; AIPROG_T0 = Date.now();
+  var el = $("aiProg"); if (el) el.hidden = false;
+  var b = $("aiProgStop");
+  if (b){ b.disabled = false; b.textContent = "中止";
+    b.onclick = function(){ AIPROG_STOP = true; b.disabled = true;
+      b.textContent = "中止しています…"; aiProg(null, "中止しています。いまの所まででやめます…"); }; }
+}
+function aiProgOff(){ var el = $("aiProg"); if (el) el.hidden = true; }
+function aiProg(a, b2, c){
+  var A2 = $("aiProgA"), B2 = $("aiProgB"), C2 = $("aiProgC");
+  if (a !== null && a !== undefined && A2) A2.textContent = a;
+  if (b2 !== null && b2 !== undefined && B2) B2.textContent = b2;
+  if (C2) C2.textContent = (c !== null && c !== undefined ? c + "　" : "") +
+    "経過 " + Math.round((Date.now() - AIPROG_T0) / 1000) + " 秒";
+}
+/* **画面を描き直させる**（v21.99）。重い計算の前後で 1 回はさむ。
+   はさまないと、押してから終わるまで画面が固まったままになる。 */
+function uiTick(){
+  return new Promise(function(res){
+    requestAnimationFrame(function(){ setTimeout(res, 0); });
+  });
+}
 function msg(t, isErr, sticky){
   var m = $("msg"); m.textContent = t; m.className = "show" + (isErr ? " err" : "");
   clearTimeout(msg._t);
@@ -9700,6 +9743,7 @@ var AIBAND_SEQ = 0;      /* AI の墨の通し番号（v21.78） */
 /* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
    「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
 function aiBandNo(t){ RUB.aiWhy = t; msg(t, true); }
+var AIPROG_COL = "";      /* ［拓本ぜんたいを通す］の中なら「2 / 3」など */
 async function rubAiBand(noAsk){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
@@ -9772,11 +9816,16 @@ async function rubAiBand(noAsk){
   ag.globalCompositeOperation = "lighten";      /* 重なりは濃い方を採る */
 
   AIBAND_BUSY = true;
+  var solo = !AIPROG_COL;             /* ［この帯だけ通す］から来たときは、自分で窓を出す */
   var bt = $("btnAiBand"); if (bt){ bt.disabled = true; bt.textContent = "AI に通しています…"; }
   var t0 = Date.now(), ok = 0, why = "";
   try {
     for (var i = 0; i < ys.length; i++){
+      if (AIPROG_STOP){ why = "中止しました"; break; }
       msg("AI に通しています… " + (i+1) + " / " + ys.length, false, true);
+      if (solo && i === 0) aiProgOn();
+      aiProg(AIPROG_COL ? ("列 " + AIPROG_COL) : "この帯",
+             "AI に通しています " + (i+1) + " / " + ys.length);
       var blob = await rubCropPng(cx0, ys[i], side);
       var fd = new FormData();
       fd.append("file", blob, "raw.png");
@@ -9800,6 +9849,7 @@ async function rubAiBand(noAsk){
     why = (e && e.message) || String(e);
   } finally {
     AIBAND_BUSY = false;
+    if (solo) aiProgOff();
     if (bt){ bt.disabled = false; bt.textContent = "帯を AI に通す"; }
   }
   ag.restore();
@@ -9932,7 +9982,9 @@ function rubColsWanted(){
   var good = runs.filter(function(c){ return (c.b - c.a) <= wide; });
   /* **［列の数］を入れてあれば、そちらが優先**（v21.67）。
      自動で切れているように見えても、人が数を知っているならその方が確か。 */
-  var n = Math.max(0, Math.min(24, num(S.rub.colN, 0)));
+  /* 画面の欄に打ってある数も見る（まだ `onchange` が起きていないことがある。v21.99） */
+  var el9 = $("rColN");
+  var n = Math.max(0, Math.min(24, num(el9 && el9.value !== "" ? el9.value : S.rub.colN, 0)));
   /* **1 本でも通す**（v21.68）。範囲を決めれば、その中が 1 列ということもある。
      「拓本ぜんたいが 1 本の列」は上の `wide` で外してあるので、ここは 1 本でよい。 */
   if (!n && good.length >= 1){ RUB.colsSplit = false; return good; }
@@ -9974,19 +10026,35 @@ async function rubAllGo(){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
-  var runs = rubColsWanted();
-  if (!runs || !runs.length) return;
+  /* **列をさがす所からもう重い**（v21.99。本人の報告「フリーズしたようになる」）。
+     拓本 1 枚は 2000×10000 画素ほどあり、切れ目さがしと字送りの測りで数秒かかる。
+     窓を先に出して、画面を 1 回描き直させてから始める。 */
+  aiProgOn();
+  aiProg("はじめます", "列をさがしています", "");
+  await uiTick();
+  var runs;
+  try { runs = rubColsWanted(); }
+  catch(e0){ aiProgOff(); msg("列をさがせませんでした（" + ((e0 && e0.message) || "") + "）。", true); return; }
+  if (!runs || !runs.length){ aiProgOff(); return; }
   if (runs.length > 12){
+    aiProgOff();
     if (!confirm("列が " + runs.length + " 本あります。ぜんぶ通すと時間がかかります。続けますか。")) return;
+    aiProgOn();
   }
+  aiProg("列は " + runs.length + " 本", "はじめます", "0 / " + runs.length + " 列");
+  await uiTick();
   var ar2 = rubArea();
   var b0 = { L: S.rub.bandL, R: S.rub.bandR, T: S.rub.calTop, B: S.rub.calBot };
   /* **たての範囲も、指定された所に合わせる**（v21.68）。
      頭・脚（較正の線）は元に戻すので、較正はくずれない。 */
   if (!ar2.all){ S.rub.calTop = ar2.y1; S.rub.calBot = ar2.y2; }
-  var ok = 0, ng = 0, whys = [];
+  var ok = 0, ng = 0, whys = [], stopped = false;
+  try {
   for (var i = 0; i < runs.length; i++){
+    if (AIPROG_STOP){ stopped = true; break; }
     var c = runs[i];
+    aiProg("列 " + (i+1) + " / " + runs.length, "列の場所を決めています", ok + " 列ぶん 読めました");
+    await uiTick();
     var pad = Math.round((c.b - c.a) * 0.08);
     S.rub.bandL = Math.max(0, Math.round(c.a - pad));
     S.rub.bandR = Math.min(RUB.W, Math.round(c.b + pad));
@@ -10004,7 +10072,12 @@ async function rubAllGo(){
        字は 30mm）。そのまま通すと「帯が広すぎます」で 1 列も通らなかった。
        列は 1 本ぶんと分かっているので、まん中に 字送りの 1.4 倍だけ残す。
        **手で決めた帯は、いままでどおり さわらない**（v21.72 の取り決め）。 */
+    aiProg(null, "字送りを測っています（重い所です）");
+    await uiTick();
     var pit0 = rubPitchPx({ x1: S.rub.bandL, x2: S.rub.bandR, y1: ar2.y1, y2: ar2.y2 }, thr());
+    aiProg(null, "字送り " + Math.round(pit0) + "px" +
+      (mmPerPx() ? "＝" + (pit0 * mmPerPx()).toFixed(1) + "mm" : ""));
+    await uiTick();
     if (pit0 > 0 && (S.rub.bandR - S.rub.bandL) > pit0 * 1.6){
       var mid0 = (S.rub.bandL + S.rub.bandR) / 2, hw = pit0 * 0.7;
       S.rub.bandL = Math.max(0, Math.round(mid0 - hw));
@@ -10014,12 +10087,18 @@ async function rubAllGo(){
     A = null; RUB.mask = null;
     msg("列 " + (i+1) + " / " + runs.length + " を通しています…", false, true);
     RUB.aiBand = null; RUB.aiWhy = "";
+    AIPROG_COL = (i+1) + " / " + runs.length;
     await rubAiBand(true);        /* まとめて通すときは聞かない */
+    AIPROG_COL = "";
+    if (AIPROG_STOP){ stopped = true; break; }     /* 通している途中で中止された */
     if (!RUB.aiBand){ ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?")); continue; }
+    aiProg(null, "1 字ずつに切り分けています");
+    await uiTick();
     var got = rubLineTakeAi();
     if (got) ok++;
     else { ng++; whys.push((i+1) + "列目：AI の墨から字を切り分けられませんでした"); }
   }
+  } finally { aiProgOff(); }
   S.rub.bandL = b0.L; S.rub.bandR = b0.R;
   S.rub.calTop = b0.T; S.rub.calBot = b0.B;
   A = null; RUB.mask = null;
@@ -10027,6 +10106,11 @@ async function rubAllGo(){
   /* **読めなかった列は、理由まで出す**（v21.70。本人の報告
      「拓本ぜんたいを通すで読めず、列の数を入れても読めず」）。
      どこで止まったのか分からないと、こちらも人も直しようがない。 */
+  if (stopped){
+    msg("中止しました（" + ok + " 列ぶん まで見立てました／ぜんぶで " + runs.length + " 列）。" +
+        "続きは、もう一度［拓本ぜんたいを通す］を押してください。", false, true);
+    return;
+  }
   msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
       (ng ? "／" + ng + " 列は読めませんでした" : "") + "）。" +
       (whys.length ? "理由：" + whys.slice(0, 4).join("／") +
@@ -13856,7 +13940,10 @@ function rubPanel(){
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;
   var barc = $("btnAreaClr"); if (barc) barc.onclick = rubAreaClear;
-  var bcn = $("rColN"); if (bcn) bcn.onchange = function(){
+  /* **打ったその場で効かせる**（v21.99。本人の報告「認識しませんでした」）。
+     `onchange` は欄から出たときにしか起きないので、数字を入れてすぐ
+     ［拓本ぜんたいを通す］を押すと、入れた数が届かないことがあった。 */
+  var bcn = $("rColN"); if (bcn) bcn.oninput = bcn.onchange = function(){
     S.rub.colN = Math.max(0, Math.min(24, num(this.value, 0)));
     persist();
     msg(S.rub.colN ? ("列を " + S.rub.colN + " 本として等分に割ります。")

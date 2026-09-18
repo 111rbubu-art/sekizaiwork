@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.0";
+var APP_VER = "v22.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9603,6 +9603,67 @@ function _median(a){
   var b = a.slice().sort(function(x, y){ return x - y; });
   return b[b.length >> 1];
 }
+/* **字（白）の並びから、行ごとの量を出す**（v22.1。本人の指摘
+   「石の地が一面にこすってあるのが通常」）。
+   拓本は 字が白・地が黒。地を一面にこすってあると、**しきい値で数えた墨の量は
+   ほとんど揺れない**ので、字送りの周期が立たない。
+   そこで「**まわりより明るい所**＝字」を数える。
+   まわりの明るさ（局所平均）は積分画像で出すので、1 回なめるだけで済む。
+   紙の余白やスキャナの黒い所は**一様**なので、この数え方では 0 になる
+   （実測：紙の上は 0%、字のある所は 30〜40%）。 */
+function rubCharProf(q){
+  if (!RUB.data) return null;
+  var d = RUB.data.data, W = RUB.W;
+  var x1 = q.x1, x2 = q.x2, y1 = q.y1, y2 = q.y2;
+  var st = 2;                                   /* 1 つおきに読む（速さのため） */
+  var w = Math.floor((x2 - x1) / st), h = Math.floor((y2 - y1) / st);
+  if (w < 8 || h < 16) return null;
+  var g = new Float32Array(w * h), i, x, y;
+  for (y = 0; y < h; y++){
+    var Y = y1 + y * st;
+    for (x = 0; x < w; x++){
+      var p = ((Y * W) + (x1 + x * st)) * 4;
+      g[y*w + x] = d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114;
+    }
+  }
+  /* 積分画像 → 半径 r のまわりの平均 */
+  var r = Math.max(4, Math.round(w * 0.35));
+  var ii = new Float64Array((w+1) * (h+1));
+  for (y = 0; y < h; y++){
+    var rs = 0;
+    for (x = 0; x < w; x++){
+      rs += g[y*w + x];
+      ii[(y+1)*(w+1) + (x+1)] = ii[y*(w+1) + (x+1)] + rs;
+    }
+  }
+  function box(xa, ya, xb, yb){
+    xa = Math.max(0, xa); ya = Math.max(0, ya);
+    xb = Math.min(w, xb); yb = Math.min(h, yb);
+    var n = (xb - xa) * (yb - ya);
+    if (n <= 0) return 0;
+    return (ii[yb*(w+1)+xb] - ii[ya*(w+1)+xb] - ii[yb*(w+1)+xa] + ii[ya*(w+1)+xa]) / n;
+  }
+  /* まわりとの差。散らばりを見て、しきいを決める */
+  var hp = new Float32Array(w * h), ss = 0, nn = 0;
+  for (y = 0; y < h; y++)
+    for (x = 0; x < w; x++){
+      var v = g[y*w + x] - box(x - r, y - r, x + r + 1, y + r + 1);
+      hp[y*w + x] = v; ss += v * v; nn++;
+    }
+  var sd = nn ? Math.sqrt(ss / nn) : 0;
+  if (!(sd > 0.5)) return null;                 /* 一面まっ平ら（紙・黒ベタ） */
+  var k = sd * 0.8, out = new Float32Array(RUB.H);
+  for (y = 0; y < h; y++){
+    var c = 0;
+    for (x = 0; x < w; x++) if (hp[y*w + x] > k) c++;
+    /* 元の y へ戻す（間引いたぶんを埋める） */
+    for (i = 0; i < st; i++){
+      var Y2 = y1 + y * st + i;
+      if (Y2 >= 0 && Y2 < RUB.H) out[Y2] = c;
+    }
+  }
+  return out;
+}
 function rubPitchPx(q, t){
   /* 字送りの**下限**は「墨の幅」から決める（v21.70）。帯の幅から決めると、
      帯が字より広いとき（等分に割った列など）下限が本当の字送りを追い越す。
@@ -9659,6 +9720,19 @@ function rubPitchPx(q, t){
       /* まん中を採ったあとも、もう一度 見当で正す（窓がそろって半分を拾うことがある） */
       pit = rubPitchHarm(sm, q.y1, q.y2, pit, tg);
     }
+  }
+  /* **墨で読めなければ、字（白）の並びで読み直す**（v22.1）。
+     地を一面にこすった拓本は、墨の量がほとんど揺れないので周期が立たない。 */
+  if (!(pit > 0) && !rubPitchPx._deep){
+    rubPitchPx._deep = true;
+    try {
+      var cp = rubCharProf(q);
+      if (cp){
+        var p9 = rubPitchCore(cp, q.y1, q.y2, inkW, band0, tg);
+        if (p9 > 0) pit = p9;
+      }
+    } catch(e9){}
+    rubPitchPx._deep = false;
   }
   return pit;
 }
@@ -9743,6 +9817,21 @@ var AIBAND_SEQ = 0;      /* AI の墨の通し番号（v21.78） */
 /* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
    「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
 function aiBandNo(t){ RUB.aiWhy = t; msg(t, true); }
+/* 校正が言っている字送り（px）。帯の幅にいちばん近いものを選ぶ（v22.1）。
+   案件に大きさが 2 種類（戒名 30mm ／ 日付 20mm など）あるので、
+   「その帯はどちらの列か」を、帯の幅から当てる（列の帯 ≒ 字送りの 1.3 倍）。 */
+function rubPitchPlanPx(q){
+  var tg = rubPitchTargets();
+  if (!tg.length) return 0;
+  var want = (q && q.x2 > q.x1) ? (q.x2 - q.x1) / 1.3 : 0;
+  if (!want) return tg[tg.length - 1];
+  var best = tg[0], gap = Math.abs(Math.log(tg[0] / want));
+  tg.forEach(function(v){
+    var g = Math.abs(Math.log(v / want));
+    if (g < gap){ gap = g; best = v; }
+  });
+  return best;
+}
 var AIPROG_COL = "";      /* ［拓本ぜんたいを通す］の中なら「2 / 3」など */
 async function rubAiBand(noAsk){
   if (AIBAND_BUSY) return;
@@ -9751,9 +9840,25 @@ async function rubAiBand(noAsk){
   RUB.aiWhy = "";
   if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
   var q = clampRange(), t = thr(), mpp = mmPerPx();
-  var pitch = rubPitchPx(q, t);
+  var pitch = rubPitchPx(q, t), pitFrom = "拓本から測った";
+  /* **測れなかったら、校正の字送りを使う**（v22.1。本人の報告「ダメです」。
+     3 列とも「字の並び（字送り）を読めませんでした」で止まっていた）。
+     石の地を一面にこすった拓本は、**地がほぼ一様**なので、行ごとの墨の量が
+     あまり揺れず、周期が立たないことがある。
+     けれども **字送りは校正の側が知っている**（字の高さ × 1.15）。
+     読めないからといって止めるより、校正の値で窓を置いて AI に通す方がよい。 */
   if (!pitch || pitch < 8){
-    aiBandNo("字の並び（字送り）を読めませんでした。帯を 1 行だけに合わせてください。"); return;
+    var pl = rubPitchPlanPx(q);
+    if (pl >= 8){
+      pitch = pl; pitFrom = "校正から取った";
+      msg("字送りを拓本から読めなかったので、校正の字送り（" +
+          (mpp ? (pitch * mpp).toFixed(1) + "mm" : pitch + "px") + "）で通します。", false, true);
+    } else {
+      aiBandNo("字の並び（字送り）を読めませんでした（帯 " + Math.round(q.x2 - q.x1) +
+               "px／しきい値 " + Math.round(t) + "）。校正にも字が入っていません。" +
+               "帯を 1 行だけに合わせてください。");
+      return;
+    }
   }
   /* **帯が広すぎたら断る**（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
      帯が字 2 つぶんより広いと、窓が拓本の幅いっぱいになり、
@@ -9891,7 +9996,8 @@ async function rubAiBand(noAsk){
     cut: !!why
   };
   rubPanel(); rubRender();
-  msg("帯を AI に通しました（" + ok + " / " + ys.length + " か所、" +
+  msg("帯を AI に通しました（" + pitFrom + "字送り " +
+      (mpp ? (pitch * mpp).toFixed(1) + "mm" : pitch + "px") + "／" + ok + " / " + ys.length + " か所、" +
       Math.round((Date.now() - t0)/100)/10 + " 秒）。" +
       (why ? "途中で止まりました：" + why + "。" : "") +
       "青いところが AI の読んだ墨です。［AI の墨を消す］で消えます。");
@@ -9984,6 +10090,41 @@ function rubColNFromPlan(){
   });
   return n;
 }
+/* **センターラインの位置から、列の帯を作る**（v22.1。本人の指摘のつづき）。
+   拓本に切れ目が無い以上、列の**場所**も拓本からは読めない。
+   けれども、拓本の上のセンターライン（`S.rub.centersPx`）は、
+   人が拓本に合わせて置いたもの＝**いちばん確かな手がかり**。
+   帯の幅は、その列の字の幅（校正の `layout().w`）の 1.3 倍。 */
+function rubColsFromCenters(){
+  var mpp = mmPerPx();
+  if (!mpp) return null;
+  var px = S.rub && S.rub.centersPx;
+  if (!Array.isArray(px) || !px.length) return null;
+  var rows;
+  try { rows = layout(); } catch(e){ return null; }
+  var wide = {};
+  (S.groups || []).forEach(function(g, gi){
+    if (!g || !String(g.text == null ? "" : g.text).trim()) return;
+    var c = Math.max(0, Math.round(num(g.col, 0)));
+    var w = (rows[gi] && num(rows[gi].w, 0)) || 0;
+    if (!(w > 0)) return;
+    if (!wide[c] || w > wide[c]) wide[c] = w;
+  });
+  var out = [], bad = false;
+  Object.keys(wide).forEach(function(k){
+    var x = px[k];
+    if (x === null || x === undefined || !isFinite(x)){ bad = true; return; }
+    var half = (wide[k] * 1.3 / 2) / mpp;
+    out.push({ a: Math.round(x - half), b: Math.round(x + half), col: +k, mid: +x });
+  });
+  if (bad || out.length < 1) return null;
+  out.sort(function(p1, p2){ return p1.a - p2.a; });
+  /* **重なっていたら使わない**（センターラインをまだ拓本に合わせていない）。
+     `padCentersPx` は、足りない分に帯のまん中を入れるので、そろって同じ値になる。 */
+  for (var i = 1; i < out.length; i++)
+    if (out[i].mid - out[i-1].mid < (out[i].b - out[i].a) * 0.4) return null;
+  return out;
+}
 function rubColsWanted(){
   /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
      拓本の取り方で端の行が見切れていることがあるので、そこを外せるようにする。 */
@@ -10006,6 +10147,19 @@ function rubColsWanted(){
   /* 切れ目から見つけた列は、**校正の列数と合っているときだけ**そのまま使う（v22.0）。
      合っていなければ、石の地のこすり跡を列と読み違えている見込みが高い。 */
   var plan = rubColNFromPlan();
+  /* **センターラインが拓本に合わせてあれば、それがいちばん確か**（v22.1）。
+     等分に割ると、範囲に紙の余白やスキャナの黒い所が入っているだけで
+     帯が紙の外に落ちる（実測：3 本のうち 2 本が紙の外だった）。 */
+  if (!n){
+    var byC = rubColsFromCenters();
+    if (byC && (!plan || byC.length === plan)){
+      RUB.colsSplit = false; RUB.cols = byC;
+      msg("センターラインの場所から、" + byC.length + " 本の列を出しました" +
+          "（幅は校正の字の幅の 1.3 倍）。ちがうときは、拓本の上の" +
+          "センターラインを動かしてから、もう一度押してください。", false, true);
+      return byC;
+    }
+  }
   if (!n && good.length >= 1 && (!plan || good.length === plan)){
     RUB.colsSplit = false; return good;
   }

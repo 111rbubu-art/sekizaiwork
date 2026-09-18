@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.82</title>
+<title>彫刻原稿 v21.83</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2211,7 +2211,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.82";
+var APP_VER = "v21.83";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -18760,29 +18760,70 @@ function peAutoAsk(gtxt, shot){
     '① AI お任せ … 拓本から墨を拾いました<br>' +
     '② AI 書体補正 … 書体らしい形に整えました<br>' +
     '③ ' + esc(gtxt) + '<br>' +
-    '<span class="hint">「このままにする」を押すと、<b>縁を広げる前</b>の墨を' +
-    '学習用に保存します。</span>' +
-    '<div class="btns"><button class="mini primary" id="peAutoOk">このままにする</button>' +
+    '<span class="hint">登録するのは、<b>縁を広げる前</b>の墨です。</span>' +
+    '<div class="btns"><button class="mini primary" id="peAutoOk">このまま登録する</button>' +
+    '<button class="mini" id="peAutoFix">直してから登録する</button>' +
     '<button class="mini" id="peAutoNo">取り消す</button></div>';
   el.hidden = false;
-  var o = $("peAutoOk"), n = $("peAutoNo");
-  if (o) o.onclick = async function(){
-    o.disabled = true; n.disabled = true;
-    var sv = "";
-    if (PE_AUTO_SHOT){
-      try { sv = (await takuSave(true, PE_AUTO_SHOT)) || ""; } catch(e){ sv = ""; }
-      if (sv) sv += "（AI お任せから直した墨として、**縁を広げる前**の形で残しました）";
-    }
-    peAutoAskHide();
-    msg((sv ? sv + "。" : "") + "AI オートの形で進みます。" +
-        "気に入らなければ［↶ 1つ戻す］で、押す前に戻せます。" +
-        "よければ ④［現トレースから字を作る］へ。");
-  };
+  var o = $("peAutoOk"), f = $("peAutoFix"), n = $("peAutoNo");
+  if (o) o.onclick = function(){ peAutoSave(PE_AUTO_SHOT); };
+  /* **直してから登録する**（v21.83。本人の指摘「点が出てしまった場合など、
+     手動で修正する場合に、このままにするを押すと、良い物として学習保存されて
+     しまう。戻ると、手作業が増えます」）。
+     AI の結果は**そのまま残す**。人が［消す］［塗る］で直してから、
+     そのときの墨で登録する。やり直しも、直しのやり直しも要らない。 */
+  if (f) f.onclick = function(){ peAutoFixMode(); };
   if (n) n.onclick = function(){
     peAutoAskHide();
     peUndoGo();
     msg("AI オートを取り消しました。押す前の状態に戻しました（学習用にも保存していません）。");
   };
+}
+/* 直しながら使う、細い帯。［消す］［塗る］の邪魔にならないよう、文言は短く。 */
+function peAutoFixMode(){
+  var el = $("peAutoAsk"); if (!el) return;
+  PE_AUTO_SHOT = null;                 /* 直す前の切り抜きは使わない */
+  el.innerHTML = '<b>直してから登録します。</b><br>' +
+    '出すぎた点やはみ出しを［消す］、足りない所を［塗る］で直してください。' +
+    '直し終わったら下を押します（<b>縁を広げる前</b>の墨で登録します）。' +
+    '<div class="btns"><button class="mini primary" id="peAutoSaveNow">いまの墨で登録する</button>' +
+    '<button class="mini" id="peAutoNo2">取り消す</button></div>';
+  el.hidden = false;
+  var sv = $("peAutoSaveNow"), n2 = $("peAutoNo2");
+  if (sv) sv.onclick = function(){ peAutoSave(null); };
+  if (n2) n2.onclick = function(){
+    peAutoAskHide();
+    peUndoGo();
+    msg("AI オートを取り消しました。押す前の状態に戻しました（学習用にも保存していません）。");
+  };
+  msg("AI オートの形はそのままです。［消す］［塗る］で直してから、" +
+      "［いまの墨で登録する］を押してください。", false, true);
+}
+/* 学習用に登録する。**縁を広げる前**の墨で残す（v21.81／v21.83）。
+   `shot` があればそれを使い（オート直後）、無ければ**いまの墨**を
+   いったん広げ量 0 に戻して切り出す（人が直したあと）。 */
+async function peAutoSave(shot){
+  var o = $("peAutoOk"), f = $("peAutoFix"), sv = $("peAutoSaveNow");
+  [o, f, sv].forEach(function(b){ if (b) b.disabled = true; });
+  var sh = shot, gEl = $("peGrow"), g0 = gEl ? gEl.value : null;
+  if (!sh){
+    try {
+      if (gEl && num(g0, 0) !== 0){ gEl.value = "0"; peInkKeep(); peInkRefresh(); }
+      sh = takuShot();
+    } finally {
+      if (gEl && g0 !== null && String(gEl.value) !== String(g0)){
+        gEl.value = g0; peInkKeep(); peInkRefresh();
+      }
+    }
+  }
+  var note = "";
+  if (sh){
+    try { note = (await takuSave(true, sh)) || ""; } catch(e){ note = ""; }
+  }
+  peAutoAskHide();
+  msg((note ? note + "（**縁を広げる前**の形で残しました）。" : "登録できませんでした。") +
+      "気に入らなければ［↶ 1つ戻す］で、AI オートを押す前に戻せます。" +
+      "よければ ④［現トレースから字を作る］へ。", !note);
 }
 function peAutoAskHide(){
   var el = $("peAutoAsk"); if (!el) return;

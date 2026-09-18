@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>彫刻原稿 v21.86</title>
+<title>彫刻原稿 v21.87</title>
 <style>
   :root{
     --paper:#F4F6F7; --surface:#fff; --sunk:#EDF0F2;
@@ -2211,7 +2211,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v21.86";
+var APP_VER = "v21.87";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -19025,23 +19025,39 @@ $("peAiShape").onclick = function(){ peAiShapeGo(); };
 async function peAiShapeGo(quiet){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return false; }
   var b = $("peAiShape");
-  var P = fitPrep();
+  /* **②に渡すのは、いつでも「①の墨（縁を広げる前）＋人の直し」**
+     （v21.87。本人の指摘「AI 書体補正が何度も押せてしまって、押すたびに
+     文字が大きくなる不具合あり」）。
+     前は**いま画面に出ている墨**を渡していたので、2 回めは
+     「②の出した形＋広げた分」が入力になり、通すたびに太っていった。
+     入り口をそろえれば、何度押しても同じ結果になる。 */
+  var gEl = $("peGrow"), g0 = gEl ? gEl.value : null;
+  var ai0 = PE.aiInk, c0 = PE.inkC;
+  /* ①の墨は、②の中に `base` として控えてある（2 回め以降も同じ入り口にするため）。 */
+  var base = (ai0 && ai0.from === "trace") ? ai0
+           : (ai0 && ai0.base) ? ai0.base
+           : (PE_AUTO_TRACE || null);
+  var P = null, shot = null, aiTrace = !!base;
+  try {
+    PE.aiInk = base; PE.inkC = null; PE.aiDrop = false;
+    if (gEl) gEl.value = "0";
+    P = fitPrep();
+    /* 学習用に残すのは、**この「AI に通す前の墨」**（v21.13／v21.81） */
+    if (P) shot = takuShot();
+  } finally {
+    PE.aiInk = ai0; PE.inkC = c0;
+    if (gEl && g0 !== null) gEl.value = g0;
+  }
   if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return false; }
   if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
-  /* ここで学習用にも保存する（v21.13。本人の指示「AI 学習用に保存は無しにして、
-     AI書体補正を押すと保存される仕組み」）。押すボタンを 1 つ減らし、
-     **拾い終わった墨が必ず残る**ようにする。
-     保存するのは**AI に通す前の、人が拾って直した墨**（takuShot は `fitPrep(true)`）。
-     同じ字は同じ名前なので、直してもう一度押せば上書きされる。 */
   var svNote = "";
-  var aiTrace = !!(PE.aiInk && PE.aiInk.from === "trace");
   /* ［AI オート］のときは、ここでは保存しない（v21.81。本人の指示）。
-     通したあとの確かめで「はい」と答えてから、**広げる前の切り抜き**を保存する。 */
+     ［現トレースから字を作る］を押したときに、直した所で①②へ振り分ける。 */
   if (!PE_AUTO){
-    try { svNote = (await takuSave(true)) || ""; } catch(e2){}
+    try { svNote = (await takuSave(true, shot)) || ""; } catch(e2){}
   }
   if (aiTrace && svNote)
-    svNote += "（AI お任せから直した墨として残しました）";
+    svNote += "（AI 拓本解析から直した墨として残しました）";
   var got;
   try { got = await traceAskAI(P.G, P.ink, "shape"); }
   finally { if (b){ b.disabled = false; peAiShapeShow(); } }
@@ -19051,23 +19067,25 @@ async function peAiShapeGo(quiet){
     return false;
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */
-  /* いま画面に出ている墨の拾い方と対で覚える。拾い方が変われば fitAiInk が捨てる。
-     `ink0` は塗りをかける前の、AI が出したそのもの。 */
+  /* 入り口は**広げ量 0** でそろえたので、`gwC0` も 0 ます。
+     いま［縁を広げる］に入っている分は、このあと差として効く。 */
   PE.aiInk  = { keyNG: (PE.inkC && PE.inkC.keyNG) || "", pv: -1, ink0: got.ink, ink: null,
-                gwC0: peGrowCells(P.G), gwC: null };   /* 通したときの広げ量を覚える */
+                gwC0: 0, gwC: null, from: "shape", base: base || null };
   PE.aiDrop = false;
   peInkShowOn();                    /* 何が変わったのか見えないと決められない */
   PE_INFO_HOLD = false;
-  peEdgeRedraw();
+  peInkKeep(); peInkRefresh();
   if (!quiet)
     msg((svNote ? svNote + "。" : "") +
         "AI 書体補正をかけました。" + (got.note || "") +
-        "。［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
+        "。何度押しても同じ形になります（いつも①の墨から通すため）。" +
+        "［↶ 1つ戻す］で戻せます。［消す］［塗る］で手直しもできます。" +
         "この墨から④で字を作ります。");
   AUTO_NOTE = svNote;
   return true;
 }
-var AUTO_NOTE = "";
+
+var AUTO_NOTE = "";      /* ［AI オート］が、②で保存した知らせを受け渡す */
 function peAiShapeShow(){
   var b = $("peAiShape"); if (!b) return;
   b.textContent = "AI 書体補正";

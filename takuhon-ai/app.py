@@ -300,6 +300,7 @@ async def feedback(
     char_hint: str = Form(""),
     key: str = Form(""),
     set_: str = Form("ink", alias="set"),
+    box: str = Form(""),
 ):
     """人が直した正解を貯める。**同じ key なら上書き**（彫刻原稿アプリと同じ考え方）。
 
@@ -327,6 +328,16 @@ async def feedback(
     if hint2 is not None:
         open(os.path.join(d, "hint2.png"), "wb").write(await hint2.read())
     meta = {"char": char_hint, "key": name, "at": datetime.now().isoformat(timespec="seconds")}
+    # **その字の枠**（512 の切り抜きの中の x1,y1,x2,y2）。彫刻原稿アプリが送ってくる。
+    # いまは覚えるだけ。あとで「枠の外は採点しない」を入れるときに使う
+    # （2026-09-19。本人の指摘「枠外が消えないために縦線になっています」）。
+    if box.strip():
+        try:
+            v = [int(float(t)) for t in box.split(",")]
+            if len(v) == 4:
+                meta["box"] = v
+        except ValueError:
+            pass
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     return {"status": "saved", "saved_id": name, "replaced": replaced,

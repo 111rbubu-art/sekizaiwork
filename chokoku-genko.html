@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v24.6";
+var APP_VER = "v24.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7656,6 +7656,85 @@ function endCrop(){
    補正の操作は上の帯にも並んでいるが、拓本を見ながらだと目が遠い。
    絵の上で右クリックすれば、その場で始められる・終われるようにする。 */
 function rubMenuClose(){ var e = $("rubMenu"); if (e){ e.hidden = true; e.innerHTML = ""; } }
+/* **その字の枠だけ AI に通す**（v24.7。本人の指示）。
+   1 字ぶんだけ ①「読む」に通して、いまの青い墨に**重ねる**。
+   通し直すと時間がかかる所を、気になった 1 字だけ やり直せる。 */
+async function rubAiOne(hit){
+  if (!hit || AIBAND_BUSY) return;
+  var base = takuApiBase();
+  if (!base){ msg("［設定］に拓本AIの住所を入れてください。", true); return; }
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  var ls = S.rub.lines || [], L = ls[hit.ci];
+  var it = L && L.items && L.items[hit.i];
+  if (!it || !it.px){ msg("その枠が読めません。", true); return; }
+  var b = it.px, side = Math.max(b.w, b.h) * 1.2;
+  var cx0 = b.x + b.w/2 - side/2, cy0 = b.y + b.h/2 - side/2;
+  AIBAND_BUSY = true;
+  aiProgOn(); aiProg("この字だけ", "AI に通しています");
+  try {
+    await uiTick();
+    var blob = await rubCropPng(cx0, cy0, side);
+    var fd = new FormData();
+    fd.append("file", blob, "raw.png");
+    fd.append("stage", "ink"); fd.append("soft", "true");
+    var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    var bb = await r.blob();
+    var img = await new Promise(function(res, rej){
+      var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+      im.src = URL.createObjectURL(bb);
+    });
+    /* いまの墨に重ねる。無ければ、この字ぶんだけの墨を作る。 */
+    var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H));
+    var A = RUB.aiBand;
+    var mw, mh;
+    if (A && A.map && A.geo === rubGeoKey()){ SC = A.sc; mw = A.mw; mh = A.mh; }
+    else {
+      mw = Math.max(1, Math.round(RUB.W * SC));
+      mh = Math.max(1, Math.round(RUB.H * SC));
+      A = { map: new Uint8Array(mw * mh), mw: mw, mh: mh, sc: SC,
+            geo: rubGeoKey(), id: (++AIBAND_SEQ), at: new Date().toLocaleString("ja-JP"),
+            n: 0, all: 0, pitchMm: null, inkMm2: null, url: "" };
+    }
+    /* 切り抜きの絵を、拓本の縮尺に直して読む */
+    var pw = Math.max(1, Math.round(side * SC));
+    var tc = document.createElement("canvas"); tc.width = pw; tc.height = pw;
+    var tg = tc.getContext("2d", { willReadFrequently: true });
+    tg.drawImage(img, 0, 0, pw, pw);
+    var td = tg.getImageData(0, 0, pw, pw).data;
+    var x0 = Math.round(cx0 * SC), y0 = Math.round(cy0 * SC), x, y, n1 = 0;
+    for (y = 0; y < pw; y++){
+      var Y = y0 + y; if (Y < 0 || Y >= mh) continue;
+      for (x = 0; x < pw; x++){
+        var X = x0 + x; if (X < 0 || X >= mw) continue;
+        var v = td[(y*pw + x) * 4];
+        var k = Y*mw + X;
+        if (v > A.map[k]) A.map[k] = v;        /* 濃い方を採る */
+        if (A.map[k] > 127) n1++;
+      }
+    }
+    /* 青い絵を作り直す（画面に出すため） */
+    var cv = document.createElement("canvas"); cv.width = mw; cv.height = mh;
+    var cg = cv.getContext("2d");
+    var im2 = cg.createImageData(mw, mh), o2 = im2.data;
+    for (var k2 = 0, k3 = 0; k2 < o2.length; k2 += 4, k3++){
+      o2[k2] = 30; o2[k2+1] = 110; o2[k2+2] = 220; o2[k2+3] = A.map[k3];
+    }
+    cg.putImageData(im2, 0, 0);
+    A.url = cv.toDataURL("image/png");
+    A.at = new Date().toLocaleString("ja-JP");
+    RUB.aiBand = A; RUB.aiWhy = "";
+    /* その列の控えも入れかえる（画面はこれを重ねて出している） */
+    if (L){ L.aiUrl = A.url; L.aiSc = A.sc; L.aiId = A.id; }
+    persist(); rubPanel(); rubRender();
+    msg((hit.ci + 1) + " 列目の " + (hit.i + 1) + " 字目だけ AI に通しました（この枠の中の墨 " +
+        n1 + " ます）。青が変わらないときは、AI がその字を読めていません。", false, true);
+  } catch(e){
+    msg("通せませんでした（" + ((e && e.message) || "") + "）。", true);
+  } finally {
+    AIBAND_BUSY = false; aiProgOff();
+  }
+}
 /* 枠から学習画面をひらく（v22.7）。ほかの列の枠なら、その列に移ってから。 */
 function rgOpenAt(hit){
   if (!hit) return;
@@ -7664,8 +7743,19 @@ function rgOpenAt(hit){
 }
 function rubMenuOpen(ev, pt, hit){
   var el = $("rubMenu"); if (!el || !RUB.img) return;
-  var h = '<div class="nhd">拓本の補正</div>';
-  if (hit) h += '<button class="mini primary" data-a="learn">この字を学習画面でひらく</button>';
+  /* **字の枠を右クリックしたときは、その字の道具を先に出す**（v24.7。本人の指示
+     「文字枠を右クリックして、メニューを追加して、その部分だけ AI に通せる機能も
+       選べるようにして、学習もメニューで選べるように」）。 */
+  var h = "";
+  if (hit){
+    h += '<div class="nhd">' + (hit.ci + 1) + ' 列目の ' + (hit.i + 1) + ' 字目</div>';
+    h += '<button class="mini primary" data-a="ai1">⬛ この字だけ AI に通す</button>';
+    h += '<button class="mini" data-a="learn">✎ 学習画面でひらく</button>';
+    h += '<button class="mini" data-a="del1">🗑 この枠を消す</button>';
+    h += '<div class="nhd" style="margin-top:6px;">拓本の補正</div>';
+  } else {
+    h += '<div class="nhd">拓本の補正</div>';
+  }
   if (rotMode){
     h += '<button class="mini primary" data-a="rot-end">✓ 回転を終える</button>';
     h += '<button class="mini" data-a="rot-here">ここを回転の中心にする</button>';
@@ -7689,6 +7779,11 @@ function rubMenuOpen(ev, pt, hit){
       var a = b.dataset.a;
       rubMenuClose();
       if (a === "learn"){ rgOpenAt(hit); }
+      else if (a === "ai1"){ rubAiOne(hit); }
+      else if (a === "del1"){
+        if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubPanel(); }
+        rubSelItem = hit.i; rubItemDel();
+      }
       else if (a === "rot-start"){ startSpin(); if (pt) setPivotAt(pt); }
       else if (a === "rot-here"){ if (pt) setPivotAt(pt); }
       else if (a === "rot-0"){ resetRot(); rubPanel(); rubRender(); persist(); msg("角度を 0 に戻しました。"); }
@@ -14478,16 +14573,9 @@ function rubRender(){
   svg.addEventListener("contextmenu", function(e){
     e.preventDefault();
     var pt = rubPt(svg, e);
-    if (!rotMode && !cropMode && !rubBoxDraw && pt){
-      var hit = rubItemAt(pt.x, pt.y);
-      if (hit){
-        rubMenuClose();
-        rgOpenAt(hit);
-        return;
-      }
-    }
-    /* 回転・トリミングの最中は、右クリックにそれぞれの役目があるので
-       奪わない。かわりに、枠の上ならメニューの先頭に学習をならべる。 */
+    /* **枠の上なら、その字の道具をメニューで出す**（v24.7）。
+       v22.7 では いきなり学習画面をひらいていたが、AI に通す・枠を消すも
+       選べるようにした。 */
     rubMenuOpen(e, pt, (!rubBoxDraw && pt) ? rubItemAt(pt.x, pt.y) : null);
   });
 }

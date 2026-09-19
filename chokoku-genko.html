@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v23.7";
+var APP_VER = "v23.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11606,7 +11606,8 @@ function rgSide(){
           "しきい値（明るさ）で拾った墨です。</span>" +
           "AI に通した墨で直したいときは、その列の帯で［帯を AI に通す］を" +
           "もう一度押してから ひらいてください。") 
-    : "<span style=\'color:#c82828;font-weight:700\'>朱の線</span>が直す前の<b>縁取り</b>、" +
+    : "<b>この字の画だけ</b>にしてから通しています（となりの字は、塊ごと外しました）。" +
+      "<br><span style=\'color:#c82828;font-weight:700\'>朱の線</span>が直す前の<b>縁取り</b>、" +
       "緑が AI の整えた形です。<b>朱の線に沿うように</b>緑を直します。" +
       "崩れすぎているときは［縁取りから直す］で、縁取りそのものから始められます。") +
     '</p>';
@@ -11719,7 +11720,8 @@ function rgSide(){
   var fi = $("rgFromInk"); if (fi) fi.onclick = function(){
     if (!RG) return;
     rgSnap();
-    RG.shape = new Uint8Array(RG.ink);
+    RG.inkChar = rgInkOfChar();
+    RG.shape = new Uint8Array(RG.inkChar || RG.ink);
     rgRender();
     msg("縁取りをそのまま形にしました。ここから角を立てて、縁を整えてください。");
   };
@@ -11832,6 +11834,38 @@ function bindRegWin(){
   var nx = $("rgNextB"); if (nx) nx.onclick = function(){ if (RG) rgOpen(RG.i + 1); };
 }
 /* 縁取りを ②「整える」に通す。**入れるのは拓本ではなく、直した縁取り**。 */
+/* **②へ渡す墨は、この字の画だけにする**（v23.8。本人の問い
+   「枠の外まで修正できるようになると、上下や隣の文字の扱いはどうなるのですか？」）。
+   ①「読む」は**窓の中の墨ぜんぶ**が正解（となりの字も墨）。
+   ②「整える」は**この字 1 つの形**が正解なので、となりの字は外す。
+   ただし**四角く切らない**。切り口が直線になって、また枠の跡が残る。
+   **塊（つながった画）ごと**に見て、枠にかかっていないものを落とす。 */
+function rgInkOfChar(){
+  if (!RG) return null;
+  var N = RG.n, m = RG.ink, bx = rgBoxPx();
+  if (!bx || !m) return m;
+  var n = N * N, out = new Uint8Array(n), lab = new Uint8Array(n), stk = new Int32Array(n), i;
+  /* 枠を少し内側に見る（となりの字が枠にかすっただけで残らないように） */
+  var mx = Math.max(2, Math.round((bx.x1 - bx.x0) * 0.06));
+  var my = Math.max(2, Math.round((bx.y1 - bx.y0) * 0.06));
+  var X0 = bx.x0 + mx, X1 = bx.x1 - mx, Y0 = bx.y0 + my, Y1 = bx.y1 - my;
+  for (i = 0; i < n; i++){
+    if (!m[i] || lab[i]) continue;
+    var sp = 0, cells = [], inBox = false;
+    stk[sp++] = i; lab[i] = 1;
+    while (sp > 0){
+      var k = stk[--sp]; cells.push(k);
+      var kx = k % N, ky = (k / N) | 0;
+      if (kx >= X0 && kx <= X1 && ky >= Y0 && ky <= Y1) inBox = true;
+      if (kx > 0   && m[k-1] && !lab[k-1]){ lab[k-1] = 1; stk[sp++] = k-1; }
+      if (kx < N-1 && m[k+1] && !lab[k+1]){ lab[k+1] = 1; stk[sp++] = k+1; }
+      if (ky > 0   && m[k-N] && !lab[k-N]){ lab[k-N] = 1; stk[sp++] = k-N; }
+      if (ky < N-1 && m[k+N] && !lab[k+N]){ lab[k+N] = 1; stk[sp++] = k+N; }
+    }
+    if (inBox) for (var t = 0; t < cells.length; t++) out[cells[t]] = 1;
+  }
+  return out;
+}
 async function rgShape(){
   if (!RG || RG.busy) return;
   var base = takuApiBase();
@@ -11840,7 +11874,8 @@ async function rgShape(){
   msg("② 整える に通しています…", false, true);
   try {
     var fd = new FormData();
-    fd.append("file", await rgBlob(rgMaskCv(RG.ink)), "ink.png");
+    RG.inkChar = rgInkOfChar();          /* この字の画だけ（v23.8） */
+    fd.append("file", await rgBlob(rgMaskCv(RG.inkChar)), "ink.png");
     fd.append("stage", "shape");
     var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
     if (!r.ok){
@@ -11877,8 +11912,9 @@ async function rgSave(which){
       fd.append("corrected_image", await rgBlob(rgMaskCv(RG.ink)), "mask.png");
       fd.append("set", "ink");
     } else {
-      /* ②の「入れるもの」は縁取りそのもの（合成データと同じ向き・同じ作り）。 */
-      fd.append("raw_image", await rgBlob(rgMaskCv(RG.ink)), "raw.png");
+      /* ②の「入れるもの」は縁取りそのもの（合成データと同じ向き・同じ作り）。
+         **この字の画だけ**にしたもの（v23.8）。②に通したときと同じものを送る。 */
+      fd.append("raw_image", await rgBlob(rgMaskCv(RG.inkChar || rgInkOfChar())), "raw.png");
       fd.append("corrected_image", await rgBlob(rgMaskCv(RG.shape)), "mask.png");
       fd.append("set", "shape_rub");
     }

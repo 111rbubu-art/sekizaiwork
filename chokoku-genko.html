@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.0";
+var APP_VER = "v25.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11175,7 +11175,7 @@ function rubAiMask(q, step){
    ③ それでも **背が中くらいの 1.55 倍より高い塊は、2 字がくっついている**
       とみて、まん中あたりの いちばん墨の薄い所で割る（割れなくなるまで）
    字送りは、切り終わってから中心の間隔として出す。等分はもう使わない。 */
-function rubAiSplit(M){
+function rubAiSplit(M, nWant){
   var w = M.w, h = M.h, m = M.m, y, x, i;
   var rows = new Float32Array(h), mx = 0;
   for (y = 0; y < h; y++){
@@ -11184,6 +11184,33 @@ function rubAiSplit(M){
     rows[y] = c; if (c > mx) mx = c;
   }
   if (!mx) return { runs: [], rows: rows };
+  /* **字数が分かっているときは、その数ちょうどに割る**（v25.1。本人の指示）。
+     墨がつながっていて すき間が 1 つも無い列でも切れる。
+     やり方：墨のある範囲を字数で等分し、**分け目のあたりで いちばん墨のうすい所**
+     へ寄せる（字のまん中を切らないように、動かせる幅は 字送りの 3 割まで）。 */
+  if (nWant >= 2){
+    var lim0 = mx * 0.04, ya = -1, yb = -1;
+    for (y = 0; y < h; y++) if (rows[y] > lim0){ if (ya < 0) ya = y; yb = y; }
+    if (ya >= 0 && yb > ya){
+      var span = yb - ya + 1, pit = span / nWant, out0 = [], k;
+      var edge = [ya];
+      for (k = 1; k < nWant; k++){
+        var mid = ya + pit * k;
+        var lo = Math.max(ya + 1, Math.round(mid - pit * 0.3));
+        var hi = Math.min(yb - 1, Math.round(mid + pit * 0.3));
+        var bx = Math.round(mid), bv = Infinity;
+        for (y = lo; y <= hi; y++) if (rows[y] < bv){ bv = rows[y]; bx = y; }
+        edge.push(bx);
+      }
+      edge.push(yb + 1);
+      for (k = 0; k < nWant; k++){
+        var a0 = edge[k], b0 = edge[k+1] - 1;
+        if (b0 < a0) b0 = a0;
+        out0.push({ a: a0, b: b0 });
+      }
+      return { runs: out0, rows: rows, forced: nWant };
+    }
+  }
   /* **地のざらつきが少し残ると、行の墨がゼロになる所が無くなる**ことがある
      （実測：いちばん少ない行でも 5〜7 ます／2095 行）。そのときは切れない。
      ここで切る高さを上げてみたが（v24.0 で試した）、こんどは画ごとに
@@ -11260,8 +11287,8 @@ function rubAiSplit(M){
   return { runs: runs, rows: rows };
 }
 /* 切り分けた run ごとに、1 字ぶんの数字を出す（AI の墨むけ）。 */
-function rubLineCoreAi(M, q, step, mpp){
-  var sp = rubAiSplit(M), runs = sp.runs;
+function rubLineCoreAi(M, q, step, mpp, nWant){
+  var sp = rubAiSplit(M, nWant), runs = sp.runs;
   if (runs.length < 2){ msg("字を 2 つ以上見つけられませんでした。帯と AI の墨を確かめてください。", true); return null; }
   var w = M.w, m = M.m, items = [], i, x, y;
   runs.forEach(function(r5){
@@ -11358,8 +11385,9 @@ function rubLineTakeAi(){
   var q = rubBandWide(clampRange()), step = 2;
   var M = rubAiMask(q, step);
   if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
+  var nWant = Math.max(0, Math.min(60, num(S.rub.lineN, 0)));    /* 手で入れた字数（v25.1） */
   /* **字送りでの等分はしない**（v21.56）。切れ目でそのまま切る。 */
-  var m2 = rubLineCoreAi(M, q, step, mpp);
+  var m2 = rubLineCoreAi(M, q, step, mpp, nWant);
   if (!m2) return;
   m2.src = "ai";
   m2.geo = rubGeoKey();      /* どの向きの拓本で測った枠か（v21.78） */
@@ -11368,8 +11396,10 @@ function rubLineTakeAi(){
   m2.aiSc  = (RUB.aiBand && RUB.aiBand.sc) || 0;      /* その絵の縮め具合（v23.0。墨を読み直すのに使う） */
   rubColPut(m2);
   persist(); rubPanel(); rubRender();
-  msg("AI の墨で見立てました（字 " + m2.n + " 字／字送り " + m2.pitchMm.toFixed(2) +
-      "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。");
+  msg("AI の墨で見立てました（字 " + m2.n + " 字" +
+      (nWant >= 2 ? "＝手で入れた字数" : "") + "／字送り " + m2.pitchMm.toFixed(2) +
+      "mm／傾き " + m2.deg.toFixed(2) + "°）。青い枠が 1 字として測った所です。" +
+      (nWant >= 2 ? "ずれている枠は、つかんで直せます。" : ""));
   return m2;
 }
 /* 見立てた列を入れる（v21.66）。**同じ帯なら置きかえ**、左から順に並べる。
@@ -15174,6 +15204,16 @@ function rubPanel(){
       (RUB.aiBand ? '' : ' disabled') + ' style="margin-top:6px;" ' +
       'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
       '>この行を見立てる</button>';
+    /* **字数を手で入れられるようにする**（v25.1。本人の指示
+       「文字数であれば、テストで私が数えて入力します」）。
+       拓本は**過去に彫った石**なので、字数は校正とちがう。
+       くっついて切れない列でも、字数さえ分かれば ぴったり N 個に割れる。 */
+    h += '<div class="fixrow" style="margin-top:6px;"><span>この列の字数（分かるとき）</span>' +
+      '<b><input type="number" id="rLineN" value="' + (num(S.rub.lineN, 0) || "") +
+      '" min="0" max="60" step="1" style="width:56px;" placeholder="自動"></b></div>';
+    h += '<p class="hint" style="margin:3px 0 0;">入れてから［この行を見立てる］を押すと、' +
+      '<b>その字数ちょうどに割ります</b>（墨がつながっていても切れます）。' +
+      '空にすると、いままでどおり すき間で切ります。</p>';
     if (!RUB.aiBand)
       h += '<p class="hint" style="margin:3px 0 0;">先に［帯を AI に通す］を押してください。</p>';
     if ((S.rub.lines || []).length) h += rubLineHtml();
@@ -15215,6 +15255,11 @@ function rubPanel(){
   var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubAiBand(); };
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bct = $("btnColsTop");  if (bct) bct.onclick = function(){ rubColsScanTop(true); };
+  var rln = $("rLineN");
+  if (rln) rln.onchange = rln.oninput = function(){
+    S.rub.lineN = Math.max(0, Math.min(60, parseInt(rln.value, 10) || 0));
+    persist();
+  };
   var scb = $("rShowCols");
   if (scb) scb.onchange = function(){ rubShowCols = scb.checked; rubRender(); };
   var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;

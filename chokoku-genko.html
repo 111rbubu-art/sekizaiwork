@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.7";
+var APP_VER = "v22.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11221,64 +11221,26 @@ function rubCropCv(cx0, cy0, side){
   g.putImageData(im, 0, 0);
   return c;
 }
-/* 学習画面に出す墨から、**地のざらつきを落とす**（v22.7。本人の報告
-   「学習画面が縁取りがノイズだらけで、拓本補正画面と違っています」）。
-   拓本補正の画面は、AI の濃さを**そのまますけ具合**にして重ねているので、
-   うすいざらつきは ほとんど見えない。学習画面は 127 で切って
-   まっ青にしていたため、同じ墨でも ざらつきが くっきり出ていた。
-   ① **濃い所（しっかり墨）とつながっている塊**だけを採る（二段しきい値）
-   ② それでも小さいかけらは落とす（いちばん大きい塊の 6% 未満） */
-function rgInkClean(gv, N){
-  var n = N * N, i;
-  var lab = new Int32Array(n), stk = new Int32Array(n), out = new Uint8Array(n);
-  var comps = [], peakAll = 0;
-  for (i = 0; i < n; i++) if (gv[i] > peakAll) peakAll = gv[i];
-  if (!peakAll) return out;
-  var WEAK = 110, STRONG = Math.min(200, Math.max(140, Math.round(peakAll * 0.78)));
-  var id = 0;
-  for (i = 0; i < n; i++){
-    if (gv[i] <= WEAK || lab[i]) continue;
-    id++;
-    var sp = 0, cells = [], area = 0, peak = 0;
-    stk[sp++] = i; lab[i] = id;
-    while (sp > 0){
-      var k = stk[--sp]; cells.push(k); area++;
-      if (gv[k] > peak) peak = gv[k];
-      var kx = k % N, ky = (k / N) | 0;
-      if (kx > 0   && gv[k-1] > WEAK && !lab[k-1]){ lab[k-1] = id; stk[sp++] = k-1; }
-      if (kx < N-1 && gv[k+1] > WEAK && !lab[k+1]){ lab[k+1] = id; stk[sp++] = k+1; }
-      if (ky > 0   && gv[k-N] > WEAK && !lab[k-N]){ lab[k-N] = id; stk[sp++] = k-N; }
-      if (ky < N-1 && gv[k+N] > WEAK && !lab[k+N]){ lab[k+N] = id; stk[sp++] = k+N; }
-    }
-    comps.push({ cells: cells, area: area, peak: peak });
-  }
-  var big = 0;
-  comps.forEach(function(c){ if (c.peak >= STRONG && c.area > big) big = c.area; });
-  if (!big) comps.forEach(function(c){ if (c.area > big) big = c.area; });
-  var minA = Math.max(Math.round(n * 0.0004), Math.round(big * 0.06));
-  comps.forEach(function(c){
-    if ((c.peak < STRONG && big) || c.area < minA) return;
-    for (var t = 0; t < c.cells.length; t++) out[c.cells[t]] = 1;
-  });
-  return out;
-}
-/* ざらつきを落とす前の墨の数（知らせに出すため） */
-var rgInkRaw0 = 0;
-/* 切り抜きぶんの墨。AI の墨があればそれ、無ければ しきい値で拾う。 */
+/* 切り抜きぶんの墨。AI の墨があればそれ、無ければ しきい値で拾う。
+   **AI が出したものを、そのまま出す**（v22.8。本人の指示
+   「学習画面はアルゴリズムで作ったということですよね？ AI でいいです。
+     AI の代わりに人ではなく、間違ったところを指摘するので」）。
+   v22.7 でこちらの計算で ざらつきを落としてみたが、それでは
+   **AI の間違いが見えなくなる**＝教材にならない。落とすのはやめた。 */
 function rgInk(cx0, cy0, side, useAi){
-  var N = TAKU_N, gv = new Uint8Array(N*N), st = side / N;
-  rgInkRaw0 = 0;
-  var A2 = (useAi === false) ? null : RUB.aiBand, y, x, k0 = 0;
+  var N = TAKU_N, m = new Uint8Array(N*N), st = side / N;
+  var A2 = (useAi === false) ? null : RUB.aiBand, y, x;
   if (A2 && A2.map){
     for (y = 0; y < N; y++){
       var Y = Math.round((cy0 + (y + 0.5) * st) * A2.sc);
+      if (Y < 0 || Y >= A2.mh) continue;
       for (x = 0; x < N; x++){
         var X = Math.round((cx0 + (x + 0.5) * st) * A2.sc);
-        if (Y >= 0 && Y < A2.mh && X >= 0 && X < A2.mw) gv[y*N + x] = A2.map[Y*A2.mw + X];
+        if (X < 0 || X >= A2.mw) continue;
+        if (A2.map[Y*A2.mw + X] > 127) m[y*N + x] = 1;
       }
     }
-    for (k0 = 0; k0 < N*N; k0++) if (gv[k0] > 127) rgInkRaw0++;
-    return { m: rgInkClean(gv, N), from: "trace" };
+    return { m: m, from: "trace" };
   }
   var d = RUB.data.data, W = RUB.W, H = RUB.H, t = thr(), inv = !!S.rub.invert;
   for (y = 0; y < N; y++){
@@ -11288,11 +11250,10 @@ function rgInk(cx0, cy0, side, useAi){
       if (X2 < 0 || Y2 < 0 || X2 >= W || Y2 >= H) continue;
       var p2 = (Y2*W + X2) * 4;
       var l = d[p2]*0.299 + d[p2+1]*0.587 + d[p2+2]*0.114;
-      if (isInk(l, t, inv)) gv[y*N + x] = 255;
+      if (isInk(l, t, inv)) m[y*N + x] = 1;
     }
   }
-  for (k0 = 0; k0 < N*N; k0++) if (gv[k0] > 127) rgInkRaw0++;
-  return { m: rgInkClean(gv, N), from: "hand" };
+  return { m: m, from: "hand" };
 }
 /* 0/1 の並びを、学習用の PNG にする（白＝墨。合成データと同じ向き）。 */
 function rgMaskCv(m){
@@ -11338,10 +11299,8 @@ function rgOpen(i){
   var fresh = !!(RUB.aiBand && RUB.aiBand.map &&
                  RUB.aiBand.geo === rubGeoKey() &&
                  (!L.aiId || RUB.aiBand.id === L.aiId));
-  var k = rgInk(cx0, cy0, side, fresh), kept = 0;
-  for (var kk = 0; kk < k.m.length; kk++) if (k.m[kk]) kept++;
+  var k = rgInk(cx0, cy0, side, fresh);
   RG = { i: i, n: TAKU_N, side: side, cx0: cx0, cy0: cy0,
-         dropped: Math.max(0, rgInkRaw0 - kept),
          step: 1, raw: rubCropCv(cx0, cy0, side),
          ink: k.m, inkFrom: k.from, shape: null,
          tool: "paint", brush: 10, undo: [], busy: false,
@@ -11493,8 +11452,8 @@ function rgSide(){
   h += '<p class="hint" style="margin:0 0 6px;">' + (RG.step === 1
     ? "青い所が「墨がある」と見た所です。はみ出しは［消す］、足りない所は［塗る］。" +
       "<b>となりの字が入り込んでいたら、消してください。</b>" +
-      (RG.dropped > 0 ? "<br>地のざらつきを <b>" + RG.dropped + "</b> ます ぶん落としてあります" +
-        "（拓本補正の画面と同じ見え方にするため）。消しすぎていたら［塗る］で足してください。" : "")
+      "<br>ここに出ているのは <b>AI が出したそのまま</b>です。地のざらつきも、" +
+      "AI の間違いとして そのまま出しています。消せば、そこが教材になります。" 
     : "<span style=\'color:#c82828;font-weight:700\'>朱の線</span>が直す前の<b>縁取り</b>、" +
       "緑が AI の整えた形です。<b>朱の線に沿うように</b>緑を直します。" +
       "崩れすぎているときは［縁取りから直す］で、縁取りそのものから始められます。") +

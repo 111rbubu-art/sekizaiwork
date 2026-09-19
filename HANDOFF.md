@@ -1,10 +1,24 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.435**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.436**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
+
+## ファイルの ⋯ メニューに「ダウンロード」（v1.9.436。本人の指示）
+
+データタブのファイルを、そのまま手元に落とせるようにした。
+
+- `downloadFolderFile(filePath, name)`：`/drives/{id}/root:{path}:/content` を
+  受け取って `_saveBlobAs()` で保存。**直リンクを `<a download>` に渡さない**。
+  よそのアドレスなので download が効かず、画面で開くだけになることがある
+- `downloadSpFile(spUrl, name)`：SP添付はドライブではないので `download=1` を付けて開く
+- 足した先：フォルダー（`_showFolderItemMenu`。ファイルのときだけ）／
+  写真・資料（`_showNokPhotoItemMenu`）／SP添付（`_showAttachmentItemMenu`）／
+  写真・図面（`_showHakaSpecItemMenu`）
+- 実測：4 つとも ⬇️ダウンロードが並ぶ。呼び先は …/content、保存名はファイル名、
+  blob から保存。SP添付は download=1 付きで開く
 
 ## 納骨リストの分類「彫刻校正」（v1.9.434／v1.8.234。本人の指示）
 

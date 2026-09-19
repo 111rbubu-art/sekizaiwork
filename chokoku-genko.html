@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.1";
+var APP_VER = "v25.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10620,7 +10620,26 @@ function _rubTopStart(x1, x2, ar, side){
   }
   return ar.y1;
 }
-async function rubColsScanTop(useAi){
+/* **いちばん下の行から探す**（v25.2。本人の案
+   「上の行を見つけることをやっているので、下の行も見つけるようにしてはどうですか？」）。
+   上が戒名で 1 列、下が命日と建之で 2 列、という拓本は ざらにある。
+   上から見た列は下では使えないので、**下のふちから上へ**のぼって
+   いちばん下の字の下ふちを見つけ、そこから上へ 1 字ぶんずつ読む。 */
+function _rubBotStart(x1, x2, ar, side){
+  var step = Math.max(8, Math.round(side * 0.5));
+  var lim = ar.y1 + Math.round(side * 0.6);
+  var nMax = 40, n = 0, w2 = x2 - x1;
+  var loose = Math.max(12, Math.round(side * 0.6));
+  for (var y = ar.y2; y >= lim && n < nMax; y -= step, n++){
+    var yA = Math.max(0, y - side);
+    var pr = _rubTopProf(x1, x2, yA, y, side);
+    if (!pr) continue;
+    if (_rubRunsOf(pr, w2, side).length) return y;
+    if (_rubRunsOf(pr, w2, loose).length) return y;
+  }
+  return ar.y2;
+}
+async function rubColsScanTop(useAi, fromBot){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return null; }
@@ -10629,13 +10648,14 @@ async function rubColsScanTop(useAi){
   var x1 = ar.x1, x2 = ar.x2, w2 = x2 - x1;
   if (w2 < side){ msg("範囲が字 1 つより狭いです。", true); return null; }
   var ai = !!(useAi && takuApiBase());
-  var yTop = ar.y1, moved = 0;
+  var yTop = ar.y1, yBot = ar.y2, moved = 0;
+  var WD = fromBot ? "下から" : "上から";
 
   /* 1 段ぶん（1 字ぶんの帯）を読んで、横の並びを返す */
   async function band(useAiNow, rI, y1, y2, sNow){
     sNow = sNow || side;
     if (!useAiNow){
-      aiProg("上から " + (rI + 1) + " 字目", "字をさがしています（手元）");
+      aiProg(WD + " " + (rI + 1) + " 字目", "字をさがしています（手元）");
       await uiTick();
       return _rubTopProf(x1, x2, y1, y2, sNow);
     }
@@ -10650,7 +10670,7 @@ async function rubColsScanTop(useAi){
     ag.globalCompositeOperation = "lighten";
     for (i = 0; i < xs.length; i++){
       if (AIPROG_STOP) break;
-      aiProg("上から " + (rI + 1) + " 字目", "AI に通しています " + (i + 1) + " / " + xs.length);
+      aiProg(WD + " " + (rI + 1) + " 字目", "AI に通しています " + (i + 1) + " / " + xs.length);
       await uiTick();
       var blob = await rubCropPng(xs[i], y1, side);
       var fd = new FormData();
@@ -10679,11 +10699,14 @@ async function rubColsScanTop(useAi){
   /* 上から順に何段か見て、どれか 1 段でも字があれば列とみなす */
   async function pass(useAiNow, sNow){
     sNow = sNow || side;
+    var spanY = fromBot ? (yBot - ar.y1) : (ar.y2 - yTop);
     var rows = Math.max(1, Math.min(useAiNow ? 2 : 4,
-                   Math.floor((ar.y2 - yTop) / Math.max(1, sNow))));
+                   Math.floor(spanY / Math.max(1, sNow))));
     var prof = new Float32Array(w2), x, rN = 0;
     for (var rI = 0; rI < rows; rI++){
-      var y1 = yTop + rI * sNow, y2 = Math.min(RUB.H, y1 + sNow);
+      var y1, y2;
+      if (fromBot){ y2 = yBot - rI * sNow; y1 = Math.max(0, y2 - sNow); }
+      else { y1 = yTop + rI * sNow; y2 = Math.min(RUB.H, y1 + sNow); }
       if (y2 - y1 < sNow * 0.6) break;
       var pr = await band(useAiNow, rI, y1, y2, sNow);
       if (!pr) continue;
@@ -10705,9 +10728,11 @@ async function rubColsScanTop(useAi){
   var got = null, how = ai ? "ai" : "local";
   aiProgOn();
   try {
-    aiProg("下ごしらえ", "いちばん上の字がどこから始まるかを見ています");
+    aiProg("下ごしらえ", fromBot ? "いちばん下の字がどこで終わるかを見ています"
+                                 : "いちばん上の字がどこから始まるかを見ています");
     await uiTick();
-    yTop = _rubTopStart(x1, x2, ar, side); moved = Math.round(yTop - ar.y1);
+    if (fromBot){ yBot = _rubBotStart(x1, x2, ar, side); moved = Math.round(ar.y2 - yBot); }
+    else { yTop = _rubTopStart(x1, x2, ar, side); moved = Math.round(yTop - ar.y1); }
     got = await pass(ai);
     if (ai && fishy(got.cols)){
       /* AI で拾えなければ、手元でもう一度（段も 4 段に増える） */
@@ -10720,13 +10745,15 @@ async function rubColsScanTop(useAi){
     }
   } catch(e){
     aiProgOff();
-    msg("いちばん上の行を読めませんでした（" + ((e && e.message) || "") + "）。", true);
+    msg("いちばん" + (fromBot ? "下" : "上") + "の行を読めませんでした（" +
+        ((e && e.message) || "") + "）。", true);
     return null;
   }
   aiProgOff();
   if (!got.rN){
-    msg("いちばん上の行に、字が見あたりませんでした。" +
-        "［範囲］の上のふちを、いちばん上の字に合わせてみてください。", true);
+    msg("いちばん" + (fromBot ? "下" : "上") + "の行に、字が見あたりませんでした。" +
+        "［範囲］の" + (fromBot ? "下のふちを、いちばん下" : "上のふちを、いちばん上") +
+        "の字に合わせてみてください。", true);
     return null;
   }
   /* **字幅の候補を ぜんぶ試す**（v23.9）。校正にある字幅（大きい順）で
@@ -10788,7 +10815,7 @@ async function rubColsScanTop(useAi){
     var rn2 = pr2 ? _rubRunsOf(pr2, w2, Math.max(12, Math.round(side * 0.35))) : [];
     var wid = 0;
     rn2.forEach(function(r){ if (r[1] - r[0] > wid) wid = r[1] - r[0]; });
-    msg("いちばん上の行から、字のかたまりを見つけられませんでした" +
+    msg("いちばん" + (fromBot ? "下" : "上") + "の行から、字のかたまりを見つけられませんでした" +
         "（範囲の幅 " + w2 + "px／字の見込み " + side + "px／字らしい所 " + on +
         "px・いちばん濃い所 " + hi.toFixed(2) + "／いちばん広いかたまり " + wid + "px）。" +
         "［文字全長］の較正か、校正の字の大きさを見直してみてください。" +
@@ -10801,8 +10828,11 @@ async function rubColsScanTop(useAi){
                     /* **どこを見て決めたか**（v24.1。本人の指示
                        「いちばん上の行から列を見つけるで、結果が画面で見れるようにして」）。
                        絵の上に出すのに使う。 */
-                    y0: Math.round(yTop),
-                    y1: Math.round(Math.min(ar.y2, yTop + got.rN * sideUsed)) };
+                    dir: fromBot ? "bot" : "top",
+                    y0: fromBot ? Math.round(Math.max(ar.y1, yBot - got.rN * sideUsed))
+                                : Math.round(yTop),
+                    y1: fromBot ? Math.round(yBot)
+                                : Math.round(Math.min(ar.y2, yTop + got.rN * sideUsed)) };
   /* **［列の数］には書かない**（v22.3。本人の報告「拓本ぜんたいを通すと こうなりました」）。
      書くと `rubColsWanted` が「人が本数を入れた」とみて**等分に割り直し**、
      せっかく見つけた列の**場所**が捨てられていた。 */
@@ -10812,6 +10842,7 @@ async function rubColsScanTop(useAi){
      列の数が途中で変わる。1 本の帯で通すと下が合わないので、先に知らせる。 */
   var warn = "";
   try {
+    if (fromBot) throw 0;            /* 下から読んだときは、下ののぞき見は要らない */
     /* **下の方を 2 か所 のぞく**（v23.9）。1 か所だけだと、たまたまの読み違いで
        いらぬ知らせが出る。**2 か所が同じ本数で、上とちがう**ときだけ言う。 */
     function peekAt(fr){
@@ -10855,9 +10886,11 @@ async function rubColsScanTop(useAi){
     }
   } catch(e){}
   if (loose === -1) return cols;      /* 数字を出した知らせを、上書きしない */
-  msg("上から " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
+  msg(WD + " " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
       cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
-      " px）。" + (moved > side * 0.2 ? "範囲の上のふちより " + moved + "px 下から読みました。" : "") +
+      " px）。" + (moved > side * 0.2 ? "範囲の" + (fromBot ? "下のふちより " + moved + "px 上"
+                                                          : "上のふちより " + moved + "px 下") +
+                                        "から読みました。" : "") +
       (loose > 0 ? "字が見込み（" + side + "px）より小さかったので、" +
         Math.round(side * loose) + "px で見ました。" : "") +
       (sideUsed !== side ? "字の大きさは " + sideUsed + "px で見ています。" : "") +
@@ -11279,10 +11312,21 @@ function rubAiSplit(M, nWant){
     runs = out2;
     if (!did2) break;
   }
-  /* 小さすぎるかけらは落とす（そのあたりの字送りの 2 割未満） */
+  /* 墨の横はば（ます）。「一」のような字を見分けるのに使う（v25.2） */
+  function wOf(r6){
+    var lo = 1e9, hi = -1, yy, xx;
+    for (yy = r6.a; yy <= r6.b; yy++)
+      for (xx = 0; xx < w; xx++) if (m[yy*w + xx]){ if (xx < lo) lo = xx; if (xx > hi) hi = xx; }
+    return hi < lo ? 0 : hi - lo + 1;
+  }
+  /* 小さすぎるかけらは落とす（そのあたりの字送りの 2 割未満）。
+     **ただし「一」は落とさない**（v25.2。本人の報告「一が選択されないです」）。
+     横 1 本の字は背が字送りの 1 割ほどしか無く、かけらと同じ高さになる。
+     見分けは **横はば**。列の幅の半分より横に長ければ、かけらではなく字。 */
   runs = runs.filter(function(r4, k){
     var pit3 = localPitch(runs, Math.max(1, Math.min(runs.length - 1, k)));
-    return !pit3 || hOf(r4) >= pit3 * 0.20;
+    if (!pit3 || hOf(r4) >= pit3 * 0.20) return true;
+    return hOf(r4) >= 2 && wOf(r4) >= w * 0.5;
   });
   return { runs: runs, rows: rows };
 }
@@ -15168,12 +15212,17 @@ function rubPanel(){
     h += '<button class="mini" id="btnColsTop" style="margin-top:4px;" ' +
       'title="上から 1 字ぶんずつ 何段か見て、字のかたまりの間隔から列を割り出します">' +
       'いちばん上の行から列を見つける</button>';
+    /* **下の行からも探せる**（v25.2。本人の案）。上は戒名で 1 列、
+       下は命日と建之で 2 列、という拓本のため。 */
+    h += '<br><button class="mini" id="btnColsBot" style="margin-top:4px;" ' +
+      'title="下から 1 字ぶんずつ 何段か見て、字のかたまりの間隔から列を割り出します">' +
+      'いちばん下の行から列を見つける</button>';
     if (ct)
       h += ' <label style="margin-left:6px;"><input type="checkbox" id="rShowCols"' +
         (rubShowCols ? " checked" : "") + '> 絵に出す</label>';
     h += '<p class="hint" style="margin:3px 0 0;">' +
       (ct ? '<b>列 ' + ct.cols.length + ' 本</b>（' + (ct.how === "ai" ? "AI で" : "手元で") +
-            '、上から ' + (ct.rows || 1) + ' 字ぶんを見て見つけました' +
+            '、' + (ct.dir === "bot" ? "下" : "上") + 'から ' + (ct.rows || 1) + ' 字ぶんを見て見つけました' +
             (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '）。<br>' +
             'むらさきの帯が見つけた列です（濃い所が見た所）。左から ' +
             ct.cols.map(function(c){ return Math.round(c.a) + '〜' + Math.round(c.b); }).join('／') +
@@ -15255,6 +15304,7 @@ function rubPanel(){
   var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubAiBand(); };
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bct = $("btnColsTop");  if (bct) bct.onclick = function(){ rubColsScanTop(true); };
+  var bcb = $("btnColsBot");  if (bcb) bcb.onclick = function(){ rubColsScanTop(true, true); };
   var rln = $("rLineN");
   if (rln) rln.onchange = rln.oninput = function(){
     S.rub.lineN = Math.max(0, Math.min(60, parseInt(rln.value, 10) || 0));

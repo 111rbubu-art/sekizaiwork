@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v24.2";
+var APP_VER = "v24.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9883,6 +9883,24 @@ async function rubAiBand(noAsk, trusted){
       return;
     }
   }
+  /* **校正の見当から あまりに離れた字送りは、採らない**（v24.3。本人の画面
+     「帯が広すぎます（字送り 66px に対して 帯 284px）」「字送り 8.4mm」）。
+     ほんとうは 350px（44mm）ほどの列で、**地のざらつきの細かい周期**を
+     拾っていた。校正の見当の 0.5 倍より小さい／2 倍より大きいときは、
+     校正の値に置きかえる（無いときはそのまま）。 */
+  if (pitch >= 8){
+    var pl3 = rubPitchPlanPx(q);
+    /* **小さすぎるときだけ**置きかえる（v24.3）。大きすぎる方（字 2 つぶんを
+       1 つと読む倍音）は、窓が大きくなるだけで だいたい害がない。
+       実測：置きかえたら、読めていた列が読めなくなった（3 列 → 2 列）。 */
+    if (pl3 >= 8 && pitch < pl3 * 0.5){
+      var was = pitch;
+      pitch = pl3; pitFrom = "校正から取った";
+      msg("拓本から読んだ字送り（" + Math.round(was) + "px）が、校正の見当（" +
+          Math.round(pl3) + "px）と かけ離れていたので、校正の値で通します。",
+          false, true);
+    }
+  }
   /* **帯が広すぎたら断る**（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
      帯が字 2 つぶんより広いと、窓が拓本の幅いっぱいになり、
      **全面が青くなるだけで 1 字も切れない**。 */
@@ -10799,6 +10817,9 @@ async function rubAllGo(){
      頭・脚（較正の線）は元に戻すので、較正はくずれない。 */
   if (!ar2.all){ S.rub.calTop = ar2.y1; S.rub.calBot = ar2.y2; }
   var ok = 0, ng = 0, whys = [], stopped = false;
+  /* **列ごとの中身を控える**（v24.3。本人の報告「全体では読めません」）。
+     どの列で何が起きたかを、あとから見られるようにする。 */
+  var rep9 = [];
   try {
   for (var i = 0; i < runs.length; i++){
     if (AIPROG_STOP){ stopped = true; break; }
@@ -10857,10 +10878,27 @@ async function rubAllGo(){
     await rubAiBand(true, true);  /* まとめて通すときは聞かない。帯はこちらが決めた */
     AIPROG_COL = "";
     if (AIPROG_STOP){ stopped = true; break; }     /* 通している途中で中止された */
-    if (!RUB.aiBand){ ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?")); continue; }
+    if (!RUB.aiBand){
+      ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?"));
+      rep9.push((i+1) + "列目 帯" + S.rub.bandL + "〜" + S.rub.bandR +
+                " AI の墨なし（" + (RUB.aiWhy || "?") + "）");
+      continue;
+    }
     aiProg(null, "1 字ずつに切り分けています");
     await uiTick();
     var got = rubLineTakeAi();
+    var ink9 = 0;
+    try {
+      var mp9 = RUB.aiBand.map, n9 = 0, k9;
+      for (k9 = 0; k9 < mp9.length; k9++) if (mp9[k9] > 127) n9++;
+      ink9 = Math.round(n9 * 1000 / Math.max(1, mp9.length)) / 10;
+    } catch(e9){}
+    rep9.push((i+1) + "列目 帯" + S.rub.bandL + "〜" + S.rub.bandR +
+              "（" + (S.rub.bandR - S.rub.bandL) + "px）" +
+              " 字送り " + Math.round(pit0) + "px" +
+              " AI の墨 " + ink9 + "%" +
+              (got ? " 字 " + got.n + "・字送り " + got.pitchMm.toFixed(1) + "mm"
+                   : " 切り分けできず"));
     if (got) ok++;
     else { ng++; whys.push((i+1) + "列目：AI の墨から字を切り分けられませんでした"); }
   }
@@ -10877,8 +10915,10 @@ async function rubAllGo(){
         "続きは、もう一度［拓本ぜんたいを通す］を押してください。", false, true);
     return;
   }
+  S.rub.allRep = rep9;                 /* 画面の下に出す（v24.3） */
   msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
       (ng ? "／" + ng + " 列は読めませんでした" : "") + "）。" +
+      (rep9.length ? "　" + rep9.join("　｜　") + "。" : "") +
       (whys.length ? "理由：" + whys.slice(0, 4).join("／") +
         (whys.length > 4 ? " ほか" : "") + "。" : "") +
       "列を押すと、その列の枠を直せます。", ok === 0);

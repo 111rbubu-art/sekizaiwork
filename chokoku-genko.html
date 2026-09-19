@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.9";
+var APP_VER = "v23.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10879,6 +10879,7 @@ function rubLineTakeAi(){
   m2.geo = rubGeoKey();      /* どの向きの拓本で測った枠か（v21.78） */
   m2.aiId = RUB.aiBand.id || 0;               /* どの墨で測った枠か（v21.78） */
   m2.aiUrl = (RUB.aiBand && RUB.aiBand.url) || "";     /* その列の青い墨（見せる用） */
+  m2.aiSc  = (RUB.aiBand && RUB.aiBand.sc) || 0;      /* その絵の縮め具合（v23.0。墨を読み直すのに使う） */
   rubColPut(m2);
   persist(); rubPanel(); rubRender();
   msg("AI の墨で見立てました（字 " + m2.n + " 字／字送り " + m2.pitchMm.toFixed(2) +
@@ -11242,9 +11243,9 @@ function rubCropCv(cx0, cy0, side){
      AI の代わりに人ではなく、間違ったところを指摘するので」）。
    v22.7 でこちらの計算で ざらつきを落としてみたが、それでは
    **AI の間違いが見えなくなる**＝教材にならない。落とすのはやめた。 */
-function rgInk(cx0, cy0, side, useAi){
+function rgInk(cx0, cy0, side, band){
   var N = TAKU_N, m = new Uint8Array(N*N), st = side / N;
-  var A2 = (useAi === false) ? null : RUB.aiBand, y, x;
+  var A2 = band || null, y, x;
   if (A2 && A2.map){
     for (y = 0; y < N; y++){
       var Y = Math.round((cy0 + (y + 0.5) * st) * A2.sc);
@@ -11289,7 +11290,40 @@ function rgItem(){
   if (!L || !L.items || !RG) return null;
   return L.items[RG.i] || null;
 }
-function rgOpen(i){
+/* **その列の AI の墨を、列の青い絵から読み直す**（v23.0。本人の指摘
+   「拓本補正の画面上では残っているのに、学習で消えているのは理解しがたい」）。
+   `RUB.aiBand` は 1 列ぶんしか持たないが、列ごとの青い絵（`L.aiUrl`）は
+   ぜんぶ取ってあり、拓本補正の画面はそれを重ねて出している。
+   この絵の**すけ具合（アルファ）が、AI の濃さ そのもの**なので、
+   そこから墨を取り出せば、どの列でも AI の墨で直せる。 */
+var RGMASK = { url: "", m: null };
+function rgBandFromUrl(url, sc0){
+  if (!url) return Promise.resolve(null);
+  if (RGMASK.url === url && RGMASK.m) return Promise.resolve(RGMASK.m);
+  /* 絵を作ったときの縮め具合。無ければ、作ったときと同じ式で出す。
+     `mw / RUB.W` では丸めの分だけずれて、拓本の下の方で 2〜3px 食いちがう。 */
+  var sc = num(sc0, 0) || Math.min(1, 2000 / Math.max(RUB.W || 1, RUB.H || 1));
+  return new Promise(function(res){
+    var im = new Image();
+    im.onload = function(){
+      try {
+        var c = document.createElement("canvas");
+        c.width = im.naturalWidth || im.width; c.height = im.naturalHeight || im.height;
+        var g = c.getContext("2d", { willReadFrequently: true });
+        g.drawImage(im, 0, 0);
+        var d = g.getImageData(0, 0, c.width, c.height).data;
+        var map = new Uint8Array(c.width * c.height);
+        for (var i = 0, k = 0; i < d.length; i += 4, k++) map[k] = d[i+3];
+        var o = { map: map, mw: c.width, mh: c.height, sc: sc };
+        RGMASK = { url: url, m: o };
+        res(o);
+      } catch(e){ res(null); }
+    };
+    im.onerror = function(){ res(null); };
+    im.src = url;
+  });
+}
+async function rgOpen(i){
   var L = rubCol();
   if (!L || !L.items || !L.items.length){
     msg("先に［この行を見立てる］で、1 字ずつの枠を出してください。", true); return;
@@ -11311,10 +11345,12 @@ function rgOpen(i){
   /* **その列の墨が残っているときだけ** AI の墨を使う（v21.78。本人の報告
      「学習に登録でズレていました」）。ほかの列の墨や、回す前の墨を当てると
      **字とずれた正解**を貯めてしまう。残っていなければ しきい値で拾う。 */
-  var fresh = !!(RUB.aiBand && RUB.aiBand.map &&
-                 RUB.aiBand.geo === rubGeoKey() &&
-                 (!L.aiId || RUB.aiBand.id === L.aiId));
-  var k = rgInk(cx0, cy0, side, fresh);
+  var band = null;
+  if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey() &&
+      (!L.aiId || RUB.aiBand.id === L.aiId)) band = RUB.aiBand;      /* いま持っている墨 */
+  else if (L.aiUrl) band = await rgBandFromUrl(L.aiUrl, L.aiSc);     /* その列の青い絵から */
+  var fresh = !!band;
+  var k = rgInk(cx0, cy0, side, band);
   RG = { i: i, n: TAKU_N, side: side, cx0: cx0, cy0: cy0,
          step: 1, raw: rubCropCv(cx0, cy0, side),
          ink: k.m, inkFrom: k.from, shape: null,
@@ -11323,10 +11359,10 @@ function rgOpen(i){
          op: 0.6,                           /* 塗りの濃さ（v21.75。本人の指示） */
          saved1: false, saved2: false };
   rubSelItem = i;
-  if (!fresh && RUB.aiBand)
-    msg("この列の AI の墨は残っていません（別の列を通したか、拓本を回しました）。" +
+  if (!fresh)
+    msg("この列の AI の墨がありません（まだ AI に通していないか、拓本を回しました）。" +
         "いまはしきい値で拾った墨を出しています。AI の墨から直したいときは、" +
-        "その列の帯に合わせて［帯を AI に通す］をもう一度押してください。", false, true);
+        "その列の帯に合わせて［帯を AI に通す］を押してください。", false, true);
   $("regWin").hidden = false;
   rgRender(); rubRender();
 }

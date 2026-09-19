@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.3";
+var APP_VER = "v25.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10995,23 +10995,81 @@ async function rubColsBotSplit(useAi){
        ものが 49px＝もとの 16%）。本人の言葉も「1列ままか、2列に分かれるか」。 */
     return [{ a: a, b: a + cut }, { a: a + cut, b: b }];
   }
-  var cols = [], each = [];
+  var cols = [], each = [], pair = [];
   top.forEach(function(c){
     var s2 = splitOne(c);
     each.push(s2.length);
+    if (s2.length > 1) pair.push({ c: c, cut: s2[0].b, y: 0 });
     s2.forEach(function(v){ cols.push(v); });
   });
+  /* ───── **上の 1 列と下の 2 列の境目をさがす**（v25.4。本人の指示
+     「あとは上の1列と下の2列の境界の判別ができるようになればいいのですが」）─────
+     下から 1 字ぶんの帯を上へずらしながら、**その帯でも 2 列に割れているか**を見る。
+     割れなくなった所が境目。2 段つづけて割れなければ、そこで止める。 */
+  var yCut = 0;
+  if (pair.length){
+    aiProgOn();
+    try {
+      var stepY = Math.max(10, Math.round(sBot * 0.5));
+      var doneN = 0, yy;
+      pair.forEach(function(p){ p.y = yBot; p.miss = 0; p.done = false; });
+      for (yy = yBot; yy > ar.y1 + sBot && doneN < pair.length; yy -= stepY){
+        if (AIPROG_STOP) break;
+        aiProg("境目さがし", "下から " + Math.round((yBot - yy) / Math.max(1, sBot) * 10) / 10 + " 字ぶん上");
+        await uiTick();
+        var prY = _rubTopProf(x1, x2, Math.round(Math.max(0, yy - sBot)), Math.round(yy), sBot);
+        pair.forEach(function(p){
+          if (p.done) return;
+          var ok = false;
+          if (prY){
+            var a2 = Math.max(x1, Math.round(p.c.a)), b2 = Math.min(x2, Math.round(p.c.b));
+            var n2 = b2 - a2, sub2 = new Float32Array(n2), i3;
+            for (i3 = 0; i3 < n2; i3++) sub2[i3] = prY[a2 - x1 + i3] || 0;
+            var v2 = valleyOf(sub2, n2);
+            /* **同じ所で割れている**ときだけ数える（列の幅の 15% まで） */
+            ok = v2 >= 0 && Math.abs((a2 + v2) - p.cut) < n2 * 0.15;
+          }
+          if (ok){ p.y = Math.max(0, yy - sBot); p.miss = 0; }
+          else { p.miss++; if (p.miss >= 2){ p.done = true; doneN++; } }
+        });
+      }
+    } catch(e){}
+    aiProgOff();
+    yCut = _median(pair.map(function(p){ return p.y; })) || 0;
+    /* 列ごとの境目を、その列に持たせる（絵に出すのに使う） */
+    var pi = 0;
+    cols.forEach(function(v){ v.y0 = 0; });
+    (function(){
+      var k2 = 0;
+      top.forEach(function(c, i4){
+        var n4 = each[i4];
+        if (n4 > 1){
+          var p2 = pair[pi++];
+          for (var j4 = 0; j4 < n4; j4++) cols[k2 + j4].y0 = Math.round(p2.y);
+        }
+        k2 += n4;
+      });
+    })();
+  }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: rN,
                     how: "local", side: sBot, dir: "bot", base: top.length,
-                    y0: Math.round(Math.max(ar.y1, yBot - rN * sBot)),
+                    y0: Math.round(yCut || Math.max(ar.y1, yBot - rN * sBot)),
+                    yCut: Math.round(yCut || 0),
                     y1: Math.round(yBot) };
   RUB.cols = cols; RUB.colsSplit = false;
   persist(); rubPanel(); rubRender();
+  var mpp0 = mmPerPx();
   msg("上の " + top.length + " 列を土台に、下から " + rN + " 字ぶんを見ました。" +
       "下は <b>" + cols.length + " 列</b>です（" +
       each.map(function(v, i2){ return (i2 + 1) + "列目 → " + v; }).join("／") + "）。" +
       "左から " + cols.map(function(c){ return Math.round(c.a) + "〜" + Math.round(c.b); }).join("／") +
-      " px。ちがうときは、上の列を直してから もう一度押してください。", false, true);
+      " px。" +
+      (yCut ? "1 列から 2 列に変わるのは <b>上から " + Math.round(yCut) + "px</b>" +
+              (mpp0 ? "（" + (yCut * mpp0).toFixed(0) + "mm）" : "") +
+              "（列ごと " + pair.map(function(p){ return Math.round(p.y); }).join("／") +
+              "px）。緑の線がその高さです。［通す範囲］をこの線で上下に分けてください。"
+            : "") +
+      "ちがうときは、上の列を直してから もう一度押してください。", false, true);
   return cols;
 }
 function rubColsWanted(){
@@ -14427,17 +14485,38 @@ function rubRender(){
     var cBot = Math.max(cy1, num((S.rub.allBox && S.rub.allBox.y + S.rub.allBox.h), H));
     ctD.cols.forEach(function(c, ci0){
       var cw = c.b - c.a;
-      o.push('<rect x="' + c.a + '" y="' + cy0 + '" width="' + cw + '" height="' + (cBot - cy0) +
+      /* **その列が始まる高さ**（v25.4）。下で 2 列に分かれた列は、
+         分かれた所から下だけに帯を出す。分かれていない列は今までどおり。 */
+      var ty = num(c.y0, 0) || cy0;
+      o.push('<rect x="' + c.a + '" y="' + ty + '" width="' + cw + '" height="' + (cBot - ty) +
         '" fill="rgba(106,74,200,.07)" stroke="#6A4AC8" stroke-width="' + (W*0.003) +
         '" stroke-dasharray="' + (W*0.016) + ' ' + (W*0.010) + '"/>');
-      /* 見た所（上から何字ぶん）だけ、濃く出す */
-      o.push('<rect x="' + c.a + '" y="' + cy0 + '" width="' + cw + '" height="' + (cy1 - cy0) +
+      /* 見た所（下から何字ぶん）だけ、濃く出す */
+      o.push('<rect x="' + c.a + '" y="' + Math.max(ty, cy1 - num(ctD.rows, 1) * num(ctD.side, 40)) +
+        '" width="' + cw + '" height="' +
+        Math.max(0, cy1 - Math.max(ty, cy1 - num(ctD.rows, 1) * num(ctD.side, 40))) +
         '" fill="rgba(106,74,200,.16)" stroke="none"/>');
-      o.push('<text x="' + (c.a + cw/2) + '" y="' + (cy0 - W*0.008) +
+      o.push('<text x="' + (c.a + cw/2) + '" y="' + (ty - W*0.008) +
         '" fill="#6A4AC8" font-size="' + (W*0.030) + '" font-weight="700" text-anchor="middle"' +
         ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
         (ci0 + 1) + '</text>');
+      /* **その列が 2 つに分かれ始める高さ**を、緑の線で出す（v25.4）。
+         列ごとに ちがう（戒名の長さがちがうので、当たり前）。 */
+      if (num(c.y0, 0) > 0)
+        o.push('<line x1="' + c.a + '" y1="' + c.y0 + '" x2="' + c.b + '" y2="' + c.y0 +
+          '" stroke="#0A8A3C" stroke-width="' + (W*0.006) + '"/>');
     });
+    /* **1 列から 2 列に変わる高さ**を、緑の線で出す（v25.4。本人の指示
+       「上の1列と下の2列の境界の判別ができるようになればいいのですが」）。 */
+    if (num(ctD.yCut, 0) > 0){
+      o.push('<line x1="0" y1="' + ctD.yCut + '" x2="' + W + '" y2="' + ctD.yCut +
+        '" stroke="#0A8A3C" stroke-width="' + (W*0.003) + '" stroke-dasharray="' +
+        (W*0.024) + ' ' + (W*0.012) + '"/>');
+      o.push('<text x="' + (W*0.012) + '" y="' + (ctD.yCut - W*0.010) +
+        '" fill="#0A8A3C" font-size="' + (W*0.026) + '" font-weight="700"' +
+        ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
+        'この辺から下は ' + ctD.cols.length + ' 列（列ごとは緑の線）</text>');
+    }
   }
   /* 枠は**人が直せる**（v21.64。本人の指示「青の四角マスを人で修正できるように」）。
      AI の切り分けがずれた所こそ、直して登録すれば良い教材になる。

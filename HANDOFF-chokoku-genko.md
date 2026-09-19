@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-19　**chokoku-genko.html = v24.5**／**index_b.html = v1.9.433**／**tekkyo.html = v3.5**
+最終更新: 2026-09-19　**chokoku-genko.html = v24.6**／**index_b.html = v1.9.433**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -2021,6 +2021,20 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
     - 直し：`runTangent(run, atStart, win)` で `win` ぶん離れた点まで見て向きを出す
       （角を見つけるときと同じ考え方）。run の 3 分の 1 より先は見ない
     - 直したあと：十字 **79% → 100%**、丸 100%、しずく（曲線＋角）100%
+  - **拓本のパネルも、ロック中に使えるようにした（v24.6。本人の報告）**
+    - 本人の言葉：「AI補正（準備中）以下のボタンが押せないです」
+    - v24.5 では**絵の上の操作（JS の見張り）だけ**を通していた。
+      左のパネルは **CSS** で止まっていた：
+      `body.locked #sub input/select/textarea/button { opacity:.5; pointer-events:none; }`
+      （`#panSP`／`#panFile`／`#panInfo`／`#panDocs`／`#panFont` だけ例外）
+    - 直し：例外に **`#panRub`** を足した。ただし **［入れる枠］（`#rubFrSel`）は
+      シートの中身が動く**ので、止めたまま
+    - 実測：ロック中でも `btnColsTop`／`btnAiBand`／`btnBandAll`／`btnBandCols`／
+      `btnArea`／`rColN` が押せる（実際に押して「帯を全体に戻しました」まで確認）。
+      作字のパネルは押せないまま
+    - **教訓**：ロックは **JS の見張り**と **CSS** の 2 か所でかかっている。
+      片方だけ直しても通らない
+
   - **ロック中でも、拓本の解析はできるようにした（v24.5。本人の指示）**
     - 本人の言葉：「あなたの提案でいいので、拓本の AI 補正をロック中にも使えるようにして」
     - `lockRubOK(t)` を足し、`pointerdown`／`contextmenu`／`dblclick` の

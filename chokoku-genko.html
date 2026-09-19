@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v23.8";
+var APP_VER = "v23.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10189,6 +10189,81 @@ function _rubCharSide(){
   if (!(w > 0)) w = 25;
   return Math.max(24, Math.round(w / mpp));
 }
+/* **校正にある字幅を、大きい順に px で並べる**（v23.9。本人の指摘
+   「このようなイレギュラーな場合も、認識してほしい」）。
+   上が戒名で大きく、下が命日で小さい拓本がある。字幅を 1 つに決め打ちすると、
+   小さい方の列が「すき間が狭い」とみなされて**つながって**しまう
+   （実測：下半分の 6 列が 3 列になった）。 */
+function _rubCharSides(){
+  var mpp = mmPerPx(); if (!mpp) return [];
+  var rows = []; try { rows = layout(); } catch(e){ rows = []; }
+  var ws = [];
+  (rows || []).forEach(function(r){ var w = num(r && r.w, 0); if (w > 0) ws.push(w); });
+  if (!ws.length) ws = [25];
+  ws.sort(function(a, b){ return b - a; });
+  var out = [], seen = {};
+  ws.forEach(function(w){
+    var px = Math.max(24, Math.round(w / mpp));
+    var k = Math.round(px / 8);                 /* 近いものは 1 つにまとめる */
+    if (seen[k]) return;
+    seen[k] = 1; out.push(px);
+  });
+  return out;
+}
+/* **広すぎる列は、中で割る**（v23.9。本人の拓本で判明）。
+   下の段は「名前」と「命日」が**すき間なく**並ぶことがあり、
+   横の並びでは 1 つの塊になる（実測：6 列が 3 つの塊に見えた）。
+   幅が字幅の 1.5 倍を超えたら、字幅で割り切れる数に分ける。
+   分け目は、そのあたりで**いちばん墨のうすい所**にする。 */
+function _rubColsSplitWide(cols, prof, x1, side){
+  if (!cols || !cols.length || !prof) return cols;
+  var out = [];
+  cols.forEach(function(c){
+    var w = c.b - c.a, k = Math.round(w / Math.max(1, side));
+    if (!(w > side * 1.5) || k < 2){ out.push(c); return; }
+    /* その列の ふだんの濃さ（中ほど）。分け目は これよりずっと うすい所でないと
+       割らない。**字のまん中を割ってしまわない**ための見張り。 */
+    var vals = [], x, idx;
+    for (x = Math.round(c.a); x <= Math.round(c.b); x++){
+      idx = Math.round(x - x1);
+      if (idx >= 0 && idx < prof.length) vals.push(prof[idx]);
+    }
+    if (!vals.length){ out.push(c); return; }
+    vals.sort(function(p1, p2){ return p1 - p2; });
+    var medV = vals[vals.length >> 1];
+    var step = w / k, edge = [c.a], cuts = [], i;
+    for (i = 1; i < k; i++){
+      var mid = c.a + step * i;
+      var lo = Math.round(mid - step * 0.25), hi = Math.round(mid + step * 0.25);
+      var bx2 = Math.round(mid), bv = Infinity;
+      for (x = lo; x <= hi; x++){
+        idx = Math.round(x - x1);
+        if (idx < 0 || idx >= prof.length) continue;
+        if (prof[idx] < bv){ bv = prof[idx]; bx2 = x; }
+      }
+      cuts.push({ x: bx2, v: bv });
+    }
+    /* ひとつでも「うすい所」が見つからなければ、割らない */
+    for (i = 0; i < cuts.length; i++) if (!(cuts[i].v <= medV * 0.35)){ out.push(c); return; }
+    cuts.forEach(function(q){ edge.push(q.x); });
+    edge.push(c.b);
+    for (i = 0; i < k; i++) out.push({ a: Math.round(edge[i]), b: Math.round(edge[i+1]) });
+  });
+  return out;
+}
+/* 見つけた列の**もっともらしさ**。小さいほど良い（v23.9）。
+   ① 間隔がそろっているか ② 列の幅が、見込みの字幅と合っているか */
+function _rubColsScore(cols, side){
+  if (!cols || !cols.length) return 9;
+  if (cols.length < 2) return 2;
+  var mids = cols.map(function(c){ return (c.a + c.b) / 2; }), gaps = [], i;
+  for (i = 1; i < mids.length; i++) gaps.push(mids[i] - mids[i-1]);
+  var mp = _median(gaps) || 1, dev = 0;
+  gaps.forEach(function(g){ dev += Math.abs(g - mp); });
+  dev = dev / (gaps.length * Math.max(1, mp));
+  var wid = _median(cols.map(function(c){ return c.b - c.a; }));
+  return dev + Math.abs(wid - side) / Math.max(1, side);
+}
 /* 塊（つながった白い所）のうち、小さいものを落とす。帰りは 0/1 の並び。 */
 function _rubDropSmall(bin, w, h, minA){
   var lab = new Int32Array(w * h), st = new Int32Array(w * h), out = new Uint8Array(w * h);
@@ -10212,7 +10287,7 @@ function _rubDropSmall(bin, w, h, minA){
   return out;
 }
 /* 横の並び（0〜1）から、列のかたまりを出す */
-function _rubRunsOf(prof, n, side){
+function _rubRunsOf(prof, n, side, mul){
   /* **ならしは、列と列のすき間より細かく**（v22.2）。
      ±30px でならしたら、70px のすき間が埋まって 2 本の列がつながった
      （実測：4 本が 2 本になった）。すき間は字の 4 分の 1 ほどなので、
@@ -10235,6 +10310,9 @@ function _rubRunsOf(prof, n, side){
      細切れになって「細すぎる」と ぜんぶ捨てられていた。
      範囲なしだと 黒い余白のぶん中ほどが下がるので、たまたま読めていた。
      まず今までの高さで見て、1 本も残らなければ 下げて見直す。 */
+  /* `mul` を渡されたら、その高さだけで切る（v23.9。字幅と切る高さの
+     組み合わせを 試すのに使う）。渡されなければ、読めるまで下げる。 */
+  if (mul) return _rubRunsAt(sm, n, side, med * mul);
   var muls = [0.45, 0.30, 0.20, 0.12], mi, out = [];
   for (mi = 0; mi < muls.length; mi++){
     out = _rubRunsAt(sm, n, side, med * muls[mi]);
@@ -10370,11 +10448,12 @@ async function rubColsScanTop(useAi){
   var yTop = ar.y1, moved = 0;
 
   /* 1 段ぶん（1 字ぶんの帯）を読んで、横の並びを返す */
-  async function band(useAiNow, rI, y1, y2){
+  async function band(useAiNow, rI, y1, y2, sNow){
+    sNow = sNow || side;
     if (!useAiNow){
       aiProg("上から " + (rI + 1) + " 字目", "字をさがしています（手元）");
       await uiTick();
-      return _rubTopProf(x1, x2, y1, y2, side);
+      return _rubTopProf(x1, x2, y1, y2, sNow);
     }
     /* 窓を横にずらして、①「読む」に通す */
     var base = takuApiBase(), step = Math.max(24, Math.round(side * 0.6)), i, x, y;
@@ -10414,21 +10493,22 @@ async function rubColsScanTop(useAi){
   }
 
   /* 上から順に何段か見て、どれか 1 段でも字があれば列とみなす */
-  async function pass(useAiNow){
+  async function pass(useAiNow, sNow){
+    sNow = sNow || side;
     var rows = Math.max(1, Math.min(useAiNow ? 2 : 4,
-                   Math.floor((ar.y2 - yTop) / Math.max(1, side))));
+                   Math.floor((ar.y2 - yTop) / Math.max(1, sNow))));
     var prof = new Float32Array(w2), x, rN = 0;
     for (var rI = 0; rI < rows; rI++){
-      var y1 = yTop + rI * side, y2 = Math.min(RUB.H, y1 + side);
-      if (y2 - y1 < side * 0.6) break;
-      var pr = await band(useAiNow, rI, y1, y2);
+      var y1 = yTop + rI * sNow, y2 = Math.min(RUB.H, y1 + sNow);
+      if (y2 - y1 < sNow * 0.6) break;
+      var pr = await band(useAiNow, rI, y1, y2, sNow);
       if (!pr) continue;
       rN++;
       for (x = 0; x < w2; x++) if (pr[x] > prof[x]) prof[x] = pr[x];   /* いちばん大きいものを採る */
       if (AIPROG_STOP) break;
     }
     if (!rN) return { cols: null, rN: 0, prof: null };
-    return { cols: _rubColsFromRuns(_rubRunsOf(prof, w2, side), x1, x2, side),
+    return { cols: _rubColsFromRuns(_rubRunsOf(prof, w2, sNow), x1, x2, sNow),
              rN: rN, prof: prof };
   }
 
@@ -10464,6 +10544,43 @@ async function rubColsScanTop(useAi){
     msg("いちばん上の行に、字が見あたりませんでした。" +
         "［範囲］の上のふちを、いちばん上の字に合わせてみてください。", true);
     return null;
+  }
+  /* **字幅の候補を ぜんぶ試す**（v23.9）。校正にある字幅（大きい順）で
+     それぞれ列を出し、いちばん もっともらしいものを採る。 */
+  var sideUsed = side, profBy = {}, base9 = null;
+  if (got.prof){
+    var cand = _rubCharSides();
+    if (cand.indexOf(side) < 0) cand.unshift(side);
+    profBy[side] = got.prof;
+    var best = null;
+    for (var ci9 = 0; ci9 < cand.length; ci9++){
+      var s3 = cand[ci9];
+      if (s3 > w2) continue;
+      /* **手元のときは、その字幅で読み取り直す**（v23.9）。
+         小さい字は、大きい字幅のままだと「小さいかけら」として捨てられてしまう。 */
+      var pf = profBy[s3];
+      if (!pf && !ai){
+        aiProg("見直し", "字の大きさ " + s3 + "px で見ています");
+        await uiTick();
+        var g3 = await pass(false, s3);
+        pf = g3.prof; profBy[s3] = pf;
+      }
+      if (!pf) pf = got.prof;
+      var c3 = _rubColsFromRuns(_rubRunsOf(pf, w2, s3), x1, x2, s3);
+      c3 = _rubColsSplitWide(c3, pf, x1, s3);
+      if (!c3 || !c3.length) continue;
+      var sc = _rubColsScore(c3, s3);
+      if (s3 === side) base9 = { sc: sc, cols: c3, side: s3, prof: pf };
+      if (!best || sc < best.sc - 0.02) best = { sc: sc, cols: c3, side: s3, prof: pf };
+    }
+    /* **いつもの字幅（校正のいちばん大きい字）を えこひいきする**（v23.9）。
+       ほかの字幅に乗りかえるのは、**いつものがうまくいっていない**（点数 0.5 超）うえに、
+       乗りかえ先が **その半分より良い**ときだけ。
+       そうしないと、ふつうの拓本でも列を割りすぎる（実測：4 本が 6〜7 本になった）。 */
+    if (base9 && base9.cols && base9.cols.length){
+      if (!(base9.sc > 0.5 && best && best.sc < base9.sc * 0.5)) best = base9;
+    }
+    if (best){ got.cols = best.cols; sideUsed = best.side; got.prof = best.prof; }
   }
   var cols = got.cols, loose = 0;
   /* **見込みの字幅をゆるめて拾い直す**（v23.3。本人の報告
@@ -10502,13 +10619,61 @@ async function rubColsScanTop(useAi){
      せっかく見つけた列の**場所**が捨てられていた。 */
   RUB.cols = cols; RUB.colsSplit = false;
   persist(); rubPanel(); rubRender();
+  /* **下の方も のぞいてみる**（v23.9）。上が戒名で大きく、下が命日で小さい拓本は、
+     列の数が途中で変わる。1 本の帯で通すと下が合わないので、先に知らせる。 */
+  var warn = "";
+  try {
+    /* **下の方を 2 か所 のぞく**（v23.9）。1 か所だけだと、たまたまの読み違いで
+       いらぬ知らせが出る。**2 か所が同じ本数で、上とちがう**ときだけ言う。 */
+    function peekAt(fr){
+      var yLow = yTop + (ar.y2 - yTop) * fr;
+      if (!(yLow + sideUsed < ar.y2)) return 0;
+      var bestLo = null;
+      _rubCharSides().forEach(function(s4){
+        if (s4 > w2) return;
+        var pLo = _rubTopProf(x1, x2, Math.round(yLow),
+                              Math.round(Math.min(RUB.H, yLow + s4)), s4);
+        if (!pLo) return;
+        var c4 = _rubColsSplitWide(_rubColsFromRuns(_rubRunsOf(pLo, w2, s4), x1, x2, s4),
+                                   pLo, x1, s4);
+        if (!c4 || !c4.length) return;
+        var sc4 = _rubColsScore(c4, s4);
+        if (!bestLo || sc4 < bestLo.sc - 0.02) bestLo = { sc: sc4, n: c4.length };
+      });
+      return bestLo ? bestLo.n : 0;
+    }
+    /* **字の大きさが上下で変わるか**を見る（v23.9）。列の本数より こちらの方が確か。
+       上が戒名で大きく、下が命日で小さい拓本は、かたまりの幅が半分ほどになる。 */
+    function wideAt(fr){
+      var yLow = yTop + (ar.y2 - yTop) * fr;
+      if (!(yLow + sideUsed < ar.y2)) return 0;
+      var pLo = _rubTopProf(x1, x2, Math.round(yLow),
+                            Math.round(Math.min(RUB.H, yLow + sideUsed)), sideUsed);
+      if (!pLo) return 0;
+      var rr2 = _rubRunsOf(pLo, w2, Math.max(12, Math.round(sideUsed * 0.35)));
+      if (!rr2.length) return 0;
+      return _median(rr2.map(function(r){ return r[1] - r[0]; })) || 0;
+    }
+    var wTop = _median(cols.map(function(c){ return c.b - c.a; })) || 0;
+    var w1 = wideAt(0.55), w2b = wideAt(0.80);
+    if (wTop && w1 && w2b && w1 < wTop * 0.7 && w2b < wTop * 0.7){
+      var n1 = peekAt(0.55), n2 = peekAt(0.80);
+      var nLo = (n1 && n1 === n2) ? n1 : Math.max(n1, n2);
+      warn = "※ 下の方は字が小さくなります（上 " + Math.round(wTop) + "px／下 " +
+             Math.round((w1 + w2b) / 2) + "px）。上下で作りが変わる拓本です。" +
+             "［通す範囲］を上と下に分けて、それぞれ通してください" +
+             (nLo ? "（下は " + nLo + " 列に見えます。［列の数］に入れると確実です）" : "") + "。";
+    }
+  } catch(e){}
   if (loose === -1) return cols;      /* 数字を出した知らせを、上書きしない */
   msg("上から " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
       cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
       " px）。" + (moved > side * 0.2 ? "範囲の上のふちより " + moved + "px 下から読みました。" : "") +
       (loose > 0 ? "字が見込み（" + side + "px）より小さかったので、" +
         Math.round(side * loose) + "px で見ました。" : "") +
-      "ちがうときは［列の数］に本数を入れてください。", false, true);
+      (sideUsed !== side ? "字の大きさは " + sideUsed + "px で見ています。" : "") +
+      "ちがうときは［列の数］に本数を入れてください。" + (warn ? " " + warn : ""),
+      false, true);
   return cols;
 }
 function rubColsWanted(){

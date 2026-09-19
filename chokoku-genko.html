@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.4";
+var APP_VER = "v25.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10907,6 +10907,49 @@ async function rubColsScanTop(useAi, fromBot){
    1 列のままか 2 列に分かれるか。**上の列を土台にして、その中だけを見る**ので、
    下だけを読み直すより はるかに はずれにくい。
    分かれ目は、その列の中で**墨のかたまりが 2 つ（3 つ）に割れている所**。 */
+/* ある高さのまわりで、**いちばん墨のうすい すき間**のまん中を返す（v25.5）。
+   拓本は 字が白・地が黒。上へ `up`・下へ `down` ぶんを見て、横 1 行ぶんの
+   白の数を数え、**いちばん長い すき間**の まん中を返す。
+   **下を広く見る**のは、谷さがしの見立てが たいてい**上に行きすぎる**から
+   （戒名にも「峰」「朗」のような左右に分かれる字があり、そこで割れて見える）。 */
+function _rubGapNear(x1, x2, y0, up, down){
+  if (!RUB.data) return y0;
+  var yA = Math.max(0, Math.round(y0 - up)), yB = Math.min(RUB.H, Math.round(y0 + down));
+  if (yB - yA < 8) return y0;
+  var d = RUB.data.data, W = RUB.W, st = 2;
+  var n = yB - yA, row = new Float32Array(n), y, x, i;
+  /* まずは まわりの明るさの ならしと ばらつき */
+  var ss = 0, s2 = 0, cn = 0;
+  for (y = yA; y < yB; y += st)
+    for (x = x1; x < x2; x += st){
+      var v = d[((y * W) + x) * 4];
+      ss += v; s2 += v * v; cn++;
+    }
+  if (!cn) return y0;
+  var mn = ss / cn, sd = Math.sqrt(Math.max(0, s2 / cn - mn * mn));
+  var lim = mn + sd * 0.8;
+  for (y = yA; y < yB; y++){
+    var c = 0;
+    for (x = x1; x < x2; x += st) if (d[((y * W) + x) * 4] > lim) c++;
+    row[y - yA] = c;
+  }
+  /* いちばんうすい すき間（ひとつづき）の まん中 */
+  var lo = Infinity, hi = 0;
+  for (i = 0; i < n; i++){ if (row[i] < lo) lo = row[i]; if (row[i] > hi) hi = row[i]; }
+  if (!(hi > 0)) return y0;
+  var cut = lo + (hi - lo) * 0.15, best = -1, bl = -1, st2 = -1, len;
+  for (i = 0; i <= n; i++){
+    if (i < n && row[i] <= cut){ if (st2 < 0) st2 = i; }
+    else if (st2 >= 0){
+      len = i - st2;
+      /* もとの高さに近い すき間を えらぶ（長さも見る） */
+      var mid = st2 + len / 2, sc = len - Math.abs(mid - (y0 - up)) * 0.2;
+      if (sc > bl){ bl = sc; best = Math.round(yA + mid); }
+      st2 = -1;
+    }
+  }
+  return best >= 0 ? best : y0;
+}
 async function rubColsBotSplit(useAi){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
   var side = _rubCharSide();
@@ -11022,6 +11065,9 @@ async function rubColsBotSplit(useAi){
           if (p.done) return;
           var ok = false;
           if (prY){
+            /* 谷さがしで見る（帯 1 段ぶん）。すき間だけを見る手も試したが、
+               下の列の片方が空になる所（「三郎」の下など）で ますます
+               当てにならなかった（v25.5 で実測）。 */
             var a2 = Math.max(x1, Math.round(p.c.a)), b2 = Math.min(x2, Math.round(p.c.b));
             var n2 = b2 - a2, sub2 = new Float32Array(n2), i3;
             for (i3 = 0; i3 < n2; i3++) sub2[i3] = prY[a2 - x1 + i3] || 0;
@@ -11035,21 +11081,19 @@ async function rubColsBotSplit(useAi){
       }
     } catch(e){}
     aiProgOff();
+    /* **境目は 6 列とも同じ高さ**（v25.5。本人の答え
+       「答えとしては、6列は開始と終わりは同じ位置です」）。
+       列ごとに出すと ばらばらになる（実測 2331／3470／3671px）。
+       ばらつく理由は、**下の列に字が少ない所**では谷が消えるから
+       （「建」「太」の列は 2 字しかないので、間があくと割れて見えない）。
+       いちばん上まで割れて見えた列＝いちばん早く 2 列になる列が本当の境目なので、
+       **いちばん上（小さい y）を採る**。 */
     yCut = _median(pair.map(function(p){ return p.y; })) || 0;
-    /* 列ごとの境目を、その列に持たせる（絵に出すのに使う） */
-    var pi = 0;
-    cols.forEach(function(v){ v.y0 = 0; });
-    (function(){
-      var k2 = 0;
-      top.forEach(function(c, i4){
-        var n4 = each[i4];
-        if (n4 > 1){
-          var p2 = pair[pi++];
-          for (var j4 = 0; j4 < n4; j4++) cols[k2 + j4].y0 = Math.round(p2.y);
-        }
-        k2 += n4;
-      });
-    })();
+    /* **字と字のあいだへ寄せる**（v25.5）。谷が消えた高さは、たいてい
+       上の字（戒名の終わり）に少し食い込む。上下 1 字ぶんを見て、
+       **いちばん墨のうすい すき間の まん中**へ動かす。 */
+    if (yCut > 0) yCut = _rubGapNear(x1, x2, yCut, Math.round(sBot * 0.3), Math.round(sBot * 1.5));
+    cols.forEach(function(v){ v.y0 = Math.round(yCut); });
   }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: rN,
                     how: "local", side: sBot, dir: "bot", base: top.length,
@@ -11066,8 +11110,10 @@ async function rubColsBotSplit(useAi){
       " px。" +
       (yCut ? "1 列から 2 列に変わるのは <b>上から " + Math.round(yCut) + "px</b>" +
               (mpp0 ? "（" + (yCut * mpp0).toFixed(0) + "mm）" : "") +
-              "（列ごと " + pair.map(function(p){ return Math.round(p.y); }).join("／") +
-              "px）。緑の線がその高さです。［通す範囲］をこの線で上下に分けてください。"
+              "。下の " + cols.length + " 列は、ここから下がそろって始まります" +
+              "（列ごとに見えた所は " + pair.map(function(p){ return Math.round(p.y); }).join("／") +
+              "px。いちばん上を採って、字のすき間へ寄せました）。" +
+              "緑の線がその高さです。［通す範囲］をこの線で上下に分けてください。"
             : "") +
       "ちがうときは、上の列を直してから もう一度押してください。", false, true);
   return cols;
@@ -15427,6 +15473,21 @@ function rubPanel(){
             '拓本を回すと、もう一度押してください。'
           : '拓本には<b>すでに彫ってある列</b>が並んでいるので、校正の列数とは合いません。' +
             'まず これを押してください。') + '</p>';
+    /* **境目は手でも直せる**（v25.5。本人の答え「6列は開始と終わりは同じ位置です」）。
+       拓本の地はざらざらで、境目を画素だけから確かに決めるのは難しい。
+       見立てを置いて、**あとは人が上下に動かす**（本人の言う「手で微調整」）。 */
+    if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
+      var mppC = mmPerPx();
+      h += '<div class="fixrow" style="margin-top:4px;"><span>1 列 → 2 列 の境目</span>' +
+        '<b><input type="number" id="rCutY" value="' + Math.round(ct.yCut) +
+        '" min="0" max="' + RUB.H + '" step="1" style="width:76px;"> px' +
+        ' <button class="mini" id="btnCutUp">↑</button>' +
+        ' <button class="mini" id="btnCutDn">↓</button></b></div>';
+      h += '<p class="hint" style="margin:3px 0 0;">緑の線です' +
+        (mppC ? '（上から ' + (ct.yCut * mppC).toFixed(0) + 'mm）' : '') +
+        '。下の ' + ct.cols.length + ' 列は、ここから下がそろって始まります。' +
+        'ずれていたら ↑↓（' + Math.round(num(ct.side, 40) * 0.25) + 'px ずつ）か、数で直してください。</p>';
+    }
     h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +
       'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
     h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
@@ -15502,6 +15563,20 @@ function rubPanel(){
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var bct = $("btnColsTop");  if (bct) bct.onclick = function(){ rubColsScanTop(true); };
   var bcb = $("btnColsBot");  if (bcb) bcb.onclick = function(){ rubColsBotSplit(true); };
+  /* 境目を手で動かす（v25.5） */
+  function cutSet(v){
+    var ct9 = S.rub.colsTop; if (!ct9 || !ct9.cols) return;
+    v = Math.max(0, Math.min(RUB.H, Math.round(v)));
+    ct9.yCut = v; ct9.y0 = v;
+    ct9.cols.forEach(function(c){ c.y0 = v; });
+    persist(); rubPanel(); rubRender();
+  }
+  var rcy = $("rCutY");
+  if (rcy) rcy.onchange = function(){ cutSet(num(rcy.value, 0)); };
+  var bcu = $("btnCutUp"), bcd = $("btnCutDn");
+  var stepC = Math.max(4, Math.round(num(S.rub.colsTop && S.rub.colsTop.side, 40) * 0.25));
+  if (bcu) bcu.onclick = function(){ cutSet(num(S.rub.colsTop.yCut, 0) - stepC); };
+  if (bcd) bcd.onclick = function(){ cutSet(num(S.rub.colsTop.yCut, 0) + stepC); };
   var rln = $("rLineN");
   if (rln) rln.onchange = rln.oninput = function(){
     S.rub.lineN = Math.max(0, Math.min(60, parseInt(rln.value, 10) || 0));

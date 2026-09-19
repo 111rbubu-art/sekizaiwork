@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v24.4";
+var APP_VER = "v24.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7142,6 +7142,21 @@ function applyLock(){
    校正と拓本は、動かすと校正そのものが変わってしまうので止める。 */
 var LOCK_ZONE = "#stagewrap,#bothwrap,#rubwrap,#demowrap";
 var LOCK_DRAG = "#bothwrap,#rubwrap";
+/* **拓本の解析は、ロック中もできる**（v24.5。本人の指示
+   「拓本の AI 補正をロック中にも使えるようにして」）。
+   拓本を読む・測る・AI に通す・字の枠を直す・学習に登録する ── どれも
+   **校正の中身（文字・形・位置）は変えない**。
+   止めたままにするのは、**校正の寸法に響く 2 つ**だけ。
+     ① 較正（頭・脚のつまみ／実測した文字全長）… mm/px が変わる
+     ② 回転 … 拓本の向きが変わり、AI の墨も 1 字ずつの枠も ぜんぶ合わなくなる
+   （トリミングは v14.6 から ロック中も動かせる。そのまま） */
+function lockRubOK(t){
+  if (!t || !t.closest) return false;
+  if (!t.closest("#rubwrap")) return false;
+  if (t.closest('[data-k="calTop"],[data-k="calBot"]')) return false;
+  if (rotMode) return false;
+  return true;
+}
 document.addEventListener("pointerdown", function(e){
   if (!locked()) return;
   /* **まん中ボタンは通す**（v21.29。本人の指摘「ロック中のファイルを閲覧する際に、
@@ -7152,6 +7167,7 @@ document.addEventListener("pointerdown", function(e){
   var t = e.target;
   if (!t || !t.closest || !t.closest(LOCK_DRAG)) return;
   if (t.closest(".crophit")) return;   /* トリミングの枠はロック中も動かせる（v14.6） */
+  if (lockRubOK(t)) return;            /* 拓本の解析はロック中もできる（v24.5） */
   /* 重ねた資料も、ロック中に動かせる（v20.26）。
      これは校正の画面にしか出ない「見るための道具」で、
      確認資料にも 印刷にも SVG 出力にも入らない。位置を変えても、
@@ -7172,6 +7188,7 @@ document.addEventListener("contextmenu", function(e){
   var t = e.target;
   if (!t || !t.closest || !t.closest(LOCK_ZONE)) return;
   if (t.closest(".notehit")) return;      /* 備考メモはロック中も直せる（v14.5） */
+  if (lockRubOK(t)) return;               /* 枠を右クリック → 学習画面（v24.5） */
   e.preventDefault(); e.stopPropagation();
   lockNo();
 }, true);
@@ -7179,6 +7196,7 @@ document.addEventListener("dblclick", function(e){
   if (!locked()) return;
   var t = e.target;
   if (!t || !t.closest || !t.closest(LOCK_ZONE)) return;
+  if (lockRubOK(t)) return;               /* v24.5 */
   e.preventDefault(); e.stopPropagation();
 }, true);
 /* 打ち込みも止める（欄が残っていても字は変わらない）。
@@ -7188,6 +7206,9 @@ document.addEventListener("beforeinput", function(e){
   var t = e.target;
   if (!t || !t.closest ||
       t.closest("#panSP,#panFile,#panInfo,#panDocs,#panFont,#glibWin,#noteMenu")) return;
+  /* 拓本の欄（列の数・しきい値など）はロック中も打てる（v24.5）。
+     **実測した文字全長（#rubLenBox）は較正なので、ここには入れない**。 */
+  if (t.closest("#rubFix,#rubData,#rubBrowse,#regWin,#aiFixBox")) return;
   e.preventDefault(); e.stopPropagation();
   lockNo();
 }, true);
@@ -7738,6 +7759,8 @@ function endRot(){
 }
 function startSpin(){
   if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  /* 回すと拓本の向きが変わり、AI の墨も枠も合わなくなる（v24.5） */
+  if (locked()){ lockNo(); return; }
   cropMode = false;
   rotMode = "spin";
   if (view !== "rub") setView("rub");
@@ -7788,6 +7811,7 @@ function setRot(v){
   rubPaintRemap(f0, rubFrameSt());        /* 塗りも一緒に動かす */
 }
 function resetRot(){
+  if (locked()){ lockNo(); return; }          /* v24.5 */
   var f0 = rubFrameSt();
   S.rub.rot = 0; S.rub.off = { x:0, y:0 };
   rubPaintRemap(f0, rubFrameSt());
@@ -7877,6 +7901,7 @@ function rebuildRub(){
    位置の指定がずれないようにする。 */
 function rubFlip180(){
   if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  if (locked()){ lockNo(); return; }          /* v24.5 */
   var r = S.rub, W = RUB.W, H = RUB.H;
   var mx = function(v){ return W - num(v, 0); };   /* 左右を裏返す */
   var my = function(v){ return H - num(v, 0); };   /* 上下を裏返す */
@@ -7995,8 +8020,10 @@ $("viewSheet").onclick = function(){ setView("sheet"); };
 $("viewRub").onclick   = function(){
   setView("rub"); setSub("rub");
   /* この画面へ来る目的はまず傾き直しなので、**はじめから回せる状態**にする
-     （v21.27。本人の指示）。すでに回している最中なら、そのまま。 */
-  if (RUB.img && !rotMode) startSpin();
+     （v21.27。本人の指示）。すでに回している最中なら、そのまま。
+     **ロック中は回せない**ので、だまって始めない（v24.5）。
+     ここで断りを出すと、拓本を見るたびに知らせが出てしまう。 */
+  if (RUB.img && !rotMode && !locked()) startSpin();
 };
 $("viewBoth").onclick  = function(){ setView("both"); };
 $("viewDemo").onclick  = function(){ setView("demo"); };
@@ -15184,6 +15211,7 @@ function bindRub(){
   bb = $("rbEnd");     if (bb) bb.onclick = endFix;
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
+    if (locked()){ lockNo(); return; }          /* 回転はロック中は止める（v24.5） */
     setView("rub");                    /* 回すあいだだけ拓本の画面を開く */
     /* 押したその場から、つかんで回せる。
        クリックだけなら、その場所が回転の中心になる。 */

@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v22.3";
+var APP_VER = "v22.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10241,94 +10241,122 @@ function _rubColsFromRuns(mg, x1, x2, side){
   }).filter(function(r){ return (r.b - r.a) >= side * 0.45; });
 }
 /* 本体。`useAi` が真なら、拓本AI に通して字を拾う。 */
+/* 手元で、その帯の「字らしさ」を横の並びにして返す（v22.4 で切り出し）。 */
+function _rubTopProf(x1, x2, y1, y2, side){
+  var w2 = x2 - x1, st = 2;
+  var gw = Math.floor(w2 / st), gh = Math.floor((y2 - y1) / st);
+  if (gw < 8 || gh < 8) return null;
+  var d = RUB.data.data, W = RUB.W, g = new Float32Array(gw * gh), x, y, i;
+  for (y = 0; y < gh; y++)
+    for (x = 0; x < gw; x++){
+      var p = (((y1 + y*st) * W) + (x1 + x*st)) * 4;
+      g[y*gw + x] = d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114;
+    }
+  var rr = Math.max(4, Math.round(side / st / 2));
+  var ii = new Float64Array((gw+1) * (gh+1));
+  for (y = 0; y < gh; y++){
+    var rs = 0;
+    for (x = 0; x < gw; x++){ rs += g[y*gw + x];
+      ii[(y+1)*(gw+1) + (x+1)] = ii[y*(gw+1) + (x+1)] + rs; }
+  }
+  function bx(xa, ya, xb, yb){
+    xa = Math.max(0, xa); ya = Math.max(0, ya);
+    xb = Math.min(gw, xb); yb = Math.min(gh, yb);
+    var n2 = (xb - xa) * (yb - ya);
+    if (n2 <= 0) return 0;
+    return (ii[yb*(gw+1)+xb] - ii[ya*(gw+1)+xb] - ii[yb*(gw+1)+xa] + ii[ya*(gw+1)+xa]) / n2;
+  }
+  var hp = new Float32Array(gw * gh), ss = 0;
+  for (y = 0; y < gh; y++)
+    for (x = 0; x < gw; x++){
+      var v = g[y*gw + x] - bx(x - rr, y - rr, x + rr + 1, y + rr + 1);
+      hp[y*gw + x] = v; ss += v * v;
+    }
+  var sd = Math.sqrt(ss / (gw * gh));
+  if (!(sd > 0.5)) return null;                 /* 一面まっ平ら（紙・黒ベタ） */
+  var bin = new Uint8Array(gw * gh);
+  for (i = 0; i < gw * gh; i++) bin[i] = hp[i] > sd * 0.8 ? 1 : 0;
+  var minA = Math.max(9, Math.round(Math.pow(side * 0.12 / st, 2)));
+  var big = _rubDropSmall(bin, gw, gh, minA);
+  var pr = new Float32Array(w2);
+  for (x = 0; x < gw; x++){
+    var c = 0;
+    for (y = 0; y < gh; y++) if (big[y*gw + x]) c++;
+    var v2 = c / gh;
+    for (i = 0; i < st; i++) if (x*st + i < w2) pr[x*st + i] = v2;
+  }
+  return pr;
+}
+/* 本体。`useAi` が真なら、拓本AI に通して字を拾う。
+   **1 字ぶんの帯を、何段か見て重ねる**（v22.4。本人の指摘
+   「1 文字ではだめですか／文字数によって かなり間隔が空くので、
+   行によって読めないことが想定されます」）。
+   列によって字の大きさも、始まる高さも ちがう。1 段だけ見ると、
+   その段が たまたま**字と字のすき間**に当たった列が 抜け落ちる。
+   1 字ぶんの帯を上から順に何段か見て、**どれか 1 段でも字があれば列とみなす**
+   （段ごとの値の いちばん大きいものを採る）。 */
 async function rubColsScanTop(useAi){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return null; }
   var ar = rubArea(), side = _rubCharSide();
   if (!side){ msg("字の大きさが分かりません。", true); return null; }
-  var x1 = ar.x1, x2 = ar.x2;
-  var y1 = ar.y1, y2 = Math.min(RUB.H, ar.y1 + Math.round(side * 2));
-  var w2 = x2 - x1;
+  var x1 = ar.x1, x2 = ar.x2, w2 = x2 - x1;
   if (w2 < side){ msg("範囲が字 1 つより狭いです。", true); return null; }
-  var prof = new Float32Array(w2), i, x, y;
+  var ai = !!(useAi && takuApiBase());
+  /* 段の数。AI は 1 段 7 窓ほどかかるので 2 段まで。手元は軽いので 4 段まで。 */
+  var rows = Math.max(1, Math.min(ai ? 2 : 4,
+                 Math.floor((ar.y2 - ar.y1) / Math.max(1, side))));
+  var prof = new Float32Array(w2), i, x, y, rN = 0;
   aiProgOn();
   try {
-    if (useAi && takuApiBase()){
-      /* 窓を横にずらして、①「読む」に通す */
-      var base = takuApiBase(), step = Math.max(24, Math.round(side * 0.6));
-      var xs = [];
-      for (x = x1; x < x2 - side * 0.35; x += step) xs.push(Math.min(x, x2 - side));
-      var acc = document.createElement("canvas");
-      acc.width = w2; acc.height = y2 - y1;
-      var ag = acc.getContext("2d", { willReadFrequently: true });
-      ag.fillStyle = "#000"; ag.fillRect(0, 0, acc.width, acc.height);
-      ag.globalCompositeOperation = "lighten";
-      for (i = 0; i < xs.length; i++){
-        if (AIPROG_STOP) break;
-        aiProg("いちばん上の行", "AI に通しています " + (i+1) + " / " + xs.length);
+    for (var rI = 0; rI < rows; rI++){
+      var y1 = ar.y1 + rI * side, y2 = Math.min(RUB.H, y1 + side);
+      if (y2 - y1 < side * 0.6) break;
+      var pr = null;
+      if (ai){
+        /* 窓を横にずらして、①「読む」に通す */
+        var base = takuApiBase(), step = Math.max(24, Math.round(side * 0.6));
+        var xs = [];
+        for (x = x1; x < x2 - side * 0.35; x += step) xs.push(Math.min(x, x2 - side));
+        var acc = document.createElement("canvas");
+        acc.width = w2; acc.height = y2 - y1;
+        var ag = acc.getContext("2d", { willReadFrequently: true });
+        ag.fillStyle = "#000"; ag.fillRect(0, 0, acc.width, acc.height);
+        ag.globalCompositeOperation = "lighten";
+        for (i = 0; i < xs.length; i++){
+          if (AIPROG_STOP) break;
+          aiProg("上から " + (rI+1) + " 字目", "AI に通しています " + (i+1) + " / " + xs.length);
+          await uiTick();
+          var blob = await rubCropPng(xs[i], y1, side);
+          var fd = new FormData();
+          fd.append("file", blob, "raw.png");
+          fd.append("stage", "ink"); fd.append("soft", "true");
+          var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          var bb = await r.blob();
+          var img = await new Promise(function(res, rej){
+            var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
+            im.src = URL.createObjectURL(bb);
+          });
+          ag.drawImage(img, xs[i] - x1, 0, side, side);
+        }
+        var id2 = ag.getImageData(0, 0, acc.width, acc.height), dd = id2.data;
+        pr = new Float32Array(w2);
+        for (x = 0; x < w2; x++){
+          var c3 = 0;
+          for (y = 0; y < acc.height; y++) if (dd[(y*w2 + x) * 4] > 100) c3++;
+          pr[x] = c3 / acc.height;
+        }
+      } else {
+        aiProg("上から " + (rI+1) + " 字目", "字をさがしています（手元）");
         await uiTick();
-        var blob = await rubCropPng(xs[i], y1, side);
-        var fd = new FormData();
-        fd.append("file", blob, "raw.png");
-        fd.append("stage", "ink"); fd.append("soft", "true");
-        var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        var bb = await r.blob();
-        var img = await new Promise(function(res, rej){
-          var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej;
-          im.src = URL.createObjectURL(bb);
-        });
-        ag.drawImage(img, xs[i] - x1, 0, side, side);
+        pr = _rubTopProf(x1, x2, y1, y2, side);
       }
-      var id2 = ag.getImageData(0, 0, acc.width, acc.height), dd = id2.data;
-      for (x = 0; x < w2; x++){
-        var c3 = 0;
-        for (y = 0; y < acc.height; y++) if (dd[(y*w2 + x) * 4] > 100) c3++;
-        prof[x] = c3 / acc.height;
-      }
-    } else {
-      /* 手元で拾う（まわりより明るい所＝字。小さい塊は捨てる） */
-      aiProg("いちばん上の行", "字をさがしています（手元）");
-      await uiTick();
-      var st3 = 2, gw = Math.floor(w2 / st3), gh = Math.floor((y2 - y1) / st3);
-      var d3 = RUB.data.data, W3 = RUB.W, g3 = new Float32Array(gw * gh);
-      for (y = 0; y < gh; y++)
-        for (x = 0; x < gw; x++){
-          var p3 = (((y1 + y*st3) * W3) + (x1 + x*st3)) * 4;
-          g3[y*gw + x] = d3[p3]*0.299 + d3[p3+1]*0.587 + d3[p3+2]*0.114;
-        }
-      var rr = Math.max(4, Math.round(side / st3 / 2));
-      var ii = new Float64Array((gw+1) * (gh+1));
-      for (y = 0; y < gh; y++){
-        var rs = 0;
-        for (x = 0; x < gw; x++){ rs += g3[y*gw + x];
-          ii[(y+1)*(gw+1) + (x+1)] = ii[y*(gw+1) + (x+1)] + rs; }
-      }
-      function bx(xa, ya, xb, yb){
-        xa = Math.max(0, xa); ya = Math.max(0, ya);
-        xb = Math.min(gw, xb); yb = Math.min(gh, yb);
-        var n2 = (xb - xa) * (yb - ya);
-        if (n2 <= 0) return 0;
-        return (ii[yb*(gw+1)+xb] - ii[ya*(gw+1)+xb] - ii[yb*(gw+1)+xa] + ii[ya*(gw+1)+xa]) / n2;
-      }
-      var hp = new Float32Array(gw * gh), ss2 = 0;
-      for (y = 0; y < gh; y++)
-        for (x = 0; x < gw; x++){
-          var v2 = g3[y*gw + x] - bx(x - rr, y - rr, x + rr + 1, y + rr + 1);
-          hp[y*gw + x] = v2; ss2 += v2 * v2;
-        }
-      var sd2 = Math.sqrt(ss2 / (gw * gh)), lim2 = sd2 * 0.8;
-      var bin = new Uint8Array(gw * gh);
-      for (i = 0; i < gw * gh; i++) bin[i] = hp[i] > lim2 ? 1 : 0;
-      var minA = Math.max(9, Math.round(Math.pow(side * 0.12 / st3, 2)));
-      var big = _rubDropSmall(bin, gw, gh, minA);
-      for (x = 0; x < gw; x++){
-        var c4 = 0;
-        for (y = 0; y < gh; y++) if (big[y*gw + x]) c4++;
-        var v3 = c4 / gh;
-        for (i = 0; i < st3; i++) if (x*st3 + i < w2) prof[x*st3 + i] = v3;
-      }
+      if (!pr) continue;
+      rN++;
+      for (x = 0; x < w2; x++) if (pr[x] > prof[x]) prof[x] = pr[x];   /* いちばん大きいものを採る */
+      if (AIPROG_STOP) break;
     }
   } catch(e){
     aiProgOff();
@@ -10336,6 +10364,11 @@ async function rubColsScanTop(useAi){
     return null;
   }
   aiProgOff();
+  if (!rN){
+    msg("いちばん上の行に、字が見あたりませんでした。" +
+        "［範囲］の上のふちを、いちばん上の字に合わせてみてください。", true);
+    return null;
+  }
   var mg = _rubRunsOf(prof, w2, side);
   var cols = _rubColsFromRuns(mg, x1, x2, side);
   if (!cols || !cols.length){
@@ -10343,15 +10376,14 @@ async function rubColsScanTop(useAi){
         "［範囲］の上のふちを、いちばん上の字に合わせてみてください。", true);
     return null;
   }
-  S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
-                    how: (useAi && takuApiBase()) ? "ai" : "local" };
+  S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: rN,
+                    how: ai ? "ai" : "local" };
   /* **［列の数］には書かない**（v22.3。本人の報告「拓本ぜんたいを通すと こうなりました」）。
      書くと `rubColsWanted` が「人が本数を入れた」とみて**等分に割り直し**、
-     せっかく見つけた列の**場所**が捨てられていた
-     （実測：34〜277／277〜541／541〜805／805〜989 → 34〜287／258〜526／… に化けた）。 */
+     せっかく見つけた列の**場所**が捨てられていた。 */
   RUB.cols = cols; RUB.colsSplit = false;
   persist(); rubPanel(); rubRender();
-  msg("いちばん上の行から、列を " + cols.length + " 本 見つけました（" +
+  msg("上から " + rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
       cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
       " px）。ちがうときは［列の数］に本数を入れてください。", false, true);
   return cols;
@@ -14321,11 +14353,12 @@ function rubPanel(){
        拓本には すでに彫ってある列が並んでいるので、校正の列数は当てにならない。 */
     var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
     h += '<button class="mini" id="btnColsTop" style="margin-top:4px;" ' +
-      'title="いちばん上の 1〜2 字ぶんだけを見て、字のかたまりの間隔から列を割り出します">' +
+      'title="上から 1 字ぶんずつ 何段か見て、字のかたまりの間隔から列を割り出します">' +
       'いちばん上の行から列を見つける</button>';
     h += '<p class="hint" style="margin:3px 0 0;">' +
       (ct ? '<b>列 ' + ct.cols.length + ' 本</b>（' + (ct.how === "ai" ? "AI で" : "手元で") +
-            '見つけました）。拓本を回すと、もう一度押してください。'
+            '、上から ' + (ct.rows || 1) + ' 字ぶんを見て見つけました）。' +
+            '拓本を回すと、もう一度押してください。'
           : '拓本には<b>すでに彫ってある列</b>が並んでいるので、校正の列数とは合いません。' +
             'まず これを押してください。') + '</p>';
     h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +

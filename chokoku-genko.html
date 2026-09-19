@@ -2255,7 +2255,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v23.9";
+var APP_VER = "v24.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9944,7 +9944,10 @@ async function rubAiBand(noAsk, trusted){
      左右に帯の 2 割ぶん のりしろを取る。行から外れた墨は、このあと
      `rubAiTrimCols` が落とすので、広めに取っても散らからない。 */
   var over = (q.x2 - q.x1) * 0.2;
-  ag.rect((q.x1 - over) * SC, q.y1 * SC, (q.x2 - q.x1 + over*2) * SC, (q.y2 - q.y1) * SC);
+  /* **となりの列には はみ出さない**（v24.0）。広げる先は `rubBandLimit` まで。 */
+  var lim0 = rubBandLimit();
+  var cx1 = Math.max(0, lim0.L, q.x1 - over), cx2 = Math.min(RUB.W, lim0.R, q.x2 + over);
+  ag.rect(cx1 * SC, q.y1 * SC, (cx2 - cx1) * SC, (q.y2 - q.y1) * SC);
   ag.clip();
   ag.globalCompositeOperation = "lighten";      /* 重なりは濃い方を採る */
 
@@ -10875,9 +10878,30 @@ function rubAiBandClear(){
 }
 
 /* 帯を左右に少しだけ広げた範囲（v21.64）。はらいの先まで入れるため。 */
+/* **帯を広げてよい かぎり**（v24.0。本人の報告「一番左側の文字がほぼ読めていません」）。
+   帯は はらいの先を落とさないように 2 割ぶん外へ広げている。ところが列と列が
+   くっついている拓本では、広げた先に**となりの列が丸ごと入る**。
+   となりの字は高さがずれているので、**字と字のすき間が埋まり**、
+   1 字ずつに切り分けられなくなる（実測：すき間の行 0／2095 で かたまり 1 個）。
+   となりの列との まん中で止める。 */
+function rubBandLimit(){
+  var out = { L: 0, R: RUB.W };
+  var cs = RUB.cols;
+  if (!cs || !cs.length) return out;
+  var a = num(S.rub.bandL, 0), b = num(S.rub.bandR, RUB.W), mid = (a + b) / 2;
+  cs.forEach(function(c){
+    if (!c) return;
+    var cm = (c.a + c.b) / 2;
+    if (cm < mid - 1) out.L = Math.max(out.L, (c.b + a) / 2);
+    if (cm > mid + 1) out.R = Math.min(out.R, (b + c.a) / 2);
+  });
+  return out;
+}
 function rubBandWide(q){
   var over = Math.round((q.x2 - q.x1) * 0.2);
-  return { x1: Math.max(0, q.x1 - over), x2: Math.min(RUB.W, q.x2 + over),
+  var lim = rubBandLimit();
+  return { x1: Math.max(0, lim.L, q.x1 - over),
+           x2: Math.min(RUB.W, lim.R, q.x2 + over),
            y1: q.y1, y2: q.y2 };
 }
 /* AI が読んだ墨から、見立ての絵（M）を作る（v21.55）。
@@ -10922,6 +10946,11 @@ function rubAiSplit(M){
     rows[y] = c; if (c > mx) mx = c;
   }
   if (!mx) return { runs: [], rows: rows };
+  /* **地のざらつきが少し残ると、行の墨がゼロになる所が無くなる**ことがある
+     （実測：いちばん少ない行でも 5〜7 ます／2095 行）。そのときは切れない。
+     ここで切る高さを上げてみたが（v24.0 で試した）、こんどは画ごとに
+     バラバラになった（6 字の列が 99 個のかけらに）。**上げるのはやめた**。
+     直すなら、AI の墨そのものを きれいにする方が筋（拓本AI 側）。 */
   var lim = mx * 0.04;                       /* これ未満は「墨なし」とみる */
   var runs = [], st = -1;
   for (y = 0; y < h; y++){

@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.6";
+var APP_VER = "v25.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10559,6 +10559,54 @@ function _rubColsFromRuns(mg, x1, x2, side){
     return { a: Math.max(x1, Math.round(cx - half)), b: Math.min(x2, Math.round(cx + half)) };
   }).filter(function(r){ return (r.b - r.a) >= side * 0.45; });
 }
+/* **たて 1 列ぶんの「字らしさ」を、行ごとに返す**（v25.7）。
+   `_rubTopProf` の たて版。局所コントラストで墨を拾い、小さいかけらを落として、
+   行ごとの墨の数（0〜1）を返す。列の中の**字の高さ**を測るのに使う。 */
+function _rubRowProf(x1, x2, y1, y2, side){
+  var w2 = x2 - x1, h2 = y2 - y1, st = 2;
+  var gw = Math.floor(w2 / st), gh = Math.floor(h2 / st);
+  if (gw < 4 || gh < 8) return null;
+  var d = RUB.data.data, W = RUB.W, g = new Float32Array(gw * gh), x, y, i;
+  for (y = 0; y < gh; y++)
+    for (x = 0; x < gw; x++){
+      var p = ((Math.round(y1 + y*st) * W) + Math.round(x1 + x*st)) * 4;
+      g[y*gw + x] = d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114;
+    }
+  var rr = Math.max(4, Math.round(side / st / 2));
+  var ii = new Float64Array((gw+1) * (gh+1));
+  for (y = 0; y < gh; y++){
+    var rs = 0;
+    for (x = 0; x < gw; x++){ rs += g[y*gw + x];
+      ii[(y+1)*(gw+1) + (x+1)] = ii[y*(gw+1) + (x+1)] + rs; }
+  }
+  function bx(xa, ya, xb, yb){
+    xa = Math.max(0, xa); ya = Math.max(0, ya);
+    xb = Math.min(gw, xb); yb = Math.min(gh, yb);
+    var n2 = (xb - xa) * (yb - ya);
+    if (n2 <= 0) return 0;
+    return (ii[yb*(gw+1)+xb] - ii[ya*(gw+1)+xb] - ii[yb*(gw+1)+xa] + ii[ya*(gw+1)+xa]) / n2;
+  }
+  var hp = new Float32Array(gw * gh), ss = 0;
+  for (y = 0; y < gh; y++)
+    for (x = 0; x < gw; x++){
+      var v = g[y*gw + x] - bx(x - rr, y - rr, x + rr + 1, y + rr + 1);
+      hp[y*gw + x] = v; ss += v * v;
+    }
+  var sd = Math.sqrt(ss / (gw * gh));
+  if (!(sd > 0.5)) return null;
+  var bin = new Uint8Array(gw * gh);
+  for (i = 0; i < gw * gh; i++) bin[i] = hp[i] > sd * 0.8 ? 1 : 0;
+  var minA = Math.max(9, Math.round(Math.pow(side * 0.12 / st, 2)));
+  var big = _rubDropSmall(bin, gw, gh, minA);
+  var pr = new Float32Array(h2);
+  for (y = 0; y < gh; y++){
+    var c = 0;
+    for (x = 0; x < gw; x++) if (big[y*gw + x]) c++;
+    var v2 = c / gw;
+    for (i = 0; i < st; i++) if (y*st + i < h2) pr[y*st + i] = v2;
+  }
+  return pr;
+}
 /* 本体。`useAi` が真なら、拓本AI に通して字を拾う。 */
 /* 手元で、その帯の「字らしさ」を横の並びにして返す（v22.4 で切り出し）。 */
 function _rubTopProf(x1, x2, y1, y2, side){
@@ -11063,54 +11111,47 @@ async function rubColsBotSplit(useAi){
     if (s2.length > 1) pair.push({ c: c, cut: s2[0].b, y: 0 });
     s2.forEach(function(v){ cols.push(v); });
   });
-  /* ───── **上の 1 列と下の 2 列の境目をさがす**（v25.4。本人の指示
+  /* ───── **上の 1 列と下の 2 列の境目をさがす**（v25.7 で作り直し。本人の指示
      「あとは上の1列と下の2列の境界の判別ができるようになればいいのですが」）─────
-     下から 1 字ぶんの帯を上へずらしながら、**その帯でも 2 列に割れているか**を見る。
-     割れなくなった所が境目。2 段つづけて割れなければ、そこで止める。 */
+
+     v25.4〜v25.6 は **帯 1 段ずつ**見て「割れているか」を数えていた。
+     これが当てにならなかった（実測 2197／3515／2528／3582px と、字幅を変える
+     たびに飛んだ）。1 段ぶんの墨では、地のざらつきに負ける。
+
+     直し：**下から帯を積み上げて**（重ねて）、そのたびに「まだ割れているか」を
+     見る。列さがしと同じやり方なので、同じだけ確かに出る。
+     下から積んでいるあいだは割れている。**戒名（大きい字）が入ったとたんに
+     すき間が埋まる**ので、そこが境目。
+     実測（`irr.json`・字幅 30mm）：上端 2335px までは 3 列とも ○、
+     2217px で 2 列が ×、2099px で 3 列とも ×。 */
   var yCut = 0;
   if (pair.length){
     aiProgOn();
     try {
-      var stepY = Math.max(10, Math.round(sBot * 0.5));
-      var doneN = 0, yy;
-      pair.forEach(function(p){ p.y = yBot; p.miss = 0; p.done = false; });
-      for (yy = yBot; yy > ar.y1 + sBot && doneN < pair.length; yy -= stepY){
+      var stepY = Math.max(8, Math.round(sBot * 0.25));
+      var acc = new Float32Array(w2), yy, miss9 = 0;
+      for (yy = yBot; yy > ar.y1 + sBot * 0.6; yy -= stepY){
         if (AIPROG_STOP) break;
-        aiProg("境目さがし", "下から " + Math.round((yBot - yy) / Math.max(1, sBot) * 10) / 10 + " 字ぶん上");
+        aiProg("境目さがし", "下から " +
+          (Math.round((yBot - yy) / Math.max(1, sBot) * 10) / 10) + " 字ぶん上");
         await uiTick();
-        var prY = _rubTopProf(x1, x2, Math.round(Math.max(0, yy - sBot)), Math.round(yy), sBot);
+        var yA9 = Math.max(0, yy - sBot);
+        var prY = _rubTopProf(x1, x2, Math.round(yA9), Math.round(yy), sBot);
+        if (prY) for (var x9 = 0; x9 < w2; x9++) if (prY[x9] > acc[x9]) acc[x9] = prY[x9];
+        var okN = 0;
         pair.forEach(function(p){
-          if (p.done) return;
-          var ok = false;
-          if (prY){
-            /* 谷さがしで見る（帯 1 段ぶん）。すき間だけを見る手も試したが、
-               下の列の片方が空になる所（「三郎」の下など）で ますます
-               当てにならなかった（v25.5 で実測）。 */
-            var a2 = Math.max(x1, Math.round(p.c.a)), b2 = Math.min(x2, Math.round(p.c.b));
-            var n2 = b2 - a2, sub2 = new Float32Array(n2), i3;
-            for (i3 = 0; i3 < n2; i3++) sub2[i3] = prY[a2 - x1 + i3] || 0;
-            var v2 = valleyOf(sub2, n2);
-            /* **同じ所で割れている**ときだけ数える（列の幅の 15% まで） */
-            ok = v2 >= 0 && Math.abs((a2 + v2) - p.cut) < n2 * 0.15;
-          }
-          if (ok){ p.y = Math.max(0, yy - sBot); p.miss = 0; }
-          else { p.miss++; if (p.miss >= 2){ p.done = true; doneN++; } }
+          var a2 = Math.max(x1, Math.round(p.c.a)), b2 = Math.min(x2, Math.round(p.c.b));
+          var n2 = b2 - a2, sub2 = new Float32Array(n2), i3;
+          for (i3 = 0; i3 < n2; i3++) sub2[i3] = acc[a2 - x1 + i3] || 0;
+          var v2 = valleyOf(sub2, n2);
+          /* **同じ所で割れている**ときだけ数える（列の幅の 15% まで） */
+          if (v2 >= 0 && Math.abs((a2 + v2) - p.cut) < n2 * 0.15) okN++;
         });
+        if (okN >= pair.length){ yCut = Math.round(yA9); miss9 = 0; }
+        else { miss9++; if (miss9 >= 3) break; }   /* 埋まったら もう戻らない */
       }
     } catch(e){}
     aiProgOff();
-    /* **境目は 6 列とも同じ高さ**（v25.5。本人の答え
-       「答えとしては、6列は開始と終わりは同じ位置です」）。
-       列ごとに出すと ばらばらになる（実測 2331／3470／3671px）。
-       ばらつく理由は、**下の列に字が少ない所**では谷が消えるから
-       （「建」「太」の列は 2 字しかないので、間があくと割れて見えない）。
-       いちばん上まで割れて見えた列＝いちばん早く 2 列になる列が本当の境目なので、
-       **いちばん上（小さい y）を採る**。 */
-    yCut = _median(pair.map(function(p){ return p.y; })) || 0;
-    /* **字と字のあいだへ寄せる**（v25.5）。谷が消えた高さは、たいてい
-       上の字（戒名の終わり）に少し食い込む。上下 1 字ぶんを見て、
-       **いちばん墨のうすい すき間の まん中**へ動かす。 */
-    if (yCut > 0) yCut = _rubGapNear(x1, x2, yCut, Math.round(sBot * 0.3), Math.round(sBot * 1.5));
     cols.forEach(function(v){ v.y0 = Math.round(yCut); });
   }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: rN,
@@ -11129,8 +11170,7 @@ async function rubColsBotSplit(useAi){
       (yCut ? "1 列から 2 列に変わるのは <b>上から " + Math.round(yCut) + "px</b>" +
               (mpp0 ? "（" + (yCut * mpp0).toFixed(0) + "mm）" : "") +
               "。下の " + cols.length + " 列は、ここから下がそろって始まります" +
-              "（列ごとに見えた所は " + pair.map(function(p){ return Math.round(p.y); }).join("／") +
-              "px。いちばん上を採って、字のすき間へ寄せました）。" +
+              "（下から帯を積んで、" + pair.length + " 本とも まだ割れている いちばん上）。" +
               "緑の線がその高さです。［通す範囲］をこの線で上下に分けてください。"
             : "") +
       "ちがうときは、上の列を直してから もう一度押してください。", false, true);

@@ -1375,6 +1375,17 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
   </div>
 </div>
 
+<!-- AI に送る絵を見る（v28.2。本人の指示「AIに送る前に、何送っているのか画像を見せて」） -->
+<div id="aiPrevWin" hidden style="position:fixed;inset:4% 4%;background:#11151a;color:#e8eef5;
+  border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:95;display:flex;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a3340;">
+    <b>AI に送る絵</b><span id="aiPrevInfo" style="color:#9fb0c3;font-size:12px;"></span>
+    <span style="flex:1"></span>
+    <button class="mini" id="aiPrevClose">閉じる</button>
+  </div>
+  <div id="aiPrevBody" style="flex:1;overflow:auto;padding:10px;display:flex;flex-wrap:wrap;gap:10px;
+    align-content:flex-start;"></div>
+</div>
 <div id="regWin" hidden>
   <div class="rgbox">
     <div class="rghd">
@@ -2263,7 +2274,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v28.1";
+var APP_VER = "v28.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10012,12 +10023,12 @@ function rubPitchPlanPx(q){
   return best;
 }
 var AIPROG_COL = "";      /* ［拓本ぜんたいを通す］の中なら「2 / 3」など */
-async function rubAiBand(noAsk, trusted){
-  if (AIBAND_BUSY) return;
-  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
-  var base = takuApiBase();
-  RUB.aiWhy = "";
-  if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
+/* ───── **AI に渡す切り抜きの計画**（v28.2。本人の指示
+   「AIに送る前に、何送っているのか画像を見せて」）─────
+   帯・字送り・窓の大きさ・窓を置く場所を、ここ 1 か所で決める。
+   ［AI 縁取りを実行］も、［AI に送る絵を見る］も、同じこれを使う。 */
+function rubAiPlan(trusted, quiet){
+  if (!RUB.data) return { err: "先に拓本を読み込んでください。" };
   var q = rubBandQ(), t = thr(), mpp = mmPerPx();      /* 下の列なら境目から下だけ（v25.8） */
   if (!trusted && rubBandKnown()) trusted = true;      /* 調べた列に合わせた帯（v26.2） */
   var pitch = rubPitchPx(q, t), pitFrom = "拓本から測った";
@@ -10031,13 +10042,12 @@ async function rubAiBand(noAsk, trusted){
     var pl = rubPitchPlanPx(q);
     if (pl >= 8){
       pitch = pl; pitFrom = "校正から取った";
-      msg("字送りを拓本から読めなかったので、校正の字送り（" +
+      if (!quiet) msg("字送りを拓本から読めなかったので、校正の字送り（" +
           (mpp ? (pitch * mpp).toFixed(1) + "mm" : pitch + "px") + "）で通します。", false, true);
     } else {
-      aiBandNo("字の並び（字送り）を読めませんでした（帯 " + Math.round(q.x2 - q.x1) +
+      return { err: "字の並び（字送り）を読めませんでした（帯 " + Math.round(q.x2 - q.x1) +
                "px／しきい値 " + Math.round(t) + "）。校正にも字が入っていません。" +
-               "帯を 1 行だけに合わせてください。");
-      return;
+               "帯を 1 行だけに合わせてください。" };
     }
   }
   /* **校正の見当から あまりに離れた字送りは、採らない**（v24.3。本人の画面
@@ -10053,7 +10063,7 @@ async function rubAiBand(noAsk, trusted){
     if (pl3 >= 8 && pitch < pl3 * 0.5){
       var was = pitch;
       pitch = pl3; pitFrom = "校正から取った";
-      msg("拓本から読んだ字送り（" + Math.round(was) + "px）が、校正の見当（" +
+      if (!quiet) msg("拓本から読んだ字送り（" + Math.round(was) + "px）が、校正の見当（" +
           Math.round(pl3) + "px）と かけ離れていたので、校正の値で通します。",
           false, true);
     }
@@ -10088,17 +10098,15 @@ async function rubAiBand(noAsk, trusted){
        帯が広くても このまま通してよい。 */
     var mppW = mmPerPx();
     if (mppW && rubKmWmm() > 0 && rubKmWmm() / mppW >= 24){
-      msg(w1 + "字 1 つぶんの窓で、墨のまん中を通します。", false, true);
+      if (!quiet) msg(w1 + "字 1 つぶんの窓で、墨のまん中を通します。", false, true);
     } else if (noAsk){
-      aiBandNo(w1 + "［列の構成を調べる］を押してから、番号ボタンで帯を合わせてください。");
-      return;
-    } else if (!confirm(w1 + "\n\nもし 1 列だけに合わせてあるなら、こちらの見立て違いです。" +
+      return { err: w1 + "［列の構成を調べる］を押してから、番号ボタンで帯を合わせてください。" };
+    } else if (!quiet && !confirm(w1 + "\n\nもし 1 列だけに合わせてあるなら、こちらの見立て違いです。" +
                  "このまま通しますか。\n\n" +
                  "（通すと 1 字ずつに切り分けられないことがあります。" +
                  "そのときは［列の構成を調べる］を押して、上・下の番号ボタンで" +
                  "帯を合わせてください）")){
-      aiBandNo(w1 + "やめました。");
-      return;
+      return { err: w1 + "やめました。", quit: 1 };
     }
   }
   /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
@@ -10156,8 +10164,57 @@ async function rubAiBand(noAsk, trusted){
   else cx0 = Math.max(0, Math.min(Math.max(0, RUB.W - side), cx0));
   var ys = [];
   for (var y = q.y1 - side * 0.15; y < q.y2; y += stepY) ys.push(y);
-  if (!ys.length){ aiBandNo("帯が短すぎます。"); return; }
-  if (ys.length > 80){ aiBandNo("帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。"); return; }
+  if (!ys.length) return { err: "帯が短すぎます。" };
+  if (ys.length > 80) return { err: "帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。" };
+  return { q: q, t: t, mpp: mpp, pitch: pitch, pitFrom: pitFrom,
+           side: side, cx0: cx0, ys: ys, stepY: stepY, trusted: trusted };
+}
+/* **AI に送る切り抜きを、そのまま並べて見せる**（v28.2）。
+   ［AI 縁取りを実行］と**同じ計画**（`rubAiPlan`）から作るので、
+   ここで見える絵が そのまま送られる絵。 */
+async function rubAiPreview(){
+  var PL = rubAiPlan(true, true);
+  if (PL.err){ msg(PL.err, true); return; }
+  var body = $("aiPrevBody"); if (!body) return;
+  var mpp = mmPerPx();
+  body.innerHTML = "";
+  $("aiPrevInfo").textContent =
+    "帯 " + Math.round(PL.q.x1) + "〜" + Math.round(PL.q.x2) + "px・たて " +
+    Math.round(PL.q.y1) + "〜" + Math.round(PL.q.y2) + "px／窓 " + Math.round(PL.side) + "px" +
+    (mpp ? "（" + (PL.side * mpp).toFixed(0) + "mm）" : "") +
+    "／" + PL.ys.length + " 枚／字送り " +
+    (mpp ? (PL.pitch * mpp).toFixed(1) + "mm" : Math.round(PL.pitch) + "px") +
+    "（" + PL.pitFrom + "）";
+  $("aiPrevWin").hidden = false;
+  for (var i = 0; i < PL.ys.length && i < 40; i++){
+    var cv = rubCropCv(PL.cx0, PL.ys[i], PL.side);      /* 送るのと同じ切り抜き */
+    var w = document.createElement("div");
+    w.style.cssText = "text-align:center;font-size:11px;color:#9fb0c3;";
+    var im = document.createElement("img");
+    im.src = cv.toDataURL("image/png");
+    im.style.cssText = "width:150px;height:150px;image-rendering:pixelated;" +
+      "border:1px solid #2a3340;background:#000;display:block;";
+    w.appendChild(im);
+    var cap = document.createElement("div");
+    cap.textContent = (i+1) + "／上から " + Math.round(PL.ys[i]) + "px";
+    w.appendChild(cap);
+    body.appendChild(w);
+  }
+  msg("AI に送る絵を " + Math.min(PL.ys.length, 40) + " 枚 出しました（窓 " +
+      Math.round(PL.side) + "px）。字が窓いっぱいに写っていれば good です。", false, true);
+}
+async function rubAiBand(noAsk, trusted){
+  if (AIBAND_BUSY) return;
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  var base = takuApiBase();
+  RUB.aiWhy = "";
+  if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
+  var PL = rubAiPlan(trusted, false);
+  if (PL.err){ aiBandNo(PL.err); return; }
+  var q = PL.q, t = PL.t, mpp = PL.mpp, pitch = PL.pitch, pitFrom = PL.pitFrom;
+  var side = PL.side, cx0 = PL.cx0, ys = PL.ys, stepY = PL.stepY;
+  trusted = PL.trusted;
+  var bw0 = q.x2 - q.x1;
 
   /* 重ねる先。大きい拓本でも重くならないよう、長い方を 2000 までに落とす。 */
   var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H));
@@ -16498,6 +16555,8 @@ function rubPanel(){
     if (RUB.aiBand || (S.rub.lines || []).some(function(L9){ return L9 && L9.aiUrl; }))
       h += ' <button class="mini" id="btnAiBandClr">' +
         (rubShowAi ? 'AI の墨を消す' : 'AI の墨を出す') + '</button>';
+    h += ' <button class="mini" id="btnAiPrev" ' +
+      'title="AI に渡す切り抜きを、そのまま並べて見せます">AI に送る絵を見る</button>';
     h += '<p class="hint" style="margin:3px 0 0;">読んだ墨を<b>青</b>、通した所を<b>水色の枠</b>で出します。' +
       (rubShowAi ? '' : '<b>いまは青い墨を隠しています。</b>') + '</p>';
     if (RUB.aiBand){
@@ -16588,6 +16647,8 @@ function rubPanel(){
     rotMode = null;
     setTimeout(function(){ rubPanel(); rubRender(); renderStage(); persist(); }, 0);
   }, true);
+  var bpv = $("btnAiPrev"); if (bpv) bpv.onclick = function(){ rubAiPreview(); };
+  var bpc = $("aiPrevClose"); if (bpc) bpc.onclick = function(){ $("aiPrevWin").hidden = true; };
   var bgo = $("btnAiGo");
   if (bgo) bgo.onclick = function(){
     /* ② の選び方で行き先が決まる（v26.7） */

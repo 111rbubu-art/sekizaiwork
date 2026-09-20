@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.0";
+var APP_VER = "v27.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10265,20 +10265,34 @@ async function rubAiBand(noAsk, trusted){
    いままで `S.rub.lineN` が 1 つだけで、列を変えるたびに入れ直しだった。
    `S.rub.lineNs` に **列の合い印**（上は `t0,t1…`／下は `b0,b1…`／
    調べていない帯は `x<左>_<右>`）で持つ。 */
-function rubColKeyOf(L, R){
-  var ct = S.rub.colsTop, i;
-  if (ct && ct.cols && ct.cols.length && ct.geo === rubGeoKey()){
-    var ups = [];
+/* ───── **列えらびの中身**（v27.1。本人の報告
+   「上は 4 列、下は 5 列です…メニューは上1行、下5行になりました。
+     4行目は判断しづらいですが、上3行は見つけてほしいです」）─────
+   これまで **上のボタンは「下で 2 つに分かれた列」だけ**から作っていた。
+   分かれていない列は上のボタンに出ず（実測：上 4 列なのにボタンは 1 つ）、
+   代わりに下のボタンへ紛れこんでいた。
+   直し：**上＝調べた上の列ぜんぶ**（`topCols`。無ければ組み立て直す）、
+   **下＝分かれた子の列だけ**。 */
+function rubColMenu(){
+  var ct = S.rub.colsTop;
+  if (!ct || !ct.cols || !ct.cols.length || ct.geo !== rubGeoKey()) return { ups: [], lows: [] };
+  var ups = [];
+  if (ct.topCols && ct.topCols.length)
+    ups = ct.topCols.map(function(c){ return { a: c.a, b: c.b }; });
+  else
     ct.cols.forEach(function(c){
-      if (!c.sp) return;
-      var pv = ups[ups.length - 1];
-      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+      var pv = ups[ups.length-1];
+      if (c.sp && pv && pv.sp && Math.abs(pv.b - c.a) < 3) pv.b = c.b;
+      else ups.push({ a: c.a, b: c.b, sp: !!c.sp });
     });
-    for (i = 0; i < ups.length; i++)
-      if (Math.abs(ups[i].a - L) < 4 && Math.abs(ups[i].b - R) < 4) return "t" + i;
-    for (i = 0; i < ct.cols.length; i++)
-      if (Math.abs(ct.cols[i].a - L) < 4 && Math.abs(ct.cols[i].b - R) < 4) return "b" + i;
-  }
+  return { ups: ups, lows: ct.cols.filter(function(c){ return c.sp; }) };
+}
+function rubColKeyOf(L, R){
+  var mn = rubColMenu(), i;
+  for (i = 0; i < mn.ups.length; i++)
+    if (Math.abs(mn.ups[i].a - L) < 4 && Math.abs(mn.ups[i].b - R) < 4) return "t" + i;
+  for (i = 0; i < mn.lows.length; i++)
+    if (Math.abs(mn.lows[i].a - L) < 4 && Math.abs(mn.lows[i].b - R) < 4) return "b" + i;
   return "x" + Math.round(L) + "_" + Math.round(R);
 }
 function rubLineNKey(){
@@ -10303,16 +10317,14 @@ function rubBandGroup(){
   var ct = S.rub.colsTop;
   if (!ct || ct.dir !== "bot" || !(num(ct.yCut, 0) > 0) || ct.geo !== rubGeoKey()) return null;
   var L = Math.min(S.rub.bandL, S.rub.bandR), R = Math.max(S.rub.bandL, S.rub.bandR);
-  var ups = [], kids = {};
-  (ct.cols || []).forEach(function(c){
-    if (!c.sp) return;
-    var pv = ups[ups.length - 1];
-    if (pv && Math.abs(pv.b - c.a) < 3){ pv.b = c.b; kids[ups.length-1].push(c); }
-    else { ups.push({ a: c.a, b: c.b }); kids[ups.length-1] = [c]; }
-  });
-  for (var i = 0; i < ups.length; i++){
-    if (Math.abs(ups[i].a - L) < 4 && Math.abs(ups[i].b - R) < 4)
-      return { up: ups[i], kids: kids[i] || [] };
+  var mn = rubColMenu();
+  for (var i = 0; i < mn.ups.length; i++){
+    var u = mn.ups[i];
+    if (!(Math.abs(u.a - L) < 4 && Math.abs(u.b - R) < 4)) continue;
+    /* その上の列の中に入る「分かれた子の列」 */
+    var kids = mn.lows.filter(function(c){ return c.a >= u.a - 4 && c.b <= u.b + 4; });
+    if (!kids.length) return null;            /* 分かれていない列は ふつうの帯 */
+    return { up: u, kids: kids };
   }
   return null;
 }
@@ -11436,17 +11448,11 @@ async function rubAllGo(){
      本人の報告「結果は同じです」）。それまでは `rubColsWanted()` の返す
      1 組（下の 6 列 か、［列の数］で等分に割った列）しか通しておらず、
      **上の戒名か、下の命日か、どちらかが丸ごと抜けていた**。 */
-  var ct5 = S.rub.colsTop;
-  if (ct5 && ct5.dir === "bot" && num(ct5.yCut, 0) > 0 && ct5.geo === rubGeoKey() &&
-      (ct5.cols || []).some(function(c){ return c.sp; })){
-    var ups5 = [];
-    ct5.cols.forEach(function(c){
-      if (!c.sp) return;
-      var pv = ups5[ups5.length - 1];
-      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups5.push({ a: c.a, b: c.b });
-    });
-    runs = ups5.map(function(v){ return { a: v.a, b: v.b, blk: "top" }; })
-           .concat(ct5.cols.map(function(v){ return { a: v.a, b: v.b, blk: "bot" }; }));
+  var mn5 = rubColMenu();
+  if (mn5.lows.length){
+    /* 上の列ぜんぶ＋分かれた子の列（v27.1。分かれていない列は 上の 1 本で足りる） */
+    runs = mn5.ups.map(function(v){ return { a: v.a, b: v.b, blk: "top" }; })
+           .concat(mn5.lows.map(function(v){ return { a: v.a, b: v.b, blk: "bot" }; }));
   }
   if (runs.length > 12){
     aiProgOff();
@@ -12329,12 +12335,7 @@ function rubGrpAuto(){
   }).sort(function(a, b){ return a.band.L - b.band.L; });
   var pairOf = {};
   if (ct && ct.cols){
-    var ups = [];
-    ct.cols.forEach(function(c){
-      if (!c.sp) return;
-      var pv = ups[ups.length-1];
-      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
-    });
+    var ups = rubColMenu().ups;
     lows.forEach(function(L){
       var mid = (L.band.L + L.band.R) / 2;
       ups.forEach(function(p, pi){
@@ -16127,15 +16128,7 @@ function rubPanel(){
 
     /* ───────────── ② 列の指定 ───────────── */
     h += '<p class="hint" style="margin:10px 0 2px;"><b>② 列の指定</b></p>';
-    var ups = [], lows = null;
-    if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
-      (ct.cols || []).forEach(function(c){
-        if (!c.sp) return;
-        var pv = ups[ups.length - 1];
-        if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
-      });
-      lows = ct.cols;
-    }
+    var mn9 = rubColMenu(), ups = mn9.ups, lows = mn9.lows;
     var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
     var fAll = frameX();
     var isAll = (bR9 - bL9) > (fAll.x2 - fAll.x1) * 0.9;
@@ -16156,21 +16149,23 @@ function rubPanel(){
     /* **ぜんたいもここで選ぶ**（v26.6。本人の指示「そこに全体の選択も入れる」） */
     var allChip = '<button class="mini colb' + (isAll ? ' primary' : '') +
       '" data-k="all" data-i="0" title="帯を拓本の幅いっぱいに戻します">ぜんたい</button>';
-    if (RUB.cols && RUB.cols.length){
-      if (ups.length){
+    if (ups.length){
+      h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
+        'style="margin-right:4px;">' + (lows.length ? '上（戒名）' : '列') + '</span>' +
+        chipsOf(ups, "top") + '<span style="margin-left:8px;"></span>' + allChip + '</div>';
+      if (lows.length)
         h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">上（戒名）</span>' + chipsOf(ups, "top") +
-          '<span style="margin-left:8px;"></span>' + allChip + '</div>';
-        h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows || RUB.cols, "bot") + '</div>';
-        h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
-          '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。' +
-          '上を選ぶと、その中の下の列も光ります（同じ人の 1 かたまり）。</p>';
-      } else {
-        h += '<div class="chips" style="margin:3px 0 0;">' + chipsOf(RUB.cols, "bot") +
-          '<span style="margin-left:8px;"></span>' + allChip + '</div>';
-        h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
-      }
+          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows, "bot") + '</div>';
+      h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
+        (lows.length
+          ? '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。' +
+            '上を選ぶと、その中の下の列も光ります（同じ人の 1 かたまり）。' +
+            '下で分かれていない列は、上のボタンだけに出ます（上から下まで 1 本なので）。'
+          : '左から数えた列の番号です。') + '</p>';
+    } else if (RUB.cols && RUB.cols.length){
+      h += '<div class="chips" style="margin:3px 0 0;">' + chipsOf(RUB.cols, "bot") +
+        '<span style="margin-left:8px;"></span>' + allChip + '</div>';
+      h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
     } else {
       h += '<div class="chips" style="margin:3px 0 0;">' + allChip + '</div>';
     }
@@ -16371,20 +16366,9 @@ function rubPanel(){
         msg("帯を拓本ぜんたいに戻しました（幅 " + Math.round(fA.x2 - fA.x1) + "px）。");
         return;
       }
-      if (kind === "top"){
-        var ct8 = S.rub.colsTop, ups8 = [];
-        (ct8 && ct8.cols || []).forEach(function(c8){
-          if (!c8.sp) return;
-          var pv = ups8[ups8.length - 1];
-          if (pv && Math.abs(pv.b - c8.a) < 3) pv.b = c8.b; else ups8.push({ a: c8.a, b: c8.b });
-        });
-        c = ups8[i9];
-      } else {
-        var ct7 = S.rub.colsTop, low7 = null;
-        if (ct7 && ct7.dir === "bot" && num(ct7.yCut, 0) > 0 && ct7.geo === rubGeoKey())
-          low7 = ct7.cols;
-        c = (low7 || RUB.cols || [])[i9];
-      }
+      var mn8 = rubColMenu();
+      if (kind === "top") c = mn8.ups[i9];
+      else c = (mn8.lows.length ? mn8.lows : (RUB.cols || []))[i9];
       if (!c) return;
       S.rub.bandL = c.a; S.rub.bandR = c.b;
       A = null; RUB.mask = null; persist(); rubPanel(); rubRender();

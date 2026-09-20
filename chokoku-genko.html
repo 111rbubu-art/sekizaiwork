@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.7";
+var APP_VER = "v26.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12250,6 +12250,168 @@ function rubLineFixRot(){
   rebuildRub(); syncOriginY(); renderAll(); rubPanel(); rubRender(); persist();
   msg("角度を " + was.toFixed(2) + "° → " + S.rub.rot.toFixed(2) + "° にしました。もう一度見立てて確かめてください。");
 }
+/* ───── **文字のグループ分け**（v26.8。本人の指示
+   「次は文字列のグループ化です。戒名や命日、俗名、年齢を分けられるようにしてほしい」）─────
+   1 字ずつに `g`（グループの合い印）を持たせる。列まるごとでも、
+   「ここから下」だけでも付けられる（「彌太郎／行年七十八歳」のように
+   1 つの列に 俗名と年齢が入ることがあるため）。
+   自動の見当は、こちらで分かっている作りだけから付ける：
+   **境目より上＝戒名／下の右＝命日／下の左＝俗名**。
+   本人の言葉「4 の順番も例外もあり決まっていないと思った方がいい」なので、
+   **手で直せること**を前提にする。 */
+var RUBGRP = [
+  { k: "kai", nm: "戒名", c: "#C2185B" },
+  { k: "zok", nm: "俗名", c: "#1565C0" },
+  { k: "mei", nm: "命日", c: "#2E7D32" },
+  { k: "nen", nm: "年齢", c: "#EF6C00" },
+  { k: "hoka", nm: "その他", c: "#6A4AC8" }
+];
+function rubGrpOf(k){
+  for (var i = 0; i < RUBGRP.length; i++) if (RUBGRP[i].k === k) return RUBGRP[i];
+  return null;
+}
+/* その列の、上から順のグループ（同じものはまとめる） */
+function rubGrpRuns(L){
+  var out = [];
+  (L && L.items || []).forEach(function(it, i){
+    var g = it.g || "";
+    var pv = out[out.length-1];
+    if (pv && pv.g === g) pv.n++; else out.push({ g: g, n: 1, from: i });
+  });
+  return out;
+}
+/* その列に付いているグループの名前（「俗名 3 字＋年齢 6 字」） */
+function rubGrpLabel(L){
+  var rs = rubGrpRuns(L).filter(function(r){ return r.g; });
+  if (!rs.length) return "";
+  return rs.map(function(r){
+    var g = rubGrpOf(r.g);
+    return (g ? g.nm : r.g) + " " + r.n + " 字";
+  }).join("＋");
+}
+/* 列まるごと／選んだ字から下だけに、グループを付ける */
+function rubGrpSet(gk, fromIdx){
+  var L = rubCol();
+  if (!L || !L.items || !L.items.length){ msg("先に列を見立ててください。", true); return; }
+  var from = (fromIdx >= 0) ? fromIdx : 0;
+  L.items.forEach(function(it, i){ if (i >= from) it.g = gk; });
+  persist(); rubPanel(); rubRender();
+  var g = rubGrpOf(gk);
+  msg((from > 0 ? (from + 1) + " 字目から下を" : "この列を") + "「" + (g ? g.nm : gk) + "」にしました。" +
+      "（いまの列： " + (rubGrpLabel(L) || "なし") + "）");
+}
+/* **大きく空いた所で、下を切り分ける**（v26.8）。
+   「彌太郎」と「行年七十八歳」のように、1 つの列に 2 つのまとまりが入っていることがある。
+   字送りの 1.6 倍より広い空きがあれば、そこが切れ目。 */
+function rubGrpGapAt(L){
+  var its = (L && L.items) || [];
+  if (its.length < 3) return -1;
+  var pit = [], i;
+  for (i = 1; i < its.length; i++) pit.push(its[i].px.y - its[i-1].px.y);
+  var med = _med(pit) || 0;
+  if (!(med > 0)) return -1;
+  var best = -1, bv = med * 1.6;
+  for (i = 1; i < its.length; i++){
+    var gap = its[i].px.y - (its[i-1].px.y + its[i-1].px.h);
+    var d = its[i].px.y - its[i-1].px.y;
+    if (d > bv){ bv = d; best = i; }
+  }
+  return best;
+}
+/* ぜんぶの列に、自動で見当を付ける */
+function rubGrpAuto(){
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  if (!ls.length){ msg("先に見立ててください。", true); return; }
+  var ct = S.rub.colsTop, yCut = (ct && ct.geo === rubGeoKey()) ? num(ct.yCut, 0) : 0;
+  /* 下の列を、親ごとに組にする（右が命日・左が俗名） */
+  var lows = ls.filter(function(L){
+    return yCut > 0 && num(L.band && L.band.T, 0) >= yCut - 10;
+  }).sort(function(a, b){ return a.band.L - b.band.L; });
+  var pairOf = {};
+  if (ct && ct.cols){
+    var ups = [];
+    ct.cols.forEach(function(c){
+      if (!c.sp) return;
+      var pv = ups[ups.length-1];
+      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+    });
+    lows.forEach(function(L){
+      var mid = (L.band.L + L.band.R) / 2;
+      ups.forEach(function(p, pi){
+        if (mid >= p.a - 4 && mid <= p.b + 4) pairOf[ls.indexOf(L)] = pi;
+      });
+    });
+  }
+  var n1 = 0;
+  ls.forEach(function(L, li){
+    var isLow = (yCut > 0 && num(L.band && L.band.T, 0) >= yCut - 10);
+    var gk = "kai";                                   /* 境目より上＝戒名 */
+    if (isLow){
+      /* 同じ親の中で、右が命日・左が俗名（本人の拓本の並び） */
+      var pi = pairOf[li];
+      var mates = lows.filter(function(x){ return pairOf[ls.indexOf(x)] === pi; });
+      if (mates.length >= 2){
+        var mine = (L.band.L + L.band.R) / 2;
+        var mx = Math.max.apply(null, mates.map(function(x){ return (x.band.L + x.band.R) / 2; }));
+        gk = (mine >= mx - 1) ? "mei" : "zok";        /* いちばん右＝命日 */
+      } else gk = "mei";
+    }
+    L.items.forEach(function(it){ it.g = gk; });
+    /* 大きく空いた所から下は、べつのまとまり（**下の列だけ**）。
+       「彌太郎／行年七十八歳」のような列のため。
+       上（戒名）は 1 つづきなので切らない（v26.8 の実測で、切ると
+       戒名の列に「命日」が付いてしまった）。 */
+    if (isLow){
+      var cut = rubGrpGapAt(L);
+      if (cut > 0){
+        var gk2 = "nen";                     /* 名前の下は 年齢（行年○十○歳） */
+        L.items.forEach(function(it, i){ if (i >= cut) it.g = gk2; });
+      }
+    }
+    n1++;
+  });
+  persist(); rubPanel(); rubRender();
+  msg("グループの見当を付けました（" + n1 + " 列）。" +
+      ls.map(function(L, i){ return (i+1) + "列目 " + (rubGrpLabel(L) || "なし"); }).join("／") +
+      "。ちがう所は、列をえらんでボタンで直してください。", false, true);
+}
+/* パネルの「⑤ グループ分け」 */
+function rubGrpHtml(){
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  var h = '<p class="hint" style="margin:10px 0 2px;"><b>⑤ グループ分け</b></p>';
+  if (!ls.length)
+    return h + '<p class="hint" style="margin:2px 0 0;">先に ④ で見立ててください。</p>';
+  h += '<button class="mini primary" id="btnGrpAuto" ' +
+    'title="境目より上は戒名、下の右は命日、下の左は俗名。大きく空いた所から下は別のまとまりとみます">' +
+    'グループの見当を付ける</button>';
+  var L = rubCol();
+  if (L && L.items && L.items.length){
+    h += '<p class="hint" style="margin:4px 0 2px;">いまの列（' +
+      (S.rub.lines.indexOf(L) + 1) + ' 本目・' + L.items.length + ' 字）：<b>' +
+      (rubGrpLabel(L) || "まだ分けていません") + '</b>' +
+      (rubSelItem >= 0 ? '／<b>' + (rubSelItem + 1) + ' 字目</b>をえらんでいます' : '') + '</p>';
+    h += '<div class="chips" style="margin:2px 0 0;">' +
+      RUBGRP.map(function(g){
+        return '<button class="mini grpb" data-g="' + g.k + '" style="border-color:' + g.c +
+          ';color:' + g.c + ';">' + g.nm + '</button>';
+      }).join("") +
+      ' <button class="mini grpb" data-g="" style="color:var(--muted);">なし</button></div>';
+    h += '<p class="hint" style="margin:3px 0 0;">' +
+      (rubSelItem >= 0
+        ? '字をえらんでいるので、<b>' + (rubSelItem + 1) + ' 字目から下</b>に付きます。' +
+          '列ぜんぶに付けたいときは、字の選びを外してから押してください。'
+        : '<b>列ぜんぶ</b>に付きます。字を 1 つえらんでから押すと、<b>そこから下だけ</b>に付きます。') +
+      '</p>';
+  }
+  h += '<div style="margin-top:4px;">' + ls.map(function(x, i){
+    var g0 = rubGrpRuns(x).filter(function(r){ return r.g; })[0];
+    var c0 = g0 ? (rubGrpOf(g0.g) || {}).c : "";
+    return '<div class="hint" style="margin:1px 0;' + (c0 ? 'color:' + c0 + ';' : '') + '">' +
+      (i+1) + '列目（' + Math.round(x.band.L) + '〜' + Math.round(x.band.R) + 'px・' +
+      x.items.length + ' 字）：' + (rubGrpLabel(x) || "なし") + '</div>';
+  }).join("") + '</div>';
+  return h;
+}
 /* 学習に登録する所の見た目（v21.63） */
 function rubCandHtml(){
   var L = rubCol();
@@ -14901,7 +15063,11 @@ function rubRender(){
          「文字の枠が薄くて見づらいので、明るいピンクにして目立たせて」）。
          拓本は黒っぽいので、青や水色は地に沈んでいた。
          いま選んでいる 1 字だけは**黄**にして、ピンクと見分けられるようにする。 */
-      var col = on ? "#FFD400" : (curCol ? "#FF2D9B" : "#FF9ECF");
+      /* **グループごとに色を変える**（v26.8。本人の指示
+         「戒名や命日、俗名、年齢を分けられるようにしてほしい」）。
+         付いていない字は、いままでどおりピンク。 */
+      var gObj = it.g ? rubGrpOf(it.g) : null;
+      var col = on ? "#FFD400" : (gObj ? gObj.c : (curCol ? "#FF2D9B" : "#FF9ECF"));
       o.push('<rect x="' + b.x.toFixed(1) + '" y="' + b.y.toFixed(1) + '" width="' + b.w.toFixed(1) +
         '" height="' + b.h.toFixed(1) + '" fill="rgba(255,45,155,' +
         (on ? '.18' : (curCol ? '.10' : '.05')) + ')" stroke="' + col + '" stroke-width="' +
@@ -14910,6 +15076,12 @@ function rubRender(){
         o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
           '" fill="' + col + '" font-size="' + (W*0.022) + '" text-anchor="end">' +
           (i+1) + (it.pick ? " " + esc(it.pick) : "") + '</text>');
+      /* グループの変わり目に、名前を出す（v26.8） */
+      if (gObj && (i === 0 || (LN.items[i-1] && LN.items[i-1].g !== it.g)))
+        o.push('<text x="' + (b.x + b.w + W*0.006) + '" y="' + (b.y + b.h*0.45) +
+          '" fill="' + gObj.c + '" font-size="' + (W*0.024) + '" font-weight="700"' +
+          ' stroke="#fff" stroke-width="' + (W*0.005) + '" paint-order="stroke">' +
+          gObj.nm + '</text>');
       /* つかむ所は**いま見ている列だけ**（ほかの列まで触れると押しまちがえる）。
          **枠を描いている間は出さない**（v21.65）。出すと、既にある枠の上から
          描き始められない（つかむ所が上に乗っているため）。 */
@@ -15934,6 +16106,7 @@ function rubPanel(){
     h += '<p class="hint" style="margin:3px 0 0;">数を入れてから［この行を見立てる］を押すと、' +
       '<b>その字数ちょうどに割ります</b>（墨がつながっていても切れます）。' +
       '空なら すき間で切ります。列ごとに覚えます。</p>';
+    h += rubGrpHtml();                       /* ⑤ グループ分け（v26.8） */
     if ((S.rub.lines || []).length) h += rubLineHtml();
     h += rubCandHtml();
     h += '</div>';
@@ -15987,6 +16160,10 @@ function rubPanel(){
     persist(); rubPanel();
   };
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
+  var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .grpb"), function(gb){
+    gb.onclick = function(){ rubGrpSet(gb.dataset.g || "", rubSelItem >= 0 ? rubSelItem : -1); };
+  });
   /* 境目を手で動かす（v25.5） */
   function cutSet(v){
     var ct9 = S.rub.colsTop; if (!ct9 || !ct9.cols) return;

@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v30.8";
+var APP_VER = "v30.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13217,9 +13217,22 @@ function rubGrpAuto(){
       });
     });
   }
+  /* **字の大きさでも見分ける**（v30.9。本人の画面「没 七十二才」の列が
+     ぜんぶ戒名になっていた）。上下の境目（`yCut`）を調べていない拓本では、
+     ここは「境目より上＝戒名」しか手がかりが無く、**どの列も戒名**になる。
+     本人の経験則「戒名は 30mm ほど、命日・年齢はそれより小さい」を使い、
+     **戒名の字幅の 8 割より小さい列は、戒名の列ではない**とみる。 */
+  var kmA9 = rubKmWmm() || 30;
+  function kaiSize9(L){
+    var ws = (L.items || []).map(function(it){
+      return Math.max(num(it.wMm, 0), num(it.hMm, 0)); }).filter(function(v){ return v > 0; });
+    if (!ws.length) return true;
+    return _med(ws) >= kmA9 * 0.8;
+  }
   var n1 = 0;
   ls.forEach(function(L, li){
     var isLow = (yCut > 0 && num(L.band && L.band.T, 0) >= yCut - 10);
+    if (!isLow && !kaiSize9(L)) isLow = true;      /* 小さい字の列（v30.9） */
     var gk = "kai";                                   /* 境目より上＝戒名 */
     if (isLow){
       /* 同じ親の中で、右が命日・左が俗名（本人の拓本の並び） */
@@ -13350,9 +13363,12 @@ async function rubAnchorGo(){
         if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
         /* はじめの方＝前半、おわりの方＝後半しか見ない（まん中の空似を避ける） */
         if (a1 && hit.mh < 0 && i < Math.max(2, L.items.length * 0.4)){ hit.mh = i; ch.mh = a1; }
-        if (a2 && i > L.items.length * 0.3){ hit.mt = i; ch.mt = a2; }
+        /* **短い列では、どこにあっても拾う**（v30.9。本人の画面
+           「没 七十二才」のように、**列の 1 字目が 没**の列がある。
+           「後ろ 3 割より後ろ」の決まりは、長い列でまん中の空似を避けるためのもの。 */
+        if (a2 && (i > L.items.length * 0.3 || L.items.length <= 8)){ hit.mt = i; ch.mt = a2; }
         if (a3 && hit.nh < 0 && i > 0){ hit.nh = i; ch.nh = a3; }
-        if (a4 && i > L.items.length * 0.3){ hit.nt = i; ch.nt = a4; }
+        if (a4 && (i > L.items.length * 0.3 || L.items.length <= 8)){ hit.nt = i; ch.nt = a4; }
       }
       RUB.aiBand = keep;
       var did = [];
@@ -13424,12 +13440,33 @@ async function rubAnchorGo(){
         if (mark9(nA, L.items.length - 1, "nen"))
           did.push("年齢 " + (nA+1) + " 字目から（" + ch.nh + "）");
       }
+      /* ───── **命日のあとに続く字は、戒名ではない**（v30.9。本人の画面
+         「没」は命日（緑）と当たったのに、続く「七十二才」が**戒名**（赤）に
+           なっていた）─────
+         才・歳は かすれると手本に当たらないことがある。けれども
+         **命日の末尾（没・日・歿）のあとに来る数字**は、この拓本では年齢。
+         数字が 1 つでもあれば（または残りが 6 字までなら）年齢とみる。 */
+      var mtEnd = -1;
+      L.items.forEach(function(it, i2){ if (it.g === "mei") mtEnd = i2; });
+      if (mtEnd >= 0 && mtEnd < L.items.length - 1){
+        var restA = mtEnd + 1, restB = L.items.length - 1, nNum = 0, t8;
+        for (t8 = restA; t8 <= restB; t8++) if (isNum[t8]) nNum++;
+        var allFree = true;
+        for (t8 = restA; t8 <= restB; t8++) if (L.items[t8].g) allFree = false;
+        if (allFree && (nNum >= 1 || (restB - restA + 1) <= 6)){
+          if (mark9(restA, restB, "nen"))
+            did.push("年齢 " + (restA+1) + "〜" + (restB+1) + " 字目（命日のあとの数字）");
+        }
+      }
       /* ③ 命日でも年齢でもない所は、下の列なら俗名とみる（上は戒名のまま） */
       var ct9 = S.rub.colsTop, yC9 = (ct9 && ct9.geo === rubGeoKey()) ? num(ct9.yCut, 0) : 0;
       var isLow9 = (yC9 > 0 && num(L.band && L.band.T, 0) >= yC9 - 10);
+      /* **命日や年齢のある列は、戒名の列ではない**（v30.9）。
+         余った字を「戒名」にすると、命日の列ぜんぶが戒名色になる。 */
+      var hasMN9 = L.items.some(function(it){ return it.g === "mei" || it.g === "nen"; });
       L.items.forEach(function(it){
         if (it.g) return;
-        it.g = isLow9 ? "zok" : "kai";
+        it.g = (isLow9 || hasMN9) ? "zok" : "kai";
       });
       if (did.length){ nHit++; rep.push((li+1) + "列目 " + did.join("／")); }
       else rep.push((li+1) + "列目 手本は見つからず（" + (isLow9 ? "俗名" : "戒名") + "のまま）");

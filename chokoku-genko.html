@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v30.9";
+var APP_VER = "v31.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13099,7 +13099,16 @@ function rubCandGo(){
 function rubCandPick(i, ch){
   var L = rubCol();
   if (!L || !L.items || !L.items[i]) return;
-  L.items[i].pick = (L.items[i].pick === ch) ? "" : ch;
+  var on = (L.items[i].pick !== ch);
+  L.items[i].pick = on ? ch : "";
+  /* **人が「この字だ」と決めたら、それも手本**（v31.0）。
+     ［学習に登録］まで行かなくても、決めた字は この拓本のほんものの字形。 */
+  if (on){
+    try {
+      var kP = rubItemInk(L.items[i]);
+      if (kP) rubTehonAdd(ch, kP.m, kP.n);
+    } catch(eP){}
+  }
   persist(); rubPanel();
 }
 /* 決まった字を並べた文字列（「?」は分からない字） */
@@ -13270,6 +13279,97 @@ function rubGrpAuto(){
    くらべ方は、作字の候補出し（`cgGuess`）と同じ IoU。
    **手本の上位に入っていれば当たり**とみる（絵は荒れているので、
    1 つの点数で決め打ちにしない）。 */
+/* ───── **拓本の手本帳**（v31.0。本人の話
+   「フォントは楷書なので、学習している物が使えればいいのですが」）─────
+   手本合わせは これまで **フォントの字**と見くらべていた。
+   けれども 石に彫ってあるのは 楷書のフォントとは形がちがうので、
+   かすれた拓本では なかなか当たらない。
+   そこで **［学習に登録］した字**（＝ この拓本たちの、ほんものの字形）を
+   そのまま手本として持っておく。
+   持ち方は フォントの手本と同じ **CG_N×CG_N のます目**（`cgNormFrom`）なので、
+   見くらべ方（IoU）も同じものが使える。
+   入れ物は `S.rub.tehon = { "没": ["<64進の字づら>", …], … }`。
+   1 字につき 8 枚まで、ぜんぶで 400 枚までにして、案件が重くならないようにする。 */
+var TEH_MAX_PER = 8, TEH_MAX_ALL = 400;
+function _tehPack(u8){
+  /* 0/1 の並びを、6 ビットずつ 1 文字にして詰める（案件に入れても軽いように） */
+  var CH = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  var out = "", i, v, k;
+  for (i = 0; i < u8.length; i += 6){
+    v = 0;
+    for (k = 0; k < 6; k++) if (u8[i+k]) v |= (1 << k);
+    out += CH.charAt(v);
+  }
+  return out;
+}
+function _tehUnpack(str, len){
+  var CH = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  var u8 = new Uint8Array(len), i, k, v;
+  for (i = 0; i < str.length; i++){
+    v = CH.indexOf(str.charAt(i));
+    if (v < 0) continue;
+    for (k = 0; k < 6; k++){
+      var j = i*6 + k;
+      if (j < len && (v & (1 << k))) u8[j] = 1;
+    }
+  }
+  return u8;
+}
+function rubTehonAll(){
+  if (!S.rub.tehon || typeof S.rub.tehon !== "object") S.rub.tehon = {};
+  return S.rub.tehon;
+}
+function rubTehonCount(){
+  var t = rubTehonAll(), n = 0;
+  Object.keys(t).forEach(function(k){ n += (t[k] || []).length; });
+  return n;
+}
+/* 1 字ぶんの墨（`rubItemInk` の m,n）を、手本帳に加える */
+function rubTehonAdd(ch, m, n){
+  if (!ch || !m) return false;
+  var q = cgNormFrom(function(x, y){ return m[y*n + x]; }, n, n);
+  if (!q) return false;
+  var t = rubTehonAll();
+  if (!t[ch]) t[ch] = [];
+  if (rubTehonCount() >= TEH_MAX_ALL && t[ch].length >= 1) t[ch].shift();
+  t[ch].push(_tehPack(q));
+  while (t[ch].length > TEH_MAX_PER) t[ch].shift();
+  return true;
+}
+var _tehCache = null, _tehCacheN = -1;
+function rubTehonBank(){
+  var t = rubTehonAll(), n = rubTehonCount();
+  if (_tehCache && _tehCacheN === n) return _tehCache;
+  var out = {};
+  Object.keys(t).forEach(function(ch){
+    out[ch] = (t[ch] || []).map(function(str){
+      var u = _tehUnpack(str, CG_N*CG_N), sum = 0, i;
+      for (i = 0; i < u.length; i++) if (u[i]) sum++;
+      return { u: u, sum: sum };
+    });
+  });
+  _tehCache = out; _tehCacheN = n;
+  return out;
+}
+/* 手本帳と見くらべる。いちばん似ている字と、その似ぐあい（IoU）を返す */
+function rubTehonBest(q, want){
+  var B = rubTehonBank(), qn = 0, i;
+  for (i = 0; i < q.length; i++) if (q[i]) qn++;
+  if (!qn) return null;
+  var bestCh = "", bestV = 0;
+  for (var w = 0; w < want.length; w++){
+    var ch = want.charAt(w), list = B[ch];
+    if (!list || !list.length) continue;
+    for (var j = 0; j < list.length; j++){
+      var bm = list[j].u, inter = 0;
+      for (i = 0; i < q.length; i++) if (bm[i] && q[i]) inter++;
+      var uni = list[j].sum + qn - inter;
+      var iou = uni ? inter / uni : 0;
+      if (iou > bestV){ bestV = iou; bestCh = ch; }
+    }
+  }
+  return bestCh ? { ch: bestCh, iou: bestV } : null;
+}
 var RUBANCH = {
   mHead: "令平昭大明治",      /* 命日のはじめ（年号） */
   mTail: "日没歿",            /* 命日のおわり */
@@ -13312,17 +13412,25 @@ function rubBandOfLine(L){
 async function rubAnchorGo(){
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
   if (!ls.length){ msg("先に ④ で見立ててください。", true); return; }
-  if (!FR()){ msg("先にフォントを読み込んでください（手本に使います）。", true); return; }
+  /* **手本帳があれば、フォントは要らない**（v31.0）。
+     石に彫ってある字は 楷書のフォントとは形がちがうので、
+     ［学習に登録］した字（ほんものの字形）があれば そちらを先に使う。 */
+  var tehN0 = rubTehonCount();
+  if (!FR() && !tehN0){
+    msg("手本がありません。フォントを読み込むか、［学習に登録］で字を覚えさせてください" +
+        "（登録した字は、そのまま手本になります）。", true); return;
+  }
   aiProgOn();
   var rep = [], nHit = 0;
   try {
     aiProg("下ごしらえ", "フォントの字を並べています（はじめの 1 回だけ数秒）");
     await uiTick();
-    var B0 = cgBank(curFont);
+    var B0 = FR() ? cgBank(curFont) : null;
     var allAnch = RUBANCH.mHead + RUBANCH.mTail + RUBANCH.nHead + RUBANCH.nTail +
                   RUBANCH.num;            /* 数字も ざっと見くらべる相手に入れる（v27.0） */
     var anchIdx = [];
     (B0 ? B0.chars : []).forEach(function(c, i){ if (allAnch.indexOf(c) >= 0) anchIdx.push(i); });
+    var tehHit = 0, fntHit = 0;
     for (var li = 0; li < ls.length; li++){
       if (AIPROG_STOP) break;
       var L = ls[li];
@@ -13355,9 +13463,22 @@ async function rubAnchorGo(){
         var i = idx[ix];
         var k = rubItemInk(L.items[i]);
         if (!k) continue;
-        /* 手本 13 字と ざっと見くらべて、見こみが無ければ飛ばす（v26.9。速さのため） */
-        if (anchIdx.length && _anchQuick(k.m, k.n, B0, anchIdx) < 0.20) continue;
-        var cd = cgGuess(k.m, k.n, k.n, curFont, 12).map(function(c){ return c.ch; });
+        var cd = null;
+        /* ───── **まず 拓本の手本帳**（v31.0）───── */
+        if (tehN0){
+          var qT = cgNormFrom(function(x, y){ return k.m[y*k.n + x]; }, k.n, k.n);
+          var bT = qT ? rubTehonBest(qT, allAnch) : null;
+          /* ほんものの字形どうしなので、0.38 当たれば その字とみる
+             （フォントとの見くらべより、ずっと当たりやすい） */
+          if (bT && bT.iou >= 0.38){ cd = [bT.ch]; tehHit++; }
+        }
+        if (!cd){
+          if (!B0) continue;                       /* フォントが無ければ ここまで */
+          /* 手本 13 字と ざっと見くらべて、見こみが無ければ飛ばす（v26.9。速さのため） */
+          if (anchIdx.length && _anchQuick(k.m, k.n, B0, anchIdx) < 0.20) continue;
+          cd = cgGuess(k.m, k.n, k.n, curFont, 12).map(function(c){ return c.ch; });
+          fntHit++;
+        }
         var a1 = _anchHit(cd, RUBANCH.mHead), a2 = _anchHit(cd, RUBANCH.mTail);
         var a3 = _anchHit(cd, RUBANCH.nHead), a4 = _anchHit(cd, RUBANCH.nTail);
         if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
@@ -13478,7 +13599,11 @@ async function rubAnchorGo(){
   }
   aiProgOff();
   persist(); rubPanel(); rubRender();
-  msg("手本合わせ：<b>" + nHit + " / " + ls.length + " 列</b>で見つかりました。" +
+  msg("手本合わせ：<b>" + nHit + " / " + ls.length + " 列</b>で見つかりました" +
+      (tehN0 ? "（拓本の手本帳 " + tehN0 + " 枚で <b>" + tehHit + " 字</b>" +
+               (B0 ? "／フォントの手本で " + fntHit + " 字" : "（フォントは使っていません）") + "）"
+             : "（拓本の手本帳は空です。［学習に登録］で字を覚えさせると、" +
+               "楷書のフォントより ずっと当たるようになります）") + "。" +
       rep.join("｜") + "。ちがう所は ⑤ のボタンで直せます。", false, true);
 }
 /* パネルの「⑤ グループ分け」 */
@@ -13496,6 +13621,21 @@ function rubGrpHtml(){
     'title="令・平・昭・大／日・没・歿／才・歳と見くらべて、命日と年齢を決めます。' +
     '年齢のはじめは、才・歳から数字をさかのぼって決めます">' +
     '文字で見分ける</button>';
+  /* **拓本の手本帳**（v31.0。本人の話「フォントは楷書なので、
+     学習している物が使えればいいのですが」）。何を覚えているかを見せる。 */
+  var tehN = 0, tehCh = "";
+  try {
+    tehN = rubTehonCount();
+    var tt = rubTehonAll();
+    tehCh = Object.keys(tt).filter(function(c){ return (tt[c] || []).length; })
+              .map(function(c){ return c + "×" + tt[c].length; }).join("・");
+  } catch(e){}
+  h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
+    (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
+    '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
+    '<br>［学習に登録］した字と、④ の候補から<b>あなたが決めた字</b>が手本になります。' +
+    '拓本のほんものの字形なので、楷書のフォントより よく当たります。' +
+    '（フォントが無くても、手本帳だけで ［文字で見分ける］が動きます）</p>';
   var L = rubCol();
   if (L && L.items && L.items.length){
     h += '<p class="hint" style="margin:4px 0 2px;">いまの列（' +
@@ -14260,9 +14400,23 @@ async function rgSave(which){
     if (!r.ok){ throw new Error("HTTP " + r.status); }
     var j = await r.json();
     if (which === 1) RG.saved1 = true; else RG.saved2 = true;
+    /* **登録した字は、手本帳にも入れる**（v31.0。本人の話
+       「フォントは楷書なので、学習している物が使えればいいのですが」）。
+       いま登録した墨は、この拓本のほんものの字形。手本合わせで使う。 */
+    var tehOK = false;
+    try {
+      if (ch){
+        var kT = rubItemInk(it);
+        if (kT) tehOK = rubTehonAdd(ch, kT.m, kT.n);
+      }
+    } catch(eT){}
     rgSide();
+    if (tehOK) persist();
     msg((which === 1 ? "① 読む" : "② 整える") + " に登録しました（" +
-        (ch ? "「" + ch + "」／" : "") + "サーバーに " + (j.pairs || "?") + " 組）。");
+        (ch ? "「" + ch + "」／" : "") + "サーバーに " + (j.pairs || "?") + " 組）。" +
+        (tehOK ? "この字は<b>拓本の手本帳</b>にも入れました（ぜんぶで " +
+                 rubTehonCount() + " 枚）。手本合わせで、楷書のフォントより先に使います。" : ""),
+        false, tehOK);
   } catch(e){
     msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true);
   }
@@ -17347,6 +17501,13 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var btc = $("btnTehClr");
+  if (btc) btc.onclick = function(){
+    if (!confirm("拓本の手本帳を空にします。よろしいですか。")) return;
+    S.rub.tehon = {}; _tehCache = null; _tehCacheN = -1;
+    persist(); rubPanel();
+    msg("拓本の手本帳を空にしました。");
+  };
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .grpb"), function(gb){
     gb.onclick = function(){ rubGrpSet(gb.dataset.g || "", rubSelItem >= 0 ? rubSelItem : -1); };
   });

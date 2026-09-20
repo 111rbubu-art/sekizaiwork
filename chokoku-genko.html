@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.2";
+var APP_VER = "v27.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12479,6 +12479,14 @@ async function rubAnchorGo(){
       var L = ls[li];
       aiProg("列 " + (li+1) + " / " + ls.length, "手本と見くらべています");
       await uiTick();
+      /* **境目より上だけの列（戒名）は、手本合わせをしない**（v27.3。本人の報告）。
+         そこに命日や年齢はない。空似で塗られると かえって悪い。 */
+      var ctA = S.rub.colsTop, yCA = (ctA && ctA.geo === rubGeoKey()) ? num(ctA.yCut, 0) : 0;
+      if (yCA > 0 && num(L.band && L.band.B, RUB.H) <= yCA + 10){
+        L.items.forEach(function(it){ if (!it.g) it.g = "kai"; });
+        rep.push((li+1) + "列目＝戒名の段（手本は見ません）");
+        continue;
+      }
       var A = await rubBandOfLine(L);
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
@@ -12512,16 +12520,47 @@ async function rubAnchorGo(){
       }
       RUB.aiBand = keep;
       var did = [];
+      /* **戒名の字（大きい字）には、命日も年齢も付けない**（v27.3。本人の報告
+         「戒名は一番上で文字幅30㎜の制限のはずが、下にいき、上のほとんどが
+           命日と判別されています」）。
+         戒名は字幅 30mm ほど、命日・年齢はその半分ほど。
+         **字の大きさ**で歯止めをかける（本人の言う「文字幅 30mm の制限」）。 */
+      var kmW9 = rubKmWmm() || 30;
+      function small9(it){
+        var w9 = num(it.wMm, 0), h9 = num(it.hMm, 0);
+        if (!w9 && !h9) return true;
+        return Math.max(w9, h9) <= kmW9 * 0.72;
+      }
+      /* 小さい字のあいだだけ、続けて付ける（大きい字に当たったら そこで止める） */
+      function mark9(a9, b9, gk9){
+        var n9 = 0;
+        for (var t9 = a9; t9 <= b9 && t9 < L.items.length; t9++){
+          if (!small9(L.items[t9])) break;
+          L.items[t9].g = gk9; n9++;
+        }
+        return n9;
+      }
+      function markBack9(b9, a9, gk9){          /* 下から上へ */
+        var n9 = 0;
+        for (var t9 = b9; t9 >= a9 && t9 >= 0; t9--){
+          if (!small9(L.items[t9])) break;
+          L.items[t9].g = gk9; n9++;
+        }
+        return n9;
+      }
       /* ① 年号 〜 日・没・歿 ＝ 命日 */
       if (hit.mh >= 0 && hit.mt > hit.mh){
-        for (var j = hit.mh; j <= hit.mt; j++) L.items[j].g = "mei";
-        did.push("命日 " + (hit.mh+1) + "〜" + (hit.mt+1) + " 字目（" + ch.mh + "…" + ch.mt + "）");
+        if (mark9(hit.mh, hit.mt, "mei"))
+          did.push("命日 " + (hit.mh+1) + "〜" + (hit.mt+1) + " 字目（" + ch.mh + "…" + ch.mt + "）");
       } else if (hit.mh >= 0){
-        for (var j2 = hit.mh; j2 < L.items.length; j2++) L.items[j2].g = "mei";
-        did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
+        if (mark9(hit.mh, L.items.length - 1, "mei"))
+          did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
       } else if (hit.mt >= 0){
-        for (var j3 = 0; j3 <= hit.mt; j3++) L.items[j3].g = "mei";
-        did.push("命日 〜" + (hit.mt+1) + " 字目（" + ch.mt + "）");
+        /* **はじめが分からないときは、上へさかのぼるだけ**（v27.3）。
+           前は 1 字目から塗っていたので、戒名まで命日になっていた。
+           命日は ふつう 10 字ほどなので、12 字までにする。 */
+        var got9 = markBack9(hit.mt, Math.max(0, hit.mt - 11), "mei");
+        if (got9) did.push("命日 " + (hit.mt - got9 + 2) + "〜" + (hit.mt+1) + " 字目（…" + ch.mt + "）");
       }
       /* ② 行年・享年 〜 才・歳 ＝ 年齢。無ければ 才・歳 から数えて さかのぼる */
       var nA = hit.nh, nB = hit.nt;
@@ -12538,11 +12577,11 @@ async function rubAnchorGo(){
             nA = (gp > 0 && gp <= nB) ? gp : Math.max(0, nB - 4);
           }
         }
-        for (var j4 = nA; j4 <= nB; j4++) L.items[j4].g = "nen";
-        did.push("年齢 " + (nA+1) + "〜" + (nB+1) + " 字目（…" + ch.nt + "）");
+        if (markBack9(nB, nA, "nen"))
+          did.push("年齢 " + (nA+1) + "〜" + (nB+1) + " 字目（…" + ch.nt + "）");
       } else if (nA >= 0){
-        for (var j5 = nA; j5 < L.items.length; j5++) L.items[j5].g = "nen";
-        did.push("年齢 " + (nA+1) + " 字目から（" + ch.nh + "）");
+        if (mark9(nA, L.items.length - 1, "nen"))
+          did.push("年齢 " + (nA+1) + " 字目から（" + ch.nh + "）");
       }
       /* ③ 命日でも年齢でもない所は、下の列なら俗名とみる（上は戒名のまま） */
       var ct9 = S.rub.colsTop, yC9 = (ct9 && ct9.geo === rubGeoKey()) ? num(ct9.yCut, 0) : 0;

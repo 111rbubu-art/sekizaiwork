@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v29.8";
+var APP_VER = "v29.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10369,7 +10369,21 @@ if (!window._aiPrevEsc){
 var AIPREV_FRESH = 0;        /* 1 なら「通したときの控え」を使わず、いまの窓で出す（v29.3） */
 async function rubAiPreview(){
   var PL = rubAiPlan(true, true);
-  if (PL.err){ msg(PL.err, true); return; }
+  /* **計画が立たないときも、板にそう出す**（v29.9。本人の報告
+     「AI縁取りを実行しても、AIに送る絵を見ると まだ通していませんと出ます」）。
+     前は `msg` を出して**そのまま帰って**いたので、板には**前に開いたときの中身**
+     （＝「まだ通していません」）が残ったままになっていた。 */
+  if (PL.err){
+    msg(PL.err, true);
+    var bE = $("aiPrevBody"), wE = $("aiPrevWin");
+    if (bE && wE){
+      bE.innerHTML = "";
+      wE.hidden = false;
+      var iE = $("aiPrevInfo");
+      if (iE) iE.textContent = "《窓を決められませんでした》" + PL.err;
+    }
+    return;
+  }
   var body = $("aiPrevBody"); if (!body) return;
   var mpp = mmPerPx();
   body.innerHTML = "";
@@ -10389,6 +10403,19 @@ async function rubAiPreview(){
   if (shots && mpp){
     var sMm = num(AB.plan.side, 0) * mpp;
     if (!(sMm >= 12 && sMm <= 60)) shots = null;
+  }
+  /* **なぜ「まだ通していません」なのかを出す**（v29.9。本人の報告
+     「AI縁取りを実行しても、AIに送る絵を見ると まだ通していませんと出ます」）。 */
+  var noWhy = "";
+  if (!shots){
+    if (AIPREV_FRESH) noWhy = "［いまの窓で出し直す］を押したので、控えは出していません";
+    else if (!RUB.aiBand) noWhy = "まだ 1 度も通していないか、前の通しで AI の墨が出ませんでした";
+    else if (RUB.aiBand.geo !== rubGeoKey()) noWhy = "前の通しは、拓本を回す前のものです";
+    else if (!(RUB.aiBand.shots && RUB.aiBand.shots.length)) noWhy = "前の通しの控えが残っていません";
+    else if (!RUB.aiBand.plan) noWhy = "前の通しに窓の控えがありません";
+    else noWhy = "前の通しの窓が " +
+      (mpp ? (num(RUB.aiBand.plan.side, 0) * mpp).toFixed(0) + "mm" : "?") +
+      "（12〜60mm の外）なので出していません";
   }
   var rows = [], usedSide = PL.side, usedCx0 = PL.cx0;
   if (shots){
@@ -10421,7 +10448,8 @@ async function rubAiPreview(){
          "。［いまの窓で出し直す］か、もう一度［AI 縁取りを実行］してください。" : "") +
     (PL.reCen ? "（枠に押されたので、帯のまん中へ戻しました）" : "") +
     (shots ? "／墨 " + num(AB.ink, 0) + " ます" : "") +
-    "／字送り " + mmT(PL.pitch, 1) + "（" + PL.pitFrom + "）";
+    "／字送り " + mmT(PL.pitch, 1) + "（" + PL.pitFrom + "）" +
+    (noWhy ? "　※ " + noWhy + "。［この帯を通し直す］で通せます。" : "");
   for (var i = 0; i < rows.length && i < 40; i++){
     var cv = rubCropCv((rows[i].x === undefined ? usedCx0 : rows[i].x),
                        rows[i].y, usedSide);   /* 送ったのと同じ切り抜き */
@@ -11905,6 +11933,22 @@ function rubColsWanted(){
   /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
      拓本の取り方で端の行が見切れていることがあるので、そこを外せるようにする。 */
   var ar = rubArea(), full = ar.x2 - ar.x1;
+  /* ───── **範囲が 1 列ぶんの幅なら、範囲そのものが その列**（v29.9。本人の画面
+     「青い枠出てきますし…1列目 帯 419〜455mm（幅 36.2mm）帯の中の墨 0.9%」＝
+       範囲（緑）の**右半分だけ**に水色の窓が置かれていた）─────
+     v29.8 で「範囲の中の列だけ」に絞ったが、**調べた列は拓本ぜんたいから
+     見つけたもの**なので、範囲の中にあっても 範囲とずれていることがある。
+     人が「この中を通します」と描いた範囲が 字 1〜2 つぶんの幅しかないなら、
+     **その範囲が列**。調べた列より、人の描いた範囲の方が確か。 */
+  if (!ar.all){
+    var chP = 0;
+    try { chP = (RUB.aiChar && RUB.aiChar.geo === rubGeoKey() && RUB.aiChar.wPx > 0)
+                ? RUB.aiChar.wPx : _rubCharSide(); } catch(e0){}
+    if (chP > 0 && full <= chP * 1.8){
+      RUB.colsSplit = false; RUB.cols = [{ a: ar.x1, b: ar.x2 }];
+      return RUB.cols;
+    }
+  }
   var runs = (detectColumns(false) || []).filter(function(c){
     var mid = (c.a + c.b) / 2;
     return mid >= ar.x1 && mid <= ar.x2;
@@ -16237,10 +16281,10 @@ function rubRender(){
       '" stroke-dasharray="' + (W*0.014) + ' ' + (W*0.010) + '"/>');
   }
   /* **AI に通した所**を水色の枠で出す（v26.4） */
-  /* **墨が出ていないときは、水色の枠も出さない**（v29.8。本人の指摘
+  /* **墨が出ていないときは、水色の枠も出さない**（v29.8 → v29.9 で「ほとんど無い」も。本人の指摘
      「AI縁取りを実行すると、結果が出ず。青の枠が表示される、
        これはAIの結果が出ないと表示してはいけないのでは」）。 */
-  if (RUB.aiBand && RUB.aiBand.box && RUB.aiBand.ink > 0 && RUB.aiBand.geo === rubGeoKey()){
+  if (RUB.aiBand && RUB.aiBand.box && RUB.aiBand.ink >= 50 && RUB.aiBand.geo === rubGeoKey()){
     var abx = RUB.aiBand.box;
     o.push('<rect x="' + abx.L + '" y="' + abx.T + '" width="' + (abx.R - abx.L) +
       '" height="' + (abx.B - abx.T) + '" fill="none" stroke="#06A8C8" stroke-width="' +

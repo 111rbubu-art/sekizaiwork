@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v29.6";
+var APP_VER = "v29.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10019,6 +10019,7 @@ function rubAiTrimCols(gmap, aw, ah){
   return [kL, kR];
 }
 var AIBAND_BUSY = false;
+var AIBAND_RETRY = 0;                  /* 通し直しは 1 回だけ（v29.7） */
 var AIBAND_SEQ = 0;      /* AI の墨の通し番号（v21.78） */
 /* 断った理由を取っておく（v21.70）。［拓本ぜんたいを通す］で列ごとに
    「なぜ読めなかったか」を出すため。本人の報告「読めず」だけでは直せない。 */
@@ -10043,6 +10044,61 @@ var AIPROG_COL = "";      /* ［拓本ぜんたいを通す］の中なら「2 /
    「AIに送る前に、何送っているのか画像を見せて」）─────
    帯・字送り・窓の大きさ・窓を置く場所を、ここ 1 か所で決める。
    ［AI 縁取りを実行］も、［AI に送る絵を見る］も、同じこれを使う。 */
+/* ───── **字の大きさは、AI が返した絵から測る**（v29.7。本人の案
+   「この文字は、選択範囲で1列しかないので、幅が決められないなら、
+     AIに枠をつけてもらってから、判断したらいいのでは。
+     AIにははみ出た画像を出しているわけだし」）─────
+   帯（範囲）の幅は「人がどう描いたか」でしかなく、1 列しか選べない拓本では
+   字幅の手がかりにならない（実測：帯 67px＝9mm で、窓も字の切れはしになった）。
+   重ねた墨（`RUB.aiBand.map`）は**帯で切ってある**ので、こちらも帯より広くならない。
+   そこで **AI が返した絵そのもの**（窓ぶん・帯からはみ出したまま）を見て、
+   まん中の字が 左右・上下 どこまで続いているかを測る。 */
+function _rubSpanPct(pf, N){
+  /* **墨の量の 5%〜95% が入る幅**を、その字の大きさとみる（v29.7）。
+     山さがしだと、画のすき間で切れて 3mm などになる（実測）。
+     窓は字 1 つぶんに置いてあるので、墨の散らばり具合で測る方が確か。 */
+  var i, tot = 0;
+  for (i = 0; i < N; i++) tot += pf[i];
+  if (tot <= 0) return 0;
+  var lo = tot * 0.05, hi = tot * 0.95, acc = 0, a = -1, b = -1;
+  for (i = 0; i < N; i++){
+    acc += pf[i];
+    if (a < 0 && acc >= lo) a = i;
+    if (acc >= hi){ b = i; break; }
+  }
+  if (a < 0 || b < 0 || b < a) return 0;
+  return b - a + 1;
+}
+/* AI が返した 1 枚から、まん中の字の 横はば・たて を測る（元の拓本の画素で返す）。
+   `full` は「窓いっぱいに墨がある」＝ **字が窓より大きい** しるし。 */
+function _rubShotChar(img, side){
+  var N = 128;
+  var cv = document.createElement("canvas"); cv.width = N; cv.height = N;
+  var g = cv.getContext("2d", { willReadFrequently: true });
+  g.drawImage(img, 0, 0, N, N);
+  var d = g.getImageData(0, 0, N, N).data;
+  var px = new Float32Array(N*N), i, k;
+  for (i = 0, k = 0; i < d.length; i += 4, k++) px[k] = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+  var lo = 255, hi = 0;
+  for (k = 0; k < px.length; k++){ if (px[k] < lo) lo = px[k]; if (px[k] > hi) hi = px[k]; }
+  if (hi - lo < 30) return null;                 /* のっぺりした絵。墨が出ていない */
+  var lim = (lo + hi) / 2;                       /* AI の返す絵は 字が白・地が黒 */
+  var colc = new Float32Array(N), rowc = new Float32Array(N), x, y, tot = 0;
+  /* **ふちに墨があるか**も見る（v29.7）。窓より字が大きいと、ふちまで墨が続く。
+     墨の散らばりだけでは「字が窓いっぱい」と「窓が大きすぎ」を見分けられない。 */
+  var eIn = Math.round(N * 0.1), eN = 0, eOn = 0;
+  for (y = 0; y < N; y++) for (x = 0; x < N; x++){
+    var on = px[y*N + x] > lim;
+    if (on){ colc[x]++; rowc[y]++; tot++; }
+    if (x < eIn || x >= N - eIn || y < eIn || y >= N - eIn){ eN++; if (on) eOn++; }
+  }
+  if (tot < N*N*0.005) return null;              /* 墨が 0.5% 未満。点のよう */
+  var w = _rubSpanPct(colc, N), h = _rubSpanPct(rowc, N);
+  if (!w || !h) return null;
+  var edge = eN ? eOn / eN : 0;
+  return { w: w * side / N, h: h * side / N, edge: edge,
+           full: (edge > 0.3 && w >= N*0.8 && h >= N*0.8) };
+}
 function rubAiPlan(trusted, quiet){
   if (!RUB.data) return { err: "先に拓本を読み込んでください。" };
   var q = rubBandQ(), t = thr(), mpp = mmPerPx();      /* 下の列なら境目から下だけ（v25.8） */
@@ -10200,7 +10256,16 @@ function rubAiPlan(trusted, quiet){
      人が手で描いた細い範囲のときだけ、墨から測った幅を使う。 */
   var known8 = false;
   try { known8 = rubBandKnown(); } catch(e){}
-  if (known8 && bw0 >= 24){
+  /* **AI が返した墨から測った字が、いちばん確か**（v29.7）。
+     1 列しか選べない拓本では、帯の幅から字幅を決められない。
+     前に通したときの墨から測った字の大きさ（10〜70mm のときだけ）を使う。 */
+  var aiC = RUB.aiChar, aiPx = 0;
+  if (aiC && aiC.geo === rubGeoKey() && aiC.wPx > 0 &&
+      (!mpp8 || (aiC.wPx * mpp8 >= 10 && aiC.wPx * mpp8 <= 70))) aiPx = aiC.wPx;
+  if (aiPx){
+    side = Math.round(aiPx * 1.15); sideFrom = "AI の墨から測った字";
+    if (mpp8){ charMm = aiPx * mpp8; charFrom = sideFrom; }
+  } else if (known8 && bw0 >= 24 && (!mpp8 || (bw0 * mpp8 >= 12 && bw0 * mpp8 <= 60))){
     side = Math.round(bw0 * 1.15); sideFrom = "帯の幅（調べた列）";
     if (mpp8){ charMm = bw0 * mpp8; charFrom = sideFrom; }
   } else if (inkPx >= 24 && inkPx <= RUB.W * 0.6 &&
@@ -10409,7 +10474,7 @@ async function rubAiBand(noAsk, trusted){
   AIBAND_BUSY = true;
   var solo = !AIPROG_COL;             /* ［この帯だけ通す］から来たときは、自分で窓を出す */
   var bt = $("btnAiBand"); if (bt){ bt.disabled = true; bt.textContent = "AI に通しています…"; }
-  var t0 = Date.now(), ok = 0, why = "", shots = [];
+  var t0 = Date.now(), ok = 0, why = "", shots = [], chArr = [];
   try {
     for (var i = 0; i < ys.length; i++){
       if (AIPROG_STOP){ why = "中止しました"; break; }
@@ -10436,6 +10501,9 @@ async function rubAiBand(noAsk, trusted){
       });
       /* **返ってきた絵を控える**（v28.4。［AI に送る絵を見る］で並べて出す） */
       if (shots.length < 40) shots.push({ y: ys[i], url: bbUrl });
+      /* **返ってきた絵から、字の大きさを測る**（v29.7）。
+         重ねたあとの墨は帯で切ってあるので、**切る前のこの絵**で測る。 */
+      try { var cm7 = _rubShotChar(img, side); if (cm7) chArr.push(cm7); } catch(e7){}
       ag.drawImage(img, cx0 * SC, ys[i] * SC, side * SC, side * SC);
       ok++;
     }
@@ -10501,6 +10569,44 @@ async function rubAiBand(noAsk, trusted){
     shots: shots,                       /* AI の返事（v28.4） */
     plan: { side: Math.round(side), cx0: Math.round(cx0) }
   };
+  /* ───── **返ってきた絵から測った字の大きさを、次の窓に使う**（v29.7）───── */
+  var chTxt = "";
+  try {
+    if (chArr.length && mpp){
+      var chW = _med(chArr.map(function(c){ return c.w; }));
+      var chH = _med(chArr.map(function(c){ return c.h; }));
+      var nFull = chArr.filter(function(c){ return c.full; }).length;
+      var wMm7 = chW * mpp, hMm7 = chH * mpp;
+      if (nFull > chArr.length / 2){
+        /* **窓いっぱいに墨がある＝字が窓より大きい**。窓を 1.6 倍にして通し直す。 */
+        chTxt = "　AI の返した絵は <b>窓いっぱいが墨</b>でした（字が窓より大きい）。";
+        if (!AIBAND_RETRY && mpp && side * mpp < 58){
+          AIBAND_RETRY = 1;
+          RUB.aiChar = { wPx: Math.min(60/mpp, side*1.6/1.15), hPx: Math.min(60/mpp, side*1.6/1.15),
+                         n: chArr.length, geo: rubGeoKey(), grow: 1 };
+          msg("窓（" + mmT(side) + "）いっぱいが墨でした。字が窓より大きいので、" +
+              "窓を広げて通し直します。", false, true);
+          try { await rubAiBand(noAsk, trusted); } finally { AIBAND_RETRY = 0; }
+          return;
+        }
+      } else if (wMm7 >= 8 && wMm7 <= 80 && hMm7 > 0 &&
+                 (hMm7 / wMm7) >= 0.4 && (hMm7 / wMm7) <= 2.5){
+        /* 字は だいたい四角いので、たてと横が 2.5 倍以上ちがう測りは採らない */
+        RUB.aiChar = { wPx: chW, hPx: chH, n: chArr.length, geo: rubGeoKey(), id: RUB.aiBand.id };
+        chTxt = "　AI の返した絵から測った字 <b>" + wMm7.toFixed(0) + "×" + hMm7.toFixed(0) +
+                "mm</b>（" + chArr.length + " 枚ぶん）。";
+        /* **窓が字と かけ離れていたら、測った字で通し直す**（1 回だけ）。 */
+        var want7 = chW * 1.15, r7 = want7 / Math.max(1, side);
+        if (!AIBAND_RETRY && (r7 > 1.35 || r7 < 0.74)){
+          AIBAND_RETRY = 1;
+          msg("窓（" + mmT(side) + "）が、AI の絵から測った字（" + wMm7.toFixed(0) +
+              "mm）と合いません。測った字の大きさで通し直します。", false, true);
+          try { await rubAiBand(noAsk, trusted); } finally { AIBAND_RETRY = 0; }
+          return;
+        }
+      }
+    }
+  } catch(e8){}
   rubPanel(); rubRender();
   /* **通した所と、墨の量を数で出す**（v26.4。本人の報告「下の段は色が変わりません」）。
      色が変わらないときに、AI が読めていないのか・こちらが別の所を通したのかを
@@ -10516,6 +10622,7 @@ async function rubAiBand(noAsk, trusted){
                                  : n1 + " ます") + "</b>（通した所の " +
       (seen > 0 ? Math.round(n1 / seen * 100) : 0) + "%）。" +
       (n1 < 50 ? "<b>墨がほとんど出ていません。</b>AI が読めていないか、帯の場所ちがいです。" : "") +
+      chTxt +
       (why ? "途中で止まりました：" + why + "。" : "") +
       "青いところが AI の読んだ墨、<b>水色の枠</b>が通した所です。［AI の墨を消す］で消えます。",
       false, true);
@@ -11853,6 +11960,20 @@ async function rubAllGo(){
     runs = mn5.ups.map(function(v){ return { a: v.a, b: v.b, blk: "top" }; })
            .concat(mn5.lows.map(function(v){ return { a: v.a, b: v.b, blk: "bot" }; }));
   }
+  /* **細すぎる列は、列の読み違えとみて外す**（v29.7。本人の画面
+     「1列目 帯654〜721（67px）」＝ 約 9mm。字は 15〜30mm がふつうなので、
+     10mm 未満の帯は 石の地のこすり跡を列と読んだもの）。
+     v29.2 の歯止めは ［列の構成を調べる］の中だけで、
+     ［拓本ぜんたいを通す］の列（`rubColsWanted`）には効いていなかった。 */
+  var mppA = mmPerPx();
+  if (mppA){
+    var thin9 = runs.filter(function(c){ return (c.b - c.a) * mppA < 10; });
+    if (thin9.length && thin9.length < runs.length){
+      runs = runs.filter(function(c){ return (c.b - c.a) * mppA >= 10; });
+      msg("細すぎる列 " + thin9.length + " 本（10mm 未満）は、列の読み違えとみて外しました" +
+          "（残り " + runs.length + " 本）。", false, true);
+    }
+  }
   if (runs.length > 12){
     aiProgOff();
     if (!confirm("列が " + runs.length + " 本あります。ぜんぶ通すと時間がかかります。続けますか。")) return;
@@ -11935,7 +12056,7 @@ async function rubAllGo(){
     if (AIPROG_STOP){ stopped = true; break; }     /* 通している途中で中止された */
     if (!RUB.aiBand){
       ng++; whys.push((i+1) + "列目：" + (RUB.aiWhy || "?"));
-      rep9.push((i+1) + "列目 帯" + S.rub.bandL + "〜" + S.rub.bandR +
+      rep9.push((i+1) + "列目 帯 " + mmRange(S.rub.bandL, S.rub.bandR) +
                 " AI の墨なし（" + (RUB.aiWhy || "?") + "）");
       continue;
     }
@@ -11957,9 +12078,9 @@ async function rubAllGo(){
       var all9 = Math.max(1, (xb9 - xa9) * (yb9 - ya9));
       ink9 = Math.round(n9 * 1000 / all9) / 10;
     } catch(e9){}
-    rep9.push((i+1) + "列目 帯" + S.rub.bandL + "〜" + S.rub.bandR +
-              "（" + (S.rub.bandR - S.rub.bandL) + "px）" +
-              " 字送り " + Math.round(pit0) + "px" +
+    rep9.push((i+1) + "列目 帯 " + mmRange(S.rub.bandL, S.rub.bandR) +
+              "（幅 " + mmT(S.rub.bandR - S.rub.bandL, 1) + "）" +
+              " 字送り " + mmT(pit0, 1) +
               " 帯の中の墨 " + ink9 + "%" +
               (got ? " 字 " + got.n + "・字送り " + got.pitchMm.toFixed(1) + "mm"
                    : " 切り分けできず"));

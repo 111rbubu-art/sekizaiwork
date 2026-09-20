@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.9";
+var APP_VER = "v27.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12385,8 +12385,12 @@ function rubGrpAuto(){
 var RUBANCH = {
   mHead: "令平昭大明治",      /* 命日のはじめ（年号） */
   mTail: "日没歿",            /* 命日のおわり */
-  nHead: "行享",              /* 年齢のはじめ（行年・享年） */
-  nTail: "才歳"               /* 年齢のおわり */
+  nHead: "行享",              /* 年齢のはじめ（行年・享年）。**無いことが多い**（本人） */
+  nTail: "才歳",              /* 年齢のおわり */
+  /* **行年・享年が無いときのため**（v27.0。本人の指摘「行・享（行年・享年）
+     これは無いことが多いす」）。年齢は「七十八歳」のように **数字＋才/歳**。
+     才・歳から上へ、数字であるあいだ さかのぼって はじめを決める。 */
+  num: "一二三四五六七八九十百廿卅"
 };
 /* **まず手本 13 字だけと見くらべる**（v26.9）。似てもいない字に
    フォントぜんぶ（数千字）を当てるのは もったいない。
@@ -12427,7 +12431,8 @@ async function rubAnchorGo(){
     aiProg("下ごしらえ", "フォントの字を並べています（はじめの 1 回だけ数秒）");
     await uiTick();
     var B0 = cgBank(curFont);
-    var allAnch = RUBANCH.mHead + RUBANCH.mTail + RUBANCH.nHead + RUBANCH.nTail;
+    var allAnch = RUBANCH.mHead + RUBANCH.mTail + RUBANCH.nHead + RUBANCH.nTail +
+                  RUBANCH.num;            /* 数字も ざっと見くらべる相手に入れる（v27.0） */
     var anchIdx = [];
     (B0 ? B0.chars : []).forEach(function(c, i){ if (allAnch.indexOf(c) >= 0) anchIdx.push(i); });
     for (var li = 0; li < ls.length; li++){
@@ -12438,7 +12443,7 @@ async function rubAnchorGo(){
       var A = await rubBandOfLine(L);
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
-      var hit = { mh: -1, mt: -1, nh: -1, nt: -1 }, ch = {};
+      var hit = { mh: -1, mt: -1, nh: -1, nt: -1 }, ch = {}, isNum = {};
       /* **見るのは はじめ・おわり・とびとびのまん中だけ**（v26.9）。
          1 字ごとにフォントぜんぶと見くらべるので、列ぜんぶを見ると重い
          （実測：40 字まで見て 7 列で 14.9 秒）。
@@ -12459,6 +12464,7 @@ async function rubAnchorGo(){
         var cd = cgGuess(k.m, k.n, k.n, curFont, 12).map(function(c){ return c.ch; });
         var a1 = _anchHit(cd, RUBANCH.mHead), a2 = _anchHit(cd, RUBANCH.mTail);
         var a3 = _anchHit(cd, RUBANCH.nHead), a4 = _anchHit(cd, RUBANCH.nTail);
+        if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
         /* はじめの方＝前半、おわりの方＝後半しか見ない（まん中の空似を避ける） */
         if (a1 && hit.mh < 0 && i < Math.max(2, L.items.length * 0.4)){ hit.mh = i; ch.mh = a1; }
         if (a2 && i > L.items.length * 0.3){ hit.mt = i; ch.mt = a2; }
@@ -12482,8 +12488,16 @@ async function rubAnchorGo(){
       var nA = hit.nh, nB = hit.nt;
       if (nB >= 0){
         if (!(nA >= 0 && nA < nB)){
-          var gp = rubGrpGapAt(L);                    /* 大きく空いた所から下 */
-          nA = (gp > 0 && gp <= nB) ? gp : Math.max(0, nB - 5);
+          /* **行年・享年は無いことが多い**（本人）。才・歳から上へ、
+             **数字であるあいだ**さかのぼる（「七十八歳」→ 3 字ぶん）。
+             数字が見つからなければ、大きな空き／5 字手前を使う。 */
+          var nw = nB;
+          while (nw - 1 >= 0 && isNum[nw - 1] && nB - (nw - 1) <= 5) nw--;
+          if (nw < nB) nA = nw;
+          else {
+            var gp = rubGrpGapAt(L);                  /* 大きく空いた所から下 */
+            nA = (gp > 0 && gp <= nB) ? gp : Math.max(0, nB - 4);
+          }
         }
         for (var j4 = nA; j4 <= nB; j4++) L.items[j4].g = "nen";
         did.push("年齢 " + (nA+1) + "〜" + (nB+1) + " 字目（…" + ch.nt + "）");
@@ -12523,7 +12537,8 @@ function rubGrpHtml(){
   /* **手本合わせ**（v26.9。本人の話「命日の先頭は令、平、昭、大、で最後は日、没、歿／
      年齢は、最後は才、歳」）。位置だけの見当より確か。 */
   h += ' <button class="mini" id="btnAnch" ' +
-    'title="令・平・昭・大／日・没・歿／才・歳（行年・享年）と見くらべて、命日と年齢を決めます">' +
+    'title="令・平・昭・大／日・没・歿／才・歳と見くらべて、命日と年齢を決めます。' +
+    '年齢のはじめは、才・歳から数字をさかのぼって決めます">' +
     '文字で見分ける</button>';
   var L = rubCol();
   if (L && L.items && L.items.length){

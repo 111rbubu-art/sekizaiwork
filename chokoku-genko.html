@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v29.7";
+var APP_VER = "v29.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10325,9 +10325,31 @@ function rubAiPlan(trusted, quiet){
   var ys = [];
   for (var y = q.y1 - side * 0.15; y < q.y2; y += stepY) ys.push(y);
   if (!ys.length) return { err: "帯が短すぎます。" };
-  if (ys.length > 80) return { err: "帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。" };
+  /* ───── **横も、範囲ぜんぶに窓を並べる**（v29.8。本人の問い
+     「AIの結果は左端は塗られている、範囲内なのに色が抜けているのはなぜ」）─────
+     窓は字 1 つぶん（`side`）で、**帯のまん中に 1 つ置くだけ**だった。
+     帯（範囲）が窓より広いと、**窓の外は AI に渡っていない**ので、
+     範囲の中なのに墨が出ない（＝色が抜ける）。
+     帯が窓より 1.25 倍 以上 広いときは、**横にも 6 割ずつずらして並べる**。 */
+  var xs = [cx0];
+  function _tileX(ov){
+    var stepX = Math.max(8, side * ov), out = [], xq;
+    for (xq = q.x1 - side * 0.1; xq < q.x2 - side * 0.3; xq += stepX)
+      out.push(Math.max(0, Math.min(Math.max(0, RUB.W - side), xq)));
+    return out.length ? out : [cx0];
+  }
+  if (q.x2 - q.x1 > side * 1.25){
+    xs = _tileX(0.6);
+    /* 多すぎるときは、**重なりを減らして**数を落とす（数を減らすより先） */
+    if (xs.length * ys.length > 90) xs = _tileX(0.95);
+  }
+  var nWin = xs.length * ys.length;
+  if (nWin > 90) return { err: "通す所が多すぎます（横 " + xs.length + " × たて " + ys.length +
+                          " ＝ " + nWin + " 回）。範囲を狭めてください。" +
+                          (xs.length > 1 ? "（範囲が字 " + xs.length + " 列ぶんの幅です。" +
+                           "列を 1 本ずつにすると通せます）" : "") };
   return { q: q, t: t, mpp: mpp, pitch: pitch, pitFrom: pitFrom,
-           side: side, cx0: cx0, ys: ys, stepY: stepY, trusted: trusted,
+           side: side, cx0: cx0, ys: ys, xs: xs, stepY: stepY, trusted: trusted,
            charMm: charMm, charFrom: charFrom, frame: fx0, reCen: reCen,
            inkPx: inkPx, sideFrom: sideFrom };
 }
@@ -10371,9 +10393,14 @@ async function rubAiPreview(){
   var rows = [], usedSide = PL.side, usedCx0 = PL.cx0;
   if (shots){
     usedSide = num(AB.plan.side, PL.side); usedCx0 = num(AB.plan.cx0, PL.cx0);
-    rows = shots.map(function(o){ return { y: o.y, url: o.url }; });
+    rows = shots.map(function(o){ return { y: o.y, x: o.x, url: o.url }; });
   } else {
-    rows = PL.ys.map(function(y){ return { y: y, url: "" }; });
+    /* 横にも並べるときは、その分も出す（v29.8） */
+    var xs0 = PL.xs || [PL.cx0];
+    rows = [];
+    xs0.forEach(function(xv){
+      PL.ys.forEach(function(y){ rows.push({ y: y, x: xv, url: "" }); });
+    });
   }
   $("aiPrevInfo").textContent =
     (shots ? "《通したときの絵》"
@@ -10396,7 +10423,8 @@ async function rubAiPreview(){
     (shots ? "／墨 " + num(AB.ink, 0) + " ます" : "") +
     "／字送り " + mmT(PL.pitch, 1) + "（" + PL.pitFrom + "）";
   for (var i = 0; i < rows.length && i < 40; i++){
-    var cv = rubCropCv(usedCx0, rows[i].y, usedSide);   /* 送ったのと同じ切り抜き */
+    var cv = rubCropCv((rows[i].x === undefined ? usedCx0 : rows[i].x),
+                       rows[i].y, usedSide);   /* 送ったのと同じ切り抜き */
     var w = document.createElement("div");
     w.style.cssText = "text-align:center;font-size:11px;color:#9fb0c3;";
     var row = document.createElement("div");
@@ -10436,6 +10464,7 @@ async function rubAiBand(noAsk, trusted){
   if (PL.err){ aiBandNo(PL.err); return; }
   var q = PL.q, t = PL.t, mpp = PL.mpp, pitch = PL.pitch, pitFrom = PL.pitFrom;
   var side = PL.side, cx0 = PL.cx0, ys = PL.ys, stepY = PL.stepY;
+  var xs = PL.xs || [cx0];              /* 横にも並べる（v29.8） */
   trusted = PL.trusted;
   var bw0 = q.x2 - q.x1;
 
@@ -10475,14 +10504,18 @@ async function rubAiBand(noAsk, trusted){
   var solo = !AIPROG_COL;             /* ［この帯だけ通す］から来たときは、自分で窓を出す */
   var bt = $("btnAiBand"); if (bt){ bt.disabled = true; bt.textContent = "AI に通しています…"; }
   var t0 = Date.now(), ok = 0, why = "", shots = [], chArr = [];
+  var nAll = xs.length * ys.length, nDone = 0;
   try {
+    for (var xi = 0; xi < xs.length; xi++){
     for (var i = 0; i < ys.length; i++){
       if (AIPROG_STOP){ why = "中止しました"; break; }
-      msg("AI に通しています… " + (i+1) + " / " + ys.length, false, true);
-      if (solo && i === 0) aiProgOn();
+      nDone++;
+      msg("AI に通しています… " + nDone + " / " + nAll, false, true);
+      if (solo && nDone === 1) aiProgOn();
       aiProg(AIPROG_COL ? ("列 " + AIPROG_COL) : "この帯",
-             "AI に通しています " + (i+1) + " / " + ys.length);
-      var blob = await rubCropPng(cx0, ys[i], side);
+             "AI に通しています " + nDone + " / " + nAll +
+             (xs.length > 1 ? "（横 " + (xi+1) + " / " + xs.length + "）" : ""));
+      var blob = await rubCropPng(xs[xi], ys[i], side);
       var fd = new FormData();
       fd.append("file", blob, "raw.png");
       fd.append("stage", "ink");
@@ -10500,12 +10533,14 @@ async function rubAiBand(noAsk, trusted){
         im.src = bbUrl;
       });
       /* **返ってきた絵を控える**（v28.4。［AI に送る絵を見る］で並べて出す） */
-      if (shots.length < 40) shots.push({ y: ys[i], url: bbUrl });
+      if (shots.length < 40) shots.push({ y: ys[i], x: xs[xi], url: bbUrl });
       /* **返ってきた絵から、字の大きさを測る**（v29.7）。
          重ねたあとの墨は帯で切ってあるので、**切る前のこの絵**で測る。 */
       try { var cm7 = _rubShotChar(img, side); if (cm7) chArr.push(cm7); } catch(e7){}
-      ag.drawImage(img, cx0 * SC, ys[i] * SC, side * SC, side * SC);
+      ag.drawImage(img, xs[xi] * SC, ys[i] * SC, side * SC, side * SC);
       ok++;
+    }
+    if (AIPROG_STOP || why) break;
     }
   } catch(e){
     why = (e && e.message) || String(e);
@@ -10524,7 +10559,11 @@ async function rubAiBand(noAsk, trusted){
   for (var k3 = 0, k4 = 0; k3 < o2.length; k3 += 4, k4++) gmap[k4] = o2[k3];
   /* **行から外れた墨を落とす**（v21.57）。青の絵も同じ所で落とし、
      見ているものと 測るものを そろえる。 */
-  var keepX = rubAiTrimCols(gmap, acc.width, acc.height);
+  /* **横にも窓を並べたときは、落とさない**（v29.8）。
+     `rubAiTrimCols` は「1 列ぶんの帯」を前提に、いちばん濃い 1 本だけ残す。
+     範囲が字 2 列ぶん以上あるときにそれをやると、**範囲の左はしだけ墨が残り、
+     あとは色が抜ける**（本人の画面そのもの）。 */
+  var keepX = (xs.length > 1) ? null : rubAiTrimCols(gmap, acc.width, acc.height);
   if (keepX){
     for (var ri3 = 0; ri3 < acc.height; ri3++){
       var b4 = ri3 * acc.width;
@@ -10557,7 +10596,7 @@ async function rubAiBand(noAsk, trusted){
     id: (++AIBAND_SEQ),
     url: acc.toDataURL("image/png"),
     at: new Date().toLocaleString("ja-JP"),
-    n: ok, all: ys.length,
+    n: ok, all: nAll,
     pitchMm: mpp ? pitch * mpp : null,
     inkMm2: mmc ? n1 * mmc * mmc : null,
     ms: Date.now() - t0,
@@ -10567,7 +10606,8 @@ async function rubAiBand(noAsk, trusted){
     box: { L: Math.round(cx1), R: Math.round(cx2), T: Math.round(q.y1), B: Math.round(q.y2) },
     ink: n1,
     shots: shots,                       /* AI の返事（v28.4） */
-    plan: { side: Math.round(side), cx0: Math.round(cx0) }
+    plan: { side: Math.round(side), cx0: Math.round(cx0),
+            xs: xs.map(function(v){ return Math.round(v); }) }
   };
   /* ───── **返ってきた絵から測った字の大きさを、次の窓に使う**（v29.7）───── */
   var chTxt = "";
@@ -10613,7 +10653,8 @@ async function rubAiBand(noAsk, trusted){
      見分けられるようにする。 */
   var seen = Math.round((q.y2 - q.y1) * (cx2 - cx1) * SC * SC);
   msg("帯を AI に通しました（" + pitFrom + "字送り " +
-      mmT(pitch, 1) + "／" + ok + " / " + ys.length + " か所、" +
+      mmT(pitch, 1) + "／" + ok + " / " + nAll + " か所" +
+      (xs.length > 1 ? "（横 " + xs.length + " 列ぶん × たて " + ys.length + "）" : "") + "、" +
       Math.round((Date.now() - t0)/100)/10 + " 秒）。" +
       "窓 " + mmT(side) +
       (PL.charMm ? "（字の見当 " + PL.charMm.toFixed(0) + "mm＝" + (PL.sideFrom || PL.charFrom) + "）" : "") +
@@ -10656,7 +10697,19 @@ function rubColMenu(){
       if (c.sp && pv && pv.sp && Math.abs(pv.b - c.a) < 3) pv.b = c.b;
       else ups.push({ a: c.a, b: c.b, sp: !!c.sp });
     });
-  return { ups: ups, lows: ct.cols.filter(function(c){ return c.sp; }) };
+  var lows = ct.cols.filter(function(c){ return c.sp; });
+  /* **範囲を決めてあるなら、その中の列だけを並べる**（v29.8。本人の報告
+     「範囲に指定すると 列の指定で１を選んでも色が変わらないが、画面上は変化している」）。
+     ボタンの 1 が**範囲の外の列**を指していたので、帯の線だけが遠くへ動き、
+     範囲の中は何も変わらなかった。 */
+  var arM = null;
+  try { arM = rubArea(); } catch(e){}
+  if (arM && !arM.all){
+    var inM = function(v){ var m = (v.a + v.b) / 2; return m >= arM.x1 && m <= arM.x2; };
+    var ups2 = ups.filter(inM), lows2 = lows.filter(inM);
+    if (ups2.length || lows2.length){ ups = ups2; lows = lows2; }
+  }
+  return { ups: ups, lows: lows };
 }
 /* **手で作った列も、AI の列と同じに扱う**（v27.2。本人の指示
    「枠取りを実行しなくても、枠を追加できるようにして、文字を認識できない
@@ -11873,6 +11926,21 @@ function rubColsWanted(){
      拓本を回していなければ（`geo` が同じ）、そのまま使う。 */
   var ct2 = S.rub.colsTop;
   if (!n && ct2 && ct2.geo === rubGeoKey() && ct2.cols && ct2.cols.length){
+    /* **範囲を決めてあるなら、その中の列だけ**（v29.8。本人の報告
+       「AI縁取りを実行してもAIには送信されず」「列の指定で１を選んでも
+         色が変わらないが、画面上は変化している」）。
+       調べた列は**拓本ぜんたい**から見つけたものなので、そのまま返すと
+       **範囲の外の列**を通しに行っていた（実測：範囲 520〜720 なのに
+       通した列は 125〜420／434〜729／744〜999）。 */
+    var inA2 = ct2.cols.filter(function(c){
+      var mid2 = (c.a + c.b) / 2; return mid2 >= ar.x1 && mid2 <= ar.x2;
+    });
+    if (inA2.length){ RUB.colsSplit = false; RUB.cols = inA2; return inA2; }
+    /* 範囲の中に調べた列が 1 本も無ければ、**範囲そのものを 1 列**とみる */
+    if (!ar.all){
+      RUB.colsSplit = false; RUB.cols = [{ a: ar.x1, b: ar.x2 }];
+      return RUB.cols;
+    }
     RUB.colsSplit = false; RUB.cols = ct2.cols;
     return ct2.cols;
   }
@@ -11946,15 +12014,28 @@ async function rubAllGo(){
   aiProgOn();
   aiProg("はじめます", "列をさがしています", "");
   await uiTick();
+  var ar0 = rubArea();
   var runs;
   try { runs = rubColsWanted(); }
   catch(e0){ aiProgOff(); msg("列をさがせませんでした（" + ((e0 && e0.message) || "") + "）。", true); return; }
+  if (!ar0.all && runs && runs.length){
+    var inR0 = runs.filter(function(c){
+      var m0 = (c.a + c.b) / 2; return m0 >= ar0.x1 && m0 <= ar0.x2;
+    });
+    runs = inR0.length ? inR0 : [{ a: ar0.x1, b: ar0.x2 }];
+  }
+  if ((!runs || !runs.length) && !ar0.all) runs = [{ a: ar0.x1, b: ar0.x2 }];
   if (!runs || !runs.length){ aiProgOff(); return; }
   /* **上下で作りが変わる拓本は、上の列と下の列を ぜんぶ通す**（v26.1。
      本人の報告「結果は同じです」）。それまでは `rubColsWanted()` の返す
      1 組（下の 6 列 か、［列の数］で等分に割った列）しか通しておらず、
      **上の戒名か、下の命日か、どちらかが丸ごと抜けていた**。 */
   var mn5 = rubColMenu();
+  /* **範囲を決めてあるなら、その中の列だけ**（v29.8）。上下の列も同じ。 */
+  if (!ar0.all){
+    var inA5 = function(v){ var m5 = (v.a + v.b) / 2; return m5 >= ar0.x1 && m5 <= ar0.x2; };
+    mn5 = { ups: mn5.ups.filter(inA5), lows: mn5.lows.filter(inA5) };
+  }
   if (mn5.lows.length){
     /* 上の列ぜんぶ＋分かれた子の列（v27.1。分かれていない列は 上の 1 本で足りる） */
     runs = mn5.ups.map(function(v){ return { a: v.a, b: v.b, blk: "top" }; })
@@ -16156,7 +16237,10 @@ function rubRender(){
       '" stroke-dasharray="' + (W*0.014) + ' ' + (W*0.010) + '"/>');
   }
   /* **AI に通した所**を水色の枠で出す（v26.4） */
-  if (RUB.aiBand && RUB.aiBand.box && RUB.aiBand.geo === rubGeoKey()){
+  /* **墨が出ていないときは、水色の枠も出さない**（v29.8。本人の指摘
+     「AI縁取りを実行すると、結果が出ず。青の枠が表示される、
+       これはAIの結果が出ないと表示してはいけないのでは」）。 */
+  if (RUB.aiBand && RUB.aiBand.box && RUB.aiBand.ink > 0 && RUB.aiBand.geo === rubGeoKey()){
     var abx = RUB.aiBand.box;
     o.push('<rect x="' + abx.L + '" y="' + abx.T + '" width="' + (abx.R - abx.L) +
       '" height="' + (abx.B - abx.T) + '" fill="none" stroke="#06A8C8" stroke-width="' +
@@ -17002,6 +17086,10 @@ function rubPanel(){
   };
   var bgo = $("btnAiGo");
   if (bgo) bgo.onclick = function(){
+    /* **前の通しの墨と水色の枠は、押した時点で消す**（v29.8。本人の報告
+       「AI縁取りを実行しても AI には送信されず…青の枠が表示される」＝
+       画面に残っていたのは**前の通しの枠**で、今回の結果ではなかった）。 */
+    RUB.aiBand = null; RUB.aiWhy = ""; rubRender();
     /* ② の選び方で行き先が決まる（v26.7）。範囲があれば その中が「ぜんたい」（v28.5） */
     var arG = rubArea();
     var fA = arG.all ? frameX() : { x1: arG.x1, x2: arG.x2 };

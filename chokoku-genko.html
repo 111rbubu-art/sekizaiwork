@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.1";
+var APP_VER = "v27.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -8012,11 +8012,11 @@ function rebuildRub(){
   var geo = rubGeoKey();
   if (RUB.aiBand && RUB.aiBand.geo && RUB.aiBand.geo !== geo){
     RUB.aiBand = null;
-    var ls = (S.rub.lines || []).filter(function(x){ return x && x.src === "ai"; }).length;
+    var ls = (S.rub.lines || []).filter(rubIsBoxLine).length;
     msg("拓本を回したので、AI の墨" + (ls ? "と見立ての枠" : "") + "は合わなくなりました。" +
         "消しましたので、もう一度［帯を AI に通す］（または［拓本ぜんたいを通す］）を" +
         "押してください。", true);
-    (S.rub.lines || []).forEach(function(x){ if (x && x.src === "ai") x.stale = true; });
+    (S.rub.lines || []).forEach(function(x){ if (rubIsBoxLine(x)) x.stale = true; });
   }
 }
 /* 拓本を 180° ひっくり返す。
@@ -10287,6 +10287,11 @@ function rubColMenu(){
     });
   return { ups: ups, lows: ct.cols.filter(function(c){ return c.sp; }) };
 }
+/* **手で作った列も、AI の列と同じに扱う**（v27.2。本人の指示
+   「枠取りを実行しなくても、枠を追加できるようにして、文字を認識できない
+     拓本があった場合、学習する手段がないので」）。
+   `src` は "ai"（AI の墨から見立てた）と "hand"（人が枠を描いた）の 2 つ。 */
+function rubIsBoxLine(L){ return !!(L && (L.src === "ai" || L.src === "hand")); }
 function rubColKeyOf(L, R){
   var mn = rubColMenu(), i;
   for (i = 0; i < mn.ups.length; i++)
@@ -12032,7 +12037,7 @@ function rubCol(){
 function rubItemAt(x, y){
   var ls = S.rub.lines || [], best = null;
   ls.forEach(function(LN, ci){
-    if (!LN || LN.src !== "ai" || !LN.items) return;
+    if (!LN || !rubIsBoxLine(LN) || !LN.items) return;
     LN.items.forEach(function(it, i){
       var b = it.px; if (!b) return;
       if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) return;
@@ -12045,7 +12050,7 @@ function rubItemAt(x, y){
   return best;
 }
 function rubColsAi(){
-  return (S.rub.lines || []).filter(function(L){ return L && L.src === "ai"; });
+  return (S.rub.lines || []).filter(rubIsBoxLine);
 }
 /* 枠を直したあと、数字を出し直す（字送り・傾きなどは枠から出している）。 */
 function rubLineRestat(){
@@ -12135,7 +12140,9 @@ function rubArea(){
 /* 描き終わった四角を、1 字の枠として足す。 */
 function rubBoxDrawn(x1, y1, x2, y2){
   var L = rubCol();
-  if (!L || !L.items){ msg("先に［この行を見立てる］を押してください。", true); return; }
+  /* **列がまだ無ければ、手で描く列を作る**（v27.2） */
+  if (!L || !L.items){ rubHandStart(); L = rubCol(); }
+  if (!L || !L.items){ msg("枠を作れませんでした。", true); return; }
   var x = Math.min(x1, x2), y = Math.min(y1, y2);
   var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
   if (w < 6 || h < 6){ msg("小さすぎます。字をかこむように引いてください。", true); return; }
@@ -12150,6 +12157,37 @@ function rubBoxDrawn(x1, y1, x2, y2){
       "続けて描けます。やめるときは［枠を描く］をもう一度押してください。");
 }
 
+/* ───── **AI なしで枠を作る**（v27.2。本人の指示
+   「枠取りを実行しなくても、枠を追加できるようにして、文字を認識できない
+     拓本があった場合、学習する手段がないので」）─────
+   AI が読めない拓本こそ、覚えさせたい教材になる。
+   いまの帯に **人が枠を描くための列**（`src:"hand"`）を作って、
+   そのまま［枠を描く］に入る。学習画面は、AI の墨が無ければ
+   しきい値で拾った墨を出すので、そこを塗って直せば登録できる。 */
+function rubHandStart(){
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  var q = rubBandQ(), mid = (q.x1 + q.x2) / 2, L = null;
+  (S.rub.lines || []).forEach(function(x){
+    if (!rubIsBoxLine(x) || !x.band) return;
+    if (!(mid >= x.band.L - 6 && mid <= x.band.R + 6)) return;
+    var t = num(x.band.T, -1), b2 = num(x.band.B, -1);
+    if (t >= 0 && b2 >= 0 && !(q.y1 < b2 && q.y2 > t)) return;   /* たてが別なら別の列 */
+    L = x;
+  });
+  if (!L){
+    L = { src: "hand", band: { L: q.x1, R: q.x2, T: q.y1, B: q.y2 },
+          items: [], geo: rubGeoKey(), n: 0,
+          at: new Date().toLocaleString("ja-JP") };
+    rubColPut(L);                     /* 並べ直し・入れかえは ここに任せる */
+  }
+  rubSelCol = (S.rub.lines || []).indexOf(L);
+  rubSelItem = -1;
+  if (!rubBoxDraw) rubBoxDrawTog(); else { persist(); rubPanel(); rubRender(); }
+  msg("手で枠を描く列を作りました（" + (rubSelCol + 1) + " 本目・" +
+      Math.round(q.x1) + "〜" + Math.round(q.x2) + "px）。" +
+      "拓本の上で、字をかこむように引いてください。" +
+      "描いた枠を右クリック →［学習画面でひらく］で、墨を塗って登録できます。", false, true);
+}
 /* 枠を足す（いま選んでいる枠の下に、同じ大きさで）。 */
 function rubItemAdd(){
   var L = rubCol();
@@ -12572,14 +12610,14 @@ function rubGrpHtml(){
 /* 学習に登録する所の見た目（v21.63） */
 function rubCandHtml(){
   var L = rubCol();
-  if (!L || L.src !== "ai" || !L.items || !L.items.length) return "";
+  if (!rubIsBoxLine(L) || !L.items || !L.items.length) return "";
   var h = '<h3 class="sec" style="margin-top:14px;">学習に登録（準備中）</h3>';
   /* 列えらび（v21.66）。拓本ぜんたいを通すと、列がいくつも並ぶ。 */
-  var ls = (S.rub.lines || []).filter(function(x){ return x && x.src === "ai"; });
+  var ls = (S.rub.lines || []).filter(rubIsBoxLine);
   if (ls.length > 1){
     h += '<div class="cand" style="margin-bottom:4px;"><span class="no">列</span>' +
       (S.rub.lines || []).map(function(x, ci){
-        if (!x || x.src !== "ai") return "";
+        if (!rubIsBoxLine(x)) return "";
         return '<button class="cb colb2' + (ci === rubSelCol ? ' on' : '') +
           '" data-ci="' + ci + '" title="' + (x.n || 0) + ' 字">' +
           (ls.indexOf(x) + 1) + '</button>';
@@ -13330,8 +13368,14 @@ function rubLineHtml(){
            '別の行でもう一度押すと、前の行と比べます。' +
            '墨の見え方は［拾う量］［縁のならし］［筆］の設定をそのまま使います。' +
            '数値が合わないときは、まずその 3 つで墨を整えてください。</p>';
-  var a = ls[0], b = ls[1];
-  function d1(v){ return (v === undefined || v === null) ? "−" : v.toFixed(2); }
+  /* **枠がまだ 1 つも無い列**（手で描きはじめた列）でも落ちないように（v27.2）。
+     見立ての数字は空なので、案内だけ出す。 */
+  var withN = ls.filter(function(x){ return x && x.items && x.items.length; });
+  if (!withN.length)
+    return '<p class="hint" style="margin:4px 0 0;">枠がまだありません。' +
+           '拓本の上で、字をかこむように引いてください（［✎ 手で枠を描く］）。</p>';
+  var a = withN[0], b = withN[1];
+  function d1(v){ return (v === undefined || v === null || !isFinite(v)) ? "−" : v.toFixed(2); }
   function cmp(x, y, unit){
     if (b === undefined) return "";
     var dd = x - y;
@@ -13362,10 +13406,10 @@ function rubLineHtml(){
       (b ? cmp(a.cxMm, b.cxMm, "mm") : "") + '</b></div>' +
     '<div class="fixrow"><span>頭〜脚</span><b>' + d1(a.topMm) + ' 〜 ' + d1(a.botMm) + ' mm ' +
       (b ? cmp(a.topMm, b.topMm, "mm") : "") + '</b></div>' +
-    '<div class="fixrow"><span>傾き</span><b>' + a.deg.toFixed(2) + '°　' +
+    '<div class="fixrow"><span>傾き</span><b>' + num(a.deg, 0).toFixed(2) + '°　' +
       '<span style="color:var(--muted);">ばらつき ' + d1(a.residMm) + 'mm</span></b></div>' +
     '<div class="fixrow"><span>高さのばらつき</span><b>' + d1(a.hMinMm) + ' 〜 ' + d1(a.hMaxMm) + ' mm</b></div>';
-  if (Math.abs(a.deg) > 0.05)
+  if (Math.abs(num(a.deg, 0)) > 0.05)
     h += '<button class="mini" id="btnLineRot" style="margin-top:6px;">この傾きで回転補正する（' +
          (a.deg >= 0 ? "−" : "＋") + Math.abs(a.deg).toFixed(2) + '°）</button>';
   h += '<p class="hint" style="margin:6px 0 0;">見立てた行：' + ls.length +
@@ -15211,7 +15255,7 @@ function rubRender(){
      AI の切り分けがずれた所こそ、直して登録すれば良い教材になる。
      **列はぜんぶ出す**（v21.66）。いま見ている列だけ濃く、ほかは薄く。 */
   (S.rub.lines || []).forEach(function(LN, ci){
-    if (!LN || LN.src !== "ai" || !LN.items || !LN.items.length) return;
+    if (!LN || !rubIsBoxLine(LN) || !LN.items || !LN.items.length) return;
     var curCol = (ci === rubSelCol);
     LN.items.forEach(function(it, i){
       var b = it.px; if (!b) return;
@@ -16227,6 +16271,10 @@ function rubPanel(){
       (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
       '>この行を見立てる</button>';
+    /* **AI なしでも枠を作れる**（v27.2。本人の指示） */
+    h += ' <button class="mini' + (rubBoxDraw ? ' primary' : '') + '" id="btnHandBox" ' +
+      'title="AI に通さなくても、人が枠を描けます。読めない拓本を学習させるときに使います">' +
+      (rubBoxDraw ? '枠を描くのをやめる' : '✎ 手で枠を描く') + '</button>';
     if (!RUB.aiBand)
       h += '<p class="hint" style="margin:3px 0 0;">先に ③ で AI に通してください。</p>';
     /* **字数は列ごとに入れる**（v26.6。本人の指示
@@ -16266,6 +16314,8 @@ function rubPanel(){
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var bta = $("btnLineTakeAi"); if (bta) bta.onclick = rubLineTakeAi;
+  var bhb = $("btnHandBox");
+  if (bhb) bhb.onclick = function(){ rubBoxDraw ? rubBoxDrawTog() : rubHandStart(); };
   var bcd = $("btnCand"); if (bcd) bcd.onclick = rubCandGo;
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb2"), function(b4){
     b4.onclick = function(){

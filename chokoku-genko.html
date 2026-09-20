@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.0";
+var APP_VER = "v31.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13444,6 +13444,7 @@ async function rubAnchorGo(){
         rep.push((li+1) + "列目＝戒名の段（手本は見ません）");
         continue;
       }
+      L.items.forEach(function(it){ if (it.anch) delete it.anch; });   /* 前の印は消す（v31.1） */
       var A = await rubBandOfLine(L);
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
@@ -13463,25 +13464,34 @@ async function rubAnchorGo(){
         var i = idx[ix];
         var k = rubItemInk(L.items[i]);
         if (!k) continue;
-        var cd = null;
+        var cd = null, how = "";
         /* ───── **まず 拓本の手本帳**（v31.0）───── */
         if (tehN0){
           var qT = cgNormFrom(function(x, y){ return k.m[y*k.n + x]; }, k.n, k.n);
           var bT = qT ? rubTehonBest(qT, allAnch) : null;
           /* ほんものの字形どうしなので、0.38 当たれば その字とみる
              （フォントとの見くらべより、ずっと当たりやすい） */
-          if (bT && bT.iou >= 0.38){ cd = [bT.ch]; tehHit++; }
+          if (bT && bT.iou >= 0.38){
+            cd = [bT.ch]; tehHit++; how = "teh";
+            /* **どの字と読めたかを控える**（v31.1。本人の指示
+               「判別できた文字を記しして頂ければと、できていない文字は登録するので」） */
+            L.items[i].anch = { ch: bT.ch, by: "teh", iou: Math.round(bT.iou*100)/100 };
+          }
         }
         if (!cd){
           if (!B0) continue;                       /* フォントが無ければ ここまで */
           /* 手本 13 字と ざっと見くらべて、見こみが無ければ飛ばす（v26.9。速さのため） */
           if (anchIdx.length && _anchQuick(k.m, k.n, B0, anchIdx) < 0.20) continue;
           cd = cgGuess(k.m, k.n, k.n, curFont, 12).map(function(c){ return c.ch; });
-          fntHit++;
+          fntHit++; how = "fnt";
         }
         var a1 = _anchHit(cd, RUBANCH.mHead), a2 = _anchHit(cd, RUBANCH.mTail);
         var a3 = _anchHit(cd, RUBANCH.nHead), a4 = _anchHit(cd, RUBANCH.nTail);
         if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
+        if (how === "fnt"){
+          var hitCh = _anchHit(cd, allAnch);
+          if (hitCh) L.items[i].anch = { ch: hitCh, by: "fnt" };
+        }
         /* はじめの方＝前半、おわりの方＝後半しか見ない（まん中の空似を避ける） */
         if (a1 && hit.mh < 0 && i < Math.max(2, L.items.length * 0.4)){ hit.mh = i; ch.mh = a1; }
         /* **短い列では、どこにあっても拾う**（v30.9。本人の画面
@@ -13589,8 +13599,15 @@ async function rubAnchorGo(){
         if (it.g) return;
         it.g = (isLow9 || hasMN9) ? "zok" : "kai";
       });
-      if (did.length){ nHit++; rep.push((li+1) + "列目 " + did.join("／")); }
-      else rep.push((li+1) + "列目 手本は見つからず（" + (isLow9 ? "俗名" : "戒名") + "のまま）");
+      /* **読めた字を並べて出す**（v31.1）。印の無い字＝登録する字。 */
+      var rdCh = [], rdN = 0;
+      L.items.forEach(function(it, i3){
+        if (it.anch && it.anch.ch){ rdN++; rdCh.push((i3+1) + "=" + it.anch.ch); }
+      });
+      var rdTx = "読めた字 " + rdN + " / " + L.items.length +
+                 (rdCh.length ? "（" + rdCh.join("・") + "）" : "");
+      if (did.length){ nHit++; rep.push((li+1) + "列目 " + did.join("／") + "／" + rdTx); }
+      else rep.push((li+1) + "列目 手本は見つからず（" + (isLow9 ? "俗名" : "戒名") + "のまま）／" + rdTx);
     }
   } catch(e){
     aiProgOff();
@@ -13604,7 +13621,11 @@ async function rubAnchorGo(){
                (B0 ? "／フォントの手本で " + fntHit + " 字" : "（フォントは使っていません）") + "）"
              : "（拓本の手本帳は空です。［学習に登録］で字を覚えさせると、" +
                "楷書のフォントより ずっと当たるようになります）") + "。" +
-      rep.join("｜") + "。ちがう所は ⑤ のボタンで直せます。", false, true);
+      rep.join("｜") + "。<b>読めた字には、枠の左上に小さな丸</b>が付きます" +
+      "（緑＝拓本の手本帳／灰＝楷書のフォント）。" +
+      "<b>丸の無い字が、読めなかった字</b>です。その字を［学習に登録］するか、" +
+      "④ の候補から字を決めると、次からは読めるようになります。" +
+      "ちがう所は ⑤ のボタンで直せます。", false, true);
 }
 /* パネルの「⑤ グループ分け」 */
 function rubGrpHtml(){
@@ -16377,6 +16398,24 @@ function rubRender(){
         o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
           '" fill="' + col + '" font-size="' + (W*0.022) + '" text-anchor="end">' +
           (i+1) + (it.pick ? " " + esc(it.pick) : "") + '</text>');
+      /* ───── **読めた字に、小さな印を付ける**（v31.1。本人の指示
+         「判別できた文字を記しして頂ければと、できていない文字は登録するので
+           小さいマークでお願いします」）─────
+         枠の左上に **小さな丸**（●）と、読めた字を小さく出す。
+         丸の色で どちらの手本で読めたかが分かる：
+           **緑＝拓本の手本帳**（登録した字）／**灰＝楷書のフォント**。
+         印が無い字＝読めなかった字なので、そこを登録していけばよい。 */
+      if (it.anch && it.anch.ch){
+        var aR = Math.max(W*0.004, Math.min(b.w, b.h) * 0.055);
+        var aC = (it.anch.by === "teh") ? "#2E7D32" : "#8A8F98";
+        var aX = b.x + aR*1.6, aY = b.y + aR*1.6;
+        o.push('<circle cx="' + aX.toFixed(1) + '" cy="' + aY.toFixed(1) + '" r="' + aR.toFixed(1) +
+          '" fill="' + aC + '" stroke="#fff" stroke-width="' + (aR*0.45).toFixed(1) + '"/>');
+        o.push('<text x="' + (aX + aR*1.7).toFixed(1) + '" y="' + (aY + aR*1.1).toFixed(1) +
+          '" fill="' + aC + '" font-size="' + (aR*3.0).toFixed(1) + '" font-weight="700"' +
+          ' stroke="#fff" stroke-width="' + (aR*0.7).toFixed(1) + '" paint-order="stroke">' +
+          esc(it.anch.ch) + '</text>');
+      }
       /* グループの変わり目に、名前を出す（v26.8） */
       if (gObj && (i === 0 || (LN.items[i-1] && LN.items[i-1].g !== it.g)))
         o.push('<text x="' + (b.x + b.w + W*0.006) + '" y="' + (b.y + b.h*0.45) +

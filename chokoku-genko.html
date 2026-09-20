@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.1";
+var APP_VER = "v26.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10013,6 +10013,7 @@ async function rubAiBand(noAsk, trusted){
   RUB.aiWhy = "";
   if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
   var q = rubBandQ(), t = thr(), mpp = mmPerPx();      /* 下の列なら境目から下だけ（v25.8） */
+  if (!trusted && rubBandKnown()) trusted = true;      /* 調べた列に合わせた帯（v26.2） */
   var pitch = rubPitchPx(q, t), pitFrom = "拓本から測った";
   /* **測れなかったら、校正の字送りを使う**（v22.1。本人の報告「ダメです」。
      3 列とも「字の並び（字送り）を読めませんでした」で止まっていた）。
@@ -10075,13 +10076,14 @@ async function rubAiBand(noAsk, trusted){
     var w1 = "帯が広すぎます（字送り " + Math.round(pitch) + "px に対して 帯 " +
         Math.round(q.x2 - q.x1) + "px）。帯に列が 2 本 入っているかもしれません。";
     if (noAsk){
-      aiBandNo(w1 + "［列の数］を入れて［拓本ぜんたいを通す］を使ってください。");
+      aiBandNo(w1 + "［列の構成を調べる］を押してから、番号ボタンで帯を合わせてください。");
       return;
     }
     if (!confirm(w1 + "\n\nもし 1 列だけに合わせてあるなら、こちらの見立て違いです。" +
                  "このまま通しますか。\n\n" +
                  "（通すと 1 字ずつに切り分けられないことがあります。" +
-                 "そのときは［列を探す］か［近い列に合わせる］で帯を絞ってください）")){
+                 "そのときは［列の構成を調べる］を押して、上・下の番号ボタンで" +
+                 "帯を合わせてください）")){
       aiBandNo(w1 + "やめました。");
       return;
     }
@@ -11495,6 +11497,31 @@ function rubAiBandClear(){
    直し：**帯の幅で どちらの かたまりかを決める**。
    - 帯が親の列とほぼ同じ幅 → **上のかたまり**（戒名）。境目より上だけを見る
    - 帯が親の半分ほど（子の列） → **下のかたまり**。境目より下だけを見る */
+/* **いまの帯が「調べた列」そのものか**（v26.2。本人の報告
+   「拓本全体を通すではうまくいきましたが、この帯だけ通すはうまくいきません」）。
+   ［拓本ぜんたいを通す］は列を信じて（`trusted`）通していたが、
+   同じ帯でも**手で押したときだけ**「帯が広すぎます」と聞かれ、
+   やめると何も起きなかった。調べた列に合っている帯は、同じように信じる。 */
+function rubBandKnown(){
+  var ct = S.rub.colsTop;
+  if (!ct || !ct.cols || !ct.cols.length || ct.geo !== rubGeoKey()) return false;
+  var L = Math.min(S.rub.bandL, S.rub.bandR), R = Math.max(S.rub.bandL, S.rub.bandR);
+  var bw = R - L;
+  if (!(bw > 8)) return false;
+  var list = (ct.cols || []).slice(), ups = [];
+  ct.cols.forEach(function(c){
+    if (!c.sp) return;
+    var pv = ups[ups.length - 1];
+    if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+  });
+  list = list.concat(ups);
+  var ok = false;
+  list.forEach(function(c){
+    var ov = Math.min(R, c.b) - Math.max(L, c.a);
+    if (ov > 0 && ov > bw * 0.8 && ov > (c.b - c.a) * 0.8) ok = true;
+  });
+  return ok;
+}
 function rubBandQ(){
   var q = clampRange();
   var ct = S.rub.colsTop;
@@ -15682,6 +15709,14 @@ function rubPanel(){
     /* **列さがしは、いちばん上の行から**（v22.2。本人の案）。
        拓本には すでに彫ってある列が並んでいるので、校正の列数は当てにならない。 */
     var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
+    /* **古くなった控えは、はっきり知らせる**（v26.2）。拓本を回したり ひっくり返すと
+       列の場所が合わなくなる。黙って「ぜんたい」に戻るので、
+       ［この帯だけ通す］だけ うまくいかなく見える。 */
+    var ctOld = (!ct && S.rub.colsTop && S.rub.colsTop.cols && S.rub.colsTop.cols.length);
+    if (ctOld)
+      h += '<p class="hint" style="margin:6px 0 0;color:#B00020;"><b>※ 拓本を回した（または ひっくり返した）ので、' +
+        '前に調べた列は使えません。</b>［列の構成を調べる］をもう一度押してください。' +
+        'このままだと、帯は上下まるごと（ぜんたい）を見ます。</p>';
     /* **上と下を 1 つにまとめた**（v25.8。本人の指示）。
        上の行で列を見つけ、そのまま下で分かれていないかまで見る。 */
     h += '<button class="mini primary" id="btnColsStudy" style="margin-top:4px;" ' +

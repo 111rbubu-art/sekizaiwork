@@ -2286,7 +2286,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v28.7";
+var APP_VER = "v28.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10121,41 +10121,30 @@ function rubAiPlan(trusted, quiet){
       return { err: w1 + "やめました。", quit: 1 };
     }
   }
-  /* 窓は字 1 つより少しだけ大きく。学習の切り抜き（字の枠 ×1.2）に近づける。 */
-  var side = Math.max(pitch * 1.15, (q.x2 - q.x1));
-  /* **窓は「字 1 つぶん」に近づける**（v24.9。本人の画面の数字で判明）。
-     同じ拓本で、窓が 1 字ぶんの列は **帯の中の墨 23.5%**、
-     1.8〜2 字ぶんの列は **12%** しか出なかった。
-     AI は 1 字ぶんの切り抜きで覚えているので、窓を大きくすると
-     字が小さく写り、読めなくなる。
-     そこで、**測った字送りが 校正の見当より ずっと大きいときは、校正に合わせる**。
-     （小さすぎる方は v24.3 で置きかえずみ） */
-  var sPlan = rubPitchPlanPx(q) * 1.15;
-  if (sPlan >= 40 && side > sPlan * 1.35) side = Math.round(Math.max(q.x2 - q.x1, sPlan));
-  /* **窓は、帯の幅を大きく超えない**（v26.0。本人の報告「下の文字は見立てられませんでした」）。
-     1 列ぶんの帯なら、字の大きさは だいたい**帯の幅**。ところが 校正の見当は
-     大きい戒名から来るので、**下の小さい列（命日・年齢）で窓が 2 字ぶん**になり、
-     2 字が 1 つの墨につながって「字を 2 つ以上見つけられません」になっていた。
-     実測（`irr.json` の下の列）：帯 100px に対して窓 201px＝**2.01 倍**、
-     帯 163px に対して 235px＝1.44 倍。 */
+  /* ───── **窓の大きさは「字の大きさ（mm）」で決める**（v28.8 で作り直し。本人の問い
+     「範囲全体の時のAIに送る大きさは何で決めているの？ 1文字がやく15㎜～30㎜と
+       あるのに明らかに細かすぎ」）─────
+     それまでは **帯の幅**をそのまま窓にし、あとから 4 つの条件で押し引きしていた。
+     帯が細ければ窓も細く（字の切れはし）、帯が広ければ窓も広く（字が小さく写る）。
+     いまは **mm で考える**：
+       ① 帯の幅が **10〜60mm** なら、それが その拓本の字の大きさ
+       ② 外れていれば、**測った字送り**（10〜60mm のとき）
+       ③ それも外れていれば、**拓本の戒名の字幅**（既定 30mm）
+     窓はその **1.15 倍**。さらに **12〜60mm** に収める（字は 15〜30mm が ふつう）。 */
   var bw0 = q.x2 - q.x1;
-  if (bw0 >= 24 && side > bw0 * 1.3) side = Math.round(bw0 * 1.15);
-  /* **窓は「字 1 つぶん」を大きく超えない**（v27.8。本人の画面
-     「帯が広すぎます（字送り 253px に対して 帯 1182px）」→ 窓も 1182px になり、
-     字が窓の中で小さくなって ほとんど読めなかった）。
-     拓本の戒名の字幅（既定 30mm）が分かっているので、その 1.35 倍まで。 */
-  var kmPx = 0, mpp8 = mmPerPx();
-  if (mpp8 && rubKmWmm() > 0) kmPx = rubKmWmm() / mpp8;
-  /* **帯が字 2 つぶんより広いときだけ、字幅で縛る**（v28.1。本人の画面
-     「墨の背景で、戒名 2 文字を範囲指定しました → 枠が点のように小さい」）。
-     帯（または範囲）の幅は**その拓本の字の幅そのもの**なので、
-     30mm の見当より確か。戒名が 30mm より大きい拓本では、
-     字幅で縛ると窓が字の一部しか写さず、AI が読めなくなる。 */
-  if (kmPx >= 24 && bw0 > kmPx * 2 && side > kmPx * 1.35) side = Math.round(kmPx * 1.35);
-  /* **窓が字よりずっと小さいときは、字の大きさまで広げる**（v28.7。本人の画面
-     「送る絵が字の一部だけの ぼやけた切れはし」）。
-     細い帯（数十 px）がそのまま窓になっていた。 */
-  if (kmPx >= 24 && side < kmPx * 0.55) side = Math.round(kmPx * 0.9);
+  var mpp8 = mmPerPx();
+  var charMm = 0, charFrom = "";
+  if (mpp8){
+    var bwMm = bw0 * mpp8, pitMm = pitch * mpp8, kmMm = rubKmWmm();
+    if (bwMm >= 10 && bwMm <= 60){ charMm = bwMm; charFrom = "帯の幅"; }
+    else if (pitMm >= 10 && pitMm <= 60){ charMm = pitMm; charFrom = "字送り"; }
+    else if (kmMm > 0){ charMm = kmMm; charFrom = "戒名の字幅"; }
+    else { charMm = 30; charFrom = "既定 30mm"; }
+    charMm = Math.max(12, Math.min(60, charMm));
+  }
+  var side = charMm && mpp8 ? Math.round(charMm * 1.15 / mpp8)
+                            : Math.round(Math.max(pitch * 1.15, bw0));
+  var kmPx = (mpp8 && rubKmWmm() > 0) ? rubKmWmm() / mpp8 : 0;
   var stepY = Math.max(8, side * 0.5);
   /* **窓は、帯のまん中ではなく「墨のまん中」に置く**（v27.8）。
      帯が字よりずっと広いとき（紙の白い所まで入っているとき）、
@@ -10183,7 +10172,8 @@ function rubAiPlan(trusted, quiet){
   if (!ys.length) return { err: "帯が短すぎます。" };
   if (ys.length > 80) return { err: "帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。" };
   return { q: q, t: t, mpp: mpp, pitch: pitch, pitFrom: pitFrom,
-           side: side, cx0: cx0, ys: ys, stepY: stepY, trusted: trusted };
+           side: side, cx0: cx0, ys: ys, stepY: stepY, trusted: trusted,
+           charMm: charMm, charFrom: charFrom };
 }
 /* **AI に送る切り抜きを、そのまま並べて見せる**（v28.2）。
    ［AI 縁取りを実行］と**同じ計画**（`rubAiPlan`）から作るので、
@@ -10227,6 +10217,7 @@ async function rubAiPreview(){
     Math.round(PL.q.y1) + "〜" + Math.round(PL.q.y2) + "px／窓 " + Math.round(usedSide) + "px" +
     (mpp ? "（" + (usedSide * mpp).toFixed(0) + "mm）" : "") +
     "／" + rows.length + " 枚" +
+    (PL.charMm ? "／字の見当 " + PL.charMm.toFixed(0) + "mm（" + PL.charFrom + "）" : "") +
     (shots ? "／墨 " + num(AB.ink, 0) + " ます" : "") +
     "／字送り " + (mpp ? (PL.pitch * mpp).toFixed(1) + "mm" : Math.round(PL.pitch) + "px") +
     "（" + PL.pitFrom + "）";
@@ -10401,7 +10392,9 @@ async function rubAiBand(noAsk, trusted){
   msg("帯を AI に通しました（" + pitFrom + "字送り " +
       (mpp ? (pitch * mpp).toFixed(1) + "mm" : pitch + "px") + "／" + ok + " / " + ys.length + " か所、" +
       Math.round((Date.now() - t0)/100)/10 + " 秒）。" +
-      "通したのは <b>横 " + Math.round(cx1) + "〜" + Math.round(cx2) + "px・たて " +
+      "窓 " + Math.round(side) + "px" +
+      (PL.charMm ? "（字の見当 " + PL.charMm.toFixed(0) + "mm＝" + PL.charFrom + "）" : "") +
+      "。通したのは <b>横 " + Math.round(cx1) + "〜" + Math.round(cx2) + "px・たて " +
       Math.round(q.y1) + "〜" + Math.round(q.y2) + "px</b>" +
       (mpp ? "（たて " + (q.y1*mpp).toFixed(0) + "〜" + (q.y2*mpp).toFixed(0) + "mm）" : "") +
       "、墨は <b>" + n1 + " ます</b>（通した所の " +

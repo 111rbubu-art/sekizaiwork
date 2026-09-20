@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.6";
+var APP_VER = "v27.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11395,6 +11395,20 @@ async function rubColsStudy(useAi){
   var t = await rubColsScanTop(useAi);
   if (!t || !t.length) return null;                 /* 知らせは向こうが出している */
   var topN = t.length;
+  /* **［列の数］を入れてあるときは、下の分かれさがしをしない**（v27.7。本人の報告
+     「下は 2 列と出るが 2 列ではない」）。人が本数を知っているのだから、
+     こちらが勝手に分けてはいけない。 */
+  if (num(S.rub.colN, 0) > 0){
+    var ct0 = S.rub.colsTop || {};
+    ct0.topN = topN;
+    ct0.topCols = t.map(function(v){ return { a: v.a, b: v.b }; });
+    persist(); rubPanel(); rubRender();
+    msg("<b>ぜんたい " + topN + " 列</b>です（［列の数］に " + num(S.rub.colN, 0) +
+        " と入っているので、下で分かれていないかは見ていません）。左から " +
+        t.map(function(v){ return Math.round(v.a) + "〜" + Math.round(v.b); }).join("／") +
+        " px。自動で見てほしいときは［列の数］を空にしてください。", false, true);
+    return t;
+  }
   var c = await rubColsBotSplit(useAi);
   if (!c || !c.length) return null;
   var ct = S.rub.colsTop || {};
@@ -15337,15 +15351,21 @@ function rubRender(){
        絵は `colsTop.cols`（上の列と下の列が混ざった並び）に番号を振っていたので、
        メニューの番号と食いちがっていた。ここも `rubColMenu()` から出す。 */
     var mnD = rubColMenu();
+    /* **上の列は「範囲の上〜境目」、下の列は「境目〜下」**（v27.7。本人の報告
+       「列の上には何も出ていない」）。v27.6 は上の列の始まりを 0 と書いたため、
+       `|| cy0` に落ちて**境目から下**に描かれ、番号も画面のまん中に出ていた。 */
+    var arD = rubArea();
+    var yCutD = num(ctD.yCut, 0);
+    var topYD = Math.max(0, Math.min(num(ctD.y0, arD.y1), arD.y1));
     var drawList = [];
     if (mnD.ups.length){
       mnD.ups.forEach(function(c, i){
         drawList.push({ a: c.a, b: c.b, nm: (mnD.lows.length ? "上" : "") + (i+1),
-                        y0: 0, y1: num(ctD.yCut, 0) || 0 });
+                        y0: topYD, y1: (yCutD > 0 && mnD.lows.length) ? yCutD : 0 });
       });
       mnD.lows.forEach(function(c, i){
-        drawList.push({ a: c.a, b: c.b, nm: "下" + (i+1),
-                        y0: num(c.y0, num(ctD.yCut, 0)), y1: 0 });
+        drawList.push({ a: c.a, b: c.b, nm: "下" + (i+1), low: 1,
+                        y0: num(c.y0, yCutD), y1: 0 });
       });
     } else drawList = ctD.cols.map(function(c, i){
       return { a: c.a, b: c.b, nm: "" + (i+1), y0: num(c.y0, 0), y1: 0 };
@@ -15354,7 +15374,7 @@ function rubRender(){
       var cw = c.b - c.a;
       /* **その列が始まる高さ**（v25.4）。下で 2 列に分かれた列は、
          分かれた所から下だけに帯を出す。分かれていない列は今までどおり。 */
-      var ty = num(c.y0, 0) || cy0;
+      var ty = num(c.y0, cy0);
       var tb = num(c.y1, 0) || cBot;               /* 上の列は境目まで（v27.6） */
       if (!(tb > ty + 8)) tb = cBot;
       o.push('<rect x="' + c.a + '" y="' + ty + '" width="' + cw + '" height="' + (tb - ty) +
@@ -15365,7 +15385,10 @@ function rubRender(){
         '" width="' + cw + '" height="' +
         Math.max(0, cy1 - Math.max(ty, cy1 - num(ctD.rows, 1) * num(ctD.side, 40))) +
         '" fill="rgba(106,74,200,.16)" stroke="none"/>');
-      o.push('<text x="' + (c.a + cw/2) + '" y="' + (ty - W*0.008) +
+      /* 下の列の番号は**帯の中**へ（v27.7。本人の画面で、緑の線の字と重なって
+         読めなくなっていた）。上の列は いままでどおり帯の上。 */
+      o.push('<text x="' + (c.a + cw/2) + '" y="' +
+        (c.low ? (ty + W*0.040) : (ty - W*0.008)) +
         '" fill="#6A4AC8" font-size="' + (W*0.030) + '" font-weight="700" text-anchor="middle"' +
         ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
         c.nm + '</text>');
@@ -15381,10 +15404,10 @@ function rubRender(){
       o.push('<line x1="0" y1="' + ctD.yCut + '" x2="' + W + '" y2="' + ctD.yCut +
         '" stroke="#0A8A3C" stroke-width="' + (W*0.003) + '" stroke-dasharray="' +
         (W*0.024) + ' ' + (W*0.012) + '"/>');
-      o.push('<text x="' + (W*0.012) + '" y="' + (ctD.yCut - W*0.010) +
-        '" fill="#0A8A3C" font-size="' + (W*0.026) + '" font-weight="700"' +
+      o.push('<text x="' + (W*0.012) + '" y="' + (ctD.yCut - W*0.014) +
+        '" fill="#0A8A3C" font-size="' + (W*0.022) + '" font-weight="700"' +
         ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
-        'この辺から下は ' + ctD.cols.length + ' 列（列ごとは緑の線）</text>');
+        'ここから下は ' + rubColMenu().lows.length + ' 列</text>');
     }
   }
   /* 枠は**人が直せる**（v21.64。本人の指示「青の四角マスを人で修正できるように」）。

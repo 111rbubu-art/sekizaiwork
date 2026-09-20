@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.0";
+var APP_VER = "v26.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9578,7 +9578,7 @@ function rubLineCore(M, q, step, pitch, mpp){
   var hs = items.map(function(it){ return it.h; });
   return {
     n: n, at: new Date().toLocaleString("ja-JP"),
-    band: { L: q.x1, R: q.x2 },
+    band: { L: q.x1, R: q.x2, T: q.y1, B: q.y2 },   /* たての見た範囲も控える（v26.1） */
     hMm: _med(hs) * mpp,
     wMm: _med(items.map(function(it){ return it.w; })) * mpp,
     inkMm: _med(items.map(function(it){ return it.ink; })) * mpp,
@@ -11320,6 +11320,22 @@ async function rubAllGo(){
   try { runs = rubColsWanted(); }
   catch(e0){ aiProgOff(); msg("列をさがせませんでした（" + ((e0 && e0.message) || "") + "）。", true); return; }
   if (!runs || !runs.length){ aiProgOff(); return; }
+  /* **上下で作りが変わる拓本は、上の列と下の列を ぜんぶ通す**（v26.1。
+     本人の報告「結果は同じです」）。それまでは `rubColsWanted()` の返す
+     1 組（下の 6 列 か、［列の数］で等分に割った列）しか通しておらず、
+     **上の戒名か、下の命日か、どちらかが丸ごと抜けていた**。 */
+  var ct5 = S.rub.colsTop;
+  if (ct5 && ct5.dir === "bot" && num(ct5.yCut, 0) > 0 && ct5.geo === rubGeoKey() &&
+      (ct5.cols || []).some(function(c){ return c.sp; })){
+    var ups5 = [];
+    ct5.cols.forEach(function(c){
+      if (!c.sp) return;
+      var pv = ups5[ups5.length - 1];
+      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups5.push({ a: c.a, b: c.b });
+    });
+    runs = ups5.map(function(v){ return { a: v.a, b: v.b, blk: "top" }; })
+           .concat(ct5.cols.map(function(v){ return { a: v.a, b: v.b, blk: "bot" }; }));
+  }
   if (runs.length > 12){
     aiProgOff();
     if (!confirm("列が " + runs.length + " 本あります。ぜんぶ通すと時間がかかります。続けますか。")) return;
@@ -11340,16 +11356,22 @@ async function rubAllGo(){
   for (var i = 0; i < runs.length; i++){
     if (AIPROG_STOP){ stopped = true; break; }
     var c = runs[i];
-    aiProg("列 " + (i+1) + " / " + runs.length, "列の場所を決めています", ok + " 列ぶん 読めました");
+    aiProg("列 " + (i+1) + " / " + runs.length +
+           (c.blk ? (c.blk === "top" ? "（上）" : "（下）") : ""),
+           "列の場所を決めています", ok + " 列ぶん 読めました");
     await uiTick();
     /* **のりしろは、となりの列と拓本のふちの手前まで**（v24.2）。
        前は ためらいなく 8% 広げていたので、左端の列では紙の白いふちに、
        列どうしが近い拓本では となりの列に食い込んでいた。 */
     var pad = Math.round((c.b - c.a) * 0.08);
     var f1 = frameX();
-    var okL = Math.max(0, f1.x1, ar2.x1, (i > 0 ? (runs[i-1].b + c.a) / 2 : 0));
-    var okR = Math.min(RUB.W, f1.x2, ar2.x2,
-                       (i < runs.length - 1 ? (c.b + runs[i+1].a) / 2 : RUB.W));
+    /* となりは**同じかたまりの中**で見る（v26.1。上の列と下の列が
+       1 つの並びに混ざっているので、ちがうかたまりを「となり」にしない） */
+    var pv5 = null, nx5 = null, k5;
+    for (k5 = i - 1; k5 >= 0; k5--) if ((runs[k5].blk || "") === (c.blk || "")){ pv5 = runs[k5]; break; }
+    for (k5 = i + 1; k5 < runs.length; k5++) if ((runs[k5].blk || "") === (c.blk || "")){ nx5 = runs[k5]; break; }
+    var okL = Math.max(0, f1.x1, ar2.x1, (pv5 ? (pv5.b + c.a) / 2 : 0));
+    var okR = Math.min(RUB.W, f1.x2, ar2.x2, (nx5 ? (c.b + nx5.a) / 2 : RUB.W));
     S.rub.bandL = Math.round(Math.max(okL, c.a - pad));
     S.rub.bandR = Math.round(Math.min(okR, c.b + pad));
     /* **等分に割ったときだけ、帯を中の墨に寄せる**（v21.70。本人の指摘
@@ -11761,7 +11783,7 @@ function rubLineCoreAi(M, q, step, mpp, nWant){
   }
   return {
     n: n, at: new Date().toLocaleString("ja-JP"),
-    band: { L: q.x1, R: q.x2 },
+    band: { L: q.x1, R: q.x2, T: q.y1, B: q.y2 },   /* たての見た範囲も控える（v26.1） */
     hMm: _med(hs) * mpp,
     wMm: _med(items.map(function(it){ return it.w; })) * mpp,
     inkMm: _med(items.map(function(it){ return it.ink; })) * mpp,
@@ -11821,9 +11843,20 @@ function rubColPut(m2){
   if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
   var mid = (m2.band.L + m2.band.R) / 2, w = Math.max(8, m2.band.R - m2.band.L);
   var at = -1;
+  /* **たての場所もそろっているときだけ、置きかえる**（v26.1。本人の報告
+     「結果は同じです」）。上下で作りが変わる拓本では、上の戒名の列と
+     下の命日の列が**同じ横位置**にある。横だけで見ていたので、
+     下の列を見立てると **上の列の見立てが消えて**いた
+     （実測：上 3 列＋下 6 列＝9 列を通したのに、残ったのは 6 列）。 */
+  var t2 = num(m2.band.T, -1), b2 = num(m2.band.B, -1);
   S.rub.lines.forEach(function(L, i){
     if (!L || !L.band) return;
-    if (Math.abs((L.band.L + L.band.R) / 2 - mid) < w * 0.5) at = i;
+    if (!(Math.abs((L.band.L + L.band.R) / 2 - mid) < w * 0.5)) return;
+    if (t2 >= 0 && num(L.band.B, -1) >= 0){
+      var ov = Math.min(b2, num(L.band.B, 0)) - Math.max(t2, num(L.band.T, 0));
+      if (!(ov > 0 && ov > (b2 - t2) * 0.5)) return;      /* たてが別なら別の列 */
+    }
+    at = i;
   });
   if (at >= 0) S.rub.lines[at] = m2; else S.rub.lines.push(m2);
   S.rub.lines.sort(function(a, b){
@@ -15573,13 +15606,20 @@ function rubPanel(){
       /* **上のかたまりと下のかたまり、どちらの列にも合わせられる**（v25.9。
          本人の画面：親の列に帯を合わせると、上の「居士」と下の「健／令和」が
          1 つの帯に入っていた）。上は戒名の列、下は分かれたあとの列。 */
-      var ctC = S.rub.colsTop, ups = [];
-      if (ctC && ctC.dir === "bot" && num(ctC.yCut, 0) > 0 && ctC.geo === rubGeoKey())
+      var ctC = S.rub.colsTop, ups = [], lows = null;
+      if (ctC && ctC.dir === "bot" && num(ctC.yCut, 0) > 0 && ctC.geo === rubGeoKey()){
         (ctC.cols || []).forEach(function(c){
           if (!c.sp) return;
           var pv = ups[ups.length - 1];
           if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
         });
+        /* **下のボタンは、調べた列そのもの**（v26.1。本人の報告「結果は同じです」）。
+           いままで `RUB.cols` から作っていたが、そこは［列の数］を入れると
+           **等分に割った列**に化ける。すると「下」を押しても幅が親の列のままになり、
+           帯は上（戒名）と見なされ、下の字は いつまでも見立てられなかった
+           （実測：［列の数］に 3 を入れると、下3 を押して 帯 670〜999・y 152〜2303）。 */
+        lows = ctC.cols;
+      }
       var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
       function chipsOf(list, kind){
         return list.map(function(c, i){
@@ -15592,7 +15632,7 @@ function rubPanel(){
         h += '<div class="chips" style="margin:5px 0 0;"><span class="hint" ' +
           'style="margin-right:4px;">上（戒名）</span>' + chipsOf(ups, "top") + '</div>';
         h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(RUB.cols, "bot") + '</div>';
+          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows || RUB.cols, "bot") + '</div>';
         h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
           '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。</p>';
       } else {
@@ -15600,8 +15640,17 @@ function rubPanel(){
         h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
       }
     }
-    h += '<p class="hint" style="margin:5px 0 0;">帯（オレンジの範囲）は、絵の上の' +
-      '<b>つまみでも動かせます</b>。</p>';
+    /* **いまの帯が どこを見ているか**を出す（v26.1）。
+       上と下で見る高さが変わるので、目で確かめられるようにする。 */
+    var qNow = rubBandQ(), mppB = mmPerPx();
+    var whole = (Math.round(qNow.y1) <= Math.round(clampRange().y1) + 1 &&
+                 Math.round(qNow.y2) >= Math.round(clampRange().y2) - 1);
+    h += '<p class="hint" style="margin:5px 0 0;">いまの帯は <b>' +
+      (whole ? 'ぜんたい' : (Math.round(qNow.y2) < RUB.H * 0.99 && Math.round(qNow.y1) < 40
+                              ? '上（戒名）' : '下（命日ほか）')) +
+      '</b>を見ています（上から ' + Math.round(qNow.y1) + '〜' + Math.round(qNow.y2) + 'px' +
+      (mppB ? '＝' + (qNow.y1*mppB).toFixed(0) + '〜' + (qNow.y2*mppB).toFixed(0) + 'mm' : '') +
+      '）。帯（オレンジの範囲）は、絵の上の<b>つまみでも動かせます</b>。</p>';
     h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
       'style="margin-top:6px;" title="通したい行をまとめてかこみます。' +
       '拓本の端で見切れている行を外せます">▣ 通す範囲を決める</button>';
@@ -15794,7 +15843,12 @@ function rubPanel(){
           if (pv && Math.abs(pv.b - c8.a) < 3) pv.b = c8.b; else ups8.push({ a: c8.a, b: c8.b });
         });
         c = ups8[i9];
-      } else c = (RUB.cols || [])[i9];
+      } else {
+        var ct7 = S.rub.colsTop, low7 = null;
+        if (ct7 && ct7.dir === "bot" && num(ct7.yCut, 0) > 0 && ct7.geo === rubGeoKey())
+          low7 = ct7.cols;
+        c = (low7 || RUB.cols || [])[i9];
+      }
       if (!c) return;
       S.rub.bandL = c.a; S.rub.bandR = c.b;
       A = null; RUB.mask = null; persist(); rubPanel(); rubRender();

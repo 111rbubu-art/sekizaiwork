@@ -2286,7 +2286,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v28.5";
+var APP_VER = "v28.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10200,20 +10200,34 @@ async function rubAiPreview(){
   var body = $("aiPrevBody"); if (!body) return;
   var mpp = mmPerPx();
   body.innerHTML = "";
-  $("aiPrevInfo").textContent =
-    "帯 " + Math.round(PL.q.x1) + "〜" + Math.round(PL.q.x2) + "px・たて " +
-    Math.round(PL.q.y1) + "〜" + Math.round(PL.q.y2) + "px／窓 " + Math.round(PL.side) + "px" +
-    (mpp ? "（" + (PL.side * mpp).toFixed(0) + "mm）" : "") +
-    "／" + PL.ys.length + " 枚／字送り " +
-    (mpp ? (PL.pitch * mpp).toFixed(1) + "mm" : Math.round(PL.pitch) + "px") +
-    "（" + PL.pitFrom + "）";
   $("aiPrevWin").hidden = false;
-  /* **返ってきた絵も並べる**（v28.4。本人の指示「帰ってきた結果も表示して」）。
-     `RUB.aiBand.shots` に、通したときの返事を控えてある（同じ帯のときだけ）。 */
-  var shots = (RUB.aiBand && RUB.aiBand.shots && RUB.aiBand.geo === rubGeoKey())
-                ? RUB.aiBand.shots : null;
-  for (var i = 0; i < PL.ys.length && i < 40; i++){
-    var cv = rubCropCv(PL.cx0, PL.ys[i], PL.side);      /* 送るのと同じ切り抜き */
+  /* **返ってきた絵も並べる**（v28.4 → v28.6 で作り直し）。本人の報告
+     「評価できないから直して」＝ 1 つおきに「まだ通していません」になっていた。
+     真因：通したときの窓と、いま出しなおした窓が **同じとは限らない**
+     （字送りの測り直しで 1 段ぶんずれる）。窓の高さで突き合わせていたので、
+     ずれた側が「返事なし」になっていた。
+     直し：**通したときの控え（`shots` と `plan`）があれば、そちらを並べる**。
+     送った絵も、そのときの窓（`plan.side`／`plan.cx0`）から作り直す。 */
+  var AB = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey()) ? RUB.aiBand : null;
+  var shots = (AB && AB.shots && AB.shots.length && AB.plan) ? AB.shots : null;
+  var rows = [], usedSide = PL.side, usedCx0 = PL.cx0;
+  if (shots){
+    usedSide = num(AB.plan.side, PL.side); usedCx0 = num(AB.plan.cx0, PL.cx0);
+    rows = shots.map(function(o){ return { y: o.y, url: o.url }; });
+  } else {
+    rows = PL.ys.map(function(y){ return { y: y, url: "" }; });
+  }
+  $("aiPrevInfo").textContent =
+    (shots ? "《通したときの絵》" : "《これから送る絵》") +
+    "帯 " + Math.round(PL.q.x1) + "〜" + Math.round(PL.q.x2) + "px・たて " +
+    Math.round(PL.q.y1) + "〜" + Math.round(PL.q.y2) + "px／窓 " + Math.round(usedSide) + "px" +
+    (mpp ? "（" + (usedSide * mpp).toFixed(0) + "mm）" : "") +
+    "／" + rows.length + " 枚" +
+    (shots ? "／墨 " + num(AB.ink, 0) + " ます" : "") +
+    "／字送り " + (mpp ? (PL.pitch * mpp).toFixed(1) + "mm" : Math.round(PL.pitch) + "px") +
+    "（" + PL.pitFrom + "）";
+  for (var i = 0; i < rows.length && i < 40; i++){
+    var cv = rubCropCv(usedCx0, rows[i].y, usedSide);   /* 送ったのと同じ切り抜き */
     var w = document.createElement("div");
     w.style.cssText = "text-align:center;font-size:11px;color:#9fb0c3;";
     var row = document.createElement("div");
@@ -10223,28 +10237,24 @@ async function rubAiPreview(){
     im.style.cssText = "width:150px;height:150px;image-rendering:pixelated;" +
       "border:1px solid #2a3340;background:#000;display:block;";
     row.appendChild(im);
-    /* 同じ高さの返事をさがす（±窓の 1 割まで） */
-    var sh = null;
-    if (shots) shots.forEach(function(o){
-      if (Math.abs(o.y - PL.ys[i]) < PL.side * 0.1) sh = o;
-    });
-    if (sh){
+    if (rows[i].url){
       var im2 = document.createElement("img");
-      im2.src = sh.url;
+      im2.src = rows[i].url;
       im2.style.cssText = "width:150px;height:150px;image-rendering:pixelated;" +
         "border:1px solid #2a3340;background:#000;display:block;";
       row.appendChild(im2);
     }
     w.appendChild(row);
     var cap = document.createElement("div");
-    cap.textContent = (i+1) + "／上から " + Math.round(PL.ys[i]) + "px" +
-      (sh ? "　左＝送った絵／右＝AI の返事" : "　（まだ通していません）");
+    cap.textContent = (i+1) + "／上から " + Math.round(rows[i].y) + "px" +
+      (rows[i].url ? "　左＝送った絵／右＝AI の返事" : "　（まだ通していません）");
     w.appendChild(cap);
     body.appendChild(w);
   }
-  msg("AI に送る絵を " + Math.min(PL.ys.length, 40) + " 枚 出しました（窓 " +
-      Math.round(PL.side) + "px）。字が窓いっぱいに写っていれば good です。" +
-      (shots ? "右は AI の返事です。" : "［AI 縁取りを実行］のあとに開くと、返事も並びます。"),
+  msg("AI に" + (shots ? "通した絵と返事" : "送る絵") + "を " +
+      Math.min(rows.length, 40) + " 枚 出しました（窓 " + Math.round(usedSide) + "px）。" +
+      "字が窓いっぱいに写っていれば good です。" +
+      (shots ? "" : "［AI 縁取りを実行］のあとに開くと、返事も並びます。"),
       false, true);
 }
 async function rubAiBand(noAsk, trusted){

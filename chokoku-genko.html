@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.7";
+var APP_VER = "v25.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10012,7 +10012,7 @@ async function rubAiBand(noAsk, trusted){
   var base = takuApiBase();
   RUB.aiWhy = "";
   if (!base){ aiBandNo("［設定］に拓本AIの住所を入れてください。"); return; }
-  var q = clampRange(), t = thr(), mpp = mmPerPx();
+  var q = rubBandQ(), t = thr(), mpp = mmPerPx();      /* 下の列なら境目から下だけ（v25.8） */
   var pitch = rubPitchPx(q, t), pitFrom = "拓本から測った";
   /* **測れなかったら、校正の字送りを使う**（v22.1。本人の報告「ダメです」。
      3 列とも「字の並び（字送り）を読めませんでした」で止まっていた）。
@@ -11109,7 +11109,7 @@ async function rubColsBotSplit(useAi){
     var s2 = splitOne(c);
     each.push(s2.length);
     if (s2.length > 1) pair.push({ c: c, cut: s2[0].b, y: 0 });
-    s2.forEach(function(v){ cols.push(v); });
+    s2.forEach(function(v){ v.sp = (s2.length > 1); cols.push(v); });
   });
   /* ───── **上の 1 列と下の 2 列の境目をさがす**（v25.7 で作り直し。本人の指示
      「あとは上の1列と下の2列の境界の判別ができるようになればいいのですが」）─────
@@ -11152,7 +11152,8 @@ async function rubColsBotSplit(useAi){
       }
     } catch(e){}
     aiProgOff();
-    cols.forEach(function(v){ v.y0 = Math.round(yCut); });
+    /* 分かれた列だけに「ここから下」を持たせる（分かれていない列は上から丸ごと） */
+    cols.forEach(function(v){ v.y0 = v.sp ? Math.round(yCut) : 0; });
   }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: rN,
                     how: "local", side: sBot, dir: "bot", base: top.length,
@@ -11175,6 +11176,39 @@ async function rubColsBotSplit(useAi){
             : "") +
       "ちがうときは、上の列を直してから もう一度押してください。", false, true);
   return cols;
+}
+/* ───── **列の構成を、ひと押しで調べる**（v25.8。本人の指示
+   「列の見極めで、上からと下からの調査が別々ですが、1つにして、
+     どのような構成になっているか判別して」）─────
+   ① いちばん上の行から列を見つける → ② その列が下で 2 列に分かれていないか
+   → ③ 分かれていれば、1 列から 2 列に変わる高さ。まとめて 1 つの知らせにする。 */
+async function rubColsStudy(useAi){
+  var t = await rubColsScanTop(useAi);
+  if (!t || !t.length) return null;                 /* 知らせは向こうが出している */
+  var topN = t.length;
+  var c = await rubColsBotSplit(useAi);
+  if (!c || !c.length) return null;
+  var ct = S.rub.colsTop || {};
+  ct.topN = topN; ct.topCols = t.map(function(v){ return { a: v.a, b: v.b }; });
+  var spN = c.filter(function(v){ return v.sp; }).length / 2;
+  var mpp = mmPerPx();
+  persist(); rubPanel(); rubRender();
+  if (!spN){
+    msg("<b>ぜんたい " + topN + " 列</b>です（上から下まで、列の数は変わりません）。" +
+        "左から " + c.map(function(v){ return Math.round(v.a) + "〜" + Math.round(v.b); }).join("／") +
+        " px。ちがうときは［列の数］に本数を入れてください。", false, true);
+  } else {
+    msg("<b>上は " + topN + " 列、下は " + c.length + " 列</b>です（" +
+        Math.round(spN) + " 本が下で 2 つに分かれます）。" +
+        (num(ct.yCut, 0) > 0
+          ? "変わり目は <b>上から " + Math.round(ct.yCut) + "px</b>" +
+            (mpp ? "（" + (ct.yCut * mpp).toFixed(0) + "mm）" : "") + "＝緑の線。"
+          : "") +
+        "下の列は 左から " +
+        c.map(function(v){ return Math.round(v.a) + "〜" + Math.round(v.b); }).join("／") +
+        " px。線がずれていたら、下の欄か ↑↓ で直してください。", false, true);
+  }
+  return c;
 }
 function rubColsWanted(){
   /* **通す範囲の中だけ**を見る（v21.68。本人の指示）。
@@ -11419,6 +11453,27 @@ function rubAiBandClear(){
    となりの字は高さがずれているので、**字と字のすき間が埋まり**、
    1 字ずつに切り分けられなくなる（実測：すき間の行 0／2095 で かたまり 1 個）。
    となりの列との まん中で止める。 */
+/* **いまの帯が「下で 2 列に分かれた列」なら、境目から下だけを見る**
+   （v25.8。本人の報告「この行を見立てるで、下の2列になった場合も文字囲ってほしい
+   変化なしです」）。
+   帯は横（x）しか決めていないので、上の戒名（大きい字）まで入ってしまい、
+   AI も 見立ても 上の字に引きずられていた。 */
+function rubBandQ(){
+  var q = clampRange();
+  var ct = S.rub.colsTop;
+  if (!ct || ct.dir !== "bot" || !(num(ct.yCut, 0) > 0) || ct.geo !== rubGeoKey()) return q;
+  var bw = q.x2 - q.x1;
+  var hit = null;
+  (ct.cols || []).forEach(function(c){
+    if (!c.sp) return;
+    var ov = Math.min(q.x2, c.b) - Math.max(q.x1, c.a);
+    if (ov > 0 && ov > bw * 0.6 && ov > (c.b - c.a) * 0.6) hit = c;
+  });
+  if (!hit) return q;
+  var y0 = Math.max(q.y1, num(hit.y0, ct.yCut));
+  if (q.y2 - y0 < 40) return q;
+  return { x1: q.x1, x2: q.x2, y1: y0, y2: q.y2 };
+}
 function rubBandLimit(){
   /* **拓本の外（紙の白いふち）へは出さない**（v24.2。本人の報告
      「拓本全体を通すだと左側の縁取りがうまくいかず、1 行目を指定して
@@ -11704,7 +11759,7 @@ function rubLineTakeAi(){
      帯からはみ出したはらいまで含めて 1 字の枠を測る。
      AI の墨は行の外を落としてあるので、広げても となりの列は入ってこない。
      **見るのも測るのも同じ枠**でないと、ます目と画素の対応がずれる。 */
-  var q = rubBandWide(clampRange()), step = 2;
+  var q = rubBandWide(rubBandQ()), step = 2;           /* 下の列なら境目から下だけ（v25.8） */
   var M = rubAiMask(q, step);
   if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
   var nWant = Math.max(0, Math.min(60, num(S.rub.lineN, 0)));    /* 手で入れた字数（v25.1） */
@@ -15476,10 +15531,9 @@ function rubPanel(){
     h += '<div class="fixrow"><span>いまの帯の幅</span><b>' +
       (bw ? (bmm ? (bw * bmm).toFixed(1) + 'mm（' + Math.round(bw) + 'px）' : Math.round(bw) + 'px')
           : '—') + '</b></div>';
-    h += '<button class="mini" id="btnBandFit" ' +
-      'title="いまの帯にいちばん近い列（彫ってある1行）に、ぴたりと合わせます">近い列に合わせる</button>' +
-      ' <button class="mini" id="btnBandCols" title="列を探して、番号で選べるようにします">列を探す</button>' +
-      ' <button class="mini" id="btnBandAll" title="帯を拓本の幅いっぱいに戻します">全体に戻す</button>';
+    /* ［近い列に合わせる］［列を探す］［全体に戻す］は やめた（v25.8。本人の指示
+       「近い列に合わせる と 列を探す、全体にもどすは不要」）。
+       列は［列の構成を調べる］で出し、下の番号ボタンで帯を合わせる。 */
     if (RUB.cols && RUB.cols.length){
       h += '<div class="chips" style="margin:5px 0 0;">' + RUB.cols.map(function(c, i){
         var on = (Math.abs(c.a - Math.min(r.bandL, r.bandR)) < 3 &&
@@ -15522,24 +15576,22 @@ function rubPanel(){
     /* **列さがしは、いちばん上の行から**（v22.2。本人の案）。
        拓本には すでに彫ってある列が並んでいるので、校正の列数は当てにならない。 */
     var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
-    h += '<button class="mini" id="btnColsTop" style="margin-top:4px;" ' +
-      'title="上から 1 字ぶんずつ 何段か見て、字のかたまりの間隔から列を割り出します">' +
-      'いちばん上の行から列を見つける</button>';
-    /* **下で分かれていないかを見る**（v25.3。本人の案）。上は戒名で 1 列、
-       下は命日と建之で 2 列、という拓本のため。上の列を土台にする。 */
-    h += '<br><button class="mini" id="btnColsBot" style="margin-top:4px;" ' +
-      'title="上で見つけた列を土台に、いちばん下の行でそれぞれが 1 列のままか 2 列に分かれるかを見ます">' +
-      '下で分かれていないか見る</button>';
+    /* **上と下を 1 つにまとめた**（v25.8。本人の指示）。
+       上の行で列を見つけ、そのまま下で分かれていないかまで見る。 */
+    h += '<button class="mini primary" id="btnColsStudy" style="margin-top:4px;" ' +
+      'title="上の行で列を見つけ、そのまま下で 2 列に分かれていないか、どこから分かれるかまで調べます">' +
+      '列の構成を調べる</button>';
     if (ct)
       h += ' <label style="margin-left:6px;"><input type="checkbox" id="rShowCols"' +
         (rubShowCols ? " checked" : "") + '> 絵に出す</label>';
+    var spN9 = ct ? (ct.cols || []).filter(function(c){ return c.sp; }).length / 2 : 0;
     h += '<p class="hint" style="margin:3px 0 0;">' +
-      (ct ? '<b>列 ' + ct.cols.length + ' 本</b>（' + (ct.how === "ai" ? "AI で" : "手元で") +
-            '、' + (ct.dir === "bot"
-                     ? "上の " + (ct.base || "?") + " 列を土台に、下から " + (ct.rows || 1) + " 字ぶんを見て分けました"
-                     : "上から " + (ct.rows || 1) + " 字ぶんを見て見つけました") +
-            (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '）。<br>' +
-            'むらさきの帯が見つけた列です（濃い所が見た所）。左から ' +
+      (ct ? (spN9
+              ? '<b>上 ' + (ct.topN || "?") + ' 列 → 下 ' + ct.cols.length + ' 列</b>（' +
+                Math.round(spN9) + ' 本が下で 2 つに分かれます）'
+              : '<b>ぜんたい ' + ct.cols.length + ' 列</b>（上から下まで同じ）') +
+            (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '。<br>' +
+            'むらさきの帯が見つけた列です。左から ' +
             ct.cols.map(function(c){ return Math.round(c.a) + '〜' + Math.round(c.b); }).join('／') +
             ' px、幅 ' + ct.cols.map(function(c){ return Math.round(c.b - c.a); }).join('／') + ' px。' +
             '拓本を回すと、もう一度押してください。'
@@ -15638,8 +15690,7 @@ function rubPanel(){
     S.rub.kmW = Math.max(0, Math.min(200, parseInt(rkw.value, 10) || 0));
     persist(); rubPanel();
   };
-  var bct = $("btnColsTop");  if (bct) bct.onclick = function(){ rubColsScanTop(true); };
-  var bcb = $("btnColsBot");  if (bcb) bcb.onclick = function(){ rubColsBotSplit(true); };
+  var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   /* 境目を手で動かす（v25.5） */
   function cutSet(v){
     var ct9 = S.rub.colsTop; if (!ct9 || !ct9.cols) return;
@@ -15673,20 +15724,8 @@ function rubPanel(){
                    : "列は自動で切り分けます。");
   };
   var bc = $("btnAiBandClr"); if (bc) bc.onclick = rubAiBandClear;
-  var bf2 = $("btnBandFit");  if (bf2) bf2.onclick = rubBandFit;
-  var bcs = $("btnBandCols"); if (bcs) bcs.onclick = function(){
-    var runs = detectColumns(false);
-    A = null; rubPanel(); rubRender();
-    msg(runs && runs.length ? ("列を " + runs.length + " 本見つけました。番号を押すと、その列に帯を合わせます。")
-                            : "列を見つけられませんでした。拓本の範囲としきい値を確かめてください。",
-        !(runs && runs.length));
-  };
-  var bal = $("btnBandAll");  if (bal) bal.onclick = function(){
-    var f = frameX();
-    S.rub.bandL = f.x1; S.rub.bandR = f.x2;
-    A = null; RUB.mask = null; persist(); rubPanel(); rubRender();
-    msg("帯を全体に戻しました。");
-  };
+  /* ［近い列に合わせる］［列を探す］［全体に戻す］の受け口は やめた（v25.8。本人の指示）。
+     `rubBandFit` と `detectColumns` は ほかからも使うので、関数は残してある。 */
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb"), function(b2){
     b2.onclick = function(){
       var c = (RUB.cols || [])[+b2.dataset.i]; if (!c) return;

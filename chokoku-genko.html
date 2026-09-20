@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.4";
+var APP_VER = "v26.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -2294,7 +2294,13 @@ function uiTick(){
   });
 }
 function msg(t, isErr, sticky){
-  var m = $("msg"); m.textContent = t; m.className = "show" + (isErr ? " err" : "");
+  /* **`<b>` は太字として出す**（v26.5。本人の画面に「通したのは &lt;b&gt;横 72〜413px…」と
+     そのまま出ていた）。`textContent` で入れていたので、知らせに書いた かざりが
+     ぜんぶ**文字のまま**見えていた。中身はこちらで組んだ文だけなので、
+     `innerHTML` で入れる。 */
+  var m = $("msg");
+  if (/<(b|br|i)>/i.test(t)) m.innerHTML = t; else m.textContent = t;
+  m.className = "show" + (isErr ? " err" : "");
   clearTimeout(msg._t);
   if (!sticky) msg._t = setTimeout(function(){ m.className = ""; }, 3200);
 }
@@ -10247,7 +10253,58 @@ async function rubAiBand(noAsk, trusted){
       (seen > 0 ? Math.round(n1 / seen * 100) : 0) + "%）。" +
       (n1 < 50 ? "<b>墨がほとんど出ていません。</b>AI が読めていないか、帯の場所ちがいです。" : "") +
       (why ? "途中で止まりました：" + why + "。" : "") +
-      "青いところが AI の読んだ墨、<b>水色の枠</b>が通した所です。［AI の墨を消す］で消えます。");
+      "青いところが AI の読んだ墨、<b>水色の枠</b>が通した所です。［AI の墨を消す］で消えます。",
+      false, true);
+}
+/* ───── **選んだ列（上＋その下）を まとめて通す**（v26.5。本人の画面
+   「帯を AI に通しました…通したのは 横 72〜413px・たて 152〜2453px」）─────
+   上の列を選ぶと 下の列も光るようにした（v26.3）のに、通すのは**上だけ**だった。
+   同じ人の 1 かたまり（戒名＋命日ほか）なので、押したら**ぜんぶ通して見立てる**。 */
+function rubBandGroup(){
+  var ct = S.rub.colsTop;
+  if (!ct || ct.dir !== "bot" || !(num(ct.yCut, 0) > 0) || ct.geo !== rubGeoKey()) return null;
+  var L = Math.min(S.rub.bandL, S.rub.bandR), R = Math.max(S.rub.bandL, S.rub.bandR);
+  var ups = [], kids = {};
+  (ct.cols || []).forEach(function(c){
+    if (!c.sp) return;
+    var pv = ups[ups.length - 1];
+    if (pv && Math.abs(pv.b - c.a) < 3){ pv.b = c.b; kids[ups.length-1].push(c); }
+    else { ups.push({ a: c.a, b: c.b }); kids[ups.length-1] = [c]; }
+  });
+  for (var i = 0; i < ups.length; i++){
+    if (Math.abs(ups[i].a - L) < 4 && Math.abs(ups[i].b - R) < 4)
+      return { up: ups[i], kids: kids[i] || [] };
+  }
+  return null;
+}
+async function rubBandGroupGo(){
+  var g = rubBandGroup();
+  if (!g) return rubAiBand();                       /* ふつうの帯は今までどおり */
+  var b0 = { L: S.rub.bandL, R: S.rub.bandR };
+  var list = [{ a: g.up.a, b: g.up.b, nm: "上（戒名）" }];
+  g.kids.forEach(function(c, i){ list.push({ a: c.a, b: c.b, nm: "下 " + (i+1) }); });
+  var ok = 0, ng = [];
+  aiProgOn();
+  for (var i = 0; i < list.length; i++){
+    if (AIPROG_STOP) break;
+    S.rub.bandL = list[i].a; S.rub.bandR = list[i].b;
+    RUB.aiBand = null;
+    AIPROG_COL = (i + 1) + " / " + list.length + "（" + list[i].nm + "）";
+    try { await rubAiBand(true, true); } catch(e){}
+    AIPROG_COL = "";
+    if (!RUB.aiBand){ ng.push(list[i].nm + "＝AI に通せず"); continue; }
+    var m = null;
+    try { m = rubLineTakeAi(); } catch(e){}
+    if (m) ok++; else ng.push(list[i].nm + "＝切り分けできず");
+  }
+  aiProgOff();
+  S.rub.bandL = b0.L; S.rub.bandR = b0.R;
+  persist(); rubPanel(); rubRender();
+  msg("この列（上＋下 " + g.kids.length + " 本）を通しました。<b>" + ok + " / " +
+      list.length + " 本</b>が見立てできました。" +
+      (ng.length ? "できなかったのは " + ng.join("／") +
+        "。［この列の字数］に数を入れて［この行を見立てる］を押すと切れます。" : ""),
+      false, true);
 }
 /* 通す列を決める（v21.67。本人の指摘「拓本全体が色が変わるだけで進みません」）。
 
@@ -15789,8 +15846,12 @@ function rubPanel(){
     }
     h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +
       'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
+    /* 上の列を選んでいるときは、**その下の列もまとめて**通す（v26.5） */
+    var grp5 = rubBandGroup();
     h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
-      'title="帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します">この帯だけ通す</button>';
+      'title="' + (grp5 ? "選んだ上の列と、その下の列をまとめて AI に通して見立てます"
+                        : "帯を字送りの長さで区切って、1つずつ ①「読む」のモデルに通します") + '">' +
+      (grp5 ? 'この列（上＋下 ' + grp5.kids.length + ' 本）を通す' : 'この帯だけ通す') + '</button>';
     if (RUB.aiBand)
       h += ' <button class="mini" id="btnAiBandClr">AI の墨を消す</button>';
     h += '<p class="hint" style="margin:5px 0 0;">帯を <b>1 行だけ</b>に合わせてから押してください。' +
@@ -15858,7 +15919,7 @@ function rubPanel(){
     rotMode = null;
     setTimeout(function(){ rubPanel(); rubRender(); renderStage(); persist(); }, 0);
   }, true);
-  var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubAiBand(); };
+  var ba = $("btnAiBand");    if (ba) ba.onclick = function(){ rubBandGroupGo(); };
   var baa = $("btnAiAll");    if (baa) baa.onclick = rubAllGo;
   var rkw = $("rKmW");
   if (rkw) rkw.onchange = function(){

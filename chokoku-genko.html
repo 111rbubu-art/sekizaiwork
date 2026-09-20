@@ -2286,7 +2286,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v28.9";
+var APP_VER = "v29.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10142,8 +10142,75 @@ function rubAiPlan(trusted, quiet){
     else { charMm = 30; charFrom = "既定 30mm"; }
     charMm = Math.max(12, Math.min(60, charMm));
   }
-  var side = charMm && mpp8 ? Math.round(charMm * 1.15 / mpp8)
-                            : Math.round(Math.max(pitch * 1.15, bw0));
+  /* ───── **字の大きさは、拓本の墨から実測する**（v29.0。本人の問い
+     「文字の大きさがほぼ決まっているのに、なぜAIに送る画像がこのようなものに
+       なるのですか」）─────
+     帯（範囲）が字より細く描いてあると、窓も細くなって**字の切れはし**になっていた。
+     帯の幅は「人がどう描いたか」でしかない。
+     そこで **帯のまん中を通る墨のかたまりの幅**を測り、それを字の大きさとする。
+     見るのは 帯のまん中 ±（帯 3 つぶん）。見つからなければ、これまでどおり mm から。 */
+  var inkPx = 0;
+  try {
+    /* **帯のまん中の字が、左右どこまで続いているか**を測る（v29.0）。
+       かたまり（run）で採ると、となりの列とつながって 2 列ぶんになることがある
+       （実測：帯 90px のとき 465px＝2 列）。そこで **まん中から左右へ、
+       墨が切れる所まで歩く**。切れ目は「そのあたりのいちばん濃い所の 35%」。 */
+    var midX = (q.x1 + q.x2) / 2;
+    var wX = Math.max(bw0 * 2, 150);
+    var rx1 = Math.max(0, Math.round(midX - wX)), rx2 = Math.min(RUB.W, Math.round(midX + wX));
+    if (rx2 - rx1 > 24){
+      var sGuess = Math.max(24, Math.round(charMm && mpp8 ? charMm / mpp8 : bw0));
+      var pfI = _rubTopProf(rx1, rx2, Math.round(q.y1), Math.round(q.y2), sGuess);
+      if (pfI){
+        var n0 = pfI.length, k0 = Math.max(2, Math.round(sGuess / 20));
+        var sm0 = new Float32Array(n0), i0, j0;
+        for (i0 = 0; i0 < n0; i0++){
+          var ss0 = 0, cn0 = 0;
+          for (j0 = -k0; j0 <= k0; j0++){ var x0 = i0 + j0; if (x0 >= 0 && x0 < n0){ ss0 += pfI[x0]; cn0++; } }
+          sm0[i0] = cn0 ? ss0 / cn0 : 0;
+        }
+        var mi = Math.max(0, Math.min(n0 - 1, Math.round(midX - rx1)));
+        var hi0 = 0;
+        for (i0 = 0; i0 < n0; i0++) if (sm0[i0] > hi0) hi0 = sm0[i0];
+        if (hi0 > 0){
+          var lim8 = hi0 * 0.35;
+          /* まん中が すき間に当たっていたら、近くの山へ寄る（v29.0） */
+          if (sm0[mi] <= lim8){
+            var seek = Math.max(8, Math.round(sGuess * 0.8)), bestI = -1, bestV = lim8;
+            for (i0 = Math.max(0, mi - seek); i0 <= Math.min(n0 - 1, mi + seek); i0++)
+              if (sm0[i0] > bestV){ bestV = sm0[i0]; bestI = i0; }
+            if (bestI >= 0) mi = bestI;
+          }
+          if (sm0[mi] > lim8){
+            var a8 = mi, b8 = mi;
+            while (a8 > 0 && sm0[a8 - 1] > lim8) a8--;
+            while (b8 < n0 - 1 && sm0[b8 + 1] > lim8) b8++;
+            inkPx = b8 - a8 + 1;
+          }
+        }
+      }
+    }
+  } catch(e){}
+  var side, sideFrom;
+  /* **調べた列に合わせた帯なら、その幅が字の幅**（v29.0）。
+     人が手で描いた細い範囲のときだけ、墨から測った幅を使う。 */
+  var known8 = false;
+  try { known8 = rubBandKnown(); } catch(e){}
+  if (known8 && bw0 >= 24){
+    side = Math.round(bw0 * 1.15); sideFrom = "帯の幅（調べた列）";
+    if (mpp8){ charMm = bw0 * mpp8; charFrom = sideFrom; }
+  } else if (inkPx >= 24 && inkPx <= RUB.W * 0.6 &&
+             (!mpp8 || (inkPx * mpp8 >= 12 && inkPx * mpp8 <= 60))){
+    /* 墨から測った幅は **12〜60mm** のときだけ信じる（v29.0）。
+       帯が拓本の高さぜんぶだと、画のすき間を拾って 7mm などになり、
+       窓が細切れになる（実測：128 枚で「帯が長すぎます」）。 */
+    side = Math.round(inkPx * 1.15); sideFrom = "墨の幅（実測）";
+    if (mpp8){ charMm = inkPx * mpp8; charFrom = "墨の幅（実測）"; }
+  } else if (charMm && mpp8){
+    side = Math.round(charMm * 1.15 / mpp8); sideFrom = charFrom;
+  } else {
+    side = Math.round(Math.max(pitch * 1.15, bw0)); sideFrom = "帯の幅";
+  }
   var kmPx = (mpp8 && rubKmWmm() > 0) ? rubKmWmm() / mpp8 : 0;
   var stepY = Math.max(8, side * 0.5);
   /* **窓は、帯のまん中ではなく「墨のまん中」に置く**（v27.8）。
@@ -10183,7 +10250,8 @@ function rubAiPlan(trusted, quiet){
   if (ys.length > 80) return { err: "帯が長すぎます（" + ys.length + " 回）。範囲を狭めてください。" };
   return { q: q, t: t, mpp: mpp, pitch: pitch, pitFrom: pitFrom,
            side: side, cx0: cx0, ys: ys, stepY: stepY, trusted: trusted,
-           charMm: charMm, charFrom: charFrom, frame: fx0, reCen: reCen };
+           charMm: charMm, charFrom: charFrom, frame: fx0, reCen: reCen,
+           inkPx: inkPx, sideFrom: sideFrom };
 }
 /* **AI に送る切り抜きを、そのまま並べて見せる**（v28.2）。
    ［AI 縁取りを実行］と**同じ計画**（`rubAiPlan`）から作るので、
@@ -10227,7 +10295,8 @@ async function rubAiPreview(){
     Math.round(PL.q.y1) + "〜" + Math.round(PL.q.y2) + "px／窓 " + Math.round(usedSide) + "px" +
     (mpp ? "（" + (usedSide * mpp).toFixed(0) + "mm）" : "") +
     "／" + rows.length + " 枚" +
-    (PL.charMm ? "／字の見当 " + PL.charMm.toFixed(0) + "mm（" + PL.charFrom + "）" : "") +
+    (PL.charMm ? "／字の見当 " + PL.charMm.toFixed(0) + "mm（" + (PL.sideFrom || PL.charFrom) + "）" : "") +
+    (PL.inkPx ? "／墨の幅 " + Math.round(PL.inkPx) + "px" : "") +
     "／窓の横 " + Math.round(usedCx0) + "〜" + Math.round(usedCx0 + usedSide) + "px" +
     (PL.frame ? "／枠 " + Math.round(PL.frame.x1) + "〜" + Math.round(PL.frame.x2) + "px" : "") +
     (PL.reCen ? "（枠に押されたので、帯のまん中へ戻しました）" : "") +

@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v26.5";
+var APP_VER = "v26.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10260,6 +10260,45 @@ async function rubAiBand(noAsk, trusted){
    「帯を AI に通しました…通したのは 横 72〜413px・たて 152〜2453px」）─────
    上の列を選ぶと 下の列も光るようにした（v26.3）のに、通すのは**上だけ**だった。
    同じ人の 1 かたまり（戒名＋命日ほか）なので、押したら**ぜんぶ通して見立てる**。 */
+/* ───── **字数は列ごとに覚える**（v26.6。本人の指示
+   「文字数は列を列ごとに入れられた方がいいのではと思います」）─────
+   いままで `S.rub.lineN` が 1 つだけで、列を変えるたびに入れ直しだった。
+   `S.rub.lineNs` に **列の合い印**（上は `t0,t1…`／下は `b0,b1…`／
+   調べていない帯は `x<左>_<右>`）で持つ。 */
+function rubColKeyOf(L, R){
+  var ct = S.rub.colsTop, i;
+  if (ct && ct.cols && ct.cols.length && ct.geo === rubGeoKey()){
+    var ups = [];
+    ct.cols.forEach(function(c){
+      if (!c.sp) return;
+      var pv = ups[ups.length - 1];
+      if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+    });
+    for (i = 0; i < ups.length; i++)
+      if (Math.abs(ups[i].a - L) < 4 && Math.abs(ups[i].b - R) < 4) return "t" + i;
+    for (i = 0; i < ct.cols.length; i++)
+      if (Math.abs(ct.cols[i].a - L) < 4 && Math.abs(ct.cols[i].b - R) < 4) return "b" + i;
+  }
+  return "x" + Math.round(L) + "_" + Math.round(R);
+}
+function rubLineNKey(){
+  return rubColKeyOf(Math.min(S.rub.bandL, S.rub.bandR), Math.max(S.rub.bandL, S.rub.bandR));
+}
+function rubLineNAt(key){
+  var m = S.rub.lineNs;
+  var v = (m && m[key] !== undefined) ? num(m[key], 0) : 0;
+  /* 前の版の 1 つだけの字数も拾う（v25.1 → v26.6） */
+  if (!v && num(S.rub.lineN, 0) > 0 && key === rubLineNKey()) v = num(S.rub.lineN, 0);
+  return Math.max(0, Math.min(60, v));
+}
+function rubLineNGet(){ return rubLineNAt(rubLineNKey()); }
+function rubLineNSet(key, v){
+  if (!S.rub.lineNs || typeof S.rub.lineNs !== "object") S.rub.lineNs = {};
+  v = Math.max(0, Math.min(60, parseInt(v, 10) || 0));
+  if (v) S.rub.lineNs[key] = v; else delete S.rub.lineNs[key];
+  if (key === rubLineNKey()) S.rub.lineN = v;      /* 古い持ち方もそろえておく */
+  persist();
+}
 function rubBandGroup(){
   var ct = S.rub.colsTop;
   if (!ct || ct.dir !== "bot" || !(num(ct.yCut, 0) > 0) || ct.geo !== rubGeoKey()) return null;
@@ -11917,7 +11956,7 @@ function rubLineTakeAi(){
   var q = rubBandWide(rubBandQ()), step = 2;           /* 下の列なら境目から下だけ（v25.8） */
   var M = rubAiMask(q, step);
   if (!M){ msg("AI の墨を読めませんでした。もう一度［帯を AI に通す］を押してください。", true); return; }
-  var nWant = Math.max(0, Math.min(60, num(S.rub.lineN, 0)));    /* 手で入れた字数（v25.1） */
+  var nWant = rubLineNGet();          /* 手で入れた字数。列ごと（v25.1 → v26.6） */
   /* **字送りでの等分はしない**（v21.56）。切れ目でそのまま切る。 */
   var m2 = rubLineCoreAi(M, q, step, mpp, nWant);
   if (!m2) return;
@@ -15694,122 +15733,35 @@ function rubPanel(){
        中の仕組み（`rubLineMeasure` ほか）は、AI 版の比べ先として残す。 */
     /* 見出しは「（準備中）」付き（v21.54。本人の指示）。
        通して見せる所までしか出来ていないので、そう分かるようにしておく。 */
+    /* ───── AI補正のパネル（v26.6 で並べ直した。本人の指示
+       「列の校正を調べるが一番上で、列の指定つぎ、そこに全体の選択も入れる。
+         その下はAI縁取り、文字判別　と続けばいいです。
+         文字数は列を列ごとに入れられた方がいいのではと思います」）─────
+       ① 列の構成を調べる → ② 列の指定（ぜんたいもここ） → ③ AI 縁取り → ④ 文字判別 */
     h += '<div id="aiFixBox"><h3 class="sec" style="margin-top:14px;">AI補正（準備中）</h3>';
-    /* まずは「通して見せる」だけ（v21.50。本人の了解を得た進め方）。
-       傾き・字送りの見立ては、この墨が使えるようになってから足す。 */
-    /* 帯を 1 行に絞る手立て（v21.51。本人の指摘「帯を絞り込むことが出来ないです」）。
-       絵の上のつまみでも動かせるが、押すだけで合う方が早い。 */
-    var bw = Math.abs(num(r.bandR, 0) - num(r.bandL, 0));
-    var bmm = mmPerPx();
-    h += '<div class="fixrow"><span>いまの帯の幅</span><b>' +
-      (bw ? (bmm ? (bw * bmm).toFixed(1) + 'mm（' + Math.round(bw) + 'px）' : Math.round(bw) + 'px')
-          : '—') + '</b></div>';
-    /* ［近い列に合わせる］［列を探す］［全体に戻す］は やめた（v25.8。本人の指示
-       「近い列に合わせる と 列を探す、全体にもどすは不要」）。
-       列は［列の構成を調べる］で出し、下の番号ボタンで帯を合わせる。 */
-    if (RUB.cols && RUB.cols.length){
-      /* **上のかたまりと下のかたまり、どちらの列にも合わせられる**（v25.9。
-         本人の画面：親の列に帯を合わせると、上の「居士」と下の「健／令和」が
-         1 つの帯に入っていた）。上は戒名の列、下は分かれたあとの列。 */
-      var ctC = S.rub.colsTop, ups = [], lows = null;
-      if (ctC && ctC.dir === "bot" && num(ctC.yCut, 0) > 0 && ctC.geo === rubGeoKey()){
-        (ctC.cols || []).forEach(function(c){
-          if (!c.sp) return;
-          var pv = ups[ups.length - 1];
-          if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
-        });
-        /* **下のボタンは、調べた列そのもの**（v26.1。本人の報告「結果は同じです」）。
-           いままで `RUB.cols` から作っていたが、そこは［列の数］を入れると
-           **等分に割った列**に化ける。すると「下」を押しても幅が親の列のままになり、
-           帯は上（戒名）と見なされ、下の字は いつまでも見立てられなかった
-           （実測：［列の数］に 3 を入れると、下3 を押して 帯 670〜999・y 152〜2303）。 */
-        lows = ctC.cols;
-      }
-      var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
-      /* **上の列を選んだら、その中の下の列も ON**（v26.3。本人の指示
-         「上の1列目を選ぶと、その範囲にある下の1，2もONになる様にしただけで
-           選ぶことはまずないので」）。
-         上の 1 列（戒名）と、その下にぶら下がる 2 列（命日・年齢ほか）は
-         **同じ人の 1 かたまり**。選ぶのは上だけで足りる。 */
-      var selUp = null;
-      ups.forEach(function(p2){
-        if (Math.abs(p2.a - bL9) < 3 && Math.abs(p2.b - bR9) < 3) selUp = p2;
-      });
-      function chipsOf(list, kind){
-        return list.map(function(c, i){
-          var on = (Math.abs(c.a - bL9) < 3 && Math.abs(c.b - bR9) < 3);
-          /* 上を選んでいるあいだは、その中に入る下の列も ON に見せる */
-          if (!on && kind === "bot" && selUp &&
-              c.a >= selUp.a - 2 && c.b <= selUp.b + 2) on = true;
-          return '<button class="mini colb' + (on ? ' primary' : '') +
-                 '" data-k="' + kind + '" data-i="' + i + '">' + (i + 1) + '</button>';
-        }).join("");
-      }
-      if (ups.length){
-        h += '<div class="chips" style="margin:5px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">上（戒名）</span>' + chipsOf(ups, "top") + '</div>';
-        h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows || RUB.cols, "bot") + '</div>';
-        h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
-          '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。' +
-          '上を選ぶと、その中に入る下の列も光ります（同じ人の 1 かたまり）。</p>';
-      } else {
-        h += '<div class="chips" style="margin:5px 0 0;">' + chipsOf(RUB.cols, "bot") + '</div>';
-        h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
-      }
-    }
-    /* **いまの帯が どこを見ているか**を出す（v26.1）。
-       上と下で見る高さが変わるので、目で確かめられるようにする。 */
-    var qNow = rubBandQ(), mppB = mmPerPx();
-    var whole = (Math.round(qNow.y1) <= Math.round(clampRange().y1) + 1 &&
-                 Math.round(qNow.y2) >= Math.round(clampRange().y2) - 1);
-    h += '<p class="hint" style="margin:5px 0 0;">いまの帯は <b>' +
-      (whole ? 'ぜんたい' : (Math.round(qNow.y2) < RUB.H * 0.99 && Math.round(qNow.y1) < 40
-                              ? '上（戒名）' : '下（命日ほか）')) +
-      '</b>を見ています（上から ' + Math.round(qNow.y1) + '〜' + Math.round(qNow.y2) + 'px' +
-      (mppB ? '＝' + (qNow.y1*mppB).toFixed(0) + '〜' + (qNow.y2*mppB).toFixed(0) + 'mm' : '') +
-      '）。帯（オレンジの範囲）は、絵の上の<b>つまみでも動かせます</b>。</p>';
-    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
-      'style="margin-top:6px;" title="通したい行をまとめてかこみます。' +
-      '拓本の端で見切れている行を外せます">▣ 通す範囲を決める</button>';
-    if (S.rub.allBox && S.rub.allBox.w > 8){
-      var mp2 = mmPerPx();
-      h += ' <button class="mini" id="btnAreaClr">範囲をやめる</button>' +
-        '<p class="hint" style="margin:3px 0 0;">いまの範囲：' +
-        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
-             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
-        '（緑の四角）</p>';
-    }
-    /* **拓本の戒名の字幅**（v25.6。本人の話「戒名の文字幅は 30mm 前後が多い」）。
-       これまでは校正（これから彫る原稿）の字から推していたが、拓本は
-       過去の石なので原稿とは関係がない。 */
+
+    /* ───────────── ① 列の構成 ───────────── */
+    h += '<p class="hint" style="margin:6px 0 2px;"><b>① 列の構成</b></p>';
+    var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
+    /* 古くなった控えは、はっきり知らせる（v26.2） */
+    if (!ct && S.rub.colsTop && S.rub.colsTop.cols && S.rub.colsTop.cols.length)
+      h += '<p class="hint" style="margin:4px 0 0;color:#B00020;"><b>※ 拓本を回した（または ひっくり返した）ので、' +
+        '前に調べた列は使えません。</b>［列の構成を調べる］をもう一度押してください。' +
+        'このままだと、帯は上下まるごと（ぜんたい）を見ます。</p>';
+    /* 拓本の戒名の字幅（v25.6） */
     var kmNow = rubKmWmm(), mppK = mmPerPx();
-    h += '<div class="fixrow" style="margin-top:6px;"><span>拓本の戒名の字幅（mm）</span>' +
+    h += '<div class="fixrow"><span>拓本の戒名の字幅（mm）</span>' +
       '<b><input type="number" id="rKmW" value="' + (S.rub.kmW === 0 ? 0 : kmNow) +
       '" min="0" max="200" step="1" style="width:56px;" placeholder="30"></b></div>';
-    h += '<p class="hint" style="margin:3px 0 0;">' +
+    h += '<p class="hint" style="margin:2px 0 0;">' +
       (kmNow > 0
         ? '拓本の<b>戒名</b>の字の幅です（これから彫る字ではありません）。' +
           (mppK ? 'いまは <b>' + Math.round(kmNow / mppK) + 'px</b> として見ています。' : '') +
-          '古い石はばらつくので、合わないときは数を変えてください。' +
-          '<b>0</b> にすると、今までどおり校正の字から推します。'
+          '<b>0</b> で 校正の字から推します。'
         : '校正の字から推しています。<b>30</b> と入れると、拓本の字幅 30mm で見ます。') + '</p>';
-    h += '<div class="fixrow" style="margin-top:6px;"><span>列の数（自動で切れないとき）</span>' +
+    h += '<div class="fixrow" style="margin-top:4px;"><span>列の数（自動で切れないとき）</span>' +
       '<b><input type="number" id="rColN" value="' + (num(S.rub.colN, 0) || "") +
       '" min="0" max="24" step="1" style="width:56px;" placeholder="自動"></b></div>';
-    /* **列さがしは、いちばん上の行から**（v22.2。本人の案）。
-       拓本には すでに彫ってある列が並んでいるので、校正の列数は当てにならない。 */
-    var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
-    /* **古くなった控えは、はっきり知らせる**（v26.2）。拓本を回したり ひっくり返すと
-       列の場所が合わなくなる。黙って「ぜんたい」に戻るので、
-       ［この帯だけ通す］だけ うまくいかなく見える。 */
-    var ctOld = (!ct && S.rub.colsTop && S.rub.colsTop.cols && S.rub.colsTop.cols.length);
-    if (ctOld)
-      h += '<p class="hint" style="margin:6px 0 0;color:#B00020;"><b>※ 拓本を回した（または ひっくり返した）ので、' +
-        '前に調べた列は使えません。</b>［列の構成を調べる］をもう一度押してください。' +
-        'このままだと、帯は上下まるごと（ぜんたい）を見ます。</p>';
-    /* **上と下を 1 つにまとめた**（v25.8。本人の指示）。
-       上の行で列を見つけ、そのまま下で分かれていないかまで見る。 */
     h += '<button class="mini primary" id="btnColsStudy" style="margin-top:4px;" ' +
       'title="上の行で列を見つけ、そのまま下で 2 列に分かれていないか、どこから分かれるかまで調べます">' +
       '列の構成を調べる</button>';
@@ -15822,16 +15774,11 @@ function rubPanel(){
               ? '<b>上 ' + (ct.topN || "?") + ' 列 → 下 ' + ct.cols.length + ' 列</b>（' +
                 Math.round(spN9) + ' 本が下で 2 つに分かれます）'
               : '<b>ぜんたい ' + ct.cols.length + ' 列</b>（上から下まで同じ）') +
-            (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '。<br>' +
-            'むらさきの帯が見つけた列です。左から ' +
-            ct.cols.map(function(c){ return Math.round(c.a) + '〜' + Math.round(c.b); }).join('／') +
-            ' px、幅 ' + ct.cols.map(function(c){ return Math.round(c.b - c.a); }).join('／') + ' px。' +
+            (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '。' +
             '拓本を回すと、もう一度押してください。'
           : '拓本には<b>すでに彫ってある列</b>が並んでいるので、校正の列数とは合いません。' +
             'まず これを押してください。') + '</p>';
-    /* **境目は手でも直せる**（v25.5。本人の答え「6列は開始と終わりは同じ位置です」）。
-       拓本の地はざらざらで、境目を画素だけから確かに決めるのは難しい。
-       見立てを置いて、**あとは人が上下に動かす**（本人の言う「手で微調整」）。 */
+    /* 境目は手でも直せる（v25.5） */
     if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
       var mppC = mmPerPx();
       h += '<div class="fixrow" style="margin-top:4px;"><span>1 列 → 2 列 の境目</span>' +
@@ -15839,14 +15786,89 @@ function rubPanel(){
         '" min="0" max="' + RUB.H + '" step="1" style="width:76px;"> px' +
         ' <button class="mini" id="btnCutUp">↑</button>' +
         ' <button class="mini" id="btnCutDn">↓</button></b></div>';
-      h += '<p class="hint" style="margin:3px 0 0;">緑の線です' +
+      h += '<p class="hint" style="margin:2px 0 0;">緑の線です' +
         (mppC ? '（上から ' + (ct.yCut * mppC).toFixed(0) + 'mm）' : '') +
-        '。下の ' + ct.cols.length + ' 列は、ここから下がそろって始まります。' +
-        'ずれていたら ↑↓（' + Math.round(num(ct.side, 40) * 0.25) + 'px ずつ）か、数で直してください。</p>';
+        '。下の ' + ct.cols.length + ' 列は、ここから下がそろって始まります。</p>';
     }
-    h += '<button class="mini primary" id="btnAiAll" style="margin-top:4px;" ' +
+
+    /* ───────────── ② 列の指定 ───────────── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>② 列の指定</b></p>';
+    var ups = [], lows = null;
+    if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
+      (ct.cols || []).forEach(function(c){
+        if (!c.sp) return;
+        var pv = ups[ups.length - 1];
+        if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+      });
+      lows = ct.cols;
+    }
+    var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
+    var fAll = frameX();
+    var isAll = (bR9 - bL9) > (fAll.x2 - fAll.x1) * 0.9;
+    var selUp = null;
+    ups.forEach(function(p2){
+      if (Math.abs(p2.a - bL9) < 3 && Math.abs(p2.b - bR9) < 3) selUp = p2;
+    });
+    function chipsOf(list, kind){
+      return list.map(function(c, i){
+        var on = !isAll && (Math.abs(c.a - bL9) < 3 && Math.abs(c.b - bR9) < 3);
+        /* 上を選んでいるあいだは、その中に入る下の列も ON に見せる（v26.3） */
+        if (!on && kind === "bot" && selUp &&
+            c.a >= selUp.a - 2 && c.b <= selUp.b + 2) on = true;
+        return '<button class="mini colb' + (on ? ' primary' : '') +
+               '" data-k="' + kind + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }).join("");
+    }
+    /* **ぜんたいもここで選ぶ**（v26.6。本人の指示「そこに全体の選択も入れる」） */
+    var allChip = '<button class="mini colb' + (isAll ? ' primary' : '') +
+      '" data-k="all" data-i="0" title="帯を拓本の幅いっぱいに戻します">ぜんたい</button>';
+    if (RUB.cols && RUB.cols.length){
+      if (ups.length){
+        h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
+          'style="margin-right:4px;">上（戒名）</span>' + chipsOf(ups, "top") +
+          '<span style="margin-left:8px;"></span>' + allChip + '</div>';
+        h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
+          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows || RUB.cols, "bot") + '</div>';
+        h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
+          '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。' +
+          '上を選ぶと、その中の下の列も光ります（同じ人の 1 かたまり）。</p>';
+      } else {
+        h += '<div class="chips" style="margin:3px 0 0;">' + chipsOf(RUB.cols, "bot") +
+          '<span style="margin-left:8px;"></span>' + allChip + '</div>';
+        h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
+      }
+    } else {
+      h += '<div class="chips" style="margin:3px 0 0;">' + allChip + '</div>';
+    }
+    var bw = Math.abs(num(r.bandR, 0) - num(r.bandL, 0));
+    var bmm = mmPerPx();
+    var qNow = rubBandQ();
+    var cr9 = clampRange();
+    var whole = (Math.round(qNow.y1) <= Math.round(cr9.y1) + 1 &&
+                 Math.round(qNow.y2) >= Math.round(cr9.y2) - 1);
+    h += '<p class="hint" style="margin:4px 0 0;">いまの帯：幅 <b>' +
+      (bw ? (bmm ? (bw * bmm).toFixed(1) + 'mm（' + Math.round(bw) + 'px）' : Math.round(bw) + 'px')
+          : '—') + '</b>／見ているのは <b>' +
+      (whole ? 'ぜんたい' : (Math.round(qNow.y1) < 40 ? '上（戒名）' : '下（命日ほか）')) +
+      '</b>（上から ' + Math.round(qNow.y1) + '〜' + Math.round(qNow.y2) + 'px' +
+      (bmm ? '＝' + (qNow.y1*bmm).toFixed(0) + '〜' + (qNow.y2*bmm).toFixed(0) + 'mm' : '') +
+      '）。オレンジのつまみでも動かせます。</p>';
+    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
+      'style="margin-top:4px;" title="通したい行をまとめてかこみます。' +
+      '拓本の端で見切れている行を外せます">▣ 通す範囲を決める</button>';
+    if (S.rub.allBox && S.rub.allBox.w > 8){
+      var mp2 = mmPerPx();
+      h += ' <button class="mini" id="btnAreaClr">範囲をやめる</button>' +
+        '<p class="hint" style="margin:2px 0 0;">いまの範囲：' +
+        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
+             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
+        '（緑の四角）</p>';
+    }
+
+    /* ───────────── ③ AI 縁取り ───────────── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>③ AI 縁取り</b></p>';
+    h += '<button class="mini primary" id="btnAiAll" ' +
       'title="列をぜんぶ見つけて、1 列ずつ AI に通して見立てます">拓本ぜんたいを通す</button>';
-    /* 上の列を選んでいるときは、**その下の列もまとめて**通す（v26.5） */
     var grp5 = rubBandGroup();
     h += '<br><button class="mini" id="btnAiBand" style="margin-top:4px;" ' +
       'title="' + (grp5 ? "選んだ上の列と、その下の列をまとめて AI に通して見立てます"
@@ -15854,35 +15876,52 @@ function rubPanel(){
       (grp5 ? 'この列（上＋下 ' + grp5.kids.length + ' 本）を通す' : 'この帯だけ通す') + '</button>';
     if (RUB.aiBand)
       h += ' <button class="mini" id="btnAiBandClr">AI の墨を消す</button>';
-    h += '<p class="hint" style="margin:5px 0 0;">帯を <b>1 行だけ</b>に合わせてから押してください。' +
-      '読んだ墨を<b>青</b>で重ねます。ここでは<b>測りません</b>。' +
-      'いまモデルがどこまで読めているかを、目で確かめるためのものです。</p>';
+    h += '<p class="hint" style="margin:3px 0 0;">読んだ墨を<b>青</b>、通した所を<b>水色の枠</b>で出します。</p>';
     if (RUB.aiBand){
       var ab = RUB.aiBand;
-      h += '<p class="hint" style="margin:4px 0 0;">' + ab.at + '　' +
+      h += '<p class="hint" style="margin:3px 0 0;">' + ab.at + '　' +
         ab.n + ' / ' + ab.all + ' か所　' +
         (ab.pitchMm ? '字送り ' + ab.pitchMm.toFixed(2) + 'mm　' : '') +
         (ab.inkMm2 ? '墨 ' + ab.inkMm2.toFixed(0) + 'mm²　' : '') +
         Math.round(ab.ms/100)/10 + ' 秒</p>';
     }
-    /* AI の墨があるときだけ見立てられる（v21.55）。
-       しきい値の墨で見立てる元の作りは、当たらないので戻さない。 */
+
+    /* ───────────── ④ 文字判別 ───────────── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>④ 文字判別</b></p>';
     h += '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
-      (RUB.aiBand ? '' : ' disabled') + ' style="margin-top:6px;" ' +
+      (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
       '>この行を見立てる</button>';
-    /* **字数を手で入れられるようにする**（v25.1。本人の指示
-       「文字数であれば、テストで私が数えて入力します」）。
-       拓本は**過去に彫った石**なので、字数は校正とちがう。
-       くっついて切れない列でも、字数さえ分かれば ぴったり N 個に割れる。 */
-    h += '<div class="fixrow" style="margin-top:6px;"><span>この列の字数（分かるとき）</span>' +
-      '<b><input type="number" id="rLineN" value="' + (num(S.rub.lineN, 0) || "") +
-      '" min="0" max="60" step="1" style="width:56px;" placeholder="自動"></b></div>';
-    h += '<p class="hint" style="margin:3px 0 0;">入れてから［この行を見立てる］を押すと、' +
-      '<b>その字数ちょうどに割ります</b>（墨がつながっていても切れます）。' +
-      '空にすると、いままでどおり すき間で切ります。</p>';
     if (!RUB.aiBand)
-      h += '<p class="hint" style="margin:3px 0 0;">先に［帯を AI に通す］を押してください。</p>';
+      h += '<p class="hint" style="margin:3px 0 0;">先に ③ で AI に通してください。</p>';
+    /* **字数は列ごとに入れる**（v26.6。本人の指示
+       「文字数は列を列ごとに入れられた方がいいのではと思います」）。
+       いままで 1 つしか持てず、列を変えるたびに入れ直しだった。 */
+    h += '<div class="fixrow" style="margin-top:6px;"><span>いまの列の字数</span>' +
+      '<b><input type="number" id="rLineN" value="' + (rubLineNGet() || "") +
+      '" min="0" max="60" step="1" style="width:56px;" placeholder="自動"></b></div>';
+    if (ups.length || (RUB.cols && RUB.cols.length)){
+      function nBox(key, lab){
+        return '<span style="display:inline-block;margin:0 6px 3px 0;">' + lab +
+          '<input type="number" class="lnn" data-key="' + key + '" value="' +
+          (rubLineNAt(key) || "") + '" min="0" max="60" step="1" ' +
+          'style="width:44px;margin-left:2px;" placeholder="自動"></span>';
+      }
+      var gh = "";
+      if (ups.length){
+        gh += '<div style="margin-top:4px;"><span class="hint">上</span> ' +
+          ups.map(function(c, i){ return nBox("t" + i, (i+1) + ""); }).join("") + '</div>';
+        gh += '<div style="margin-top:2px;"><span class="hint">下</span> ' +
+          (lows || []).map(function(c, i){ return nBox("b" + i, (i+1) + ""); }).join("") + '</div>';
+      } else {
+        gh += '<div style="margin-top:4px;">' +
+          (RUB.cols || []).map(function(c, i){ return nBox("b" + i, (i+1) + ""); }).join("") + '</div>';
+      }
+      h += gh;
+    }
+    h += '<p class="hint" style="margin:3px 0 0;">数を入れてから［この行を見立てる］を押すと、' +
+      '<b>その字数ちょうどに割ります</b>（墨がつながっていても切れます）。' +
+      '空なら すき間で切ります。列ごとに覚えます。</p>';
     if ((S.rub.lines || []).length) h += rubLineHtml();
     h += rubCandHtml();
     h += '</div>';
@@ -15941,10 +15980,15 @@ function rubPanel(){
   var stepC = Math.max(4, Math.round(num(S.rub.colsTop && S.rub.colsTop.side, 40) * 0.25));
   if (bcu) bcu.onclick = function(){ cutSet(num(S.rub.colsTop.yCut, 0) - stepC); };
   if (bcd) bcd.onclick = function(){ cutSet(num(S.rub.colsTop.yCut, 0) + stepC); };
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .lnn"), function(el9){
+    el9.onchange = function(){
+      rubLineNSet(el9.dataset.key, el9.value);
+      rubPanel();
+    };
+  });
   var rln = $("rLineN");
   if (rln) rln.onchange = rln.oninput = function(){
-    S.rub.lineN = Math.max(0, Math.min(60, parseInt(rln.value, 10) || 0));
-    persist();
+    rubLineNSet(rubLineNKey(), rln.value);       /* いまの列の字数（v26.6） */
   };
   var scb = $("rShowCols");
   if (scb) scb.onchange = function(){ rubShowCols = scb.checked; rubRender(); };
@@ -15965,6 +16009,13 @@ function rubPanel(){
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb"), function(b2){
     b2.onclick = function(){
       var kind = b2.dataset.k || "bot", i9 = +b2.dataset.i, c;
+      if (kind === "all"){                       /* ぜんたい（v26.6） */
+        var fA = frameX();
+        S.rub.bandL = fA.x1; S.rub.bandR = fA.x2;
+        A = null; RUB.mask = null; persist(); rubPanel(); rubRender();
+        msg("帯を拓本ぜんたいに戻しました（幅 " + Math.round(fA.x2 - fA.x1) + "px）。");
+        return;
+      }
       if (kind === "top"){
         var ct8 = S.rub.colsTop, ups8 = [];
         (ct8 && ct8.cols || []).forEach(function(c8){

@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.8";
+var APP_VER = "v27.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11067,35 +11067,38 @@ async function rubColsScanTop(useAi, fromBot){
      （字数を手で入れるときと同じ考え方。v25.1）。 */
   var wantN = Math.max(0, Math.min(24, num(S.rub.colN, 0)));
   if (wantN > 0 && got.prof){
+    /* ───── **［列の数］を入れてあるときは、墨のいちばん濃い所を列にする**
+       （v27.9 で作り直し。本人の画面「通したのは 横 594〜749px…墨は 0 ます」）─────
+       v27.6 の「墨のある所を n 等分」は、**鉛筆で取った拓本では効かない**。
+       紙ぜんたいに こすり跡があるので「墨のある所」が紙いっぱいになり、
+       等分すると **字の無い所**が列になってしまう。
+       そこで、**字 1 つぶんの幅の窓をすべらせて、いちばん濃い所を n か所**選ぶ。
+       選んだ所どうしは、字 1 つぶんは離す。 */
     var pf9 = got.prof, n9 = pf9.length, i9;
-    var lim9 = 0;
-    for (i9 = 0; i9 < n9; i9++) if (pf9[i9] > lim9) lim9 = pf9[i9];
-    lim9 *= 0.08;
-    var a9 = -1, b9 = -1;
-    for (i9 = 0; i9 < n9; i9++) if (pf9[i9] > lim9){ if (a9 < 0) a9 = i9; b9 = i9; }
-    if (a9 >= 0 && b9 > a9 + wantN){
-      var span9 = b9 - a9 + 1, pit9 = span9 / wantN, edge9 = [a9], k9, y9;
-      for (k9 = 1; k9 < wantN; k9++){
-        var mid9 = a9 + pit9 * k9;
-        var lo9 = Math.max(a9 + 1, Math.round(mid9 - pit9 * 0.3));
-        var hi9 = Math.min(b9 - 1, Math.round(mid9 + pit9 * 0.3));
-        var bx9 = Math.round(mid9), bv9 = Infinity;
-        for (y9 = lo9; y9 <= hi9; y9++) if (pf9[y9] < bv9){ bv9 = pf9[y9]; bx9 = y9; }
-        edge9.push(bx9);
+    var mppP = mmPerPx();
+    var wWin = Math.max(24, Math.round(
+      (mppP && rubKmWmm() > 0) ? (rubKmWmm() / mppP) : sideUsed));
+    if (wWin > n9) wWin = n9;
+    var acc9 = new Float64Array(n9 + 1);
+    for (i9 = 0; i9 < n9; i9++) acc9[i9+1] = acc9[i9] + pf9[i9];
+    function sum9(a, b){ return acc9[Math.min(n9, b)] - acc9[Math.max(0, a)]; }
+    var used9 = [], picks = [];
+    for (var t9 = 0; t9 < wantN; t9++){
+      var bx9 = -1, bv9 = -1;
+      for (i9 = 0; i9 + wWin <= n9; i9++){
+        var ok9 = true;
+        for (var u9 = 0; u9 < used9.length; u9++)
+          if (Math.abs(i9 - used9[u9]) < wWin * 0.8){ ok9 = false; break; }
+        if (!ok9) continue;
+        var v9 = sum9(i9, i9 + wWin);
+        if (v9 > bv9){ bv9 = v9; bx9 = i9; }
       }
-      edge9.push(b9 + 1);
-      cols = [];
-      for (k9 = 0; k9 < wantN; k9++){
-        /* **墨のある所まで縮める**（v27.8。本人の画面「帯が広すぎます
-           （字送り 253px に対して 帯 1182px）」）。等分しただけだと、
-           紙の白い所まで列に入り、帯が字の 4〜5 倍になる。 */
-        var ca9 = edge9[k9], cb9 = edge9[k9+1] - 1, t9;
-        var lim8 = lim9 * 1.5;
-        for (t9 = ca9; t9 <= cb9; t9++) if (pf9[t9] > lim8){ ca9 = t9; break; }
-        for (t9 = cb9; t9 >= ca9; t9--) if (pf9[t9] > lim8){ cb9 = t9; break; }
-        if (cb9 - ca9 < 8){ ca9 = edge9[k9]; cb9 = edge9[k9+1] - 1; }
-        cols.push({ a: x1 + ca9, b: x1 + cb9 });
-      }
+      if (bx9 < 0) break;
+      used9.push(bx9); picks.push({ a: bx9, b: bx9 + wWin - 1, v: bv9 });
+    }
+    if (picks.length){
+      picks.sort(function(a, b){ return a.a - b.a; });
+      cols = picks.map(function(p9){ return { a: x1 + p9.a, b: x1 + p9.b }; });
       loose = 0;
     }
   }
@@ -11202,7 +11205,16 @@ async function rubColsScanTop(useAi, fromBot){
         : "") +
       WD + " " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
       cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
-      " px）。" + (moved > side * 0.2 ? "範囲の" + (fromBot ? "下のふちより " + moved + "px 上"
+      " px）。" +
+      /* **列ごとの「字らしさ」の濃さ**も出す（v27.9。本人の画面で
+         「墨は 0 ます」＝字の無い所を列にしていたのが分かったため）。
+         うすい列は、字のない所を拾っている見込みが高い。 */
+      (got.prof ? "濃さ " + cols.map(function(c){
+        var a8 = Math.max(0, Math.round(c.a - x1)), b8 = Math.min(got.prof.length, Math.round(c.b - x1));
+        var s8 = 0, n8 = 0;
+        for (var i8 = a8; i8 < b8; i8++){ s8 += got.prof[i8]; n8++; }
+        return n8 ? Math.round(s8 / n8 * 100) + "%" : "-";
+      }).join("／") + "（うすい列は字が無いかもしれません）。" : "") + (moved > side * 0.2 ? "範囲の" + (fromBot ? "下のふちより " + moved + "px 上"
                                                           : "上のふちより " + moved + "px 下") +
                                         "から読みました。" : "") +
       (loose > 0 ? "字が見込み（" + side + "px）より小さかったので、" +

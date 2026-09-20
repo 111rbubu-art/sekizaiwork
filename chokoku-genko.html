@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.5";
+var APP_VER = "v27.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11030,6 +11030,36 @@ async function rubColsScanTop(useAi, fromBot){
     if (best){ got.cols = best.cols; sideUsed = best.side; got.prof = best.prof; }
   }
   var cols = got.cols, loose = 0;
+  /* **［列の数］を入れてあれば、その数ちょうどに割る**（v27.6。本人の報告
+     「校正を調べてもうまくいきません」。鉛筆で取った拓本は、紙の上の
+     こすり跡が たてすじに見えるので、列を作れないことがある）。
+     墨のある所を n 等分し、**分け目は そのあたりで いちばん墨のうすい所**へ寄せる
+     （字数を手で入れるときと同じ考え方。v25.1）。 */
+  var wantN = Math.max(0, Math.min(24, num(S.rub.colN, 0)));
+  if (wantN > 0 && got.prof){
+    var pf9 = got.prof, n9 = pf9.length, i9;
+    var lim9 = 0;
+    for (i9 = 0; i9 < n9; i9++) if (pf9[i9] > lim9) lim9 = pf9[i9];
+    lim9 *= 0.08;
+    var a9 = -1, b9 = -1;
+    for (i9 = 0; i9 < n9; i9++) if (pf9[i9] > lim9){ if (a9 < 0) a9 = i9; b9 = i9; }
+    if (a9 >= 0 && b9 > a9 + wantN){
+      var span9 = b9 - a9 + 1, pit9 = span9 / wantN, edge9 = [a9], k9, y9;
+      for (k9 = 1; k9 < wantN; k9++){
+        var mid9 = a9 + pit9 * k9;
+        var lo9 = Math.max(a9 + 1, Math.round(mid9 - pit9 * 0.3));
+        var hi9 = Math.min(b9 - 1, Math.round(mid9 + pit9 * 0.3));
+        var bx9 = Math.round(mid9), bv9 = Infinity;
+        for (y9 = lo9; y9 <= hi9; y9++) if (pf9[y9] < bv9){ bv9 = pf9[y9]; bx9 = y9; }
+        edge9.push(bx9);
+      }
+      edge9.push(b9 + 1);
+      cols = [];
+      for (k9 = 0; k9 < wantN; k9++)
+        cols.push({ a: x1 + edge9[k9], b: x1 + edge9[k9+1] - 1 });
+      loose = 0;
+    }
+  }
   /* **見込みの字幅をゆるめて拾い直す**（v23.3。本人の報告
      「通す範囲をきめてから、いちばん上の行から列を見つけるを実行するとエラー」）。
      `side` は校正の字の大きさから出した見込み。拓本の字がそれより小さいと、
@@ -15302,12 +15332,32 @@ function rubRender(){
       (!$("rShowCols") || $("rShowCols").checked)){
     var cy0 = num(ctD.y0, 0), cy1 = num(ctD.y1, cy0 + 40);
     var cBot = Math.max(cy1, num((S.rub.allBox && S.rub.allBox.y + S.rub.allBox.h), H));
-    ctD.cols.forEach(function(c, ci0){
+    /* **絵の番号を、メニューと同じにする**（v27.6。本人の報告
+       「メニューには上１２３　下１２　と出るのですが、絵では下4があります」）。
+       絵は `colsTop.cols`（上の列と下の列が混ざった並び）に番号を振っていたので、
+       メニューの番号と食いちがっていた。ここも `rubColMenu()` から出す。 */
+    var mnD = rubColMenu();
+    var drawList = [];
+    if (mnD.ups.length){
+      mnD.ups.forEach(function(c, i){
+        drawList.push({ a: c.a, b: c.b, nm: (mnD.lows.length ? "上" : "") + (i+1),
+                        y0: 0, y1: num(ctD.yCut, 0) || 0 });
+      });
+      mnD.lows.forEach(function(c, i){
+        drawList.push({ a: c.a, b: c.b, nm: "下" + (i+1),
+                        y0: num(c.y0, num(ctD.yCut, 0)), y1: 0 });
+      });
+    } else drawList = ctD.cols.map(function(c, i){
+      return { a: c.a, b: c.b, nm: "" + (i+1), y0: num(c.y0, 0), y1: 0 };
+    });
+    drawList.forEach(function(c, ci0){
       var cw = c.b - c.a;
       /* **その列が始まる高さ**（v25.4）。下で 2 列に分かれた列は、
          分かれた所から下だけに帯を出す。分かれていない列は今までどおり。 */
       var ty = num(c.y0, 0) || cy0;
-      o.push('<rect x="' + c.a + '" y="' + ty + '" width="' + cw + '" height="' + (cBot - ty) +
+      var tb = num(c.y1, 0) || cBot;               /* 上の列は境目まで（v27.6） */
+      if (!(tb > ty + 8)) tb = cBot;
+      o.push('<rect x="' + c.a + '" y="' + ty + '" width="' + cw + '" height="' + (tb - ty) +
         '" fill="rgba(106,74,200,.07)" stroke="#6A4AC8" stroke-width="' + (W*0.003) +
         '" stroke-dasharray="' + (W*0.016) + ' ' + (W*0.010) + '"/>');
       /* 見た所（下から何字ぶん）だけ、濃く出す */
@@ -15318,7 +15368,7 @@ function rubRender(){
       o.push('<text x="' + (c.a + cw/2) + '" y="' + (ty - W*0.008) +
         '" fill="#6A4AC8" font-size="' + (W*0.030) + '" font-weight="700" text-anchor="middle"' +
         ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
-        (ci0 + 1) + '</text>');
+        c.nm + '</text>');
       /* **その列が 2 つに分かれ始める高さ**を、緑の線で出す（v25.4）。
          列ごとに ちがう（戒名の長さがちがうので、当たり前）。 */
       if (num(c.y0, 0) > 0)

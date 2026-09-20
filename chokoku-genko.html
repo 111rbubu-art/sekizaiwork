@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v25.8";
+var APP_VER = "v25.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -11453,26 +11453,43 @@ function rubAiBandClear(){
    となりの字は高さがずれているので、**字と字のすき間が埋まり**、
    1 字ずつに切り分けられなくなる（実測：すき間の行 0／2095 で かたまり 1 個）。
    となりの列との まん中で止める。 */
-/* **いまの帯が「下で 2 列に分かれた列」なら、境目から下だけを見る**
-   （v25.8。本人の報告「この行を見立てるで、下の2列になった場合も文字囲ってほしい
-   変化なしです」）。
-   帯は横（x）しか決めていないので、上の戒名（大きい字）まで入ってしまい、
-   AI も 見立ても 上の字に引きずられていた。 */
+/* **帯は、境目の上か下か どちらかの かたまりだけを見る**（v25.9。本人の報告
+   「効いていません」＋画面：帯を 1 列ぶん（親の列）に合わせると、
+   上の「居士」と下の「健／令和」が 1 つの帯に入ったままだった）。
+
+   v25.8 は「帯が**分かれた子の列**に重なるときだけ」下へ寄せていた。
+   だが実際の使い方は **親の列（上の 1 列）に帯を合わせる**ことが多く、
+   そのときは何も起きていなかった（子の列の幅は親の半分なので、
+   「重なり 6 割」に届かない）。
+
+   直し：**帯の幅で どちらの かたまりかを決める**。
+   - 帯が親の列とほぼ同じ幅 → **上のかたまり**（戒名）。境目より上だけを見る
+   - 帯が親の半分ほど（子の列） → **下のかたまり**。境目より下だけを見る */
 function rubBandQ(){
   var q = clampRange();
   var ct = S.rub.colsTop;
   if (!ct || ct.dir !== "bot" || !(num(ct.yCut, 0) > 0) || ct.geo !== rubGeoKey()) return q;
-  var bw = q.x2 - q.x1;
-  var hit = null;
-  (ct.cols || []).forEach(function(c){
+  var yC = num(ct.yCut, 0), bw = q.x2 - q.x1, bc = (q.x1 + q.x2) / 2;
+  /* 分かれた親の列を組み立てる（`topCols` が無い古い控えでも困らないように、
+     となりあう「分かれた子の列」からも作る） */
+  var pars = [];
+  (ct.cols || []).forEach(function(c, i2){
     if (!c.sp) return;
-    var ov = Math.min(q.x2, c.b) - Math.max(q.x1, c.a);
-    if (ov > 0 && ov > bw * 0.6 && ov > (c.b - c.a) * 0.6) hit = c;
+    var pv = pars[pars.length - 1];
+    if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b;
+    else pars.push({ a: c.a, b: c.b });
   });
-  if (!hit) return q;
-  var y0 = Math.max(q.y1, num(hit.y0, ct.yCut));
-  if (q.y2 - y0 < 40) return q;
-  return { x1: q.x1, x2: q.x2, y1: y0, y2: q.y2 };
+  var par = null;
+  pars.forEach(function(p2){ if (bc >= p2.a - 2 && bc <= p2.b + 2) par = p2; });
+  if (!par) return q;
+  var pw = par.b - par.a;
+  if (bw >= pw * 0.7){                                  /* 親まるごと＝上のかたまり */
+    if (yC - q.y1 > 40) return { x1: q.x1, x2: q.x2, y1: q.y1, y2: Math.min(q.y2, yC) };
+    return q;
+  }
+  if (q.y2 - yC > 40)                                   /* 子の列＝下のかたまり */
+    return { x1: q.x1, x2: q.x2, y1: Math.max(q.y1, yC), y2: q.y2 };
+  return q;
 }
 function rubBandLimit(){
   /* **拓本の外（紙の白いふち）へは出さない**（v24.2。本人の報告
@@ -15535,13 +15552,35 @@ function rubPanel(){
        「近い列に合わせる と 列を探す、全体にもどすは不要」）。
        列は［列の構成を調べる］で出し、下の番号ボタンで帯を合わせる。 */
     if (RUB.cols && RUB.cols.length){
-      h += '<div class="chips" style="margin:5px 0 0;">' + RUB.cols.map(function(c, i){
-        var on = (Math.abs(c.a - Math.min(r.bandL, r.bandR)) < 3 &&
-                  Math.abs(c.b - Math.max(r.bandL, r.bandR)) < 3);
-        return '<button class="mini colb' + (on ? ' primary' : '') + '" data-i="' + i + '">' +
-               (i + 1) + '</button>';
-      }).join("") + '</div>';
-      h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
+      /* **上のかたまりと下のかたまり、どちらの列にも合わせられる**（v25.9。
+         本人の画面：親の列に帯を合わせると、上の「居士」と下の「健／令和」が
+         1 つの帯に入っていた）。上は戒名の列、下は分かれたあとの列。 */
+      var ctC = S.rub.colsTop, ups = [];
+      if (ctC && ctC.dir === "bot" && num(ctC.yCut, 0) > 0 && ctC.geo === rubGeoKey())
+        (ctC.cols || []).forEach(function(c){
+          if (!c.sp) return;
+          var pv = ups[ups.length - 1];
+          if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b; else ups.push({ a: c.a, b: c.b });
+        });
+      var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
+      function chipsOf(list, kind){
+        return list.map(function(c, i){
+          var on = (Math.abs(c.a - bL9) < 3 && Math.abs(c.b - bR9) < 3);
+          return '<button class="mini colb' + (on ? ' primary' : '') +
+                 '" data-k="' + kind + '" data-i="' + i + '">' + (i + 1) + '</button>';
+        }).join("");
+      }
+      if (ups.length){
+        h += '<div class="chips" style="margin:5px 0 0;"><span class="hint" ' +
+          'style="margin-right:4px;">上（戒名）</span>' + chipsOf(ups, "top") + '</div>';
+        h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
+          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(RUB.cols, "bot") + '</div>';
+        h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
+          '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。</p>';
+      } else {
+        h += '<div class="chips" style="margin:5px 0 0;">' + chipsOf(RUB.cols, "bot") + '</div>';
+        h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
+      }
     }
     h += '<p class="hint" style="margin:5px 0 0;">帯（オレンジの範囲）は、絵の上の' +
       '<b>つまみでも動かせます</b>。</p>';
@@ -15728,11 +15767,26 @@ function rubPanel(){
      `rubBandFit` と `detectColumns` は ほかからも使うので、関数は残してある。 */
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb"), function(b2){
     b2.onclick = function(){
-      var c = (RUB.cols || [])[+b2.dataset.i]; if (!c) return;
+      var kind = b2.dataset.k || "bot", i9 = +b2.dataset.i, c;
+      if (kind === "top"){
+        var ct8 = S.rub.colsTop, ups8 = [];
+        (ct8 && ct8.cols || []).forEach(function(c8){
+          if (!c8.sp) return;
+          var pv = ups8[ups8.length - 1];
+          if (pv && Math.abs(pv.b - c8.a) < 3) pv.b = c8.b; else ups8.push({ a: c8.a, b: c8.b });
+        });
+        c = ups8[i9];
+      } else c = (RUB.cols || [])[i9];
+      if (!c) return;
       S.rub.bandL = c.a; S.rub.bandR = c.b;
       A = null; RUB.mask = null; persist(); rubPanel(); rubRender();
-      msg("帯を " + (+b2.dataset.i + 1) + " 本目の列に合わせました（幅 " +
-          Math.round(c.b - c.a) + "px）。");
+      var q8 = rubBandQ(), mpp8 = mmPerPx();
+      msg("帯を" + (kind === "top" ? "上（戒名）の " : "下の ") + (i9 + 1) +
+          " 本目の列に合わせました（幅 " + Math.round(c.b - c.a) + "px" +
+          (Math.round(q8.y1) > 0 || Math.round(q8.y2) < RUB.H
+            ? "／見るのは 上から " + Math.round(q8.y1) + "〜" + Math.round(q8.y2) + "px" +
+              (mpp8 ? "＝" + (q8.y1*mpp8).toFixed(0) + "〜" + (q8.y2*mpp8).toFixed(0) + "mm" : "")
+            : "") + "）。");
     };
   });
   var br = $("btnLineRot");  if (br) br.onclick = rubLineFixRot;
@@ -15839,7 +15893,11 @@ function bindRub(){
   });
   on("btnCols","click",function(){ detectColumns(false); A = null; rubPanel(); rubRender(); });
   on("btnAnalyze","click", rubAnalyze);
-  Array.prototype.forEach.call(document.querySelectorAll(".colb"), function(b){
+  /* **`data-k` の付いた列ボタンは、こちらで上書きしない**（v25.9）。
+     上（戒名）と下で別の列を持つようになったので、受け口は rubFix 側のものを使う
+     （こちらが後から `onclick` を差しかえていて、上の列を押しても
+     下の列に合っていた）。 */
+  Array.prototype.forEach.call(document.querySelectorAll(".colb:not([data-k])"), function(b){
     b.onclick = function(){
       var c = RUB.cols[+b.dataset.i];
       r.bandL = c.a; r.bandR = c.b; A = null; rubPanel(); rubRender(); persist();

@@ -6465,6 +6465,34 @@ var _pendingKoujiMerge = {}; // {itemId: editsObj}
 var _GCAL_CLIENT_ID = '695783251822-vr8hkhpeunmv82e7oiptdvkl1tkp0uql.apps.googleusercontent.com';
 var _GCAL_SCOPES = 'https://www.googleapis.com/auth/calendar.events';
 var _gcalToken = null;
+/* ───── **ログインの有効期限を覚える**（v1.9.437。本人の報告
+   「カレンダー登録でエラーになりました」＝
+     Request had invalid authentication credentials. Expected OAuth 2 access token …）─────
+   この作りは OAuth2 の Implicit Flow で、URL のハッシュに返ってくる
+   access_token を `_gcalToken` に置いているだけだった。
+   **この token は 1 時間で切れる**（更新の仕組みは無い）。
+   画面を開きっぱなしにして 1 時間たつと、切れた token をそのまま送り、
+   Google から 401（上のエラー）が返る。こちらは token を捨てないので、
+   **画面を読み直すまで 何度押しても同じエラー**だった。
+   直し：`expires_in` を覚えて、切れていれば「ログインしていない」とみる。
+   401 が返ったときも token を捨てて、ログインし直しへ回す。 */
+var _gcalTokenExp = 0;
+function _gcalClearToken(){
+  _gcalToken = null; _gcalTokenExp = 0;
+  try { sessionStorage.removeItem('gcal_token'); } catch(e){}
+}
+function _gcalTokenAlive(){
+  return !!(_gcalToken && (!_gcalTokenExp || Date.now() < _gcalTokenExp));
+}
+/* 401（ログイン切れ）かどうか */
+function _gcalIsAuthErr(err){
+  if (!err) return false;
+  if (err.code === 401 || err.code === '401') return true;
+  var m = String(err.message || '');
+  return m.indexOf('authentication credentials') >= 0 ||
+         m.indexOf('OAuth 2 access token') >= 0 ||
+         m.indexOf('Invalid Credentials') >= 0;
+}
 
 var _GCAL_CALENDAR_ID = 'shojisekizai%40gmail.com';
 
@@ -6486,12 +6514,25 @@ function gcalSignIn(callback) {
       });
       if (params['access_token']) {
         _gcalToken = params['access_token'];
+        /* 期限（ふつう 3600 秒）。1 分の余裕を見る（v1.9.437） */
+        var _ei = parseInt(params['expires_in'], 10);
+        _gcalTokenExp = (_ei > 0) ? (Date.now() + (_ei - 60) * 1000) : 0;
+        try { sessionStorage.setItem('gcal_token',
+          JSON.stringify({ t: _gcalToken, e: _gcalTokenExp })); } catch(e){}
         history.replaceState(null, '', location.pathname + location.search);
       }
     }
   }
-  // ② トークンがあればコールバック
-  if (_gcalToken) { callback(_gcalToken); return; }
+  /* 読み直したあとでも、同じタブなら使い回せるように（v1.9.437） */
+  if (!_gcalToken){
+    try {
+      var sv = JSON.parse(sessionStorage.getItem('gcal_token') || 'null');
+      if (sv && sv.t){ _gcalToken = sv.t; _gcalTokenExp = parseInt(sv.e, 10) || 0; }
+    } catch(e){}
+  }
+  // ② トークンがあれば（期限内なら）コールバック
+  if (_gcalTokenAlive()) { callback(_gcalToken); return; }
+  _gcalClearToken();
   // ③ なければリダイレクト認証（作業状態をsessionStorageに保存）
   try {
     var state = {
@@ -6609,7 +6650,7 @@ function _confirmGcalRegister() {
   if (!(G(d, '納骨日') || '').substring(0, 10)) return;
   if (confirm('Googleカレンダーに登録／更新しますか？')) registerGcalEvent(true);
 }
-function registerGcalEvent(silent) {
+function registerGcalEvent(silent, _retry) {
   if (!currentItem) return;
   var d = currentItem;
   var cat = d['_x5206__x985e_'] || '';
@@ -6641,8 +6682,18 @@ function registerGcalEvent(silent) {
         if (ev.id) {
           showSaveToast(true, '📅 カレンダーに' + (existingId ? '更新' : '登録') + 'しました');
           _gcalUpdateBtn(true);
+        } else if (_gcalIsAuthErr(ev.error) && !_retry) {
+          /* **ログイン切れは、黙って入り直す**（v1.9.437）。
+             Implicit Flow の token は 1 時間で切れる。 */
+          _gcalClearToken();
+          showSaveToast(null, '📅 Google のログインが切れました。入り直します…');
+          setTimeout(function(){ registerGcalEvent(silent, true); }, 300);
         } else {
-          showSaveToast(false, 'カレンダー登録エラー: ' + (ev.error && ev.error.message || ''));
+          showSaveToast(false, 'カレンダー登録エラー: ' +
+            (ev.error && ev.error.message || '') +
+            (_gcalIsAuthErr(ev.error)
+              ? '（Google のログインが切れています。画面を読み直してから、もう一度押してください）'
+              : ''));
         }
       })
       .catch(function(e){ showSaveToast(false, 'エラー: ' + e.message); });
@@ -6683,7 +6734,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.436';
+var APP_VERSION = 'v1.9.437';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

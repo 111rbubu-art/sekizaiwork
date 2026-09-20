@@ -2263,7 +2263,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v27.4";
+var APP_VER = "v27.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -10842,6 +10842,39 @@ function _rubBotStart(x1, x2, ar, side){
   }
   return ar.y2;
 }
+/* **紙の外（真っ黒な所）を、列としない**（v27.5。本人の画面
+   「これが構成を判別できないのは AI のせいですか」。鉛筆で取った拓本で、
+   紙の右わきの**真っ黒な帯**に 4・5・6 列目が出ていた）。
+   拓本の紙は明るく、その外（スキャナのふた・机）は暗い。
+   見つけた列の**明るさ**を測り、ほかの列よりずっと暗いものは外す。 */
+function _rubColLum(c, y1, y2){
+  if (!RUB.data) return 0;
+  var d = RUB.data.data, W = RUB.W;
+  var x0 = Math.max(0, Math.round(c.a)), x1 = Math.min(RUB.W, Math.round(c.b));
+  var ya = Math.max(0, Math.round(y1)), yb = Math.min(RUB.H, Math.round(y2));
+  if (x1 - x0 < 2 || yb - ya < 2) return 0;
+  var ss = 0, n = 0;
+  for (var y = ya; y < yb; y += 4)
+    for (var x = x0; x < x1; x += 4){
+      var p = (y * W + x) * 4;
+      ss += d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114; n++;
+    }
+  return n ? ss / n : 0;
+}
+function _rubDropDark(cols, y1, y2){
+  if (!cols || cols.length < 2) return { cols: cols, off: [] };
+  var lum = cols.map(function(c){ return _rubColLum(c, y1, y2); });
+  var med = _median(lum.slice().sort(function(a, b){ return a - b; })) || 0;
+  if (!(med > 0)) return { cols: cols, off: [] };
+  var keep = [], off = [];
+  cols.forEach(function(c, i){
+    /* **まわりの半分より暗い列は、紙の外**とみる（拓本の地は どこも同じくらいの明るさ） */
+    if (lum[i] < med * 0.45) off.push({ c: c, l: Math.round(lum[i]) });
+    else keep.push(c);
+  });
+  if (!keep.length) return { cols: cols, off: [] };       /* ぜんぶ暗いときは さわらない */
+  return { cols: keep, off: off, med: Math.round(med) };
+}
 async function rubColsScanTop(useAi, fromBot){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return null; }
   var mpp = mmPerPx();
@@ -11026,6 +11059,10 @@ async function rubColsScanTop(useAi, fromBot){
     cols = [{ a: x1, b: x2 }];
     loose = -1;
   }
+  /* 紙の外（真っ黒な所）に出た列を落とす（v27.5） */
+  var drop9 = _rubDropDark(cols, yTop, Math.min(ar.y2, yTop + Math.max(1, got.rN) * sideUsed));
+  var dropped9 = drop9.off || [];
+  cols = drop9.cols;
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(), rows: got.rN,
                     how: how, side: sideUsed,
                     /* **どこを見て決めたか**（v24.1。本人の指示
@@ -11089,7 +11126,12 @@ async function rubColsScanTop(useAi, fromBot){
     }
   } catch(e){}
   if (loose === -1) return cols;      /* 数字を出した知らせを、上書きしない */
-  msg(WD + " " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
+  msg((dropped9.length
+        ? "紙の外とみて " + dropped9.length + " 本 外しました（明るさ " +
+          dropped9.map(function(o){ return o.l; }).join("／") + "／ふつうの列は " +
+          (drop9.med || "?") + "）。"
+        : "") +
+      WD + " " + got.rN + " 字ぶんを見て、列を " + cols.length + " 本 見つけました（" +
       cols.map(function(c){ return Math.round((c.a + c.b) / 2); }).join("／") +
       " px）。" + (moved > side * 0.2 ? "範囲の" + (fromBot ? "下のふちより " + moved + "px 上"
                                                           : "上のふちより " + moved + "px 下") +

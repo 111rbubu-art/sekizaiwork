@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-21　**chokoku-genko.html = v34.2**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
+最終更新: 2026-09-21　**chokoku-genko.html = v34.3**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -5299,4 +5299,28 @@ python3 train_box.py --epochs 80          # dataset/lines から学習
 ボタンが「⬆ えらんだ枠を登録（3 字）」になること、押すと実際のサーバーに
 `line_案件-…_c1_p4-6x3` として 3 字ぶんが貯まること（`meta.json` の note に「えらんだ分」）、
 右クリックの［同じまとまりを選ぶ］で戒名の 3 字 `[0,1,2]` が選ばれることを確認。`pageerror` 0 件。
+
+---
+
+## v34.3 — 学習画面が真っ黒だった（id のぶつかり）
+
+本人の報告「枠を右クリックして学習画面で開くと真っ黒で何も映っていないです」。
+
+**真因**：v33.9 で足した［AI 登録の確かめ］の板に **`id="regWin"`** を付けたが、
+**学習画面がすでに同じ `regWin` を使っていた**（HTML に同じ id が 2 つ）。
+`document.getElementById` は**先に出てくる方**を返すので、`rgOpen()` の
+`$("regWin").hidden = false` は**確かめの板の方**を開けていた。
+その板は開いた時点では中身が空なので、**黒い板だけが出ていた**。
+
+**直し**：あとから足した方の名前を変えた。
+`regWin → aiRegWin`、`regInfo → aiRegInfo`、`regBody → aiRegBody`、
+`regTabNow/regTabSrv/regInk/regBox/regReload/regClose → aiReg…`。
+学習画面（`regWin`・`rgCv` ほか）は**元のまま**。
+
+**確かめたこと**：Playwright で `rgOpenAt({ci:0,i:0})` を呼び、
+学習画面が開き（`regWin` が表示・確かめの板 `aiRegWin` は閉じたまま）、
+画布 `rgCv` に字が描かれている（明るい画素 86%）ことを確認。画面の写真でも確認。
+
+**教訓**：板を足すときは `grep 'id="…"'` で**同じ名前が無いか必ず見る**。
+`#xxx[hidden]{display:none !important;}` と合わせて、この 2 点が板の決まり。
 

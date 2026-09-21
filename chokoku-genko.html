@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.5";
+var APP_VER = "v32.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13801,9 +13801,18 @@ function _anchHit(cands, set){
 }
 /* その列の墨（`RUB.aiBand` が別の列のものなら、控えの絵から読み直す） */
 function rubBandOfLine(L){
+  /* ───── **その列の墨だけを返す**（v32.6。本人の報告
+     「再判定をしても 3 列中 1 列しかしない」）─────
+     これまでは **`!L.aiId`（番号を控えていない列）なら、いま画面にある墨を返す**
+     決まりだった。ところが 前の版で `aiUrl`・`aiId` を失った列が
+     この道に入ると、**別の列の墨**を受け取ってしまう。
+     その墨で切り分けると 1 字も見つからず（実測：帯 67〜430 に
+     となりの列の墨 59068 ます → かたまり 0 個）、
+     「切り分けできず」で終わって **その列だけ直らない**。
+     いまは **番号か 絵の場所が合ったときだけ**使い回す。 */
   if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey() &&
-      (!L.aiId || RUB.aiBand.id === L.aiId ||
-       (L.aiUrl && RUB.aiBand.url === L.aiUrl)))      /* 読み直した墨（v32.3） */
+      ((L.aiId && RUB.aiBand.id === L.aiId) ||
+       (L.aiUrl && RUB.aiBand.url === L.aiUrl)))
     return Promise.resolve(RUB.aiBand);
   return rgBandFromUrl(L.aiUrl, L.aiSc);
 }
@@ -13820,7 +13829,7 @@ async function rubRejudge(){
   });
   if (!ls.length){ msg("先に ④ で見立ててください。", true); return; }
   var b0 = { L: S.rub.bandL, R: S.rub.bandR, T: S.rub.calTop, B: S.rub.calBot };
-  var keep0 = RUB.aiBand, ok = 0, ng = 0, rep9 = [];
+  var keep0 = RUB.aiBand, ok = 0, ng = 0, reAi = 0, rep9 = [];
   aiProgOn();
   try {
     for (var i = 0; i < ls.length; i++){
@@ -13830,7 +13839,30 @@ async function rubRejudge(){
       await uiTick();
       var A = null;
       try { A = await rubBandOfLine(L); } catch(e){}
-      if (!A || !A.map){ ng++; rep9.push((i+1) + "列目＝前の墨が残っていません"); continue; }
+      /* ───── **墨の控えが無い列は、その場で AI に通し直す**（v32.6。本人の報告
+         「再判定をしても3列中1列しかしない」）─────
+         v32.3 より前は、見立て直すたびに その列の `aiUrl` が消えていた。
+         そのため **古い案件には 墨の控えが無い列が残っている**。
+         控えが無ければ、その帯をもう一度 AI に通して作り直す
+         （拓本AI につながらないときは、これまでどおり飛ばす）。 */
+      if ((!A || !A.map) && !L.noAi){
+        aiProg("列 " + (i+1) + " / " + ls.length, "墨の控えが無いので、AI に通し直しています");
+        await uiTick();
+        var keepB = { L: S.rub.bandL, R: S.rub.bandR };
+        S.rub.bandL = num(L.band && L.band.L, S.rub.bandL);
+        S.rub.bandR = num(L.band && L.band.R, S.rub.bandR);
+        RUB.aiBand = null;
+        try { await rubAiBand(true, true); } catch(e){}
+        A = RUB.aiBand;
+        S.rub.bandL = keepB.L; S.rub.bandR = keepB.R;
+        if (!A || !A.map) L.noAi = 1;                 /* 1 回だめなら、この回はもう試さない */
+        else { reAi++; }
+      }
+      if (!A || !A.map){
+        ng++;
+        rep9.push((i+1) + "列目＝墨の控えが無く、AI にも通せませんでした");
+        continue;
+      }
       /* その列の帯に合わせてから、同じ切り分けをやり直す */
       S.rub.bandL = num(L.band && L.band.L, S.rub.bandL);
       S.rub.bandR = num(L.band && L.band.R, S.rub.bandR);
@@ -13846,6 +13878,7 @@ async function rubRejudge(){
     S.rub.bandL = b0.L; S.rub.bandR = b0.R;
     S.rub.calTop = b0.T; S.rub.calBot = b0.B;
     RUB.aiBand = keep0;
+    (S.rub.lines || []).forEach(function(L9){ if (L9 && L9.noAi) delete L9.noAi; });
   }
   persist(); rubPanel(); rubRender();
   /* 手本がまったく無いときは、枠の作り直しだけで止める（v32.1）。
@@ -13853,12 +13886,14 @@ async function rubRejudge(){
   var canAnch = false;
   try { canAnch = !!FR() || rubTehonCount() > 0; } catch(e){}
   if (!canAnch){
-    msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") + "）。" +
+    msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") +
+        (reAi ? "／" + reAi + " 列は AI に通し直しました" : "") + "）。" +
         rep9.join("｜") + "。<b>手本がまだ無いので、文字の見分けはしていません</b>" +
         "（字をえらんで ［この字として覚えさせる］ で覚えさせてください）。", false, true);
     return;
   }
-  msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") + "）。" +
+  msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") +
+      (reAi ? "／" + reAi + " 列は 墨が無かったので AI に通し直しました" : "") + "）。" +
       rep9.join("｜") + "。つづけて 文字で見分けます…", false, true);
   await uiTick();
   try { await rubAnchorGo(); } catch(e){}
@@ -15325,20 +15360,32 @@ async function rgSave(which){
     /* **登録した字は、手本帳にも入れる**（v31.0。本人の話
        「フォントは楷書なので、学習している物が使えればいいのですが」）。
        いま登録した墨は、この拓本のほんものの字形。手本合わせで使う。 */
-    var tehOK = false;
+    /* **その列の墨で覚える**（v32.6。本人の報告
+       「学習させて保存しましたとでるが、覚えた一覧は増えていない」）。
+       `rubItemInk` は **いま画面にある墨（`RUB.aiBand`）**しか見ないので、
+       ほかの列の字を登録すると **黙って覚えそこねて**いた。 */
+    var tehOK = false, tehWhy = "";
     try {
-      if (ch){
-        var kT = rubItemInk(it);                      /* 登録の窓は その列の墨を出している */
-        if (kT) tehOK = rubTehonAdd(ch, kT.m, kT.n);
+      if (!ch) tehWhy = "字が決まっていないので";
+      else {
+        var Lr = rubCol();
+        var kT = Lr ? await rubItemInkOf(Lr, it) : null;
+        if (!kT) tehWhy = "この字の墨を読めなかったので";
+        else {
+          tehOK = rubTehonAdd(ch, kT.m, kT.n);
+          if (!tehOK) tehWhy = "墨が 1 ますも無かったので";
+        }
       }
-    } catch(eT){}
+    } catch(eT){ tehWhy = "覚える所でつまずいたので"; }
     rgSide();
     if (tehOK) persist();
     msg((which === 1 ? "① 読む" : "② 整える") + " に登録しました（" +
         (ch ? "「" + ch + "」／" : "") + "サーバーに " + (j.pairs || "?") + " 組）。" +
         (tehOK ? "この字は<b>拓本の手本帳</b>にも入れました（ぜんぶで " +
-                 rubTehonCount() + " 枚）。手本合わせで、楷書のフォントより先に使います。" : ""),
-        false, tehOK);
+                 rubTehonCount() + " 枚）。手本合わせで、楷書のフォントより先に使います。"
+               : "<b>手本帳には入れていません</b>（" + tehWhy + "）。" +
+                 (ch ? "" : "下の候補から字をえらぶか、⑤ の［この字として覚えさせる］で覚えさせてください。")),
+        false, true);
   } catch(e){
     msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true);
   }

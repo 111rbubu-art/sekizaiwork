@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v34.1";
+var APP_VER = "v34.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7841,7 +7841,7 @@ async function rubAiOne(hit){
 /* 枠から学習画面をひらく（v22.7）。ほかの列の枠なら、その列に移ってから。 */
 function rgOpenAt(hit){
   if (!hit) return;
-  if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubSelItem = -1; rubPanel(); rubRender(); }
+  if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubSelItem = -1; rubSelSet = []; rubPanel(); rubRender(); }
   rgOpen(hit.i);
 }
 function rubMenuOpen(ev, pt, hit){
@@ -7863,6 +7863,18 @@ function rubMenuOpen(ev, pt, hit){
     h += '<button class="mini" data-a="bx-split">✂ ここで割る</button>';
     h += '<button class="mini" data-a="bx-join">⇵ 下とつなぐ</button>';
     h += '<button class="mini" data-a="del1">🗑 この枠を消す</button>';
+    /* **えらぶ**（v34.2）。Ctrl＝1 つずつ、Shift＝そこまで、の近道をここにも置く。 */
+    h += '<div class="nhd" style="margin-top:6px;">えらぶ' +
+      (rubSelSet.length > 1 ? '（いま ' + rubSelSet.length + ' 字）' : '') + '</div>';
+    h += '<button class="mini" data-a="pk-grp" title="この字と同じまとまり（命日など）を ぜんぶ選びます">' +
+      '同じまとまりを選ぶ' + ((itH && itH.g && rubGrpOf(itH.g)) ? '（' + rubGrpOf(itH.g).nm + '）' : '') +
+      '</button>';
+    h += '<button class="mini" data-a="pk-all" title="この列の枠を ぜんぶ選びます">この列をぜんぶ選ぶ</button>';
+    if (rubSelSet.length > 1){
+      h += '<button class="mini primary" data-a="pk-reg">⬆ えらんだ ' + rubSelSet.length +
+        ' 字を登録</button>';
+      h += '<button class="mini" data-a="pk-clr">選びをやめる</button>';
+    }
     h += '<div class="nhd" style="margin-top:6px;">まとまり（ここから下）</div>';
     h += RUBGRP.map(function(g){
       var on = itH && itH.g === g.k;
@@ -7911,6 +7923,15 @@ function rubMenuOpen(ev, pt, hit){
       else if (a === "bx-dn"){    pickHit(); rubBoxAdd(1); }
       else if (a === "bx-split"){ pickHit(); rubBoxSplit(); }
       else if (a === "bx-join"){  pickHit(); rubBoxJoin(); }
+      else if (a === "pk-grp"){
+        pickHit();
+        rubPickGrp((itH && itH.g) || "");
+        rubPanel(); rubRender();
+        msg((rubSelSet.length || 0) + " 字をえらびました。［えらんだ枠を登録］で、その分だけ送れます。");
+      }
+      else if (a === "pk-all"){ pickHit(); rubPickAll(); rubPanel(); rubRender(); }
+      else if (a === "pk-clr"){ rubPickClear(); rubPanel(); rubRender(); }
+      else if (a === "pk-reg"){ rubLineRegPick(); }
       else if (a.indexOf("g:") === 0){ pickHit(); rubGrpSet(a.slice(2), hit.i); }
       else if (a === "rot-start"){ startSpin(); if (pt) setPivotAt(pt); }
       else if (a === "rot-here"){ if (pt) setPivotAt(pt); }
@@ -13096,15 +13117,52 @@ function rubColPut(m2){
   });
   if (S.rub.lines.length > 24) S.rub.lines.length = 24;
   rubSelCol = S.rub.lines.indexOf(m2);
-  rubSelItem = -1;
+  rubSelItem = -1; rubSelSet = [];
 }
 
+/* **いくつもの枠をえらぶ**（v34.2）。いまの列の中の 何字目か の並び。
+   Ctrl（⌘）＝ 1 つずつ足す／外す、Shift ＝ そこまで まとめて。
+   えらんだ分だけを教材として登録できる（命日・年齢だけ送りたい、という使い方）。 */
+var rubSelSet = [];
+function rubPickClear(){ rubSelSet = []; }
+function rubPick1(i){          /* ふつうの押し。えらびは 1 つに戻す */
+  rubSelItem = i; rubSelSet = [i];
+}
+function rubPickTog(i){
+  var k = rubSelSet.indexOf(i);
+  if (k >= 0){
+    rubSelSet.splice(k, 1);
+    if (rubSelItem === i) rubSelItem = rubSelSet.length ? rubSelSet[rubSelSet.length-1] : -1;
+  } else {
+    rubSelSet.push(i); rubSelItem = i;
+  }
+}
+function rubPickRange(i){
+  var a = (rubSelItem >= 0) ? rubSelItem : i;
+  var lo = Math.min(a, i), hi = Math.max(a, i);
+  for (var j = lo; j <= hi; j++) if (rubSelSet.indexOf(j) < 0) rubSelSet.push(j);
+  rubSelSet.sort(function(x, y){ return x - y; });
+  rubSelItem = i;
+}
+function rubPickOn(i){ return rubSelSet.indexOf(i) >= 0; }
+/* そのまとまり（戒名・命日など）を ぜんぶ選ぶ */
+function rubPickGrp(g){
+  var L = rubCol(); if (!L || !L.items) return;
+  rubSelSet = [];
+  L.items.forEach(function(it, i){ if ((it.g || "") === (g || "")) rubSelSet.push(i); });
+  rubSelItem = rubSelSet.length ? rubSelSet[0] : -1;
+}
+function rubPickAll(){
+  var L = rubCol(); if (!L || !L.items) return;
+  rubSelSet = L.items.map(function(x, i){ return i; });
+  rubSelItem = 0;
+}
 /* いま選んでいる 1 字の枠（v21.64）。-1 なら選んでいない。 */
 /* 見つけた列を 絵に出すか（v24.1。本人の指示） */
 var rubShowCols = true;
 /* 青い墨（AI の縁取り）を絵に出すか（v26.7）。［AI の墨を消す］で切りかえる。 */
 var rubShowAi = true;
-var rubSelItem = -1;
+var rubSelItem = -1; rubSelSet = [];
 /* いま見ている列（v21.66）。`S.rub.lines` を**左からの列の並び**として使う。 */
 var rubSelCol = 0;
 function rubCol(){
@@ -13290,7 +13348,7 @@ function rubHandStart(){
     rubColPut(L);                     /* 並べ直し・入れかえは ここに任せる */
   }
   rubSelCol = (S.rub.lines || []).indexOf(L);
-  rubSelItem = -1;
+  rubSelItem = -1; rubSelSet = [];
   if (!rubBoxDraw) rubBoxDrawTog(); else { persist(); rubPanel(); rubRender(); }
   msg("手で枠を描く列を作りました（" + (rubSelCol + 1) + " 本目・" +
       Math.round(q.x1) + "〜" + Math.round(q.x2) + "px）。" +
@@ -14095,7 +14153,7 @@ function rubAnalyzeReset(){
   S.rub.lineNs = {};
   S.rub.anaLast = null;                 /* 3 ─ 解析 の結果行も消す（v33.6） */
   RUB.aiBand = null; RUB.aiWhy = ""; RUB.aiChar = null;
-  rubSelCol = 0; rubSelItem = -1;
+  rubSelCol = 0; rubSelItem = -1; rubSelSet = [];
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
   msg("見立てを消しました（枠 " + nC + " 列・" + nI + " 字／列の構成）。" +
@@ -17930,11 +17988,14 @@ function rubRender(){
          「戒名や命日、俗名、年齢を分けられるようにしてほしい」）。
          付いていない字は、いままでどおりピンク。 */
       var gObj = it.g ? rubGrpOf(it.g) : null;
-      var col = on ? "#FFD400" : (gObj ? gObj.c : (curCol ? "#FF2D9B" : "#FF9ECF"));
+      /* **いくつも選んだ枠**は だいだい色で太く（v34.2） */
+      var many = curCol && rubPickOn(i) && rubSelSet.length > 1;
+      var col = many ? "#FF8A00"
+              : (on ? "#FFD400" : (gObj ? gObj.c : (curCol ? "#FF2D9B" : "#FF9ECF")));
       o.push('<rect x="' + b.x.toFixed(1) + '" y="' + b.y.toFixed(1) + '" width="' + b.w.toFixed(1) +
         '" height="' + b.h.toFixed(1) + '" fill="rgba(255,45,155,' +
         (on ? '.18' : (curCol ? '.10' : '.05')) + ')" stroke="' + col + '" stroke-width="' +
-        (W * (on ? 0.006 : (curCol ? 0.0035 : 0.0025))) + '"/>');
+        (W * (many ? 0.008 : (on ? 0.006 : (curCol ? 0.0035 : 0.0025)))) + '"/>');
       if (curCol)
         o.push('<text x="' + (b.x - W*0.012) + '" y="' + (b.y + b.h*0.5) +
           '" fill="' + col + '" font-size="' + (W*0.022) + '" text-anchor="end">' +
@@ -18558,7 +18619,7 @@ function bindDrag(svg){
       var cen = k.indexOf("cen:") === 0 ? +k.split(":")[1] : null;
       /* 1 字の枠（v21.64）。中をつかめば動き、辺をつかめば大きさが変わる。 */
       if (k.indexOf("col:") === 0){        /* ほかの列を押した（v21.66） */
-        rubSelCol = +k.split(":")[1]; rubSelItem = -1;
+        rubSelCol = +k.split(":")[1]; rubSelItem = -1; rubSelSet = [];
         rubPanel(); rubRender(); persist();
         return;
       }
@@ -18568,7 +18629,15 @@ function bindDrag(svg){
         var L0 = rubCol();
         var it0 = L0 && L0.items && L0.items[+li[1]];
         if (!it0 || !it0.px) return;
-        rubSelItem = +li[1];
+        /* **Ctrl（⌘）や Shift を押しながらなら、いくつも選ぶ**（v34.2。本人の指示
+           「シフトキーやコントロールキーをおして複数の枠を選択して登録ができるといいです」）。
+           このときは つかんで動かさない（選ぶだけ）。 */
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey){
+          if (ev.shiftKey) rubPickRange(+li[1]); else rubPickTog(+li[1]);
+          rubPanel(); rubRender();
+          return;
+        }
+        rubPick1(+li[1]);
         li0 = { x: it0.px.x, y: it0.px.y, w: it0.px.w, h: it0.px.h,
                 p0: toPt(ev), it: it0 };
         rubPanel(); rubRender();
@@ -19112,6 +19181,11 @@ function rubPanel(){
       '⬆ この列を AI に登録</button>' +
       ' <button class="mini" id="btnLineRegAll" ' +
       'title="枠のある列をぜんぶ、拓本AI に登録します">ぜんぶの列を登録</button>' +
+      ' <button class="mini' + (rubSelSet.length > 1 ? ' primary' : '') + '" id="btnLineRegPick"' +
+      (rubSelSet.length ? '' : ' disabled') + ' ' +
+      'title="Ctrl（⌘）を押しながら枠を押すと いくつも選べます。Shift でそこまで まとめて。' +
+      'えらんだ分だけを教材として登録します">⬆ えらんだ枠を登録' +
+      (rubSelSet.length ? '（' + rubSelSet.length + ' 字）' : '') + '</button>' +
       ' <button class="mini" id="btnRegView" ' +
       'title="送るもの（切り抜き・AI の墨・枠・読み）を絵にして見せます。' +
       'サーバーに貯まった分も同じ絵で見られます">🔍 登録したものを見る</button></p>';
@@ -19156,7 +19230,7 @@ function rubPanel(){
   var bcd = $("btnCand"); if (bcd) bcd.onclick = rubCandGo;
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .colb2"), function(b4){
     b4.onclick = function(){
-      rubSelCol = +b4.dataset.ci; rubSelItem = -1;
+      rubSelCol = +b4.dataset.ci; rubSelItem = -1; rubSelSet = [];
       persist(); rubPanel(); rubRender();
     };
   });
@@ -19220,6 +19294,12 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var brp = $("btnLineRegPick");
+  if (brp) brp.onclick = async function(){
+    brp.disabled = true;
+    try { await rubLineRegPick(); } catch(e){}
+    brp.disabled = false;
+  };
   var bba = $("btnBoxAi");
   if (bba) bba.onclick = async function(){
     bba.disabled = true; bba.textContent = "AI が描いています…";
@@ -20568,10 +20648,16 @@ async function takuSave(quiet, shIn){
    1 字ずつの［学習に登録］とは別物。**列まるごと**（拓本の切り抜き・AI の墨・
    人が直した枠・読み）を `/api/takuhon/line` へ送る。
    これが貯まれば、拓本AI 側で「字の中心を出す」「字を見分ける」を学習できる。 */
-function rubLineShot(L){
+function rubLineShot(L, idxs){
   if (!L || !L.items || !L.items.length || !RUB.img) return null;
+  /* idxs があれば、**その枠だけ**を切り出す（v34.2。えらんだ分だけ登録するため） */
+  var its = idxs && idxs.length
+    ? idxs.slice().sort(function(a, b){ return a - b; })
+          .map(function(i){ return L.items[i]; }).filter(Boolean)
+    : L.items;
+  if (!its.length) return null;
   var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-  L.items.forEach(function(it){
+  its.forEach(function(it){
     var b = it.px; if (!b) return;
     x1 = Math.min(x1, b.x); y1 = Math.min(y1, b.y);
     x2 = Math.max(x2, b.x + b.w); y2 = Math.max(y2, b.y + b.h);
@@ -20588,13 +20674,14 @@ function rubLineShot(L){
   var g = cv.getContext("2d");
   g.fillStyle = "#fff"; g.fillRect(0, 0, w, h);
   g.drawImage(RUB.img, x1, y1, w0, h0, 0, 0, w, h);
-  var bx = L.items.map(function(it){
+  var bx = its.map(function(it){
     var b = it.px || { x: 0, y: 0, w: 0, h: 0 };
     return { x: +((b.x - x1) * sc).toFixed(1), y: +((b.y - y1) * sc).toFixed(1),
              w: +(b.w * sc).toFixed(1), h: +(b.h * sc).toFixed(1),
              ch: (it.pick || (it.anch && it.anch.ch) || ""), g: it.g || "" };
   });
-  return { cv: cv, boxes: bx, x1: x1, y1: y1, w0: w0, h0: h0, sc: sc };
+  return { cv: cv, boxes: bx, x1: x1, y1: y1, w0: w0, h0: h0, sc: sc,
+           part: (idxs && idxs.length && idxs.length < L.items.length) ? idxs.slice() : null };
 }
 /* AI の墨（列の切り抜きに合わせたもの）。無ければ null */
 function rubLineInkShot(L, sh){
@@ -20614,19 +20701,22 @@ function rubLineInkShot(L, sh){
     im.src = url;
   });
 }
-function rubLineKey(L){
+function rubLineKey(L, part){
   function ok(x){ return String(x == null ? "" : x).replace(/[\\/:*?"<>|\s]/g, "_"); }
   var proj = ok((S.info && S.info.family) || "").slice(0, 24) || "案件";
   var i = (S.rub.lines || []).indexOf(L);
-  return "line_" + proj + "-" + caseUid() + "_c" + (i + 1);
+  /* えらんだ分は、**どこを選んだか**まで名前に入れる（別々に貯まるように） */
+  var tail = (part && part.length)
+    ? "_p" + (part[0] + 1) + "-" + (part[part.length-1] + 1) + "x" + part.length : "";
+  return "line_" + proj + "-" + caseUid() + "_c" + (i + 1) + tail;
 }
 function cvBlob(cv){
   return new Promise(function(res){ cv.toBlob(res, "image/png"); });
 }
-async function rubLineReg(L){
+async function rubLineReg(L, idxs){
   var base = takuApiBase();
   if (!base) throw new Error(takuAiOffNote());
-  var sh = rubLineShot(L);
+  var sh = rubLineShot(L, idxs);
   if (!sh) throw new Error("この列には枠がありません");
   var ink = await rubLineInkShot(L, sh);
   var fd = new FormData();
@@ -20636,19 +20726,36 @@ async function rubLineReg(L){
   /* **切り抜きの位置も控える**（v34.0）。これが無いと、あとで
      「登録した枠」と「いまの枠」を同じものさしで突き合わせられない。 */
   fd.append("crop", JSON.stringify({ x: sh.x1, y: sh.y1, w: sh.w0, h: sh.h0, sc: sh.sc }));
-  fd.append("key", rubLineKey(L));
+  fd.append("key", rubLineKey(L, sh.part));
   fd.append("char_line", sh.boxes.map(function(b){ return b.ch || "□"; }).join(""));
   fd.append("mm_per_px", String((mmPerPx() || 0) / (sh.sc || 1)));
-  fd.append("note", (L.boxFix ? "手で直した列" : "AI の枠のまま") +
-                    "／" + sh.boxes.length + " 字");
+  fd.append("note", (L.boxBy === "ai" ? "AI が描いた枠" : (L.boxFix ? "手で直した列" : "AI の枠のまま")) +
+                    "／" + sh.boxes.length + " 字" + (sh.part ? "／えらんだ分" : ""));
   var r = await fetch(base + "/api/takuhon/line", { method: "POST", body: fd });
   if (!r.ok) throw new Error("HTTP " + r.status);
   var j9 = await r.json();
-  L.regAt = new Date().toISOString();        /* いつ登録したか（確かめの板に出す） */
+  if (!sh.part) L.regAt = new Date().toISOString();   /* 列ぜんぶを送ったときだけ「登録ずみ」 */
+  else L.regPart = (num(L.regPart, 0) + sh.boxes.length);        /* いつ登録したか（確かめの板に出す） */
   persist();
   return j9;
 }
 /* ボタンの受け口。all なら、枠のある列をぜんぶ送る。 */
+/* えらんだ枠だけを登録する（v34.2）。命日・年齢だけ重点的に貯めたいとき用。 */
+async function rubLineRegPick(){
+  var L = rubCol();
+  if (!L || !L.items || !L.items.length){ msg("先に枠を作ってください。", true); return; }
+  if (!rubSelSet.length){
+    msg("枠をえらんでください（Ctrl か ⌘ を押しながら押すと いくつも選べます。" +
+        "Shift を押しながらなら、そこまで まとめて）。", true); return;
+  }
+  if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
+  try {
+    var j = await rubLineReg(L, rubSelSet.slice());
+    msg("えらんだ " + rubSelSet.length + " 字を拓本AI に登録しました" +
+        (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
+  } catch(e){ msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true); }
+  rubPanel();
+}
 async function rubLineRegGo(all){
   var ls = all ? (S.rub.lines || []).filter(function(L){
                    return rubIsBoxLine(L) && L.items && L.items.length; })
@@ -20949,6 +21056,8 @@ async function rubRegViewNow(){
               : '<br><span style="color:#ffb3b3;">まだ登録していません</span>') +
       /* **いまの枠を決めているのは何か**（v34.0。本人の問い
          「枠が登録されたものが反映したのかはどう判断できるの」） */
+      (num(L.regPart, 0) ? '<br><span style="color:#7ddc9b;">えらんだ分も ' +
+        num(L.regPart, 0) + ' 字 登録しました</span>' : '') +
       '<br>枠のもと：' + esc(rubRegWhy(L)) +
       (cmp
         ? '<br>登録した枠とくらべて：<b style="color:' +

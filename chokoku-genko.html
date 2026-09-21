@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.1";
+var APP_VER = "v31.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13325,6 +13325,20 @@ function rubTehonCount(){
   return n;
 }
 /* 1 字ぶんの墨（`rubItemInk` の m,n）を、手本帳に加える */
+/* 墨の字づらの **たて ÷ よこ**（v31.2。本人の報告
+   「十を一と勘違いしているところなど多々ありました」）。
+   `cgNormFrom` は字づらを **正方形に引きのばして**そろえるので、
+   **「一」のような平たい字と、「十」のような四角い字の区別が消える**。
+   縦横比を別に覚えておいて、見くらべのときに効かせる。 */
+function _tehRatio(m, n){
+  var x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1, x, y;
+  for (y = 0; y < n; y++) for (x = 0; x < n; x++) if (m[y*n + x]){
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x1 < x0) return 0;
+  return (y1 - y0 + 1) / Math.max(1, x1 - x0 + 1);
+}
 function rubTehonAdd(ch, m, n){
   if (!ch || !m) return false;
   var q = cgNormFrom(function(x, y){ return m[y*n + x]; }, n, n);
@@ -13332,8 +13346,9 @@ function rubTehonAdd(ch, m, n){
   var t = rubTehonAll();
   if (!t[ch]) t[ch] = [];
   if (rubTehonCount() >= TEH_MAX_ALL && t[ch].length >= 1) t[ch].shift();
-  t[ch].push(_tehPack(q));
+  t[ch].push({ b: _tehPack(q), r: Math.round(_tehRatio(m, n) * 100) / 100 });
   while (t[ch].length > TEH_MAX_PER) t[ch].shift();
+  _tehCache = null; _tehCacheN = -1;
   return true;
 }
 var _tehCache = null, _tehCacheN = -1;
@@ -13342,17 +13357,20 @@ function rubTehonBank(){
   if (_tehCache && _tehCacheN === n) return _tehCache;
   var out = {};
   Object.keys(t).forEach(function(ch){
-    out[ch] = (t[ch] || []).map(function(str){
+    out[ch] = (t[ch] || []).map(function(e){
+      /* 古い控え（詰めた文字列だけ）も読めるように（v31.2） */
+      var str = (typeof e === "string") ? e : (e && e.b) || "";
+      var rr = (typeof e === "string") ? 0 : num(e && e.r, 0);
       var u = _tehUnpack(str, CG_N*CG_N), sum = 0, i;
       for (i = 0; i < u.length; i++) if (u[i]) sum++;
-      return { u: u, sum: sum };
+      return { u: u, sum: sum, r: rr };
     });
   });
   _tehCache = out; _tehCacheN = n;
   return out;
 }
 /* 手本帳と見くらべる。いちばん似ている字と、その似ぐあい（IoU）を返す */
-function rubTehonBest(q, want){
+function rubTehonBest(q, want, qr){
   var B = rubTehonBank(), qn = 0, i;
   for (i = 0; i < q.length; i++) if (q[i]) qn++;
   if (!qn) return null;
@@ -13365,6 +13383,14 @@ function rubTehonBest(q, want){
       for (i = 0; i < q.length; i++) if (bm[i] && q[i]) inter++;
       var uni = list[j].sum + qn - inter;
       var iou = uni ? inter / uni : 0;
+      /* **字づらの縦横比が ちがいすぎる手本は、点を下げる**（v31.2）。
+         引きのばしてそろえるので、「一」と「十」が同じ形に見えてしまう。
+         比が 2 倍ちがえば ほぼ別の字とみる。 */
+      if (qr > 0 && list[j].r > 0){
+        var d9 = Math.abs(Math.log(qr / list[j].r));
+        if (d9 > 0.7) iou = 0;                      /* 2 倍ちがう → 見ない */
+        else iou *= (1 - d9 * 0.7);
+      }
       if (iou > bestV){ bestV = iou; bestCh = ch; }
     }
   }
@@ -13468,7 +13494,7 @@ async function rubAnchorGo(){
         /* ───── **まず 拓本の手本帳**（v31.0）───── */
         if (tehN0){
           var qT = cgNormFrom(function(x, y){ return k.m[y*k.n + x]; }, k.n, k.n);
-          var bT = qT ? rubTehonBest(qT, allAnch) : null;
+          var bT = qT ? rubTehonBest(qT, allAnch, _tehRatio(k.m, k.n)) : null;
           /* ほんものの字形どうしなので、0.38 当たれば その字とみる
              （フォントとの見くらべより、ずっと当たりやすい） */
           if (bT && bT.iou >= 0.38){
@@ -13627,6 +13653,69 @@ async function rubAnchorGo(){
       "④ の候補から字を決めると、次からは読めるようになります。" +
       "ちがう所は ⑤ のボタンで直せます。", false, true);
 }
+/* ───── **その字を直して、覚えさせる**（v31.2。本人の指示
+   「十を一と勘違いしているところなど多々ありました。
+     修正や学習させるやり方はありますか」）─────
+   ① 選んだ字の読みを、人が入れた字に直す（印も直る）
+   ② その墨を **手本帳に入れる**（次から その形は その字と読む）
+   ③ **まちがって当たった手本を捨てる**。まちがいの元が残っていると、
+      いくら正しい手本を足しても また同じ読み違いをする。
+      捨てるのは「この墨と 0.5 以上似ている、ちがう字の手本」だけ。 */
+function rubTeachHere(ch){
+  ch = String(ch || "").trim();
+  if (!ch){ msg("覚えさせる字を 1 字入れてください。", true); return; }
+  ch = Array.from(ch)[0];
+  var L = rubCol();
+  if (!L || !L.items || rubSelItem < 0 || !L.items[rubSelItem]){
+    msg("先に、直したい字を絵の上でえらんでください。", true); return;
+  }
+  var it = L.items[rubSelItem];
+  var A0 = RUB.aiBand;
+  var kT = null;
+  try { kT = rubItemInk(it); } catch(e){}
+  if (!kT){
+    msg("この字の墨が読めません。先に［AI 縁取りを実行］で、この列を通してください。", true);
+    return;
+  }
+  var was = (it.anch && it.anch.ch) || it.pick || "";
+  /* ③ まちがいの元を捨てる */
+  var dropped = 0;
+  try {
+    var q0 = cgNormFrom(function(x, y){ return kT.m[y*kT.n + x]; }, kT.n, kT.n);
+    var r0 = _tehRatio(kT.m, kT.n);
+    if (q0){
+      var t0 = rubTehonAll(), q0n = 0, i0;
+      for (i0 = 0; i0 < q0.length; i0++) if (q0[i0]) q0n++;
+      Object.keys(t0).forEach(function(c0){
+        if (c0 === ch) return;
+        t0[c0] = (t0[c0] || []).filter(function(e0){
+          var str0 = (typeof e0 === "string") ? e0 : (e0 && e0.b) || "";
+          var u0 = _tehUnpack(str0, CG_N*CG_N), inter = 0, sum0 = 0, i1;
+          for (i1 = 0; i1 < u0.length; i1++){
+            if (u0[i1]) sum0++;
+            if (u0[i1] && q0[i1]) inter++;
+          }
+          var uni0 = sum0 + q0n - inter, iou0 = uni0 ? inter / uni0 : 0;
+          if (iou0 >= 0.5){ dropped++; return false; }
+          return true;
+        });
+        if (!t0[c0].length) delete t0[c0];
+      });
+    }
+  } catch(e){}
+  /* ②　手本帳に入れる */
+  var okT = rubTehonAdd(ch, kT.m, kT.n);
+  /* ①　この字の読みを直す */
+  it.pick = ch;
+  it.anch = { ch: ch, by: "teh", iou: 1, hand: 1 };
+  persist(); rubPanel(); rubRender();
+  msg("この字を <b>「" + esc(ch) + "」</b> として覚えました" +
+      (was && was !== ch ? "（前は「" + esc(was) + "」と読んでいました）" : "") +
+      (dropped ? "。読み違いの元になっていた手本 " + dropped + " 枚を捨てました" : "") +
+      "。手本帳は ぜんぶで " + rubTehonCount() + " 枚です。" +
+      "［文字で見分ける］を押し直すと、この形は「" + esc(ch) + "」と読みます。",
+      false, true);
+}
 /* パネルの「⑤ グループ分け」 */
 function rubGrpHtml(){
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
@@ -13651,6 +13740,28 @@ function rubGrpHtml(){
     tehCh = Object.keys(tt).filter(function(c){ return (tt[c] || []).length; })
               .map(function(c){ return c + "×" + tt[c].length; }).join("・");
   } catch(e){}
+  /* **その字を直して覚えさせる**（v31.2） */
+  var Lt = rubCol(), itT = (Lt && Lt.items && rubSelItem >= 0) ? Lt.items[rubSelItem] : null;
+  h += '<p class="hint" style="margin:6px 0 2px;"><b>読み違いを直す</b>：' +
+    (itT
+      ? (rubSelItem + 1) + ' 字目' +
+        ((itT.anch && itT.anch.ch) ? '（いまは「<b>' + esc(itT.anch.ch) + '</b>」と読んでいます）'
+                                   : '（まだ読めていません）')
+      : '絵の上で、直したい字をえらんでください') + '</p>' +
+    '<div class="chips" style="margin:0;">' +
+    '<input type="text" id="rTeachCh" maxlength="2" ' +
+    'style="width:3.2em;text-align:center;font-size:15px;" ' +
+    'value="' + ((itT && (itT.pick || (itT.anch && itT.anch.ch))) ? esc(itT.pick || itT.anch.ch) : '') + '" ' +
+    (itT ? '' : 'disabled ') + 'placeholder="十">' +
+    '<button class="mini primary" id="btnTeach" ' + (itT ? '' : 'disabled ') +
+    'title="この墨を その字として手本帳に入れ、読み違いの元になった手本は捨てます">' +
+    'この字として覚えさせる</button>' +
+    /* よく使う字は 1 押しで */
+    '一二三四五六七八九十才歳没日'.split('').map(function(c){
+      return '<button class="mini teq" data-c="' + c + '"' + (itT ? '' : ' disabled') +
+             ' style="padding:2px 6px;">' + c + '</button>';
+    }).join('') +
+    '</div>';
   h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
     (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
     '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
@@ -17540,6 +17651,14 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var bte = $("btnTeach");
+  if (bte) bte.onclick = function(){
+    var el = $("rTeachCh");
+    rubTeachHere(el ? el.value : "");
+  };
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .teq"), function(tb){
+    tb.onclick = function(){ rubTeachHere(tb.dataset.c || ""); };
+  });
   var btc = $("btnTehClr");
   if (btc) btc.onclick = function(){
     if (!confirm("拓本の手本帳を空にします。よろしいですか。")) return;

@@ -5,6 +5,7 @@
                                set=ink なら①「読む」用、set=shape なら②「整える」用
   POST /api/takuhon/line       人が直した**列まるごと**を貯める（字の枠と読みつき）
   GET  /api/takuhon/lines      貯まった列の一覧
+  GET  /api/takuhon/line/{id}  その列の枠と読み（meta.json）
   GET  /api/takuhon/lineimg/.. 列の画像（raw／ink）
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
   GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
@@ -450,6 +451,19 @@ def lines(limit: int = 60, offset: int = 0):
                     "chars": m.get("chars", ""),
                     "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))})
     return {"all": len(ids), "offset": offset, "items": out}
+
+
+@app.get("/api/takuhon/line/{pid}")
+def line_one(pid: str):
+    """その列の meta.json（枠と読み）。彫刻原稿アプリの［登録したものを見る］が読む。"""
+    d = _line_dir(pid)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    m = _read_json(os.path.join(d, "meta.json"), None)
+    if m is None:
+        return JSONResponse({"error": "no_meta"}, status_code=404)
+    m["ink"] = os.path.exists(os.path.join(d, "ink.png"))
+    return m
 
 
 @app.get("/api/takuhon/lineimg/{pid}/{kind}.png")

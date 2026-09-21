@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.6";
+var APP_VER = "v33.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7826,10 +7826,28 @@ function rubMenuOpen(ev, pt, hit){
        選べるようにして、学習もメニューで選べるように」）。 */
   var h = "";
   if (hit){
-    h += '<div class="nhd">' + (hit.ci + 1) + ' 列目の ' + (hit.i + 1) + ' 字目</div>';
+    var itH = null;
+    try { itH = S.rub.lines[hit.ci].items[hit.i]; } catch(e){}
+    h += '<div class="nhd">' + (hit.ci + 1) + ' 列目の ' + (hit.i + 1) + ' 字目' +
+      (itH && itH.anch && itH.anch.ch ? '「' + esc(itH.anch.ch) + '」' : '') + '</div>';
+    /* **枠の直しも、まとまりも、ここで選ぶ**（v33.7。本人の指示
+       「枠を選択して右クリックでまとまりを選択できるようにして／
+         ↓へ足すや割る、↓とつなぐ、消すを選択できるようにして」）。 */
+    h += '<button class="mini" data-a="bx-up">↑ 上に足す</button>';
+    h += '<button class="mini" data-a="bx-dn">↓ 下に足す</button>';
+    h += '<button class="mini" data-a="bx-split">✂ ここで割る</button>';
+    h += '<button class="mini" data-a="bx-join">⇵ 下とつなぐ</button>';
+    h += '<button class="mini" data-a="del1">🗑 この枠を消す</button>';
+    h += '<div class="nhd" style="margin-top:6px;">まとまり（ここから下）</div>';
+    h += RUBGRP.map(function(g){
+      var on = itH && itH.g === g.k;
+      return '<button class="mini' + (on ? ' primary' : '') + '" data-a="g:' + g.k +
+        '" style="border-color:' + g.c + ';color:' + (on ? '' : g.c) + ';">' + g.nm + '</button>';
+    }).join("") +
+      '<button class="mini" data-a="g:" style="color:var(--muted);">なし</button>';
+    h += '<div class="nhd" style="margin-top:6px;">この字</div>';
     h += '<button class="mini primary" data-a="ai1">⬛ この字だけ AI に通す</button>';
     h += '<button class="mini" data-a="learn">✎ 学習画面でひらく</button>';
-    h += '<button class="mini" data-a="del1">🗑 この枠を消す</button>';
     h += '<div class="nhd" style="margin-top:6px;">拓本の補正</div>';
   } else {
     h += '<div class="nhd">拓本の補正</div>';
@@ -7856,12 +7874,19 @@ function rubMenuOpen(ev, pt, hit){
     b.onclick = function(){
       var a = b.dataset.a;
       rubMenuClose();
+      /* 枠の直し・まとまりは、まず その字をえらんでから（v33.7） */
+      function pickHit(){
+        if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; }
+        rubSelItem = hit.i;
+      }
       if (a === "learn"){ rgOpenAt(hit); }
       else if (a === "ai1"){ rubAiOne(hit); }
-      else if (a === "del1"){
-        if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubPanel(); }
-        rubSelItem = hit.i; rubItemDel();
-      }
+      else if (a === "del1"){ pickHit(); rubPanel(); rubItemDel(); }
+      else if (a === "bx-up"){    pickHit(); rubBoxAdd(-1); }
+      else if (a === "bx-dn"){    pickHit(); rubBoxAdd(1); }
+      else if (a === "bx-split"){ pickHit(); rubBoxSplit(); }
+      else if (a === "bx-join"){  pickHit(); rubBoxJoin(); }
+      else if (a.indexOf("g:") === 0){ pickHit(); rubGrpSet(a.slice(2), hit.i); }
       else if (a === "rot-start"){ startSpin(); if (pt) setPivotAt(pt); }
       else if (a === "rot-here"){ if (pt) setPivotAt(pt); }
       else if (a === "rot-0"){ resetRot(); rubPanel(); rubRender(); persist(); msg("角度を 0 に戻しました。"); }
@@ -13133,6 +13158,10 @@ function rubBoxDrawTog(){
     : "枠を描くのをやめました。");
 }
 function rubAreaDrawTog(){
+  if (rubAreaLocked()){
+    msg("解析ずみなので、範囲は動かせません。［やり直す（消す）］を押してから直してください。", true);
+    return;
+  }
   rubAreaDraw = !rubAreaDraw;
   if (rubAreaDraw) rubBoxDraw = false;
   rubPanel(); rubRender();
@@ -13140,7 +13169,32 @@ function rubAreaDrawTog(){
     ? "通す範囲を描く状態にしました。拓本の上で、**通したい行をまとめて**かこんでください。"
     : "範囲を描くのをやめました。");
 }
+/* **解析ずみなら、範囲は動かせない**（v33.7。本人の指示
+   「解析したら動かせないように」）。枠ができたあとに範囲を動かすと、
+   枠と墨の置き場所が食いちがうため。［やり直す（消す）］で外れる。 */
+function rubAreaLocked(){
+  return (S.rub.lines || []).some(function(L){ return L && L.items && L.items.length; });
+}
+/* 範囲の 4 辺を 1 つだけ動かす（つまみ・±ボタンの共通の受け口） */
+function rubAreaEdge(k, v){
+  var b = S.rub.allBox; if (!b || rubAreaLocked()) return;
+  var MIN = 12;
+  var x1 = b.x, y1 = b.y, x2 = b.x + b.w, y2 = b.y + b.h;
+  v = Math.round(v);
+  if (k === "x1")      x1 = Math.max(0, Math.min(x2 - MIN, v));
+  else if (k === "x2") x2 = Math.min(RUB.W, Math.max(x1 + MIN, v));
+  else if (k === "y1") y1 = Math.max(0, Math.min(y2 - MIN, v));
+  else                 y2 = Math.min(RUB.H, Math.max(y1 + MIN, v));
+  S.rub.allBox = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  /* 描いたときと同じで、帯も範囲の幅に合わせておく */
+  S.rub.bandL = x1; S.rub.bandR = x2;
+  A = null; RUB.mask = null;
+}
 function rubAreaClear(){
+  if (rubAreaLocked()){
+    msg("解析ずみなので、範囲はやめられません。［やり直す（消す）］を押してください。", true);
+    return;
+  }
   S.rub.allBox = null;
   persist(); rubPanel(); rubRender();
   msg("通す範囲をやめました。拓本ぜんたいが相手になります。");
@@ -15068,33 +15122,6 @@ function rubReadHtml(){
       return '<button class="mini teq" data-c="' + c + '"' + (itT ? '' : ' disabled') +
              ' style="padding:2px 6px;">' + c + '</button>';
     }).join('') + '</div>';
-  return h;
-}
-/* ───── 4d まとまり（戒名・俗名・命日・年齢） ───── */
-function rubGrpPickHtml(){
-  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
-  if (!ls.length) return '<p class="hint" style="margin:0;">先に［拓本を解析］を押してください。</p>';
-  var h = '';
-  var L = rubCol();
-  if (L && L.items && L.items.length){
-    h += '<p class="hint" style="margin:0 0 2px;">' +
-      (S.rub.lines.indexOf(L) + 1) + ' 列目（' + L.items.length + ' 字）：<b>' +
-      (rubGrpLabel(L) || "まだ分けていません") + '</b>' +
-      (rubSelItem >= 0 ? '／' + (rubSelItem + 1) + ' 字目から下に付きます' : '／列ぜんぶに付きます') +
-      '</p>';
-    h += '<div class="chips" style="margin:0;">' +
-      RUBGRP.map(function(g){
-        return '<button class="mini grpb" data-g="' + g.k + '" style="border-color:' + g.c +
-          ';color:' + g.c + ';">' + g.nm + '</button>';
-      }).join("") +
-      ' <button class="mini grpb" data-g="" style="color:var(--muted);">なし</button></div>';
-  }
-  h += '<div style="margin-top:4px;">' + ls.map(function(x, i){
-    var g0 = rubGrpRuns(x).filter(function(r){ return r.g; })[0];
-    var c0 = g0 ? (rubGrpOf(g0.g) || {}).c : "";
-    return '<div class="hint" style="margin:1px 0;' + (c0 ? 'color:' + c0 + ';' : '') + '">' +
-      (i+1) + '列目（' + x.items.length + ' 字）：' + (rubGrpLabel(x) || "なし") + '</div>';
-  }).join("") + '</div>';
   return h;
 }
 /* ───── 5 覚えたもの（手本帳・1 字の大きさ） ───── */
@@ -18135,15 +18162,31 @@ function rubRender(){
         '" y="' + (k[2]-k[4]) + '" width="' + (k[3]*2) + '" height="' + (k[4]*2) + '" fill="transparent"/>';
     });
   }
+  var areaHits = "";
   if (S.rub.allBox && S.rub.allBox.w > 8){
-    var ab = S.rub.allBox;
+    var ab = S.rub.allBox, aLk = rubAreaLocked();
     o.push('<rect x="' + ab.x + '" y="' + ab.y + '" width="' + ab.w + '" height="' + ab.h +
       '" fill="none" stroke="#137A52" stroke-width="' + (W*0.005) +
       '" stroke-dasharray="' + (W*0.02) + ' ' + (W*0.012) + '"/>');
     o.push('<text x="' + (ab.x + W*0.008) + '" y="' + (ab.y - W*0.008) +
       '" fill="#137A52" font-size="' + (W*0.026) + '" font-weight="700"' +
       ' stroke="#fff" stroke-width="' + (W*0.005) + '" paint-order="stroke"' +
-      '>この中を通します</text>');
+      '>' + (aLk ? "この中を通しました（解析ずみ）" : "この中を通します") + '</text>');
+    /* **描いたあとも 4 辺をつかんで直せる**（v33.7）。解析ずみなら つまみを出さない。 */
+    if (!aLk){
+      var aw2 = W*0.016, ah2 = W*0.05;
+      [["x1", ab.x, ab.y+ab.h/2, aw2, Math.min(ah2, ab.h*0.5), "ew"],
+       ["x2", ab.x+ab.w, ab.y+ab.h/2, aw2, Math.min(ah2, ab.h*0.5), "ew"],
+       ["y1", ab.x+ab.w/2, ab.y, Math.min(ah2, ab.w*0.5), aw2, "ns"],
+       ["y2", ab.x+ab.w/2, ab.y+ab.h, Math.min(ah2, ab.w*0.5), aw2, "ns"]].forEach(function(k){
+        o.push('<rect x="' + (k[1]-k[3]/2) + '" y="' + (k[2]-k[4]/2) + '" width="' + k[3] +
+          '" height="' + k[4] + '" rx="' + (Math.min(k[3],k[4])*0.3) + '" fill="#137A52" ' +
+          'opacity=".92" stroke="#fff" stroke-width="' + (W*0.002) + '" pointer-events="none"/>');
+        areaHits += '<rect class="crophit ' + k[5] + '" data-rarea="' + k[0] + '" x="' +
+          (k[1]-k[3]) + '" y="' + (k[2]-k[4]) + '" width="' + (k[3]*2) + '" height="' +
+          (k[4]*2) + '" fill="transparent"/>';
+      });
+    }
   }
   if (rubBoxNow){
     var bn = rubBoxNow;
@@ -18204,7 +18247,7 @@ function rubRender(){
     /* 中心の印。つかんで動かすので、いちばん上に置く。 */
     (rotMode ? '<circle class="pivhit" cx="' + pvr.x.toFixed(2) + '" cy="' + pvr.y.toFixed(2) +
       '" r="' + (Math.max(W, H) * 0.012 * 2.6).toFixed(2) + '" fill="transparent"/>' : '') +
-    cropHits +
+    cropHits + areaHits +
     '</svg>';
   /* 脚の線のすぐ下に、実測した文字全長の入力欄を出す（v9.1）。場所と値だけ直す。 */
   sideRoom("rubwrap");             /* 左右に動かせる余白（v21.22） */
@@ -18223,6 +18266,7 @@ function rubRender(){
 
   var svg = st.querySelector("svg");
   bindRubCrop(svg);
+  bindRubArea(svg);
   bindPivot(svg);
   rubOverlay();
   bindDrag(svg);
@@ -18287,6 +18331,35 @@ function bindRubCrop(svg){
   });
 }
 
+/* 通す範囲（緑の四角）の 4 辺をつかんで動かす（v33.7）。 */
+function bindRubArea(svg){
+  Array.prototype.forEach.call(svg.querySelectorAll("[data-rarea]"), function(el){
+    el.addEventListener("pointerdown", function(ev){
+      if (ev.button !== undefined && ev.button !== 0) return;
+      ev.preventDefault(); ev.stopPropagation();
+      try { el.setPointerCapture(ev.pointerId); } catch(_){}
+      var k = el.dataset.rarea, toPt = rubMapper(svg);
+      function mv(e){
+        var q = toPt(e);
+        rubAreaEdge(k, (k === "x1" || k === "x2") ? q.x : q.y);
+        rubRender();
+      }
+      function up(){
+        try { el.releasePointerCapture(ev.pointerId); } catch(_){}
+        window.removeEventListener("pointermove", mv);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        persist(); rubPanel(); rubRender();
+        var b9 = S.rub.allBox, mp9 = mmPerPx();
+        if (b9) msg("通す範囲を " + (mp9 ? (b9.w*mp9).toFixed(0) + " × " + (b9.h*mp9).toFixed(0) + "mm"
+                                        : Math.round(b9.w) + " × " + Math.round(b9.h) + "px") + " にしました。");
+      }
+      window.addEventListener("pointermove", mv);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
+  });
+}
 /* 回転の中心をつかんで動かす。縦の基準線は中心を通るので、一緒に動く。 */
 function bindPivot(svg){
   var el = svg.querySelector(".pivhit");
@@ -18766,9 +18839,6 @@ function rubPanel(){
 
     /* ───────────── 1 ─ 準備 ───────────── */
     h += '<p class="hint" style="margin:6px 0 2px;"><b>1 ─ 準備</b></p>';
-    h += '<div class="fixrow"><span>実測した文字全長</span><b style="color:' +
-      (mppK ? '#0a7a3c;">できています（1px = ' + mppK.toFixed(3) + 'mm）' : '#B00020;">まだです') +
-      '</b></div>';
     h += '<div class="fixrow"><span>戒名の字幅（mm）</span>' +
       '<b><input type="number" id="rKmW" value="' + (S.rub.kmW === 0 ? 0 : kmNow) +
       '" min="0" max="200" step="1" style="width:56px;" placeholder="30" ' +
@@ -18783,17 +18853,35 @@ function rubPanel(){
 
     /* ───────────── 2 ─ 範囲 ───────────── */
     h += '<p class="hint" style="margin:12px 0 2px;"><b>2 ─ 範囲</b></p>';
-    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
+    var lk2 = rubAreaLocked(), ab2 = S.rub.allBox;
+    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea"' +
+      (lk2 ? ' disabled' : '') + ' ' +
       'title="通したい行をまとめてかこみます。拓本の端で見切れている行を外せます">' +
       '▣ 範囲を描く</button>';
-    if (S.rub.allBox && S.rub.allBox.w > 8){
+    if (ab2 && ab2.w > 8){
       var mp2 = mmPerPx();
-      h += ' <button class="mini" id="btnAreaClr" title="範囲をやめて、拓本ぜんたいに戻します">' +
-        '範囲をやめる</button>' +
+      h += ' <button class="mini" id="btnAreaClr"' + (lk2 ? ' disabled' : '') +
+        ' title="範囲をやめて、拓本ぜんたいに戻します">範囲をやめる</button>' +
         ' <span class="hint">' +
-        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
-             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
-        '（緑の四角）</span>';
+        (mp2 ? (ab2.w*mp2).toFixed(0) + " × " + (ab2.h*mp2).toFixed(0) + "mm"
+             : Math.round(ab2.w) + " × " + Math.round(ab2.h) + "px") + '</span>';
+      /* **描いたあとも直せる**（v33.7。本人の指示「範囲を描くで、マウス操作で描いた後でも
+         微調整の修正できるようにし、解析したら動かせないように」）。
+         緑の四角の 4 辺はつかんで動かせる。下のボタンは 1mm ずつ。 */
+      if (lk2){
+        h += '<p class="hint" style="margin:3px 0 0;color:#B8860B;">' +
+          '解析ずみなので、範囲は動かせません（［やり直す（消す）］で外せます）。</p>';
+      } else {
+        h += '<div class="chips" style="margin:4px 0 0;">' +
+          [["x1","左"],["x2","右"],["y1","上"],["y2","下"]].map(function(k){
+            return '<span class="hint" style="margin-left:6px;">' + k[1] + '</span>' +
+              '<button class="mini arb" data-k="' + k[0] + '" data-d="-1" ' +
+              'title="1mm ずらします">−</button>' +
+              '<button class="mini arb" data-k="' + k[0] + '" data-d="1" ' +
+              'title="1mm ずらします">＋</button>';
+          }).join("") + '</div>' +
+          '<p class="hint" style="margin:3px 0 0;">緑の四角の <b>4 辺をつかんでも</b>動かせます。</p>';
+      }
     } else {
       h += ' <span class="hint">いまは拓本ぜんたい</span>';
     }
@@ -18956,11 +19044,10 @@ function rubPanel(){
     h += '<p class="hint" style="margin:10px 0 2px;"><b>4c 読み</b></p>';
     h += rubReadHtml();
 
-    /* ── 4d まとまり ── */
-    h += '<p class="hint" style="margin:10px 0 2px;"><b>4d まとまり</b></p>';
-    h += rubGrpPickHtml();
+    /* まとまり（戒名・俗名・命日・年齢）は、枠を右クリックして選ぶ（v33.7。本人の指示
+       「4d まとまりは不要で、枠を選択して右クリックでまとまりを選択できるようにして」）。 */
 
-    /* ── 4e もう一度 ── */
+    /* ── 4d もう一度 ── */
     h += '<p class="hint" style="margin:10px 0 4px;">' +
       '<button class="mini primary" id="btnRejudge" ' +
       'title="覚えさせたことを使って、枠の切り分けからやり直し、そのまま文字で見分けます。' +
@@ -19168,7 +19255,7 @@ function rubPanel(){
   if (bpr) bpr.onclick = async function(){
     bpr.disabled = true; bpr.textContent = "調べています…";
     try { await rubProbe(); } catch(e){}
-    bpr.disabled = false; bpr.textContent = "この字を調べる";
+    bpr.disabled = false; bpr.textContent = "調べる";
   };
   var btn9 = $("btnTeachNo");
   if (btn9) btn9.onclick = async function(){
@@ -19236,6 +19323,18 @@ function rubPanel(){
   var scb = $("rShowCols");
   if (scb) scb.onchange = function(){ rubShowCols = scb.checked; rubRender(); };
   var bar = $("btnArea");     if (bar) bar.onclick = rubAreaDrawTog;
+  /* 範囲の微調整（v33.7）。1 押し 1mm（mm が分からなければ 4px）。 */
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .arb"), function(ab9){
+    ab9.onclick = function(){
+      var b9 = S.rub.allBox; if (!b9) return;
+      var mp9 = mmPerPx(), st9 = mp9 ? Math.max(1, Math.round(1 / mp9)) : 4;
+      var k9 = ab9.dataset.k, d9 = +ab9.dataset.d;
+      var cur = (k9 === "x1") ? b9.x : (k9 === "x2") ? b9.x + b9.w
+              : (k9 === "y1") ? b9.y : b9.y + b9.h;
+      rubAreaEdge(k9, cur + d9 * st9);
+      persist(); rubPanel(); rubRender();
+    };
+  });
   var barc = $("btnAreaClr"); if (barc) barc.onclick = rubAreaClear;
   /* **打ったその場で効かせる**（v21.99。本人の報告「認識しませんでした」）。
      `onchange` は欄から出たときにしか起きないので、数字を入れてすぐ

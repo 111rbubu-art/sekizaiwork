@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.9";
+var APP_VER = "v34.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -20617,6 +20617,9 @@ async function rubLineReg(L){
   fd.append("raw_image", await cvBlob(sh.cv), "raw.png");
   if (ink) fd.append("ink_image", await cvBlob(ink), "ink.png");
   fd.append("boxes", JSON.stringify(sh.boxes));
+  /* **切り抜きの位置も控える**（v34.0）。これが無いと、あとで
+     「登録した枠」と「いまの枠」を同じものさしで突き合わせられない。 */
+  fd.append("crop", JSON.stringify({ x: sh.x1, y: sh.y1, w: sh.w0, h: sh.h0, sc: sh.sc }));
   fd.append("key", rubLineKey(L));
   fd.append("char_line", sh.boxes.map(function(b){ return b.ch || "□"; }).join(""));
   fd.append("mm_per_px", String((mmPerPx() || 0) / (sh.sc || 1)));
@@ -20654,8 +20657,75 @@ async function rubLineRegGo(all){
    送るもの（拓本の切り抜き・AI の墨・人が直した枠・読み）を、そのまま 1 枚の絵に
    描いて見せる。サーバーに貯まった分も、同じ描き方で見せるので、突き合わせられる。 */
 var REGV = { tab: "now", ink: true, box: true };
+/* いまの枠は、何で決まっているか（v34.0）。**枠は まだ AI が描いていない**。 */
+function rubRegWhy(L){
+  var a = [];
+  if (L && L.boxFix) a.push("手で直した");
+  var lb = null; try { lb = rubLearnBox(); } catch(e){}
+  if (lb && lb.hMm) a.push("覚えた 1 字の大きさ " + lb.hMm.toFixed(1) + "mm" +
+                          (lb.carried ? "（前の拓本から）" : ""));
+  var n = 0; try { n = rubTehonCount(); } catch(e){}
+  if (n) a.push("手本帳 " + n + " 枚");
+  if (rubLineNGet && rubLineNAt){
+    var nn = 0; try { nn = rubLineNGet(); } catch(e){}
+    if (nn) a.push("字数の指定 " + nn + " 字");
+  }
+  if (!a.length) a.push("AI の墨のすき間だけ");
+  return a.join("／");
+}
+/* 登録した枠と、いまの枠を突き合わせる（v34.0。本人の問い
+   「枠が登録されたものが反映したのかはどう判断できるの」）。
+   **枠は まだ AI が描いていない**（貯めているだけ）ので、判断できるのは
+   「登録した枠と いまの枠が 同じかどうか」＝ 直した枠が生きているか。
+   重なり（IoU）0.6 以上を「同じ」とみる。 */
+function _regIoU(a, b){
+  var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+  var x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+  if (!(x2 > x1 && y2 > y1)) return 0;
+  var i = (x2 - x1) * (y2 - y1);
+  return i / (a.w * a.h + b.w * b.h - i);
+}
+/* サーバーに登録してある枠を、いまの切り抜きの画素に直して返す */
+async function rubRegSrvBoxes(L, sh){
+  var base = takuApiBase(); if (!base) return null;
+  var r;
+  try {
+    r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(rubLineKey(L)));
+  } catch(e){ return null; }
+  if (!r.ok) return null;
+  var m = await r.json();
+  var c = m && m.crop, bx = (m && m.boxes) || [];
+  if (!c || !bx.length) return null;
+  var sc0 = num(c.sc, 1) || 1;
+  return {
+    at: m.at || "",
+    boxes: bx.map(function(b){
+      /* 登録したときの切り抜き → 拓本の画素 → いまの切り抜き */
+      var X = c.x + b.x / sc0, Y = c.y + b.y / sc0;
+      return { x: (X - sh.x1) * sh.sc, y: (Y - sh.y1) * sh.sc,
+               w: b.w / sc0 * sh.sc, h: b.h / sc0 * sh.sc, ch: b.ch || "" };
+    })
+  };
+}
+/* 「同じ」「ちがう」「抜け」「余分」を数える */
+function rubRegMatch(now, old){
+  var used = {}, same = 0, moved = 0;
+  now.forEach(function(a){
+    var bi = -1, bv = 0;
+    old.forEach(function(b, j){
+      if (used[j]) return;
+      var v = _regIoU(a, b);
+      if (v > bv){ bv = v; bi = j; }
+    });
+    if (bi >= 0 && bv >= 0.6){ used[bi] = 1; same++; }
+    else if (bi >= 0 && bv >= 0.2){ used[bi] = 1; moved++; }
+  });
+  return { same: same, moved: moved,
+           miss: old.length - Object.keys(used).length,
+           extra: now.length - same - moved };
+}
 /* 1 枚に描く。raw（切り抜き）＋ 墨（水色）＋ 枠（まとまりの色）＋ 番号と読み */
-function rubRegDraw(rawCv, inkCv, boxes){
+function rubRegDraw(rawCv, inkCv, boxes, oldBoxes){
   var w = rawCv.width, h = rawCv.height;
   var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   var g = cv.getContext("2d");
@@ -20689,8 +20759,18 @@ function rubRegDraw(rawCv, inkCv, boxes){
     g.fillStyle = ch ? "rgba(46,125,50,.85)" : "rgba(120,120,120,.75)";
     g.fillRect(b.x + b.w - fs * 1.3, b.y, fs * 1.3, fs * 1.3);
     g.fillStyle = "#fff";
-    g.fillText(ch || "□", b.x + b.w - fs * 1.15, b.y + fs * 0.1);
+    g.fillText(ch || "\u25a1", b.x + b.w - fs * 1.15, b.y + fs * 0.1);
   });
+  /* **登録してある枠**を、白い点線で重ねる（v34.0）。
+     いまの枠（色の実線）とぴたり重なっていれば、登録した通りということ。 */
+  if (REGV.box && oldBoxes && oldBoxes.length){
+    g.save();
+    g.setLineDash([Math.max(2, w * 0.02), Math.max(2, w * 0.014)]);
+    g.lineWidth = Math.max(1, w * 0.006);
+    g.strokeStyle = "#ffffff";
+    oldBoxes.forEach(function(b){ g.strokeRect(b.x, b.y, b.w, b.h); });
+    g.restore();
+  }
   return cv;
 }
 function rubRegCard(cv, title, sub, btnHtml){
@@ -20728,7 +20808,10 @@ async function rubRegViewNow(){
     var L = ls[i];
     var sh = rubLineShot(L); if (!sh) continue;
     var ink = await rubLineInkShot(L, sh);
-    var cv = rubRegDraw(sh.cv, ink, sh.boxes);
+    /* **登録してある枠と突き合わせる**（v34.0） */
+    var srv = L.regAt ? await rubRegSrvBoxes(L, sh) : null;
+    var cmp = srv ? rubRegMatch(sh.boxes, srv.boxes) : null;
+    var cv = rubRegDraw(sh.cv, ink, sh.boxes, srv && srv.boxes);
     var read = sh.boxes.filter(function(b){ return b.ch; }).length;
     nCh += read; nAll += sh.boxes.length;
     if (L.regAt) nReg++;
@@ -20741,13 +20824,34 @@ async function rubRegViewNow(){
       sh.cv.width + '×' + sh.cv.height + 'px' +
       (L.regAt ? '<br><b style="color:#7ddc9b;">登録ずみ ' +
         esc(String(L.regAt).slice(0, 16).replace("T", " ")) + '</b>'
-              : '<br><span style="color:#ffb3b3;">まだ登録していません</span>');
+              : '<br><span style="color:#ffb3b3;">まだ登録していません</span>') +
+      /* **いまの枠を決めているのは何か**（v34.0。本人の問い
+         「枠が登録されたものが反映したのかはどう判断できるの」） */
+      '<br>枠のもと：' + esc(rubRegWhy(L)) +
+      (cmp
+        ? '<br>登録した枠とくらべて：<b style="color:' +
+          (cmp.moved + cmp.miss + cmp.extra === 0 ? '#7ddc9b' : '#ffd166') + ';">' +
+          cmp.same + ' 枠は同じ</b>' +
+          (cmp.moved ? '／' + cmp.moved + ' 枠はずれた' : '') +
+          (cmp.miss ? '／' + cmp.miss + ' 枠は消えた' : '') +
+          (cmp.extra ? '／' + cmp.extra + ' 枠は増えた' : '') +
+          (cmp.moved + cmp.miss + cmp.extra
+            ? '<br><span style="color:#ffd166;">ちがうので、もう一度 登録すると新しい枠に入れかわります</span>'
+            : '') +
+          '<br><span style="color:#9fb0c3;">白い点線＝登録してある枠</span>'
+        : (L.regAt
+            ? '<br><span style="color:#9fb0c3;">登録した枠は読めませんでした（サーバーに つながらないか、古い登録です）</span>'
+            : ''));
     body.appendChild(rubRegCard(cv, ci + " 列目", sub,
       '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ この列を登録</button>'));
   }
   info.innerHTML = ls.length + ' 列／' + nAll + ' 字（読めた ' + nCh + ' 字）。登録ずみ <b>' +
     nReg + ' / ' + ls.length + ' 列</b>。<b>この絵が そのまま教材になります</b>' +
-    '（切り抜き・墨・枠・読み）。' +
+    '（切り抜き・墨・枠・読み）。<br>' +
+    '<b style="color:#ffd166;">枠は まだ AI が描いていません</b>' +
+    '（いまは「AI の墨 → 覚えた 1 字の大きさ → 手本帳」で切っています）。' +
+    'ここで分かるのは <b>登録した枠と いまの枠が同じかどうか</b>です' +
+    '（白い点線＝登録してある枠）。' +
     (takuApiBase() ? '' : '　<b style="color:#ffb3b3;">' + esc(takuAiOffNote()) + '</b>');
   Array.prototype.forEach.call(body.querySelectorAll(".regOne"), function(b){
     b.onclick = async function(){

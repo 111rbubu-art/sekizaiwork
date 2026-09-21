@@ -393,6 +393,7 @@ async def line(
     raw_image: UploadFile = File(...),
     ink_image: UploadFile = File(None),
     boxes: str = Form(""),
+    crop: str = Form(""),
     key: str = Form(""),
     char_line: str = Form(""),
     mm_per_px: float = Form(0.0),
@@ -426,6 +427,15 @@ async def line(
         "mmPerPx": round(float(mm_per_px or 0), 6),
         "note": note[:200],
     }
+    # **切り抜きの位置**（拓本の画素での x,y,w,h と縮めた率）。
+    # 彫刻原稿アプリが「登録した枠」と「いまの枠」を突き合わせるのに使う。
+    try:
+        c = json.loads(crop or "{}")
+        if isinstance(c, dict) and all(k in c for k in ("x", "y", "w", "h")):
+            meta["crop"] = {k: round(float(c.get(k, 0)), 3)
+                            for k in ("x", "y", "w", "h", "sc") if k in c}
+    except ValueError:
+        pass
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     return {"status": "saved", "saved_id": name, "replaced": replaced,

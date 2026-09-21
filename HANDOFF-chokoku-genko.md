@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-21　**chokoku-genko.html = v33.7**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
+最終更新: 2026-09-21　**chokoku-genko.html = v33.8**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -5069,4 +5069,50 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
 解析ずみにすると `rubAreaLocked()` が true・つまみ 0 個・［範囲を描く］が disabled になること、
 右クリックのメニューに 17 個のボタン（bx-up〜g:・ai1・learn・補正）が出ること、
 ［命日］を押すと `items[0].g === "mei"` になること、`pageerror` 0 件を確認。
+
+---
+
+## v33.8 — 枠の角（ななめ）と、直した列を拓本AI に登録する口
+
+### 1. 文字枠を ななめに直せる（本人の指示「角をクリックしたら斜めでも修正できるように」）
+
+- つまみに **4 すみ**（`li:<i>:tl / tr / bl / br`）を足した。辺（t/b/l/r）より
+  **あと**に出しているので、角では角が勝つ。えらんでいる枠は角が小さな黄色い四角で見える。
+- カーソルは `.lihit.d1`（↘↖）と `.lihit.d2`（↗↙）。
+- `bindDrag` の動かす所に「名前が 2 文字なら ななめ」の枝を足した（たてと よこを いちどに）。
+- 実測（Playwright）：右下の角を 30px 引くと 幅・高さとも +37.5px（絵の倍率ぶん）。
+
+### 2. 直した列を、そのまま拓本AI に登録できる（本人の指示「AIに登録できるように進めましょう」）
+
+1 字ずつの［学習に登録］とは**別の教材**。**列まるごと**を送る。
+
+**画面**（4 ─ 直す の下）
+- ［⬆ この列を AI に登録］（`btnLineReg`）／［ぜんぶの列を登録］（`btnLineRegAll`）
+
+**送るもの**（`rubLineReg`）
+- `raw_image`：その列の切り抜き（枠ぜんぶを囲み、まわりを 12% つける。
+  横 384px・たて 3072px を上限に縮める）
+- `ink_image`：AI が読んだ墨（`L.aiUrl` を同じ切り抜きに合わせたもの。無ければ送らない）
+- `boxes`：切り抜きの画素での `[{x,y,w,h,ch,g}]`＝**人が直したあとの枠と読み**
+- `key`：`line_<案件>-<caseUid>_c<列番号>`（**同じ列を送り直すと上書き**）
+- `char_line`（読みをつなげたもの）・`mm_per_px`・`note`（手で直した列か）
+
+**サーバー**（`takuhon-ai/app.py`。置き場は `dataset/lines/<key>/`）
+- `POST /api/takuhon/line` … `raw.png` / `ink.png` / `meta.json` を書く。
+  返りは `{status, saved_id, replaced, n, lines}`。**学習は回さない**（貯めるだけ）。
+- `GET /api/takuhon/lines` … 一覧（id・字数・日付・読み・墨の有無）
+- `GET /api/takuhon/lineimg/{pid}/{raw|ink}.png` … 画像
+- `GET /api/takuhon/status` に `lines`（貯まった列の数）を足した。
+- 枠の読み取り `_line_boxes()` は、数でないもの・大きさ 0 のものを捨て、200 枠まで。
+  `_line_dir()` は名前を洗って、置き場の外へ出られないようにしてある。
+
+**確かめたこと**：にせのサーバー（127.0.0.1:8899）を立て、Playwright から
+［この列を AI に登録］を押して `POST /api/takuhon/line` が飛ぶこと、
+`boxes` に 3 枠ぶん（「令」「和」「」）と `key=line_案件-…_c1` が入ることを確認。
+サーバー側は `_line_boxes` / `_line_dir` を直に呼んで、
+おかしな枠を捨てること・`../etc` を断ることを確認。
+
+**次にやること**：この材料で拓本AI 側を作る。
+（a）`unet.py` を 2 出力にして「字の中心」を出す → 枠を AI に描かせる
+（b）`char_guess.py` を `/api/takuhon/guess` として開き、手本帳と合わせて読む
 

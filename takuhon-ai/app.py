@@ -3,6 +3,9 @@
   POST /api/takuhon/clean      切り抜きを渡すと、墨の白黒マスク（PNG）を返す
   POST /api/takuhon/feedback   人が直した正解を貯める（学習は回さない。すぐ返す）
                                set=ink なら①「読む」用、set=shape なら②「整える」用
+  POST /api/takuhon/line       人が直した**列まるごと**を貯める（字の枠と読みつき）
+  GET  /api/takuhon/lines      貯まった列の一覧
+  GET  /api/takuhon/lineimg/.. 列の画像（raw／ink）
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
   GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
   GET  /api/takuhon/curve      1 エポックごとの成績（いまの回）
@@ -58,6 +61,10 @@ SHAPE_VAL = os.path.join(ROOT, "dataset", "shape_val")    # ②「整える」�
 # 混ぜて学習することも、別々に学習して比べることもできるようにするため。
 SHAPE_RUB = os.path.join(ROOT, "dataset", "shape_rub")          # ②・拓本から取り出した学習用
 SHAPE_RUB_VAL = os.path.join(ROOT, "dataset", "shape_rub_val")  # ②・拓本から取り出した検証用
+# **人が直した列まるごと**（2026-09-21。本人の指示「AIに登録できるように進めましょう」）。
+# 1 字ずつの組（dataset/pairs）とは別物。字の切り分け（枠）と読みを教えるための材料で、
+# のちに「字の中心を出すモデル」と「字を見分けるモデル」の学習に使う。
+LINES = os.path.join(ROOT, "dataset", "lines")
 FONTS = os.path.join(ROOT, "fonts")                       # 彫っている書体の置き場
 TRAINLOG = os.path.join(RUNS, "train.log")
 TRAINPID = os.path.join(RUNS, "train.pid")
@@ -230,6 +237,7 @@ def status():
         "model": INFO,
         "pairs": n,
         "val": len(D.list_pairs(VALDIR)),
+        "lines": len(_line_ids()),
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
                   "rub": len(D.list_pairs(SHAPE_RUB)),
                   "rubVal": len(D.list_pairs(SHAPE_RUB_VAL)),
@@ -343,6 +351,116 @@ async def feedback(
     return {"status": "saved", "saved_id": name, "replaced": replaced,
             "set": {SHAPE: "shape", SHAPE_RUB: "shape_rub"}.get(root, "ink"),
             "pairs": len(D.list_pairs(root))}
+
+
+def _line_dir(pid):
+    """dataset/lines の中の 1 つ。変な名前で外へ出られないようにする。"""
+    nm = "".join(c for c in (pid or "") if c.isalnum() or c in "-_." or ord(c) > 127)
+    if not nm or nm.startswith("."):
+        return None
+    d = os.path.join(LINES, nm)
+    return d if os.path.isdir(d) else None
+
+
+def _line_boxes(s):
+    """枠の並びを読む。[{x,y,w,h,ch,g}, ...]。おかしいものは捨てる。"""
+    try:
+        v = json.loads(s or "[]")
+    except ValueError:
+        return []
+    if not isinstance(v, list):
+        return []
+    out = []
+    for it in v[:200]:
+        if not isinstance(it, dict):
+            continue
+        try:
+            b = {k: float(it.get(k, 0)) for k in ("x", "y", "w", "h")}
+        except (TypeError, ValueError):
+            continue
+        if b["w"] <= 0 or b["h"] <= 0:
+            continue
+        b = {k: round(v2, 1) for k, v2 in b.items()}
+        b["ch"] = str(it.get("ch") or "")[:4]
+        b["g"] = str(it.get("g") or "")[:8]
+        out.append(b)
+    return out
+
+
+@app.post("/api/takuhon/line")
+async def line(
+    raw_image: UploadFile = File(...),
+    ink_image: UploadFile = File(None),
+    boxes: str = Form(""),
+    key: str = Form(""),
+    char_line: str = Form(""),
+    mm_per_px: float = Form(0.0),
+    note: str = Form(""),
+):
+    """人が直した**列まるごと**を貯める。**同じ key なら上書き**（feedback と同じ）。
+
+    raw_image … その列の切り抜き（拓本のまま。まわりを少しつけたもの）
+    ink_image … AI が読んだ墨（あれば。答え合わせと、枠の学習の入力に使う）
+    boxes     … その切り抜きの画素での [{x,y,w,h,ch,g}, ...]。**人が直したあとの枠**
+    char_line … 列の読み（上から順に つなげた字）
+
+    ここでも**学習は回さない**。貯めるだけ。
+    """
+    os.makedirs(LINES, exist_ok=True)
+    name = key.strip() or datetime.now().strftime("line_%Y%m%d-%H%M%S")
+    name = "".join(c for c in name if c.isalnum() or c in "-_." or ord(c) > 127)
+    d = os.path.join(LINES, name)
+    replaced = os.path.isdir(d)
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "raw.png"), "wb").write(await raw_image.read())
+    if ink_image is not None:
+        open(os.path.join(d, "ink.png"), "wb").write(await ink_image.read())
+    bx = _line_boxes(boxes)
+    meta = {
+        "key": name,
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "n": len(bx),
+        "boxes": bx,
+        "chars": char_line[:120],
+        "mmPerPx": round(float(mm_per_px or 0), 6),
+        "note": note[:200],
+    }
+    with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    return {"status": "saved", "saved_id": name, "replaced": replaced,
+            "n": len(bx), "lines": len(_line_ids())}
+
+
+def _line_ids():
+    try:
+        return sorted(x for x in os.listdir(LINES)
+                      if os.path.isdir(os.path.join(LINES, x)))
+    except OSError:
+        return []
+
+
+@app.get("/api/takuhon/lines")
+def lines(limit: int = 60, offset: int = 0):
+    """貯まった列の一覧。中身は meta.json だけ読む（画像は開かない）。"""
+    ids = _line_ids()
+    out = []
+    for pid in ids[offset:offset + max(1, min(limit, 300))]:
+        m = _read_json(os.path.join(LINES, pid, "meta.json"), {}) or {}
+        out.append({"id": pid, "n": m.get("n", 0), "at": m.get("at", ""),
+                    "chars": m.get("chars", ""),
+                    "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))})
+    return {"all": len(ids), "offset": offset, "items": out}
+
+
+@app.get("/api/takuhon/lineimg/{pid}/{kind}.png")
+def lineimg(pid: str, kind: str):
+    d = _line_dir(pid)
+    if d is None or kind not in ("raw", "ink"):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    f = os.path.join(d, kind + ".png")
+    if not os.path.exists(f):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return FileResponse(f, media_type="image/png")
 
 
 # ----- 見るための口（モニタリング）。読むだけで、学習には触らない ------------

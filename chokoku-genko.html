@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.4";
+var APP_VER = "v31.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13315,10 +13315,69 @@ function _tehUnpack(str, len){
   }
   return u8;
 }
-function rubTehonAll(){
-  if (!S.rub.tehon || typeof S.rub.tehon !== "object") S.rub.tehon = {};
-  return S.rub.tehon;
+/* ───── **手本帳は 案件をまたいで ためる**（v31.5。本人の問い
+   「これは、AIの縁取り等の学習とは別で、覚えられるのですか？」）─────
+   ・**AI（拓本AI サーバー）の学習とは まったく別物**。
+     あちらは ［学習に登録］で絵の組をサーバーへ送り、モデルを鍛えるもの。
+     こちらは **この画面の中だけ**で、字の形と名前を並べて見くらべる覚え書き。
+   ・v31.4 までは `S.rub.tehon`（＝**案件の中**）に置いていたので、
+     別の拓本（別の案件）を開くと **覚えたことが消えて**いた。
+     字の形は 拓本がちがっても使えるので、**この画面の持ち物**として
+     `localStorage("chokoku.tehon")` にためる。
+   ・案件ファイルにも写しを入れておく（引き継ぎ・控えのため）。
+     案件を開いたときは、その写しを **足し合わせる**（消さない）。 */
+var TEHON = null, _tehMergedSig = "";
+function _tehLoad(){
+  if (!TEHON){
+    try { TEHON = JSON.parse(localStorage.getItem("chokoku.tehon") || "null"); } catch(e){}
+    if (!TEHON || typeof TEHON !== "object") TEHON = {};
+    if (!TEHON.t || typeof TEHON.t !== "object") TEHON.t = {};
+    if (!TEHON.n || typeof TEHON.n !== "object") TEHON.n = {};
+  }
+  _tehMergeFromCase();
+  return TEHON;
 }
+function _tehSave(){
+  if (!TEHON) return;
+  try { localStorage.setItem("chokoku.tehon", JSON.stringify(TEHON)); } catch(e){}
+  /* 案件にも写しを置く（引き継ぎのため）。持ち主は localStorage の方。 */
+  try { S.rub.tehon = TEHON.t; S.rub.tehonNg = TEHON.n; } catch(e){}
+  _tehCache = null; _tehCacheN = -1;
+}
+/* 案件に入っていた手本を、持ち物に足し合わせる（同じ枚は入れない） */
+function _tehMergeFromCase(){
+  var src = (S.rub && S.rub.tehon) || null, srcN = (S.rub && S.rub.tehonNg) || null;
+  if (src === TEHON.t && srcN === TEHON.n) return;          /* もう同じ物を見ている */
+  var sig = "";
+  try { sig = JSON.stringify(src || {}).length + "/" + JSON.stringify(srcN || {}).length; } catch(e){}
+  if (sig === _tehMergedSig) return;
+  _tehMergedSig = sig;
+  function key(e){ return (typeof e === "string") ? e : ((e && e.b) || ""); }
+  function mrg(from, to, cap){
+    var n = 0;
+    Object.keys(from || {}).forEach(function(ch){
+      var list = from[ch] || [];
+      if (!to[ch]) to[ch] = [];
+      var have = {};
+      to[ch].forEach(function(e){ have[key(e)] = 1; });
+      list.forEach(function(e){
+        var k = key(e);
+        if (!k || have[k]) return;
+        to[ch].push(e); have[k] = 1; n++;
+      });
+      while (to[ch].length > cap) to[ch].shift();
+      if (!to[ch].length) delete to[ch];
+    });
+    return n;
+  }
+  var add = mrg(src, TEHON.t, TEH_MAX_PER) + mrg(srcN, TEHON.n, TEHNG_MAX_PER);
+  if (add){ _tehCache = null; _tehCacheN = -1; }
+  try {
+    localStorage.setItem("chokoku.tehon", JSON.stringify(TEHON));
+    S.rub.tehon = TEHON.t; S.rub.tehonNg = TEHON.n;
+  } catch(e){}
+}
+function rubTehonAll(){ return _tehLoad().t; }
 function rubTehonCount(){
   var t = rubTehonAll(), n = 0;
   Object.keys(t).forEach(function(k){ n += (t[k] || []).length; });
@@ -13349,6 +13408,7 @@ function rubTehonAdd(ch, m, n){
   t[ch].push({ b: _tehPack(q), r: Math.round(_tehRatio(m, n) * 100) / 100 });
   while (t[ch].length > TEH_MAX_PER) t[ch].shift();
   _tehCache = null; _tehCacheN = -1;
+  _tehSave();
   return true;
 }
 /* ───── **ちがう帳**（v31.4。本人の問い
@@ -13360,10 +13420,7 @@ function rubTehonAdd(ch, m, n){
    入れ物は `S.rub.tehonNg = { "十": ["<詰めた字づら>", …] }`。
    見くらべのとき、ちがう帳に似ている字は その読みを外す。 */
 var TEHNG_MAX_PER = 12;
-function rubTehonNgAll(){
-  if (!S.rub.tehonNg || typeof S.rub.tehonNg !== "object") S.rub.tehonNg = {};
-  return S.rub.tehonNg;
-}
+function rubTehonNgAll(){ return _tehLoad().n; }
 function rubTehonNgCount(){
   var t = rubTehonNgAll(), n = 0;
   Object.keys(t).forEach(function(k){ n += (t[k] || []).length; });
@@ -13378,6 +13435,7 @@ function rubTehonNgAdd(ch, m, n){
   t[ch].push({ b: _tehPack(q), r: Math.round(_tehRatio(m, n) * 100) / 100 });
   while (t[ch].length > TEHNG_MAX_PER) t[ch].shift();
   _tehCache = null; _tehCacheN = -1;
+  _tehSave();
   return true;
 }
 /* ちがう帳の中で、この墨にいちばん似ている枚の 似ぐあい（v31.4）。
@@ -13819,6 +13877,7 @@ function rubTeachHere(ch){
       });
     }
   } catch(e){}
+  if (dropped) _tehSave();
   /* ②　手本帳に入れる */
   var okT = rubTehonAdd(ch, kT.m, kT.n);
   /* ①　この字の読みを直す */
@@ -13873,6 +13932,7 @@ function rubTeachNo(){
       if (!t0[was].length) delete t0[was];
     }
   } catch(e){}
+  if (dropped) _tehSave();
   /* ③ 読みと印を消す。グループも、その字だけ外す */
   if (it.anch) delete it.anch;
   if (it.pick === was) it.pick = "";
@@ -13943,6 +14003,9 @@ function rubGrpHtml(){
     '<br>［学習に登録］した字と、④ の候補から<b>あなたが決めた字</b>が手本になります。' +
     '拓本のほんものの字形なので、楷書のフォントより よく当たります。' +
     '（フォントが無くても、手本帳だけで ［文字で見分ける］が動きます）' +
+    '<br>手本帳は <b>この画面の持ち物</b>です。<b>別の拓本（別の案件）を開いても残ります</b>。' +
+    '案件ファイルにも写しが入り、開いたときに足し合わせます。' +
+    '<b>拓本AI の学習（［学習に登録］でサーバーへ送るもの）とは 別物</b>です。' +
     '<br><b>戒名の字など、覚えさせる必要のない字を読み違えたとき</b>は、' +
     'その字をえらんで ［これはちがう］ を押してください。' +
     '名前は要りません。「この形は その字ではない」とだけ覚えます。</p>';
@@ -17842,7 +17905,10 @@ function rubPanel(){
   var btc = $("btnTehClr");
   if (btc) btc.onclick = function(){
     if (!confirm("拓本の手本帳と ちがう帳を空にします。よろしいですか。")) return;
-    S.rub.tehon = {}; S.rub.tehonNg = {}; _tehCache = null; _tehCacheN = -1;
+    TEHON = { t: {}, n: {} }; _tehMergedSig = "";
+    S.rub.tehon = {}; S.rub.tehonNg = {};
+    try { localStorage.setItem("chokoku.tehon", JSON.stringify(TEHON)); } catch(e){}
+    _tehCache = null; _tehCacheN = -1;
     persist(); rubPanel();
     msg("拓本の手本帳と ちがう帳を、空にしました。");
   };

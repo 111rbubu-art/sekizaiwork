@@ -360,6 +360,31 @@ torch の読み込みに十数秒かかり、その間は何も書かれてい�
 `runs/train.pid` の pid が居ないのに `progress.json` が「学習中」のままなら、
 **落ちたものとして見せる**（パソコンごと落ちたときなど。待ち続けずに済む）。
 
+## 5z. **枠と読み**の学習（2026-09-21 に足した）
+
+墨（`train.py`）のほかに、**2 つ**ある。材料はどちらも彫刻原稿アプリの
+［⬆ 字枠を登録］で `dataset/lines/` に貯まる。
+
+| | 何を出すか | 材料 | 学習 | モデル |
+|---|---|---|---|---|
+| ① 墨 | 墨の白黒 | `dataset/pairs` | `train.py` | `runs/current.pth` |
+| ② 枠 | 1 字ずつの枠 | `dataset/lines` | `train_box.py` | `runs/box_current.pth` |
+| ③ 読み | 字の候補 | `dataset/lines` の読み ＋ `dataset/chars`（手本帳） | `train_char.py` | `runs/char_current.pth` |
+
+```bash
+cd /opt/takuhon-ai && source .venv/bin/activate
+python3 train_box.py  --epochs 80     # 枠（列が 8 本以上 要る）
+python3 train_char.py --epochs 60     # 読み（1 字につき 3 枚以上ある字だけ）
+```
+
+**材料が足りなければ、そう言ってすぐ終わる**（前のモデルは そのまま）。
+3 つまとめて回すなら `bash train-nightly.sh`。夜の自動実行（`takuhon-train.timer`）も
+これを呼ぶようにしてある。
+
+貯まり具合は `curl -s localhost:8077/api/takuhon/status | python3 -m json.tool` の
+`lines`（列の数）・`box`・`char` で分かる。
+彫刻原稿アプリの［🔍 登録した字枠を見る］→［サーバーに貯まった分］でも、絵で見られる。
+
 ## 6. サーバーを動かす
 
 ```bash
@@ -489,6 +514,21 @@ curl -X POST http://localhost:8077/api/takuhon/feedback \
   ます目より細かい縁が取れるので本来はこちら（アプリはいまのところ 0/1 で受けている）
 - **置き直したモデルは、日付が古くても読む**。`cp` でしまい直すと日付が元のままのことがあり、
   「置いたのに、いつまでも『モデルがありません』」になった（v2026-09-12 で直した）
+
+### 2026-09-21 に足した口
+
+```
+POST /api/takuhon/line              字枠を貯める（列 1 本ぶん。同じ名前は上書き）
+GET  /api/takuhon/lines             貯まった列の一覧（off＝学習から外した印、on＝使う数）
+GET  /api/takuhon/line/{id}         その列の枠と読み
+POST /api/takuhon/line/{id}/off     学習から外す／戻す（off=true / false）
+DELETE /api/takuhon/line/{id}       消す
+GET  /api/takuhon/lineimg/{id}/raw.png（ink.png）  その列の絵
+POST /api/takuhon/boxes             列の切り抜き → 1 字ずつの枠
+POST /api/takuhon/guess             1 字の切り抜き → 読みの候補
+POST /api/takuhon/chars             手本帳の 1 字を貯める
+GET  /api/takuhon/chars             字ごとの枚数
+```
 
 ## つまずいたところ（2026-09-10・実際に直した記録）
 

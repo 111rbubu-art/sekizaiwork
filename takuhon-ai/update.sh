@@ -12,12 +12,19 @@ echo "■ 新しいものを取ってきます…"
 git clone --depth 1 -q https://github.com/111rbubu-art/sekizaiwork.git "$TMP/sw"
 
 echo "■ 入れ替えます（データ・モデル・書体は そのまま）…"
-for f in app.py train.py unet.py data.py make_synth.py import_pairs.py \
-         dash.html check-env.sh update.sh README.md requirements.txt \
-         "SPEC-輪郭と補正.md" Dockerfile docker-compose.yml \
+# **プログラムは ぜんぶ写す**（2026-09-21）。
+# 前は写すファイル名を並べて書いていたので、**新しく足したファイルが写らず**、
+# app.py だけ新しくなって「boxnet が無い」で上がらなくなる、という事故になる。
+# ここでは *.py と 付き物（画面・設定・説明）をまとめて写す。
+# dataset/ runs/ fonts/ .venv/ には触らない。
+cp -f "$TMP/sw/takuhon-ai/"*.py "$HERE/" 2>/dev/null || true
+for f in dash.html check-env.sh update.sh README.md requirements.txt \
+         "SPEC-輪郭と補正.md" Dockerfile docker-compose.yml train-nightly.sh \
          takuhon-ai.service takuhon-train.service takuhon-train.timer; do
   [ -f "$TMP/sw/takuhon-ai/$f" ] && cp -f "$TMP/sw/takuhon-ai/$f" "$HERE/$f"
 done
+chmod +x "$HERE/update.sh" "$HERE/check-env.sh" "$HERE/train-nightly.sh" 2>/dev/null || true
+echo "　写したプログラム: $(ls "$HERE"/*.py | wc -l) 本"
 
 if [ -x "$HERE/.venv/bin/pip" ]; then
   echo "■ 足りない部品があれば入れます…"

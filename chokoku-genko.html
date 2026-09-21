@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.2";
+var APP_VER = "v32.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13766,7 +13766,9 @@ function _anchHit(cands, set){
 /* その列の墨（`RUB.aiBand` が別の列のものなら、控えの絵から読み直す） */
 function rubBandOfLine(L){
   if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey() &&
-      (!L.aiId || RUB.aiBand.id === L.aiId)) return Promise.resolve(RUB.aiBand);
+      (!L.aiId || RUB.aiBand.id === L.aiId ||
+       (L.aiUrl && RUB.aiBand.url === L.aiUrl)))      /* 読み直した墨（v32.3） */
+    return Promise.resolve(RUB.aiBand);
   return rgBandFromUrl(L.aiUrl, L.aiSc);
 }
 /* ───── **覚えたことで、もう一度判定する**（v32.1。本人の問い
@@ -14124,7 +14126,25 @@ async function rubAnchorGo(){
    ③ **まちがって当たった手本を捨てる**。まちがいの元が残っていると、
       いくら正しい手本を足しても また同じ読み違いをする。
       捨てるのは「この墨と 0.5 以上似ている、ちがう字の手本」だけ。 */
-function rubTeachHere(ch){
+/* ───── **その列の墨で、1 字ぶんを取り出す**（v32.3。本人の報告
+   「過去に登録しているのに墨がないといわれることが多いです」）─────
+   `rubItemInk` は **いま画面にある墨（`RUB.aiBand`）**しか見ない。
+   ［拓本ぜんたいを通す］のあとは **最後の列の墨**しか残らないので、
+   ほかの列の字をえらぶと「墨が読めません」になっていた。
+   列ごとに控えてある墨（`L.aiUrl`）を読み直してから取り出す。 */
+async function rubItemInkOf(L, it){
+  var keep = RUB.aiBand, k = null;
+  try {
+    var A = await rubBandOfLine(L);
+    if (A && A.map){
+      RUB.aiBand = A;
+      k = rubItemInk(it);
+    }
+  } catch(e){}
+  RUB.aiBand = keep;
+  return k;
+}
+async function rubTeachHere(ch){
   ch = String(ch || "").trim();
   if (!ch){ msg("覚えさせる字を 1 字入れてください。", true); return; }
   ch = Array.from(ch)[0];
@@ -14133,11 +14153,10 @@ function rubTeachHere(ch){
     msg("先に、直したい字を絵の上でえらんでください。", true); return;
   }
   var it = L.items[rubSelItem];
-  var A0 = RUB.aiBand;
-  var kT = null;
-  try { kT = rubItemInk(it); } catch(e){}
+  var kT = await rubItemInkOf(L, it);
   if (!kT){
-    msg("この字の墨が読めません。先に［AI 縁取りを実行］で、この列を通してください。", true);
+    msg("この字の墨が読めません（この列は まだ AI に通していないか、" +
+        "控えの墨が残っていません）。［AI 縁取りを実行］で この列を通してください。", true);
     return;
   }
   var was = (it.anch && it.anch.ch) || it.pick || "";
@@ -14184,7 +14203,7 @@ function rubTeachHere(ch){
    「登録する必要のない漢字を間違えた場合…」）─────
    戒名の字などは、名前を覚えさせても手本帳が太るだけ。
    **「この形は ○ ではない」**とだけ覚えて、読みを消す。 */
-function rubTeachNo(){
+async function rubTeachNo(){
   var L = rubCol();
   if (!L || !L.items || rubSelItem < 0 || !L.items[rubSelItem]){
     msg("先に、直したい字を絵の上でえらんでください。", true); return;
@@ -14192,10 +14211,10 @@ function rubTeachNo(){
   var it = L.items[rubSelItem];
   var was = (it.anch && it.anch.ch) || it.pick || "";
   if (!was){ msg("この字には、まだ読みが付いていません。", true); return; }
-  var kT = null;
-  try { kT = rubItemInk(it); } catch(e){}
+  var kT = await rubItemInkOf(L, it);
   if (!kT){
-    msg("この字の墨が読めません。先に［AI 縁取りを実行］で、この列を通してください。", true);
+    msg("この字の墨が読めません（この列は まだ AI に通していないか、" +
+        "控えの墨が残っていません）。［AI 縁取りを実行］で この列を通してください。", true);
     return;
   }
   /* ① ちがう帳に入れる */
@@ -14239,13 +14258,13 @@ function rubTeachNo(){
    ・手本帳の上位 5 つ（字・似ぐあい・縦横比）
    ・ちがう帳に引っかかっていないか
    ・0.38（当たりの線）に届いているか */
-function rubProbe(){
+async function rubProbe(){
   var L = rubCol();
   if (!L || !L.items || rubSelItem < 0 || !L.items[rubSelItem]){
     msg("先に、調べたい字を絵の上でえらんでください。", true); return;
   }
-  var it = L.items[rubSelItem], k = null;
-  try { k = rubItemInk(it); } catch(e){}
+  var it = L.items[rubSelItem];
+  var k = await rubItemInkOf(L, it);
   if (!k){
     msg("この字の墨が読めません（この列は まだ AI に通していないか、" +
         "墨が残っていません）。［AI 縁取りを実行］か［覚えたことで 再判定］を先に。", true);
@@ -14602,7 +14621,16 @@ function rgBandFromUrl(url, sc0){
         var d = g.getImageData(0, 0, c.width, c.height).data;
         var map = new Uint8Array(c.width * c.height);
         for (var i = 0, k = 0; i < d.length; i += 4, k++) map[k] = d[i+3];
-        var o = { map: map, mw: c.width, mh: c.height, sc: sc };
+        /* ───── **読み直した墨にも、元の絵と向きを持たせる**（v32.3。本人の報告
+           「覚えたことで再判定をすると、3列あると 1列しか判断せず、
+             他の列は墨が無くなっています」）─────
+           ここは `{map, mw, mh, sc}` しか返していなかった。
+           これを `RUB.aiBand` に入れて見立て直すと、
+           `rubLineTakeAi` が控える **`aiUrl` が空**になり、
+           **その列の青い墨が消える**（次からは読み直すことも できなくなる）。
+           `geo` が無いせいで「別の向きの墨」とみなされる取りちがえも起きていた。 */
+        var o = { map: map, mw: c.width, mh: c.height, sc: sc,
+                  url: url, geo: rubGeoKey(), id: 0, fromUrl: 1 };
         RGMASK = { url: url, m: o };
         res(o);
       } catch(e){ res(null); }
@@ -15161,7 +15189,7 @@ async function rgSave(which){
     var tehOK = false;
     try {
       if (ch){
-        var kT = rubItemInk(it);
+        var kT = rubItemInk(it);                      /* 登録の窓は その列の墨を出している */
         if (kT) tehOK = rubTehonAdd(ch, kT.m, kT.n);
       }
     } catch(eT){}
@@ -18294,16 +18322,30 @@ function rubPanel(){
     bsd.disabled = false; bsd.textContent = "サーバーから戻す";
   };
   var bpr = $("btnProbe");
-  if (bpr) bpr.onclick = rubProbe;
+  if (bpr) bpr.onclick = async function(){
+    bpr.disabled = true; bpr.textContent = "調べています…";
+    try { await rubProbe(); } catch(e){}
+    bpr.disabled = false; bpr.textContent = "この字を調べる";
+  };
   var btn9 = $("btnTeachNo");
-  if (btn9) btn9.onclick = rubTeachNo;
+  if (btn9) btn9.onclick = async function(){
+    btn9.disabled = true;
+    try { await rubTeachNo(); } catch(e){}
+    btn9.disabled = false;
+  };
   var bte = $("btnTeach");
-  if (bte) bte.onclick = function(){
+  if (bte) bte.onclick = async function(){
     var el = $("rTeachCh");
-    rubTeachHere(el ? el.value : "");
+    bte.disabled = true;
+    try { await rubTeachHere(el ? el.value : ""); } catch(e){}
+    bte.disabled = false;
   };
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .teq"), function(tb){
-    tb.onclick = function(){ rubTeachHere(tb.dataset.c || ""); };
+    tb.onclick = async function(){
+      tb.disabled = true;
+      try { await rubTeachHere(tb.dataset.c || ""); } catch(e){}
+      tb.disabled = false;
+    };
   });
   var btc = $("btnTehClr");
   if (btc) btc.onclick = function(){

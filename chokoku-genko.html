@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v34.3";
+var APP_VER = "v34.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -15236,6 +15236,9 @@ function rubMemHtml(){
     '<button class="mini" id="btnTehSpDn" title="サーバーの控えを足し合わせます">戻す</button>' +
     '<button class="mini" id="btnTehBak" title="1 つ前の手本帳に戻します">1 つ前</button>' +
     '<button class="mini" id="btnTehClr" title="手本帳をぜんぶ消します">空にする</button>' +
+    '<button class="mini" id="btnTehAi" ' +
+    'title="手本帳の字を 拓本AI へ送り、読みのモデルの学習材料にします">' +
+    '🤖 読みの学習へ送る</button>' +
     '</div>';
   var lb8 = rubLearnBox();
   if (lb8 && lb8.hMm){
@@ -19168,7 +19171,10 @@ function rubPanel(){
     }
 
     /* ── 4c 読み ── */
-    h += '<p class="hint" style="margin:10px 0 2px;"><b>4c 読み</b></p>';
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>4c 読み</b>' +
+      ' <button class="mini" id="btnReadAi" ' +
+      'title="この列の字を、拓本AI に読ませます（手本帳ではなく、学習した読みのモデル）">' +
+      '🤖 AI に読ませる</button></p>';
     h += rubReadHtml();
 
     /* まとまり（戒名・俗名・命日・年齢）は、枠を右クリックして選ぶ（v33.7。本人の指示
@@ -19294,6 +19300,20 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var bra = $("btnReadAi");
+  if (bra) bra.onclick = async function(){
+    bra.disabled = true; bra.textContent = "読ませています…";
+    try { await rubReadAiGo(); } catch(e){
+      msg("読みの AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
+    }
+    bra.disabled = false; bra.textContent = "🤖 AI に読ませる";
+  };
+  var bta9 = $("btnTehAi");
+  if (bta9) bta9.onclick = async function(){
+    bta9.disabled = true;
+    try { await rubTehSendAi(); } catch(e){}
+    bta9.disabled = false;
+  };
   var brp = $("btnLineRegPick");
   if (brp) brp.onclick = async function(){
     brp.disabled = true;
@@ -20878,6 +20898,114 @@ async function rubBoxAiGo(){
       (got.model && got.model.f1 ? "／この版の当たり具合 F1 " + got.model.f1 : "") +
       "）。ちがう所は枠を直して、［この列を AI に登録］で教えてください。", false, true);
   return m2;
+}
+/* ───── 読みを AI に聞く（v34.4。本人の問い「文字を登録は AI にしないのですか」）─────
+   いままでの読みは、手本帳との重ね合わせ（IoU）だけだった。
+   ここでは **1 字の切り抜きを拓本AI に渡して、候補を返してもらう**。
+   手本帳は残し、AI がはっきりしないときの保険にする。 */
+/* 1 字を切り出す（枠の 1.15 倍。学習と同じ切り方） */
+function rubCharCv(it, pad){
+  var b = it && it.px; if (!b || !RUB.img) return null;
+  var s = Math.max(b.w, b.h) * (pad || 1.15);
+  var cx = b.x + b.w/2, cy = b.y + b.h/2;
+  var n = 128;
+  var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+  var g = cv.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, n, n);
+  g.drawImage(RUB.img, cx - s/2, cy - s/2, s, s, 0, 0, n, n);
+  return cv;
+}
+/* 1 字ぶん聞く。返りは [{ch,p}, ...]（高い順） */
+async function rubGuessAi(it){
+  var base = takuApiBase();
+  if (!base) throw new Error(takuAiOffNote());
+  var cv = rubCharCv(it); if (!cv) throw new Error("切り抜けません");
+  var fd = new FormData();
+  fd.append("file", await new Promise(function(res){ cv.toBlob(res, "image/png"); }), "c.png");
+  fd.append("top", "5");
+  var r = await fetch(base + "/api/takuhon/guess", { method: "POST", body: fd });
+  if (r.status === 503){
+    var e5 = await r.json().catch(function(){ return {}; });
+    throw new Error(e5.detail || "読みのモデルがまだありません");
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  var j = await r.json();
+  return { cands: j.cands || [], model: j.model || {} };
+}
+/* いまの列を、ぜんぶ AI に読ませる。
+   はっきりしている字（いちばん上が 0.5 以上）だけ読みに入れ、
+   そうでない字は **候補だけ**持っておく（あなたが選べるように）。 */
+async function rubReadAiGo(){
+  var L = rubCol();
+  if (!L || !L.items || !L.items.length){ msg("先に枠を作ってください。", true); return; }
+  if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
+  var ok = 0, hold = 0, ng = 0, last = "", mdl = null;
+  for (var i = 0; i < L.items.length; i++){
+    var it = L.items[i];
+    if (it.anch && it.anch.hand) continue;          /* 人が決めた読みは触らない */
+    msg("AI に読ませています… " + (i+1) + " / " + L.items.length, false, true);
+    try {
+      var g = await rubGuessAi(it);
+      mdl = g.model;
+      it.ai = g.cands;                              /* 候補は残す（選び直せるように） */
+      /* **どれだけ確かなら読みに入れるか**（v34.4）。
+         字の数が増えるほど 1 つあたりの数字は小さくなるので、
+         「0.35 以上」か「2 番めの 2 倍以上」なら採る（実測：平 0.44／2 番め 0.10）。 */
+      var top = g.cands[0], sec = g.cands[1];
+      var sure = top && (top.p >= 0.35 ||
+                         (top.p >= 0.2 && (!sec || top.p >= sec.p * 2)));
+      if (sure){
+        it.anch = { ch: top.ch, by: "ai", p: top.p };
+        ok++;
+      } else { hold++; }
+    } catch(e){ ng++; last = (e && e.message) || ""; }
+  }
+  persist(); rubPanel(); rubRender();
+  msg((ng ? "読みの AI に通せませんでした（" + esc(last) + "）。"
+          : "AI が " + ok + " 字を読みました" +
+            (hold ? "／" + hold + " 字は迷っています（候補だけ出しています）" : "") +
+            (mdl && mdl.acc ? "／この版の当たり具合 " + mdl.acc : "") +
+            "。ちがう字は［これは この字］で直してください。"), !!ng, true);
+}
+/* ───── 手本帳を、読みの学習へ送る（v34.4）─────
+   ブラウザが覚えている 1 字（64×64 の 0/1）を PNG にして
+   `/api/takuhon/chars` へ。拓本に出にくい字の穴うめになる。 */
+function _tehCv(bits, n){
+  var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+  var g = cv.getContext("2d"), im = g.createImageData(n, n), o = im.data;
+  for (var i = 0; i < n*n; i++){
+    var v = bits[i] ? 0 : 255;                      /* 墨を黒、地を白（拓本と同じ向き） */
+    o[i*4] = o[i*4+1] = o[i*4+2] = v; o[i*4+3] = 255;
+  }
+  g.putImageData(im, 0, 0);
+  return cv;
+}
+async function rubTehSendAi(){
+  var base = takuApiBase();
+  if (!base){ msg(takuAiOffNote() + "。", true); return; }
+  var t = rubTehonAll(), cs = Object.keys(t).filter(function(c){ return (t[c] || []).length; });
+  if (!cs.length){ msg("手本帳が空です。", true); return; }
+  var ok = 0, ng = 0, last = "";
+  for (var i = 0; i < cs.length; i++){
+    var ch = cs[i], list = t[ch] || [];
+    msg("手本帳を送っています… " + (i+1) + " / " + cs.length + "（" + ch + "）", false, true);
+    for (var k = 0; k < list.length; k++){
+      var e = list[k], b = (typeof e === "string") ? e : ((e && e.b) || "");
+      if (!b) continue;
+      try {
+        var cv = _tehCv(_tehUnpack(b, CG_N*CG_N), CG_N);
+        var fd = new FormData();
+        fd.append("file", await new Promise(function(res){ cv.toBlob(res, "image/png"); }), "t.png");
+        fd.append("ch", ch);
+        fd.append("key", "teh" + k + "_" + caseUid());   /* 同じ所は上書き */
+        var r = await fetch(base + "/api/takuhon/chars", { method: "POST", body: fd });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        ok++;
+      } catch(e2){ ng++; last = (e2 && e2.message) || ""; }
+    }
+  }
+  msg("手本帳から " + ok + " 枚を、読みの学習へ送りました（字 " + cs.length + " 種）" +
+      (ng ? "／" + ng + " 枚は送れませんでした（" + esc(last) + "）" : "") + "。", !!ng, true);
 }
 /* ───── AI 登録の確かめ（v33.9。本人の指示「どの様に登録されたか、可視化する様に
    してほしいです／枠と文字の学習できたかの確認と、学習資料の目視チェック」）─────

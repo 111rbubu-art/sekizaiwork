@@ -5,6 +5,8 @@
                                set=ink なら①「読む」用、set=shape なら②「整える」用
   POST /api/takuhon/line       人が直した**列まるごと**を貯める（字の枠と読みつき）
   POST /api/takuhon/boxes      列の切り抜きを渡すと、**1 字ずつの枠**を返す（枠の AI）
+  POST /api/takuhon/guess      1 字の切り抜きを渡すと、**読みの候補**を返す（読みの AI）
+  POST /api/takuhon/chars      手本帳の 1 字を貯める（読みの学習材料）
   GET  /api/takuhon/lines      貯まった列の一覧
   GET  /api/takuhon/line/{id}  その列の枠と読み（meta.json）
   GET  /api/takuhon/lineimg/.. 列の画像（raw／ink）
@@ -48,9 +50,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 
 import boxdata as BD
+import chardata as CD
 import data as D
 import make_synth as MS
 from boxnet import find_boxes, load_boxnet
+from charnet import guess as char_guess_top
+from charnet import load_charnet
 from unet import load_model
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +74,8 @@ SHAPE_RUB_VAL = os.path.join(ROOT, "dataset", "shape_rub_val")  # ②・拓本�
 # 1 字ずつの組（dataset/pairs）とは別物。字の切り分け（枠）と読みを教えるための材料で、
 # のちに「字の中心を出すモデル」と「字を見分けるモデル」の学習に使う。
 LINES = os.path.join(ROOT, "dataset", "lines")
+# **手本帳**（彫刻原稿アプリが覚えている 1 字）。読みの学習に混ぜる。
+CHARS = os.path.join(ROOT, "dataset", "chars")
 FONTS = os.path.join(ROOT, "fonts")                       # 彫っている書体の置き場
 TRAINLOG = os.path.join(RUNS, "train.log")
 TRAINPID = os.path.join(RUNS, "train.pid")
@@ -168,6 +175,10 @@ LOADED_AT2 = time.time()
 CURRENTB = os.path.join(RUNS, "box_current.pth")
 NETB, INFOB = load_boxnet(CURRENTB, DEVICE)
 LOADED_ATB = time.time()
+# **読みの AI**（2026-09-21）。1 字の切り抜きから、どの字かを当てる。
+CURRENTC = os.path.join(RUNS, "char_current.pth")
+NETC, INFOC = load_charnet(CURRENTC, DEVICE)
+LOADED_ATC = time.time()
 
 app = FastAPI(title="拓本クリーン化")
 # 社内のブラウザ（彫刻原稿アプリ）から呼ぶので、同じ LAN からは通す。
@@ -235,6 +246,22 @@ def _reloadb_if_new():
         LOADED_ATB = max(m, LOADED_ATB)
 
 
+def _reloadc_if_new():
+    """読みのモデルも、新しくなっていたら読み直す。"""
+    global NETC, INFOC, LOADED_ATC
+    try:
+        m = os.path.getmtime(CURRENTC)
+    except OSError:
+        if INFOC.get("loaded"):
+            NETC, INFOC = load_charnet(CURRENTC, DEVICE)
+            LOADED_ATC = time.time()
+        return
+    if m > LOADED_ATC or (not INFOC.get("loaded") and TRIED.get(CURRENTC) != m):
+        TRIED[CURRENTC] = m
+        NETC, INFOC = load_charnet(CURRENTC, DEVICE)
+        LOADED_ATC = max(m, LOADED_ATC)
+
+
 def _read_gray(b, size=D.N):
     im = Image.open(__import__("io").BytesIO(b)).convert("L")
     if im.size != (size, size):
@@ -264,6 +291,7 @@ def status():
         "val": len(D.list_pairs(VALDIR)),
         "lines": len(_line_ids()),
         "box": {"model": INFOB, "lines": len(_line_ids())},
+        "char": {"model": INFOC, "chars": _chars_count()},
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
                   "rub": len(D.list_pairs(SHAPE_RUB)),
                   "rubVal": len(D.list_pairs(SHAPE_RUB_VAL)),
@@ -397,6 +425,84 @@ def _ink_of(raw):
             x = np.pad(x, ((0, 0), (0, ph), (0, pw)))
         y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
     return (y[:H, :W] > 0.5).astype(np.float32)
+
+
+@app.post("/api/takuhon/guess")
+async def guess_char(
+    file: UploadFile = File(...),
+    top: int = Form(5),
+):
+    """**1 字の切り抜き**を渡すと、読みの候補を返す（2026-09-21）。
+
+    返り  {"cands":[{"ch":"令","p":0.88}, ...], "model":{...}}
+
+    渡す絵は **枠の 1.15 倍**で切ったもの。縦横の比は変えずにこちらで 64×64 に収める
+    （引き伸ばすと 十 と 一 が同じ形になるため。彫刻原稿アプリの手本帳で実際に起きた）。
+    """
+    _reloadc_if_new()
+    if not INFOC.get("loaded") or NETC is None:
+        return JSONResponse({"error": "no_model_char",
+                             "detail": "読みのモデルがまだありません（train_char.py で学習してください）",
+                             "why": INFOC.get("why")}, status_code=503)
+    im = Image.open(__import__("io").BytesIO(await file.read())).convert("L")
+    a = CD.fit(im)
+    if a is None:
+        return JSONResponse({"error": "too_small"}, status_code=400)
+    t0 = time.time()
+    x = torch.from_numpy(a[None][None]).to(DEVICE)
+    cands = char_guess_top(NETC, x, top=max(1, min(int(top), 10)))
+    return {"cands": cands, "ms": int((time.time() - t0) * 1000),
+            "model": {"step": INFOC.get("step"), "at": INFOC.get("at"),
+                      "acc": INFOC.get("acc"), "top3": INFOC.get("top3"),
+                      "chars": INFOC.get("chars")}}
+
+
+@app.post("/api/takuhon/chars")
+async def put_char(
+    file: UploadFile = File(...),
+    ch: str = Form(...),
+    key: str = Form(""),
+):
+    """**手本帳の 1 字**を貯める（読みの学習材料）。同じ key なら上書き。
+
+    置き場は dataset/chars/<字>/<key>.png。
+    拓本から切り出した字（dataset/lines）の方が効くが、
+    拓本に出にくい字の穴うめになる。
+    """
+    ch = (ch or "").strip()
+    if len(ch) != 1:
+        return JSONResponse({"error": "bad_char", "detail": "字は 1 文字で渡してください"},
+                            status_code=400)
+    d = os.path.join(CHARS, ch)
+    os.makedirs(d, exist_ok=True)
+    name = "".join(c for c in (key.strip() or datetime.now().strftime("t%Y%m%d-%H%M%S%f"))
+                   if c.isalnum() or c in "-_.")
+    f = os.path.join(d, name + ".png")
+    replaced = os.path.exists(f)
+    open(f, "wb").write(await file.read())
+    return {"status": "saved", "ch": ch, "id": name, "replaced": replaced,
+            "n": len([x for x in os.listdir(d) if x.endswith(".png")])}
+
+
+def _chars_count():
+    out = {}
+    if not os.path.isdir(CHARS):
+        return out
+    for c in sorted(os.listdir(CHARS)):
+        d = os.path.join(CHARS, c)
+        if os.path.isdir(d):
+            n = len([x for x in os.listdir(d) if x.lower().endswith(".png")])
+            if n:
+                out[c] = n
+    return out
+
+
+@app.get("/api/takuhon/chars")
+def chars_list():
+    """貯まった手本の数（字ごと）。"""
+    c = _chars_count()
+    return {"chars": c, "kinds": len(c), "all": sum(c.values()),
+            "model": INFOC}
 
 
 @app.post("/api/takuhon/feedback")

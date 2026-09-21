@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.0";
+var APP_VER = "v33.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12650,7 +12650,7 @@ function rubAiSplit(M, nWant){
   /* **枠から覚えた字送り**（ます目）。読み違いの見張りに使う（v32.8） */
   var pitL9 = 0;
   try {
-    var lb9 = S.rub && S.rub.learnBox, mp9 = mmPerPx(), st99 = num(M.step, 0);
+    var lb9 = rubLearnBox(), mp9 = mmPerPx(), st99 = num(M.step, 0);
     if (lb9 && lb9.pitchMm > 1 && mp9 && st99 > 0) pitL9 = (lb9.pitchMm / mp9) / st99;
   } catch(e){}
   function localPitch(list, k){
@@ -13910,6 +13910,68 @@ function rubBandOfLine(L){
       **枠を作り直す**（AI には通し直さない。速い）
    ② そのあと ［文字で見分ける］と同じ判定を通しでかける
    手で描いた列（`src:"hand"`）と、手で直した枠はさわらない。 */
+/* ───── **拓本を解析（ひと押し）**（v33.1。本人の狙い
+   「理想は、拓本解析ボタンをクリックするだけで戒名や命日、といった構成を理解して、
+     文字の長さや幅の設定を取得することが目的です」）─────
+   ① 列の構成を調べる（上下の段・列の本数）
+   ② 列ぜんぶを AI に通して、1 字ずつの枠を作る
+   ③ 手本帳で 文字を見分け、戒名／命日／俗名／年齢に分ける
+   ④ 分かったこと（構成・字の大きさ・字送り）を まとめて出す
+   手で直した枠・手で決めた字は、途中で消さない（v33.0 の決まりのまま）。 */
+async function rubAllAnalyze(){
+  if (AIBAND_BUSY) return;
+  if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
+  if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
+  var step = [];
+  /* ① 構成 */
+  try {
+    if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey()){
+      msg("① 列の構成を調べています…", false, true);
+      await uiTick();
+      await rubColsScanTop(false);
+    }
+    var mn = rubColMenu();
+    step.push("構成：上 " + mn.ups.length + " 列" + (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
+  } catch(e){ step.push("構成：調べられませんでした"); }
+  /* ② 枠 */
+  msg("② 列を AI に通して、1 字ずつの枠を作っています…", false, true);
+  await uiTick();
+  try { await rubAllGo(); } catch(e){ msg("枠づくりでつまずきました（" +
+    ((e && e.message) || "") + "）。", true); return; }
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  if (!ls.length){ msg("枠を作れませんでした。［AI に送る絵を見る］で、墨が出ているか確かめてください。", true); return; }
+  step.push("枠：" + ls.length + " 列・" +
+            ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字");
+  /* ③ 文字と構成の見分け */
+  var canA = false;
+  try { canA = !!FR() || rubTehonCount() > 0; } catch(e){}
+  if (canA){
+    msg("③ 文字を見分けて、戒名・命日・俗名・年齢に分けています…", false, true);
+    await uiTick();
+    try { await rubAnchorGo(); } catch(e){}
+  } else {
+    try { rubGrpAuto(); } catch(e){}
+    step.push("見分け：手本帳が空なので、位置から見当を付けました");
+  }
+  /* ④ まとめ */
+  var mpp = mmPerPx(), hs = [], ws = [], ps = [], grp = {};
+  ls.forEach(function(L){
+    (L.items || []).forEach(function(it){
+      if (it.px){ hs.push(it.px.h * mpp); ws.push(it.px.w * mpp); }
+      var g = it.g || "hoka"; grp[g] = (grp[g] || 0) + 1;
+    });
+    if (num(L.pitchMm, 0) > 0) ps.push(L.pitchMm);
+  });
+  var gTx = RUBGRP.map(function(g){
+    return grp[g.k] ? g.nm + " " + grp[g.k] + " 字" : ""; }).filter(Boolean).join("・");
+  var sum = "<b>拓本を解析しました。</b>" + step.join("／") + "。" +
+    (hs.length ? "　字の大きさ <b>高さ " + _med(hs).toFixed(1) + "mm・横 " +
+      _med(ws).toFixed(1) + "mm</b>" + (ps.length ? "・字送り <b>" +
+      _med(ps).toFixed(1) + "mm</b>" : "") : "") +
+    (gTx ? "　まとまり：<b>" + gTx + "</b>" : "") +
+    "　ちがう所は ⑤ で直して、［覚えたことで 再判定］を押してください。";
+  msg(sum, false, true);
+}
 async function rubRejudge(){
   if (AIBAND_BUSY) return;
   var ls = (S.rub.lines || []).filter(function(L){
@@ -14563,6 +14625,17 @@ function rubBoxLearn(L, quiet){
               n: hs.length, at: new Date().toLocaleString("ja-JP") };
   if (!(got.hMm > 1) || !(got.wMm > 1)) return null;
   S.rub.learnBox = got;
+  /* ───── **覚えた大きさは、次の案件にも持ち越す**（v33.1。本人の狙い
+     「学習が完了すれば個別の案件で、文字の枠を指定は行いません」）─────
+     これまで `S.rub.learnBox` は **案件の中だけ**だった。
+     同じ彫り師・同じ寸法の仕事が続くので、**次の拓本の出発点**として持っておく。
+     拓本ごとに実際の大きさが違えば、その拓本で覚え直せば上書きされる。 */
+  try {
+    var TT = _tehLoad();
+    TT.box = { hMm: got.hMm, wMm: got.wMm, pitchMm: got.pitchMm,
+               hMinMm: got.hMinMm, hMaxMm: got.hMaxMm, n: got.n, at: got.at };
+    _tehSave();
+  } catch(e){}
   persist();
   if (!quiet)
     msg("この列の枠から、<b>1 字の大きさ</b>を覚えました（高さ " + got.hMm.toFixed(1) +
@@ -14576,16 +14649,30 @@ function rubBoxLearn(L, quiet){
   return got;
 }
 /* 切り分けで使う「1 字の高さ」（ます目）。枠から覚えていれば そちらを使う（v32.8） */
+/* この案件の「覚えた大きさ」。無ければ **持ち越した値**（v33.1） */
+function rubLearnBox(){
+  var lb = S.rub && S.rub.learnBox;
+  if (lb && lb.hMm > 1) return lb;
+  try {
+    var TT = _tehLoad();
+    if (TT.box && TT.box.hMm > 1){
+      var b = Object.assign({}, TT.box);
+      b.carried = 1;                       /* 前の案件から持ち越した印 */
+      return b;
+    }
+  } catch(e){}
+  return null;
+}
 function rubCharHpx(){
   var mpp = mmPerPx();
-  var lb = S.rub && S.rub.learnBox;
+  var lb = rubLearnBox();
   if (lb && mpp && lb.hMm > 1) return lb.hMm / mpp;
   return 0;
 }
 /* 覚えた大きさの **ばらつき具合**（1.0〜1.4）。
    同じ字でも数 mm ちがうので、その分だけ見きわめをゆるめる（v32.9）。 */
 function rubCharHSpread(){
-  var lb = S.rub && S.rub.learnBox;
+  var lb = rubLearnBox();
   if (!lb || !(lb.hMm > 1) || !(lb.hMaxMm > 0)) return 1;
   return Math.max(1, Math.min(1.4, lb.hMaxMm / lb.hMm));
 }
@@ -14756,14 +14843,16 @@ function rubGrpHtml(){
     '</div>';
   var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
   var tehKB = 0; try { tehKB = rubTehonKB(); } catch(e){}
-  var lb8 = S.rub.learnBox;
+  var lb8 = rubLearnBox();
   if (lb8 && lb8.hMm){
     /* **手で微調整できるようにする**（v32.9。本人の確認
        「同じ文字でも、数ミリの大きさ違いはあると思うのです／微調整できますよね」）。 */
     var spr8 = (lb8.hMaxMm > 0 && (lb8.hMaxMm - num(lb8.hMinMm, 0)) > 0.5)
       ? '（' + num(lb8.hMinMm, 0).toFixed(1) + '〜' + lb8.hMaxMm.toFixed(1) + 'mm のばらつき）' : '';
-    h += '<p class="hint" style="margin:6px 0 2px;">枠から覚えた 1 字の大きさ' +
-      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）' + spr8 + '</p>' +
+    h += '<p class="hint" style="margin:6px 0 2px;">' +
+      (lb8.carried ? '<b>前の拓本から持ち越した</b> 1 字の大きさ' : '枠から覚えた 1 字の大きさ') +
+      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）' + spr8 +
+      (lb8.carried ? '。この拓本で［この列の枠から覚える］を押すと、置きかわります' : '') + '</p>' +
       '<div class="chips" style="margin:0;">' +
       '<span class="hint">高さ</span>' +
       '<button class="mini lbb" data-k="h" data-d="-1">−</button>' +
@@ -18603,6 +18692,11 @@ function rubPanel(){
 
     /* ───────────── ④ 文字判別 ───────────── */
     h += '<p class="hint" style="margin:10px 0 2px;"><b>④ 文字判別</b></p>';
+    h += '<p class="hint" style="margin:6px 0 2px;">' +
+      '<button class="mini primary" id="btnAnalyze" ' +
+      'title="列の構成しらべ → AI 縁取り → 文字の見分け（戒名・命日・俗名・年齢）まで、' +
+      'ひと押しで通します">拓本を解析（ひと押し）</button>' +
+      '　覚えた手本が増えるほど、この 1 つで済むようになります</p>';
     h += '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
       (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
@@ -18649,6 +18743,13 @@ function rubPanel(){
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
   $("rubFix").innerHTML = h;
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
+  var bza = $("btnAnalyze");
+  if (bza) bza.onclick = async function(){
+    bza.disabled = true; bza.textContent = "解析しています…";
+    try { await rubAllAnalyze(); } catch(e){ msg("解析でつまずきました（" +
+      ((e && e.message) || "") + "）。", true); }
+    bza.disabled = false; bza.textContent = "拓本を解析（ひと押し）";
+  };
   var bta = $("btnLineTakeAi");
   if (bta) bta.onclick = function(){
     /* 人が自分で押したときは、手直しの印を外して作り直す（v32.7） */
@@ -18732,6 +18833,11 @@ function rubPanel(){
     brj.disabled = false; brj.textContent = "覚えたことで 再判定";
   };
   function lbSet(k, v){
+    /* 持ち越した値を直したら、この案件の値として置く（v33.1） */
+    if (!S.rub.learnBox){
+      var c8 = rubLearnBox();
+      if (c8){ S.rub.learnBox = Object.assign({}, c8); delete S.rub.learnBox.carried; }
+    }
     var lb = S.rub.learnBox; if (!lb) return;
     v = Math.max(1, Math.min(200, Math.round(v * 10) / 10));
     if (k === "h"){

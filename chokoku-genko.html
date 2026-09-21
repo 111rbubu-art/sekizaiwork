@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.0";
+var APP_VER = "v32.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13769,6 +13769,62 @@ function rubBandOfLine(L){
       (!L.aiId || RUB.aiBand.id === L.aiId)) return Promise.resolve(RUB.aiBand);
   return rgBandFromUrl(L.aiUrl, L.aiSc);
 }
+/* ───── **覚えたことで、もう一度判定する**（v32.1。本人の問い
+   「おしえた後、再度確認のために、再判定させたい場合はどうすればいいのですか」）─────
+   ① 列ごとに、**前に通した AI の墨**（`L.aiUrl`）をそのまま使って
+      **枠を作り直す**（AI には通し直さない。速い）
+   ② そのあと ［文字で見分ける］と同じ判定を通しでかける
+   手で描いた列（`src:"hand"`）と、手で直した枠はさわらない。 */
+async function rubRejudge(){
+  if (AIBAND_BUSY) return;
+  var ls = (S.rub.lines || []).filter(function(L){
+    return L && L.src === "ai" && L.items && L.items.length;
+  });
+  if (!ls.length){ msg("先に ④ で見立ててください。", true); return; }
+  var b0 = { L: S.rub.bandL, R: S.rub.bandR, T: S.rub.calTop, B: S.rub.calBot };
+  var keep0 = RUB.aiBand, ok = 0, ng = 0, rep9 = [];
+  aiProgOn();
+  try {
+    for (var i = 0; i < ls.length; i++){
+      if (AIPROG_STOP) break;
+      var L = ls[i];
+      aiProg("列 " + (i+1) + " / " + ls.length, "覚えたことで 枠を作り直しています");
+      await uiTick();
+      var A = null;
+      try { A = await rubBandOfLine(L); } catch(e){}
+      if (!A || !A.map){ ng++; rep9.push((i+1) + "列目＝前の墨が残っていません"); continue; }
+      /* その列の帯に合わせてから、同じ切り分けをやり直す */
+      S.rub.bandL = num(L.band && L.band.L, S.rub.bandL);
+      S.rub.bandR = num(L.band && L.band.R, S.rub.bandR);
+      RUB.aiBand = A;
+      var was = L.items.length;
+      var m2 = null;
+      try { m2 = rubLineTakeAi(); } catch(e){}
+      if (m2){ ok++; rep9.push((i+1) + "列目 " + was + " 字 → " + m2.n + " 字"); }
+      else { ng++; rep9.push((i+1) + "列目＝切り分けできず（" + was + " 字のまま）"); }
+    }
+  } finally {
+    aiProgOff();
+    S.rub.bandL = b0.L; S.rub.bandR = b0.R;
+    S.rub.calTop = b0.T; S.rub.calBot = b0.B;
+    RUB.aiBand = keep0;
+  }
+  persist(); rubPanel(); rubRender();
+  /* 手本がまったく無いときは、枠の作り直しだけで止める（v32.1）。
+     そうしないと「手本がありません」の知らせで、作り直しの結果が消えてしまう。 */
+  var canAnch = false;
+  try { canAnch = !!FR() || rubTehonCount() > 0; } catch(e){}
+  if (!canAnch){
+    msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") + "）。" +
+        rep9.join("｜") + "。<b>手本がまだ無いので、文字の見分けはしていません</b>" +
+        "（字をえらんで ［この字として覚えさせる］ で覚えさせてください）。", false, true);
+    return;
+  }
+  msg("枠を作り直しました（" + ok + " 列" + (ng ? "／" + ng + " 列は できず" : "") + "）。" +
+      rep9.join("｜") + "。つづけて 文字で見分けます…", false, true);
+  await uiTick();
+  try { await rubAnchorGo(); } catch(e){}
+}
 async function rubAnchorGo(){
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
   if (!ls.length){ msg("先に ④ で見立ててください。", true); return; }
@@ -14179,7 +14235,11 @@ function rubGrpHtml(){
   h += ' <button class="mini" id="btnAnch" ' +
     'title="令・平・昭・大／日・没・歿／才・歳と見くらべて、命日と年齢を決めます。' +
     '年齢のはじめは、才・歳から数字をさかのぼって決めます">' +
-    '文字で見分ける</button>';
+    '文字で見分ける</button>' +
+    ' <button class="mini" id="btnRejudge" ' +
+    'title="覚えさせたことを使って、枠の切り分けからやり直し、そのまま文字で見分けます。' +
+    'AI には通し直さないので速いです">' +
+    '覚えたことで 再判定</button>';
   /* **拓本の手本帳**（v31.0。本人の話「フォントは楷書なので、
      学習している物が使えればいいのですが」）。何を覚えているかを見せる。 */
   var tehN = 0, tehCh = "";
@@ -18124,6 +18184,13 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var brj = $("btnRejudge");
+  if (brj) brj.onclick = async function(){
+    brj.disabled = true; brj.textContent = "やり直しています…";
+    try { await rubRejudge(); } catch(e){ msg("再判定でつまずきました（" +
+      ((e && e.message) || "") + "）。", true); }
+    brj.disabled = false; brj.textContent = "覚えたことで 再判定";
+  };
   var bsu = $("btnTehSpUp");
   if (bsu) bsu.onclick = async function(){
     bsu.disabled = true; bsu.textContent = "控えています…";

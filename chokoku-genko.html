@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.2";
+var APP_VER = "v31.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13404,7 +13404,15 @@ var RUBANCH = {
   /* **行年・享年が無いときのため**（v27.0。本人の指摘「行・享（行年・享年）
      これは無いことが多いす」）。年齢は「七十八歳」のように **数字＋才/歳**。
      才・歳から上へ、数字であるあいだ さかのぼって はじめを決める。 */
-  num: "一二三四五六七八九十百廿卅"
+  num: "一二三四五六七八九十百廿卅",
+  /* ───── **手本を増やす**（v31.3。本人の指示
+     「新たに、月、平、令、昭、俗、名、歿、行、士、姉、女を追加して」）─────
+     平・令・昭は `mHead`、歿は `mTail`、行は `nHead` に もともと入っている。
+     足りなかったのは **年・月**（命日のまん中）、**俗・名**（俗名の目印）、
+     **士・姉・女**（戒名のおわり。居士・大姉・信女）。 */
+  mMid: "年月",               /* 命日のまん中（○年○月○日） */
+  zHead: "俗名",              /* 俗名の目印（「俗名 ○○」） */
+  kTail: "士姉女"             /* 戒名のおわり（居士・大姉・信女・信士） */
 };
 /* **まず手本 13 字だけと見くらべる**（v26.9）。似てもいない字に
    フォントぜんぶ（数千字）を当てるのは もったいない。
@@ -13453,7 +13461,20 @@ async function rubAnchorGo(){
     await uiTick();
     var B0 = FR() ? cgBank(curFont) : null;
     var allAnch = RUBANCH.mHead + RUBANCH.mTail + RUBANCH.nHead + RUBANCH.nTail +
-                  RUBANCH.num;            /* 数字も ざっと見くらべる相手に入れる（v27.0） */
+                  RUBANCH.num + RUBANCH.mMid + RUBANCH.zHead + RUBANCH.kTail;
+    /* ───── **手本帳にある字は、ぜんぶ見くらべ相手にする**（v31.3。本人の問い
+       「誤って判定された字を間違っていると教えたほうがいいのでしょうか？
+         たとえば、子を十と間違っている物があります」）─────
+       「子」は目印の字ではないので、これまで**見くらべ相手に入っていなかった**。
+       そのため 子 を覚えさせても、その墨はまた「十」に当たってしまう。
+       手本帳にある字は ぜんぶ相手に入れて、**いちばん似ている字**を選ばせる。
+       そうすれば 子 を 1 枚覚えるだけで、十 との取りちがえが止まる。 */
+    var tehWant = allAnch;
+    try {
+      Object.keys(rubTehonAll()).forEach(function(c){
+        if (tehWant.indexOf(c) < 0) tehWant += c;
+      });
+    } catch(e){}
     var anchIdx = [];
     (B0 ? B0.chars : []).forEach(function(c, i){ if (allAnch.indexOf(c) >= 0) anchIdx.push(i); });
     var tehHit = 0, fntHit = 0;
@@ -13474,7 +13495,7 @@ async function rubAnchorGo(){
       var A = await rubBandOfLine(L);
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
-      var hit = { mh: -1, mt: -1, nh: -1, nt: -1 }, ch = {}, isNum = {};
+      var hit = { mh: -1, mt: -1, nh: -1, nt: -1, mm: -1, zh: -1, kt: -1 }, ch = {}, isNum = {};
       /* **見るのは はじめ・おわり・とびとびのまん中だけ**（v26.9）。
          1 字ごとにフォントぜんぶと見くらべるので、列ぜんぶを見ると重い
          （実測：40 字まで見て 7 列で 14.9 秒）。
@@ -13494,7 +13515,7 @@ async function rubAnchorGo(){
         /* ───── **まず 拓本の手本帳**（v31.0）───── */
         if (tehN0){
           var qT = cgNormFrom(function(x, y){ return k.m[y*k.n + x]; }, k.n, k.n);
-          var bT = qT ? rubTehonBest(qT, allAnch, _tehRatio(k.m, k.n)) : null;
+          var bT = qT ? rubTehonBest(qT, tehWant, _tehRatio(k.m, k.n)) : null;
           /* ほんものの字形どうしなので、0.38 当たれば その字とみる
              （フォントとの見くらべより、ずっと当たりやすい） */
           if (bT && bT.iou >= 0.38){
@@ -13513,6 +13534,9 @@ async function rubAnchorGo(){
         }
         var a1 = _anchHit(cd, RUBANCH.mHead), a2 = _anchHit(cd, RUBANCH.mTail);
         var a3 = _anchHit(cd, RUBANCH.nHead), a4 = _anchHit(cd, RUBANCH.nTail);
+        var a5 = _anchHit(cd, RUBANCH.mMid);     /* 年・月（命日のまん中） */
+        var a6 = _anchHit(cd, RUBANCH.zHead);    /* 俗・名 */
+        var a7 = _anchHit(cd, RUBANCH.kTail);    /* 士・姉・女（戒名のおわり） */
         if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
         if (how === "fnt"){
           var hitCh = _anchHit(cd, allAnch);
@@ -13526,6 +13550,9 @@ async function rubAnchorGo(){
         if (a2 && (i > L.items.length * 0.3 || L.items.length <= 8)){ hit.mt = i; ch.mt = a2; }
         if (a3 && hit.nh < 0 && i > 0){ hit.nh = i; ch.nh = a3; }
         if (a4 && (i > L.items.length * 0.3 || L.items.length <= 8)){ hit.nt = i; ch.nt = a4; }
+        if (a5 && hit.mm < 0){ hit.mm = i; ch.mm = a5; }
+        if (a6 && hit.zh < 0){ hit.zh = i; ch.zh = a6; }
+        if (a7){ hit.kt = i; ch.kt = a7; }
       }
       RUB.aiBand = keep;
       var did = [];
@@ -13576,6 +13603,17 @@ async function rubAnchorGo(){
         var got9 = markBack9(hit.mt, Math.max(0, hit.mt - 11), "mei");
         if (got9) did.push("命日 " + (hit.mt - got9 + 2) + "〜" + (hit.mt+1) + " 字目（…" + ch.mt + "）");
       }
+      /* ①' **年・月が当たれば、そこは命日のまん中**（v31.3）。
+         年号（令・平・昭）も 日・没・歿も かすれて当たらないことがあるが、
+         「○年○月○日」の 年・月 は どこかで当たりやすい。
+         年・月 の前後を命日とみて、上下へ小さい字のあいだだけ広げる。 */
+      if (hit.mm >= 0 && !L.items[hit.mm].g){
+        var mmA = markBack9(hit.mm, Math.max(0, hit.mm - 6), "mei");
+        var mmB = mark9(hit.mm, Math.min(L.items.length - 1, hit.mm + 8), "mei");
+        if (mmA || mmB)
+          did.push("命日 " + (hit.mm - mmA + 2) + "〜" + (hit.mm + mmB) +
+                   " 字目（" + ch.mm + "のまわり）");
+      }
       /* ② 行年・享年 〜 才・歳 ＝ 年齢。無ければ 才・歳 から数えて さかのぼる */
       var nA = hit.nh, nB = hit.nt;
       if (nB >= 0){
@@ -13596,6 +13634,25 @@ async function rubAnchorGo(){
       } else if (nA >= 0){
         if (mark9(nA, L.items.length - 1, "nen"))
           did.push("年齢 " + (nA+1) + " 字目から（" + ch.nh + "）");
+      }
+      /* ②' **士・姉・女＝戒名のおわり**（v31.3。居士・大姉・信女・信士）。
+         当たった字から上へ、**戒名の大きさの字であるあいだ**さかのぼって戒名にする。
+         戒名は大きい字なので、`small9`（小さい字だけ）の歯止めは使わない。 */
+      if (hit.kt >= 0){
+        var kmK = rubKmWmm() || 30, nK = 0;
+        for (var tK = hit.kt; tK >= 0 && hit.kt - tK <= 14; tK--){
+          var itK = L.items[tK], wK = Math.max(num(itK.wMm, 0), num(itK.hMm, 0));
+          if (wK > 0 && wK < kmK * 0.6) break;      /* 小さい字（命日・年齢）に当たったら止める */
+          if (itK.g && itK.g !== "kai") break;
+          itK.g = "kai"; nK++;
+        }
+        if (nK) did.push("戒名 " + (hit.kt - nK + 2) + "〜" + (hit.kt+1) +
+                         " 字目（…" + ch.kt + "）");
+      }
+      /* ③' **俗・名＝俗名の目印**（v31.3）。そこから下を俗名にする。 */
+      if (hit.zh >= 0 && !L.items[hit.zh].g){
+        var nZ = mark9(hit.zh, Math.min(L.items.length - 1, hit.zh + 10), "zok");
+        if (nZ) did.push("俗名 " + (hit.zh+1) + " 字目から（" + ch.zh + "）");
       }
       /* ───── **命日のあとに続く字は、戒名ではない**（v30.9。本人の画面
          「没」は命日（緑）と当たったのに、続く「七十二才」が**戒名**（赤）に
@@ -13757,7 +13814,7 @@ function rubGrpHtml(){
     'title="この墨を その字として手本帳に入れ、読み違いの元になった手本は捨てます">' +
     'この字として覚えさせる</button>' +
     /* よく使う字は 1 押しで */
-    '一二三四五六七八九十才歳没日'.split('').map(function(c){
+    '一二三四五六七八九十百年月日才歳没歿令平昭大行享士姉女信居俗名子'.split('').map(function(c){
       return '<button class="mini teq" data-c="' + c + '"' + (itT ? '' : ' disabled') +
              ' style="padding:2px 6px;">' + c + '</button>';
     }).join('') +

@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-20　**chokoku-genko.html = v33.5**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
+最終更新: 2026-09-21　**chokoku-genko.html = v33.6**／**index_b.html = v1.9.437**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -4990,3 +4990,51 @@ SharePoint は `ctx.route('https://graph.microsoft.com/**')` で差し替える�
 - `docker compose down -v`（Dify のデータが消える）
 - `tailscale funnel`（インターネット全体に公開される）
 - LLMサーバー・管理PCの Tailscale ログアウト
+
+---
+
+## v33.6 — AI補正のパネルを「作業の順」に並べ替えた
+
+本人の指示「AI補正（準備中）のメニューが複雑すぎて、作業順に並べたいです。
+説明文は不要で、直感的にわかる様にしなければなりません」。
+
+**新しい並び（承認ずみ）**
+
+1. **準備** — 実測した文字全長（できています／まだです）・戒名の字幅（`rKmW`）
+2. **範囲** — ［▣ 範囲を描く］（`btnArea`）／［範囲をやめる］（`btnAreaClr`）
+3. **解析** — 大きく［拓本を解析］（`btnAnalyze`）＋［やり直す（消す）］（`btnAnalyzeClr`）
+   ＋結果 1 行（`S.rub.anaLast.tx`）
+4. **直す**（`<details id="aiFix4">`。枠があるときは開いた状態）
+   - 右上に小さく［AI の墨を出す/消す］（`btnAiBandClr`）［AI に送る絵］（`btnAiPrev`）
+   - 4a **列** — ［列を調べ直す］（`btnColsStudy`）・列の数（`rColN`）・絵に出す（`rShowCols`）・
+     境目（`rCutY`／`btnCutUp`／`btnCutDn`）・列チップ（`.colb`）・
+     ［ここだけ AI に通す］（`btnAiGo`）・帯の情報
+   - 4b **枠** — ↑足す/↓足す/割る/つなぐ/消す（`.bxb`）・［この列だけ作り直す］（`btnLineTakeAi`）・
+     ［✎ 手で描く］（`btnHandBox`）・字数（`rLineN`／`.lnn`）
+   - 4c **読み** — `rTeachCh`・［これは この字］（`btnTeach`）・［ちがう］（`btnTeachNo`）・
+     ［調べる］（`btnProbe`）・早押し 32 字（`.teq`）
+   - 4d **まとまり** — 戒名/俗名/命日/年齢/なし（`.grpb`）＋列ごとの一覧
+   - 4e ［もう一度 解析］（`btnRejudge`）
+5. **覚えたもの**（`<details id="aiFix5">`。既定で閉じる）— 手本帳の枚数・
+   ［一覧］［控える］［戻す］［1 つ前］［空にする］・1 字の大きさの微調整（`rLbH`/`rLbP`/`.lbb`/`btnLbClr`）・
+   ［この列から覚える］（`btnBoxLearn`）
+
+**名前の付け替え**：AI 縁取りを実行 → ［ここだけ AI に通す］（ふだんは 3 の［拓本を解析］に吸収）／
+この行を見立てる → ［この列だけ作り直す］／覚えたことで 再判定 → ［もう一度 解析］／
+列の構成を調べる → ［列を調べ直す］／これはちがう → ［ちがう］／この字を調べる → ［調べる］。
+［位置から見当を付ける］（`btnGrpAuto`）と［文字で見分ける］（`btnAnch`）は
+解析の中で自動で通るので、画面からは隠した（受け口は `display:none` のまま残してある）。
+
+**作りの変更**
+
+- `rubGrpHtml()` を 4 つに分けた：`rubBoxFixHtml()`（4b）・`rubReadHtml()`（4c）・
+  `rubGrpPickHtml()`（4d）・`rubMemHtml()`（5）。id は前のままなので、
+  受け口（`rubPanel()` の下半分）は触っていない。
+- 説明の文（`hint` の長い段落）は消して、すべて `title=`（ツールチップ）に移した。
+- `rubAllAnalyze()` が「**列を調べました／列は前のまま**」を出すようにした（`did9`）。
+  結果は `S.rub.anaLast` に残り、3 ─ 解析 の下に 1 行で出る。
+  ［やり直す（消す）］（`rubAnalyzeReset`）で消える。
+
+**確かめたこと**：`node --check` と Playwright で、偽の拓本を入れて `rubPanel()` を描き、
+22 個の id（`rKmW` 〜 `aiFix5`）がすべて出ること・`pageerror` が 0 件であることを確認。
+

@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.5";
+var APP_VER = "v33.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14009,6 +14009,7 @@ function rubAnalyzeReset(){
   S.rub.colsTop = null;
   S.rub.allRep = null;
   S.rub.lineNs = {};
+  S.rub.anaLast = null;                 /* 3 ─ 解析 の結果行も消す（v33.6） */
   RUB.aiBand = null; RUB.aiWhy = ""; RUB.aiChar = null;
   rubSelCol = 0; rubSelItem = -1;
   A = null; RUB.mask = null;
@@ -14022,16 +14023,20 @@ async function rubAllAnalyze(){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
   var step = [];
-  /* ① 構成 */
+  /* ① 構成。**調べ直したのか、前のままなのかを はっきり出す**（v33.6。本人の指示
+     「［拓本を解析］に［列を調べ直す］この機能は入っていましたか？」） */
+  var did9 = false;
   try {
     if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey()){
       msg("① 列の構成を調べています…", false, true);
       await uiTick();
       await rubColsScanTop(false);
+      did9 = true;
     }
     var mn = rubColMenu();
-    step.push("構成：上 " + mn.ups.length + " 列" + (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
-  } catch(e){ step.push("構成：調べられませんでした"); }
+    step.push((did9 ? "列を調べました" : "列は前のまま") + "：上 " + mn.ups.length + " 列" +
+              (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
+  } catch(e){ step.push("列：調べられませんでした"); }
   /* ② 枠 */
   msg("② 列を AI に通して、1 字ずつの枠を作っています…", false, true);
   await uiTick();
@@ -14068,7 +14073,11 @@ async function rubAllAnalyze(){
       _med(ws).toFixed(1) + "mm</b>" + (ps.length ? "・字送り <b>" +
       _med(ps).toFixed(1) + "mm</b>" : "") : "") +
     (gTx ? "　まとまり：<b>" + gTx + "</b>" : "") +
-    "　ちがう所は ⑤ で直して、［覚えたことで 再判定］を押してください。";
+    "　ちがう所は <b>4 ─ 直す</b> で直して、［もう一度 解析］を押してください。";
+  /* 3 ─ 解析 の結果を 1 行で残す（v33.6） */
+  S.rub.anaLast = { tx: step.join("／") + (hs.length ? "／字 高さ " + _med(hs).toFixed(1) +
+    "mm・横 " + _med(ws).toFixed(1) + "mm" : "") + (gTx ? "／" + gTx : ""), ts: Date.now() };
+  persist();
   msg(sum, false, true);
 }
 async function rubRejudge(){
@@ -15006,62 +15015,38 @@ if (!window._tehEsc){
   });
 }
 /* パネルの「⑤ グループ分け」 */
-function rubGrpHtml(){
-  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
-  var h = '<p class="hint" style="margin:10px 0 2px;"><b>⑤ グループ分け</b></p>';
-  if (!ls.length)
-    return h + '<p class="hint" style="margin:2px 0 0;">先に ④ で見立ててください。</p>';
-  h += '<button class="mini primary" id="btnGrpAuto" ' +
-    'title="境目より上は戒名、下の右は命日、下の左は俗名。大きく空いた所から下は別のまとまりとみます">' +
-    '位置から見当を付ける</button>';
-  /* **手本合わせ**（v26.9。本人の話「命日の先頭は令、平、昭、大、で最後は日、没、歿／
-     年齢は、最後は才、歳」）。位置だけの見当より確か。 */
-  h += ' <button class="mini" id="btnAnch" ' +
-    'title="令・平・昭・大／日・没・歿／才・歳と見くらべて、命日と年齢を決めます。' +
-    '年齢のはじめは、才・歳から数字をさかのぼって決めます">' +
-    '文字で見分ける</button>' +
-    ' <button class="mini" id="btnRejudge" ' +
-    'title="覚えさせたことを使って、枠の切り分けからやり直し、そのまま文字で見分けます。' +
-    'AI には通し直さないので速いです">' +
-    '覚えたことで 再判定</button>';
-  /* **拓本の手本帳**（v31.0。本人の話「フォントは楷書なので、
-     学習している物が使えればいいのですが」）。何を覚えているかを見せる。 */
-  var tehN = 0, tehCh = "";
-  try {
-    tehN = rubTehonCount();
-    var tt = rubTehonAll();
-    tehCh = Object.keys(tt).filter(function(c){ return (tt[c] || []).length; })
-              .map(function(c){ return c + "×" + tt[c].length; }).join("・");
-  } catch(e){}
-  /* **その字を直して覚えさせる**（v31.2） */
+/* ───── 4b 枠を直す（v33.6 で rubGrpHtml から切り出した） ───── */
+function rubBoxFixHtml(){
   var Lt = rubCol(), itT = (Lt && Lt.items && rubSelItem >= 0) ? Lt.items[rubSelItem] : null;
+  var h = '';
   if (Lt && Lt.boxFix)
-    h += '<p class="hint" style="margin:4px 0 0;color:#B8860B;">' +
-      'この列の枠は<b>手で直してあります</b>。［覚えたことで 再判定］でも、枠はそのままにします' +
-      '（作り直したいときは ④ の［この行を見立てる］を押してください）。</p>';
-  /* **枠を直す**（v33.4） */
-  h += '<p class="hint" style="margin:6px 0 2px;"><b>枠を直す</b>：' +
+    h += '<p class="hint" style="margin:0 0 3px;color:#B8860B;">' +
+      'この列の枠は手で直してあります（［もう一度 解析］でも そのままにします）。</p>';
+  h += '<p class="hint" style="margin:0 0 2px;">' +
     (itT ? (rubSelItem + 1) + ' 字目をえらんでいます'
-         : '絵の上で枠をえらぶと、割る・つなぐ・消すができます') + '</p>' +
+         : '絵の上で枠をえらんでください') + '</p>' +
     '<div class="chips" style="margin:0;">' +
     '<button class="mini bxb" data-a="up"' + (itT ? '' : ' disabled') +
-      ' title="えらんだ枠の 上に 1 つ足します">↑ 上に足す</button>' +
+      ' title="えらんだ枠の 上に 1 つ足します">↑ 足す</button>' +
     '<button class="mini bxb" data-a="dn"' +
-      ' title="えらんだ枠の 下に 1 つ足します（えらんでいなければ 列の終わりに）">↓ 下に足す</button>' +
+      ' title="えらんだ枠の 下に 1 つ足します（えらんでいなければ 列の終わりに）">↓ 足す</button>' +
     '<button class="mini bxb" data-a="split"' + (itT ? '' : ' disabled') +
-      ' title="えらんだ枠を、墨のいちばん薄い所で 上下 2 つに割ります">ここで割る</button>' +
+      ' title="えらんだ枠を、墨のいちばん薄い所で 上下 2 つに割ります">割る</button>' +
     '<button class="mini bxb" data-a="join"' + (itT ? '' : ' disabled') +
-      ' title="えらんだ枠と、その下の枠を 1 つにします">下とつなぐ</button>' +
+      ' title="えらんだ枠と、その下の枠を 1 つにします">つなぐ</button>' +
     '<button class="mini bxb" data-a="del"' + (itT ? '' : ' disabled') +
-      ' title="えらんだ枠を消します">この枠を消す</button>' +
-    '</div>' +
-    '<p class="hint" style="margin:3px 0 0;">直した枠は <b>正解として覚えます</b>' +
-    '（1 字の大きさ・字送り）。作り直しでも消えません。</p>';
-  h += '<p class="hint" style="margin:6px 0 2px;"><b>読み違いを直す</b>：' +
+      ' title="えらんだ枠を消します">消す</button>' +
+    '</div>';
+  return h;
+}
+/* ───── 4c 読みを直す ───── */
+function rubReadHtml(){
+  var Lt = rubCol(), itT = (Lt && Lt.items && rubSelItem >= 0) ? Lt.items[rubSelItem] : null;
+  var h = '<p class="hint" style="margin:0 0 2px;">' +
     (itT
       ? (rubSelItem + 1) + ' 字目' +
-        ((itT.anch && itT.anch.ch) ? '（いまは「<b>' + esc(itT.anch.ch) + '</b>」と読んでいます）'
-                                   : '（まだ読めていません）')
+        ((itT.anch && itT.anch.ch) ? '＝いまは「<b>' + esc(itT.anch.ch) + '</b>」'
+                                   : '＝まだ読めていません')
       : '絵の上で、直したい字をえらんでください') + '</p>' +
     '<div class="chips" style="margin:0;">' +
     '<input type="text" id="rTeachCh" maxlength="2" ' +
@@ -15070,34 +15055,80 @@ function rubGrpHtml(){
     (itT ? '' : 'disabled ') + 'placeholder="十">' +
     '<button class="mini primary" id="btnTeach" ' + (itT ? '' : 'disabled ') +
     'title="この墨を その字として手本帳に入れ、読み違いの元になった手本は捨てます">' +
-    'この字として覚えさせる</button>' +
-    /* **名前は要らない。ちがうとだけ言う**（v31.4） */
-    '<button class="mini" id="btnProbe" ' + (itT ? '' : 'disabled ') +
-    'title="この字が 手本帳の どれに どれだけ似ているかを、数で出します">' +
-    'この字を調べる</button>' +
+    'これは この字</button>' +
     '<button class="mini" id="btnTeachNo" ' +
     ((itT && itT.anch && itT.anch.ch) ? '' : 'disabled ') +
     'title="戒名の字など、手本帳に入れる必要のない字のためのボタン。' +
-    'この形は その字ではない、とだけ覚えて 読みを消します">' +
-    'これはちがう</button>' +
-    /* よく使う字は 1 押しで */
+    'この形は その字ではない、とだけ覚えて 読みを消します">ちがう</button>' +
+    '<button class="mini" id="btnProbe" ' + (itT ? '' : 'disabled ') +
+    'title="この字が 手本帳の どれに どれだけ似ているかを、数で出します">調べる</button>' +
+    '</div>' +
+    '<div class="chips" style="margin:3px 0 0;">' +
     '一二三四五六七八九十百年月日才歳没歿令平昭大行享士姉女信居俗名子'.split('').map(function(c){
       return '<button class="mini teq" data-c="' + c + '"' + (itT ? '' : ' disabled') +
              ' style="padding:2px 6px;">' + c + '</button>';
-    }).join('') +
-    '</div>';
+    }).join('') + '</div>';
+  return h;
+}
+/* ───── 4d まとまり（戒名・俗名・命日・年齢） ───── */
+function rubGrpPickHtml(){
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  if (!ls.length) return '<p class="hint" style="margin:0;">先に［拓本を解析］を押してください。</p>';
+  var h = '';
+  var L = rubCol();
+  if (L && L.items && L.items.length){
+    h += '<p class="hint" style="margin:0 0 2px;">' +
+      (S.rub.lines.indexOf(L) + 1) + ' 列目（' + L.items.length + ' 字）：<b>' +
+      (rubGrpLabel(L) || "まだ分けていません") + '</b>' +
+      (rubSelItem >= 0 ? '／' + (rubSelItem + 1) + ' 字目から下に付きます' : '／列ぜんぶに付きます') +
+      '</p>';
+    h += '<div class="chips" style="margin:0;">' +
+      RUBGRP.map(function(g){
+        return '<button class="mini grpb" data-g="' + g.k + '" style="border-color:' + g.c +
+          ';color:' + g.c + ';">' + g.nm + '</button>';
+      }).join("") +
+      ' <button class="mini grpb" data-g="" style="color:var(--muted);">なし</button></div>';
+  }
+  h += '<div style="margin-top:4px;">' + ls.map(function(x, i){
+    var g0 = rubGrpRuns(x).filter(function(r){ return r.g; })[0];
+    var c0 = g0 ? (rubGrpOf(g0.g) || {}).c : "";
+    return '<div class="hint" style="margin:1px 0;' + (c0 ? 'color:' + c0 + ';' : '') + '">' +
+      (i+1) + '列目（' + x.items.length + ' 字）：' + (rubGrpLabel(x) || "なし") + '</div>';
+  }).join("") + '</div>';
+  return h;
+}
+/* ───── 5 覚えたもの（手本帳・1 字の大きさ） ───── */
+function rubMemHtml(){
+  var tehN = 0, tehCh = "";
+  try {
+    tehN = rubTehonCount();
+    var tt = rubTehonAll();
+    tehCh = Object.keys(tt).filter(function(c){ return (tt[c] || []).length; })
+              .map(function(c){ return c + "×" + tt[c].length; }).join("・");
+  } catch(e){}
   var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
   var tehKB = 0; try { tehKB = rubTehonKB(); } catch(e){}
+  var h = '<p class="hint" style="margin:6px 0 2px;">手本帳 <b>' + tehN + ' 枚</b>' +
+    (ngN ? '／ちがう帳 <b>' + ngN + ' 枚</b>' : '') +
+    (tehKB ? '／' + tehKB + 'KB（上限 400 枚）' : '') +
+    (tehCh ? '　' + tehCh : '　（まだ空です）') +
+    (S.rub.tehonSpAt ? '<br>サーバーの控え：' +
+      esc(String(S.rub.tehonSpAt).slice(0, 16).replace("T", " ")) : '') + '</p>';
+  h += '<div class="chips" style="margin:0;">' +
+    '<button class="mini" id="btnTehList" title="覚えている字を一覧で見ます">一覧</button>' +
+    '<button class="mini" id="btnTehSpUp" title="サーバー（' + esc(FONT_DIR + "/" + TEHON_DIR) +
+      '）に控えます">控える</button>' +
+    '<button class="mini" id="btnTehSpDn" title="サーバーの控えを足し合わせます">戻す</button>' +
+    '<button class="mini" id="btnTehBak" title="1 つ前の手本帳に戻します">1 つ前</button>' +
+    '<button class="mini" id="btnTehClr" title="手本帳をぜんぶ消します">空にする</button>' +
+    '</div>';
   var lb8 = rubLearnBox();
   if (lb8 && lb8.hMm){
-    /* **手で微調整できるようにする**（v32.9。本人の確認
-       「同じ文字でも、数ミリの大きさ違いはあると思うのです／微調整できますよね」）。 */
     var spr8 = (lb8.hMaxMm > 0 && (lb8.hMaxMm - num(lb8.hMinMm, 0)) > 0.5)
       ? '（' + num(lb8.hMinMm, 0).toFixed(1) + '〜' + lb8.hMaxMm.toFixed(1) + 'mm のばらつき）' : '';
-    h += '<p class="hint" style="margin:6px 0 2px;">' +
-      (lb8.carried ? '<b>前の拓本から持ち越した</b> 1 字の大きさ' : '枠から覚えた 1 字の大きさ') +
-      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）' + spr8 +
-      (lb8.carried ? '。この拓本で［この列の枠から覚える］を押すと、置きかわります' : '') + '</p>' +
+    h += '<p class="hint" style="margin:8px 0 2px;">' +
+      (lb8.carried ? '前の拓本から持ち越した 1 字の大きさ' : '枠から覚えた 1 字の大きさ') +
+      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）' + spr8 + '</p>' +
       '<div class="chips" style="margin:0;">' +
       '<span class="hint">高さ</span>' +
       '<button class="mini lbb" data-k="h" data-d="-1">−</button>' +
@@ -15110,62 +15141,11 @@ function rubGrpHtml(){
         num(lb8.pitchMm, 0).toFixed(1) + '">' +
       '<button class="mini lbb" data-k="p" data-d="1">＋</button>' +
       '<span class="hint">mm</span>' +
-      ' <button class="mini" id="btnLbClr">忘れる</button></div>' +
-      '<p class="hint" style="margin:3px 0 0;">青枠は <b>墨から切る</b>ので 1 字ずつ大きさが' +
-      'ちがってかまいません。この値は「どこで割るか・どこでつなぐか」の<b>目当て</b>です' +
-      '（ばらつきのぶんは、こちらで ゆるめて見ます）。</p>';
+      ' <button class="mini" id="btnLbClr" title="覚えた大きさを忘れます">忘れる</button></div>';
   }
-  h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
-    (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
-    (tehKB ? '／<b>' + tehKB + 'KB</b>（上限 400 枚・約 280KB。置き場は 5MB ほど）' : '') +
-    (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
-    '　<button class="mini" id="btnTehBak">1 つ前に戻す</button>' +
-    ' <button class="mini" id="btnBoxLearn">この列の枠から覚える</button>' +
-    ' <button class="mini" id="btnTehList">覚えた一覧を見る</button>' +
-    ' <button class="mini" id="btnTehSpUp">サーバーに控える</button>' +
-    ' <button class="mini" id="btnTehSpDn">サーバーから戻す</button>' +
-    '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
-    '<br>［学習に登録］した字と、④ の候補から<b>あなたが決めた字</b>が手本になります。' +
-    '拓本のほんものの字形なので、楷書のフォントより よく当たります。' +
-    '（フォントが無くても、手本帳だけで ［文字で見分ける］が動きます）' +
-    (S.rub.tehonSpAt ? '<br>サーバーの控え：<b>' +
-      esc(String(S.rub.tehonSpAt).slice(0, 16).replace("T", " ")) + '</b>' : '') +
-    '<br>手本帳は <b>この画面の持ち物</b>です。<b>別の拓本（別の案件）を開いても残ります</b>。' +
-    '案件を工事フォルダに保存すると、<b>サーバーにも控え</b>ます' +
-    '（<b>' + esc(FONT_DIR + "/" + TEHON_DIR) + '</b> の「' + TEHON_SP_NAME +
-    '」。会社ぜんぶで 1 つ。フォルダが無ければ作ります）。' +
-    '別のパソコンでは［サーバーから戻す］で足し合わせられます。' 
-    '案件ファイルにも写しが入り、開いたときに足し合わせます。' +
-    '<b>拓本AI の学習（［学習に登録］でサーバーへ送るもの）とは 別物</b>です。' +
-    '<br><b>戒名の字など、覚えさせる必要のない字を読み違えたとき</b>は、' +
-    'その字をえらんで ［これはちがう］ を押してください。' +
-    '名前は要りません。「この形は その字ではない」とだけ覚えます。</p>';
-  var L = rubCol();
-  if (L && L.items && L.items.length){
-    h += '<p class="hint" style="margin:4px 0 2px;">いまの列（' +
-      (S.rub.lines.indexOf(L) + 1) + ' 本目・' + L.items.length + ' 字）：<b>' +
-      (rubGrpLabel(L) || "まだ分けていません") + '</b>' +
-      (rubSelItem >= 0 ? '／<b>' + (rubSelItem + 1) + ' 字目</b>をえらんでいます' : '') + '</p>';
-    h += '<div class="chips" style="margin:2px 0 0;">' +
-      RUBGRP.map(function(g){
-        return '<button class="mini grpb" data-g="' + g.k + '" style="border-color:' + g.c +
-          ';color:' + g.c + ';">' + g.nm + '</button>';
-      }).join("") +
-      ' <button class="mini grpb" data-g="" style="color:var(--muted);">なし</button></div>';
-    h += '<p class="hint" style="margin:3px 0 0;">' +
-      (rubSelItem >= 0
-        ? '字をえらんでいるので、<b>' + (rubSelItem + 1) + ' 字目から下</b>に付きます。' +
-          '列ぜんぶに付けたいときは、字の選びを外してから押してください。'
-        : '<b>列ぜんぶ</b>に付きます。字を 1 つえらんでから押すと、<b>そこから下だけ</b>に付きます。') +
-      '</p>';
-  }
-  h += '<div style="margin-top:4px;">' + ls.map(function(x, i){
-    var g0 = rubGrpRuns(x).filter(function(r){ return r.g; })[0];
-    var c0 = g0 ? (rubGrpOf(g0.g) || {}).c : "";
-    return '<div class="hint" style="margin:1px 0;' + (c0 ? 'color:' + c0 + ';' : '') + '">' +
-      (i+1) + '列目（' + Math.round(x.band.L) + '〜' + Math.round(x.band.R) + 'px・' +
-      x.items.length + ' 字）：' + (rubGrpLabel(x) || "なし") + '</div>';
-  }).join("") + '</div>';
+  h += '<p class="hint" style="margin:8px 0 0;">' +
+    '<button class="mini" id="btnBoxLearn" ' +
+    'title="いまの列の枠から、1 字の大きさ・字送りを覚えます">この列から覚える</button></p>';
   return h;
 }
 /* 学習に登録する所の見た目（v21.63） */
@@ -18774,74 +18754,111 @@ function rubPanel(){
        中の仕組み（`rubLineMeasure` ほか）は、AI 版の比べ先として残す。 */
     /* 見出しは「（準備中）」付き（v21.54。本人の指示）。
        通して見せる所までしか出来ていないので、そう分かるようにしておく。 */
-    /* ───── AI補正のパネル（v26.6 で並べ直した。本人の指示
-       「列の校正を調べるが一番上で、列の指定つぎ、そこに全体の選択も入れる。
-         その下はAI縁取り、文字判別　と続けばいいです。
-         文字数は列を列ごとに入れられた方がいいのではと思います」）─────
-       ① 列の構成を調べる → ② 列の指定（ぜんたいもここ） → ③ AI 縁取り → ④ 文字判別 */
+    /* ───── AI補正のパネル（v33.6 で作業の順に並べ直した。本人の指示
+       「AI補正（準備中）のメニューが複雑すぎて、作業順に並べたいです。
+         最初は範囲、拓本を解析（ワンクリック）、拓本を解析内の動作になるのでしょうか？
+         説明文は不要で、直感的にわかる様にしなければなりません」）─────
+       1 準備 → 2 範囲 → 3 解析 → 4 直す（折りたたみ）→ 5 覚えたもの（折りたたみ）
+       説明の文はツールチップ（title）に移した。受け口（id）は前のまま。 */
     h += '<div id="aiFixBox"><h3 class="sec" style="margin-top:14px;">AI補正（準備中）</h3>';
-
-    /* ───────────── ① 列の構成 ───────────── */
-    h += '<p class="hint" style="margin:6px 0 2px;"><b>① 列の構成</b></p>';
     var ct = S.rub.colsTop && S.rub.colsTop.geo === rubGeoKey() ? S.rub.colsTop : null;
-    /* 古くなった控えは、はっきり知らせる（v26.2） */
-    if (!ct && S.rub.colsTop && S.rub.colsTop.cols && S.rub.colsTop.cols.length)
-      h += '<p class="hint" style="margin:4px 0 0;color:#B00020;"><b>※ 拓本を回した（または ひっくり返した）ので、' +
-        '前に調べた列は使えません。</b>［列の構成を調べる］をもう一度押してください。' +
-        'このままだと、帯は上下まるごと（ぜんたい）を見ます。</p>';
-    /* 拓本の戒名の字幅（v25.6） */
-    var kmNow = rubKmWmm(), mppK = mmPerPx();
-    h += '<div class="fixrow"><span>拓本の戒名の字幅（mm）</span>' +
+    var mppK = mmPerPx(), kmNow = rubKmWmm();
+
+    /* ───────────── 1 ─ 準備 ───────────── */
+    h += '<p class="hint" style="margin:6px 0 2px;"><b>1 ─ 準備</b></p>';
+    h += '<div class="fixrow"><span>実測した文字全長</span><b style="color:' +
+      (mppK ? '#0a7a3c;">できています（1px = ' + mppK.toFixed(3) + 'mm）' : '#B00020;">まだです') +
+      '</b></div>';
+    h += '<div class="fixrow"><span>戒名の字幅（mm）</span>' +
       '<b><input type="number" id="rKmW" value="' + (S.rub.kmW === 0 ? 0 : kmNow) +
-      '" min="0" max="200" step="1" style="width:56px;" placeholder="30"></b></div>';
-    h += '<p class="hint" style="margin:2px 0 0;">' +
-      (kmNow > 0
-        ? '拓本の<b>戒名</b>の字の幅です（これから彫る字ではありません）。' +
-          (mppK ? 'いまは <b>' + Math.round(kmNow / mppK) + 'px</b> として見ています。' : '') +
-          '<b>0</b> で 校正の字から推します。'
-        : '校正の字から推しています。<b>30</b> と入れると、拓本の字幅 30mm で見ます。') + '</p>';
-    h += '<div class="fixrow" style="margin-top:4px;"><span>列の数（自動で切れないとき）</span>' +
-      '<b><input type="number" id="rColN" value="' + (num(S.rub.colN, 0) || "") +
-      '" min="0" max="24" step="1" style="width:56px;" placeholder="自動"></b></div>';
-    h += '<button class="mini primary" id="btnColsStudy" style="margin-top:4px;" ' +
+      '" min="0" max="200" step="1" style="width:56px;" placeholder="30" ' +
+      'title="拓本の戒名の字の幅です（これから彫る字ではありません）。' +
+      '0 にすると校正の字から推します' +
+      (mppK && kmNow ? '。いまは ' + Math.round(kmNow / mppK) + 'px として見ています' : '') +
+      '"></b></div>';
+    if (!ct && S.rub.colsTop && S.rub.colsTop.cols && S.rub.colsTop.cols.length)
+      h += '<p class="hint" style="margin:4px 0 0;color:#B00020;">' +
+        '拓本を回した（ひっくり返した）ので、前に調べた列は使えません。' +
+        '<b>4 ─ 直す</b>の［列を調べ直す］を押してください。</p>';
+
+    /* ───────────── 2 ─ 範囲 ───────────── */
+    h += '<p class="hint" style="margin:12px 0 2px;"><b>2 ─ 範囲</b></p>';
+    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
+      'title="通したい行をまとめてかこみます。拓本の端で見切れている行を外せます">' +
+      '▣ 範囲を描く</button>';
+    if (S.rub.allBox && S.rub.allBox.w > 8){
+      var mp2 = mmPerPx();
+      h += ' <button class="mini" id="btnAreaClr" title="範囲をやめて、拓本ぜんたいに戻します">' +
+        '範囲をやめる</button>' +
+        ' <span class="hint">' +
+        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
+             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
+        '（緑の四角）</span>';
+    } else {
+      h += ' <span class="hint">いまは拓本ぜんたい</span>';
+    }
+
+    /* ───────────── 3 ─ 解析 ───────────── */
+    h += '<p class="hint" style="margin:12px 0 2px;"><b>3 ─ 解析</b></p>';
+    h += '<button class="mini primary" id="btnAnalyze" ' +
+      'style="font-size:15px;padding:8px 18px;" ' +
+      'title="列を調べる → AI に通して字の枠を作る → 戒名・命日・俗名・年齢に分ける、' +
+      'までを ひと押しで通します">拓本を解析</button>' +
+      ' <button class="mini" id="btnAnalyzeClr" ' +
+      'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
+      '手本帳・覚えた大きさ・較正・範囲は残ります">やり直す（消す）</button>';
+    var an9 = S.rub.anaLast;
+    h += '<p class="hint" style="margin:4px 0 0;">' +
+      (an9 && an9.tx
+        ? esc(an9.tx)
+        : (ct ? '前に調べた列：' + ((ct.cols || []).length) + ' 列。そのまま解析できます。'
+              : 'まだ解析していません。')) + '</p>';
+
+    /* ───────────── 4 ─ 直す ───────────── */
+    var anyLine4 = (S.rub.lines || []).some(function(L9){ return L9 && L9.items && L9.items.length; });
+    h += '<details id="aiFix4"' + (anyLine4 ? ' open' : '') + ' style="margin-top:12px;">' +
+      '<summary style="cursor:pointer;font-weight:bold;">4 ─ 直す</summary>';
+    /* 右上の小道具（AI の墨の出し消し・送る絵） */
+    h += '<p class="hint" style="margin:6px 0 2px;text-align:right;">';
+    if (RUB.aiBand || (S.rub.lines || []).some(function(L9){ return L9 && L9.aiUrl; }))
+      h += '<button class="mini" id="btnAiBandClr" title="AI が読んだ青い墨を 出す／消す">' +
+        (rubShowAi ? 'AI の墨を消す' : 'AI の墨を出す') + '</button> ';
+    h += '<button class="mini" id="btnAiPrev" ' +
+      'title="AI に渡す切り抜きを、そのまま並べて見せます">AI に送る絵</button></p>';
+
+    /* ── 4a 列 ── */
+    h += '<p class="hint" style="margin:8px 0 2px;"><b>4a 列</b></p>';
+    h += '<button class="mini' + (ct ? '' : ' primary') + '" id="btnColsStudy" ' +
       'title="上の行で列を見つけ、そのまま下で 2 列に分かれていないか、どこから分かれるかまで調べます">' +
-      '列の構成を調べる</button>';
+      '列を調べ直す</button>';
+    h += ' <span class="hint">列の数<input type="number" id="rColN" value="' +
+      (num(S.rub.colN, 0) || "") + '" min="0" max="24" step="1" ' +
+      'style="width:48px;margin-left:2px;" placeholder="自動" ' +
+      'title="自動で切れないときだけ入れます"></span>';
     if (ct)
-      h += ' <label style="margin-left:6px;"><input type="checkbox" id="rShowCols"' +
+      h += ' <label class="hint" style="margin-left:6px;"><input type="checkbox" id="rShowCols"' +
         (rubShowCols ? " checked" : "") + '> 絵に出す</label>';
     var spN9 = ct ? (ct.cols || []).filter(function(c){ return c.sp; }).length / 2 : 0;
     h += '<p class="hint" style="margin:3px 0 0;">' +
       (ct ? (spN9
-              ? '<b>上 ' + (ct.topN || "?") + ' 列 → 下 ' + ct.cols.length + ' 列</b>（' +
-                Math.round(spN9) + ' 本が下で 2 つに分かれます）'
-              : '<b>ぜんたい ' + ct.cols.length + ' 列</b>（上から下まで同じ）') +
-            (ct.side ? '／字の大きさ ' + ct.side + 'px' : '') + '。' +
-            '拓本を回すと、もう一度押してください。'
-          : '拓本には<b>すでに彫ってある列</b>が並んでいるので、校正の列数とは合いません。' +
-            'まず これを押してください。') + '</p>';
-    /* 境目は手でも直せる（v25.5） */
+              ? '上 ' + (ct.topN || "?") + ' 列 → 下 ' + ct.cols.length + ' 列'
+              : 'ぜんたい ' + ct.cols.length + ' 列') +
+            (ct.side ? '／字 ' + ct.side + 'px' : '')
+          : 'まだ調べていません') + '</p>';
+    /* 境目（1 列 → 2 列） */
     if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
       var mppC = mmPerPx();
-      /* **mm で出す**（v29.1。本人の指示「pxだとわかりずらいので㎜に単位を統一して」） */
-      h += '<div class="fixrow" style="margin-top:4px;"><span>1 列 → 2 列 の境目</span>' +
+      h += '<div class="fixrow" style="margin-top:4px;"><span>上下の境目（緑の線）</span>' +
         '<b><input type="number" id="rCutY" value="' +
         (mppC ? (ct.yCut * mppC).toFixed(0) : Math.round(ct.yCut)) +
         '" min="0" max="' + (mppC ? Math.round(RUB.H * mppC) : RUB.H) +
-        '" step="1" style="width:76px;"> ' + (mppC ? 'mm' : 'px') +
-        ' <button class="mini" id="btnCutUp">↑</button>' +
-        ' <button class="mini" id="btnCutDn">↓</button></b></div>';
-      h += '<p class="hint" style="margin:2px 0 0;">緑の線です（拓本の上から）。' +
-        '下の ' + ct.cols.length + ' 列は、ここから下がそろって始まります。</p>';
+        '" step="1" style="width:70px;"> ' + (mppC ? 'mm' : 'px') +
+        ' <button class="mini" id="btnCutUp" title="境目を上げる">↑</button>' +
+        ' <button class="mini" id="btnCutDn" title="境目を下げる">↓</button></b></div>';
     }
-
-    /* ───────────── ② 列の指定 ───────────── */
-    h += '<p class="hint" style="margin:10px 0 2px;"><b>② 列の指定</b></p>';
+    /* 列えらび */
     var mn9 = rubColMenu(), ups = mn9.ups, lows = mn9.lows;
     var bL9 = Math.min(r.bandL, r.bandR), bR9 = Math.max(r.bandL, r.bandR);
-    /* **［ぜんたい］は「範囲の中ぜんぶ」**（v28.5。本人の指摘
-       「範囲を決めているのに、列の指定で全体はおかしくないですか？…
-         列の指定の全体は指定した範囲を無視してますよね」）。
-       範囲（緑の四角）を描いてあるなら、そこが「ぜんたい」。 */
     var arAll = rubArea();
     var fAll = arAll.all ? frameX() : { x1: arAll.x1, x2: arAll.x2 };
     var isAll = (bL9 <= fAll.x1 + 4 && bR9 >= fAll.x2 - 4);
@@ -18859,74 +18876,39 @@ function rubPanel(){
                '" data-k="' + kind + '" data-i="' + i + '">' + (i + 1) + '</button>';
       }).join("");
     }
-    /* **ぜんたいもここで選ぶ**（v26.6。本人の指示「そこに全体の選択も入れる」） */
     var allChip = '<button class="mini colb' + (isAll ? ' primary' : '') +
       '" data-k="all" data-i="0" title="' +
-      (arAll.all ? "帯を拓本の幅いっぱいに戻します" : "帯を［通す範囲］の幅いっぱいにします") + '">' +
+      (arAll.all ? "帯を拓本の幅いっぱいに戻します" : "帯を範囲の幅いっぱいにします") + '">' +
       (arAll.all ? 'ぜんたい' : '範囲ぜんたい') + '</button>';
     if (ups.length){
-      h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-        'style="margin-right:4px;">' + (lows.length ? '上（戒名）' : '列') + '</span>' +
+      h += '<div class="chips" style="margin:4px 0 0;"><span class="hint" ' +
+        'style="margin-right:4px;">' + (lows.length ? '上' : '列') + '</span>' +
         chipsOf(ups, "top") + '<span style="margin-left:8px;"></span>' + allChip + '</div>';
       if (lows.length)
         h += '<div class="chips" style="margin:3px 0 0;"><span class="hint" ' +
-          'style="margin-right:4px;">下（命日ほか）</span>' + chipsOf(lows, "bot") + '</div>';
-      h += '<p class="hint" style="margin:3px 0 0;">押すとその列に帯を合わせます。' +
-        (lows.length
-          ? '<b>上を選べば境目より上だけ</b>、<b>下を選べば境目より下だけ</b>を見ます。' +
-            '上を選ぶと、その中の下の列も光ります（同じ人の 1 かたまり）。' +
-            '下で分かれていない列は、上のボタンだけに出ます（上から下まで 1 本なので）。'
-          : '左から数えた列の番号です。') + '</p>';
+          'style="margin-right:4px;">下</span>' + chipsOf(lows, "bot") + '</div>';
     } else if (RUB.cols && RUB.cols.length){
-      h += '<div class="chips" style="margin:3px 0 0;">' + chipsOf(RUB.cols, "bot") +
+      h += '<div class="chips" style="margin:4px 0 0;">' + chipsOf(RUB.cols, "bot") +
         '<span style="margin-left:8px;"></span>' + allChip + '</div>';
-      h += '<p class="hint" style="margin:3px 0 0;">左から数えた列の番号です。押すとその列に帯を合わせます。</p>';
     } else {
-      h += '<div class="chips" style="margin:3px 0 0;">' + allChip + '</div>';
+      h += '<div class="chips" style="margin:4px 0 0;">' + allChip + '</div>';
     }
     var bw = Math.abs(num(r.bandR, 0) - num(r.bandL, 0));
-    var bmm = mmPerPx();
     var qNow = rubBandQ();
     var cr9 = clampRange();
     var whole = (Math.round(qNow.y1) <= Math.round(cr9.y1) + 1 &&
                  Math.round(qNow.y2) >= Math.round(cr9.y2) - 1);
-    h += '<p class="hint" style="margin:4px 0 0;">いまの帯：幅 <b>' +
-      (bw ? mmT(bw, 1) : '—') + '</b>／見ているのは <b>' +
-      (whole ? 'ぜんたい' : (Math.round(qNow.y1) < 40 ? '上（戒名）' : '下（命日ほか）')) +
-      '</b>（上から ' + mmRange(qNow.y1, qNow.y2) + '）。オレンジのつまみでも動かせます。</p>';
-    h += '<button class="mini' + (rubAreaDraw ? ' primary' : '') + '" id="btnArea" ' +
-      'style="margin-top:4px;" title="通したい行をまとめてかこみます。' +
-      '拓本の端で見切れている行を外せます">▣ 通す範囲を決める</button>';
-    if (S.rub.allBox && S.rub.allBox.w > 8){
-      var mp2 = mmPerPx();
-      h += ' <button class="mini" id="btnAreaClr">範囲をやめる</button>' +
-        '<p class="hint" style="margin:2px 0 0;">いまの範囲：' +
-        (mp2 ? (S.rub.allBox.w*mp2).toFixed(0) + " × " + (S.rub.allBox.h*mp2).toFixed(0) + "mm"
-             : Math.round(S.rub.allBox.w) + " × " + Math.round(S.rub.allBox.h) + "px") +
-        '（緑の四角）</p>';
-    }
-
-    /* ───────────── ③ AI 縁取り ───────────── */
-    h += '<p class="hint" style="margin:10px 0 2px;"><b>③ AI 縁取り</b></p>';
-    /* **ボタンは 1 つ**（v26.7。本人の指示「AI縁取りの実行は１つのボタンでいいです。
-       列の指定で、全体を選んでAI縁取りを選択する場合と、列を指定する場合で、
-       決まるので、分ける必要がないからです」）。
-       ② で ぜんたいを選んでいれば 拓本ぜんたい、上の列なら その下もまとめて、
-       それ以外は その帯だけ。**押す前に、何を通すかを字で出す**。 */
     var grp5 = rubBandGroup();
     var aiWhat = isAll ? ((arAll.all ? "拓本ぜんたい" : "範囲ぜんたい") +
                           "（" + ((RUB.cols || []).length || "?") + " 列）")
                 : (grp5 ? "この列（上＋下 " + grp5.kids.length + " 本）" : "この帯 1 本");
-    h += '<button class="mini primary" id="btnAiGo" ' +
-      'title="② で選んだ所を AI に通して、字の縁取りを作ります">' +
-      'AI 縁取りを実行：' + aiWhat + '</button>';
-    if (RUB.aiBand || (S.rub.lines || []).some(function(L9){ return L9 && L9.aiUrl; }))
-      h += ' <button class="mini" id="btnAiBandClr">' +
-        (rubShowAi ? 'AI の墨を消す' : 'AI の墨を出す') + '</button>';
-    h += ' <button class="mini" id="btnAiPrev" ' +
-      'title="AI に渡す切り抜きを、そのまま並べて見せます">AI に送る絵を見る</button>';
-    h += '<p class="hint" style="margin:3px 0 0;">読んだ墨を<b>青</b>、通した所を<b>水色の枠</b>で出します。' +
-      (rubShowAi ? '' : '<b>いまは青い墨を隠しています。</b>') + '</p>';
+    h += '<p class="hint" style="margin:3px 0 0;">いまの帯：幅 <b>' +
+      (bw ? mmT(bw, 1) : '—') + '</b>／' +
+      (whole ? 'ぜんたい' : (Math.round(qNow.y1) < 40 ? '上' : '下')) +
+      '（' + mmRange(qNow.y1, qNow.y2) + '）　' +
+      '<button class="mini" id="btnAiGo" ' +
+      'title="いま選んでいる所だけを AI に通して、字の縁取りを作り直します">' +
+      'ここだけ AI に通す：' + aiWhat + '</button></p>';
     if (RUB.aiBand){
       var ab = RUB.aiBand;
       h += '<p class="hint" style="margin:3px 0 0;">' + ab.at + '　' +
@@ -18936,32 +18918,22 @@ function rubPanel(){
         Math.round(ab.ms/100)/10 + ' 秒</p>';
     }
 
-    /* ───────────── ④ 文字判別 ───────────── */
-    h += '<p class="hint" style="margin:10px 0 2px;"><b>④ 文字判別</b></p>';
-    h += '<p class="hint" style="margin:6px 0 2px;">' +
-      '<button class="mini primary" id="btnAnalyze" ' +
-      'title="列の構成しらべ → AI 縁取り → 文字の見分け（戒名・命日・俗名・年齢）まで、' +
-      'ひと押しで通します">拓本を解析（ひと押し）</button>' +
-      ' <button class="mini" id="btnAnalyzeClr" ' +
-      'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
-      '手本帳・覚えた大きさ・較正・通す範囲は残ります">やり直す（消す）</button>' +
-      '　覚えた手本が増えるほど、この 1 つで済むようになります</p>';
-    h += '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
+    /* ── 4b 枠 ── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>4b 枠</b></p>';
+    h += rubBoxFixHtml();
+    h += '<div class="chips" style="margin:4px 0 0;">' +
+      '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
       (RUB.aiBand ? '' : ' disabled') + ' ' +
-      'title="AI が読んだ墨から、字の大きさ・字送り・画線の太さ・傾きを測ります"' +
-      '>この行を見立てる</button>';
-    /* **AI なしでも枠を作れる**（v27.2。本人の指示） */
-    h += ' <button class="mini' + (rubBoxDraw ? ' primary' : '') + '" id="btnHandBox" ' +
+      'title="AI が読んだ墨から、この列の枠を作り直します（大きさ・字送り・太さ・傾きを測ります）">' +
+      'この列だけ作り直す</button>' +
+      '<button class="mini' + (rubBoxDraw ? ' primary' : '') + '" id="btnHandBox" ' +
       'title="AI に通さなくても、人が枠を描けます。読めない拓本を学習させるときに使います">' +
-      (rubBoxDraw ? '枠を描くのをやめる' : '✎ 手で枠を描く') + '</button>';
-    if (!RUB.aiBand)
-      h += '<p class="hint" style="margin:3px 0 0;">先に ③ で AI に通してください。</p>';
-    /* **字数は列ごとに入れる**（v26.6。本人の指示
-       「文字数は列を列ごとに入れられた方がいいのではと思います」）。
-       いままで 1 つしか持てず、列を変えるたびに入れ直しだった。 */
-    h += '<div class="fixrow" style="margin-top:6px;"><span>いまの列の字数</span>' +
-      '<b><input type="number" id="rLineN" value="' + (rubLineNGet() || "") +
-      '" min="0" max="60" step="1" style="width:56px;" placeholder="自動"></b></div>';
+      (rubBoxDraw ? '描くのをやめる' : '✎ 手で描く') + '</button>' +
+      '<span class="hint" style="margin-left:6px;">この列の字数' +
+      '<input type="number" id="rLineN" value="' + (rubLineNGet() || "") +
+      '" min="0" max="60" step="1" style="width:48px;margin-left:2px;" placeholder="自動" ' +
+      'title="数を入れて［この列だけ作り直す］を押すと、その字数ちょうどに割ります"></span>' +
+      '</div>';
     if (ups.length || (RUB.cols && RUB.cols.length)){
       function nBox(key, lab){
         return '<span style="display:inline-block;margin:0 6px 3px 0;">' + lab +
@@ -18969,22 +18941,40 @@ function rubPanel(){
           (rubLineNAt(key) || "") + '" min="0" max="60" step="1" ' +
           'style="width:44px;margin-left:2px;" placeholder="自動"></span>';
       }
-      var gh = "";
       if (ups.length){
-        gh += '<div style="margin-top:4px;"><span class="hint">上</span> ' +
+        h += '<div style="margin-top:4px;"><span class="hint">字数 上</span> ' +
           ups.map(function(c, i){ return nBox("t" + i, (i+1) + ""); }).join("") + '</div>';
-        gh += '<div style="margin-top:2px;"><span class="hint">下</span> ' +
+        h += '<div style="margin-top:2px;"><span class="hint">字数 下</span> ' +
           (lows || []).map(function(c, i){ return nBox("b" + i, (i+1) + ""); }).join("") + '</div>';
       } else {
-        gh += '<div style="margin-top:4px;">' +
+        h += '<div style="margin-top:4px;"><span class="hint">字数</span> ' +
           (RUB.cols || []).map(function(c, i){ return nBox("b" + i, (i+1) + ""); }).join("") + '</div>';
       }
-      h += gh;
     }
-    h += '<p class="hint" style="margin:3px 0 0;">数を入れてから［この行を見立てる］を押すと、' +
-      '<b>その字数ちょうどに割ります</b>（墨がつながっていても切れます）。' +
-      '空なら すき間で切ります。列ごとに覚えます。</p>';
-    h += rubGrpHtml();                       /* ⑤ グループ分け（v26.8） */
+
+    /* ── 4c 読み ── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>4c 読み</b></p>';
+    h += rubReadHtml();
+
+    /* ── 4d まとまり ── */
+    h += '<p class="hint" style="margin:10px 0 2px;"><b>4d まとまり</b></p>';
+    h += rubGrpPickHtml();
+
+    /* ── 4e もう一度 ── */
+    h += '<p class="hint" style="margin:10px 0 4px;">' +
+      '<button class="mini primary" id="btnRejudge" ' +
+      'title="覚えさせたことを使って、枠の切り分けからやり直し、そのまま文字で見分けます。' +
+      'AI には通し直さないので速いです">もう一度 解析</button>' +
+      ' <button class="mini" id="btnGrpAuto" style="display:none;">位置から見当</button>' +
+      '<button class="mini" id="btnAnch" style="display:none;">文字で見分ける</button></p>';
+    h += '</details>';
+
+    /* ───────────── 5 ─ 覚えたもの ───────────── */
+    h += '<details id="aiFix5" style="margin-top:8px;">' +
+      '<summary style="cursor:pointer;font-weight:bold;">5 ─ 覚えたもの</summary>';
+    h += rubMemHtml();
+    h += '</details>';
+
     if ((S.rub.lines || []).length) h += rubLineHtml();
     h += rubCandHtml();
     h += '</div>';
@@ -18999,7 +18989,7 @@ function rubPanel(){
     bza.disabled = true; bza.textContent = "解析しています…";
     try { await rubAllAnalyze(); } catch(e){ msg("解析でつまずきました（" +
       ((e && e.message) || "") + "）。", true); }
-    bza.disabled = false; bza.textContent = "拓本を解析（ひと押し）";
+    bza.disabled = false; bza.textContent = "拓本を解析";
   };
   var bta = $("btnLineTakeAi");
   if (bta) bta.onclick = function(){
@@ -19081,7 +19071,7 @@ function rubPanel(){
     brj.disabled = true; brj.textContent = "やり直しています…";
     try { await rubRejudge(); } catch(e){ msg("再判定でつまずきました（" +
       ((e && e.message) || "") + "）。", true); }
-    brj.disabled = false; brj.textContent = "覚えたことで 再判定";
+    brj.disabled = false; brj.textContent = "もう一度 解析";
   };
   function lbSet(k, v){
     /* 持ち越した値を直したら、この案件の値として置く（v33.1） */

@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v34.5";
+var APP_VER = "v34.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -21151,6 +21151,36 @@ function rubRegCard(cv, title, sub, btnHtml){
   }
   return d;
 }
+/* ───── 登録したあとに直す（v34.6。本人の指示
+   「登録した後に編集できるようにしてほしいです」）─────
+   ① この列を直す … 板を閉じて、その列をえらぶ（枠を直して、登録し直す）
+   ② 登録し直す   … 同じ名前で送るので **前の分に上書き**される
+   ③ 学習から外す … サーバーに `off` の印を付ける（消さずに外す。戻せる）
+   ④ 消す         … サーバーから消す（戻せない） */
+async function rubRegSrvOff(id, off){
+  var base = takuApiBase(); if (!base) throw new Error(takuAiOffNote());
+  var fd = new FormData(); fd.append("off", off ? "true" : "false");
+  var r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(id) + "/off",
+                      { method: "POST", body: fd });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
+async function rubRegSrvDel(id){
+  var base = takuApiBase(); if (!base) throw new Error(takuAiOffNote());
+  var r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(id),
+                      { method: "DELETE" });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
+/* その列に移って、枠を直せるようにする（板は閉じる） */
+function rubRegEdit(ci){
+  var w = $("aiRegWin"); if (w) w.hidden = true;
+  rubSelCol = ci; rubSelItem = -1; rubSelSet = [];
+  if (S.view !== "rub") setView("rub");
+  persist(); rubPanel(); rubRender();
+  msg((ci + 1) + " 列目に移りました。字枠を直してから［⬆ この列の字枠を登録］を押すと、" +
+      "<b>前の分に上書き</b>されます。", false, true);
+}
 /* ── いまの拓本（送るもの・送ったもの） ── */
 async function rubRegViewNow(){
   var body = $("aiRegBody"), info = $("aiRegInfo");
@@ -21203,7 +21233,13 @@ async function rubRegViewNow(){
             ? '<br><span style="color:#9fb0c3;">登録した枠は読めませんでした（サーバーに つながらないか、古い登録です）</span>'
             : ''));
     body.appendChild(rubRegCard(cv, ci + " 列目", sub,
-      '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ この列の字枠を登録</button>'));
+      '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ ' +
+      (L.regAt ? '登録し直す（上書き）' : 'この列の字枠を登録') + '</button>' +
+      '<button class="mini regEdit" data-ci="' + (ci - 1) + '" ' +
+      'title="板を閉じて この列に移り、字枠を直せるようにします">✎ この列を直す</button>' +
+      (L.regAt ? '<button class="mini regDel" data-key="' + esc(rubLineKey(L)) +
+        '" data-ci="' + (ci - 1) + '" ' +
+        'title="サーバーからこの列の登録を消します">🗑 登録を消す</button>' : '')));
   }
   info.innerHTML = ls.length + ' 列／' + nAll + ' 字（読めた ' + nCh + ' 字）。登録ずみ <b>' +
     nReg + ' / ' + ls.length + ' 列</b>。<b>この絵が そのまま教材になります</b>' +
@@ -21213,6 +21249,23 @@ async function rubRegViewNow(){
     'ここで分かるのは <b>登録した枠と いまの枠が同じかどうか</b>です' +
     '（白い点線＝登録してある枠）。' +
     (takuApiBase() ? '' : '　<b style="color:#ffb3b3;">' + esc(takuAiOffNote()) + '</b>');
+  Array.prototype.forEach.call(body.querySelectorAll(".regEdit"), function(b){
+    b.onclick = function(){ rubRegEdit(+b.dataset.ci); };
+  });
+  Array.prototype.forEach.call(body.querySelectorAll(".regDel"), function(b){
+    b.onclick = async function(){
+      if (!confirm("サーバーから この列の登録を消します。よろしいですか。\n\n" +
+                   b.dataset.key)) return;
+      b.disabled = true;
+      try {
+        await rubRegSrvDel(b.dataset.key);
+        var L9 = (S.rub.lines || [])[+b.dataset.ci];
+        if (L9){ delete L9.regAt; delete L9.regPart; persist(); }
+        msg("登録を消しました。直してから もう一度 登録できます。");
+      } catch(e){ msg("消せませんでした（" + ((e && e.message) || "") + "）。", true); }
+      rubRegViewNow();
+    };
+  });
   Array.prototype.forEach.call(body.querySelectorAll(".regOne"), function(b){
     b.onclick = async function(){
       var L = (S.rub.lines || [])[+b.dataset.ci];
@@ -21258,7 +21311,11 @@ async function rubRegViewSrv(){
   }
   var its = (j && j.items) || [];
   info.innerHTML = 'サーバーに <b>' + ((j && j.all) || 0) + ' 列</b>貯まっています' +
-    '（名前の順）。ここに出ているものが、そのまま学習の材料です。';
+    ((j && j.on !== undefined && j.on !== j.all)
+      ? '（うち <b>' + j.on + ' 列</b>を学習に使います）' : '') +
+    '（名前の順）。ここに出ているものが、そのまま学習の材料です。' +
+    '<br>間違って登録した列は ⛔ で外すか 🗑 で消せます。' +
+    '字枠を直したいときは［いまの拓本］の札の ✎ から直して、登録し直してください（上書きされます）。';
   for (var i = 0; i < its.length; i++){
     var it = its[i];
     var m = null;
@@ -21279,8 +21336,33 @@ async function rubRegViewSrv(){
       (it.ink ? '／墨あり' : '／<b style="color:#ff8f8f;">墨なし</b>') +
       ((m && m.note) ? '<br>' + esc(m.note) : "") +
       (bx.length ? '' : '<br><span style="color:#ffb3b3;">枠の控えが読めませんでした</span>');
-    body.appendChild(rubRegCard(cv, it.id, sub, ""));
+    body.appendChild(rubRegCard(cv, it.id + (it.off ? "（使わない）" : ""), sub,
+      '<button class="mini srvOff" data-id="' + esc(it.id) + '" data-off="' +
+      (it.off ? "0" : "1") + '" ' +
+      'title="消さずに学習から外します（あとで戻せます）">' +
+      (it.off ? '↩ また使う' : '⛔ 学習から外す') + '</button>' +
+      '<button class="mini srvDel" data-id="' + esc(it.id) + '" ' +
+      'title="サーバーから消します（戻せません）">🗑 消す</button>'));
   }
+  Array.prototype.forEach.call(body.querySelectorAll(".srvOff"), function(b){
+    b.onclick = async function(){
+      b.disabled = true;
+      try {
+        await rubRegSrvOff(b.dataset.id, b.dataset.off === "1");
+        msg(b.dataset.off === "1" ? "学習から外しました（消していません）。" : "また使うようにしました。");
+      } catch(e){ msg("変えられませんでした（" + ((e && e.message) || "") + "）。", true); }
+      rubRegViewSrv();
+    };
+  });
+  Array.prototype.forEach.call(body.querySelectorAll(".srvDel"), function(b){
+    b.onclick = async function(){
+      if (!confirm("サーバーから消します。戻せません。よろしいですか。\n\n" + b.dataset.id)) return;
+      b.disabled = true;
+      try { await rubRegSrvDel(b.dataset.id); msg("消しました。"); }
+      catch(e){ msg("消せませんでした（" + ((e && e.message) || "") + "）。", true); }
+      rubRegViewSrv();
+    };
+  });
   if (!its.length) info.innerHTML = "サーバーには まだ 1 列も貯まっていません。";
 }
 function rubRegBind(){

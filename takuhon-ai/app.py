@@ -9,6 +9,8 @@
   POST /api/takuhon/chars      手本帳の 1 字を貯める（読みの学習材料）
   GET  /api/takuhon/lines      貯まった列の一覧
   GET  /api/takuhon/line/{id}  その列の枠と読み（meta.json）
+  POST /api/takuhon/line/{id}/off   その列を学習に使う／使わない（消さずに外す）
+  DELETE /api/takuhon/line/{id}     その列を消す（間違って登録したとき）
   GET  /api/takuhon/lineimg/.. 列の画像（raw／ink）
   GET  /api/takuhon/status     いま使っているモデルと、貯まった組数
   GET  /api/takuhon/progress   学習の途中経過（train.py が置く runs/progress.json）
@@ -664,8 +666,10 @@ def lines(limit: int = 60, offset: int = 0):
         m = _read_json(os.path.join(LINES, pid, "meta.json"), {}) or {}
         out.append({"id": pid, "n": m.get("n", 0), "at": m.get("at", ""),
                     "chars": m.get("chars", ""),
+                    "off": os.path.exists(os.path.join(LINES, pid, "off")),
                     "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))})
-    return {"all": len(ids), "offset": offset, "items": out}
+    on = sum(1 for x in out if not x["off"])
+    return {"all": len(ids), "on": on, "offset": offset, "items": out}
 
 
 @app.get("/api/takuhon/line/{pid}")
@@ -679,6 +683,35 @@ def line_one(pid: str):
         return JSONResponse({"error": "no_meta"}, status_code=404)
     m["ink"] = os.path.exists(os.path.join(d, "ink.png"))
     return m
+
+
+@app.post("/api/takuhon/line/{pid}/off")
+def line_off(pid: str, off: bool = Form(True)):
+    """その列を **学習に使わない**（または使う）。消さずに外せる（2026-09-21）。
+
+    印は `off` という**空ファイル**。`boxdata.list_lines` はこれがある列を飛ばす。
+    間違って登録した字枠を、消さずに学習から外せるようにしてある
+    （あとで見返して「やはり使う」に戻せる）。
+    """
+    d = _line_dir(pid)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    f = os.path.join(d, "off")
+    if off:
+        open(f, "w").close()
+    elif os.path.exists(f):
+        os.remove(f)
+    return {"status": "ok", "id": pid, "off": bool(off)}
+
+
+@app.delete("/api/takuhon/line/{pid}")
+def line_del(pid: str):
+    """その列を消す。**戻せない**ので、ふだんは /off の方を使うこと。"""
+    d = _line_dir(pid)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    shutil.rmtree(d, ignore_errors=True)
+    return {"status": "deleted", "id": pid, "lines": len(_line_ids())}
 
 
 @app.get("/api/takuhon/lineimg/{pid}/{kind}.png")

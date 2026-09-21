@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v34.6";
+var APP_VER = "v34.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7870,11 +7870,18 @@ function rubMenuOpen(ev, pt, hit){
       '同じまとまりを選ぶ' + ((itH && itH.g && rubGrpOf(itH.g)) ? '（' + rubGrpOf(itH.g).nm + '）' : '') +
       '</button>';
     h += '<button class="mini" data-a="pk-all" title="この列の枠を ぜんぶ選びます">この列をぜんぶ選ぶ</button>';
-    if (rubSelSet.length > 1){
+    if (rubSelSet.length > 1)
+      h += '<button class="mini" data-a="pk-clr">選びをやめる</button>';
+    /* **右クリックからも登録できる**（v34.7。本人の指示
+       「枠を選択したら、右クリックでも枠の登録できるようにして」）。 */
+    h += '<div class="nhd" style="margin-top:6px;">拓本AI に登録（字枠）</div>';
+    if (rubSelSet.length > 1)
       h += '<button class="mini primary" data-a="pk-reg">⬆ えらんだ字枠 ' + rubSelSet.length +
         ' 個を登録</button>';
-      h += '<button class="mini" data-a="pk-clr">選びをやめる</button>';
-    }
+    else
+      h += '<button class="mini primary" data-a="one-reg">⬆ この字枠を登録</button>';
+    h += '<button class="mini" data-a="col-reg">⬆ この列の字枠を登録</button>';
+    h += '<button class="mini" data-a="reg-view">🔍 登録した字枠を見る</button>';
     h += '<div class="nhd" style="margin-top:6px;">まとまり（ここから下）</div>';
     h += RUBGRP.map(function(g){
       var on = itH && itH.g === g.k;
@@ -7932,6 +7939,15 @@ function rubMenuOpen(ev, pt, hit){
       else if (a === "pk-all"){ pickHit(); rubPickAll(); rubPanel(); rubRender(); }
       else if (a === "pk-clr"){ rubPickClear(); rubPanel(); rubRender(); }
       else if (a === "pk-reg"){ rubLineRegPick(); }
+      else if (a === "one-reg"){ pickHit(); rubPanel(); rubLineRegOne(hit.i); }
+      else if (a === "col-reg"){
+        if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubPanel(); }
+        rubLineRegGo(false);
+      }
+      else if (a === "reg-view"){
+        if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubPanel(); }
+        rubRegView("now");
+      }
       else if (a.indexOf("g:") === 0){ pickHit(); rubGrpSet(a.slice(2), hit.i); }
       else if (a === "rot-start"){ startSpin(); if (pt) setPivotAt(pt); }
       else if (a === "rot-here"){ if (pt) setPivotAt(pt); }
@@ -20753,7 +20769,7 @@ async function rubLineReg(L, idxs){
   fd.append("note", (L.boxBy === "ai" ? "AI が描いた枠" : (L.boxFix ? "手で直した列" : "AI の枠のまま")) +
                     "／" + sh.boxes.length + " 字" + (sh.part ? "／えらんだ分" : ""));
   var r = await fetch(base + "/api/takuhon/line", { method: "POST", body: fd });
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) throw await takuErr(r, "字枠の登録（/api/takuhon/line）");
   var j9 = await r.json();
   if (!sh.part) L.regAt = new Date().toISOString();   /* 列ぜんぶを送ったときだけ「登録ずみ」 */
   else L.regPart = (num(L.regPart, 0) + sh.boxes.length);        /* いつ登録したか（確かめの板に出す） */
@@ -20777,6 +20793,18 @@ async function rubLineRegPick(){
   } catch(e){ msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true); }
   rubPanel();
 }
+/* 字枠 1 つだけ登録する（v34.7。右クリックから） */
+async function rubLineRegOne(i){
+  var L = rubCol();
+  if (!L || !L.items || !L.items[i]){ msg("その字枠が読めません。", true); return; }
+  if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
+  try {
+    var j = await rubLineReg(L, [i]);
+    msg((i + 1) + " 字目の字枠を拓本AI に登録しました" +
+        (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
+  } catch(e){ msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true); }
+  rubPanel();
+}
 async function rubLineRegGo(all){
   var ls = all ? (S.rub.lines || []).filter(function(L){
                    return rubIsBoxLine(L) && L.items && L.items.length; })
@@ -20791,10 +20819,16 @@ async function rubLineRegGo(all){
       ok++; if (j && j.replaced) rep++;
     } catch(e){ ng++; last = (e && e.message) || ""; }
   }
-  msg(ok + " 列の字枠を拓本AI に登録しました" +
-      (rep ? "（うち " + rep + " 列は前の分に上書き）" : "") +
-      (ng ? "。" + ng + " 列は送れませんでした（" + esc(last) + "）" : "") + "。" +
-      "切り抜き・字枠（読みがあれば読みも）を送っています。", !!ng, true);
+  /* **1 列も送れなかったときは、理由だけを言う**（v34.7）。
+     「0 列を登録しました」と並べると、何が起きたのか読み取りにくい。 */
+  if (!ok){
+    msg("字枠を登録できませんでした（" + esc(last) + "）。", true, true);
+  } else {
+    msg(ok + " 列の字枠を拓本AI に登録しました" +
+        (rep ? "（うち " + rep + " 列は前の分に上書き）" : "") +
+        (ng ? "。" + ng + " 列は送れませんでした（" + esc(last) + "）" : "") + "。" +
+        "切り抜き・字枠（読みがあれば読みも）を送っています。", !!ng, true);
+  }
 }
 /* ───── 枠を AI に描かせる（v34.1。本人の指示「今の枠が役に立たないので…AI にしよう」）─────
    いままでの枠は「AI の墨のすき間」を こちらで切ったもの。
@@ -20846,11 +20880,7 @@ async function rubBoxAiAsk(q){
   var ink = url ? await rubInkCutCv(url, cut) : null;
   if (ink) fd.append("ink", await cvBlob2(ink), "ink.png");
   var r = await fetch(base + "/api/takuhon/boxes", { method: "POST", body: fd });
-  if (r.status === 503){
-    var e5 = await r.json().catch(function(){ return {}; });
-    throw new Error(e5.detail || "枠のモデルがまだありません");
-  }
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) throw await takuErr(r, "枠の AI（/api/takuhon/boxes）");
   var j = await r.json();
   /* **切り抜きより広い枠は、切り抜きの幅まで**（v34.1）。
      字が小さく写った切り抜きでは、AI が幅を大きく見積もることがある。 */
@@ -20925,11 +20955,7 @@ async function rubGuessAi(it){
   fd.append("file", await new Promise(function(res){ cv.toBlob(res, "image/png"); }), "c.png");
   fd.append("top", "5");
   var r = await fetch(base + "/api/takuhon/guess", { method: "POST", body: fd });
-  if (r.status === 503){
-    var e5 = await r.json().catch(function(){ return {}; });
-    throw new Error(e5.detail || "読みのモデルがまだありません");
-  }
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) throw await takuErr(r, "読みの AI（/api/takuhon/guess）");
   var j = await r.json();
   return { cands: j.cands || [], model: j.model || {} };
 }
@@ -21000,7 +21026,7 @@ async function rubTehSendAi(){
         fd.append("ch", ch);
         fd.append("key", "teh" + k + "_" + caseUid());   /* 同じ所は上書き */
         var r = await fetch(base + "/api/takuhon/chars", { method: "POST", body: fd });
-        if (!r.ok) throw new Error("HTTP " + r.status);
+        if (!r.ok) throw await takuErr(r, "手本帳の送り口（/api/takuhon/chars）");
         ok++;
       } catch(e2){ ng++; last = (e2 && e2.message) || ""; }
     }
@@ -21151,6 +21177,24 @@ function rubRegCard(cv, title, sub, btnHtml){
   }
   return d;
 }
+/* 拓本AI からの返事を見て、**分かることばで**返す（v34.7。本人の報告
+   「枠を登録したら 登録できませんでした（HTTP 404）」）。
+   404 ＝ その口がサーバーに無い＝**サーバーが古い**。
+   番号だけ出しても直しようがないので、何をすればよいかまで言う。 */
+async function takuErr(r, what){
+  var j = null;
+  try { j = await r.json(); } catch(e){}
+  if (r.status === 404)
+    return new Error("拓本AI のサーバーが古いようです（" + (what || "この口") +
+      "がありません）。GPU 機で git pull をして、サーバーを起こし直してください");
+  if (r.status === 503)
+    return new Error((j && j.detail) || "サーバーの用意ができていません");
+  if (r.status === 413)
+    return new Error("絵が大きすぎて受け取ってもらえませんでした");
+  if (r.status === 0 || r.status >= 500)
+    return new Error("サーバーでつまずいています（HTTP " + r.status + "）");
+  return new Error((j && (j.detail || j.error)) || ("HTTP " + r.status));
+}
 /* ───── 登録したあとに直す（v34.6。本人の指示
    「登録した後に編集できるようにしてほしいです」）─────
    ① この列を直す … 板を閉じて、その列をえらぶ（枠を直して、登録し直す）
@@ -21162,14 +21206,14 @@ async function rubRegSrvOff(id, off){
   var fd = new FormData(); fd.append("off", off ? "true" : "false");
   var r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(id) + "/off",
                       { method: "POST", body: fd });
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) throw await takuErr(r, "学習から外す口（/api/takuhon/line/…/off）");
   return await r.json();
 }
 async function rubRegSrvDel(id){
   var base = takuApiBase(); if (!base) throw new Error(takuAiOffNote());
   var r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(id),
                       { method: "DELETE" });
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) throw await takuErr(r, "登録を消す口（/api/takuhon/line/…）");
   return await r.json();
 }
 /* その列に移って、枠を直せるようにする（板は閉じる） */
@@ -21303,7 +21347,7 @@ async function rubRegViewSrv(){
   var j;
   try {
     var r = await fetch(base + "/api/takuhon/lines?limit=60");
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) throw await takuErr(r, "一覧の口（/api/takuhon/lines）");
     j = await r.json();
   } catch(e){
     info.innerHTML = "サーバーから読めませんでした（" + esc((e && e.message) || "") + "）。";

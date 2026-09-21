@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.8";
+var APP_VER = "v32.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12692,7 +12692,9 @@ function rubAiSplit(M, nWant){
          拓本の字幅（［戒名の字幅］。既定 30mm）の 1.5 倍を超える背丈は、
          2 字が入っているとみる。 */
       var tall9 = pit2 * 1.45;
-      if (expH9 > 0) tall9 = Math.min(tall9, expH9 * 1.5);
+      /* **ばらつきぶん ゆるめる**（v32.9）。覚えた高さが 30mm でも、
+         33mm の字を「2 字」と割らないように。 */
+      if (expH9 > 0) tall9 = Math.min(tall9, expH9 * 1.5 * (expFrom9 ? rubCharHSpread() : 1));
       if (hh > tall9){
         var lo = r3.a + Math.round(hh * 0.25), hi = r3.b - Math.round(hh * 0.25);
         var cut = -1, cv = Infinity;
@@ -12730,7 +12732,7 @@ function rubAiSplit(M, nWant){
            （実測：高さ 26 ます の 二 で すき間 14 ます＝54%）。
            それでも「一 が 2 つ」は 字送りぶん（1 字より広く）離れるので、混ざらない。 */
         if (hCu < expH9 * 0.55 && hPv < expH9 * 0.95 &&
-            gap3 < expH9 * 0.7 && joi3 <= expH9 * 1.25){
+            gap3 < expH9 * 0.7 && joi3 <= expH9 * 1.25 * rubCharHSpread()){
           out3[out3.length-1] = { a: pv3.a, b: cu3.b };
           did3 = true;
         } else out3.push(cu3);
@@ -14461,7 +14463,20 @@ function rubBoxLearn(L, quiet){
   cys.sort(function(a, b){ return a - b; });
   var pit = [];
   for (var i = 1; i < cys.length; i++) pit.push(cys[i] - cys[i-1]);
+  /* **ばらつきも覚える**（v32.9。本人の確認
+     「同じ文字でも、数ミリの大きさ違いはあると思うのです」）。
+     まん中の値だけだと、少し大きい字を「2 字」と割ってしまう。
+     上下の はずれ値を落とした **いちばん小さい／大きい**を持っておき、
+     切り分けの見きわめを その幅に合わせて ゆるめる。 */
+  function _band9(a9){
+    var v9 = a9.slice().sort(function(x, y){ return x - y; });
+    if (v9.length < 4) return { lo: v9[0], hi: v9[v9.length-1] };
+    var k9 = Math.floor(v9.length * 0.1);
+    return { lo: v9[k9], hi: v9[v9.length - 1 - k9] };
+  }
+  var bH = _band9(hs);
   var got = { hMm: _med(hs), wMm: _med(ws),
+              hMinMm: bH.lo, hMaxMm: bH.hi,
               pitchMm: pit.length ? _med(pit) : 0,
               n: hs.length, at: new Date().toLocaleString("ja-JP") };
   if (!(got.hMm > 1) || !(got.wMm > 1)) return null;
@@ -14469,7 +14484,9 @@ function rubBoxLearn(L, quiet){
   persist();
   if (!quiet)
     msg("この列の枠から、<b>1 字の大きさ</b>を覚えました（高さ " + got.hMm.toFixed(1) +
-        "mm・横 " + got.wMm.toFixed(1) + "mm" +
+        "mm" + ((got.hMaxMm - got.hMinMm) > 0.5
+                ? "（" + got.hMinMm.toFixed(1) + "〜" + got.hMaxMm.toFixed(1) + "mm のばらつき）" : "") +
+        "・横 " + got.wMm.toFixed(1) + "mm" +
         (got.pitchMm ? "・字送り " + got.pitchMm.toFixed(1) + "mm" : "") +
         "／" + got.n + " 字ぶん）。" +
         "これからの切り分け（青枠）は、この大きさを目当てにします。" +
@@ -14482,6 +14499,13 @@ function rubCharHpx(){
   var lb = S.rub && S.rub.learnBox;
   if (lb && mpp && lb.hMm > 1) return lb.hMm / mpp;
   return 0;
+}
+/* 覚えた大きさの **ばらつき具合**（1.0〜1.4）。
+   同じ字でも数 mm ちがうので、その分だけ見きわめをゆるめる（v32.9）。 */
+function rubCharHSpread(){
+  var lb = S.rub && S.rub.learnBox;
+  if (!lb || !(lb.hMm > 1) || !(lb.hMaxMm > 0)) return 1;
+  return Math.max(1, Math.min(1.4, lb.hMaxMm / lb.hMm));
 }
 /* ───── **覚えた一覧**（v32.4。本人の指示
    「学習済の一覧を見れるようにできれば、他に影響があっても判断つくのでつくって」）─────
@@ -14651,12 +14675,30 @@ function rubGrpHtml(){
   var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
   var tehKB = 0; try { tehKB = rubTehonKB(); } catch(e){}
   var lb8 = S.rub.learnBox;
-  if (lb8 && lb8.hMm)
-    h += '<p class="hint" style="margin:4px 0 0;">枠から覚えた 1 字の大きさ：' +
-      '<b>高さ ' + lb8.hMm.toFixed(1) + 'mm・横 ' + lb8.wMm.toFixed(1) + 'mm' +
-      (lb8.pitchMm ? '・字送り ' + lb8.pitchMm.toFixed(1) + 'mm' : '') + '</b>' +
-      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）。' +
-      '青枠の切り分けは、この大きさを目当てにします。</p>';
+  if (lb8 && lb8.hMm){
+    /* **手で微調整できるようにする**（v32.9。本人の確認
+       「同じ文字でも、数ミリの大きさ違いはあると思うのです／微調整できますよね」）。 */
+    var spr8 = (lb8.hMaxMm > 0 && (lb8.hMaxMm - num(lb8.hMinMm, 0)) > 0.5)
+      ? '（' + num(lb8.hMinMm, 0).toFixed(1) + '〜' + lb8.hMaxMm.toFixed(1) + 'mm のばらつき）' : '';
+    h += '<p class="hint" style="margin:6px 0 2px;">枠から覚えた 1 字の大きさ' +
+      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）' + spr8 + '</p>' +
+      '<div class="chips" style="margin:0;">' +
+      '<span class="hint">高さ</span>' +
+      '<button class="mini lbb" data-k="h" data-d="-1">−</button>' +
+      '<input type="number" id="rLbH" step="0.5" style="width:5em;text-align:right;" value="' +
+        lb8.hMm.toFixed(1) + '">' +
+      '<button class="mini lbb" data-k="h" data-d="1">＋</button>' +
+      '<span class="hint" style="margin-left:6px;">字送り</span>' +
+      '<button class="mini lbb" data-k="p" data-d="-1">−</button>' +
+      '<input type="number" id="rLbP" step="0.5" style="width:5em;text-align:right;" value="' +
+        num(lb8.pitchMm, 0).toFixed(1) + '">' +
+      '<button class="mini lbb" data-k="p" data-d="1">＋</button>' +
+      '<span class="hint">mm</span>' +
+      ' <button class="mini" id="btnLbClr">忘れる</button></div>' +
+      '<p class="hint" style="margin:3px 0 0;">青枠は <b>墨から切る</b>ので 1 字ずつ大きさが' +
+      'ちがってかまいません。この値は「どこで割るか・どこでつなぐか」の<b>目当て</b>です' +
+      '（ばらつきのぶんは、こちらで ゆるめて見ます）。</p>';
+  }
   h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
     (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
     (tehKB ? '／<b>' + tehKB + 'KB</b>（上限 400 枚・約 280KB。置き場は 5MB ほど）' : '') +
@@ -18606,6 +18648,38 @@ function rubPanel(){
     try { await rubRejudge(); } catch(e){ msg("再判定でつまずきました（" +
       ((e && e.message) || "") + "）。", true); }
     brj.disabled = false; brj.textContent = "覚えたことで 再判定";
+  };
+  function lbSet(k, v){
+    var lb = S.rub.learnBox; if (!lb) return;
+    v = Math.max(1, Math.min(200, Math.round(v * 10) / 10));
+    if (k === "h"){
+      var rt = lb.hMm > 0 ? v / lb.hMm : 1;
+      lb.hMm = v;
+      /* ばらつきの幅も、同じ割合で動かす */
+      if (lb.hMinMm) lb.hMinMm = Math.round(lb.hMinMm * rt * 10) / 10;
+      if (lb.hMaxMm) lb.hMaxMm = Math.round(lb.hMaxMm * rt * 10) / 10;
+    } else lb.pitchMm = v;
+    lb.at = new Date().toLocaleString("ja-JP") + "（手で直した）";
+    persist(); rubPanel();
+    msg("目当ての大きさを直しました（高さ " + lb.hMm.toFixed(1) + "mm" +
+        (lb.pitchMm ? "・字送り " + lb.pitchMm.toFixed(1) + "mm" : "") +
+        "）。［覚えたことで 再判定］で効きます。");
+  }
+  var lbH = $("rLbH");
+  if (lbH) lbH.onchange = function(){ lbSet("h", num(lbH.value, 0)); };
+  var lbP = $("rLbP");
+  if (lbP) lbP.onchange = function(){ lbSet("p", num(lbP.value, 0)); };
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .lbb"), function(xb){
+    xb.onclick = function(){
+      var lb = S.rub.learnBox; if (!lb) return;
+      var k = xb.dataset.k, d = +xb.dataset.d;
+      lbSet(k, (k === "h" ? lb.hMm : num(lb.pitchMm, 0)) + d);
+    };
+  });
+  var blc = $("btnLbClr");
+  if (blc) blc.onclick = function(){
+    S.rub.learnBox = null; persist(); rubPanel();
+    msg("枠から覚えた大きさを忘れました（これからは ［戒名の字幅］を目当てにします）。");
   };
   var bbl = $("btnBoxLearn");
   if (bbl) bbl.onclick = function(){

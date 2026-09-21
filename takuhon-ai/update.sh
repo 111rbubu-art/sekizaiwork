@@ -19,10 +19,24 @@ if [ "${TAKU_SELF:-}" != "1" ]; then
 fi
 [ -n "${TAKU_SELF_PATH:-}" ] && trap 'rm -f "$TAKU_SELF_PATH"' EXIT
 
-HERE="${TAKU_HERE:-$(cd "$(dirname "$0")" && pwd)}"
+# ───── **入れ先をまちがえない**（2026-09-22。実機でやらかした）─────
+# このプログラムは「自分が置かれている場所」を入れ先とみなす。
+# そのため、一時フォルダに落とした写しから走らせると、
+# **その一時フォルダを更新して終わり**になり、/opt/takuhon-ai は古いままになる
+# （実際にそうなった。そのあと写しを消したので、何も残らなかった）。
+# 置き場らしくない所（.venv も dataset も無い）から走らせたときは、
+# 決まった置き場に向ける。`TAKU_DIR=…` で名ざしもできる。
+HERE="${TAKU_DIR:-${TAKU_HERE:-$(cd "$(dirname "$0")" && pwd)}}"
+if [ ! -d "$HERE/.venv" ] && [ ! -d "$HERE/dataset" ] && [ ! -d "$HERE/runs" ]; then
+  if [ -d "/opt/takuhon-ai" ]; then
+    echo "■ ここは置き場ではないようなので、/opt/takuhon-ai を新しくします"
+    HERE="/opt/takuhon-ai"
+  fi
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"; [ -n "${TAKU_SELF_PATH:-}" ] && rm -f "$TAKU_SELF_PATH"' EXIT
 
+echo "■ 入れ先: $HERE"
 echo "■ 新しいものを取ってきます…"
 git clone --depth 1 -q https://github.com/111rbubu-art/sekizaiwork.git "$TMP/sw"
 

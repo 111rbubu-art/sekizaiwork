@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.2";
+var APP_VER = "v33.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13542,6 +13542,27 @@ function _tehLoad(){
 }
 function _tehSave(){
   if (!TEHON) return;
+  /* ───── **覚えたものを、うっかり消さない**（v33.3。本人の報告
+     「学習したはずのデータが消えています」）─────
+     ・**空っぽで上書きしない**（中身があったのに 0 枚になる書き込みは断る）
+     ・書く前に **1 つ前を控える**（`chokoku.tehon.bak`）。取り違えても戻せる */
+  try {
+    var now9 = rubTehonCount() + rubTehonNgCount();
+    var old9 = localStorage.getItem("chokoku.tehon");
+    if (old9 && now9 === 0 && !TEHON._clear){
+      var o9 = JSON.parse(old9), n9 = 0;
+      [o9.t, o9.n].forEach(function(bk){
+        Object.keys(bk || {}).forEach(function(c){ n9 += (bk[c] || []).length; });
+      });
+      if (n9 > 0){
+        TEHON.t = o9.t || {}; TEHON.n = o9.n || {};
+        _tehCache = null; _tehCacheN = -1;
+        msg("手本帳が空になりかけたので、<b>前の " + n9 + " 枚を戻しました</b>。", true, true);
+        return;
+      }
+    }
+    if (old9) localStorage.setItem("chokoku.tehon.bak", old9);
+  } catch(e){}
   /* **開いている一覧は、その場で並べ直す**（v32.5。本人の指示
      「登録後に追加表示できるようにして」）。 */
   try {
@@ -13808,12 +13829,9 @@ function _tehNgBest(q, ch){
   var best = 0;
   for (var j = 0; j < list.length; j++){
     var e = list[j], str = (typeof e === "string") ? e : (e && e.b) || "";
-    var u = _tehUnpack(str, CG_N*CG_N), inter = 0, sum = 0, i2;
-    for (i2 = 0; i2 < u.length; i2++){
-      if (u[i2]) sum++;
-      if (u[i2] && q[i2]) inter++;
-    }
-    var uni = sum + qn - inter, iou = uni ? inter / uni : 0;
+    var u = _tehUnpack(str, CG_N*CG_N), sum = 0, i2;
+    for (i2 = 0; i2 < u.length; i2++) if (u[i2]) sum++;
+    var iou = _tehIoUShift(q, u, sum, qn);
     if (iou > best) best = iou;
   }
   return best;
@@ -13836,6 +13854,34 @@ function rubTehonBank(){
   _tehCache = out; _tehCacheN = n;
   return out;
 }
+/* ───── **少しの ずれは 見のがす**（v33.3。本人の報告「精度がわるいです」）─────
+   これまでは **ます目を 1 つも動かさずに** 重なりを数えていた。
+   拓本の墨は かすれ・にじみがあり、枠の切り方も 1 回ごとに数ます ちがうので、
+   同じ字でも 重なりが 0.2〜0.3 落ちることがある。
+   **±2 ます ずらし**ながら いちばん良い重なりを採る
+   （64×64 の 2 ます＝字の 3%。別の字に化けるほどの動きではない）。 */
+function _tehIoUShift(q, u, sumU, qn){
+  var N = CG_N, best = 0, dx, dy, x, y;
+  for (dy = -2; dy <= 2; dy += 2){
+    for (dx = -2; dx <= 2; dx += 2){
+      var inter = 0;
+      for (y = 0; y < N; y++){
+        var sy = y + dy;
+        if (sy < 0 || sy >= N) continue;
+        var rq = y*N, ru = sy*N;
+        for (x = 0; x < N; x++){
+          if (!q[rq + x]) continue;
+          var sx = x + dx;
+          if (sx < 0 || sx >= N) continue;
+          if (u[ru + sx]) inter++;
+        }
+      }
+      var uni = sumU + qn - inter, iou = uni ? inter / uni : 0;
+      if (iou > best) best = iou;
+    }
+  }
+  return best;
+}
 /* 手本帳と見くらべる。いちばん似ている字と、その似ぐあい（IoU）を返す */
 function rubTehonBest(q, want, qr){
   var B = rubTehonBank(), qn = 0, i;
@@ -13848,10 +13894,7 @@ function rubTehonBest(q, want, qr){
 
     var ngV = _tehNgBest(q, ch);            /* ちがう帳（×）との似ぐあい（v31.4） */
     for (var j = 0; j < list.length; j++){
-      var bm = list[j].u, inter = 0;
-      for (i = 0; i < q.length; i++) if (bm[i] && q[i]) inter++;
-      var uni = list[j].sum + qn - inter;
-      var iou = uni ? inter / uni : 0;
+      var iou = _tehIoUShift(q, list[j].u, list[j].sum, qn);
       /* **字づらの縦横比が ちがいすぎる手本は、点を下げる**（v31.2）。
          引きのばしてそろえるので、「一」と「十」が同じ形に見えてしまう。
          比が 2 倍ちがえば ほぼ別の字とみる。 */
@@ -14913,7 +14956,8 @@ function rubGrpHtml(){
     (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
     (tehKB ? '／<b>' + tehKB + 'KB</b>（上限 400 枚・約 280KB。置き場は 5MB ほど）' : '') +
     (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
-    '　<button class="mini" id="btnBoxLearn">この列の枠から覚える</button>' +
+    '　<button class="mini" id="btnTehBak">1 つ前に戻す</button>' +
+    ' <button class="mini" id="btnBoxLearn">この列の枠から覚える</button>' +
     ' <button class="mini" id="btnTehList">覚えた一覧を見る</button>' +
     ' <button class="mini" id="btnTehSpUp">サーバーに控える</button>' +
     ' <button class="mini" id="btnTehSpDn">サーバーから戻す</button>' +
@@ -18908,6 +18952,22 @@ function rubPanel(){
     S.rub.learnBox = null; persist(); rubPanel();
     msg("枠から覚えた大きさを忘れました（これからは ［戒名の字幅］を目当てにします）。");
   };
+  var btb = $("btnTehBak");
+  if (btb) btb.onclick = function(){
+    var bk = "";
+    try { bk = localStorage.getItem("chokoku.tehon.bak") || ""; } catch(e){}
+    if (!bk){ msg("控えがありません。", true); return; }
+    var o = null;
+    try { o = JSON.parse(bk); } catch(e){}
+    if (!o){ msg("控えを読めませんでした。", true); return; }
+    var was = rubTehonCount();
+    var u1 = _tehUnion(rubTehonAll(), o.t || {}, TEH_MAX_PER);
+    var u2 = _tehUnion(rubTehonNgAll(), o.n || {}, TEHNG_MAX_PER);
+    TEHON.t = u1.book; TEHON.n = u2.book;
+    delete TEHON._clear;
+    _tehSave(); persist(); rubPanel();
+    msg("1 つ前の控えを足しました（" + was + " 枚 → <b>" + rubTehonCount() + " 枚</b>）。", false, true);
+  };
   var bbl = $("btnBoxLearn");
   if (bbl) bbl.onclick = function(){
     var L8 = rubCol();
@@ -18965,7 +19025,7 @@ function rubPanel(){
   var btc = $("btnTehClr");
   if (btc) btc.onclick = function(){
     if (!confirm("拓本の手本帳と ちがう帳を空にします。よろしいですか。")) return;
-    TEHON = { t: {}, n: {} }; _tehMergedSig = "";
+    TEHON = { t: {}, n: {}, _clear: 1 }; _tehMergedSig = "";
     S.rub.tehon = {}; S.rub.tehonNg = {};
     try { localStorage.setItem("chokoku.tehon", JSON.stringify(TEHON)); } catch(e){}
     _tehCache = null; _tehCacheN = -1;

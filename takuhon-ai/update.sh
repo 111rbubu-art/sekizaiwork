@@ -4,9 +4,24 @@
 #
 # 貯めたデータ（dataset/）・モデル（runs/）・置いた書体（fonts/）には触らない。
 set -e
-HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# ───── **自分自身を上書きしないように、まず写しへ移る**（2026-09-21）─────
+# bash は走らせているファイルを**読みながら**進む。このプログラムは
+# 最後に update.sh も新しくするので、上書きした所から続きを読んでしまい、
+# 説明書きの途中を命令として実行してしまう（実際に出た
+# 「行 21: $'\201\231。': コマンドが見つかりません」がこれ）。
+# そこで、いったん /tmp の写しに移ってから続ける。
+if [ "${TAKU_SELF:-}" != "1" ]; then
+  SELF="$(mktemp /tmp/takuhon-update-XXXXXX.sh)"
+  cp "$0" "$SELF"
+  TAKU_SELF=1 TAKU_SELF_PATH="$SELF" TAKU_HERE="$(cd "$(dirname "$0")" && pwd)" \
+    exec bash "$SELF" "$@"
+fi
+[ -n "${TAKU_SELF_PATH:-}" ] && trap 'rm -f "$TAKU_SELF_PATH"' EXIT
+
+HERE="${TAKU_HERE:-$(cd "$(dirname "$0")" && pwd)}"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP"; [ -n "${TAKU_SELF_PATH:-}" ] && rm -f "$TAKU_SELF_PATH"' EXIT
 
 echo "■ 新しいものを取ってきます…"
 git clone --depth 1 -q https://github.com/111rbubu-art/sekizaiwork.git "$TMP/sw"
@@ -21,7 +36,11 @@ cp -f "$TMP/sw/takuhon-ai/"*.py "$HERE/" 2>/dev/null || true
 for f in dash.html check-env.sh update.sh README.md requirements.txt \
          "SPEC-輪郭と補正.md" Dockerfile docker-compose.yml train-nightly.sh \
          takuhon-ai.service takuhon-train.service takuhon-train.timer; do
-  [ -f "$TMP/sw/takuhon-ai/$f" ] && cp -f "$TMP/sw/takuhon-ai/$f" "$HERE/$f"
+  # **cp ではなく mv で差し替える**。cp は同じ入れ物を書きかえるので、
+  # いま走っているプログラムを書きかえてしまう。mv なら入れ物ごと入れ替わる。
+  if [ -f "$TMP/sw/takuhon-ai/$f" ]; then
+    cp -f "$TMP/sw/takuhon-ai/$f" "$HERE/.$f.new" && mv -f "$HERE/.$f.new" "$HERE/$f"
+  fi
 done
 chmod +x "$HERE/update.sh" "$HERE/check-env.sh" "$HERE/train-nightly.sh" 2>/dev/null || true
 echo "　写したプログラム: $(ls "$HERE"/*.py | wc -l) 本"

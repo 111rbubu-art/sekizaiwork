@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v33.3";
+var APP_VER = "v33.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -14452,6 +14452,118 @@ async function rubAnchorGo(){
       "④ の候補から字を決めると、次からは読めるようになります。" +
       "ちがう所は ⑤ のボタンで直せます。", false, true);
 }
+/* ───── **枠を 足す・消す・割る・つなぐ**（v33.4。本人の報告
+   「文字枠がいつもうまくいきません」）─────
+   これまで枠は **つまんで動かす・大きさを変える**しかできなかった。
+   ・1 字ぶん 枠が足りない → 足せない
+   ・かけらに枠が付いた → 消せない
+   ・2 字が 1 枠 → 割れない
+   ・1 字が 2 枠 → つなげない
+   これでは、どれだけ AI が良くなっても 人が直しきれない。
+   直した枠は そのまま **教師データ**（`boxFix`）になる。 */
+function _boxFixed(L){
+  if (!L) return;
+  L.boxFix = 1;
+  rubLineRestat();
+  try { rubBoxLearn(L, true); } catch(e){}
+  persist(); rubPanel(); rubRender();
+}
+function rubBoxSel(){
+  var L = rubCol();
+  if (!L || !L.items || !L.items.length) return null;
+  if (rubSelItem < 0 || !L.items[rubSelItem]) return null;
+  return { L: L, i: rubSelItem, it: L.items[rubSelItem] };
+}
+/* 選んだ枠の 上／下 に 1 つ足す */
+function rubBoxAdd(dir){
+  var S9 = rubBoxSel();
+  var L = S9 ? S9.L : rubCol();
+  if (!L || !L.items){ msg("先に列をえらんでください。", true); return; }
+  var mpp = mmPerPx();
+  var lb = rubLearnBox();
+  var hDef = (lb && mpp) ? lb.hMm / mpp : 0;
+  var b;
+  if (S9){
+    var p = S9.it.px;
+    var h = num(p.h, 0) || hDef || 40;
+    var gap = (lb && lb.pitchMm && mpp) ? (lb.pitchMm / mpp - h) : h * 0.15;
+    if (!(gap > 0)) gap = h * 0.15;
+    b = { x: p.x, w: p.w, h: h,
+          y: (dir < 0) ? (p.y - h - gap) : (p.y + p.h + gap) };
+  } else {
+    var h2 = hDef || 40, w2 = (L.band ? (L.band.R - L.band.L) * 0.8 : 80);
+    b = { x: (L.band ? L.band.L + (L.band.R - L.band.L) * 0.1 : 0),
+          y: (L.band ? L.band.T : 0), w: w2, h: h2 };
+  }
+  b.y = Math.max(0, Math.min(RUB.H - 8, b.y));
+  var it = { px: b, byHand: 1 };
+  if (mpp){ it.wMm = b.w * mpp; it.hMm = b.h * mpp; }
+  L.items.splice(S9 ? (dir < 0 ? S9.i : S9.i + 1) : L.items.length, 0, it);
+  rubSelItem = S9 ? (dir < 0 ? S9.i : S9.i + 1) : L.items.length - 1;
+  _boxFixed(L);
+  msg("枠を 1 つ足しました（" + L.items.length + " 字）。つまんで大きさを合わせてください。");
+}
+/* 選んだ枠を消す */
+function rubBoxDel(){
+  var S9 = rubBoxSel();
+  if (!S9){ msg("先に、消したい枠をえらんでください。", true); return; }
+  S9.L.items.splice(S9.i, 1);
+  rubSelItem = Math.min(S9.i, S9.L.items.length - 1);
+  _boxFixed(S9.L);
+  msg("枠を 1 つ消しました（" + S9.L.items.length + " 字）。");
+}
+/* 選んだ枠を、上下 2 つに割る（墨のいちばん薄い所で） */
+function rubBoxSplit(){
+  var S9 = rubBoxSel();
+  if (!S9){ msg("先に、割りたい枠をえらんでください。", true); return; }
+  var p = S9.it.px, cut = p.y + p.h / 2;
+  /* 墨があれば、まん中あたりで いちばん薄い所を探す */
+  try {
+    var A = RUB.aiBand;
+    if (A && A.map){
+      var sc = A.sc, y1 = Math.round((p.y + p.h * 0.3) * sc), y2 = Math.round((p.y + p.h * 0.7) * sc);
+      var x1 = Math.max(0, Math.round(p.x * sc)), x2 = Math.min(A.mw, Math.round((p.x + p.w) * sc));
+      var best = -1, bv = 1e9;
+      for (var y = y1; y <= y2 && y < A.mh; y++){
+        if (y < 0) continue;
+        var c = 0;
+        for (var x = x1; x < x2; x++) if (A.map[y*A.mw + x] > 127) c++;
+        if (c < bv){ bv = c; best = y; }
+      }
+      if (best >= 0) cut = best / sc;
+    }
+  } catch(e){}
+  var h1 = Math.max(4, cut - p.y), h2b = Math.max(4, p.y + p.h - cut);
+  var mpp = mmPerPx();
+  var n1 = { px: { x: p.x, y: p.y, w: p.w, h: h1 }, byHand: 1 };
+  var n2 = { px: { x: p.x, y: cut, w: p.w, h: h2b }, byHand: 1 };
+  if (mpp){
+    n1.wMm = p.w * mpp; n1.hMm = h1 * mpp;
+    n2.wMm = p.w * mpp; n2.hMm = h2b * mpp;
+  }
+  if (S9.it.g){ n1.g = S9.it.g; n1.gBy = S9.it.gBy; n2.g = S9.it.g; n2.gBy = S9.it.gBy; }
+  S9.L.items.splice(S9.i, 1, n1, n2);
+  _boxFixed(S9.L);
+  msg("枠を 2 つに割りました（" + S9.L.items.length + " 字）。");
+}
+/* 選んだ枠と、その下の枠を 1 つにする */
+function rubBoxJoin(){
+  var S9 = rubBoxSel();
+  if (!S9){ msg("先に、つなぎたい枠をえらんでください。", true); return; }
+  var nx = S9.L.items[S9.i + 1];
+  if (!nx || !nx.px){ msg("下に つなぐ枠がありません。", true); return; }
+  var a = S9.it.px, b = nx.px, mpp = mmPerPx();
+  var x1 = Math.min(a.x, b.x), x2 = Math.max(a.x + a.w, b.x + b.w);
+  var y1 = Math.min(a.y, b.y), y2 = Math.max(a.y + a.h, b.y + b.h);
+  var it = { px: { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }, byHand: 1 };
+  if (mpp){ it.wMm = (x2 - x1) * mpp; it.hMm = (y2 - y1) * mpp; }
+  if (S9.it.g){ it.g = S9.it.g; it.gBy = S9.it.gBy; }
+  if (S9.it.pick) it.pick = S9.it.pick;
+  if (S9.it.anch && S9.it.anch.hand) it.anch = S9.it.anch;
+  S9.L.items.splice(S9.i, 2, it);
+  _boxFixed(S9.L);
+  msg("枠を 1 つにつなぎました（" + S9.L.items.length + " 字）。");
+}
 /* ───── **その字を直して、覚えさせる**（v31.2。本人の指示
    「十を一と勘違いしているところなど多々ありました。
      修正や学習させるやり方はありますか」）─────
@@ -14894,6 +15006,24 @@ function rubGrpHtml(){
     h += '<p class="hint" style="margin:4px 0 0;color:#B8860B;">' +
       'この列の枠は<b>手で直してあります</b>。［覚えたことで 再判定］でも、枠はそのままにします' +
       '（作り直したいときは ④ の［この行を見立てる］を押してください）。</p>';
+  /* **枠を直す**（v33.4） */
+  h += '<p class="hint" style="margin:6px 0 2px;"><b>枠を直す</b>：' +
+    (itT ? (rubSelItem + 1) + ' 字目をえらんでいます'
+         : '絵の上で枠をえらぶと、割る・つなぐ・消すができます') + '</p>' +
+    '<div class="chips" style="margin:0;">' +
+    '<button class="mini bxb" data-a="up"' + (itT ? '' : ' disabled') +
+      ' title="えらんだ枠の 上に 1 つ足します">↑ 上に足す</button>' +
+    '<button class="mini bxb" data-a="dn"' +
+      ' title="えらんだ枠の 下に 1 つ足します（えらんでいなければ 列の終わりに）">↓ 下に足す</button>' +
+    '<button class="mini bxb" data-a="split"' + (itT ? '' : ' disabled') +
+      ' title="えらんだ枠を、墨のいちばん薄い所で 上下 2 つに割ります">ここで割る</button>' +
+    '<button class="mini bxb" data-a="join"' + (itT ? '' : ' disabled') +
+      ' title="えらんだ枠と、その下の枠を 1 つにします">下とつなぐ</button>' +
+    '<button class="mini bxb" data-a="del"' + (itT ? '' : ' disabled') +
+      ' title="えらんだ枠を消します">この枠を消す</button>' +
+    '</div>' +
+    '<p class="hint" style="margin:3px 0 0;">直した枠は <b>正解として覚えます</b>' +
+    '（1 字の大きさ・字送り）。作り直しでも消えません。</p>';
   h += '<p class="hint" style="margin:6px 0 2px;"><b>読み違いを直す</b>：' +
     (itT
       ? (rubSelItem + 1) + ' 字目' +
@@ -18996,6 +19126,16 @@ function rubPanel(){
     try { await rubTehonRestore(); } catch(e){}
     bsd.disabled = false; bsd.textContent = "サーバーから戻す";
   };
+  Array.prototype.forEach.call(document.querySelectorAll("#rubFix .bxb"), function(xb){
+    xb.onclick = function(){
+      var a = xb.dataset.a;
+      if (a === "up") rubBoxAdd(-1);
+      else if (a === "dn") rubBoxAdd(1);
+      else if (a === "split") rubBoxSplit();
+      else if (a === "join") rubBoxJoin();
+      else if (a === "del") rubBoxDel();
+    };
+  });
   var bpr = $("btnProbe");
   if (bpr) bpr.onclick = async function(){
     bpr.disabled = true; bpr.textContent = "調べています…";

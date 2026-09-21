@@ -2341,7 +2341,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v34.0";
+var APP_VER = "v34.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -9675,7 +9675,12 @@ function rubLineCore(M, q, step, pitch, mpp){
   if (items.length < 2){ msg("字を 2 つ以上見つけられませんでした。範囲を確かめてください。", true); return null; }
 
   /* 傾き：中心 x を 中心 y で回した最小二乗。右へ倒れていれば ＋ */
-  var n = items.length, sx = 0, sy = 0, sxy = 0, syy = 0;
+  return rubLineStats(items, q, mpp);
+}
+/* 枠の並び（{y0,y1,h,w,cx,cy,ink}）から、列の数字を出す（v34.1 で切り出し）。
+   AI が描いた枠からも、同じ数字を出せるようにするため。 */
+function rubLineStats(items, q, mpp){
+  var i, n = items.length, sx = 0, sy = 0, sxy = 0, syy = 0;
   items.forEach(function(it){ sx += it.cx; sy += it.cy; });
   var mx = sx / n, my = sy / n;
   items.forEach(function(it){ sxy += (it.cy - my) * (it.cx - mx); syy += (it.cy - my) * (it.cy - my); });
@@ -19060,6 +19065,9 @@ function rubPanel(){
     h += '<p class="hint" style="margin:10px 0 2px;"><b>4b 枠</b></p>';
     h += rubBoxFixHtml();
     h += '<div class="chips" style="margin:4px 0 0;">' +
+      '<button class="mini" id="btnBoxAi" ' +
+      'title="列の切り抜きを拓本AI に渡して、1 字ずつの枠を描いてもらいます' +
+      '（墨のすき間で切るのではなく、AI が字の中心を出します）">🤖 AI に枠を描かせる</button>' +
       '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
       (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、この列の枠を作り直します（大きさ・字送り・太さ・傾きを測ります）">' +
@@ -19212,6 +19220,14 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var bba = $("btnBoxAi");
+  if (bba) bba.onclick = async function(){
+    bba.disabled = true; bba.textContent = "AI が描いています…";
+    try { await rubBoxAiGo(); } catch(e){
+      msg("枠の AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
+    }
+    bba.disabled = false; bba.textContent = "🤖 AI に枠を描かせる";
+  };
   var brv = $("btnRegView"); if (brv) brv.onclick = function(){ rubRegView("now"); };
   /* 直した列を 拓本AI へ（v33.8） */
   [["btnLineReg", false], ["btnLineRegAll", true]].forEach(function(k9){
@@ -20652,6 +20668,110 @@ async function rubLineRegGo(all){
       (ng ? "。" + ng + " 列は送れませんでした（" + esc(last) + "）" : "") + "。" +
       "枠と読みも一緒に送っています。", !!ng, true);
 }
+/* ───── 枠を AI に描かせる（v34.1。本人の指示「今の枠が役に立たないので…AI にしよう」）─────
+   いままでの枠は「AI の墨のすき間」を こちらで切ったもの。
+   ここでは **列の切り抜きを そのまま拓本AI に渡し、1 字ずつの枠を返してもらう**。
+   返ってくるのは [{x,y,w,h,score}]（渡した絵の画素）。そのまま青枠にする。 */
+/* 拓本の一部を切り出す（たての長い絵。横は 384px まで） */
+function rubCutCv(q, maxW, maxH){
+  if (!RUB.img) return null;
+  var x1 = Math.max(0, Math.round(q.x1)), y1 = Math.max(0, Math.round(q.y1));
+  var x2 = Math.min(RUB.W, Math.round(q.x2)), y2 = Math.min(RUB.H, Math.round(q.y2));
+  var w0 = x2 - x1, h0 = y2 - y1;
+  if (!(w0 > 8 && h0 > 8)) return null;
+  var sc = Math.min(1, (maxW || 384) / w0, (maxH || 3072) / h0);
+  var w = Math.max(8, Math.round(w0 * sc)), h = Math.max(8, Math.round(h0 * sc));
+  var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  var g = cv.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, w, h);
+  g.drawImage(RUB.img, x1, y1, w0, h0, 0, 0, w, h);
+  return { cv: cv, x1: x1, y1: y1, w0: w0, h0: h0, sc: w / w0 };
+}
+/* 同じ切り口で、AI の墨も切り出す（url は拓本ぜんたいと同じ大きさの 1 枚） */
+function rubInkCutCv(url, cut){
+  return new Promise(function(res){
+    if (!url || !cut) return res(null);
+    var im = new Image();
+    im.onload = function(){
+      var cv = document.createElement("canvas");
+      cv.width = cut.cv.width; cv.height = cut.cv.height;
+      var g = cv.getContext("2d");
+      g.fillStyle = "#000"; g.fillRect(0, 0, cv.width, cv.height);
+      g.drawImage(im, cut.x1, cut.y1, cut.w0, cut.h0, 0, 0, cv.width, cv.height);
+      res(cv);
+    };
+    im.onerror = function(){ res(null); };
+    im.src = url;
+  });
+}
+function cvBlob2(cv){ return new Promise(function(res){ cv.toBlob(res, "image/png"); }); }
+/* 枠の AI に通す。返りは 拓本の画素に直した枠の並び */
+async function rubBoxAiAsk(q){
+  var base = takuApiBase();
+  if (!base) throw new Error(takuAiOffNote());
+  var cut = rubCutCv(q);
+  if (!cut) throw new Error("切り抜けませんでした（帯が小さすぎます）");
+  var fd = new FormData();
+  fd.append("file", await cvBlob2(cut.cv), "line.png");
+  /* すでに読んである墨があれば、それを渡す（サーバーで通し直さずに済む） */
+  var url = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
+  var ink = url ? await rubInkCutCv(url, cut) : null;
+  if (ink) fd.append("ink", await cvBlob2(ink), "ink.png");
+  var r = await fetch(base + "/api/takuhon/boxes", { method: "POST", body: fd });
+  if (r.status === 503){
+    var e5 = await r.json().catch(function(){ return {}; });
+    throw new Error(e5.detail || "枠のモデルがまだありません");
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  var j = await r.json();
+  /* **切り抜きより広い枠は、切り抜きの幅まで**（v34.1）。
+     字が小さく写った切り抜きでは、AI が幅を大きく見積もることがある。 */
+  var wMax = cut.w0 * 1.05;
+  var bx = (j.boxes || []).map(function(b){
+    var w = Math.min(b.w / cut.sc, wMax), h = b.h / cut.sc;
+    var cx = cut.x1 + (b.x + b.w / 2) / cut.sc;
+    return { x: cx - w / 2, y: cut.y1 + b.y / cut.sc, w: w, h: h, score: b.score };
+  });
+  return { boxes: bx, model: j.model || {}, ms: j.ms || 0, cut: cut };
+}
+/* ［AI に枠を描かせる］。いま選んでいる帯（列）を通して、枠を入れかえる。 */
+async function rubBoxAiGo(){
+  var mpp = mmPerPx();
+  if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
+  /* **学習したときと同じ切り方**にする（v34.1）。教材（rubLineShot）は
+     枠ぜんたい＋のりしろ 12% で切ってあるので、ここも 12% だけ広げる。
+     ［この行を見立てる］の 20% では、字が小さく写り、枠を大きく見積もる。 */
+  var q0 = rubBandQ(), ov = Math.round((q0.x2 - q0.x1) * 0.12), lim = rubBandLimit();
+  var q = { x1: Math.max(0, lim.L, q0.x1 - ov), x2: Math.min(RUB.W, lim.R, q0.x2 + ov),
+            y1: q0.y1, y2: q0.y2 };
+  var got;
+  try { got = await rubBoxAiAsk(q); }
+  catch(e){ msg("枠の AI に通せませんでした（" + ((e && e.message) || "") + "）。", true); return; }
+  if (!got.boxes.length){
+    msg("AI は字を 1 つも見つけられませんでした。範囲か、墨を確かめてください。", true); return;
+  }
+  /* 上から順に。数字（字送り・傾き）は いままでと同じ出し方 */
+  var items = got.boxes.slice().sort(function(a, b){ return a.y - b.y; })
+    .map(function(b){
+      return { y0: b.y, y1: b.y + b.h, h: b.h, w: b.w,
+               cx: b.x + b.w/2, cy: b.y + b.h/2, ink: 0, blobs: 1, score: b.score };
+    });
+  var m2 = rubLineStats(items, q, mpp);
+  m2.src = "ai";
+  m2.boxBy = "ai";                                   /* 枠は AI が描いた（v34.1） */
+  m2.boxModel = got.model || {};
+  m2.geo = rubGeoKey();
+  m2.aiId = (RUB.aiBand && RUB.aiBand.id) || 0;
+  m2.aiUrl = (RUB.aiBand && RUB.aiBand.url) || "";
+  m2.aiSc = (RUB.aiBand && RUB.aiBand.sc) || 0;
+  m2.items.forEach(function(it, i){ it.score = items[i].score; });
+  rubColPut(m2);
+  persist(); rubPanel(); rubRender();
+  msg("AI が枠を描きました（" + m2.n + " 字／" + Math.round(got.ms) + "ms" +
+      (got.model && got.model.f1 ? "／この版の当たり具合 F1 " + got.model.f1 : "") +
+      "）。ちがう所は枠を直して、［この列を AI に登録］で教えてください。", false, true);
+  return m2;
+}
 /* ───── AI 登録の確かめ（v33.9。本人の指示「どの様に登録されたか、可視化する様に
    してほしいです／枠と文字の学習できたかの確認と、学習資料の目視チェック」）─────
    送るもの（拓本の切り抜き・AI の墨・人が直した枠・読み）を、そのまま 1 枚の絵に
@@ -20660,6 +20780,8 @@ var REGV = { tab: "now", ink: true, box: true };
 /* いまの枠は、何で決まっているか（v34.0）。**枠は まだ AI が描いていない**。 */
 function rubRegWhy(L){
   var a = [];
+  if (L && L.boxBy === "ai")
+    a.push("AI が描いた枠" + ((L.boxModel && L.boxModel.f1) ? "（F1 " + L.boxModel.f1 + " の版）" : ""));
   if (L && L.boxFix) a.push("手で直した");
   var lb = null; try { lb = rubLearnBox(); } catch(e){}
   if (lb && lb.hMm) a.push("覚えた 1 字の大きさ " + lb.hMm.toFixed(1) + "mm" +

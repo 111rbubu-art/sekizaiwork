@@ -4,6 +4,7 @@
   POST /api/takuhon/feedback   人が直した正解を貯める（学習は回さない。すぐ返す）
                                set=ink なら①「読む」用、set=shape なら②「整える」用
   POST /api/takuhon/line       人が直した**列まるごと**を貯める（字の枠と読みつき）
+  POST /api/takuhon/boxes      列の切り抜きを渡すと、**1 字ずつの枠**を返す（枠の AI）
   GET  /api/takuhon/lines      貯まった列の一覧
   GET  /api/takuhon/line/{id}  その列の枠と読み（meta.json）
   GET  /api/takuhon/lineimg/.. 列の画像（raw／ink）
@@ -46,8 +47,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 
+import boxdata as BD
 import data as D
 import make_synth as MS
+from boxnet import find_boxes, load_boxnet
 from unet import load_model
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -160,6 +163,11 @@ LOADED_AT = time.time()
 CURRENT2 = os.path.join(RUNS, "current_shape.pth")
 NET2, INFO2 = load_model(CURRENT2, DEVICE)
 LOADED_AT2 = time.time()
+# **枠の AI**（2026-09-21）。列の切り抜きから 1 字ずつの枠を出す。
+# 墨のモデルとは別物なので、別に持つ（train_box.py が置く）。
+CURRENTB = os.path.join(RUNS, "box_current.pth")
+NETB, INFOB = load_boxnet(CURRENTB, DEVICE)
+LOADED_ATB = time.time()
 
 app = FastAPI(title="拓本クリーン化")
 # 社内のブラウザ（彫刻原稿アプリ）から呼ぶので、同じ LAN からは通す。
@@ -211,6 +219,22 @@ def _reload2_if_new():
         LOADED_AT2 = max(m, LOADED_AT2)
 
 
+def _reloadb_if_new():
+    """枠のモデルも、新しくなっていたら読み直す。"""
+    global NETB, INFOB, LOADED_ATB
+    try:
+        m = os.path.getmtime(CURRENTB)
+    except OSError:
+        if INFOB.get("loaded"):
+            NETB, INFOB = load_boxnet(CURRENTB, DEVICE)
+            LOADED_ATB = time.time()
+        return
+    if m > LOADED_ATB or (not INFOB.get("loaded") and TRIED.get(CURRENTB) != m):
+        TRIED[CURRENTB] = m
+        NETB, INFOB = load_boxnet(CURRENTB, DEVICE)
+        LOADED_ATB = max(m, LOADED_ATB)
+
+
 def _read_gray(b, size=D.N):
     im = Image.open(__import__("io").BytesIO(b)).convert("L")
     if im.size != (size, size):
@@ -239,6 +263,7 @@ def status():
         "pairs": n,
         "val": len(D.list_pairs(VALDIR)),
         "lines": len(_line_ids()),
+        "box": {"model": INFOB, "lines": len(_line_ids())},
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
                   "rub": len(D.list_pairs(SHAPE_RUB)),
                   "rubVal": len(D.list_pairs(SHAPE_RUB_VAL)),
@@ -298,6 +323,80 @@ async def clean(
         "X-Model-At": str(I.get("at") or ""),
         "X-Infer-Ms": str(ms),
     })
+
+
+@app.post("/api/takuhon/boxes")
+async def boxes(
+    file: UploadFile = File(...),
+    ink: UploadFile = File(None),
+    thresh: float = Form(0.3),
+    with_ink: bool = Form(True),
+):
+    """**列の切り抜き**を渡すと、1 字ずつの枠を返す（2026-09-21）。
+
+    返り  {"boxes":[{"x","y","w","h","score"}], "w","h", ...}
+          x,y,w,h は **渡した絵の画素**。アプリはそのまま青枠にできる。
+
+    中では
+      ① 墨のモデル（①「読む」）に通して墨を作る（`ink` を渡せば それを使う）
+      ② 枠のモデルに「拓本＋墨」を渡して、中心の山と 幅・高さを出す
+      ③ 山の頂を拾って、枠の並びにする
+    たての長い絵を **そのまま 1 度**に通す（列を切らないので、上下で食いちがわない）。
+    """
+    _reloadb_if_new()
+    if not INFOB.get("loaded"):
+        return JSONResponse({"error": "no_model_box",
+                             "detail": "枠のモデルがまだありません（train_box.py で学習してください）",
+                             "why": INFOB.get("why")}, status_code=503)
+    im = Image.open(__import__("io").BytesIO(await file.read())).convert("L")
+    w0, h0 = im.size
+    if w0 < 8 or h0 < 8:
+        return JSONResponse({"error": "too_small"}, status_code=400)
+    # 学習と同じ **横 W_STD** にそろえる（字の大きさをそろえるため）
+    sc = BD.W_STD / float(w0)
+    W, H = BD.W_STD, max(16, int(round(h0 * sc)))
+    raw = np.asarray(im.resize((W, H), Image.BILINEAR), dtype=np.float32) / 255.0
+    if ink is not None:
+        ik = Image.open(__import__("io").BytesIO(await ink.read())).convert("L")
+        ink_a = (np.asarray(ik.resize((W, H), Image.NEAREST), dtype=np.float32) / 255.0 > 0.5)
+        ink_a = ink_a.astype(np.float32)
+    elif with_ink and INFO.get("loaded"):
+        _reload_if_new()
+        ink_a = _ink_of(raw)
+    else:
+        ink_a = np.zeros((H, W), dtype=np.float32)
+    ph = (16 - H % 16) % 16                  # たては 16 の倍数にそろえる
+    x = np.stack([raw, ink_a], axis=0)
+    if ph:
+        x = np.pad(x, ((0, 0), (0, ph), (0, 0)))
+    t0 = time.time()
+    got = find_boxes(NETB, torch.from_numpy(x[None]).to(DEVICE), thr=float(thresh))
+    ms = int((time.time() - t0) * 1000)
+    out = []
+    for b in got:
+        if b["cy"] > H:                      # 継ぎ足した所に出たものは捨てる
+            continue
+        out.append({"x": round((b["cx"] - b["w"] / 2) / sc, 1),
+                    "y": round((b["cy"] - b["h"] / 2) / sc, 1),
+                    "w": round(b["w"] / sc, 1), "h": round(b["h"] / sc, 1),
+                    "score": round(b["score"], 3)})
+    out.sort(key=lambda b: b["y"])           # 上から順に
+    return {"boxes": out, "n": len(out), "w": w0, "h": h0, "ms": ms,
+            "model": {"step": INFOB.get("step"), "at": INFOB.get("at"),
+                      "f1": INFOB.get("f1"), "lines": INFOB.get("lines")}}
+
+
+def _ink_of(raw):
+    """墨のモデルに通して、墨（0/1）を返す。**512 に切らず、そのままの形で通す**。"""
+    with torch.no_grad():
+        z = np.zeros_like(raw)
+        x = np.stack([raw, z, z], axis=0)
+        H, W = raw.shape
+        ph, pw = (16 - H % 16) % 16, (16 - W % 16) % 16
+        if ph or pw:
+            x = np.pad(x, ((0, 0), (0, ph), (0, pw)))
+        y = torch.sigmoid(NET(torch.from_numpy(x[None]).to(DEVICE)))[0, 0].cpu().numpy()
+    return (y[:H, :W] > 0.5).astype(np.float32)
 
 
 @app.post("/api/takuhon/feedback")

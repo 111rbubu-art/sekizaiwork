@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.3";
+var APP_VER = "v31.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13351,6 +13351,59 @@ function rubTehonAdd(ch, m, n){
   _tehCache = null; _tehCacheN = -1;
   return true;
 }
+/* ───── **ちがう帳**（v31.4。本人の問い
+   「登録する必要のない漢字を間違えた場合、正しい物を教えるということは
+     どのようにすればいいのですか」）─────
+   戒名の字のように、**手本帳に入れる必要のない字**を
+   「十」などと読み違えることがある。その字の名前を覚えさせても意味がないので、
+   **「この形は 十 ではない」とだけ**覚える。
+   入れ物は `S.rub.tehonNg = { "十": ["<詰めた字づら>", …] }`。
+   見くらべのとき、ちがう帳に似ている字は その読みを外す。 */
+var TEHNG_MAX_PER = 12;
+function rubTehonNgAll(){
+  if (!S.rub.tehonNg || typeof S.rub.tehonNg !== "object") S.rub.tehonNg = {};
+  return S.rub.tehonNg;
+}
+function rubTehonNgCount(){
+  var t = rubTehonNgAll(), n = 0;
+  Object.keys(t).forEach(function(k){ n += (t[k] || []).length; });
+  return n;
+}
+function rubTehonNgAdd(ch, m, n){
+  if (!ch || !m) return false;
+  var q = cgNormFrom(function(x, y){ return m[y*n + x]; }, n, n);
+  if (!q) return false;
+  var t = rubTehonNgAll();
+  if (!t[ch]) t[ch] = [];
+  t[ch].push({ b: _tehPack(q), r: Math.round(_tehRatio(m, n) * 100) / 100 });
+  while (t[ch].length > TEHNG_MAX_PER) t[ch].shift();
+  _tehCache = null; _tehCacheN = -1;
+  return true;
+}
+/* ちがう帳の中で、この墨にいちばん似ている枚の 似ぐあい（v31.4）。
+   **しきい値では決めない**。「ちがう」と教えた形は ほんものの字とも
+   よく似ている（実測：ちがう形と ほんものの十で 0.71）ので、
+   しきい値で切ると **ほんものまで読まなくなる**（実測でそうなった）。
+   代わりに **手本（○）と ちがう帳（×）の、どちらに近いか**で決める。 */
+function _tehNgBest(q, ch){
+  var t = rubTehonNgAll(), list = t[ch];
+  if (!list || !list.length) return 0;
+  var qn = 0, i;
+  for (i = 0; i < q.length; i++) if (q[i]) qn++;
+  if (!qn) return 0;
+  var best = 0;
+  for (var j = 0; j < list.length; j++){
+    var e = list[j], str = (typeof e === "string") ? e : (e && e.b) || "";
+    var u = _tehUnpack(str, CG_N*CG_N), inter = 0, sum = 0, i2;
+    for (i2 = 0; i2 < u.length; i2++){
+      if (u[i2]) sum++;
+      if (u[i2] && q[i2]) inter++;
+    }
+    var uni = sum + qn - inter, iou = uni ? inter / uni : 0;
+    if (iou > best) best = iou;
+  }
+  return best;
+}
 var _tehCache = null, _tehCacheN = -1;
 function rubTehonBank(){
   var t = rubTehonAll(), n = rubTehonCount();
@@ -13378,6 +13431,8 @@ function rubTehonBest(q, want, qr){
   for (var w = 0; w < want.length; w++){
     var ch = want.charAt(w), list = B[ch];
     if (!list || !list.length) continue;
+
+    var ngV = _tehNgBest(q, ch);            /* ちがう帳（×）との似ぐあい（v31.4） */
     for (var j = 0; j < list.length; j++){
       var bm = list[j].u, inter = 0;
       for (i = 0; i < q.length; i++) if (bm[i] && q[i]) inter++;
@@ -13391,6 +13446,10 @@ function rubTehonBest(q, want, qr){
         if (d9 > 0.7) iou = 0;                      /* 2 倍ちがう → 見ない */
         else iou *= (1 - d9 * 0.7);
       }
+      /* **手本（○）より ちがう帳（×）に近ければ、その字としては読まない**（v31.4）。
+         しきい値ではなく「どちらに近いか」で決めるので、
+         ほんものの字は そのまま読めるまま、まちがいだけが止まる。 */
+      if (ngV > 0 && iou <= ngV) continue;
       if (iou > bestV){ bestV = iou; bestCh = ch; }
     }
   }
@@ -13773,6 +13832,57 @@ function rubTeachHere(ch){
       "［文字で見分ける］を押し直すと、この形は「" + esc(ch) + "」と読みます。",
       false, true);
 }
+/* ───── **「これはちがう」だけ教える**（v31.4。本人の問い
+   「登録する必要のない漢字を間違えた場合…」）─────
+   戒名の字などは、名前を覚えさせても手本帳が太るだけ。
+   **「この形は ○ ではない」**とだけ覚えて、読みを消す。 */
+function rubTeachNo(){
+  var L = rubCol();
+  if (!L || !L.items || rubSelItem < 0 || !L.items[rubSelItem]){
+    msg("先に、直したい字を絵の上でえらんでください。", true); return;
+  }
+  var it = L.items[rubSelItem];
+  var was = (it.anch && it.anch.ch) || it.pick || "";
+  if (!was){ msg("この字には、まだ読みが付いていません。", true); return; }
+  var kT = null;
+  try { kT = rubItemInk(it); } catch(e){}
+  if (!kT){
+    msg("この字の墨が読めません。先に［AI 縁取りを実行］で、この列を通してください。", true);
+    return;
+  }
+  /* ① ちがう帳に入れる */
+  rubTehonNgAdd(was, kT.m, kT.n);
+  /* ② その読み違いの元になった手本を捨てる */
+  var dropped = 0;
+  try {
+    var q0 = cgNormFrom(function(x, y){ return kT.m[y*kT.n + x]; }, kT.n, kT.n);
+    if (q0){
+      var t0 = rubTehonAll(), q0n = 0, i0;
+      for (i0 = 0; i0 < q0.length; i0++) if (q0[i0]) q0n++;
+      t0[was] = (t0[was] || []).filter(function(e0){
+        var str0 = (typeof e0 === "string") ? e0 : (e0 && e0.b) || "";
+        var u0 = _tehUnpack(str0, CG_N*CG_N), inter = 0, sum0 = 0, i1;
+        for (i1 = 0; i1 < u0.length; i1++){
+          if (u0[i1]) sum0++;
+          if (u0[i1] && q0[i1]) inter++;
+        }
+        var uni0 = sum0 + q0n - inter;
+        if (uni0 && (inter / uni0) >= 0.5){ dropped++; return false; }
+        return true;
+      });
+      if (!t0[was].length) delete t0[was];
+    }
+  } catch(e){}
+  /* ③ 読みと印を消す。グループも、その字だけ外す */
+  if (it.anch) delete it.anch;
+  if (it.pick === was) it.pick = "";
+  persist(); rubPanel(); rubRender();
+  msg("この形は <b>「" + esc(was) + "」ではない</b>と覚えました" +
+      (dropped ? "（読み違いの元だった手本 " + dropped + " 枚も捨てました）" : "") +
+      "。ちがう帳は " + rubTehonNgCount() + " 枚です。" +
+      "<b>名前を覚えさせる必要はありません</b>。" +
+      "［文字で見分ける］を押し直すと、この字は読まなくなります。", false, true);
+}
 /* パネルの「⑤ グループ分け」 */
 function rubGrpHtml(){
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
@@ -13813,18 +13923,29 @@ function rubGrpHtml(){
     '<button class="mini primary" id="btnTeach" ' + (itT ? '' : 'disabled ') +
     'title="この墨を その字として手本帳に入れ、読み違いの元になった手本は捨てます">' +
     'この字として覚えさせる</button>' +
+    /* **名前は要らない。ちがうとだけ言う**（v31.4） */
+    '<button class="mini" id="btnTeachNo" ' +
+    ((itT && itT.anch && itT.anch.ch) ? '' : 'disabled ') +
+    'title="戒名の字など、手本帳に入れる必要のない字のためのボタン。' +
+    'この形は その字ではない、とだけ覚えて 読みを消します">' +
+    'これはちがう</button>' +
     /* よく使う字は 1 押しで */
     '一二三四五六七八九十百年月日才歳没歿令平昭大行享士姉女信居俗名子'.split('').map(function(c){
       return '<button class="mini teq" data-c="' + c + '"' + (itT ? '' : ' disabled') +
              ' style="padding:2px 6px;">' + c + '</button>';
     }).join('') +
     '</div>';
+  var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
   h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
+    (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
     (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
     '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
     '<br>［学習に登録］した字と、④ の候補から<b>あなたが決めた字</b>が手本になります。' +
     '拓本のほんものの字形なので、楷書のフォントより よく当たります。' +
-    '（フォントが無くても、手本帳だけで ［文字で見分ける］が動きます）</p>';
+    '（フォントが無くても、手本帳だけで ［文字で見分ける］が動きます）' +
+    '<br><b>戒名の字など、覚えさせる必要のない字を読み違えたとき</b>は、' +
+    'その字をえらんで ［これはちがう］ を押してください。' +
+    '名前は要りません。「この形は その字ではない」とだけ覚えます。</p>';
   var L = rubCol();
   if (L && L.items && L.items.length){
     h += '<p class="hint" style="margin:4px 0 2px;">いまの列（' +
@@ -17708,6 +17829,8 @@ function rubPanel(){
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
   var banc = $("btnAnch"); if (banc) banc.onclick = function(){ rubAnchorGo(); };
+  var btn9 = $("btnTeachNo");
+  if (btn9) btn9.onclick = rubTeachNo;
   var bte = $("btnTeach");
   if (bte) bte.onclick = function(){
     var el = $("rTeachCh");
@@ -17718,10 +17841,10 @@ function rubPanel(){
   });
   var btc = $("btnTehClr");
   if (btc) btc.onclick = function(){
-    if (!confirm("拓本の手本帳を空にします。よろしいですか。")) return;
-    S.rub.tehon = {}; _tehCache = null; _tehCacheN = -1;
+    if (!confirm("拓本の手本帳と ちがう帳を空にします。よろしいですか。")) return;
+    S.rub.tehon = {}; S.rub.tehonNg = {}; _tehCache = null; _tehCacheN = -1;
     persist(); rubPanel();
-    msg("拓本の手本帳を空にしました。");
+    msg("拓本の手本帳と ちがう帳を、空にしました。");
   };
   Array.prototype.forEach.call(document.querySelectorAll("#rubFix .grpb"), function(gb){
     gb.onclick = function(){ rubGrpSet(gb.dataset.g || "", rubSelItem >= 0 ? rubSelItem : -1); };

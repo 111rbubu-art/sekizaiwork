@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.9";
+var APP_VER = "v33.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12240,7 +12240,7 @@ async function rubAllGo(){
   var ok = 0, ng = 0, whys = [], stopped = false;
   /* **列ごとの中身を控える**（v24.3。本人の報告「全体では読めません」）。
      どの列で何が起きたかを、あとから見られるようにする。 */
-  var rep9 = [];
+  var rep9 = [], keepFix = 0;
   try {
   for (var i = 0; i < runs.length; i++){
     if (AIPROG_STOP){ stopped = true; break; }
@@ -12342,6 +12342,22 @@ async function rubAllGo(){
     }
     aiProg(null, "1 字ずつに切り分けています");
     await uiTick();
+    /* **手で直した枠の列は、作り直さない**（v33.0。本人の報告
+       「枠を変更し学習させ、再判定でいい結果も出たのですが、
+         AI縁取りからやったところ、反映されていないところが多々あります」）。
+       墨（青）は新しくして、枠と 手で決めた字はそのまま残す。 */
+    var Lfix = null;
+    try { Lfix = rubLineAtBand({ L: S.rub.bandL, R: S.rub.bandR, T: ar2.y1, B: ar2.y2 }); } catch(e){}
+    if (Lfix && Lfix.boxFix && Lfix.items && Lfix.items.length){
+      Lfix.aiUrl = (RUB.aiBand && RUB.aiBand.url) || Lfix.aiUrl;
+      Lfix.aiId  = (RUB.aiBand && RUB.aiBand.id)  || Lfix.aiId;
+      Lfix.aiSc  = (RUB.aiBand && RUB.aiBand.sc)  || Lfix.aiSc;
+      keepFix++;
+      ok++;
+      rep9.push((i+1) + "列目 帯 " + mmRange(S.rub.bandL, S.rub.bandR) +
+                "＝手で直した枠なので そのまま（" + Lfix.items.length + " 字。墨だけ新しくしました）");
+      continue;
+    }
     var got = rubLineTakeAi();
     /* **帯の中だけで数える**（v24.8）。拓本ぜんたいで数えると、帯の広さのちがいで
        列どうしを比べられない（実測：同じ濃さでも 2.8% と 6.1% になった）。 */
@@ -12386,7 +12402,8 @@ async function rubAllGo(){
      画面には**前の通しの枠**が残る。それを「変わっていない」と見てしまう。 */
   var oldLeft = (ok === 0 && (S.rub.lines || []).some(function(L){ return rubIsBoxLine(L); }));
   msg("拓本ぜんたいを見立てました（" + ok + " 列ぶん" +
-      (ng ? "／" + ng + " 列は読めませんでした" : "") + "）。" +
+      (ng ? "／" + ng + " 列は読めませんでした" : "") +
+      (keepFix ? "／" + keepFix + " 列は<b>手で直した枠をそのまま</b>にしました" : "") + "）。" +
       (rep9.length ? "　" + rep9.join("　｜　") + "。" : "") +
       (whys.length ? "理由：" + whys.slice(0, 4).join("／") +
         (whys.length > 4 ? " ほか" : "") + "。" : "") +
@@ -12948,6 +12965,22 @@ function rubLineTakeAi(){
 /* 見立てた列を入れる（v21.66）。**同じ帯なら置きかえ**、左から順に並べる。
    前は新しい順に 6 行ぶん積んでいたが、拓本 1 枚ぶんを一度に見たいので、
    **列の並び**として持つ方が素直。 */
+/* いまの帯（または渡した枠）にある列を探す（v33.0。`rubColPut` と同じ見分け方） */
+function rubLineAtBand(bd){
+  var q = bd || { L: S.rub.bandL, R: S.rub.bandR, T: -1, B: -1 };
+  var mid = (num(q.L, 0) + num(q.R, 0)) / 2, w = Math.max(8, num(q.R, 0) - num(q.L, 0));
+  var hit = null;
+  (S.rub.lines || []).forEach(function(L){
+    if (!L || !L.band) return;
+    if (!(Math.abs((L.band.L + L.band.R) / 2 - mid) < w * 0.5)) return;
+    if (num(q.T, -1) >= 0 && num(L.band.B, -1) >= 0){
+      var ov = Math.min(num(q.B, 0), num(L.band.B, 0)) - Math.max(num(q.T, 0), num(L.band.T, 0));
+      if (!(ov > 0 && ov > (num(q.B, 0) - num(q.T, 0)) * 0.5)) return;
+    }
+    hit = L;
+  });
+  return hit;
+}
 function rubColPut(m2){
   if (!Array.isArray(S.rub.lines)) S.rub.lines = [];
   var mid = (m2.band.L + m2.band.R) / 2, w = Math.max(8, m2.band.R - m2.band.L);
@@ -12967,7 +13000,42 @@ function rubColPut(m2){
     }
     at = i;
   });
-  if (at >= 0) S.rub.lines[at] = m2; else S.rub.lines.push(m2);
+  /* ───── **手で教えたことは、作り直しても引き継ぐ**（v33.0。本人の報告
+     「違う文字の登録をしているのですが、同じ間違いを繰り返します。3回同じ登録をしています」
+     「枠を変更し学習させ、再判定でいい結果も出たのですが、
+       AI縁取りからやったところ、反映されていないところが多々あります」）─────
+     これまでは **列をまるごと置きかえて**いたので、
+     ・手で直した枠（`boxFix`）
+     ・手で決めた字（`pick`／`anch.hand`）
+     ・手で付けたグループ（`gBy:"hand"`）
+     が、AI 縁取りのたびに消えていた。**同じ直しを何度もさせていた**のはこれ。
+     置きかえる前に、**前の列の「手で教えたこと」を、近い枠へ写す**。 */
+  if (at >= 0){
+    var old9 = S.rub.lines[at];
+    try {
+      if (old9 && old9.items && m2.items){
+        if (old9.boxFix) m2.boxFix = 1;
+        old9.items.forEach(function(o9){
+          if (!o9 || !o9.px) return;
+          var hand9 = (o9.gBy === "hand") || (o9.anch && o9.anch.hand) || o9.byHand;
+          if (!hand9 && !o9.pick) return;
+          /* まん中がいちばん近い新しい枠へ写す（1 字ぶんより離れていたら写さない） */
+          var oc = o9.px.y + o9.px.h / 2, best = -1, bd = 1e9;
+          m2.items.forEach(function(n9, j9){
+            if (!n9 || !n9.px) return;
+            var d9 = Math.abs((n9.px.y + n9.px.h / 2) - oc);
+            if (d9 < bd){ bd = d9; best = j9; }
+          });
+          if (best < 0 || bd > Math.max(8, num(o9.px.h, 0) * 0.7)) return;
+          var t9 = m2.items[best];
+          if (o9.pick) t9.pick = o9.pick;
+          if (o9.anch && o9.anch.hand) t9.anch = o9.anch;
+          if (o9.gBy === "hand"){ t9.g = o9.g; t9.gBy = "hand"; }
+        });
+      }
+    } catch(e9){}
+    S.rub.lines[at] = m2;
+  } else S.rub.lines.push(m2);
   S.rub.lines.sort(function(a, b){
     return ((a.band && a.band.L) || 0) - ((b.band && b.band.L) || 0);
   });
@@ -13981,7 +14049,8 @@ async function rubAnchorGo(){
          **手本合わせが付けたもの（`gBy:"anch"`）だけ**を消してから始める。
          人が ⑤ のボタンで手で付けたもの（`gBy:"hand"`）は そのまま残す。 */
       L.items.forEach(function(it){
-        if (it.anch) delete it.anch;
+        /* **人が「この字だ」と決めた印は消さない**（v33.0） */
+        if (it.anch && !it.anch.hand) delete it.anch;
         if (it.gBy === "anch"){ delete it.g; delete it.gBy; }
         else if (it.g && !it.gBy) delete it.g;       /* 古い控え（印なし）も消す */
       });
@@ -14013,6 +14082,19 @@ async function rubAnchorGo(){
         return v >= 0 && v < nItem; }).sort(function(a2, b2){ return a2 - b2; });
       for (var ix = 0; ix < idx.length; ix++){
         var i = idx[ix];
+        /* 人が決めた字は、見くらべずに そのまま使う（v33.0） */
+        if (L.items[i].anch && L.items[i].anch.hand){
+          var hc = L.items[i].anch.ch;
+          if (_anchHit([hc], RUBANCH.num)) isNum[i] = 1;
+          if (_anchHit([hc], RUBANCH.mHead) && hit.mh < 0){ hit.mh = i; ch.mh = hc; }
+          if (_anchHit([hc], RUBANCH.mTail)){ hit.mt = i; ch.mt = hc; }
+          if (_anchHit([hc], RUBANCH.nHead) && hit.nh < 0){ hit.nh = i; ch.nh = hc; }
+          if (_anchHit([hc], RUBANCH.nTail)){ hit.nt = i; ch.nt = hc; }
+          if (_anchHit([hc], RUBANCH.mMid) && hit.mm < 0){ hit.mm = i; ch.mm = hc; }
+          if (_anchHit([hc], RUBANCH.zHead) && hit.zh < 0){ hit.zh = i; ch.zh = hc; }
+          if (_anchHit([hc], RUBANCH.kTail)){ hit.kt = i; ch.kt = hc; }
+          continue;
+        }
         var k = rubItemInk(L.items[i]);
         if (!k) continue;
         var cd = null, how = "";

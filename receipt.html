@@ -157,7 +157,7 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
 <body>
 
 <div class="tb">
-  <h1>🧾 領収書</h1><span class="ver">v2.1</span>
+  <h1>🧾 領収書</h1><span class="ver">v2.2</span>
   <span id="segWrap" class="seg" style="display:none"></span>
   <span class="lbl">敬称</span>
   <span class="seg">
@@ -174,6 +174,10 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
     <button onclick="mstCancel()">やめる</button>
     <button onclick="mstSealPick()">社印の画像…</button>
     <button onclick="mstReset()">ひな形に戻す</button>
+  </span>
+  <span id="mstSp" style="display:none">
+    <button onclick="mstToSP()" title="会社の共有フォルダー（SharePoint）へ控えます。ほかのパソコンにも届きます">☁ 会社に控える</button>
+    <button onclick="mstFromSP()" title="共有フォルダーの控えを取り込みます">☁ 会社から取り込む</button>
   </span>
   <input type="file" id="mstSealFile" accept="image/*" style="display:none" onchange="mstSealSet(this)">
   <button onclick="resetAll()">↺ 元に戻す</button>
@@ -637,8 +641,70 @@ function mstSave(){
   mstApply(o);
   mstMode(false);
   render();
-  var t = toast('原本を保存しました。次に開いたときも この形で出ます。', 'ok');
-  setTimeout(function(){ t.remove(); }, 3000);
+  /* **会社ぜんぶで同じ原本を使えるように、共有フォルダーへも控える**（v2.2。
+     本人の指示「SharePoint に控える作りしてください」）。
+     業務アプリ（親の画面）が持っている設定の同期に相乗りする。
+     親の画面から開いていないときは、このパソコンだけに残る。 */
+  var sent = mstPushSP();
+  var t = toast('原本を保存しました。次に開いたときも この形で出ます。' +
+                (sent ? '\n会社の共有フォルダーにも控えました。' : '\n（このパソコンだけに覚えました）'), 'ok');
+  setTimeout(function(){ t.remove(); }, 3500);
+}
+/* 親の画面（業務アプリ）を通して、共有フォルダーへ控える。
+   設定の同期は `app_ui_settings.json` にまとめて入る作りなので、
+   そこに `receipt.master.v1` を足してある（index_b.html の SP_UI_KEYS）。 */
+function mstSpOK(){
+  try { return !!(window.opener && window.opener.saveSettingsToSP && window.opener.loadSettingsFromSP); }
+  catch (e) { return false; }
+}
+function mstPushSP(){
+  if (!mstSpOK()) return false;
+  try {
+    /* 親の画面と同じ localStorage を見ているので、書いてから呼べば届く */
+    window.opener.saveSettingsToSP();
+    return true;
+  } catch (e) { return false; }
+}
+function mstToSP(){
+  if (!mstSpOK()){
+    alert('業務アプリの画面から開いていないので、会社の共有フォルダーへは控えられません。\n' +
+          '業務アプリの領収書ボタンから開き直してください。');
+    return;
+  }
+  var raw = '';
+  try { raw = localStorage.getItem(MST_KEY) || ''; } catch (e) {}
+  if (!raw){ alert('まだ原本を保存していません。［✎ 原本を直す］→［✓ 原本を保存して終わる］のあとに押してください。'); return; }
+  if (raw.length > 400000 &&
+      !window.confirm('原本が大きめです（' + Math.round(raw.length/1024) + 'KB）。\n' +
+                      '社印の画像が大きいのかもしれません。このまま控えますか？')) return;
+  mstPushSP();
+  var t = toast('会社の共有フォルダーへ控えました。ほかのパソコンでは［☁ 会社から取り込む］で入ります。', 'ok');
+  setTimeout(function(){ t.remove(); }, 3500);
+}
+function mstFromSP(){
+  if (!mstSpOK()){
+    alert('業務アプリの画面から開いていないので、会社の共有フォルダーからは取り込めません。');
+    return;
+  }
+  var t = toast('会社の共有フォルダーから読んでいます…');
+  Promise.resolve(window.opener.loadSettingsFromSP()).then(function (){
+    t.remove();
+    var got = null;
+    try { got = JSON.parse(localStorage.getItem(MST_KEY) || 'null'); } catch (e) {}
+    if (!got){
+      var ng = toast('共有フォルダーに 原本の控えがありませんでした。', 'ng');
+      setTimeout(function(){ ng.remove(); }, 3000);
+      return;
+    }
+    mstApply(got);
+    render();
+    var ok = toast('会社の控えを取り込みました。', 'ok');
+    setTimeout(function(){ ok.remove(); }, 3000);
+  }).catch(function (e){
+    t.remove();
+    var ng = toast('取り込めませんでした\n' + (e && e.message || e), 'ng');
+    setTimeout(function(){ ng.remove(); }, 5000);
+  });
 }
 function mstCancel(){
   if (MST_BAK) mstApply(MST_BAK);
@@ -650,6 +716,7 @@ function mstReset(){
                       'いま直している内容は消えます。よろしいですか？')) return;
   mstApply(MST_DEF);
   try { localStorage.removeItem(MST_KEY); } catch (e) {}
+  mstPushSP();                 /* 共有フォルダーの控えからも外す（v2.2） */
   render();
 }
 function mstSealPick(){ $('mstSealFile').click(); }
@@ -685,6 +752,7 @@ function mstSealSet(inp){
 
 mstLoad();
 mstMode(false);
+if (mstSpOK()) $('mstSp').style.display = '';   /* 親の画面から開いたときだけ */
 render();
 </script>
 </body>

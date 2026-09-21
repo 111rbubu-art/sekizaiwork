@@ -2316,7 +2316,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v32.7";
+var APP_VER = "v32.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -12630,12 +12630,21 @@ function rubAiSplit(M, nWant){
   /* **そのあたりの字送り**。となりどうしの間隔を、前後 3 つぶん見て
      まん中の値を採る。行のとちゅうで大きさが変わっても（戒名 → 命日）、
      その場の間隔で見られる。 */
+  /* **枠から覚えた字送り**（ます目）。読み違いの見張りに使う（v32.8） */
+  var pitL9 = 0;
+  try {
+    var lb9 = S.rub && S.rub.learnBox, mp9 = mmPerPx(), st99 = num(M.step, 0);
+    if (lb9 && lb9.pitchMm > 1 && mp9 && st99 > 0) pitL9 = (lb9.pitchMm / mp9) / st99;
+  } catch(e){}
   function localPitch(list, k){
     var d = [];
     for (var t = Math.max(1, k - 3); t <= Math.min(list.length - 1, k + 3); t++)
       d.push(ctr(list[t]) - ctr(list[t-1]));
-    if (!d.length) return 0;
-    return _med(d);
+    var v = d.length ? _med(d) : 0;
+    /* **覚えた字送りと かけ離れていたら、覚えた方を使う**（v32.8）。
+       かたまりが少ないと、その場の字送りが「二」の横棒どうしの間隔になる。 */
+    if (pitL9 > 0 && (!v || v < pitL9 * 0.45 || v > pitL9 * 2.2)) return pitL9;
+    return v;
   }
   /* ① **1 字の中の空きをつなぐ**。
      「二」「三」「日」のように、1 字の中が離れている字がある。
@@ -12656,10 +12665,15 @@ function rubAiSplit(M, nWant){
     if (!did) break;
   }
   /* 経験の字の大きさ（ます目）。0 なら使わない（v30.6） */
-  var expH9 = 0;
+  var expH9 = 0, expFrom9 = "";
   try {
-    var cs9 = _rubCharSide(), st9 = num(M.step, 0);
-    if (cs9 > 0 && st9 > 0) expH9 = cs9 / st9;
+    /* **枠から覚えた高さが いちばん確か**（v32.8）。無ければ 字幅（経験値）。 */
+    var st9 = num(M.step, 0), hL9 = rubCharHpx();
+    if (hL9 > 0 && st9 > 0){ expH9 = hL9 / st9; expFrom9 = "枠から覚えた高さ"; }
+    else {
+      var cs9 = _rubCharSide();
+      if (cs9 > 0 && st9 > 0){ expH9 = cs9 / st9; expFrom9 = "戒名の字幅"; }
+    }
   } catch(e9){}
   /* ② **くっついている 2 字を割る**。
      そのあたりの字送りの 1.45 倍より背が高ければ、2 字が入っているとみて、
@@ -12711,8 +12725,12 @@ function rubAiSplit(M, nWant){
         var gap3 = cu3.a - pv3.b - 1, joi3 = cu3.b - pv3.a + 1;
         /* つなぐ相手（下の段）は平たいこと。**すでにつないだ側**は
            背が伸びているので、字幅の 9.5 割まで許す（「三」のため。v32.0） */
-        if (hCu < expH9 * 0.5 && hPv < expH9 * 0.95 &&
-            gap3 < expH9 * 0.5 && joi3 <= expH9 * 1.25){
+        /* すき間は **字の高さの 7 割**まで見る（v32.8）。
+           「二」の横棒どうしの空きは、字の高さの半分ほどあることがある
+           （実測：高さ 26 ます の 二 で すき間 14 ます＝54%）。
+           それでも「一 が 2 つ」は 字送りぶん（1 字より広く）離れるので、混ざらない。 */
+        if (hCu < expH9 * 0.55 && hPv < expH9 * 0.95 &&
+            gap3 < expH9 * 0.7 && joi3 <= expH9 * 1.25){
           out3[out3.length-1] = { a: pv3.a, b: cu3.b };
           did3 = true;
         } else out3.push(cu3);
@@ -14421,6 +14439,50 @@ async function rubProbe(){
   }
   msg(html, false, true);
 }
+/* ───── **枠から、1 字の大きさを覚える**（v32.8。本人の問い
+   「この枠を覚えるのは、学習してその結果が、枠の変更になればいいのですが。
+     枠は学習されないのですか？」）─────
+   v32.7 は「手で直した列は さわらない」だけで、**覚えてはいなかった**。
+   手で直した枠は **その拓本の 1 字の大きさ・字送りの ほんとうの値**なので、
+   そこから覚えて、**ほかの列の切り分けに効かせる**。
+   覚えるのは 3 つ：高さ・横はば・字送り（どれも mm）。
+   置き場は 案件の中（`S.rub.learnBox`）。拓本ごとに字の大きさは変わるため。 */
+function rubBoxLearn(L, quiet){
+  L = L || rubCol();
+  var mpp = mmPerPx();
+  if (!L || !L.items || L.items.length < 1 || !mpp) return null;
+  var hs = [], ws = [], cys = [];
+  L.items.forEach(function(it){
+    if (!it.px) return;
+    hs.push(it.px.h * mpp); ws.push(it.px.w * mpp);
+    cys.push((it.px.y + it.px.h / 2) * mpp);
+  });
+  if (!hs.length) return null;
+  cys.sort(function(a, b){ return a - b; });
+  var pit = [];
+  for (var i = 1; i < cys.length; i++) pit.push(cys[i] - cys[i-1]);
+  var got = { hMm: _med(hs), wMm: _med(ws),
+              pitchMm: pit.length ? _med(pit) : 0,
+              n: hs.length, at: new Date().toLocaleString("ja-JP") };
+  if (!(got.hMm > 1) || !(got.wMm > 1)) return null;
+  S.rub.learnBox = got;
+  persist();
+  if (!quiet)
+    msg("この列の枠から、<b>1 字の大きさ</b>を覚えました（高さ " + got.hMm.toFixed(1) +
+        "mm・横 " + got.wMm.toFixed(1) + "mm" +
+        (got.pitchMm ? "・字送り " + got.pitchMm.toFixed(1) + "mm" : "") +
+        "／" + got.n + " 字ぶん）。" +
+        "これからの切り分け（青枠）は、この大きさを目当てにします。" +
+        "［覚えたことで 再判定］で、ほかの列にも効きます。", false, true);
+  return got;
+}
+/* 切り分けで使う「1 字の高さ」（ます目）。枠から覚えていれば そちらを使う（v32.8） */
+function rubCharHpx(){
+  var mpp = mmPerPx();
+  var lb = S.rub && S.rub.learnBox;
+  if (lb && mpp && lb.hMm > 1) return lb.hMm / mpp;
+  return 0;
+}
 /* ───── **覚えた一覧**（v32.4。本人の指示
    「学習済の一覧を見れるようにできれば、他に影響があっても判断つくのでつくって」）─────
    手本帳（○）と ちがう帳（×）の中身を、**絵のまま**並べて見せる。
@@ -14588,11 +14650,19 @@ function rubGrpHtml(){
     '</div>';
   var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
   var tehKB = 0; try { tehKB = rubTehonKB(); } catch(e){}
+  var lb8 = S.rub.learnBox;
+  if (lb8 && lb8.hMm)
+    h += '<p class="hint" style="margin:4px 0 0;">枠から覚えた 1 字の大きさ：' +
+      '<b>高さ ' + lb8.hMm.toFixed(1) + 'mm・横 ' + lb8.wMm.toFixed(1) + 'mm' +
+      (lb8.pitchMm ? '・字送り ' + lb8.pitchMm.toFixed(1) + 'mm' : '') + '</b>' +
+      '（' + lb8.n + ' 字ぶん／' + esc(lb8.at || "") + '）。' +
+      '青枠の切り分けは、この大きさを目当てにします。</p>';
   h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
     (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
     (tehKB ? '／<b>' + tehKB + 'KB</b>（上限 400 枚・約 280KB。置き場は 5MB ほど）' : '') +
     (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
-    '　<button class="mini" id="btnTehList">覚えた一覧を見る</button>' +
+    '　<button class="mini" id="btnBoxLearn">この列の枠から覚える</button>' +
+    ' <button class="mini" id="btnTehList">覚えた一覧を見る</button>' +
     ' <button class="mini" id="btnTehSpUp">サーバーに控える</button>' +
     ' <button class="mini" id="btnTehSpDn">サーバーから戻す</button>' +
     '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
@@ -17999,7 +18069,12 @@ function bindDrag(svg){
         window.removeEventListener("pointerup", up);
         if (calBusy){ calBusy = false; rubRender(); }
         if (grp || cen !== null){ renderStage(); rubPanel(); }
-        if (li0){ rubLineRestat(); rubPanel(); rubRender(); }
+        if (li0){
+          rubLineRestat();
+          /* **直した枠から、1 字の大きさを覚える**（v32.8） */
+          try { rubBoxLearn(rubCol(), false); } catch(e){}
+          rubPanel(); rubRender();
+        }
         persist();
       }
       window.addEventListener("pointermove", move);
@@ -18531,6 +18606,14 @@ function rubPanel(){
     try { await rubRejudge(); } catch(e){ msg("再判定でつまずきました（" +
       ((e && e.message) || "") + "）。", true); }
     brj.disabled = false; brj.textContent = "覚えたことで 再判定";
+  };
+  var bbl = $("btnBoxLearn");
+  if (bbl) bbl.onclick = function(){
+    var L8 = rubCol();
+    if (!L8 || !L8.items || !L8.items.length){ msg("先に列をえらんでください。", true); return; }
+    if (!rubBoxLearn(L8, false))
+      msg("この列の枠からは、大きさを読めませんでした（較正がまだかもしれません）。", true);
+    rubPanel();
   };
   var bls = $("btnTehList");
   if (bls) bls.onclick = rubTehonList;

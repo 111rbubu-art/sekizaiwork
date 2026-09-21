@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.5";
+var APP_VER = "v31.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -7329,6 +7329,10 @@ function persist(){
     S.view = view;
     var copy = Object.assign({}, S);
     copy.rub = Object.assign({}, S.rub || {}); delete copy.rub.src;
+    /* **手本帳は べつの場所に持っている**（v31.6。`chokoku.tehon`）。
+       ここにも入れると 同じものを 2 重に置くことになるので外す
+       （案件ファイルへの写しは、そのまま入る）。 */
+    delete copy.rub.tehon; delete copy.rub.tehonNg;
     localStorage.setItem("chokoku.state", JSON.stringify(copy));
   } catch(e){}
 }
@@ -13183,7 +13187,8 @@ function rubGrpSet(gk, fromIdx){
   var L = rubCol();
   if (!L || !L.items || !L.items.length){ msg("先に列を見立ててください。", true); return; }
   var from = (fromIdx >= 0) ? fromIdx : 0;
-  L.items.forEach(function(it, i){ if (i >= from) it.g = gk; });
+  /* **人が手で付けたもの**は、あとで［文字で見分ける］を押し直しても消さない（v31.6） */
+  L.items.forEach(function(it, i){ if (i >= from){ it.g = gk; it.gBy = "hand"; } });
   persist(); rubPanel(); rubRender();
   var g = rubGrpOf(gk);
   msg((from > 0 ? (from + 1) + " 字目から下を" : "この列を") + "「" + (g ? g.nm : gk) + "」にしました。" +
@@ -13253,7 +13258,7 @@ function rubGrpAuto(){
         gk = (mine >= mx - 1) ? "mei" : "zok";        /* いちばん右＝命日 */
       } else gk = "mei";
     }
-    L.items.forEach(function(it){ it.g = gk; });
+    L.items.forEach(function(it){ it.g = gk; it.gBy = "anch"; });
     /* 大きく空いた所から下は、べつのまとまり（**下の列だけ**）。
        「彌太郎／行年七十八歳」のような列のため。
        上（戒名）は 1 つづきなので切らない（v26.8 の実測で、切ると
@@ -13262,7 +13267,7 @@ function rubGrpAuto(){
       var cut = rubGrpGapAt(L);
       if (cut > 0){
         var gk2 = "nen";                     /* 名前の下は 年齢（行年○十○歳） */
-        L.items.forEach(function(it, i){ if (i >= cut) it.g = gk2; });
+        L.items.forEach(function(it, i){ if (i >= cut){ it.g = gk2; it.gBy = "anch"; } });
       }
     }
     n1++;
@@ -13378,6 +13383,16 @@ function _tehMergeFromCase(){
   } catch(e){}
 }
 function rubTehonAll(){ return _tehLoad().t; }
+/* 手本帳が、いま何キロバイトあるか（v31.6。本人の問い
+   「置き場所はブラウザで容量は大丈夫ですか」）。
+   1 枚 683 字（約 0.7KB）。400 枚で 280KB ほど。
+   ブラウザの置き場は ふつう 5MB なので、十分に収まる。 */
+function rubTehonKB(){
+  try {
+    var s9 = localStorage.getItem("chokoku.tehon") || "";
+    return Math.round(s9.length / 1024 * 10) / 10;
+  } catch(e){ return 0; }
+}
 function rubTehonCount(){
   var t = rubTehonAll(), n = 0;
   Object.keys(t).forEach(function(k){ n += (t[k] || []).length; });
@@ -13604,11 +13619,23 @@ async function rubAnchorGo(){
          そこに命日や年齢はない。空似で塗られると かえって悪い。 */
       var ctA = S.rub.colsTop, yCA = (ctA && ctA.geo === rubGeoKey()) ? num(ctA.yCut, 0) : 0;
       if (yCA > 0 && num(L.band && L.band.B, RUB.H) <= yCA + 10){
-        L.items.forEach(function(it){ if (!it.g) it.g = "kai"; });
+        L.items.forEach(function(it){ if (!it.g){ it.g = "kai"; it.gBy = "anch"; } });
         rep.push((li+1) + "列目＝戒名の段（手本は見ません）");
         continue;
       }
-      L.items.forEach(function(it){ if (it.anch) delete it.anch; });   /* 前の印は消す（v31.1） */
+      /* ───── **押すたびに、いちばん新しい手本帳で判じ直す**（v31.6。本人の指示
+         「訂正して、文字で見分けるボタンをもう一度押すことで、
+           最新の状態で判別する様にしてほしい」）─────
+         前は **前の回に付けたグループが残ったまま**だったので、
+         「命日のあとの数字＝年齢」のような後づけの決まりが
+         （もう g が付いているために）効かなかった。
+         **手本合わせが付けたもの（`gBy:"anch"`）だけ**を消してから始める。
+         人が ⑤ のボタンで手で付けたもの（`gBy:"hand"`）は そのまま残す。 */
+      L.items.forEach(function(it){
+        if (it.anch) delete it.anch;
+        if (it.gBy === "anch"){ delete it.g; delete it.gBy; }
+        else if (it.g && !it.gBy) delete it.g;       /* 古い控え（印なし）も消す */
+      });
       var A = await rubBandOfLine(L);
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
@@ -13694,7 +13721,7 @@ async function rubAnchorGo(){
         var n9 = 0;
         for (var t9 = a9; t9 <= b9 && t9 < L.items.length; t9++){
           if (!small9(L.items[t9])) break;
-          L.items[t9].g = gk9; n9++;
+          L.items[t9].g = gk9; L.items[t9].gBy = "anch"; n9++;
         }
         return n9;
       }
@@ -13702,7 +13729,7 @@ async function rubAnchorGo(){
         var n9 = 0;
         for (var t9 = b9; t9 >= a9 && t9 >= 0; t9--){
           if (!small9(L.items[t9])) break;
-          L.items[t9].g = gk9; n9++;
+          L.items[t9].g = gk9; L.items[t9].gBy = "anch"; n9++;
         }
         return n9;
       }
@@ -13761,7 +13788,7 @@ async function rubAnchorGo(){
           var itK = L.items[tK], wK = Math.max(num(itK.wMm, 0), num(itK.hMm, 0));
           if (wK > 0 && wK < kmK * 0.6) break;      /* 小さい字（命日・年齢）に当たったら止める */
           if (itK.g && itK.g !== "kai") break;
-          itK.g = "kai"; nK++;
+          itK.g = "kai"; itK.gBy = "anch"; nK++;
         }
         if (nK) did.push("戒名 " + (hit.kt - nK + 2) + "〜" + (hit.kt+1) +
                          " 字目（…" + ch.kt + "）");
@@ -13798,6 +13825,7 @@ async function rubAnchorGo(){
       L.items.forEach(function(it){
         if (it.g) return;
         it.g = (isLow9 || hasMN9) ? "zok" : "kai";
+        it.gBy = "anch";
       });
       /* **読めた字を並べて出す**（v31.1）。印の無い字＝登録する字。 */
       var rdCh = [], rdN = 0;
@@ -13996,8 +14024,10 @@ function rubGrpHtml(){
     }).join('') +
     '</div>';
   var ngN = 0; try { ngN = rubTehonNgCount(); } catch(e){}
+  var tehKB = 0; try { tehKB = rubTehonKB(); } catch(e){}
   h += '<p class="hint" style="margin:4px 0 0;">拓本の手本帳：<b>' + tehN + ' 枚</b>' +
     (ngN ? '／ちがう帳：<b>' + ngN + ' 枚</b>' : '') +
+    (tehKB ? '／<b>' + tehKB + 'KB</b>（上限 400 枚・約 280KB。置き場は 5MB ほど）' : '') +
     (tehCh ? '（' + tehCh + '）' : '（まだ空です）') +
     '　<button class="mini" id="btnTehClr" style="margin-left:4px;">手本帳を空にする</button>' +
     '<br>［学習に登録］した字と、④ の候補から<b>あなたが決めた字</b>が手本になります。' +

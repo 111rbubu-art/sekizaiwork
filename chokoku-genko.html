@@ -2290,7 +2290,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v31.7";
+var APP_VER = "v31.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   document.title = "彫刻原稿 " + APP_VER;
@@ -13391,19 +13391,36 @@ function rubTehonAll(){ return _tehLoad().t; }
    のせる前に **サーバーの控えを読んで足し合わせる**ので、
    別のパソコンで覚えた分も消えない。 */
 var TEHON_SP_NAME = "拓本の手本帳.json";
+/* 置き場は **業務アプリ ＞ アプリ使用フォント ＞ 拓本文字分析**（v31.8。本人の指示
+   「業務アプリ、アプリ使用フォント、内に拓本文字分析というフォルダを作って
+     そこに保存して」）。無ければ作る（「拓本学習データ」と同じやり方）。 */
+var TEHON_DIR = "拓本文字分析";
+var TEHON_SPID = "";
 function tehonSpReady(){
-  return (typeof SP !== "undefined") && SP.state === "ready" &&
-         !!SP.cfg.driveId && !!SP.cfg.rootPath;
+  return (typeof SP !== "undefined") && SP.state === "ready" && !!SP.cfg.driveId;
 }
-function _tehSpPath(){
-  return "/drives/" + SP.cfg.driveId + "/root:" +
-         spEncPath(SP.cfg.rootPath + "/" + TEHON_SP_NAME);
+async function tehonDirId(){
+  if (TEHON_SPID) return TEHON_SPID;
+  var pid = await fontDirId(true);                 /* /業務アプリ/アプリ使用フォント */
+  var r = await graph("/drives/" + SP.cfg.driveId + "/items/" + pid +
+    "/children?$top=200&$select=id,name,folder");
+  var hit = (r.value || []).filter(function(x){
+    return x.folder && sameName(x.name, TEHON_DIR); })[0];
+  if (hit){ TEHON_SPID = hit.id; return TEHON_SPID; }
+  var made = await graph("/drives/" + SP.cfg.driveId + "/items/" + pid + "/children",
+    { method: "POST", json: { name: TEHON_DIR, folder: {},
+                              "@microsoft.graph.conflictBehavior": "rename" } });
+  TEHON_SPID = made.id;
+  return TEHON_SPID;
 }
+function tehonSpWhere(){ return FONT_DIR + "/" + TEHON_DIR + "/" + TEHON_SP_NAME; }
 /* サーバーの控えを読む（無ければ null） */
 async function tehonSpGet(){
   if (!tehonSpReady()) return null;
   try {
-    var res = await graph(_tehSpPath() + ":/content", { raw: true });
+    var did = await tehonDirId();
+    var res = await graph("/drives/" + SP.cfg.driveId + "/items/" + did +
+      ":/" + encodeURIComponent(TEHON_SP_NAME) + ":/content", { raw: true });
     if (!res || !res.ok) return null;
     return await res.json();
   } catch(e){ return null; }
@@ -13430,7 +13447,7 @@ function _tehUnion(a, b, cap){
 /* サーバーへ控える（読んで → 足して → 書く） */
 async function rubTehonBackup(quiet){
   if (!tehonSpReady()){
-    if (!quiet) msg("先に SharePoint につないでください（いちばん上のフォルダが要ります）。", true);
+    if (!quiet) msg("先に SharePoint につないでください。", true);
     return false;
   }
   try {
@@ -13442,15 +13459,13 @@ async function rubTehonBackup(quiet){
     _tehSave();
     var body = { v: 1, at: new Date().toISOString(), t: TEHON.t, n: TEHON.n };
     var blob = new Blob([JSON.stringify(body)], { type: "application/json" });
-    var tok = await spToken();
-    var res = await fetch("https://graph.microsoft.com/v1.0" + _tehSpPath() + ":/content",
-      { method: "PUT", headers: { Authorization: "Bearer " + tok,
-        "Content-Type": "application/json" }, body: blob });
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    var did = await tehonDirId();
+    var it2 = await spPutIn(did, TEHON_SP_NAME, blob, "application/json");
+    if (!it2) throw new Error("保存できませんでした");
     S.rub.tehonSpAt = body.at;
     persist(); rubPanel();
     if (!quiet)
-      msg("手本帳を <b>" + esc(SP.cfg.rootPath) + "/" + TEHON_SP_NAME + "</b> に控えました（" +
+      msg("手本帳を <b>" + esc(tehonSpWhere()) + "</b> に控えました（" +
           rubTehonCount() + " 枚・" + rubTehonKB() + "KB" +
           (sv ? "／サーバーにあった分も足しました" : "") + "）。", false, true);
     return true;
@@ -14133,7 +14148,8 @@ function rubGrpHtml(){
       esc(String(S.rub.tehonSpAt).slice(0, 16).replace("T", " ")) + '</b>' : '') +
     '<br>手本帳は <b>この画面の持ち物</b>です。<b>別の拓本（別の案件）を開いても残ります</b>。' +
     '案件を工事フォルダに保存すると、<b>サーバーにも控え</b>ます' +
-    '（いちばん上のフォルダの「' + TEHON_SP_NAME + '」。会社ぜんぶで 1 つ）。' +
+    '（<b>' + esc(FONT_DIR + "/" + TEHON_DIR) + '</b> の「' + TEHON_SP_NAME +
+    '」。会社ぜんぶで 1 つ。フォルダが無ければ作ります）。' +
     '別のパソコンでは［サーバーから戻す］で足し合わせられます。' 
     '案件ファイルにも写しが入り、開いたときに足し合わせます。' +
     '<b>拓本AI の学習（［学習に登録］でサーバーへ送るもの）とは 別物</b>です。' +

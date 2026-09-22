@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.1";
+var APP_VER = "v36.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14258,8 +14258,18 @@ var RUBANCH = {
      足りなかったのは **年・月**（命日のまん中）、**俗・名**（俗名の目印）、
      **士・姉・女**（戒名のおわり。居士・大姉・信女）。 */
   mMid: "年月",               /* 命日のまん中（○年○月○日） */
-  zHead: "俗名",              /* 俗名の目印（「俗名 ○○」） */
-  kTail: "士姉女"             /* 戒名のおわり（居士・大姉・信女・信士） */
+  /* ───── **故＝俗名の目印**（v36.2。本人の決め
+     「一番上の位置のまとまりは、故があれば俗名、無ければ戒名の可能性が高い」）───── */
+  zHead: "俗名故",            /* 俗名の目印（「俗名 ○○」「故 ○○」） */
+  kTail: "士姉女",            /* 戒名のおわり（居士・大姉・信女・信士） */
+  /* ───── **戒名のおわりの、もう 1 つの手がかり**（v36.2。本人の決め
+     「一番下の文字が 士/姉/女 が当たった、もし読めなければ、下から2番目が 信、大」）─────
+     信女・信士・大姉 の **上の字**。下から 2 番目がこれなら、
+     いちばん下の字が（読めなくても）戒名のおわり。 */
+  kTail2: "信大",
+  /* 命日の「数字＋○」の ○（v36.2。本人の決め
+     「数字＋年、数字＋月、数値＋日が当たったら 命日です」） */
+  mDate: "年月日"
 };
 /* ───── **まとまり（戒名・俗名・命日・年齢）の決まりごと**（v35.9）─────
    もとは［文字で見分ける］（`rubAnchorGo`）の中にじか書きしてあった。
@@ -14271,8 +14281,22 @@ var RUBANCH = {
    hit   … {mh,mt,nh,nt,mm,zh,kt} それぞれ「何字目で当たったか」（-1＝無し）
    ch    … 同じ形で「当たった字」
    isNum … {何字目: true} 数字の字
+   chs   … {何字目: "字"} 読めている字（v36.2 で足した。無くても動く）
    返り  … 何をしたかの覚え書き（画面に出す） */
-function rubGrpApply(L, hit, ch, isNum){
+function rubGrpApply(L, hit, ch, isNum, chs){
+  chs = chs || {};
+  var nIt9 = (L.items || []).length;
+  /* ───── **戒名のおわりが読めないときの助け**（v36.2。本人の決め
+     「一番下の文字が 士/姉/女 が当たった、もし読めなければ、下から2番目が 信、大」）─────
+     信女・信士・大姉 の 上の字が読めていれば、いちばん下の字は
+     （読めなくても）戒名のおわり。 */
+  if (hit.kt < 0 && nIt9 >= 2){
+    var c29 = (chs[nIt9 - 2] || "").charAt(0);
+    if (c29 && RUBANCH.kTail2.indexOf(c29) >= 0){
+      hit.kt = nIt9 - 1;
+      ch.kt = (chs[nIt9 - 1] || c29) + "（下から 2 番目が " + c29 + "）";
+    }
+  }
   var did = [];
   /* **戒名の字（大きい字）には、命日も年齢も付けない**（v27.3。本人の報告
      「戒名は一番上で文字幅30㎜の制限のはずが、下にいき、上のほとんどが
@@ -14290,11 +14314,27 @@ function rubGrpApply(L, hit, ch, isNum){
     if (!w9 && !h9) return true;
     return Math.max(w9, h9) <= kmW9 * 0.92;
   }
+  /* ───── **よその目印・よそのまとまりに当たったら止める**（v36.2）─────
+     本人の決め「まとまりは同じ物 2 か所は存在しません」を守るには、
+     塗り広げるときに **となりのまとまりへ入らない**ことが先。
+     故・俗・名（俗名の目印）と 士・姉・女（戒名のおわり）を越えない。 */
+  function stop9(t9, gk9){
+    var it9 = L.items[t9];
+    if (!it9) return true;
+    if (it9.g && it9.g !== gk9) return true;          /* もう別のまとまり */
+    var c8 = (chs[t9] || "").charAt(0);
+    if (!c8) return false;
+    /* **自分の目印では止まらない**（俗名を塗るのに 俗・名 で止まっては塗れない） */
+    if (gk9 !== "zok" && RUBANCH.zHead.indexOf(c8) >= 0) return true;
+    if (gk9 !== "kai" && RUBANCH.kTail.indexOf(c8) >= 0) return true;
+    return false;
+  }
   /* 小さい字のあいだだけ、続けて付ける（大きい字に当たったら そこで止める） */
   function mark9(a9, b9, gk9){
     var n9 = 0;
     for (var t9 = a9; t9 <= b9 && t9 < L.items.length; t9++){
       if (!small9(L.items[t9])) break;
+      if (t9 !== a9 && stop9(t9, gk9)) break;
       L.items[t9].g = gk9; L.items[t9].gBy = "anch"; n9++;
     }
     return n9;
@@ -14303,46 +14343,76 @@ function rubGrpApply(L, hit, ch, isNum){
     var n9 = 0;
     for (var t9 = b9; t9 >= a9 && t9 >= 0; t9--){
       if (!small9(L.items[t9])) break;
+      if (t9 !== b9 && stop9(t9, gk9)) break;
       L.items[t9].g = gk9; L.items[t9].gBy = "anch"; n9++;
     }
     return n9;
   }
-  /* ① 年号 〜 日・没・歿 ＝ 命日 */
-  if (hit.mh >= 0 && hit.mt > hit.mh){
-    /* ───── **両はしが分かったら、その間はまるごと命日**（v32.7）─────
-       `mark9` には「戒名ほど大きい字に当たったら止める」歯止めが入っている。
-       これは **おわりしか分からないとき**に、戒名まで塗らないためのもの。
-       **はじめ（年号）と おわり（日）の両方が分かっているとき**は、
-       その間が命日なのは決まっているので、歯止めは要らない。
-       実測：本人の拓本で 平 も 日 も当たっているのに、
-       字の大きさが戒名と変わらず **1 字も塗られなかった**。 */
-    var nM7 = 0;
-    for (var t7 = hit.mh; t7 <= hit.mt && t7 < L.items.length; t7++){
-      L.items[t7].g = "mei"; L.items[t7].gBy = "anch"; nM7++;
-    }
-    if (nM7)
-      did.push("命日 " + (hit.mh+1) + "〜" + (hit.mt+1) + " 字目（" + ch.mh + "…" + ch.mt +
-               "。両はしが分かったので その間ぜんぶ）");
-  } else if (hit.mh >= 0){
-    if (mark9(hit.mh, L.items.length - 1, "mei"))
-      did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
-  } else if (hit.mt >= 0){
-    /* **はじめが分からないときは、上へさかのぼるだけ**（v27.3）。
-       前は 1 字目から塗っていたので、戒名まで命日になっていた。
-       命日は ふつう 10 字ほどなので、12 字までにする。 */
-    var got9 = markBack9(hit.mt, Math.max(0, hit.mt - 11), "mei");
-    if (got9) did.push("命日 " + (hit.mt - got9 + 2) + "〜" + (hit.mt+1) + " 字目（…" + ch.mt + "）");
+  /* ───── ①' **「数字＋年」「数字＋月」「数字＋日」が当たったら 命日**
+     （v36.2。本人の決め）─────
+     前は「年・月が当たったら、その上下 6〜8 字」という当てずっぽうだったので、
+     戒名の中の 年 や、年齢の 十 のそばまで 命日で塗ることがあった。
+     **前の字が数字であること**を足すと、まず外さない
+     （命日は かならず ○年○月○日 の形）。
+     いちばん上の「数字＋○」の **数字の並びの頭**から、
+     いちばん下の「数字＋○」までを、まるごと命日にする。 */
+  var dA = -1, dB = -1, i9;
+  for (i9 = 1; i9 < L.items.length; i9++){
+    var c9 = (chs[i9] || "").charAt(0);
+    if (!c9 || RUBANCH.mDate.indexOf(c9) < 0) continue;
+    if (!isNum[i9 - 1]) continue;                  /* 前が数字でなければ見ない */
+    if (dA < 0) dA = i9;
+    dB = i9;
   }
-  /* ①' **年・月が当たれば、そこは命日のまん中**（v31.3）。
-     年号（令・平・昭）も 日・没・歿も かすれて当たらないことがあるが、
-     「○年○月○日」の 年・月 は どこかで当たりやすい。
-     年・月 の前後を命日とみて、上下へ小さい字のあいだだけ広げる。 */
-  if (hit.mm >= 0 && !L.items[hit.mm].g){
-    var mmA = markBack9(hit.mm, Math.max(0, hit.mm - 6), "mei");
-    var mmB = mark9(hit.mm, Math.min(L.items.length - 1, hit.mm + 8), "mei");
-    if (mmA || mmB)
-      did.push("命日 " + (hit.mm - mmA + 2) + "〜" + (hit.mm + mmB) +
-               " 字目（" + ch.mm + "のまわり）");
+  if (dA >= 0){
+    while (dA - 1 >= 0 && isNum[dA - 1]) dA--;     /* 数字の並びの頭まで さかのぼる */
+    var cUp = (chs[dA - 1] || "").charAt(0);       /* すぐ上が年号なら、そこも命日 */
+    if (cUp && RUBANCH.mHead.indexOf(cUp) >= 0) dA--;
+    var nD9 = 0;
+    for (i9 = dA; i9 <= dB && i9 < L.items.length; i9++){
+      L.items[i9].g = "mei"; L.items[i9].gBy = "anch"; nD9++;
+    }
+    if (nD9) did.push("命日 " + (dA + 1) + "〜" + (dB + 1) +
+                      " 字目（数字＋" + esc((chs[dB] || "").charAt(0)) + "）");
+  }
+  /* ───── **数字＋年月日 が読めたら、そこが命日**。
+     読めなかったときだけ、年号・日のあいまいな決まりを使う（v36.2）───── */
+  if (dA < 0){
+    /* ① 年号 〜 日・没・歿 ＝ 命日 */
+    if (hit.mh >= 0 && hit.mt > hit.mh){
+      /* ───── **両はしが分かったら、その間はまるごと命日**（v32.7）─────
+         `mark9` には「戒名ほど大きい字に当たったら止める」歯止めが入っている。
+         これは **おわりしか分からないとき**に、戒名まで塗らないためのもの。
+         **はじめ（年号）と おわり（日）の両方が分かっているとき**は、
+         その間が命日なのは決まっているので、歯止めは要らない。
+         実測：本人の拓本で 平 も 日 も当たっているのに、
+         字の大きさが戒名と変わらず **1 字も塗られなかった**。 */
+      var nM7 = 0;
+      for (var t7 = hit.mh; t7 <= hit.mt && t7 < L.items.length; t7++){
+        L.items[t7].g = "mei"; L.items[t7].gBy = "anch"; nM7++;
+      }
+      if (nM7)
+        did.push("命日 " + (hit.mh+1) + "〜" + (hit.mt+1) + " 字目（" + ch.mh + "…" + ch.mt +
+                 "。両はしが分かったので その間ぜんぶ）");
+    } else if (hit.mh >= 0){
+      if (mark9(hit.mh, L.items.length - 1, "mei"))
+        did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
+    } else if (hit.mt >= 0){
+      /* **はじめが分からないときは、上へさかのぼるだけ**（v27.3）。
+         前は 1 字目から塗っていたので、戒名まで命日になっていた。
+         命日は ふつう 10 字ほどなので、12 字までにする。 */
+      var got9 = markBack9(hit.mt, Math.max(0, hit.mt - 11), "mei");
+      if (got9) did.push("命日 " + (hit.mt - got9 + 2) + "〜" + (hit.mt+1) + " 字目（…" + ch.mt + "）");
+    }
+    /* ①'' 年・月のまわり（数字が読めていないとき）*/
+    if (hit.mm >= 0 && !L.items[hit.mm].g){
+      /* 数字が読めていないときだけ、前のやり方（年・月のまわり）で補う */
+      var mmA = markBack9(hit.mm, Math.max(0, hit.mm - 6), "mei");
+      var mmB = mark9(hit.mm, Math.min(L.items.length - 1, hit.mm + 8), "mei");
+      if (mmA || mmB)
+        did.push("命日 " + (hit.mm - mmA + 2) + "〜" + (hit.mm + mmB) +
+                 " 字目（" + ch.mm + "のまわり。数字は読めていません）");
+    }
   }
   /* ② 行年・享年 〜 才・歳 ＝ 年齢。無ければ 才・歳 から数えて さかのぼる */
   var nA = hit.nh, nB = hit.nt;
@@ -14381,7 +14451,8 @@ function rubGrpApply(L, hit, ch, isNum){
   }
   /* ③' **俗・名＝俗名の目印**（v31.3）。そこから下を俗名にする。 */
   if (hit.zh >= 0 && !L.items[hit.zh].g){
-    var nZ = mark9(hit.zh, Math.min(L.items.length - 1, hit.zh + 10), "zok");
+    /* **10 → 6 字**（v36.2。本人の決め）。俗名は長くても 6 字ほど */
+    var nZ = mark9(hit.zh, Math.min(L.items.length - 1, hit.zh + 6), "zok");
     if (nZ) did.push("俗名 " + (hit.zh+1) + " 字目から（" + ch.zh + "）");
   }
   /* ───── **命日のあとに続く字は、戒名ではない**（v30.9。本人の画面
@@ -14402,12 +14473,74 @@ function rubGrpApply(L, hit, ch, isNum){
         did.push("年齢 " + (restA+1) + "〜" + (restB+1) + " 字目（命日のあとの数字）");
     }
   }
-  /* ③ 命日でも年齢でもない所は、下の列なら俗名とみる（上は戒名のまま） */
+  /* ───── ④ **同じまとまりは、1 列に 2 か所ない**（v36.2。本人の決め
+     「まとまりは同じ物 2 か所は存在しません」）─────
+     決まりを重ねていくと、離れた所に同じまとまりが 2 つ付くことがある
+     （戒名の中の「年」を拾って命日が 2 か所、など）。
+     同じ種類が 2 つ以上できたら、**いちばん長い 1 か所だけ**を残し、
+     ほかは いったん白紙に戻す（すぐ下の ⑤⑥ で塗り直される）。
+     人が手で付けた分（`gBy:"hand"`）は さわらない。 */
+  (function once9(){
+    var runs = [], i7;
+    L.items.forEach(function(it, i){
+      var g7 = it.g || "";
+      var pv = runs[runs.length - 1];
+      if (pv && pv.g === g7) pv.n++;
+      else runs.push({ g: g7, n: 1, from: i });
+    });
+    var by7 = {};
+    runs.forEach(function(r){ if (!r.g) return; (by7[r.g] = by7[r.g] || []).push(r); });
+    Object.keys(by7).forEach(function(g7){
+      var list = by7[g7];
+      if (list.length < 2) return;
+      var best = list[0];
+      list.forEach(function(r){ if (r.n > best.n) best = r; });
+      list.forEach(function(r){
+        if (r === best) return;
+        var hand7 = false;
+        for (i7 = r.from; i7 < r.from + r.n; i7++)
+          if (L.items[i7].gBy === "hand") hand7 = true;
+        if (hand7) return;                    /* 手で付けた所はそのまま */
+        for (i7 = r.from; i7 < r.from + r.n; i7++){
+          delete L.items[i7].g; delete L.items[i7].gBy;
+        }
+        var gO7 = rubGrpOf(g7);
+        did.push("（" + (gO7 ? gO7.nm : g7) + " が 2 か所にできたので、" +
+                 (r.from + 1) + "〜" + (r.from + r.n) + " 字目は白紙に戻しました）");
+      });
+    });
+  })();
   var ct9 = S.rub.colsTop, yC9 = (ct9 && ct9.geo === rubGeoKey()) ? num(ct9.yCut, 0) : 0;
   var isLow9 = (yC9 > 0 && num(L.band && L.band.T, 0) >= yC9 - 10);
   /* **命日や年齢のある列は、戒名の列ではない**（v30.9）。
      余った字を「戒名」にすると、命日の列ぜんぶが戒名色になる。 */
   var hasMN9 = L.items.some(function(it){ return it.g === "mei" || it.g === "nen"; });
+  /* ───── ⑤ **いちばん上のまとまりは、故があれば俗名・無ければ戒名**
+     （v36.2。本人の決め「一番上の位置のまとまりは、故があれば俗名、
+     無ければ戒名の可能性が高い」）─────
+     いちばん上に残っている白紙の並びだけ、別に決める。
+     「故 ○○」は 俗名（生前の名）、目印が無ければ 戒名。 */
+  var head9 = -1;
+  for (var t0 = 0; t0 < L.items.length; t0++){
+    if (L.items[t0].g) break;
+    head9 = t0;
+  }
+  if (head9 >= 0){
+    var koGot = "";
+    for (var t1 = 0; t1 <= head9; t1++){
+      var cH = (chs[t1] || "").charAt(0);
+      if (cH && "故俗名".indexOf(cH) >= 0){ koGot = cH; break; }
+    }
+    var gHead = koGot ? "zok" : ((isLow9 || hasMN9) ? "zok" : "kai");
+    for (var t2 = 0; t2 <= head9; t2++){
+      L.items[t2].g = gHead; L.items[t2].gBy = "anch";
+    }
+    did.push((gHead === "zok" ? "俗名" : "戒名") + " 1〜" + (head9 + 1) + " 字目（いちばん上" +
+             (koGot ? "／" + koGot + " があるので俗名"
+                    : ((isLow9 || hasMN9) ? "／下の段・命日のある列なので俗名"
+                                          : "／目印なしなので戒名")) + "）");
+  }
+  /* ⑥ 残った所は、下の列なら俗名とみる（上は戒名のまま） */
   L.items.forEach(function(it){
     if (it.g) return;
     it.g = (isLow9 || hasMN9) ? "zok" : "kai";
@@ -14420,11 +14553,13 @@ function rubGrpApply(L, hit, ch, isNum){
    手本合わせ（`rubAnchorGo`）は墨とフォントを見くらべて `hit` を作るが、
    こちらは **すでに読めている字**をそのまま当てはめるだけ。 */
 function rubGrpHits(L){
-  var hit = { mh:-1, mt:-1, nh:-1, nt:-1, mm:-1, zh:-1, kt:-1 }, chh = {}, isNum = {};
+  var hit = { mh:-1, mt:-1, nh:-1, nt:-1, mm:-1, zh:-1, kt:-1 };
+  var chh = {}, isNum = {}, chs = {};
   var n = (L.items || []).length;
   (L.items || []).forEach(function(it, i){
     var c = (it.pick || (it.anch && it.anch.ch) || "").charAt(0);
     if (!c) return;
+    chs[i] = c;
     if (RUBANCH.num.indexOf(c) >= 0) isNum[i] = true;
     if (RUBANCH.mHead.indexOf(c) >= 0 && hit.mh < 0){ hit.mh = i; chh.mh = c; }
     if (RUBANCH.mTail.indexOf(c) >= 0 && (i > n * 0.3 || n <= 8)){ hit.mt = i; chh.mt = c; }
@@ -14434,7 +14569,7 @@ function rubGrpHits(L){
     if (RUBANCH.zHead.indexOf(c) >= 0 && hit.zh < 0){ hit.zh = i; chh.zh = c; }
     if (RUBANCH.kTail.indexOf(c) >= 0){ hit.kt = i; chh.kt = c; }
   });
-  return { hit: hit, ch: chh, isNum: isNum };
+  return { hit: hit, ch: chh, isNum: isNum, chs: chs };
 }
 /* ───── **読みから まとまりを付け直す**（v35.9。本人の指示
    「AI の読みの場合グループ分けが出来ないようですができる様にしてほしい」）─────
@@ -14452,7 +14587,7 @@ function rubGrpFromRead(all, quiet){
       else if (it.g && !it.gBy) delete it.g;
     });
     var h = rubGrpHits(L);
-    var did = rubGrpApply(L, h.hit, h.ch, h.isNum);
+    var did = rubGrpApply(L, h.hit, h.ch, h.isNum, h.chs);
     if (did.length){ nHit++; rep.push((li + 1) + "列目 " + did.join("／")); }
   });
   persist();
@@ -14790,6 +14925,9 @@ async function rubAnchorGo(){
       if (!A || !A.map){ rep.push((li+1) + "列目＝墨が見つからない"); continue; }
       var keep = RUB.aiBand; RUB.aiBand = A;          /* `rubItemInk` はこれを見る */
       var hit = { mh: -1, mt: -1, nh: -1, nt: -1, mm: -1, zh: -1, kt: -1 }, ch = {}, isNum = {};
+      /* **1 字ずつ 何と読めたか**も控える（v36.2）。新しい決まり
+         （数字＋年月日／下から 2 番目が 信・大／いちばん上の 故）に要る。 */
+      var chsA = {};
       /* **見るのは はじめ・おわり・とびとびのまん中だけ**（v26.9）。
          1 字ごとにフォントぜんぶと見くらべるので、列ぜんぶを見ると重い
          （実測：40 字まで見て 7 列で 14.9 秒）。
@@ -14866,6 +15004,10 @@ async function rubAnchorGo(){
         var a6 = _anchHit(cd, RUBANCH.zHead);    /* 俗・名 */
         var a7 = _anchHit(cd, RUBANCH.kTail);    /* 士・姉・女（戒名のおわり） */
         if (_anchHit(cd, RUBANCH.num)) isNum[i] = 1;      /* 数字らしい字（v27.0） */
+        /* 目印の字に当たっていれば それ、無ければ 読めた字（v36.2） */
+        chsA[i] = a1 || a2 || a3 || a4 || a5 || a6 || a7 ||
+                  _anchHit(cd, RUBANCH.kTail2) ||
+                  ((L.items[i].anch && L.items[i].anch.ch) || "");
         if (how === "fnt"){
           var hitCh = _anchHit(cd, allAnch);
           if (hitCh) L.items[i].anch = { ch: hitCh, by: "fnt" };
@@ -14888,7 +15030,7 @@ async function rubAnchorGo(){
         if (a7){ hit.kt = i; ch.kt = a7; }
       }
       RUB.aiBand = keep;
-      var did = rubGrpApply(L, hit, ch, isNum);
+      var did = rubGrpApply(L, hit, ch, isNum, chsA);
       /* **読めた字を並べて出す**（v31.1）。印の無い字＝登録する字。 */
       var rdCh = [], rdN = 0;
       L.items.forEach(function(it, i3){

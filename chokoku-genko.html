@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.3";
+var APP_VER = "v36.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -13585,10 +13585,12 @@ var RUBGRPR = {
   kaitail: "②' 士・姉・女（または下から2番目の信・大）から上",
   zok:     "③' 俗・名・故から下",
   nenaft:  "③ 命日のあとの数字",
-  headko:  "⑤ いちばん上（故・俗・名があるので俗名）",
-  headlow: "⑤ いちばん上（下の段・命日のある列なので俗名）",
-  headkai: "⑤ いちばん上（目印なしなので戒名）",
-  rest:    "⑥ 残り（下の段・命日のある列なら俗名／ほかは戒名）",
+  headko:  "⑤ 故・俗・名があるので俗名",
+  widkai:  "⑤ 字幅が大きいので戒名",
+  widzok:  "⑤ 字幅が小さいので俗名",
+  headlow: "（古い版）下の段・命日のある列なので俗名",
+  headkai: "（古い版）目印なしなので戒名",
+  rest:    "（古い版）残り",
   hand:    "人が手で付けた"
 };
 function rubGrpRuleNm(r){ return RUBGRPR[r] || (r || "—"); }
@@ -14581,40 +14583,71 @@ function rubGrpApply(L, hit, ch, isNum, chs){
       });
     });
   })();
-  var ct9 = S.rub.colsTop, yC9 = (ct9 && ct9.geo === rubGeoKey()) ? num(ct9.yCut, 0) : 0;
-  var isLow9 = (yC9 > 0 && num(L.band && L.band.T, 0) >= yC9 - 10);
-  /* **命日や年齢のある列は、戒名の列ではない**（v30.9）。
-     余った字を「戒名」にすると、命日の列ぜんぶが戒名色になる。 */
-  var hasMN9 = L.items.some(function(it){ return it.g === "mei" || it.g === "nen"; });
-  /* ───── ⑤ **いちばん上のまとまりは、故があれば俗名・無ければ戒名**
-     （v36.2。本人の決め「一番上の位置のまとまりは、故があれば俗名、
-     無ければ戒名の可能性が高い」）─────
-     いちばん上に残っている白紙の並びだけ、別に決める。
-     「故 ○○」は 俗名（生前の名）、目印が無ければ 戒名。 */
-  var head9 = -1;
-  for (var t0 = 0; t0 < L.items.length; t0++){
-    if (L.items[t0].g) break;
-    head9 = t0;
+  /* ───── ⑤ **まだ決まっていない所は、目印と「字幅」で 戒名／俗名に分ける**
+     （v36.4。本人の訂正
+       「（下の段・命日のある列は俗名）は間違い。命日の年号が分かっていないのでは。
+         文字幅が違うものと同じまとまりグループにはならないので、
+         確定しない部分、戒名と俗名を切り分けることが出来るのでは」）─────
+     **前のやり方は やめた**。「下の段だから俗名」「命日のある列だから俗名」は、
+     ほんとうは **命日の年号が読めていないだけ**のことがあり、
+     戒名を俗名に塗ってしまっていた。
+
+     代わりに **字幅**で決める。ひとつのまとまりに 大きさのちがう字は入らない。
+       ・戒名 … 大きい字（［戒名の字幅］の設定に近い）
+       ・俗名 … それより小さい字
+     命日・年齢が読めていれば、その字幅を「小さい方」の見本にする
+     （読めていなければ 戒名の字幅の半分）。
+     白紙の並びの中でも、大きい所と小さい所があれば **そこで切り分ける**。 */
+  var wKai9 = rubKmWmm() || 30, smW9 = [];
+  L.items.forEach(function(it){
+    if (it.g !== "mei" && it.g !== "nen") return;
+    var w7 = Math.max(num(it.wMm, 0), num(it.hMm, 0));
+    if (w7 > 0) smW9.push(w7);
+  });
+  var wZok9 = smW9.length ? _med(smW9) : 0;
+  if (!(wZok9 > 0) || wZok9 >= wKai9 * 0.95) wZok9 = wKai9 * 0.5;
+  function byWid9(it){
+    var w7 = Math.max(num(it.wMm, 0), num(it.hMm, 0));
+    if (!(w7 > 0)) return "kai";                 /* 測れなければ 戒名のまま */
+    return (Math.abs(w7 - wKai9) <= Math.abs(w7 - wZok9)) ? "kai" : "zok";
   }
-  if (head9 >= 0){
-    var koGot = "";
-    for (var t1 = 0; t1 <= head9; t1++){
-      var cH = (chs[t1] || "").charAt(0);
-      if (cH && "故俗名".indexOf(cH) >= 0){ koGot = cH; break; }
+  /* 白紙の並びを ひとかたまりずつ */
+  var rest9 = [], cur9 = null;
+  L.items.forEach(function(it, i){
+    if (it.g){ cur9 = null; return; }
+    if (!cur9){ cur9 = { a: i, b: i }; rest9.push(cur9); }
+    else cur9.b = i;
+  });
+  rest9.forEach(function(r){
+    var ko = "", i5;
+    for (i5 = r.a; i5 <= r.b; i5++){
+      var c5 = (chs[i5] || "").charAt(0);
+      if (c5 && RUBANCH.zHead.indexOf(c5) >= 0){ ko = c5; break; }
     }
-    var gHead = koGot ? "zok" : ((isLow9 || hasMN9) ? "zok" : "kai");
-    gR9 = koGot ? "headko" : ((isLow9 || hasMN9) ? "headlow" : "headkai");
-    for (var t2 = 0; t2 <= head9; t2++) put9(t2, gHead);
-    did.push((gHead === "zok" ? "俗名" : "戒名") + " 1〜" + (head9 + 1) + " 字目（いちばん上" +
-             (koGot ? "／" + koGot + " があるので俗名"
-                    : ((isLow9 || hasMN9) ? "／下の段・命日のある列なので俗名"
-                                          : "／目印なしなので戒名")) + "）");
-  }
-  /* ⑥ 残った所は、下の列なら俗名とみる（上は戒名のまま） */
-  gR9 = "rest";
-  L.items.forEach(function(it, i6){
-    if (it.g) return;
-    put9(i6, (isLow9 || hasMN9) ? "zok" : "kai");
+    /* 故・俗・名 があれば、その並びは 俗名 */
+    if (ko){
+      gR9 = "headko";
+      for (i5 = r.a; i5 <= r.b; i5++) put9(i5, "zok");
+      did.push("俗名 " + (r.a + 1) + "〜" + (r.b + 1) + " 字目（" + ko + " があるので俗名）");
+      return;
+    }
+    /* 無ければ 字幅で 1 字ずつ decide。1 字だけの島は ならす */
+    var dec = [];
+    for (i5 = r.a; i5 <= r.b; i5++) dec.push(byWid9(L.items[i5]));
+    for (var k5 = 1; k5 + 1 < dec.length; k5++)
+      if (dec[k5] !== dec[k5-1] && dec[k5-1] === dec[k5+1]) dec[k5] = dec[k5-1];
+    var nK5 = 0, nZ5 = 0;
+    for (i5 = r.a; i5 <= r.b; i5++){
+      var d5 = dec[i5 - r.a];
+      gR9 = (d5 === "kai") ? "widkai" : "widzok";
+      put9(i5, d5);
+      if (d5 === "kai") nK5++; else nZ5++;
+    }
+    did.push((r.a + 1) + "〜" + (r.b + 1) + " 字目は 字幅で分けた（" +
+             (nK5 ? "戒名 " + nK5 + " 字" : "") + (nK5 && nZ5 ? "／" : "") +
+             (nZ5 ? "俗名 " + nZ5 + " 字" : "") +
+             "。目安 戒名 " + wKai9.toFixed(1) + "mm・俗名 " + wZok9.toFixed(1) + "mm" +
+             (smW9.length ? "＝命日や年齢の字幅" : "＝戒名の半分") + "）");
   });
   return did;
 }
@@ -15116,7 +15149,15 @@ async function rubAnchorGo(){
       var rdTx = "読めた字 " + rdN + " / " + L.items.length +
                  (rdCh.length ? "（" + rdCh.join("・") + "）" : "");
       if (did.length){ nHit++; rep.push((li+1) + "列目 " + did.join("／") + "／" + rdTx); }
-      else rep.push((li+1) + "列目 手本は見つからず（" + (isLow9 ? "俗名" : "戒名") + "のまま）／" + rdTx);
+      /* **`isLow9` は `rubGrpApply` の中の変数**（v35.9 で外へ出したときの置き去り。
+         ここで読むと止まる）。まとまりの結果から言い直す（v36.4）。 */
+      else {
+        var g8 = {};
+        L.items.forEach(function(it){ if (it.g) g8[it.g] = (g8[it.g] || 0) + 1; });
+        var t8 = Object.keys(g8).map(function(k8){
+          var o8 = rubGrpOf(k8); return (o8 ? o8.nm : k8) + " " + g8[k8] + " 字"; }).join("・");
+        rep.push((li+1) + "列目 手本は見つからず（" + (t8 || "まとまりなし") + "）／" + rdTx);
+      }
     }
   } catch(e){
     aiProgOff();

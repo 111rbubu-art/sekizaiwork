@@ -670,12 +670,34 @@ async def line(
     if ink_image is not None:
         open(os.path.join(d, "ink.png"), "wb").write(await ink_image.read())
     bx = _line_boxes(boxes)
+    # ───── **画面で入れた読みは、枠を登録し直しても消さない**（2026-09-22）─────
+    # 拓本AI の画面（［覚えたもの］→ ✎ 読み）で入れた `ch` は、アプリ側には無い。
+    # 同じ名前で枠を送り直すと、そのまま上書きされて **読みだけが消えて**いた。
+    # 送られてきた枠に読みが無いときだけ、**同じ場所にある前の枠**の読みを引き継ぐ。
+    if replaced:
+        prev = (_read_json(os.path.join(d, "meta.json"), {}) or {}).get("boxes") or []
+        for b in bx:
+            if b.get("ch"):
+                continue
+            cy, lim = b["y"] + b["h"] / 2, max(4.0, b["h"] * 0.5)
+            for o in prev:
+                if not o.get("ch"):
+                    continue
+                try:
+                    oc = float(o["y"]) + float(o["h"]) / 2
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if abs(oc - cy) <= lim:
+                    b["ch"] = o["ch"]
+                    break
     meta = {
         "key": name,
         "at": datetime.now().isoformat(timespec="seconds"),
         "n": len(bx),
         "boxes": bx,
-        "chars": char_line[:120],
+        # 読みは **枠から組み立てる**（2026-09-22）。上の引き継ぎで枠に読みが
+        # 戻ることがあるので、送られてきた char_line のままだと食いちがう。
+        "chars": ("".join((b.get("ch") or "□") for b in bx) if bx else char_line)[:120],
         "mmPerPx": round(float(mm_per_px or 0), 6),
         "note": note[:200],
     }
@@ -754,6 +776,54 @@ def line_one(pid: str):
         return JSONResponse({"error": "no_meta"}, status_code=404)
     m["ink"] = os.path.exists(os.path.join(d, "ink.png"))
     return m
+
+
+@app.post("/api/takuhon/line/{pid}/chars")
+def line_chars(pid: str, chars: str = Form("")):
+    """その列の**読み**を、あとから入れる（2026-09-22。本人の指示
+    「枠用で学習登録した物に、あとから文字の判別登録を行うことはできますか」
+    →「拓本AI の画面で、登録できるようにお願いします」）。
+
+    枠（`boxes`）はさわらない。**`ch` だけ**を入れかえる。
+    だから枠の学習（train_box.py）に出した材料は そのまま使え、
+    読みの入った枠は 読みの学習（train_char.py）にも入るようになる。
+
+    chars … 枠と同じ数だけ並べた字。JSON の配列でも、字を並べただけでもよい。
+            空ける所は「□」か 空白（その枠の読みは消える）。
+    """
+    d = _line_dir(pid)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    f = os.path.join(d, "meta.json")
+    m = _read_json(f, None)
+    if m is None:
+        return JSONResponse({"error": "no_meta"}, status_code=404)
+    arr = None
+    t = (chars or "").strip()
+    if t.startswith("["):
+        try:
+            v = json.loads(t)
+            if isinstance(v, list):
+                arr = [str(x or "") for x in v]
+        except ValueError:
+            arr = None
+    if arr is None:
+        arr = list(chars or "")
+    bx = m.get("boxes") or []
+    n = 0
+    for i, b in enumerate(bx):
+        c = (arr[i] if i < len(arr) else "").strip()
+        if c in ("", "□", "　"):
+            b.pop("ch", None)
+        else:
+            b["ch"] = c[0]
+            n += 1
+    m["boxes"] = bx
+    m["chars"] = "".join((b.get("ch") or "□") for b in bx)
+    m["charsAt"] = datetime.now().isoformat(timespec="seconds")
+    with open(f, "w", encoding="utf-8") as fp:
+        json.dump(m, fp, ensure_ascii=False, indent=1)
+    return {"status": "ok", "id": pid, "n": len(bx), "read": n, "chars": m["chars"]}
 
 
 @app.post("/api/takuhon/line/{pid}/off")

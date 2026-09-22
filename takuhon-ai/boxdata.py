@@ -139,7 +139,12 @@ def zoom(it, f):
     return {"raw": raw, "ink": ink, "boxes": boxes, "dir": it["dir"], "W": W, "H": raw.shape[0]}
 
 
-def window(it, win=WIN_H, rng=None, train=True, zoom_lo=0.55, zoom_hi=1.05):
+def window(it, win=WIN_H, rng=None, train=True, zoom_lo=0.45, zoom_hi=1.25):
+    """（2026-09-22）**縮め方の幅を広げた**。実測で、登録した列は
+    「字の幅 ÷ 切り抜きの幅」が 0.43〜0.64 とばらついていた
+    （長い列は 戒名と命日で字の幅が違い、切り抜きは その union になるため）。
+    描かせるときの切り抜き（帯＋12%）とも食いちがうので、
+    そのぶん ここで見せておく。"""
     """たての窓を 1 つ切り出して、入力と正解にする。"""
     r = rng or random
     if train:

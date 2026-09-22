@@ -107,7 +107,9 @@ def one(d):
         ik = np.asarray(Image.open(ip).convert("L"), dtype=np.float32) / 255.0
         r["ink"] = round(float((ik > 0.5).mean()) * 100, 1)
         if r["ink"] < 1:
-            r["warn"].append("墨がほとんどありません（%.1f%%）" % r["ink"])
+            r["bad"].append("墨が空です（%.1f%%）。彫刻原稿 v35.3 より前に登録した列は "
+                            "墨が入っていません（青い墨を白黒に直せていなかった）。"
+                            "登録し直してください" % r["ink"])
         if r["ink"] > 80:
             r["warn"].append("墨が多すぎます（%.1f%%）" % r["ink"])
     else:

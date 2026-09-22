@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.4";
+var APP_VER = "v36.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14651,6 +14651,53 @@ function rubGrpApply(L, hit, ch, isNum, chs){
   });
   return did;
 }
+/* ───── **命日のそばの「士」は、十の読みちがい**（v36.5。本人の決め）─────
+   「士」と「十」は拓本でよく取りちがえる。戒名のおわり（居士・信士）の 士 と、
+   命日の 十（三十日・八十二才）の見分けは **まわりの字**で付く。
+
+     ・年号（令・平・昭・大・明・治）の **1〜2 字下**の 士 → 十
+     ・年 または 月 の **上 2 字以内・下 2 字以内**の 士 → 十
+     ・日 の **上 2 字以内**の 士 → 十
+
+   直すのは **読みそのもの**（`anch.ch`）。こうしておかないと、
+   ②'（士・姉・女＝戒名のおわり）が命日の中で当たって、命日が戒名に塗られる。
+   **人が手で決めた読み（`pick` / `anch.hand`）は さわらない。** */
+function rubShiFix(L, chs, isNum, hit, ch){
+  var out = [], n = (L.items || []).length, i, d;
+  function at(k){ return (chs[k] || "").charAt(0); }
+  function isEra(c){ return !!c && RUBANCH.mHead.indexOf(c) >= 0; }
+  for (i = 0; i < n; i++){
+    if (at(i) !== "士") continue;
+    var it = L.items[i];
+    if (!it) continue;
+    if (it.pick || (it.anch && it.anch.hand)) continue;     /* 人が決めた読みは そのまま */
+    var why = "";
+    for (d = 1; d <= 2 && !why; d++)                        /* ① 年号の 1〜2 字下 */
+      if (isEra(at(i - d))) why = at(i - d) + "（年号）の " + d + " 字下";
+    for (d = 1; d <= 2 && !why; d++){                       /* ② 年・月 の上下 2 字以内 */
+      if (at(i - d) === "年" || at(i - d) === "月") why = at(i - d) + " の " + d + " 字下";
+      else if (at(i + d) === "年" || at(i + d) === "月") why = at(i + d) + " の " + d + " 字上";
+    }
+    for (d = 1; d <= 2 && !why; d++)                        /* ③ 日 の上 2 字以内 */
+      if (at(i + d) === "日") why = "日 の " + d + " 字上";
+    if (!why) continue;
+    chs[i] = "十";
+    if (isNum) isNum[i] = 1;
+    if (it.anch) { it.anch.ch = "十"; it.anch.fix = "士→十"; }
+    else it.anch = { ch: "十", by: "rule", fix: "士→十" };
+    out.push((i + 1) + " 字目 士 → 十（" + why + "）");
+  }
+  if (!out.length) return out;
+  /* **戒名のおわりを拾い直す**。直した 士 を「戒名のおわり」にしてはいけない。 */
+  if (hit){
+    hit.kt = -1; if (ch) delete ch.kt;
+    for (i = 0; i < n; i++){
+      var c2 = at(i);
+      if (c2 && RUBANCH.kTail.indexOf(c2) >= 0){ hit.kt = i; if (ch) ch.kt = c2; }
+    }
+  }
+  return out;
+}
 /* ───── **いま付いている読みから、当たりどころを拾う**（v35.9）─────
    ［🤖 AI に読ませる］や、人が手で決めた読み（`pick` / `anch.ch`）を使う。
    手本合わせ（`rubAnchorGo`）は墨とフォントを見くらべて `hit` を作るが、
@@ -14690,9 +14737,11 @@ function rubGrpFromRead(all, quiet){
       else if (it.g && !it.gBy) { delete it.g; delete it.gR; }
     });
     var h = rubGrpHits(L);
+    /* **命日のそばの 士 を 十 に直してから**まとまりを決める（v36.5） */
+    var fx = rubShiFix(L, h.chs, h.isNum, h.hit, h.ch);
     var did = rubGrpApply(L, h.hit, h.ch, h.isNum, h.chs);
     /* **なぜそうなったかを控える**（v36.3。右わきの窓に出す） */
-    L.grpWhy = did.slice();
+    L.grpWhy = fx.concat(did);
     L.grpAt = new Date().toLocaleString("ja-JP");
     L.grpFrom = "読み";
     if (did.length){ nHit++; rep.push((li + 1) + "列目 " + did.join("／")); }
@@ -15137,8 +15186,10 @@ async function rubAnchorGo(){
         if (a7){ hit.kt = i; ch.kt = a7; }
       }
       RUB.aiBand = keep;
+      var fxA = rubShiFix(L, chsA, isNum, hit, ch);
       var did = rubGrpApply(L, hit, ch, isNum, chsA);
-      L.grpWhy = did.slice();
+      L.grpWhy = fxA.concat(did);
+      if (fxA.length) did = fxA.concat(did);
       L.grpAt = new Date().toLocaleString("ja-JP");
       L.grpFrom = "手本合わせ";
       /* **読めた字を並べて出す**（v31.1）。印の無い字＝登録する字。 */

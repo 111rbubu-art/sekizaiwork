@@ -826,6 +826,37 @@ def line_chars(pid: str, chars: str = Form("")):
     return {"status": "ok", "id": pid, "n": len(bx), "read": n, "chars": m["chars"]}
 
 
+@app.post("/api/takuhon/line/{pid}/boxes")
+def line_setboxes(pid: str, boxes: str = Form("")):
+    """その列の**枠**を入れかえる（2026-09-22。本人の問い
+    「文字を登録していて、枠の間違いを発見したのですが修正できますか」）。
+
+    絵（raw.png・ink.png）はそのまま。`boxes` だけを入れかえる。
+    読み（`ch`）は枠にぶら下がっているので、**送る側が一緒に持ってくる**こと。
+    """
+    d = _line_dir(pid)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    f = os.path.join(d, "meta.json")
+    m = _read_json(f, None)
+    if m is None:
+        return JSONResponse({"error": "no_meta"}, status_code=404)
+    bx = _line_boxes(boxes)
+    if not bx:
+        return JSONResponse({"error": "no_boxes",
+                             "detail": "枠が 1 つもありません（列ごと消すなら DELETE を）"},
+                            status_code=400)
+    bx.sort(key=lambda b: b["y"] + b["h"] / 2)        # かならず上から順に
+    m["boxes"] = bx
+    m["n"] = len(bx)
+    m["chars"] = "".join((b.get("ch") or "□") for b in bx)[:120]
+    m["boxesAt"] = datetime.now().isoformat(timespec="seconds")
+    with open(f, "w", encoding="utf-8") as fp:
+        json.dump(m, fp, ensure_ascii=False, indent=1)
+    return {"status": "ok", "id": pid, "n": len(bx),
+            "read": sum(1 for b in bx if b.get("ch")), "chars": m["chars"]}
+
+
 @app.post("/api/takuhon/line/{pid}/off")
 def line_off(pid: str, off: bool = Form(True)):
     """その列を **学習に使わない**（または使う）。消さずに外せる（2026-09-21）。

@@ -2345,7 +2345,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v35.3";
+var APP_VER = "v35.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14208,16 +14208,42 @@ async function rubAllAnalyze(){
   var step = [];
   /* ① 構成。**調べ直したのか、前のままなのかを はっきり出す**（v33.6。本人の指示
      「［拓本を解析］に［列を調べ直す］この機能は入っていましたか？」） */
-  var did9 = false;
+  var did9 = false, by9 = "";
   try {
     if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey()){
-      msg("① 列の構成を調べています…", false, true);
-      await uiTick();
-      await rubColsScanTop(false);
+      /* **まず AI に列を調べさせる**（v35.4。本人の指示
+         「拓本を解析で、AI による列の調査に変更してください」）。
+         枠の AI が入っていない／見つけられないときだけ、いままでの計算に戻す。 */
+      var okAi = false;
+      try {
+        var bm9 = null;
+        try {
+          var r9 = await fetch(takuApiBase() + "/api/takuhon/status");
+          if (r9.ok) bm9 = ((await r9.json()).box || {}).model || null;
+        } catch(e9){}
+        if (bm9 && bm9.loaded){
+          msg("① AI で列を調べています…", false, true);
+          await uiTick();
+          await rubColsAi(true);
+          okAi = true; by9 = "AI";
+        }
+      } catch(e9b){
+        msg("AI では列を調べられませんでした（" + ((e9b && e9b.message) || "") +
+            "）。計算で調べます。", false, true);
+      }
+      if (!okAi){
+        msg("① 列の構成を調べています…", false, true);
+        await uiTick();
+        await rubColsScanTop(false);
+        by9 = "計算";
+      }
       did9 = true;
+    } else {
+      by9 = (S.rub.colsTop.by === "ai") ? "AI" : "計算";
     }
     var mn = rubColMenu();
-    step.push((did9 ? "列を調べました" : "列は前のまま") + "：上 " + mn.ups.length + " 列" +
+    step.push((did9 ? "列を調べました（" + by9 + "）" : "列は前のまま（" + by9 + "）") +
+              "：上 " + mn.ups.length + " 列" +
               (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
   } catch(e){ step.push("列：調べられませんでした"); }
   /* ② 枠 */
@@ -19095,9 +19121,12 @@ function rubPanel(){
 
     /* ── 4a 列 ── */
     h += '<p class="hint" style="margin:8px 0 2px;"><b>4a 列</b></p>';
+    h += '<button class="mini primary" id="btnColsAi" ' +
+      'title="枠の AI に字を見つけさせ、その中心の横位置から列を決めます' +
+      '（かすれ・行間の詰まりに強い）">🤖 AI で列を調べる</button> ';
     h += '<button class="mini' + (ct ? '' : ' primary') + '" id="btnColsStudy" ' +
       'title="上の行で列を見つけ、そのまま下で 2 列に分かれていないか、どこから分かれるかまで調べます">' +
-      '列を調べ直す</button>';
+      '列を調べ直す（計算）</button>';
     h += ' <span class="hint">列の数<input type="number" id="rColN" value="' +
       (num(S.rub.colN, 0) || "") + '" min="0" max="24" step="1" ' +
       'style="width:48px;margin-left:2px;" placeholder="自動" ' +
@@ -19110,7 +19139,8 @@ function rubPanel(){
       (ct ? (spN9
               ? '上 ' + (ct.topN || "?") + ' 列 → 下 ' + ct.cols.length + ' 列'
               : 'ぜんたい ' + ct.cols.length + ' 列') +
-            (ct.side ? '／字 ' + ct.side + 'px' : '')
+            (ct.side ? '／字 ' + ct.side + 'px' : '') +
+            (ct.by === "ai" ? '／<b style="color:#8A2BE2;">AI が調べた</b>' : '／計算で調べた')
           : 'まだ調べていません') + '</p>';
     /* 境目（1 列 → 2 列） */
     if (ct && ct.dir === "bot" && num(ct.yCut, 0) > 0){
@@ -19357,6 +19387,14 @@ function rubPanel(){
   if (rkw) rkw.onchange = function(){
     S.rub.kmW = Math.max(0, Math.min(200, parseInt(rkw.value, 10) || 0));
     persist(); rubPanel();
+  };
+  var bcai = $("btnColsAi");
+  if (bcai) bcai.onclick = async function(){
+    bcai.disabled = true; bcai.textContent = "調べています…";
+    try { await rubColsAi(); rubPanel(); rubRender(); }
+    catch(e){ msg("AI で列を調べられませんでした（" + ((e && e.message) || "") + "）。" +
+                  "［列を調べ直す（計算）］を試してください。", true); }
+    bcai.disabled = false; bcai.textContent = "🤖 AI で列を調べる";
   };
   var bstu = $("btnColsStudy"); if (bstu) bstu.onclick = function(){ rubColsStudy(true); };
   var bga = $("btnGrpAuto"); if (bga) bga.onclick = rubGrpAuto;
@@ -20869,6 +20907,139 @@ async function rubLineRegGo(all){
         (nSk ? "。" + nSk + " 列は［登録しない］なので飛ばしました" : "") + "。" +
         "切り抜き・字枠（読みがあれば読みも）を送っています。", !!ng, true);
   }
+}
+/* ───── 列を AI で調べる（v35.4。本人の指示
+   「拓本を解析で、AI による列の調査に変更してください」）─────
+   いままでの列さがしは「墨をたてに足して、空いた所で切る」計算だった。
+   かすれ・行間の詰まり・鉛筆の跡に弱い。
+   ここでは **枠の AI に字を見つけさせ、その中心の横位置をまとめて列にする**。
+
+   渡し方：拓本ぜんたいをそのまま渡すと、字が小さく写りすぎて当たらない
+   （枠の AI は「列 1 本ぶんの切り抜き」で学んでいる）。
+   そこで **字 1.3 個ぶんの幅の短ざく**を、半分ずつ重ねながら横に流す。 */
+async function rubColsAi(quiet){
+  var base = takuApiBase();
+  if (!base) throw new Error(takuAiOffNote());
+  var mpp = mmPerPx();
+  if (!mpp) throw new Error("先に較正してください（実測した文字全長）");
+  var side = _rubCharSide();
+  if (!side) throw new Error("字の大きさが分かりません");
+  var ar = rubArea();
+  var W = Math.max(1, ar.x2 - ar.x1);
+  var sw = Math.round(side * 1.3), step = Math.max(12, Math.round(side * 0.5));
+  var xs = [];
+  for (var x = ar.x1; x < ar.x2 - side * 0.35; x += step) xs.push(Math.min(x, ar.x2 - sw));
+  if (!xs.length) xs = [ar.x1];
+  if (xs.length > 40) {                      /* 多すぎるときは間引く（時間がかかりすぎる） */
+    var k = Math.ceil(xs.length / 40), xs2 = [];
+    for (var i2 = 0; i2 < xs.length; i2 += k) xs2.push(xs[i2]);
+    xs = xs2;
+  }
+  var url = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
+  var all = [];
+  for (var i = 0; i < xs.length; i++){
+    if (!quiet) msg("AI で列を調べています… " + (i+1) + " / " + xs.length, false, true);
+    var q = { x1: xs[i], x2: Math.min(ar.x2, xs[i] + sw), y1: ar.y1, y2: ar.y2 };
+    var got;
+    try { got = await rubBoxAiAsk(q); } catch(e){ continue; }
+    (got.boxes || []).forEach(function(b){
+      /* **大きさの歯止め**（v35.4）。まだ育っていないモデルは、
+         点のような枠を何百も出すことがある（実測：12px の枠を 502 個）。
+         字の見込み（較正・戒名の字幅）から外れたものは、はじめから採らない。 */
+      if (b.score < 0.4) return;
+      if (b.w < side * 0.45 || b.w > side * 2.2) return;
+      if (b.h < side * 0.35 || b.h > side * 2.6) return;
+      all.push(b);
+    });
+  }
+  if (all.length < 2) throw new Error("字を見つけられませんでした（" + all.length + " 個）");
+  /* 同じ字を何度も拾っているので、重なりで間引く（確からしさの高い方を残す） */
+  all.sort(function(a, b){ return b.score - a.score; });
+  var keep = [];
+  all.forEach(function(b){
+    for (var j = 0; j < keep.length; j++){
+      var k2 = keep[j];
+      var x1 = Math.max(b.x, k2.x), y1 = Math.max(b.y, k2.y);
+      var x2 = Math.min(b.x + b.w, k2.x + k2.w), y2 = Math.min(b.y + b.h, k2.y + k2.h);
+      if (x2 > x1 && y2 > y1){
+        var it = (x2 - x1) * (y2 - y1);
+        if (it > 0.3 * Math.min(b.w * b.h, k2.w * k2.h)) return;
+      }
+    }
+    keep.push(b);
+  });
+  /* 横の位置でまとめる（字 0.6 個ぶんより離れていたら 別の列） */
+  var cs = keep.map(function(b){ return { c: b.x + b.w/2, b: b }; })
+               .sort(function(a, b){ return a.c - b.c; });
+  var gap = Math.max(8, side * 0.6), runs = [], cur = [cs[0]];
+  for (var m = 1; m < cs.length; m++){
+    if (cs[m].c - cs[m-1].c > gap){ runs.push(cur); cur = []; }
+    cur.push(cs[m]);
+  }
+  runs.push(cur);
+  /* **広がりすぎた かたまりは、いちばん空いている所で割る**（v35.4）。
+     すき間だけで切ると、列と列のあいだに 1 つでも拾いまちがいがあると
+     2 列がつながってしまう（実測：3 列のうち 2 列がつながった）。
+     1 列の幅は 字 1.6 個ぶんまで、とみて割り直す。 */
+  function splitWide(run){
+    var a = run[0].c, b = run[run.length-1].c;
+    if (b - a <= side * 1.6 || run.length < 4) return [run];
+    var bi = -1, bg = 0;
+    for (var t = 1; t < run.length; t++){
+      var g2 = run[t].c - run[t-1].c;
+      if (g2 > bg){ bg = g2; bi = t; }
+    }
+    if (bi < 2 || run.length - bi < 2 || bg < side * 0.2) return [run];
+    return splitWide(run.slice(0, bi)).concat(splitWide(run.slice(bi)));
+  }
+  var runs2 = [];
+  runs.forEach(function(r){ runs2 = runs2.concat(splitWide(r)); });
+  runs = runs2;
+  /* 1〜2 字しかない列は、拾いまちがいとみて落とす */
+  var minN = (keep.length >= 12) ? 3 : 2;
+  runs = runs.filter(function(r){ return r.length >= minN; });
+  if (!runs.length) throw new Error("列にまとめられませんでした");
+  /* **範囲いっぱいの 1 列**は、たいてい拾いまちがい（字を細かく拾いすぎている）。
+     そのときは AI のせいにせず、計算の列さがしに任せる。 */
+  if (runs.length === 1){
+    var r1 = runs[0];
+    var a1 = Math.min.apply(null, r1.map(function(o){ return o.b.x; }));
+    var b1 = Math.max.apply(null, r1.map(function(o){ return o.b.x + o.b.w; }));
+    if ((b1 - a1) > W * 0.8 && W > side * 2.2)
+      throw new Error("字がばらけていて、列にまとめられませんでした");
+  }
+  var ws = keep.map(function(b){ return b.w; });
+  var sideUsed = Math.round(_med(ws)) || side;
+  var cols = runs.map(function(r){
+    var a = Math.min.apply(null, r.map(function(o){ return o.b.x; }));
+    var b2 = Math.max.apply(null, r.map(function(o){ return o.b.x + o.b.w; }));
+    /* 列の幅は 字 1 つぶんを下回らせない */
+    if (b2 - a < sideUsed * 0.8){
+      var c2 = (a + b2) / 2;
+      a = c2 - sideUsed * 0.5; b2 = c2 + sideUsed * 0.5;
+    }
+    return { a: Math.round(Math.max(ar.x1, a)), b: Math.round(Math.min(ar.x2, b2)),
+             n: r.length };
+  });
+  /* **となりと重ならないようにする**（v35.4）。重なったままだと、
+     列を選んだときの帯が よその列にかぶる。重なった分は まん中で分ける。 */
+  cols.sort(function(p1, p2){ return p1.a - p2.a; });
+  for (var z = 0; z + 1 < cols.length; z++){
+    if (cols[z].b > cols[z+1].a){
+      var mid = Math.round((cols[z].b + cols[z+1].a) / 2);
+      cols[z].b = mid; cols[z+1].a = mid;
+    }
+  }
+  S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
+                    rows: 0, how: "ai", by: "ai", side: sideUsed,
+                    dir: "top", y0: Math.round(ar.y1), y1: Math.round(ar.y2),
+                    chars: keep.length };
+  persist();
+  if (!quiet)
+    msg("AI が <b>" + cols.length + " 列</b>を見つけました（字 " + keep.length + " 個／" +
+        "1 字 " + Math.round(sideUsed) + "px＝" + (sideUsed * mpp).toFixed(1) + "mm）。" +
+        "ちがうときは［列を調べ直す］（計算で調べる）を押してください。", false, true);
+  return S.rub.colsTop;
 }
 /* ───── 枠を AI に描かせる（v34.1。本人の指示「今の枠が役に立たないので…AI にしよう」）─────
    いままでの枠は「AI の墨のすき間」を こちらで切ったもの。

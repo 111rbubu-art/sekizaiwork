@@ -2345,7 +2345,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v35.6";
+var APP_VER = "v35.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -21142,8 +21142,10 @@ async function rubBoxAiAsk(q){
   if (!cut) throw new Error("切り抜けませんでした（帯が小さすぎます）");
   var fd = new FormData();
   fd.append("file", await cvBlob2(cut.cv), "line.png");
-  /* すでに読んである墨があれば、それを渡す（サーバーで通し直さずに済む） */
-  var url = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
+  /* すでに読んである墨があれば、それを渡す（サーバーで通し直さずに済む）。
+     **その列の墨を使う**（v35.7）。`RUB.aiBand` は最後に通した帯のものなので、
+     列ごとに縁取りしている拓本では よその列の墨を渡してしまう。 */
+  var url = rubInkUrlAt(q);
   var ink = url ? await rubInkCutCv(url, cut) : null;
   if (ink) fd.append("ink", await cvBlob2(ink), "ink.png");
   var r = await fetch(base + "/api/takuhon/boxes", { method: "POST", body: fd });
@@ -21159,6 +21161,34 @@ async function rubBoxAiAsk(q){
   });
   return { boxes: bx, model: j.model || {}, ms: j.ms || 0, cut: cut,
            ink: j.ink || "", inkPct: j.inkPct, sentInk: !!ink };
+}
+/* ───── **その列の墨は、その列のものを引き継ぐ**（v35.7。本人の報告
+   「枠を AI で作るを 2 回以上押すと 文字の墨が消えてしまいます」）─────
+   `RUB.aiBand` は **最後に通した帯の墨**しか持っていない。
+   列ごとに［AI 縁取りを実行］している拓本では、
+   枠を作り直すたびに **どの列にも「最後の列の墨」**を貼ってしまい、
+   ほかの列の墨が画面から消えていた（絵は列ごとの `L.aiUrl` を重ねて出している）。
+   そこで、**前からその帯にある列が墨を持っていれば、それを引き継ぐ**。 */
+/* その帯の墨（青い絵）の在りか。前からある列のものを先に見る（v35.7） */
+function rubInkUrlAt(q){
+  var prev = rubLineAtBand({ L: q.x1, R: q.x2, T: q.y1, B: q.y2 });
+  if (prev && prev.aiUrl && (!prev.geo || prev.geo === rubGeoKey())) return prev.aiUrl;
+  return (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
+}
+function rubKeepInk(m2, q){
+  var prev = rubLineAtBand({ L: q.x1, R: q.x2, T: q.y1, B: q.y2 });
+  if (prev && prev.aiUrl && (!prev.geo || prev.geo === rubGeoKey())){
+    m2.aiUrl = prev.aiUrl;
+    m2.aiSc = num(prev.aiSc, 0) || m2.aiSc || 0;
+    m2.aiId = num(prev.aiId, 0) || m2.aiId || 0;
+    return true;
+  }
+  /* 前の列が無いときは、いまの墨（帯ぜんたいを通したときは これでよい） */
+  var ab = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey()) ? RUB.aiBand : null;
+  m2.aiUrl = (ab && ab.url) || "";
+  m2.aiSc = (ab && ab.sc) || 0;
+  m2.aiId = (ab && ab.id) || 0;
+  return false;
 }
 /* **列の並びを 1 本ずつ通す**（v35.6）。AI・計算のどちらでも同じ道を通る。
    本人の話「基本的に 1 行のみの枠付けをすることは無い」ので、
@@ -21240,7 +21270,7 @@ async function rubBoxAiAll(){
     S.rub.bandL = it.c.a; S.rub.bandR = it.c.b;
     A = null; RUB.mask = null;
     /* 列ごとの墨があるかを数える（無い列が多いと、当たりが落ちる） */
-    if (!(RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url)) inkNo++;
+    if (!rubInkUrlAt(rubBandQ())) inkNo++;
     var m2 = null, err = "";
     try { m2 = await rubBoxAiGo(true); } catch(e){ err = (e && e.message) || "通せませんでした"; }
     if (m2){ ok++; nCh += m2.n; }
@@ -21272,7 +21302,7 @@ async function rubBoxAiGo(quiet){
      「枠の AI は墨を見ていないのでしょうか？ 墨を見たほうが精度が上がりませんか？」）。
      枠の AI は「拓本＋墨」の 2 枚で学んでいる。アプリの墨（1 字ずつの窓で通したもの）が
      いちばん質がよい。無いと サーバーが細長い列をそのまま通して作るので、質が落ちる。 */
-  var haveInk = !!(RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url);
+  var haveInk = !!rubInkUrlAt(q);
   if (!haveInk && !quiet)
     msg("この列の AI の墨がありません。粗い墨で枠を描きます" +
         "（先に［AI 縁取りを実行］を押すと、当たりがよくなります）。", false, true);
@@ -21297,9 +21327,7 @@ async function rubBoxAiGo(quiet){
   m2.boxBy = "ai";                                   /* 枠は AI が描いた（v34.1） */
   m2.boxModel = got.model || {};
   m2.geo = rubGeoKey();
-  m2.aiId = (RUB.aiBand && RUB.aiBand.id) || 0;
-  m2.aiUrl = (RUB.aiBand && RUB.aiBand.url) || "";
-  m2.aiSc = (RUB.aiBand && RUB.aiBand.sc) || 0;
+  rubKeepInk(m2, q);            /* その列の墨を引き継ぐ（v35.7） */
   /* **1 字ずつにも「AI が描いた」印を付ける**（v35.1）。
      あとで手で動かすと `byHand` が付くので、色で見分けられる。 */
   m2.items.forEach(function(it, i){ it.score = items[i].score; it.by = "ai"; });

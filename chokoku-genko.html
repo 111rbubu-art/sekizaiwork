@@ -2345,7 +2345,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v35.4";
+var APP_VER = "v35.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -19230,6 +19230,9 @@ function rubPanel(){
       '（墨のすき間で切るのではなく、AI が字の中心を出します）。' +
       '先に［AI 縁取りを実行］で墨を出しておくと、当たりがよくなります">' +
       '🤖 AI に枠を描かせる</button>' +
+      '<button class="mini" id="btnBoxAiAll" ' +
+      'title="列の指定に出ている列を、上から順に ぜんぶ AI に描かせます">' +
+      '🤖 ぜんぶの列に描かせる</button>' +
       '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
       (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、この列の枠を作り直します（大きさ・字送り・太さ・傾きを測ります）">' +
@@ -19426,6 +19429,14 @@ function rubPanel(){
       msg("枠の AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
     }
     bba.disabled = false; bba.textContent = "🤖 AI に枠を描かせる";
+  };
+  var bbA = $("btnBoxAiAll");
+  if (bbA) bbA.onclick = async function(){
+    bbA.disabled = true; bbA.textContent = "描いています…";
+    try { await rubBoxAiAll(); } catch(e){
+      msg("枠の AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
+    }
+    bbA.disabled = false; bbA.textContent = "🤖 ぜんぶの列に描かせる";
   };
   var brv = $("btnRegView"); if (brv) brv.onclick = function(){ rubRegView("now"); };
   /* 直した列を 拓本AI へ（v33.8） */
@@ -21131,8 +21142,48 @@ async function rubBoxAiAsk(q){
   return { boxes: bx, model: j.model || {}, ms: j.ms || 0, cut: cut,
            ink: j.ink || "", inkPct: j.inkPct, sentInk: !!ink };
 }
+/* **ぜんぶの列に、続けて AI で枠を描かせる**（v35.5。本人の問い
+   「AI に枠を描かせる は 1 列ではある程度できるのですが、複数列まとめてはできないのですか」）。
+   列の指定（上＝戒名／下＝命日ほか）の並びを、そのまま 1 本ずつ通す。
+   途中で失敗しても止めず、最後にまとめて知らせる。 */
+async function rubBoxAiAll(){
+  var mn = rubColMenu();
+  var list = [];
+  mn.ups.forEach(function(c, i){ list.push({ c: c, kind: "上", i: i }); });
+  (mn.lows || []).forEach(function(c, i){ list.push({ c: c, kind: "下", i: i }); });
+  if (!list.length && RUB.cols && RUB.cols.length)
+    RUB.cols.forEach(function(c, i){ list.push({ c: c, kind: "", i: i }); });
+  if (!list.length){
+    msg("列が分かりません。先に［🤖 AI で列を調べる］か［列を調べ直す（計算）］を押してください。", true);
+    return;
+  }
+  if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
+  var keep = { L: S.rub.bandL, R: S.rub.bandR };
+  var ok = 0, ng = 0, nCh = 0, last = "", inkNo = 0;
+  for (var i = 0; i < list.length; i++){
+    var it = list[i];
+    msg("AI が枠を描いています… " + (i+1) + " / " + list.length +
+        "（" + it.kind + (it.i + 1) + " 本目）", false, true);
+    await uiTick();
+    S.rub.bandL = it.c.a; S.rub.bandR = it.c.b;
+    A = null; RUB.mask = null;
+    /* 列ごとの墨があるかを数える（無い列が多いと、当たりが落ちる） */
+    if (!(RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url)) inkNo++;
+    var m2 = null;
+    try { m2 = await rubBoxAiGo(true); } catch(e){ last = (e && e.message) || ""; }
+    if (m2){ ok++; nCh += m2.n; } else { ng++; }
+  }
+  S.rub.bandL = keep.L; S.rub.bandR = keep.R;
+  A = null; RUB.mask = null;
+  persist(); rubPanel(); rubRender();
+  msg("AI が <b>" + ok + " 列</b>に枠を描きました（あわせて " + nCh + " 字）" +
+      (ng ? "／" + ng + " 列は描けませんでした（" + esc(last) + "）" : "") +
+      (inkNo ? "／<b style=\"color:#B00020;\">" + inkNo + " 列は墨がありませんでした</b>" +
+               "（先に［AI 縁取りを実行］を押すと当たりが上がります）" : "") +
+      "。ちがう所は枠を直して、［⬆ この列の字枠を登録］で教えてください。", !!ng, true);
+}
 /* ［AI に枠を描かせる］。いま選んでいる帯（列）を通して、枠を入れかえる。 */
-async function rubBoxAiGo(){
+async function rubBoxAiGo(quiet){
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
   /* **学習したときと同じ切り方**にする（v34.1）。教材（rubLineShot）は
@@ -21146,13 +21197,17 @@ async function rubBoxAiGo(){
      枠の AI は「拓本＋墨」の 2 枚で学んでいる。アプリの墨（1 字ずつの窓で通したもの）が
      いちばん質がよい。無いと サーバーが細長い列をそのまま通して作るので、質が落ちる。 */
   var haveInk = !!(RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url);
-  if (!haveInk)
+  if (!haveInk && !quiet)
     msg("この列の AI の墨がありません。粗い墨で枠を描きます" +
         "（先に［AI 縁取りを実行］を押すと、当たりがよくなります）。", false, true);
   var got;
   try { got = await rubBoxAiAsk(q); }
-  catch(e){ msg("枠の AI に通せませんでした（" + ((e && e.message) || "") + "）。", true); return; }
+  catch(e){
+    if (quiet) throw e;
+    msg("枠の AI に通せませんでした（" + ((e && e.message) || "") + "）。", true); return;
+  }
   if (!got.boxes.length){
+    if (quiet) return null;
     msg("AI は字を 1 つも見つけられませんでした。範囲か、墨を確かめてください。", true); return;
   }
   /* 上から順に。数字（字送り・傾き）は いままでと同じ出し方 */
@@ -21173,7 +21228,9 @@ async function rubBoxAiGo(){
      あとで手で動かすと `byHand` が付くので、色で見分けられる。 */
   m2.items.forEach(function(it, i){ it.score = items[i].score; it.by = "ai"; });
   rubColPut(m2);
-  persist(); rubPanel(); rubRender();
+  persist();
+  if (quiet) return m2;                 /* まとめて回すときは、絵と知らせは最後に */
+  rubPanel(); rubRender();
   var inkTx = (got.ink === "sent") ? "この画面の墨を使いました"
             : (got.ink === "made") ? "<b style=\"color:#B00020;\">墨はサーバーで作った粗いもの</b>です" +
                                      "（先に［AI 縁取りを実行］を押すと精度が上がります）"

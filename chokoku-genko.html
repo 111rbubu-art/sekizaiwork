@@ -2345,7 +2345,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v35.7";
+var APP_VER = "v35.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -7714,7 +7714,16 @@ function sizeText(n){
    11. 拓本 — 読込・較正・解析
    ============================================================ */
 var RUB = { img:null, canvas:null, data:null, W:0, H:0, mask:null,
-            aiBand:null };   /* ［帯をAIに通す］の結果（v21.50）。絵の住所と覚え書き */
+            aiBand:null,     /* ［帯をAIに通す］の結果（v21.50）。絵の住所と覚え書き */
+            /* ───── **列ごとの墨の控え**（v35.8。本人の報告
+               「枠をAIにしろ、計算でも、複数列あったら、右側の行しか計算されず。
+                 枠の除去を行うと、左側の列の墨が消えます」）─────
+               墨は これまで **枠の列（`L.aiUrl`）にだけ**ぶら下がっていた。
+               だから枠を消すと 列ごと消えてしまい、`RUB.aiBand`（＝**最後に
+               通した帯 1 本ぶん**）しか残らない。画面からは左の列の墨が消え、
+               次に枠を作るときも 右の 1 列しか墨が無いので、そこしか作れない。
+               枠とは**別に**、帯ごとの墨をここで持つ。 */
+            inks:[] };
 /* 前回の続きの拓本。読み込みは済んでいるが、まだ画面には出していないもの。
    別の案件を受け取ったときに捨てられるよう、いったんここで持つ。 */
 var _pendingRubSrc = null;
@@ -7854,6 +7863,7 @@ async function rubAiOne(hit){
     RUB.aiBand = A; RUB.aiWhy = "";
     /* その列の控えも入れかえる（画面はこれを重ねて出している） */
     if (L){ L.aiUrl = A.url; L.aiSc = A.sc; L.aiId = A.id; L.geo = rubGeoKey(); }
+    rubInkPut((L && L.band) || { L: S.rub.bandL, R: S.rub.bandR, T: -1, B: -1 }, A);
     persist(); rubPanel(); rubRender();
     msg((hit.ci + 1) + " 列目の " + (hit.i + 1) + " 字目だけ AI に通しました（この枠の中の墨 " +
         n1 + " ます）。青が変わらないときは、AI がその字を読めていません。", false, true);
@@ -10846,6 +10856,9 @@ async function rubAiBand(noAsk, trusted){
     plan: { side: Math.round(side), cx0: Math.round(cx0),
             xs: xs.map(function(v){ return Math.round(v); }) }
   };
+  /* **この帯の墨を、控えにも入れておく**（v35.8）。
+     枠を消しても、ほかの列を通し直しても、この列の墨は残る。 */
+  rubInkPut({ L: q.x1, R: q.x2, T: q.y1, B: q.y2 }, RUB.aiBand);
   /* ───── **返ってきた絵から測った字の大きさを、次の窓に使う**（v29.7）───── */
   /* 拓本の字幅（既定 30mm）の 半分〜1.8 倍から外れた測りは採らない（v30.3） */
   function _chOut(wm){
@@ -18406,6 +18419,16 @@ function rubRender(){
     maskLayer += '<image href="' + L2.aiUrl + '" x="0" y="0" width="' + W +
       '" height="' + H + '" pointer-events="none"/>';
   });
+  /* **枠を消しても、列ごとの墨は出したまま**（v35.8。本人の報告
+     「枠の除去を行うと、左側の列の墨が消えます」）。
+     墨は枠の列（`L.aiUrl`）にだけぶら下がっていたので、枠を消すと
+     `RUB.aiBand`（＝最後に通した 1 本）しか残らなかった。 */
+  if (rubShowAi && Array.isArray(RUB.inks)) RUB.inks.forEach(function(k9){
+    if (!k9 || !k9.url || k9.geo !== rubGeoKey() || aiSeen[k9.url]) return;
+    aiSeen[k9.url] = 1;
+    maskLayer += '<image href="' + k9.url + '" x="0" y="0" width="' + W +
+      '" height="' + H + '" pointer-events="none"/>';
+  });
   if (rubShowAi && RUB.aiBand && RUB.aiBand.url && !aiSeen[RUB.aiBand.url])
     maskLayer += '<image href="' + RUB.aiBand.url + '" x="0" y="0" width="' + W +
       '" height="' + H + '" pointer-events="none"/>';
@@ -21169,10 +21192,71 @@ async function rubBoxAiAsk(q){
    枠を作り直すたびに **どの列にも「最後の列の墨」**を貼ってしまい、
    ほかの列の墨が画面から消えていた（絵は列ごとの `L.aiUrl` を重ねて出している）。
    そこで、**前からその帯にある列が墨を持っていれば、それを引き継ぐ**。 */
-/* その帯の墨（青い絵）の在りか。前からある列のものを先に見る（v35.7） */
+/* ───── **列ごとの墨の控え**（v35.8）─────
+   `RUB.inks` は「帯（L,R,T,B）ごとに 1 つ」の青い絵。
+   枠（`S.rub.lines`）を消しても残るので、墨は画面からも 次の枠作りからも消えない。 */
+function rubInkPut(band, A){
+  if (!band || !A || !A.url) return;
+  if (!Array.isArray(RUB.inks)) RUB.inks = [];
+  var L0 = num(band.L, 0), R0 = num(band.R, 0);
+  var T0 = num(band.T, -1), B0 = num(band.B, -1);
+  if (!(R0 - L0 > 4)) return;
+  var mid = (L0 + R0) / 2, w = Math.max(8, R0 - L0), gk = rubGeoKey(), at = -1;
+  RUB.inks.forEach(function(k, i){
+    if (!k || k.geo !== gk) return;
+    if (!(Math.abs((k.L + k.R) / 2 - mid) < w * 0.5)) return;
+    if (T0 >= 0 && num(k.B, -1) >= 0){
+      var ov = Math.min(B0, k.B) - Math.max(T0, k.T);
+      if (!(ov > 0 && ov > (B0 - T0) * 0.5)) return;      /* たてが別なら別の帯 */
+    }
+    at = i;
+  });
+  var e = { L: L0, R: R0, T: T0, B: B0, geo: gk,
+            url: A.url, sc: num(A.sc, 0), id: num(A.id, 0) };
+  if (at >= 0) RUB.inks[at] = e; else RUB.inks.push(e);
+  /* 重くならないよう、古いものから落とす（拓本 1 枚は多くても十数列） */
+  while (RUB.inks.length > 24) RUB.inks.shift();
+}
+/* いまの枠の列が持っている墨を、控えへ写しておく（枠を消す前に呼ぶ） */
+function rubInkSync(){
+  var gk = rubGeoKey();
+  (S.rub.lines || []).forEach(function(L){
+    if (!L || !L.aiUrl || !L.band) return;
+    if (L.geo && L.geo !== gk) return;
+    rubInkPut(L.band, { url: L.aiUrl, sc: num(L.aiSc, 0), id: num(L.aiId, 0) });
+  });
+}
+/* その帯にある控えの墨 */
+function rubInkFind(q){
+  if (!Array.isArray(RUB.inks) || !RUB.inks.length) return null;
+  var L0 = num(q.x1, num(q.L, 0)), R0 = num(q.x2, num(q.R, 0));
+  var T0 = num(q.y1, num(q.T, -1)), B0 = num(q.y2, num(q.B, -1));
+  var mid = (L0 + R0) / 2, w = Math.max(8, R0 - L0), gk = rubGeoKey(), hit = null;
+  RUB.inks.forEach(function(k){
+    if (!k || k.geo !== gk || !k.url) return;
+    if (!(Math.abs((k.L + k.R) / 2 - mid) < w * 0.5)) return;
+    if (T0 >= 0 && num(k.B, -1) >= 0){
+      var ov = Math.min(B0, k.B) - Math.max(T0, k.T);
+      if (!(ov > 0 && ov > (B0 - T0) * 0.5)) return;
+    }
+    hit = k;
+  });
+  return hit;
+}
+/* 墨が 1 つでもあるか（［計算で枠を作る］の下ごしらえ） */
+function rubInkAny(){
+  if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey()) return true;
+  if (Array.isArray(RUB.inks) && RUB.inks.some(function(k){
+        return k && k.url && k.geo === rubGeoKey(); })) return true;
+  return (S.rub.lines || []).some(function(L){
+    return L && L.aiUrl && (!L.geo || L.geo === rubGeoKey()); });
+}
+/* その帯の墨（青い絵）の在りか。前からある列 → 控え → いまの帯 の順に見る（v35.8） */
 function rubInkUrlAt(q){
   var prev = rubLineAtBand({ L: q.x1, R: q.x2, T: q.y1, B: q.y2 });
   if (prev && prev.aiUrl && (!prev.geo || prev.geo === rubGeoKey())) return prev.aiUrl;
+  var k = rubInkFind(q);
+  if (k) return k.url;
   return (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
 }
 function rubKeepInk(m2, q){
@@ -21183,7 +21267,13 @@ function rubKeepInk(m2, q){
     m2.aiId = num(prev.aiId, 0) || m2.aiId || 0;
     return true;
   }
-  /* 前の列が無いときは、いまの墨（帯ぜんたいを通したときは これでよい） */
+  /* **控えにあれば、その帯の墨**（v35.8。枠を消したあとでも残っている） */
+  var k = rubInkFind(q);
+  if (k){
+    m2.aiUrl = k.url; m2.aiSc = k.sc || m2.aiSc || 0; m2.aiId = k.id || m2.aiId || 0;
+    return true;
+  }
+  /* どちらも無いときは、いまの墨（帯ぜんたいを通したときは これでよい） */
   var ab = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey()) ? RUB.aiBand : null;
   m2.aiUrl = (ab && ab.url) || "";
   m2.aiSc = (ab && ab.sc) || 0;
@@ -21201,19 +21291,37 @@ function rubColList(){
     RUB.cols.forEach(function(c, i){ list.push({ c: c, kind: "", i: i }); });
   return list;
 }
+/* ───── **その列の墨を、見立てに使える形で出す**（v35.8。本人の報告
+   「枠をAIにしろ、計算でも、複数列あったら、右側の行しか計算されず」）─────
+   `rubLineTakeAi`（計算）は `RUB.aiBand.map`＝**最後に通した帯 1 本ぶん**しか見ない。
+   複数列ある拓本では、ほかの列の場所には墨が無いので 0 字になり、
+   結果として **最後に通した列（右の 1 本）だけ**枠が付いていた。
+   列ごとの青い絵から、その列の墨を読み直して渡す。 */
+async function rubInkBandAt(q){
+  var url = rubInkUrlAt(q);
+  if (!url) return null;
+  if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.url === url &&
+      RUB.aiBand.geo === rubGeoKey()) return RUB.aiBand;      /* いま持っているもの */
+  var k = rubInkFind(q);
+  var pv = rubLineAtBand({ L: q.x1, R: q.x2, T: q.y1, B: q.y2 });
+  var sc = (pv && num(pv.aiSc, 0)) || (k && num(k.sc, 0)) || 0;
+  var o = await rgBandFromUrl(url, sc);
+  if (o && !o.id) o.id = (pv && num(pv.aiId, 0)) || (k && num(k.id, 0)) || 0;
+  return o;
+}
 /* 計算で枠を作る（AI の墨のすき間・覚えた大きさ・手本帳）。ぜんぶの列。 */
 async function rubBoxAlgoAll(){
   var list = rubColList();
   if (!list.length){
     msg("列が分かりません。先に列を調べてください。", true); return;
   }
-  if (!(RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey())){
+  if (!rubInkAny()){
     msg("AI の墨がありません。先に［AI 縁取りを実行］を押してください" +
         "（計算の枠は、墨のすき間で切るので 墨が要ります）。", true);
     return;
   }
-  var keep = { L: S.rub.bandL, R: S.rub.bandR };
-  var ok = 0, ng = 0, nCh = 0;
+  var keep = { L: S.rub.bandL, R: S.rub.bandR }, keepAB = RUB.aiBand;
+  var ok = 0, ng = 0, nCh = 0, inkNo = 0;
   for (var i = 0; i < list.length; i++){
     var it = list[i];
     msg("計算で枠を作っています… " + (i+1) + " / " + list.length +
@@ -21221,16 +21329,24 @@ async function rubBoxAlgoAll(){
     await uiTick();
     S.rub.bandL = it.c.a; S.rub.bandR = it.c.b;
     A = null; RUB.mask = null;
+    /* **その列の墨に入れかえてから測る**（v35.8） */
+    var band9 = null;
+    try { band9 = await rubInkBandAt(rubBandQ()); } catch(e9){}
+    if (!band9){ inkNo++; ng++; continue; }        /* 墨が無い列は とばす */
+    RUB.aiBand = band9;
     var L7 = rubCol(); if (L7 && L7.boxFix) delete L7.boxFix;
     var m2 = null;
     try { m2 = rubLineTakeAi(); } catch(e){}
     if (m2){ ok++; nCh += m2.n; } else ng++;
   }
   S.rub.bandL = keep.L; S.rub.bandR = keep.R;
+  RUB.aiBand = keepAB;
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
   msg("計算で <b>" + ok + " 列</b>に枠を作りました（あわせて " + nCh + " 字）" +
-      (ng ? "／" + ng + " 列は作れませんでした" : "") + "。", !!ng, true);
+      (ng ? "／" + ng + " 列は作れませんでした" : "") +
+      (inkNo ? "（うち <b style=\"color:#B00020;\">" + inkNo + " 列は墨がありません</b>" +
+               "。その列で［AI 縁取りを実行］を押してください）" : "") + "。", !!ng, true);
 }
 /* 枠をぜんぶ消す（墨・列の構成・覚えたものは残す） */
 function rubBoxClearAll(){
@@ -21239,6 +21355,9 @@ function rubBoxClearAll(){
   var nC = ls.length, nI = ls.reduce(function(a, L){ return a + L.items.length; }, 0);
   if (!confirm("枠を消します（" + nC + " 列・" + nI + " 字）。\n\n" +
                "AI の墨・列の構成・覚えたものは残ります。よろしいですか。")) return;
+  /* **消す前に、列ごとの墨を控えへ写す**（v35.8）。
+     これをしないと、左の列の墨が 枠といっしょに消える。 */
+  rubInkSync();
   S.rub.lines = [];
   rubSelCol = 0; rubSelItem = -1; rubSelSet = [];
   persist(); rubPanel(); rubRender();

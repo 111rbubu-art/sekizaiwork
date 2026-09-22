@@ -165,7 +165,7 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
 <body>
 
 <div class="tb">
-  <h1>🧾 領収書</h1><span class="ver">v2.5</span>
+  <h1>🧾 領収書</h1><span class="ver">v2.6</span>
   <span id="segWrap" class="seg" style="display:none"></span>
   <span class="lbl">敬称</span>
   <span class="seg">
@@ -188,7 +188,7 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
   <button onclick="savePdfToSP()">📄 PDFを提出資料へ</button>
   <button class="pr" onclick="window.print()">🖨️ 印刷</button>
 </div>
-<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。No.は4桁で自動採番、収入印紙の額は金額から自動で出します。再発行のときは上の「再発行」を押してください。切り取り線より上のあいさつ文も直せます。</div>
+<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。No.は「日付＋枝番」で自動採番（例 20260922-01）、収入印紙の額は金額から自動で出します。再発行のときは上の「再発行」を押してください。切り取り線より上のあいさつ文も直せます。</div>
 
 <div class="sheet">
   <div class="msg" data-mst="msg" contenteditable="true">
@@ -343,8 +343,44 @@ function renderStamp(total){
   if ($('rcStamp')) $('rcStamp').textContent = duty ? '¥' + comma(duty) : '‐';
 }
 
-/* No. は4桁で自動採番する（あとから書き換えられる） */
-function newReceiptNo(){ return String(1000 + Math.floor(Math.random() * 9000)); }
+/* ── No. は **日付＋枝番**（v2.6。本人の指示）─────────────────
+   例 `20260922-01`。その日の何枚目かが分かり、重複しない。
+   前は 4 桁の当てずっぽうだったので、同じ番号が出ることも、
+   並びが分からないこともあった。
+
+   枝番の数は `receipt.seq.v1`（{"20260922":3,…}）に覚える。
+   業務アプリの画面から開いていれば、**会社の共有フォルダーにも控える**ので、
+   ほかのパソコンで出した分とも重ならない（同じ時刻に別々のパソコンで
+   出したときだけ、同じ枝番になりうる。そのときは手で直せる）。
+   古い日付は 90 日で捨てる（いつまでも増やさない）。 */
+var SEQ_KEY = 'receipt.seq.v1';
+function seqLoad(){
+  try { return JSON.parse(localStorage.getItem(SEQ_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function seqSave(o){
+  /* 古い分を落とす */
+  var keys = Object.keys(o).sort();
+  while (keys.length > 90) { delete o[keys.shift()]; }
+  try { localStorage.setItem(SEQ_KEY, JSON.stringify(o)); } catch (e) {}
+  mstPushSP();                     /* 会社にも控える（開き方によっては何もしない） */
+}
+function seqNext(ymd){
+  var o = seqLoad();
+  var n = (parseInt(o[ymd], 10) || 0) + 1;
+  o[ymd] = n;
+  seqSave(o);
+  return n;
+}
+function newReceiptNo(dateStr){
+  var ymd = ymd8(dateStr);                    /* 空なら今日の日付 */
+  var n = seqNext(ymd);
+  return ymd + '-' + ('0' + n).slice(-2);
+}
+/* その番号が、いつの日付で振ったものか（日付を直したときの見分けに使う） */
+function noYmd(no){
+  var m = String(no || '').match(/^(\d{8})-\d+$/);
+  return m ? m[1] : '';
+}
 
 function jpDate(iso){
   if (!iso) return '';
@@ -355,7 +391,7 @@ function jpDate(iso){
 
 function render(){
   var v = cur();
-  if (!v.no) v.no = newReceiptNo();   // 種別ごとに別の番号を振る
+  if (!v.no){ v.no = newReceiptNo(v.date); v.noAuto = 1; }   // 種別ごとに別の番号を振る
   $('rcNo').textContent   = v.no;
   $('rcName').textContent = DATA.name || '';
   $('rcAmt').textContent  = comma(v.amount);
@@ -420,7 +456,8 @@ function saveEdits(){
   DATA.name = $('rcName').textContent.trim();
   v.amount  = num($('rcAmt').textContent);
   v.note    = $('rcNote').textContent.trim();
-  v.no      = $('rcNo').textContent.trim();
+  var no9 = $('rcNo').textContent.trim();
+  if (no9 !== v.no){ v.no = no9; v.noAuto = 0; }   /* 手で直したら、以後さわらない */
   var t = $('rcDate').textContent.trim();
   if (t) v.date = t;      // 和暦・自由入力もそのまま残す
 }
@@ -436,7 +473,14 @@ function onDateEdit(){
   var t = $('rcDate').textContent.trim();
   // 2026-05-12 のように入れたら、日本語の表記に整える
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) $('rcDate').textContent = jpDate(t);
-  cur().date = $('rcDate').textContent.trim();
+  var v = cur();
+  v.date = $('rcDate').textContent.trim();
+  /* **日付を直したら、番号も その日付で振り直す**（v2.6）。
+     自分で番号を書きかえてあるときは、そのままにする。 */
+  if (v.noAuto && noYmd(v.no) && noYmd(v.no) !== ymd8(v.date)){
+    v.no = newReceiptNo(v.date);
+    $('rcNo').textContent = v.no;
+  }
 }
 
 /* ── PDFにして SharePoint の「提出資料」へ入れる ───────────── */

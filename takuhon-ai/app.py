@@ -516,11 +516,40 @@ def _chars_count():
 
 
 @app.get("/api/takuhon/chars")
-def chars_list():
-    """貯まった手本の数（字ごと）。"""
+def chars_list(samples: int = 0):
+    """貯まった手本の数（字ごと）。
+
+    samples=N … 字ごとに、手本の**ファイル名**を N 枚まで付ける。
+    画面（拓本AI の「覚えたもの」）が、その字の見本を並べて出すのに使う。
+    絵そのものは /api/takuhon/charimg/<字>/<名前>.png から。
+    """
     c = _chars_count()
-    return {"chars": c, "kinds": len(c), "all": sum(c.values()),
-            "model": INFOC}
+    out = {"chars": c, "kinds": len(c), "all": sum(c.values()), "model": INFOC}
+    if samples > 0:
+        n = max(1, min(samples, 12))
+        sm = {}
+        for ch in c:
+            d = os.path.join(CHARS, ch)
+            try:
+                fs = sorted(x for x in os.listdir(d) if x.lower().endswith(".png"))
+            except OSError:
+                fs = []
+            sm[ch] = fs[:n]
+        out["samples"] = sm
+    return out
+
+
+@app.get("/api/takuhon/charimg/{ch}/{name}.png")
+def charimg(ch: str, name: str):
+    """手本帳の 1 枚。"""
+    ch = (ch or "").strip()
+    name = "".join(x for x in (name or "") if x.isalnum() or x in "-_.")
+    if len(ch) != 1 or not name:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    f = os.path.join(CHARS, ch, name + ".png")
+    if not os.path.exists(f):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return FileResponse(f, media_type="image/png")
 
 
 @app.post("/api/takuhon/feedback")
@@ -674,20 +703,44 @@ def _line_ids():
 
 
 @app.get("/api/takuhon/lines")
-def lines(limit: int = 60, offset: int = 0):
-    """貯まった列の一覧。中身は meta.json だけ読む（画像は開かない）。"""
+def lines(limit: int = 60, offset: int = 0, boxes: int = 0,
+          only: str = "", order: str = ""):
+    """貯まった列の一覧。中身は meta.json だけ読む（画像は開かない）。
+
+    boxes=1 … 1 列ごとの**枠**（と切り抜きの位置）も返す。
+              画面（拓本AI の「覚えたもの」）が、絵の上に枠を重ねて出すのに使う。
+    only    … "on"（学習に使う）／"off"（外してある）だけに絞る。既定は ぜんぶ。
+    order   … "new" で**新しい順**。既定は これまでどおり 名前順。
+    """
     ids = _line_ids()
+    on_ids = [p for p in ids if not os.path.exists(os.path.join(LINES, p, "off"))]
+    off_ids = [p for p in ids if os.path.exists(os.path.join(LINES, p, "off"))]
+    sel = on_ids if only == "on" else off_ids if only == "off" else ids
+    if order == "new":
+        def _mt(p):
+            try:
+                return os.path.getmtime(os.path.join(LINES, p, "meta.json"))
+            except OSError:
+                return 0.0
+        sel = sorted(sel, key=_mt, reverse=True)
     out = []
-    for pid in ids[offset:offset + max(1, min(limit, 300))]:
+    for pid in sel[offset:offset + max(1, min(limit, 300))]:
         m = _read_json(os.path.join(LINES, pid, "meta.json"), {}) or {}
-        out.append({"id": pid, "n": m.get("n", 0), "at": m.get("at", ""),
-                    "chars": m.get("chars", ""),
-                    "off": os.path.exists(os.path.join(LINES, pid, "off")),
-                    "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))})
+        it = {"id": pid, "n": m.get("n", 0), "at": m.get("at", ""),
+              "chars": m.get("chars", ""),
+              "off": os.path.exists(os.path.join(LINES, pid, "off")),
+              "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))}
+        if boxes:
+            it["boxes"] = m.get("boxes", [])
+            if m.get("crop"):
+                it["crop"] = m["crop"]
+            it["mmPerPx"] = m.get("mmPerPx", 0)
+            it["note"] = m.get("note", "")
+        out.append(it)
     # **学習に使う数は ぜんぶを数える**（2026-09-22 の実測で判明。
     # 1 ページぶん（out）だけ数えていたので、limit=1 で見ると「1 列」と出ていた）。
-    on = sum(1 for pid in ids if not os.path.exists(os.path.join(LINES, pid, "off")))
-    return {"all": len(ids), "on": on, "offset": offset, "items": out}
+    return {"all": len(ids), "on": len(on_ids), "off": len(off_ids),
+            "shown": len(sel), "offset": offset, "items": out}
 
 
 @app.get("/api/takuhon/line/{pid}")

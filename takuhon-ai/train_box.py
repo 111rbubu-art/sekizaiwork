@@ -36,7 +36,14 @@ CURVE = os.path.join(RUNS, "curve_box.jsonl")
 
 
 def put_progress(**kw):
+    """いまの様子を runs/progress_*.json に置く。
+
+    **pid と state="running" を必ず入れる**（2026-09-22 の実測で必要と分かった）。
+    サーバーの `_running()` は「pid が合っていて state が running」で走行中とみなす。
+    これが無いと、画面には いつまでも「はじめています…」としか出なかった。
+    """
     try:
+        kw.setdefault("pid", os.getpid())
         kw["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         os.makedirs(RUNS, exist_ok=True)
         with open(PROGRESS, "w", encoding="utf-8") as f:
@@ -197,7 +204,7 @@ def main():
                     "rec": None if rec is None else round(rec, 4),
                     "sec": round(time.time() - t0, 1)}
         put_curve(rec_line)
-        put_progress(state="train", epochs=a.epochs, step=step, best=round(best, 4),
+        put_progress(state="running", epochs=a.epochs, step=step, best=round(best, 4),
                      lines=len(tr), **rec_line)
         print("ep %3d  loss %.4f  F1 %s  (%.1fs)" %
               (ep, rec_line["loss"], rec_line["f1"], rec_line["sec"]))

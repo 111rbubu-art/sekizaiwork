@@ -371,11 +371,19 @@ torch の読み込みに十数秒かかり、その間は何も書かれてい�
 | ② 枠 | 1 字ずつの枠 | `dataset/lines` | `train_box.py` | `runs/box_current.pth` |
 | ③ 読み | 字の候補 | `dataset/lines` の読み ＋ `dataset/chars`（手本帳） | `train_char.py` | `runs/char_current.pth` |
 
+**画面から回せる**（2026-09-22）。状況画面（`http://<この機械>:8077/`）の
+「**枠と読みの学習（新しい AI）**」の欄に、③ 枠 と ④ 読み のボタンがある。
+材料の数（列・手本の枚数）もそこに出る。ターミナルからなら:
+
 ```bash
 cd /opt/takuhon-ai && source .venv/bin/activate
 python3 train_box.py  --epochs 80     # 枠（列が 8 本以上 要る）
 python3 train_char.py --epochs 60     # 読み（1 字につき 3 枚以上ある字だけ）
 ```
+
+画面の［試すだけ］は、材料が少なくても とにかく通すための逃げ道
+（枠は 2 列から、読みは 1 枚しかない字も使う）。**当たる AI にはならない**ので、
+動くことの確認だけに使うこと。
 
 **材料が足りなければ、そう言ってすぐ終わる**（前のモデルは そのまま）。
 3 つまとめて回すなら `bash train-nightly.sh`。夜の自動実行（`takuhon-train.timer`）も

@@ -84,8 +84,14 @@ TRAINPID = os.path.join(RUNS, "train.pid")
 
 
 def _nm(which):
-    """画面の①②を、モデルの名前に直す。"""
-    return "shape" if which == "shape" else "current"
+    """画面の①②③④を、ファイルの名前に直す（2026-09-22 に ③枠・④読み を追加）。
+
+    ① 読む   … current（progress_current.json / train_current.log）
+    ② 整える … shape
+    ③ 枠     … box   （train_box.py が progress_box.json を書く）
+    ④ 読み   … char  （train_char.py が progress_char.json を書く）
+    """
+    return {"shape": "shape", "box": "box", "char": "char"}.get(which, "current")
 
 
 def _retire_old():
@@ -279,6 +285,8 @@ def health():
 @app.get("/api/takuhon/status")
 def status():
     _reload_if_new()
+    _reloadb_if_new()                 # 枠（学習が終わっていれば、ここで拾う）
+    _reloadc_if_new()                 # 読み
     n = len(D.list_pairs(DATASET))
     sh = None
     try:
@@ -668,7 +676,9 @@ def lines(limit: int = 60, offset: int = 0):
                     "chars": m.get("chars", ""),
                     "off": os.path.exists(os.path.join(LINES, pid, "off")),
                     "ink": os.path.exists(os.path.join(LINES, pid, "ink.png"))})
-    on = sum(1 for x in out if not x["off"])
+    # **学習に使う数は ぜんぶを数える**（2026-09-22 の実測で判明。
+    # 1 ページぶん（out）だけ数えていたので、limit=1 で見ると「1 列」と出ていた）。
+    on = sum(1 for pid in ids if not os.path.exists(os.path.join(LINES, pid, "off")))
     return {"all": len(ids), "on": on, "offset": offset, "items": out}
 
 
@@ -1064,7 +1074,7 @@ def _running():
             p = {"state": "starting", "pid": pid}
         p["which"] = which
         return p
-    for w in ("ink", "shape"):
+    for w in ("ink", "shape", "box", "char"):
         p = _read_json(_progress_path(w), {}) or {}
         if p.get("state") == "running" and p.get("pid") and _alive(p["pid"]):
             p["which"] = w
@@ -1201,6 +1211,32 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
     epochs = max(1, min(2000, int(epochs)))
     bs = max(1, min(32, int(bs)))
     base = max(4, min(64, int(base)))
+    if which in ("box", "char"):
+        """③ 枠・④ 読み（2026-09-22）。材料はどちらも dataset/lines。
+           ①②とは別のプログラム（train_box.py / train_char.py）を回す。
+           「試すだけ」は、材料の下限を下げて とにかく通してみるための逃げ道。"""
+        prog = "train_box.py" if which == "box" else "train_char.py"
+        cmd = [sys.executable, os.path.join(ROOT, prog),
+               "--epochs", str(epochs), "--base", str(base)]
+        if which == "box":
+            cmd += ["--bs", str(bs)]
+            if test:
+                cmd += ["--min", "2", "--val", "0.2"]
+        elif test:
+            cmd += ["--min-per-char", "1"]
+        if noswap:
+            cmd += ["--no-swap"]
+        os.makedirs(RUNS, exist_ok=True)
+        log = open(_log_path(which), "w", encoding="utf-8")
+        pr = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                              start_new_session=True)
+        try:
+            with open(TRAINPID, "w", encoding="utf-8") as f:
+                f.write("%d %s" % (pr.pid, which))
+        except OSError:
+            pass
+        return {"started": True, "pid": pr.pid, "cmd": " ".join(cmd[1:]),
+                "test": bool(test), "which": which}
     cmd = [sys.executable, os.path.join(ROOT, "train.py"),
            "--epochs", str(epochs), "--bs", str(bs), "--base", str(base)]
     if which == "shape":

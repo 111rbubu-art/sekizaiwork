@@ -394,15 +394,22 @@ async def boxes(
     sc = BD.W_STD / float(w0)
     W, H = BD.W_STD, max(16, int(round(h0 * sc)))
     raw = np.asarray(im.resize((W, H), Image.BILINEAR), dtype=np.float32) / 255.0
+    # **どの墨を使ったかを返す**（2026-09-22。本人の問い「枠の AI は墨を見ていないのか」）。
+    #   sent … アプリが送ってきた墨（＝1 字窓で通した、質のよい墨）
+    #   made … ここで作った墨（細長い列をそのまま通すので、質は落ちる）
+    #   none … 墨なし（拓本だけで枠を出す）
     if ink is not None:
         ik = Image.open(__import__("io").BytesIO(await ink.read())).convert("L")
         ink_a = (np.asarray(ik.resize((W, H), Image.NEAREST), dtype=np.float32) / 255.0 > 0.5)
         ink_a = ink_a.astype(np.float32)
+        ink_src = "sent"
     elif with_ink and INFO.get("loaded"):
         _reload_if_new()
         ink_a = _ink_of(raw)
+        ink_src = "made"
     else:
         ink_a = np.zeros((H, W), dtype=np.float32)
+        ink_src = "none"
     ph = (16 - H % 16) % 16                  # たては 16 の倍数にそろえる
     x = np.stack([raw, ink_a], axis=0)
     if ph:
@@ -420,6 +427,7 @@ async def boxes(
                     "score": round(b["score"], 3)})
     out.sort(key=lambda b: b["y"])           # 上から順に
     return {"boxes": out, "n": len(out), "w": w0, "h": h0, "ms": ms,
+            "ink": ink_src, "inkPct": round(float(ink_a.mean()) * 100, 1),
             "model": {"step": INFOB.get("step"), "at": INFOB.get("at"),
                       "f1": INFOB.get("f1"), "lines": INFOB.get("lines")}}
 

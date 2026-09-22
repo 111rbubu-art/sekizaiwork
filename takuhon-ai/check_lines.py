@@ -110,8 +110,9 @@ def one(d):
             r["bad"].append("墨が空です（%.1f%%）。彫刻原稿 v35.3 より前に登録した列は "
                             "墨が入っていません（青い墨を白黒に直せていなかった）。"
                             "登録し直してください" % r["ink"])
-        if r["ink"] > 80:
-            r["warn"].append("墨が多すぎます（%.1f%%）" % r["ink"])
+        if r["ink"] > 45:
+            r["warn"].append("墨が多すぎます（%.1f%%）。にじみ・地のざらつきを拾っている見込み"
+                             % r["ink"])
     else:
         r["ink"] = None
         r["warn"].append("墨（ink.png）がありません")
@@ -185,12 +186,14 @@ def main():
             print("%-28s  %s" % (r["id"], "／".join(r["bad"])))
             continue
         sig.setdefault(r.get("sig"), []).append(r["id"])
-        print("%-26s %-16s %3dx%-4d %4d %4d %6s %6s %6s %5d %s%s" %
-              (r["id"][:26], str(r.get("at", "")).replace("T", " ")[:16],
+        print("%-26s %-16s %3dx%-4d %4d %4d %6s %6s %6s %5d %s%s%s" %
+              ((("外 " if r.get("off") else "") + r["id"])[:26],
+               str(r.get("at", "")).replace("T", " ")[:16],
                r["w"], r["h"], r["n"], r["read"],
                r.get("wRatio"), r.get("hRatio"),
                ("—" if r.get("ink") is None else r["ink"]), r.get("out", 0),
-               "【要確認】" if r["bad"] else "", "／".join(r["bad"] + r["warn"])))
+               "【要確認】" if r["bad"] else "", "／".join(r["bad"] + r["warn"]),
+               ""))
     # **2026-09-22 の朝より前に登録した列は、切り抜きが「回す前の絵」のことがある**
     # （彫刻原稿 v34.8 で直した不具合。絵と枠が食いちがう）。日付で目印を出す。
     old = [r["id"] for r in rows if str(r.get("at", "")) < "2026-09-22T10"]
@@ -209,7 +212,10 @@ def main():
     if inks:
         print("\n■ 墨の入り具合: 中ほど %.1f%%／いちばん少ない %.1f%%／空の列 %d 本"
               % (float(np.median(inks)), min(inks), sum(1 for v in inks if v < 1)))
-        print("   目安は 20〜70%。0% の列は 彫刻原稿 v35.3 より前に登録した分です。")
+        # **本物の拓本では 8〜20% くらい**（2026-09-22 の実測。
+        # 1 字の枠が切り抜きの 4 割ほど、その中で画線が 3 割ほど → 全体で 1 割前後）。
+        # 試験用に作った「塗りつぶし」の絵では 55% になるが、それは別物。
+        print("   本物の拓本では 8〜20% くらいが ふつうです（0% は墨なし、45% 超は拾いすぎ）。")
     nbad = sum(1 for r in rows if r["bad"])
     nwarn = sum(1 for r in rows if r["warn"] and not r["bad"])
     print("\n■ まとめ: 要確認 %d 本／気になる %d 本／よさそう %d 本"

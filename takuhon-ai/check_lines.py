@@ -177,16 +177,17 @@ def main():
         return
     rows = [one(d) for d in ds]
     print("＝＝ 貯まった列 %d 本 ＝＝" % len(rows))
-    print("%-26s %-11s %6s %5s %4s %6s %6s %6s %5s %s" %
-          ("名前", "登録した日", "大きさ", "字数", "読み", "幅比", "高比", "墨%", "はみ出", "気になる点"))
+    print("%-26s %-16s %6s %5s %4s %6s %6s %6s %5s %s" %
+          ("名前", "登録した日時", "大きさ", "字数", "読み", "幅比", "高比", "墨%", "はみ出", "気になる点"))
     sig = {}
     for r in rows:
         if "w" not in r:
             print("%-28s  %s" % (r["id"], "／".join(r["bad"])))
             continue
         sig.setdefault(r.get("sig"), []).append(r["id"])
-        print("%-26s %-11s %3dx%-4d %4d %4d %6s %6s %6s %5d %s%s" %
-              (r["id"][:26], str(r.get("at", ""))[:10], r["w"], r["h"], r["n"], r["read"],
+        print("%-26s %-16s %3dx%-4d %4d %4d %6s %6s %6s %5d %s%s" %
+              (r["id"][:26], str(r.get("at", "")).replace("T", " ")[:16],
+               r["w"], r["h"], r["n"], r["read"],
                r.get("wRatio"), r.get("hRatio"),
                ("—" if r.get("ink") is None else r["ink"]), r.get("out", 0),
                "【要確認】" if r["bad"] else "", "／".join(r["bad"] + r["warn"])))
@@ -204,6 +205,11 @@ def main():
         print("\n■ 同じ絵が二重に入っています:")
         for v in dup.values():
             print("   " + " ＝ ".join(v))
+    inks = [r["ink"] for r in rows if r.get("ink") is not None]
+    if inks:
+        print("\n■ 墨の入り具合: 中ほど %.1f%%／いちばん少ない %.1f%%／空の列 %d 本"
+              % (float(np.median(inks)), min(inks), sum(1 for v in inks if v < 1)))
+        print("   目安は 20〜70%。0% の列は 彫刻原稿 v35.3 より前に登録した分です。")
     nbad = sum(1 for r in rows if r["bad"])
     nwarn = sum(1 for r in rows if r["warn"] and not r["bad"])
     print("\n■ まとめ: 要確認 %d 本／気になる %d 本／よさそう %d 本"

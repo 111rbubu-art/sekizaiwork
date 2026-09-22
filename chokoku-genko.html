@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.6";
+var APP_VER = "v36.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14861,8 +14861,9 @@ function rubBandOfLine(L){
    「理想は、拓本解析ボタンをクリックするだけで戒名や命日、といった構成を理解して、
      文字の長さや幅の設定を取得することが目的です」）─────
    ① 列の構成を調べる（上下の段・列の本数）
-   ② 列ぜんぶを AI に通して、1 字ずつの枠を作る
-   ③ 手本帳で 文字を見分け、戒名／命日／俗名／年齢に分ける
+   ② 列ぜんぶを 墨の AI に通し、**枠の AI** で 1 字ずつの枠を作る（v36.7）
+   ③ **読みの AI** で読み、戒名／命日／俗名／年齢に分ける（v36.7）
+      （AI が入っていなければ ②は計算・③は手本合わせに戻る）
    ④ 分かったこと（構成・字の大きさ・字送り）を まとめて出す
    手で直した枠・手で決めた字は、途中で消さない（v33.0 の決まりのまま）。 */
 /* ───── **解析をやり直す（消す）**（v33.5。本人の指示
@@ -14904,6 +14905,18 @@ async function rubAllAnalyze(){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
   var step = [];
+  /* ───── **拓本AI に どのモデルが入っているか**を先に聞く（v36.7）─────
+     枠の AI（boxnet）・読みの AI（charnet）が入っていれば そちらを使い、
+     入っていないときだけ いままでの計算・手本合わせに戻る。 */
+  var bm9 = null, cm9 = null;
+  try {
+    var r9 = await fetch(takuApiBase() + "/api/takuhon/status");
+    if (r9.ok){
+      var j9 = await r9.json();
+      bm9 = ((j9.box || {}).model) || null;
+      cm9 = ((j9.char || {}).model) || null;
+    }
+  } catch(e9){}
   /* ① 構成。**調べ直したのか、前のままなのかを はっきり出す**（v33.6。本人の指示
      「［拓本を解析］に［列を調べ直す］この機能は入っていましたか？」） */
   var did9 = false, by9 = "";
@@ -14914,11 +14927,6 @@ async function rubAllAnalyze(){
          枠の AI が入っていない／見つけられないときだけ、いままでの計算に戻す。 */
       var okAi = false;
       try {
-        var bm9 = null;
-        try {
-          var r9 = await fetch(takuApiBase() + "/api/takuhon/status");
-          if (r9.ok) bm9 = ((await r9.json()).box || {}).model || null;
-        } catch(e9){}
         if (bm9 && bm9.loaded){
           msg("① AI で列を調べています…", false, true);
           await uiTick();
@@ -14944,25 +14952,61 @@ async function rubAllAnalyze(){
               "：上 " + mn.ups.length + " 列" +
               (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
   } catch(e){ step.push("列：調べられませんでした"); }
-  /* ② 枠 */
-  msg("② 列を AI に通して、1 字ずつの枠を作っています…", false, true);
+  /* ② 枠。
+     ───── **枠は AI で作る**（v36.7。本人の指示「最近は枠の AI の方がいいので、変更しましょう」）─────
+     1) 列ごとに **墨の AI** に通して青い墨を出す（枠の AI は 墨も見て枠を描くので要る）。
+        このとき **計算の枠**もいっしょにできる（`rubAllGo`）。
+     2) 枠の AI が入っていれば、**その上から AI の枠に入れかえる**（`rubBoxAiAll`）。
+        AI が字を見つけられなかった列は、1) の計算の枠が そのまま残る（逃げ道）。
+     **手で直した列（boxFix）は どちらでも作り直さない。** */
+  msg("② 列を AI に通して、墨を出しています…", false, true);
   await uiTick();
-  try { await rubAllGo(); } catch(e){ msg("枠づくりでつまずきました（" +
+  try { await rubAllGo(); } catch(e){ msg("墨づくりでつまずきました（" +
     ((e && e.message) || "") + "）。", true); return; }
+  var boxBy9 = "計算";
+  if (bm9 && bm9.loaded){
+    msg("② 枠の AI が 1 字ずつの枠を描いています…", false, true);
+    await uiTick();
+    try {
+      var rb9 = await rubBoxAiAll({ quiet: true, skipFixed: true });
+      if (rb9){
+        boxBy9 = "AI " + rb9.ok + " 列" +
+          (rb9.none + rb9.ng ? "（計算のまま " + (rb9.none + rb9.ng) + " 列）" : "") +
+          (rb9.skip ? "（手で直した " + rb9.skip + " 列は そのまま）" : "");
+      }
+    } catch(e){ boxBy9 = "計算（枠の AI でつまずきました）"; }
+  } else {
+    boxBy9 = "計算（枠の AI がまだ入っていません）";
+  }
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
   if (!ls.length){ msg("枠を作れませんでした。［AI に送る絵を見る］で、墨が出ているか確かめてください。", true); return; }
   step.push("枠：" + ls.length + " 列・" +
-            ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字");
-  /* ③ 文字と構成の見分け */
-  var canA = false;
-  try { canA = !!FR() || rubTehonCount() > 0; } catch(e){}
-  if (canA){
-    msg("③ 文字を見分けて、戒名・命日・俗名・年齢に分けています…", false, true);
+            ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字（" + boxBy9 + "）");
+  /* ③ 読みと まとまり。
+     ───── **読みは AI で**（v36.7。本人の指示「読みの AI へも変更で」）─────
+     読みの AI が入っていれば ぜんぶの列を読ませ、その読みから まとまりを付ける
+     （士→十 の直し・数字＋年月日・字幅での切り分け… は そのまま効く）。
+     入っていないときだけ、いままでの 手本合わせ（手本帳・フォント）に戻る。 */
+  if (cm9 && cm9.loaded){
+    msg("③ 読みの AI が字を読み、戒名・命日・俗名・年齢に分けています…", false, true);
     await uiTick();
-    try { await rubAnchorGo(); } catch(e){}
+    try {
+      var rr9 = await rubReadAiAll({ quiet: true });
+      step.push("読み：AI " + (rr9 ? rr9.ok : 0) + " 列" +
+                (rr9 && rr9.nG ? "（まとまり " + rr9.nG + " 列）" : ""));
+    } catch(e){ step.push("読み：AI でつまずきました"); }
   } else {
-    try { rubGrpAuto(); } catch(e){}
-    step.push("見分け：手本帳が空なので、位置から見当を付けました");
+    var canA = false;
+    try { canA = !!FR() || rubTehonCount() > 0; } catch(e){}
+    if (canA){
+      msg("③ 文字を見分けて、戒名・命日・俗名・年齢に分けています…", false, true);
+      await uiTick();
+      try { await rubAnchorGo(); } catch(e){}
+      step.push("読み：手本合わせ（読みの AI がまだ入っていません）");
+    } else {
+      try { rubGrpAuto(); } catch(e){}
+      step.push("見分け：読みの AI も手本帳も無いので、位置から見当を付けました");
+    }
   }
   /* ④ まとめ */
   var mpp = mmPerPx(), hs = [], ws = [], ps = [], grp = {};
@@ -18877,43 +18921,12 @@ function rubRender(){
   });
 
 
-  /* 帯（左右の範囲）の絵とつまみ（v21.51 で戻した。本人の指摘
-     「帯を絞り込むことが出来ないです」）。
-     v21.28 で外したが、［帯を AI に通す］が **1 行だけの帯**を要るようになった。
-     出すのは**この拓本補正の画面だけ**。校正の画面には出さない（v21.28 の指摘）。
-     つまみは `data-k="bandL"／"bandR"` で、bindDrag の受け皿にそのまま乗る。
-
-     **回している間も出す**（v21.52。本人の指摘「ボタンを押しても表示されない」）。
-     ［拓本補正］のタブは**はじめから回せる状態で開く**ので（v21.27）、
-     回している間に出さないと、**ふつうに開いたときは一度も見えない**。
-     実際、帯は変わっているのに絵に何も出ていなかった。 */
-  {
-    var bL = Math.min(num(r.bandL, 0), num(r.bandR, 0));
-    var bR = Math.max(num(r.bandL, 0), num(r.bandR, 0));
-    if (bR - bL > 4){
-      o.push('<rect x="' + bL + '" y="0" width="' + (bR - bL) + '" height="' + H +
-        '" fill="#F59E0B" opacity=".10" pointer-events="none"/>');
-      var bkn = W * 0.055, bMidY = H * 0.5;
-      [[bL, "bandL"], [bR, "bandR"]].forEach(function(pair){
-        o.push('<line x1="' + pair[0] + '" y1="0" x2="' + pair[0] + '" y2="' + H +
-          '" stroke="#B45309" stroke-width="' + (W*0.004) + '" opacity=".85" pointer-events="none"/>');
-        o.push('<rect x="' + (pair[0] - bkn/2) + '" y="' + (bMidY - bkn/2) + '" width="' + bkn +
-          '" height="' + bkn + '" rx="' + (bkn*0.2) + '" fill="#B45309" ' +
-          'stroke="#fff" stroke-width="' + (W*0.004) + '" pointer-events="none"/>');
-        /* **つかめるのは四角いつまみの所だけ**（v21.65。本人の指摘
-           「枠を調整するときに、帯の枠が移動してしまう」）。
-           前は帯の線ぜんたい（絵の高さいっぱい）を受けていたので、
-           1 字の枠を直そうとして帯をつかんでしまっていた。 */
-        hits.push('<rect class="hitx" data-k="' + pair[1] + '" x="' + (pair[0] - bkn*0.7) +
-          '" y="' + (bMidY - bkn*0.7) + '" width="' + (bkn*1.4) + '" height="' + (bkn*1.4) +
-          '" fill="transparent"/>');
-      });
-      o.push('<text x="' + ((bL + bR) / 2) + '" y="' + (H * 0.5 - W * 0.045) +
-        '" fill="#B45309" font-size="' + (W*0.035) + '" text-anchor="middle" font-weight="700"' +
-        ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke"' +
-        ' pointer-events="none">帯</text>');
-    }
-  }
+  /* ───── **茶色の帯は、絵に出さない**（v36.7。本人の指示
+     「茶色の帯の範囲指定と、範囲を描くの指定が内容がほぼ同じなので絞りたいです」）─────
+     帯（`S.rub.bandL/R`）は もともと「1 列だけ通す」ための左右のしるし。
+     いまは 列のボタン・［ぜんぶの列］が **列ごとに自動で**帯を合わせるので、
+     人が つまんで動かす出番が無くなった。人が決める範囲は **［▣ 範囲を描く］（緑）だけ**にする。
+     帯そのものは 中で使い続ける（列ごとの墨・枠づくりの「いまの列」）。 */
 
   /* 回転のとき、傾きを見比べるための縦の基準線 */
   /* 縦の基準線は、回転の中心をそのまま通す。線に触るところは作らない。
@@ -19729,8 +19742,9 @@ function rubPanel(){
     h += '<p class="hint" style="margin:12px 0 2px;"><b>3 ─ 解析</b></p>';
     h += '<button class="mini primary" id="btnAnalyze" ' +
       'style="font-size:15px;padding:8px 18px;" ' +
-      'title="列を調べる → AI に通して字の枠を作る → 戒名・命日・俗名・年齢に分ける、' +
-      'までを ひと押しで通します">拓本を解析</button>' +
+      'title="① 列を調べる → ② 墨を出して 枠の AI で 1 字ずつの枠 → ' +
+      '③ 読みの AI で読んで 戒名・命日・俗名・年齢に分ける、までを ひと押しで通します' +
+      '（AI が入っていなければ、計算・手本合わせに戻ります）">拓本を解析</button>' +
       ' <button class="mini" id="btnAnalyzeClr" ' +
       'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
       '手本帳・覚えた大きさ・較正・範囲は残ります">やり直す（消す）</button>';
@@ -19809,7 +19823,7 @@ function rubPanel(){
     }
     var allChip = '<button class="mini colb' + (isAll ? ' primary' : '') +
       '" data-k="all" data-i="0" title="' +
-      (arAll.all ? "帯を拓本の幅いっぱいに戻します" : "帯を範囲の幅いっぱいにします") + '">' +
+      (arAll.all ? "拓本の幅いっぱいを えらびます" : "範囲の幅いっぱいを えらびます") + '">' +
       (arAll.all ? 'ぜんたい' : '範囲ぜんたい') + '</button>';
     if (ups.length){
       h += '<div class="chips" style="margin:4px 0 0;"><span class="hint" ' +
@@ -19832,14 +19846,15 @@ function rubPanel(){
     var grp5 = rubBandGroup();
     var aiWhat = isAll ? ((arAll.all ? "拓本ぜんたい" : "範囲ぜんたい") +
                           "（" + ((RUB.cols || []).length || "?") + " 列）")
-                : (grp5 ? "この列（上＋下 " + grp5.kids.length + " 本）" : "この帯 1 本");
-    h += '<p class="hint" style="margin:3px 0 0;">いまの帯：幅 <b>' +
+                : (grp5 ? "この列（上＋下 " + grp5.kids.length + " 本）" : "この列");
+    /* 「帯」という言葉は出さない（v36.7）。人に見せるのは **列** と **範囲** だけ。 */
+    h += '<p class="hint" style="margin:3px 0 0;">えらんでいる列：幅 <b>' +
       (bw ? mmT(bw, 1) : '—') + '</b>／' +
       (whole ? 'ぜんたい' : (Math.round(qNow.y1) < 40 ? '上' : '下')) +
       '（' + mmRange(qNow.y1, qNow.y2) + '）　' +
       '<button class="mini" id="btnAiGo" ' +
-      'title="いま選んでいる所だけを AI に通して、字の縁取りを作り直します">' +
-      'ここだけ AI に通す：' + aiWhat + '</button></p>';
+      'title="えらんでいる列だけを 墨の AI に通して、青い墨を作り直します">' +
+      '墨を出し直す：' + aiWhat + '</button></p>';
     if (RUB.aiBand){
       var ab = RUB.aiBand;
       h += '<p class="hint" style="margin:3px 0 0;">' + ab.at + '　' +
@@ -21980,7 +21995,10 @@ function rubBoxClearAll(){
    「AI に枠を描かせる は 1 列ではある程度できるのですが、複数列まとめてはできないのですか」）。
    列の指定（上＝戒名／下＝命日ほか）の並びを、そのまま 1 本ずつ通す。
    途中で失敗しても止めず、最後にまとめて知らせる。 */
-async function rubBoxAiAll(){
+async function rubBoxAiAll(opt){
+  /* opt.quiet … 最後の知らせを出さず、数を返す（［拓本を解析］から呼ぶとき）
+     opt.skipFixed … **手で直した列（boxFix）は作り直さない**（v36.7） */
+  opt = opt || {};
   var mn = rubColMenu();
   var list = [];
   mn.ups.forEach(function(c, i){ list.push({ c: c, kind: "上", i: i }); });
@@ -21993,7 +22011,7 @@ async function rubBoxAiAll(){
   }
   if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
   var keep = { L: S.rub.bandL, R: S.rub.bandR };
-  var ok = 0, ng = 0, none = 0, nCh = 0, last = "", inkNo = 0;
+  var ok = 0, ng = 0, none = 0, nCh = 0, last = "", inkNo = 0, skip = 0;
   for (var i = 0; i < list.length; i++){
     var it = list[i];
     msg("AI が枠を描いています… " + (i+1) + " / " + list.length +
@@ -22001,6 +22019,11 @@ async function rubBoxAiAll(){
     await uiTick();
     S.rub.bandL = it.c.a; S.rub.bandR = it.c.b;
     A = null; RUB.mask = null;
+    if (opt.skipFixed){
+      var qF = rubBandQ();
+      var pvF = rubLineAtBand({ L: qF.x1, R: qF.x2, T: qF.y1, B: qF.y2 });
+      if (pvF && pvF.boxFix){ skip++; continue; }
+    }
     /* 列ごとの墨があるかを数える（無い列が多いと、当たりが落ちる） */
     if (!rubInkUrlAt(rubBandQ())) inkNo++;
     var m2 = null, err = "";
@@ -22012,6 +22035,8 @@ async function rubBoxAiAll(){
   S.rub.bandL = keep.L; S.rub.bandR = keep.R;
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
+  if (opt.quiet)
+    return { ok: ok, none: none, ng: ng, nCh: nCh, inkNo: inkNo, skip: skip, last: last };
   msg("AI が <b>" + ok + " 列</b>に枠を描きました（あわせて " + nCh + " 字）" +
       (none ? "／<b>" + none + " 列は字を見つけられませんでした</b>" +
               "（枠のモデルがまだ育っていないか、墨がありません）" : "") +
@@ -22157,7 +22182,8 @@ async function rubReadAiGo(quiet){
 /* ───── **ぜんぶの列を AI に読ませる**（v35.9）─────
    枠を「ぜんぶの列」で作れるようにしたので、読みも列ごとに押させるのは合わない。
    1 列ずつ通して、最後に まとまりを付け直す。 */
-async function rubReadAiAll(){
+async function rubReadAiAll(opt){
+  opt = opt || {};                         /* opt.quiet … 知らせを出さず 数を返す（v36.7） */
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
   if (!ls.length){ msg("先に枠を作ってください。", true); return; }
   if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
@@ -22172,6 +22198,7 @@ async function rubReadAiAll(){
   rubSelCol = keep;
   var nG = rubGrpFromRead(true, true);
   persist(); rubPanel(); rubRender();
+  if (opt.quiet) return { ok: ok, ng: ng, nG: nG, last: last };
   msg("AI が <b>" + ok + " 列</b>を読みました" +
       (nG ? "／<b>" + nG + " 列に まとまりを付けました</b>" : "／まとまりの手がかりは読めていません") +
       (ng ? "／" + ng + " 列は通せませんでした（" + esc(last) + "）" : "") +

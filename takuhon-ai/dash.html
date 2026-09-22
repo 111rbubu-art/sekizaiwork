@@ -194,7 +194,7 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
 
 <div class="wrap">
   <h1>拓本クリーン化 ― 状況<span class="hint" style="font-size:12px;font-weight:400;
-    margin-left:8px;">画面 v2026-09-22g</span></h1>
+    margin-left:8px;">画面 v2026-09-22h</span></h1>
   <p class="sub" id="head">読み込み中…</p>
 
   <div class="cards" id="cards"></div>
@@ -246,6 +246,10 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       <button class="go" id="btnTrainChar">読みの学習を始める</button>
       <button id="btnStopChar">止める</button>
     </div>
+    <!-- **回す前に、回せるかどうかを出す**（2026-09-22。本人の問い
+         「読みを学習させてのですが、実行はどうすれば良いのですか」）。
+         材料が足りているのか分からないまま押すと、「few」で終わって戸惑う。 -->
+    <p class="hint" id="bcReady" style="margin:0 0 7px">―</p>
     <div class="bcEcho" id="echoChar"></div>
     <div style="font-weight:700;font-size:13px;margin:16px 0 7px">学習のログ（うしろの方）</div>
     <div class="row" style="align-items:center;margin-bottom:6px">
@@ -469,6 +473,12 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
       <b id="ceTtl">読みを入れる</b>
       <span class="hint" id="ceSub"></span>
       <span style="flex:1"></span>
+      <!-- **列から列へ、続けて入れられるように**（2026-09-22。本人の指示
+           「文字を入れる画面で、次の列へや前の列に移動できるようにして」）。
+           移るときは、その列を**自動で保存**する（打ったものが消えない）。 -->
+      <button class="mini" id="cePrev" title="この列を保存して、前の列へ">◀ 前の列</button>
+      <span class="hint" id="ceAt"></span>
+      <button class="mini" id="ceNext" title="この列を保存して、次の列へ">次の列 ▶</button>
       <button class="go" id="ceSave">保存する</button>
       <button id="ceClose">閉じる</button>
     </div>
@@ -1300,6 +1310,47 @@ async function bcCount(){
   var tx9 = '　いま <b>' + n + ' 列</b>' + (on !== n ? '（学習に使うのは ' + on + ' 列）' : '') +
     '／手本帳から <b>' + ch + ' 枚</b>（' + kinds + ' 種）';
   if (el.innerHTML !== tx9) el.innerHTML = tx9;
+  bcReady();
+}
+/* ───── **読みの学習が回せるかどうか**（2026-09-22。本人の問い
+   「読みを学習させてのですが、実行はどうすれば良いのですか」）─────
+   材料は ① 列の枠に入れた読み ② 手本帳 の合わせ技。
+   **1 字につき 3 枚以上ある字が 2 種以上**ないと、回しても「材料が足りません」で終わる。
+   押す前にそれが分かるように、ここで数えて出す。 */
+async function bcReady(){
+  var el = document.getElementById("bcReady"); if (!el) return;
+  var by = {};
+  try {
+    var d = await get("/api/takuhon/lines?boxes=1&limit=300&only=on");
+    (d.items || []).forEach(function(it){
+      (it.boxes || []).forEach(function(b){
+        if (b && b.ch) by[b.ch] = (by[b.ch] || 0) + 1;
+      });
+    });
+  } catch(e){}
+  try {
+    var c = await get("/api/takuhon/chars");
+    Object.keys(c.chars || {}).forEach(function(k){ by[k] = (by[k] || 0) + c.chars[k]; });
+  } catch(e){}
+  var ks = Object.keys(by);
+  var ok = ks.filter(function(k){ return by[k] >= 3; });
+  var few = ks.filter(function(k){ return by[k] < 3; }).sort(function(a, b){ return by[b] - by[a]; });
+  var t;
+  if (ok.length >= 2){
+    t = '<b style="color:#137A52">回せます</b>：学習に入る字 <b>' + ok.length + ' 種</b>（' +
+        ok.reduce(function(a, k){ return a + by[k]; }, 0) + ' 枚）。' +
+        '［読みの学習を始める］を押してください。';
+  } else {
+    t = '<b style="color:#B00020">まだ回せません</b>：3 枚以上ある字が <b>' + ok.length +
+        ' 種</b>しかありません（<b>2 種以上</b>が要ります）。' +
+        '［覚えたもの］→［列］の ✎ で読みを入れるか、彫刻原稿アプリの' +
+        '［🤖 読みの学習へ送る］で手本を足してください。' +
+        'ためしに通すだけなら［試すだけ］に レ点を。';
+  }
+  if (few.length) t += '　あと少しの字：' +
+    few.slice(0, 20).map(function(k){ return esc(k) + (3 - by[k]); }).join("・") +
+    (few.length > 20 ? " ほか" : "") + '（数字は<b>あと何枚</b>）';
+  if (el.innerHTML !== t) el.innerHTML = t;
 }
 var BCLOG = "box";                      /* いま出しているログ（枠／読み） */
 async function bcLog(){
@@ -1324,6 +1375,7 @@ async function bcLog(){
       読みは **どの字を読めるのか**（char_list）まで出す
    どれも読むだけ。ここから学習は動かない。 ───── */
 var MEM = "line";                     /* いま出している面 */
+var MEM_IDS = [];                     /* いま出している列の並び（✎ の 前／次 用） */
 var MEM_BUSY = false;
 function memEsc(x){ return encodeURIComponent(x); }
 /* 絵が出たら、その大きさに合わせて 枠の下敷き（SVG）をそろえる */
@@ -1354,6 +1406,8 @@ async function memLines(){
     "ぜんぶで <b>" + (d.all || 0) + " 列</b>（学習に使う " + (d.on || 0) + " 列" +
     ((d.off || 0) ? "／外してある " + d.off + " 列" : "") + "）";
   var its = d.items || [];
+  /* いま出している並び。✎ の画面の［前の列］［次の列］がこれを辿る（2026-09-22） */
+  MEM_IDS = its.map(function(x){ return x.id; });
   if (!its.length) return '<p class="hint">まだ 1 列もありません。' +
     '彫刻原稿アプリで枠を直して、［⬆ この列の字枠を登録］を押すと ここに出ます。</p>';
   return '<div class="mgrid">' + its.map(function(it){
@@ -1482,7 +1536,7 @@ function ceCut(im, b, n){
   g.drawImage(im, cx - s / 2, cy - s / 2, s, s, 0, 0, n, n);
   return cv.toDataURL("image/png");
 }
-async function ceOpen(id){
+async function ceOpen(id, ids){
   var w = document.getElementById("chEd");
   document.getElementById("ceGrid").innerHTML = '<p class="hint">読み込み中…</p>';
   document.getElementById("ceTtl").textContent = "読みを入れる";
@@ -1493,7 +1547,13 @@ async function ceOpen(id){
   try { m = await get("/api/takuhon/line/" + memEsc(id)); }
   catch(e){ document.getElementById("ceGrid").innerHTML =
     '<p class="hint">読めませんでした。</p>'; return; }
-  CE = { id: id, boxes: (m && m.boxes) || [], im: null, sel: -1, undo: [], zoom: 0 };
+  /* **並びは、画面を開いたときのものを控えて使う**（2026-09-22）。
+     保存すると `order=new` の並びが変わるので、そのつど拾い直すと
+     ［次の列］が行ったり来たりする。 */
+  var lst = ids || MEM_IDS.slice();
+  CE = { id: id, boxes: (m && m.boxes) || [], im: null, sel: -1, undo: [], zoom: 0,
+         ids: lst, at: lst.indexOf(id) };
+  ceAtShow();
   ceTab("ch");
   var im = new Image();
   im.onload = function(){ CE.im = im; ceDraw(im); };
@@ -1749,30 +1809,55 @@ function ceSet(list){
   });
   ceCount();
 }
+/* いまの列の位置（3 / 12）と、前後のボタンの出し入れ */
+function ceAtShow(){
+  var el = document.getElementById("ceAt");
+  var pv = document.getElementById("cePrev"), nx = document.getElementById("ceNext");
+  var i = CE.at, n = (CE.ids || []).length;
+  if (el) el.textContent = (i >= 0 && n) ? (i + 1) + " / " + n + " 列目" : "";
+  if (pv) pv.disabled = !(i > 0);
+  if (nx) nx.disabled = !(i >= 0 && i < n - 1);
+}
+/* 読みと枠を **まとめて**書き込む。枠に読みがぶら下がっているので 1 回で済む。 */
+async function ceWrite(){
+  if (CE.tab === "ch"){            /* 打ちかけの読みを、枠へ写してから送る */
+    var v = ceVals();
+    CE.boxes.forEach(function(b, i){ b.ch = v[i] || ""; });
+  }
+  if (!CE.boxes.length) throw new Error("枠が 1 つもありません");
+  var fd = new FormData();
+  fd.append("boxes", JSON.stringify(CE.boxes));
+  return await post("/api/takuhon/line/" + memEsc(CE.id) + "/boxes", fd);
+}
 async function ceSaveGo(){
   var b = document.getElementById("ceSave");
   b.disabled = true;
   try {
-    var fd = new FormData(), j;
-    if (CE.tab === "bx"){
-      /* **枠を直したとき**（2026-09-22）。読み（ch）は枠に付けたまま送る。 */
-      if (!CE.boxes.length) throw new Error("枠が 1 つもありません");
-      fd.append("boxes", JSON.stringify(CE.boxes));
-      j = await post("/api/takuhon/line/" + memEsc(CE.id) + "/boxes", fd);
-      memSay("✓ 枠を直しました（" + (j.n || 0) + " 枠／読み " + (j.read || 0) + " 字）。");
-    } else {
-      /* **配列で送る**（字を並べただけだと、面によっては 2 つに割れる字がある） */
-      fd.append("chars", JSON.stringify(ceVals()));
-      j = await post("/api/takuhon/line/" + memEsc(CE.id) + "/chars", fd);
-      memSay("✓ 読みを入れました（" + (j.read || 0) + " / " + (j.n || 0) + " 字）。" +
-             "［④ 読み］を回すと、この字が入ります。");
-    }
+    var j = await ceWrite();
     document.getElementById("chEd").hidden = true;
     memDraw(); bcCount();
+    memSay("✓ 入れました（" + (j.n || 0) + " 枠／読み " + (j.read || 0) + " 字）。" +
+           "［④ 読み］を回すと、この字が入ります。");
   } catch(e){
     alert("入れられませんでした（" + ((e && e.message) || "") + "）。");
   }
   b.disabled = false;
+}
+/* **前の列／次の列**（2026-09-22）。移る前に、その列を自動で保存する。 */
+async function ceGo(d){
+  var lst = CE.ids || [], at = CE.at + d;
+  if (at < 0 || at >= lst.length) return;
+  var pv = document.getElementById("cePrev"), nx = document.getElementById("ceNext");
+  pv.disabled = nx.disabled = true;
+  try { var j = await ceWrite(); memSay("✓ " + CE.id + " を入れました（読み " + (j.read || 0) + " 字）。"); }
+  catch(e){
+    if (!confirm("この列を保存できませんでした（" + ((e && e.message) || "") + "）。\n\n" +
+                 "それでも " + (d > 0 ? "次" : "前") + " の列へ移りますか。")){
+      ceAtShow(); return;
+    }
+  }
+  bcCount();                     /* 一覧は閉じるときに出し直す（並びが動かないように） */
+  await ceOpen(lst[at], lst);
 }
 /* 枠の手直し（消す・割る・つなぐ・足す・元に戻す） */
 function bxOp(what){
@@ -1820,8 +1905,13 @@ function bxOp(what){
   });
   window.addEventListener("resize", function(){ if (CE.tab === "bx") bxDraw(); });
   var m = {
-    ceClose: function(){ document.getElementById("chEd").hidden = true; },
+    ceClose: function(){
+      document.getElementById("chEd").hidden = true;
+      memDraw(); bcCount();        /* 移りながら入れた分を、一覧にも出し直す */
+    },
     ceSave: ceSaveGo,
+    cePrev: function(){ ceGo(-1); },
+    ceNext: function(){ ceGo(1); },
     ceClr: function(){ ceSet([]); },
     ceFill: function(){ ceSet(Array.from(document.getElementById("ceAll").value || "")); },
     bxDel: function(){ bxOp("del"); },
@@ -1838,9 +1928,15 @@ function bxOp(what){
   var z = document.getElementById("bxZoom");
   if (z) z.onchange = function(){ CE.zoom = +z.value || 0; bxDraw(); };
   var w = document.getElementById("chEd");
-  if (w) w.onclick = function(e){ if (e.target === w) w.hidden = true; };
+  if (w) w.onclick = function(e){
+    if (e.target === w){ w.hidden = true; memDraw(); bcCount(); }
+  };
   document.addEventListener("keydown", function(e){
-    if (e.key === "Escape" && w && !w.hidden) w.hidden = true;
+    if (!w || w.hidden) return;
+    if (e.key === "Escape"){ w.hidden = true; memDraw(); bcCount(); return; }
+    /* Alt ＋ ← → でも 列から列へ（打ちながら手を離さずに済む） */
+    if (e.altKey && e.key === "ArrowRight"){ e.preventDefault(); ceGo(1); }
+    if (e.altKey && e.key === "ArrowLeft"){ e.preventDefault(); ceGo(-1); }
   });
 })();
 async function memUse(el, id){

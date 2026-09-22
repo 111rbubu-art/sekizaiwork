@@ -2345,7 +2345,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v35.5";
+var APP_VER = "v35.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -19225,14 +19225,23 @@ function rubPanel(){
       '<b style="color:#FF8A00;">橙＝いくつもえらんだ</b></p>';
     h += rubBoxFixHtml();
     h += '<div class="chips" style="margin:4px 0 0;">' +
+      /* **枠の作り方を 3 つから選ぶ**（v35.6。本人の指示
+         「基本的に 1 行のみの枠付けをすることは無いので、
+           AI枠とアルゴリズム枠、枠クリアをボタンで切り替えられるようにして」）。
+         どれも **ぜんぶの列**が相手。1 列だけ作り直すのは、下の
+         ［この列だけ作り直す］。 */
+      '<span class="hint" style="margin-right:2px;">枠（ぜんぶの列）</span>' +
+      '<button class="mini primary" id="btnBoxAiAll" ' +
+      'title="AI が字の中心を出して枠を描きます。先に［AI 縁取りを実行］で' +
+      '墨を出しておくと、当たりがよくなります">🤖 AI で作る</button>' +
+      '<button class="mini" id="btnBoxAlgoAll" ' +
+      'title="AI の墨のすき間・覚えた 1 字の大きさ・手本帳で切ります（今までのやり方）">' +
+      '🧮 計算で作る</button>' +
+      '<button class="mini" id="btnBoxClrAll" ' +
+      'title="枠をぜんぶ消します（AI の墨・列の構成・覚えたものは残ります）">' +
+      '🧹 枠を消す</button>' +
       '<button class="mini" id="btnBoxAi" ' +
-      'title="列の切り抜きを拓本AI に渡して、1 字ずつの枠を描いてもらいます' +
-      '（墨のすき間で切るのではなく、AI が字の中心を出します）。' +
-      '先に［AI 縁取りを実行］で墨を出しておくと、当たりがよくなります">' +
-      '🤖 AI に枠を描かせる</button>' +
-      '<button class="mini" id="btnBoxAiAll" ' +
-      'title="列の指定に出ている列を、上から順に ぜんぶ AI に描かせます">' +
-      '🤖 ぜんぶの列に描かせる</button>' +
+      'title="いま選んでいる 1 列だけ、AI に描かせます">🤖 この列だけ AI</button>' +
       '<button class="mini' + (RUB.aiBand ? ' primary' : '') + '" id="btnLineTakeAi"' +
       (RUB.aiBand ? '' : ' disabled') + ' ' +
       'title="AI が読んだ墨から、この列の枠を作り直します（大きさ・字送り・太さ・傾きを測ります）">' +
@@ -19428,15 +19437,24 @@ function rubPanel(){
     try { await rubBoxAiGo(); } catch(e){
       msg("枠の AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
     }
-    bba.disabled = false; bba.textContent = "🤖 AI に枠を描かせる";
+    bba.disabled = false; bba.textContent = "🤖 この列だけ AI";
   };
+  var bbG = $("btnBoxAlgoAll");
+  if (bbG) bbG.onclick = async function(){
+    bbG.disabled = true; bbG.textContent = "作っています…";
+    try { await rubBoxAlgoAll(); } catch(e){
+      msg("計算の枠でつまずきました（" + ((e && e.message) || "") + "）。", true);
+    }
+    bbG.disabled = false; bbG.textContent = "🧮 計算で作る";
+  };
+  var bbC = $("btnBoxClrAll"); if (bbC) bbC.onclick = rubBoxClearAll;
   var bbA = $("btnBoxAiAll");
   if (bbA) bbA.onclick = async function(){
     bbA.disabled = true; bbA.textContent = "描いています…";
     try { await rubBoxAiAll(); } catch(e){
       msg("枠の AI でつまずきました（" + ((e && e.message) || "") + "）。", true);
     }
-    bbA.disabled = false; bbA.textContent = "🤖 ぜんぶの列に描かせる";
+    bbA.disabled = false; bbA.textContent = "🤖 AI で作る";
   };
   var brv = $("btnRegView"); if (brv) brv.onclick = function(){ rubRegView("now"); };
   /* 直した列を 拓本AI へ（v33.8） */
@@ -21142,6 +21160,60 @@ async function rubBoxAiAsk(q){
   return { boxes: bx, model: j.model || {}, ms: j.ms || 0, cut: cut,
            ink: j.ink || "", inkPct: j.inkPct, sentInk: !!ink };
 }
+/* **列の並びを 1 本ずつ通す**（v35.6）。AI・計算のどちらでも同じ道を通る。
+   本人の話「基本的に 1 行のみの枠付けをすることは無い」ので、
+   枠は **ぜんぶの列をまとめて**作る／消すのを ふつうにする。 */
+function rubColList(){
+  var mn = rubColMenu(), list = [];
+  mn.ups.forEach(function(c, i){ list.push({ c: c, kind: "上", i: i }); });
+  (mn.lows || []).forEach(function(c, i){ list.push({ c: c, kind: "下", i: i }); });
+  if (!list.length && RUB.cols && RUB.cols.length)
+    RUB.cols.forEach(function(c, i){ list.push({ c: c, kind: "", i: i }); });
+  return list;
+}
+/* 計算で枠を作る（AI の墨のすき間・覚えた大きさ・手本帳）。ぜんぶの列。 */
+async function rubBoxAlgoAll(){
+  var list = rubColList();
+  if (!list.length){
+    msg("列が分かりません。先に列を調べてください。", true); return;
+  }
+  if (!(RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey())){
+    msg("AI の墨がありません。先に［AI 縁取りを実行］を押してください" +
+        "（計算の枠は、墨のすき間で切るので 墨が要ります）。", true);
+    return;
+  }
+  var keep = { L: S.rub.bandL, R: S.rub.bandR };
+  var ok = 0, ng = 0, nCh = 0;
+  for (var i = 0; i < list.length; i++){
+    var it = list[i];
+    msg("計算で枠を作っています… " + (i+1) + " / " + list.length +
+        "（" + it.kind + (it.i + 1) + " 本目）", false, true);
+    await uiTick();
+    S.rub.bandL = it.c.a; S.rub.bandR = it.c.b;
+    A = null; RUB.mask = null;
+    var L7 = rubCol(); if (L7 && L7.boxFix) delete L7.boxFix;
+    var m2 = null;
+    try { m2 = rubLineTakeAi(); } catch(e){}
+    if (m2){ ok++; nCh += m2.n; } else ng++;
+  }
+  S.rub.bandL = keep.L; S.rub.bandR = keep.R;
+  A = null; RUB.mask = null;
+  persist(); rubPanel(); rubRender();
+  msg("計算で <b>" + ok + " 列</b>に枠を作りました（あわせて " + nCh + " 字）" +
+      (ng ? "／" + ng + " 列は作れませんでした" : "") + "。", !!ng, true);
+}
+/* 枠をぜんぶ消す（墨・列の構成・覚えたものは残す） */
+function rubBoxClearAll(){
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  if (!ls.length){ msg("消す枠がありません。", true); return; }
+  var nC = ls.length, nI = ls.reduce(function(a, L){ return a + L.items.length; }, 0);
+  if (!confirm("枠を消します（" + nC + " 列・" + nI + " 字）。\n\n" +
+               "AI の墨・列の構成・覚えたものは残ります。よろしいですか。")) return;
+  S.rub.lines = [];
+  rubSelCol = 0; rubSelItem = -1; rubSelSet = [];
+  persist(); rubPanel(); rubRender();
+  msg("枠を消しました（" + nC + " 列・" + nI + " 字）。墨と列の構成は残しています。");
+}
 /* **ぜんぶの列に、続けて AI で枠を描かせる**（v35.5。本人の問い
    「AI に枠を描かせる は 1 列ではある程度できるのですが、複数列まとめてはできないのですか」）。
    列の指定（上＝戒名／下＝命日ほか）の並びを、そのまま 1 本ずつ通す。
@@ -21159,7 +21231,7 @@ async function rubBoxAiAll(){
   }
   if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
   var keep = { L: S.rub.bandL, R: S.rub.bandR };
-  var ok = 0, ng = 0, nCh = 0, last = "", inkNo = 0;
+  var ok = 0, ng = 0, none = 0, nCh = 0, last = "", inkNo = 0;
   for (var i = 0; i < list.length; i++){
     var it = list[i];
     msg("AI が枠を描いています… " + (i+1) + " / " + list.length +
@@ -21169,15 +21241,19 @@ async function rubBoxAiAll(){
     A = null; RUB.mask = null;
     /* 列ごとの墨があるかを数える（無い列が多いと、当たりが落ちる） */
     if (!(RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url)) inkNo++;
-    var m2 = null;
-    try { m2 = await rubBoxAiGo(true); } catch(e){ last = (e && e.message) || ""; }
-    if (m2){ ok++; nCh += m2.n; } else { ng++; }
+    var m2 = null, err = "";
+    try { m2 = await rubBoxAiGo(true); } catch(e){ err = (e && e.message) || "通せませんでした"; }
+    if (m2){ ok++; nCh += m2.n; }
+    else if (err){ ng++; last = err; }
+    else { none++; }                      /* 通ったが、字を 1 つも見つけられなかった */
   }
   S.rub.bandL = keep.L; S.rub.bandR = keep.R;
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
   msg("AI が <b>" + ok + " 列</b>に枠を描きました（あわせて " + nCh + " 字）" +
-      (ng ? "／" + ng + " 列は描けませんでした（" + esc(last) + "）" : "") +
+      (none ? "／<b>" + none + " 列は字を見つけられませんでした</b>" +
+              "（枠のモデルがまだ育っていないか、墨がありません）" : "") +
+      (ng ? "／" + ng + " 列は通せませんでした（" + esc(last) + "）" : "") +
       (inkNo ? "／<b style=\"color:#B00020;\">" + inkNo + " 列は墨がありませんでした</b>" +
                "（先に［AI 縁取りを実行］を押すと当たりが上がります）" : "") +
       "。ちがう所は枠を直して、［⬆ この列の字枠を登録］で教えてください。", !!ng, true);

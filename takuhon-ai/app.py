@@ -1046,7 +1046,12 @@ def dash():
     f = os.path.join(ROOT, "dash.html")
     if not os.path.exists(f):
         return JSONResponse({"error": "no_dash"}, status_code=404)
-    return FileResponse(f, media_type="text/html; charset=utf-8")
+    # **画面は覚えさせない**（2026-09-22。本人の報告「まだ残っているようです」＝
+    # ブラウザが古い dash.html を使い続けていた）。毎回 読み直させる。
+    return FileResponse(f, media_type="text/html; charset=utf-8", headers={
+        "Cache-Control": "no-store, must-revalidate",
+        "Pragma": "no-cache",
+    })
 
 
 # ----- 画面から動かすための口（v2）。--------------------------------------

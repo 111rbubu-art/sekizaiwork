@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.9";
+var APP_VER = "v37.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -12657,20 +12657,29 @@ function rubBandQ(){
   var pars = [];
   (ct.cols || []).forEach(function(c, i2){
     if (!c.sp) return;
+    /* **親が分かっている列（AI の見分け・v37.0）は 親ごとにまとめる**。
+       となりあう親どうしが くっつくと、1 つの親に まざってしまうため */
+    if (c.pa !== undefined && c.pb !== undefined){
+      var pz = pars.filter(function(p3){ return p3.a === c.pa && p3.b === c.pb; })[0];
+      if (!pz) pars.push({ a: c.pa, b: c.pb, y0: num(c.y0, 0) });
+      return;
+    }
     var pv = pars[pars.length - 1];
-    if (pv && Math.abs(pv.b - c.a) < 3) pv.b = c.b;
-    else pars.push({ a: c.a, b: c.b });
+    if (pv && Math.abs(pv.b - c.a) < 3 && pv.pa === undefined) pv.b = c.b;
+    else pars.push({ a: c.a, b: c.b, y0: num(c.y0, 0) });
   });
   var par = null;
   pars.forEach(function(p2){ if (bc >= p2.a - 2 && bc <= p2.b + 2) par = p2; });
   if (!par) return q;
+  /* **境目は その親のもの**（v37.0。分かれ目ごとに高さがちがうことがある） */
+  var yCp = num(par.y0, 0) > 0 ? num(par.y0, 0) : yC;
   var pw = par.b - par.a;
   if (bw >= pw * 0.7){                                  /* 親まるごと＝上のかたまり */
-    if (yC - q.y1 > 40) return { x1: q.x1, x2: q.x2, y1: q.y1, y2: Math.min(q.y2, yC) };
+    if (yCp - q.y1 > 40) return { x1: q.x1, x2: q.x2, y1: q.y1, y2: Math.min(q.y2, yCp) };
     return q;
   }
-  if (q.y2 - yC > 40)                                   /* 子の列＝下のかたまり */
-    return { x1: q.x1, x2: q.x2, y1: Math.max(q.y1, yC), y2: q.y2 };
+  if (q.y2 - yCp > 40)                                  /* 子の列＝下のかたまり */
+    return { x1: q.x1, x2: q.x2, y1: Math.max(q.y1, yCp), y2: q.y2 };
   return q;
 }
 function rubBandLimit(){
@@ -14994,8 +15003,8 @@ async function rubAllAnalyze(opt){
   try {
     /* **前の AI の結果が 上下を見分けていない版なら、調べ直す**（v36.9）。
        `v2` の印が無い AI の結果は、上 1・下 2 を見ていない。 */
-    var old9 = S.rub.colsTop && S.rub.colsTop.by === "ai" && !S.rub.colsTop.v2 &&
-               bm9 && bm9.loaded;
+    var old9 = S.rub.colsTop && S.rub.colsTop.by === "ai" &&
+               num(S.rub.colsTop.v2, 0) < 2 && bm9 && bm9.loaded;
     if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey() || old9){
       /* **まず AI に列を調べさせる**（v35.4。本人の指示
          「拓本を解析で、AI による列の調査に変更してください」）。
@@ -18727,10 +18736,11 @@ function rubRender(){
       mnD.ups.forEach(function(c, i){
         /* **境目で止めるのは、下で分かれる列だけ**（v36.9）。分かれない列は
            上から下まで 1 本なので、境目で切って描くと「上だけの列」に見えてしまう。 */
-        var splitD = mnD.lows.some(function(l9){
-          var m9 = (l9.a + l9.b) / 2; return m9 >= c.a - 2 && m9 <= c.b + 2; });
+        var lowD = mnD.lows.filter(function(l9){
+          var m9 = (l9.a + l9.b) / 2; return m9 >= c.a - 2 && m9 <= c.b + 2; })[0];
+        var yEndD = lowD ? (num(lowD.y0, 0) > 0 ? num(lowD.y0, 0) : yCutD) : 0;
         drawList.push({ a: c.a, b: c.b, nm: (mnD.lows.length ? "上" : "") + (i+1),
-                        y0: topYD, y1: (yCutD > 0 && mnD.lows.length && splitD) ? yCutD : 0 });
+                        y0: topYD, y1: (yEndD > 0) ? yEndD : 0 });
       });
       mnD.lows.forEach(function(c, i){
         drawList.push({ a: c.a, b: c.b, nm: "下" + (i+1), low: 1,
@@ -18769,7 +18779,21 @@ function rubRender(){
     });
     /* **1 列から 2 列に変わる高さ**を、緑の線で出す（v25.4。本人の指示
        「上の1列と下の2列の境界の判別ができるようになればいいのですが」）。 */
-    if (num(ctD.yCut, 0) > 0){
+    /* **分かれ目ごとに 線を引く**（v37.0。AI の見分けは 親の列ごとに高さも本数も ちがう）。
+       線は その親の列の幅だけ（拓本の はしからはしまで引くと、分かれない列まで切れて見える）。 */
+    if (ctD.split && ctD.split.length){
+      ctD.split.forEach(function(sz9){
+        var ys9 = num(sz9.yCut, 0); if (!(ys9 > 0)) return;
+        var xa9 = Math.max(0, num(sz9.a, 0) - W * 0.02), xb9 = Math.min(W, num(sz9.b, W) + W * 0.02);
+        o.push('<line x1="' + xa9 + '" y1="' + ys9 + '" x2="' + xb9 + '" y2="' + ys9 +
+          '" stroke="#0A8A3C" stroke-width="' + (W*0.003) + '" stroke-dasharray="' +
+          (W*0.024) + ' ' + (W*0.012) + '"/>');
+        o.push('<text x="' + xa9 + '" y="' + (ys9 - W*0.014) +
+          '" fill="#0A8A3C" font-size="' + (W*0.022) + '" font-weight="700"' +
+          ' stroke="#fff" stroke-width="' + (W*0.006) + '" paint-order="stroke">' +
+          'ここから下は ' + ((sz9.kids && sz9.kids.length) || 2) + ' 列</text>');
+      });
+    } else if (num(ctD.yCut, 0) > 0){
       o.push('<line x1="0" y1="' + ctD.yCut + '" x2="' + W + '" y2="' + ctD.yCut +
         '" stroke="#0A8A3C" stroke-width="' + (W*0.003) + '" stroke-dasharray="' +
         (W*0.024) + ' ' + (W*0.012) + '"/>');
@@ -21740,93 +21764,137 @@ async function rubLineRegGo(all){
    渡し方：拓本ぜんたいをそのまま渡すと、字が小さく写りすぎて当たらない
    （枠の AI は「列 1 本ぶんの切り抜き」で学んでいる）。
    そこで **字 1.3 個ぶんの幅の短ざく**を、半分ずつ重ねながら横に流す。 */
-/* ───── **上 1 列・下 2 列を、AI の枠から見分ける**（v36.9。本人の報告
-   「下側が 2 列になっているので そこを見極められればと思ったのですが、
-     特に之という字は全く墨がつかなかった」→「枠が無く、墨もないです」）─────
-   AI で列を調べると、枠を **横の位置だけ**でまとめていたので、
-   上の戒名の下で 2 本に分かれる所を **1 本の列**として扱っていた。
-   その列の真ん中に窓も枠も並ぶので、**片側の列の字（之）には枠も墨も付かなかった**。
+/* ───── **列が下で分かれる所を、AI の枠の「縦のつながり」で見分ける**
+   （v36.9 → v37.0 で作り直し。本人の訂正
+   「戒名（大 6 字）・下の左右（小 5 字ずつ）… は過去の例であって、必ずこうなるわけではないので、
+     これを前提にやるとおかしくなります。AI 枠で判別つきませんか」）─────
+   v36.9 は「上が大きい字・下が小さい字」「分かれるのは 2 本」を前提にしていた。
+   字の大きさが同じ拓本や、3 本に分かれる拓本では 見分けられない。
+   **字の大きさ・本数・場所を決めつけず、AI の枠のならびだけで決める。**
 
-   AI の枠には 1 字ずつの **位置と大きさ** があるので、それで見分ける：
-     ① 字を **大きい字／小さい字** に分ける（大きさの並びで、いちばん比の大きいすき間）。
-        戒名は大きく、命日・年齢は小さい（本人「命日・年齢は戒名より小さい」）。
-        はっきり分かれなければ、見分けない（これまでどおり）。
-     ② **大きい字の 横のかたまり ＝ 親の列**（上の戒名）
-     ③ 親の列の **下にある 小さい字** を集め、横で いちばん空いている所で 2 つに分ける。
-        ・それぞれ 2 字以上
-        ・すき間が 小さい字の 0.45 個ぶん以上（せまければ 1 列）
-        ・2 本が **同じ高さに並んでいる**（たての重なり 3 割以上）
-        を みたせば「下で 2 本に分かれる」。
-     ④ 境目（yCut）は、大きい字の下はしと 小さい字の上はしの まん中。
-   返り … null（分かれていない）か { pars:[{a,b,cut,yCut,nL,nR}], bigS, smS } */
+     ① 1 字ずつ、**すぐ上の字**とつなぐ。
+        つなぐのは「横に 3 割以上 重なる」「縦に 離れすぎていない」字のうち、
+        いちばん近い高さで いちばん重なるもの。
+     ② つないでいくと **縦につながった鎖＝列** ができる。
+     ③ **1 つの字の下に、横に並んだ字が 2 つ以上 ぶら下がったら**、そこで列が分かれている
+        （ぶら下がった字どうしが 同じ高さに並び＝たての重なり 3 割以上、
+          横には あまり重ならない＝3 割未満）。
+        ぶら下がった先の鎖は それぞれ 2 字以上（1 字だけは 拾いまちがいとみる）。
+     ④ 境目は、分かれる字の下はしと ぶら下がった字の上はしの まん中。**分かれ目ごと**に持つ。
+   返り … null（分かれていない）か
+          { pars:[{ a, b, yCut, kids:[{a,b,n}], nUp }] } */
 function rubAiSplitFind(keep){
-  if (!keep || keep.length < 6) return null;
-  function sz(b){ return Math.max(b.w, b.h); }
-  var ss = keep.map(sz).sort(function(a, b){ return a - b; });
-  var bk = -1, br = 1, k;
-  for (k = 1; k + 2 < ss.length; k++){               /* 両がわに 2 個以上 */
-    var r0 = ss[k + 1] / Math.max(1, ss[k]);
-    if (r0 > br){ br = r0; bk = k; }
+  if (!keep || keep.length < 4) return null;
+  var bx = keep.slice().sort(function(p, q){ return p.y - q.y; });
+  var n = bx.length, i, j;
+  function hov(p, q){                               /* 横の重なり */
+    return Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
   }
-  if (bk < 0 || br < 1.25) return null;              /* 大小が はっきりしない */
-  var thr = Math.sqrt(ss[bk] * ss[bk + 1]);
-  var big = keep.filter(function(b){ return sz(b) >= thr; });
-  var small = keep.filter(function(b){ return sz(b) < thr; });
-  if (big.length < 2 || small.length < 4) return null;
-  var bigS = _med(big.map(sz)), smS = _med(small.map(sz));
+  function vov(p, q){                               /* たての重なり */
+    return Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
+  }
+  /* ① すぐ上の字（親）をさがす */
+  var par = new Array(n), kids = [];
+  for (i = 0; i < n; i++){ par[i] = -1; kids.push([]); }
+  /* つなぐ条件（v37.0 の試しで ゆるめた）：
+       ・横の重なり … 細い方の 3 割以上（半分だと、字の大きさが同じ 2 列は
+         どちらも上の字と半分弱しか重ならず、つながらなかった）
+       ・縦の離れ … 字 3 個ぶんか 拓本の高さの 2 割の 大きい方まで
+         （戒名と下の列のあいだは 空いていることが多い）
+     ゆるめた代わりに、**いちばん近い高さの字の中から、いちばん重なる字**を選ぶ。
+     となりの列の字と取りちがえないため。 */
+  for (j = 0; j < n; j++){
+    var b2 = bx[j], cand = [], bg = Infinity;
+    for (i = 0; i < n; i++){
+      if (i === j) continue;
+      var a2 = bx[i];
+      if (!(a2.y + a2.h / 2 < b2.y + b2.h / 2)) continue;          /* 上にある字だけ */
+      var ho = hov(a2, b2);
+      if (!(ho >= 0.3 * Math.min(a2.w, b2.w))) continue;          /* 横に 3 割以上 重なる */
+      var gap = b2.y - (a2.y + a2.h);
+      if (gap < -0.3 * Math.min(a2.h, b2.h)) continue;            /* 重なりすぎ（同じ字の二重） */
+      /* 離れすぎ … 字 3 個ぶんか、拓本の高さの 2 割の 大きい方まで
+         （戒名と下の列のあいだは 大きく空くことがある。横の重なりで絞っているので
+           となりの列とは つながらない） */
+      if (gap > Math.max(3.0 * Math.max(a2.h, b2.h), (RUB.H || 0) * 0.2)) continue;
+      cand.push({ i: i, gap: gap, ho: ho });
+      if (gap < bg) bg = gap;
+    }
+    if (!cand.length) continue;
+    var best = -1, bho = -1;
+    cand.forEach(function(c9){
+      if (c9.gap > bg + 0.25 * b2.h) return;                      /* いちばん近い高さの字だけ */
+      if (c9.ho > bho){ bho = c9.ho; best = c9.i; }
+    });
+    if (best >= 0){ par[j] = best; kids[best].push(j); }
+  }
+  /* ② 鎖の長さ（下へ何字つながるか）。分かれていれば いちばん長い枝 */
+  var down = new Array(n);
+  function dn(k){
+    if (down[k] !== undefined) return down[k];
+    down[k] = 1;
+    var mx0 = 0;
+    kids[k].forEach(function(c){ mx0 = Math.max(mx0, dn(c)); });
+    down[k] = 1 + mx0;
+    return down[k];
+  }
+  for (i = 0; i < n; i++) dn(i);
+  /* 鎖の字をぜんぶ集める（そこから下） */
+  function below(k, acc){
+    acc.push(bx[k]);
+    kids[k].forEach(function(c){ below(c, acc); });
+    return acc;
+  }
+  function above(k){                                 /* そこから上（親をたどる） */
+    var acc = [], c = k;
+    while (c >= 0){ acc.push(bx[c]); c = par[c]; }
+    return acc;
+  }
   function mn(a){ return Math.min.apply(null, a); }
   function mx(a){ return Math.max.apply(null, a); }
-  /* ② 親の列（大きい字の横のかたまり） */
-  var bc = big.map(function(b){ return { c: b.x + b.w / 2, b: b }; })
-              .sort(function(p, q){ return p.c - q.c; });
-  var pars = [], cur = [bc[0]];
-  for (k = 1; k < bc.length; k++){
-    if (bc[k].c - bc[k - 1].c > bigS * 0.6){ pars.push(cur); cur = []; }
-    cur.push(bc[k]);
-  }
-  pars.push(cur);
+  /* ③ 分かれ目をさがす */
   var out = [];
-  pars.forEach(function(pr){
-    if (pr.length < 2) return;
-    var bs = pr.map(function(o){ return o.b; });
-    var a = mn(bs.map(function(b){ return b.x; }));
-    var bR = mx(bs.map(function(b){ return b.x + b.w; }));
-    var bigBot = mx(bs.map(function(b){ return b.y + b.h; }));
-    var cMid = (a + bR) / 2, half = Math.max((bR - a) / 2, bigS * 0.5);
-    /* ③ その親の 下にある 小さい字 */
-    var sub = small.filter(function(s){
-      var cx = s.x + s.w / 2, cy = s.y + s.h / 2;
-      return Math.abs(cx - cMid) <= half + bigS * 0.3 && cy > bigBot - bigS * 0.3;
-    });
-    if (sub.length < 4) return;
-    var sc = sub.map(function(s){ return { c: s.x + s.w / 2, s: s }; })
-                .sort(function(p, q){ return p.c - q.c; });
-    var gi = -1, gv = 0, t;
-    for (t = 1; t < sc.length; t++){
-      var g = sc[t].c - sc[t - 1].c;
-      if (g > gv){ gv = g; gi = t; }
+  for (i = 0; i < n; i++){
+    var ks = kids[i].filter(function(c){ return dn(c) >= 2; });   /* 2 字以上 続く枝だけ */
+    if (ks.length < 2) continue;
+    /* 横に並んでいる枝どうしだけを 組にする */
+    ks.sort(function(p, q){ return (bx[p].x + bx[p].w / 2) - (bx[q].x + bx[q].w / 2); });
+    var side = [ks[0]];
+    for (j = 1; j < ks.length; j++){
+      var p0 = bx[side[side.length - 1]], q0 = bx[ks[j]];
+      var sideBySide = vov(p0, q0) >= 0.3 * Math.min(p0.h, q0.h) &&
+                       hov(p0, q0) < 0.3 * Math.min(p0.w, q0.w);
+      if (sideBySide) side.push(ks[j]);
     }
-    if (gi < 2 || sc.length - gi < 2) return;        /* 片がわ 2 字以上 */
-    if (gv < smS * 0.45) return;                     /* すき間がせまい＝ 1 列 */
-    var Ls = sc.slice(0, gi).map(function(o){ return o.s; });
-    var Rs = sc.slice(gi).map(function(o){ return o.s; });
-    var lT = mn(Ls.map(function(s){ return s.y; })), lB = mx(Ls.map(function(s){ return s.y + s.h; }));
-    var rT = mn(Rs.map(function(s){ return s.y; })), rB = mx(Rs.map(function(s){ return s.y + s.h; }));
-    var ovY = Math.min(lB, rB) - Math.max(lT, rT);
-    if (!(ovY > 0.3 * Math.min(lB - lT, rB - rT))) return;   /* 同じ高さに並んでいない */
-    var lb = mx(Ls.map(function(s){ return s.x + s.w; }));
-    var ra = mn(Rs.map(function(s){ return s.x; }));
-    var la = mn(Ls.map(function(s){ return s.x; }));
-    var rb = mx(Rs.map(function(s){ return s.x + s.w; }));
-    var subTop = Math.min(lT, rT);
-    out.push({
-      a: Math.round(Math.min(a, la)), b: Math.round(Math.max(bR, rb)),
-      cut: Math.round((lb + ra) / 2),
-      yCut: Math.round(subTop > bigBot ? (bigBot + subTop) / 2 : subTop),
-      nL: Ls.length, nR: Rs.length, nBig: bs.length
+    if (side.length < 2) continue;
+    var up = above(i);
+    var kidCols = side.map(function(c){
+      var bs = below(c, []);
+      return { a: mn(bs.map(function(q){ return q.x; })),
+               b: mx(bs.map(function(q){ return q.x + q.w; })),
+               top: mn(bs.map(function(q){ return q.y; })), n: bs.length };
     });
+    var all9 = up.concat.apply(up, side.map(function(c){ return below(c, []); }));
+    var aX = mn(all9.map(function(q){ return q.x; }));
+    var bX = mx(all9.map(function(q){ return q.x + q.w; }));
+    var upBot = bx[i].y + bx[i].h;
+    var kTop = mn(kidCols.map(function(k9){ return k9.top; }));
+    out.push({
+      a: Math.round(aX), b: Math.round(bX),
+      yCut: Math.round(kTop > upBot ? (upBot + kTop) / 2 : kTop),
+      kids: kidCols.map(function(k9){ return { a: Math.round(k9.a), b: Math.round(k9.b), n: k9.n }; }),
+      nUp: up.length
+    });
+  }
+  if (!out.length) return null;
+  /* 同じ親を 2 度数えないよう、横に重なる分かれ目は いちばん上のもの（字が多い方）だけ */
+  out.sort(function(p, q){ return p.yCut - q.yCut; });
+  var keep9 = [];
+  out.forEach(function(o){
+    if (keep9.some(function(k9){ return Math.min(k9.b, o.b) - Math.max(k9.a, o.a) > 0; })) return;
+    keep9.push(o);
   });
-  return out.length ? { pars: out, bigS: bigS, smS: smS } : null;
+  return { pars: keep9 };
 }
 async function rubColsAi(quiet){
   var base = takuApiBase();
@@ -21950,7 +22018,7 @@ async function rubColsAi(quiet){
   var spl = null;
   try { spl = rubAiSplitFind(keep); } catch(eS){ spl = null; }
   if (spl){
-    /* 上の列：分かれる親は 親の幅まるごと。ほかの列は そのまま（親に入るものは 取りこむ） */
+    /* 上の列：分かれ目のある親は 親の幅まるごと。ほかの列は そのまま（親に入るものは 取りこむ） */
     var tops = spl.pars.map(function(pz){ return { a: pz.a, b: pz.b, par: pz }; });
     cols.forEach(function(c9){
       var m9 = (c9.a + c9.b) / 2;
@@ -21964,17 +22032,21 @@ async function rubColsAi(quiet){
         tops[z9].b = md9; tops[z9 + 1].a = md9;
       }
     }
-    var yCs = spl.pars.map(function(pz){ return pz.yCut; }).sort(function(a, b){ return a - b; });
-    var yCut9 = yCs[Math.floor(yCs.length / 2)];
+    /* 境目は **分かれ目ごと**（下の列の y0）。まとめの yCut は いちばん上のもの */
+    var yCs = spl.pars.map(function(pz){ return pz.yCut; });
+    var yCut9 = Math.min.apply(null, yCs);
     var lowList = [];
     tops.forEach(function(t9){
-      if (t9.par){
-        var cut9 = Math.max(t9.a + 4, Math.min(t9.b - 4, t9.par.cut));
-        lowList.push({ a: t9.a, b: cut9, sp: true, y0: yCut9 });
-        lowList.push({ a: cut9, b: t9.b, sp: true, y0: yCut9 });
-      } else {
-        lowList.push({ a: t9.a, b: t9.b, sp: false, y0: 0 });
-      }
+      if (!t9.par){ lowList.push({ a: t9.a, b: t9.b, sp: false, y0: 0 }); return; }
+      /* 下の列：ぶら下がった枝の数だけ。となりどうしの まん中で分け、両はしは 親の幅まで */
+      var kz = t9.par.kids.slice().sort(function(p, q){ return p.a - q.a; });
+      var cutsX = [];
+      for (var c9 = 0; c9 + 1 < kz.length; c9++)
+        cutsX.push(Math.round((kz[c9].b + kz[c9 + 1].a) / 2));
+      var edges = [t9.a].concat(cutsX).concat([t9.b]);
+      for (var e9 = 0; e9 + 1 < edges.length; e9++)
+        lowList.push({ a: edges[e9], b: edges[e9 + 1], sp: true, y0: t9.par.yCut,
+                       pa: t9.a, pb: t9.b });
     });
     S.rub.colsTop = { cols: lowList, geo: rubGeoKey(), at: Date.now(),
                       rows: 0, how: "ai", by: "ai", side: sideUsed,
@@ -21982,25 +22054,26 @@ async function rubColsAi(quiet){
                       yCut: Math.round(yCut9),
                       topN: tops.length,
                       topCols: tops.map(function(t9){ return { a: t9.a, b: t9.b }; }),
-                      chars: keep.length, v2: 1,
+                      chars: keep.length, v2: 2,
                       split: spl.pars.map(function(pz){
-                        return { a: pz.a, b: pz.b, nL: pz.nL, nR: pz.nR, nBig: pz.nBig }; }),
-                      bigMm: spl.bigS * mpp, smMm: spl.smS * mpp };
+                        return { a: pz.a, b: pz.b, yCut: pz.yCut, nUp: pz.nUp,
+                                 kids: pz.kids.map(function(k9){ return k9.n; }) }; }) };
     RUB.cols = lowList;
     persist();
     if (!quiet)
       msg("AI が <b>上 " + tops.length + " 列・下 " +
           lowList.length + " 列</b>を見つけました（" +
-          spl.pars.length + " 本が 下で 2 つに分かれます。境目は 上から <b>" +
-          mmT(yCut9) + "</b>＝緑の線。大きい字 " + (spl.bigS * mpp).toFixed(1) +
-          "mm／小さい字 " + (spl.smS * mpp).toFixed(1) + "mm）。" +
+          spl.pars.map(function(pz){
+            return mmRange(pz.a, pz.b) + " の列が 上から " + mmT(pz.yCut) + " で " +
+                   pz.kids.length + " 本に分かれます";
+          }).join("／") + "。緑の線が境目）。" +
           "線がずれていたら、下の欄か ↑↓ で直してください。", false, true);
     return S.rub.colsTop;
   }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
                     rows: 0, how: "ai", by: "ai", side: sideUsed,
                     dir: "top", y0: Math.round(ar.y1), y1: Math.round(ar.y2),
-                    chars: keep.length, v2: 1 };
+                    chars: keep.length, v2: 2 };
   persist();
   if (!quiet)
     msg("AI が <b>" + cols.length + " 列</b>を見つけました（字 " + keep.length + " 個／" +

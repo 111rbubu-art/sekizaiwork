@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.7";
+var APP_VER = "v36.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14900,7 +14900,78 @@ function rubAnalyzeReset(){
       "<b>覚えたことは そのまま</b>です（手本帳 " + rubTehonCount() + " 枚）。" +
       "［拓本を解析］で、はじめからやり直せます。", false, true);
 }
-async function rubAllAnalyze(){
+/* ───── **1 字ずつ、枠の真ん中で 墨の AI に通す**（v36.8。［拓本を解析2（テスト）］用）─────
+   本人の問い「拓本解析での墨出し状態で、枠を右クリックして、この字だけ AI に通すと
+   墨と異なるのですがなぜですか」→「拓本を解析2 というテストボタンを作ってやりましょうか」。
+
+   列の墨は「列の真ん中に、上から一定の間隔で並べた窓」で作るので、
+   字が窓の境で切れ、AI には 上の字の下半分＋下の字の上半分 が写る。
+   墨の AI の学習材料は **字の枠 × 1.2 を、字を真ん中に切った絵**なので、
+   こちらの切り方の方が 学習と同じ条件になる（右クリックの［この字だけ AI に通す］と同じ）。
+
+   ・窓 … 枠 × 1.2、枠の真ん中（`rubAiOne` と同じ）
+   ・採る所 … AI の返した絵のうち **その字の枠を 8% 広げた所だけ**
+     （窓の ふちに写った となりの字の切れはしは、AI の見立てが弱いので採らない）
+   ・重なりは 濃い方
+   ・**列の墨は 入れかえる**（重ねない。比べるためのテストなので）
+   返り … { n: 通した字の数, ink: 墨のます目の数 } */
+async function rubInkPerChar(L, tag){
+  var base = takuApiBase();
+  if (!base) throw new Error(takuAiOffNote());
+  var its = (L.items || []).filter(function(it){ return it && it.px; });
+  if (!its.length) return null;
+  var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H));
+  var mw = Math.max(1, Math.round(RUB.W * SC)), mh = Math.max(1, Math.round(RUB.H * SC));
+  var acc = document.createElement("canvas"); acc.width = mw; acc.height = mh;
+  var ag = acc.getContext("2d", { willReadFrequently: true });
+  ag.fillStyle = "#000"; ag.fillRect(0, 0, mw, mh);
+  ag.globalCompositeOperation = "lighten";            /* 重なりは 濃い方 */
+  var ok = 0, EX = 0.08;
+  for (var i = 0; i < its.length; i++){
+    if (AIPROG_STOP) break;
+    var b = its[i].px, side = Math.max(b.w, b.h) * 1.2;
+    var cx0 = b.x + b.w / 2 - side / 2, cy0 = b.y + b.h / 2 - side / 2;
+    aiProg(tag || "1 字ずつ", "枠の真ん中で AI に通しています " + (i + 1) + " / " + its.length);
+    await uiTick();
+    var blob = await rubCropPng(cx0, cy0, side);
+    var fd = new FormData();
+    fd.append("file", blob, "raw.png");
+    fd.append("stage", "ink"); fd.append("soft", "true");
+    var r = await fetch(base + "/api/takuhon/clean", { method: "POST", body: fd });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    var bu = URL.createObjectURL(await r.blob());
+    var img = await new Promise(function(res, rej){
+      var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej; im.src = bu;
+    });
+    ag.save();
+    ag.beginPath();
+    ag.rect((b.x - b.w * EX) * SC, (b.y - b.h * EX) * SC,
+            b.w * (1 + 2 * EX) * SC, b.h * (1 + 2 * EX) * SC);
+    ag.clip();
+    ag.drawImage(img, cx0 * SC, cy0 * SC, side * SC, side * SC);
+    ag.restore();
+    URL.revokeObjectURL(bu);
+    ok++;
+  }
+  /* 濃さを そのまま「青の透け具合」にする（列の墨と同じ見せ方） */
+  var im2 = ag.getImageData(0, 0, mw, mh), o2 = im2.data, n1 = 0;
+  for (var k = 0; k < o2.length; k += 4){
+    var v = o2[k]; if (v > 127) n1++;
+    o2[k] = 30; o2[k + 1] = 110; o2[k + 2] = 220; o2[k + 3] = v;
+  }
+  ag.globalCompositeOperation = "source-over";
+  ag.clearRect(0, 0, mw, mh);
+  ag.putImageData(im2, 0, 0);
+  var url = acc.toDataURL("image/png");
+  L.aiUrl = url; L.aiSc = SC; L.aiId = (++AIBAND_SEQ); L.geo = rubGeoKey();
+  L.inkBy = "char";                                   /* 1 字ずつの墨（見分け用） */
+  if (L.band) rubInkPut(L.band, { url: url, sc: SC, id: L.aiId });
+  return { n: ok, ink: n1 };
+}
+async function rubAllAnalyze(opt){
+  /* opt.pass2 … ［拓本を解析2（テスト）］。② のあとに
+     「1 字ずつの墨 → もう一度 枠の AI」を足す（v36.8） */
+  opt = opt || {};
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   if (!mmPerPx()){ msg("先に較正してください（実測した文字全長）。", true); return; }
@@ -14982,6 +15053,53 @@ async function rubAllAnalyze(){
   if (!ls.length){ msg("枠を作れませんでした。［AI に送る絵を見る］で、墨が出ているか確かめてください。", true); return; }
   step.push("枠：" + ls.length + " 列・" +
             ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字（" + boxBy9 + "）");
+  /* ───── **2 周目**（［拓本を解析2（テスト）］だけ。v36.8）─────
+     ②' 1 周目の枠を使って、**1 字ずつ枠の真ん中で**墨の AI に通し、列の墨を入れかえる
+     ②'' その墨で **もう一度 枠の AI**（手で直した列は とばす）
+     1 周目と 2 周目の 字の数を 列ごとに並べて、効いたかどうかが見えるようにする。 */
+  if (opt.pass2){
+    var t2a = Date.now(), nChar2 = 0, nLine2 = 0, e2 = "";
+    aiProgOn();
+    try {
+      for (var q2 = 0; q2 < ls.length; q2++){
+        if (AIPROG_STOP) break;
+        msg("②' 1 字ずつ 墨を出し直しています… 列 " + (q2 + 1) + " / " + ls.length, false, true);
+        var g2 = await rubInkPerChar(ls[q2], "列 " + (q2 + 1) + " / " + ls.length);
+        if (g2){ nChar2 += g2.n; nLine2++; }
+      }
+    } catch(e){ e2 = (e && e.message) || "?"; }
+    aiProgOff();
+    persist(); rubRender();
+    step.push("1 字ずつの墨：" + nLine2 + " 列・" + nChar2 + " 字（" +
+              Math.round((Date.now() - t2a) / 100) / 10 + " 秒）" +
+              (e2 ? "／とちゅうで止まりました（" + esc(e2) + "）" : ""));
+    if (bm9 && bm9.loaded && !e2){
+      /* 1 周目の字の数を控えてから、2 周目 */
+      var before2 = ls.map(function(L){
+        return { mid: (num(L.band && L.band.L, 0) + num(L.band && L.band.R, 0)) / 2,
+                 n: L.items.length, fix: !!L.boxFix };
+      });
+      msg("②'' その墨で もう一度 枠の AI に描かせています…", false, true);
+      await uiTick();
+      try { await rubBoxAiAll({ quiet: true, skipFixed: true }); } catch(e){}
+      var ls2 = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+      var cmp2 = before2.map(function(bf, k2){
+        var hit2 = null;
+        ls2.forEach(function(L){
+          var m2 = (num(L.band && L.band.L, 0) + num(L.band && L.band.R, 0)) / 2;
+          if (!hit2 || Math.abs(m2 - bf.mid) < Math.abs(
+                ((num(hit2.band && hit2.band.L, 0) + num(hit2.band && hit2.band.R, 0)) / 2) - bf.mid))
+            hit2 = L;
+        });
+        var a2 = hit2 ? hit2.items.length : 0;
+        return (k2 + 1) + "列 " + bf.n + "→" + a2 + (bf.fix ? "（手直し）" : "");
+      });
+      step.push("枠 2 周目（1 周目→2 周目の字の数）：" + cmp2.join("・"));
+      ls = ls2;
+    } else if (!(bm9 && bm9.loaded)){
+      step.push("枠 2 周目：枠の AI が入っていないので とばしました");
+    }
+  }
   /* ③ 読みと まとまり。
      ───── **読みは AI で**（v36.7。本人の指示「読みの AI へも変更で」）─────
      読みの AI が入っていれば ぜんぶの列を読ませ、その読みから まとまりを付ける
@@ -15019,14 +15137,16 @@ async function rubAllAnalyze(){
   });
   var gTx = RUBGRP.map(function(g){
     return grp[g.k] ? g.nm + " " + grp[g.k] + " 字" : ""; }).filter(Boolean).join("・");
-  var sum = "<b>拓本を解析しました。</b>" + step.join("／") + "。" +
+  var sum = "<b>" + (opt.pass2 ? "拓本を解析2（テスト）を通しました。" : "拓本を解析しました。") +
+    "</b>" + step.join("／") + "。" +
     (hs.length ? "　字の大きさ <b>高さ " + _med(hs).toFixed(1) + "mm・横 " +
       _med(ws).toFixed(1) + "mm</b>" + (ps.length ? "・字送り <b>" +
       _med(ps).toFixed(1) + "mm</b>" : "") : "") +
     (gTx ? "　まとまり：<b>" + gTx + "</b>" : "") +
     "　ちがう所は <b>4 ─ 直す</b> で直して、［もう一度 解析］を押してください。";
   /* 3 ─ 解析 の結果を 1 行で残す（v33.6） */
-  S.rub.anaLast = { tx: step.join("／") + (hs.length ? "／字 高さ " + _med(hs).toFixed(1) +
+  S.rub.anaLast = { tx: (opt.pass2 ? "［解析2］" : "") + step.join("／") +
+    (hs.length ? "／字 高さ " + _med(hs).toFixed(1) +
     "mm・横 " + _med(ws).toFixed(1) + "mm" : "") + (gTx ? "／" + gTx : ""), ts: Date.now() };
   persist();
   msg(sum, false, true);
@@ -19745,6 +19865,12 @@ function rubPanel(){
       'title="① 列を調べる → ② 墨を出して 枠の AI で 1 字ずつの枠 → ' +
       '③ 読みの AI で読んで 戒名・命日・俗名・年齢に分ける、までを ひと押しで通します' +
       '（AI が入っていなければ、計算・手本合わせに戻ります）">拓本を解析</button>' +
+      /* **テスト用の 2 周目**（v36.8） */
+      ' <button class="mini" id="btnAnalyze2" ' +
+      'title="［拓本を解析］に 2 周目を足したテスト版です。' +
+      '① 列 → ② 列の墨 → 枠の AI → ②\' 1 字ずつ 枠の真ん中で墨を出し直す → ' +
+      '②\'\' その墨で もう一度 枠の AI → ③ 読みの AI。' +
+      '1 字ずつ AI に通すので、字の数だけ時間がかかります">拓本を解析2（テスト）</button>' +
       ' <button class="mini" id="btnAnalyzeClr" ' +
       'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
       '手本帳・覚えた大きさ・較正・範囲は残ります">やり直す（消す）</button>';
@@ -19968,6 +20094,13 @@ function rubPanel(){
     try { await rubAllAnalyze(); } catch(e){ msg("解析でつまずきました（" +
       ((e && e.message) || "") + "）。", true); }
     bza.disabled = false; bza.textContent = "拓本を解析";
+  };
+  var bz2 = $("btnAnalyze2");
+  if (bz2) bz2.onclick = async function(){
+    bz2.disabled = true; bz2.textContent = "解析2 しています…";
+    try { await rubAllAnalyze({ pass2: true }); } catch(e){ msg("解析2 でつまずきました（" +
+      ((e && e.message) || "") + "）。", true); }
+    bz2.disabled = false; bz2.textContent = "拓本を解析2（テスト）";
   };
   var bta = $("btnLineTakeAi");
   if (bta) bta.onclick = function(){
@@ -21893,6 +22026,7 @@ function rubKeepInk(m2, q){
     m2.aiUrl = prev.aiUrl;
     m2.aiSc = num(prev.aiSc, 0) || m2.aiSc || 0;
     m2.aiId = num(prev.aiId, 0) || m2.aiId || 0;
+    if (prev.inkBy) m2.inkBy = prev.inkBy;       /* どう作った墨か（v36.8） */
     return true;
   }
   /* **控えにあれば、その帯の墨**（v35.8。枠を消したあとでも残っている） */

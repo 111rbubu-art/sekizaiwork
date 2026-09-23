@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v36.8";
+var APP_VER = "v36.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14992,7 +14992,11 @@ async function rubAllAnalyze(opt){
      「［拓本を解析］に［列を調べ直す］この機能は入っていましたか？」） */
   var did9 = false, by9 = "";
   try {
-    if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey()){
+    /* **前の AI の結果が 上下を見分けていない版なら、調べ直す**（v36.9）。
+       `v2` の印が無い AI の結果は、上 1・下 2 を見ていない。 */
+    var old9 = S.rub.colsTop && S.rub.colsTop.by === "ai" && !S.rub.colsTop.v2 &&
+               bm9 && bm9.loaded;
+    if (!S.rub.colsTop || S.rub.colsTop.geo !== rubGeoKey() || old9){
       /* **まず AI に列を調べさせる**（v35.4。本人の指示
          「拓本を解析で、AI による列の調査に変更してください」）。
          枠の AI が入っていない／見つけられないときだけ、いままでの計算に戻す。 */
@@ -15019,9 +15023,11 @@ async function rubAllAnalyze(opt){
       by9 = (S.rub.colsTop.by === "ai") ? "AI" : "計算";
     }
     var mn = rubColMenu();
+    var ctS = S.rub.colsTop || {};
     step.push((did9 ? "列を調べました（" + by9 + "）" : "列は前のまま（" + by9 + "）") +
               "：上 " + mn.ups.length + " 列" +
-              (mn.lows.length ? "／下 " + mn.lows.length + " 列" : ""));
+              (mn.lows.length ? "／下 " + mn.lows.length + " 列" +
+                 (num(ctS.yCut, 0) > 0 ? "（境目 上から " + mmT(ctS.yCut) + "）" : "") : ""));
   } catch(e){ step.push("列：調べられませんでした"); }
   /* ② 枠。
      ───── **枠は AI で作る**（v36.7。本人の指示「最近は枠の AI の方がいいので、変更しましょう」）─────
@@ -18719,8 +18725,12 @@ function rubRender(){
     var drawList = [];
     if (mnD.ups.length){
       mnD.ups.forEach(function(c, i){
+        /* **境目で止めるのは、下で分かれる列だけ**（v36.9）。分かれない列は
+           上から下まで 1 本なので、境目で切って描くと「上だけの列」に見えてしまう。 */
+        var splitD = mnD.lows.some(function(l9){
+          var m9 = (l9.a + l9.b) / 2; return m9 >= c.a - 2 && m9 <= c.b + 2; });
         drawList.push({ a: c.a, b: c.b, nm: (mnD.lows.length ? "上" : "") + (i+1),
-                        y0: topYD, y1: (yCutD > 0 && mnD.lows.length) ? yCutD : 0 });
+                        y0: topYD, y1: (yCutD > 0 && mnD.lows.length && splitD) ? yCutD : 0 });
       });
       mnD.lows.forEach(function(c, i){
         drawList.push({ a: c.a, b: c.b, nm: "下" + (i+1), low: 1,
@@ -21730,6 +21740,94 @@ async function rubLineRegGo(all){
    渡し方：拓本ぜんたいをそのまま渡すと、字が小さく写りすぎて当たらない
    （枠の AI は「列 1 本ぶんの切り抜き」で学んでいる）。
    そこで **字 1.3 個ぶんの幅の短ざく**を、半分ずつ重ねながら横に流す。 */
+/* ───── **上 1 列・下 2 列を、AI の枠から見分ける**（v36.9。本人の報告
+   「下側が 2 列になっているので そこを見極められればと思ったのですが、
+     特に之という字は全く墨がつかなかった」→「枠が無く、墨もないです」）─────
+   AI で列を調べると、枠を **横の位置だけ**でまとめていたので、
+   上の戒名の下で 2 本に分かれる所を **1 本の列**として扱っていた。
+   その列の真ん中に窓も枠も並ぶので、**片側の列の字（之）には枠も墨も付かなかった**。
+
+   AI の枠には 1 字ずつの **位置と大きさ** があるので、それで見分ける：
+     ① 字を **大きい字／小さい字** に分ける（大きさの並びで、いちばん比の大きいすき間）。
+        戒名は大きく、命日・年齢は小さい（本人「命日・年齢は戒名より小さい」）。
+        はっきり分かれなければ、見分けない（これまでどおり）。
+     ② **大きい字の 横のかたまり ＝ 親の列**（上の戒名）
+     ③ 親の列の **下にある 小さい字** を集め、横で いちばん空いている所で 2 つに分ける。
+        ・それぞれ 2 字以上
+        ・すき間が 小さい字の 0.45 個ぶん以上（せまければ 1 列）
+        ・2 本が **同じ高さに並んでいる**（たての重なり 3 割以上）
+        を みたせば「下で 2 本に分かれる」。
+     ④ 境目（yCut）は、大きい字の下はしと 小さい字の上はしの まん中。
+   返り … null（分かれていない）か { pars:[{a,b,cut,yCut,nL,nR}], bigS, smS } */
+function rubAiSplitFind(keep){
+  if (!keep || keep.length < 6) return null;
+  function sz(b){ return Math.max(b.w, b.h); }
+  var ss = keep.map(sz).sort(function(a, b){ return a - b; });
+  var bk = -1, br = 1, k;
+  for (k = 1; k + 2 < ss.length; k++){               /* 両がわに 2 個以上 */
+    var r0 = ss[k + 1] / Math.max(1, ss[k]);
+    if (r0 > br){ br = r0; bk = k; }
+  }
+  if (bk < 0 || br < 1.25) return null;              /* 大小が はっきりしない */
+  var thr = Math.sqrt(ss[bk] * ss[bk + 1]);
+  var big = keep.filter(function(b){ return sz(b) >= thr; });
+  var small = keep.filter(function(b){ return sz(b) < thr; });
+  if (big.length < 2 || small.length < 4) return null;
+  var bigS = _med(big.map(sz)), smS = _med(small.map(sz));
+  function mn(a){ return Math.min.apply(null, a); }
+  function mx(a){ return Math.max.apply(null, a); }
+  /* ② 親の列（大きい字の横のかたまり） */
+  var bc = big.map(function(b){ return { c: b.x + b.w / 2, b: b }; })
+              .sort(function(p, q){ return p.c - q.c; });
+  var pars = [], cur = [bc[0]];
+  for (k = 1; k < bc.length; k++){
+    if (bc[k].c - bc[k - 1].c > bigS * 0.6){ pars.push(cur); cur = []; }
+    cur.push(bc[k]);
+  }
+  pars.push(cur);
+  var out = [];
+  pars.forEach(function(pr){
+    if (pr.length < 2) return;
+    var bs = pr.map(function(o){ return o.b; });
+    var a = mn(bs.map(function(b){ return b.x; }));
+    var bR = mx(bs.map(function(b){ return b.x + b.w; }));
+    var bigBot = mx(bs.map(function(b){ return b.y + b.h; }));
+    var cMid = (a + bR) / 2, half = Math.max((bR - a) / 2, bigS * 0.5);
+    /* ③ その親の 下にある 小さい字 */
+    var sub = small.filter(function(s){
+      var cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+      return Math.abs(cx - cMid) <= half + bigS * 0.3 && cy > bigBot - bigS * 0.3;
+    });
+    if (sub.length < 4) return;
+    var sc = sub.map(function(s){ return { c: s.x + s.w / 2, s: s }; })
+                .sort(function(p, q){ return p.c - q.c; });
+    var gi = -1, gv = 0, t;
+    for (t = 1; t < sc.length; t++){
+      var g = sc[t].c - sc[t - 1].c;
+      if (g > gv){ gv = g; gi = t; }
+    }
+    if (gi < 2 || sc.length - gi < 2) return;        /* 片がわ 2 字以上 */
+    if (gv < smS * 0.45) return;                     /* すき間がせまい＝ 1 列 */
+    var Ls = sc.slice(0, gi).map(function(o){ return o.s; });
+    var Rs = sc.slice(gi).map(function(o){ return o.s; });
+    var lT = mn(Ls.map(function(s){ return s.y; })), lB = mx(Ls.map(function(s){ return s.y + s.h; }));
+    var rT = mn(Rs.map(function(s){ return s.y; })), rB = mx(Rs.map(function(s){ return s.y + s.h; }));
+    var ovY = Math.min(lB, rB) - Math.max(lT, rT);
+    if (!(ovY > 0.3 * Math.min(lB - lT, rB - rT))) return;   /* 同じ高さに並んでいない */
+    var lb = mx(Ls.map(function(s){ return s.x + s.w; }));
+    var ra = mn(Rs.map(function(s){ return s.x; }));
+    var la = mn(Ls.map(function(s){ return s.x; }));
+    var rb = mx(Rs.map(function(s){ return s.x + s.w; }));
+    var subTop = Math.min(lT, rT);
+    out.push({
+      a: Math.round(Math.min(a, la)), b: Math.round(Math.max(bR, rb)),
+      cut: Math.round((lb + ra) / 2),
+      yCut: Math.round(subTop > bigBot ? (bigBot + subTop) / 2 : subTop),
+      nL: Ls.length, nR: Rs.length, nBig: bs.length
+    });
+  });
+  return out.length ? { pars: out, bigS: bigS, smS: smS } : null;
+}
 async function rubColsAi(quiet){
   var base = takuApiBase();
   if (!base) throw new Error(takuAiOffNote());
@@ -21760,8 +21858,10 @@ async function rubColsAi(quiet){
          点のような枠を何百も出すことがある（実測：12px の枠を 502 個）。
          字の見込み（較正・戒名の字幅）から外れたものは、はじめから採らない。 */
       if (b.score < 0.4) return;
-      if (b.w < side * 0.45 || b.w > side * 2.2) return;
-      if (b.h < side * 0.35 || b.h > side * 2.6) return;
+      /* **下限を下げた**（v36.9）。命日・年齢は 戒名の半分ほどの大きさなので、
+         0.45 では 下の 2 列の字を ふるい落としていた */
+      if (b.w < side * 0.30 || b.w > side * 2.2) return;
+      if (b.h < side * 0.25 || b.h > side * 2.6) return;
       all.push(b);
     });
   }
@@ -21843,14 +21943,69 @@ async function rubColsAi(quiet){
       cols[z].b = mid; cols[z+1].a = mid;
     }
   }
+  /* ───── **上 1・下 2 を見分ける**（v36.9）─────
+     見分けられたら、［列を調べ直す（計算）］と **同じ形**で控える
+     （`dir:"bot"`・`topCols`＝上の列・`cols` の `sp`＝下で分かれた列・`yCut`＝境目）。
+     こうしておくと、列ごとの墨・枠・読み・絵（緑の線）が そのまま上下を扱える。 */
+  var spl = null;
+  try { spl = rubAiSplitFind(keep); } catch(eS){ spl = null; }
+  if (spl){
+    /* 上の列：分かれる親は 親の幅まるごと。ほかの列は そのまま（親に入るものは 取りこむ） */
+    var tops = spl.pars.map(function(pz){ return { a: pz.a, b: pz.b, par: pz }; });
+    cols.forEach(function(c9){
+      var m9 = (c9.a + c9.b) / 2;
+      if (tops.some(function(t9){ return t9.par && m9 >= t9.a && m9 <= t9.b; })) return;
+      tops.push({ a: c9.a, b: c9.b, par: null });
+    });
+    tops.sort(function(p1, p2){ return p1.a - p2.a; });
+    for (var z9 = 0; z9 + 1 < tops.length; z9++){
+      if (tops[z9].b > tops[z9 + 1].a){
+        var md9 = Math.round((tops[z9].b + tops[z9 + 1].a) / 2);
+        tops[z9].b = md9; tops[z9 + 1].a = md9;
+      }
+    }
+    var yCs = spl.pars.map(function(pz){ return pz.yCut; }).sort(function(a, b){ return a - b; });
+    var yCut9 = yCs[Math.floor(yCs.length / 2)];
+    var lowList = [];
+    tops.forEach(function(t9){
+      if (t9.par){
+        var cut9 = Math.max(t9.a + 4, Math.min(t9.b - 4, t9.par.cut));
+        lowList.push({ a: t9.a, b: cut9, sp: true, y0: yCut9 });
+        lowList.push({ a: cut9, b: t9.b, sp: true, y0: yCut9 });
+      } else {
+        lowList.push({ a: t9.a, b: t9.b, sp: false, y0: 0 });
+      }
+    });
+    S.rub.colsTop = { cols: lowList, geo: rubGeoKey(), at: Date.now(),
+                      rows: 0, how: "ai", by: "ai", side: sideUsed,
+                      dir: "bot", y0: Math.round(yCut9), y1: Math.round(ar.y2),
+                      yCut: Math.round(yCut9),
+                      topN: tops.length,
+                      topCols: tops.map(function(t9){ return { a: t9.a, b: t9.b }; }),
+                      chars: keep.length, v2: 1,
+                      split: spl.pars.map(function(pz){
+                        return { a: pz.a, b: pz.b, nL: pz.nL, nR: pz.nR, nBig: pz.nBig }; }),
+                      bigMm: spl.bigS * mpp, smMm: spl.smS * mpp };
+    RUB.cols = lowList;
+    persist();
+    if (!quiet)
+      msg("AI が <b>上 " + tops.length + " 列・下 " +
+          lowList.length + " 列</b>を見つけました（" +
+          spl.pars.length + " 本が 下で 2 つに分かれます。境目は 上から <b>" +
+          mmT(yCut9) + "</b>＝緑の線。大きい字 " + (spl.bigS * mpp).toFixed(1) +
+          "mm／小さい字 " + (spl.smS * mpp).toFixed(1) + "mm）。" +
+          "線がずれていたら、下の欄か ↑↓ で直してください。", false, true);
+    return S.rub.colsTop;
+  }
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
                     rows: 0, how: "ai", by: "ai", side: sideUsed,
                     dir: "top", y0: Math.round(ar.y1), y1: Math.round(ar.y2),
-                    chars: keep.length };
+                    chars: keep.length, v2: 1 };
   persist();
   if (!quiet)
     msg("AI が <b>" + cols.length + " 列</b>を見つけました（字 " + keep.length + " 個／" +
-        "1 字 " + Math.round(sideUsed) + "px＝" + (sideUsed * mpp).toFixed(1) + "mm）。" +
+        "1 字 " + Math.round(sideUsed) + "px＝" + (sideUsed * mpp).toFixed(1) + "mm。" +
+        "下で 2 つに分かれる列は ありませんでした）。" +
         "ちがうときは［列を調べ直す］（計算で調べる）を押してください。", false, true);
   return S.rub.colsTop;
 }

@@ -176,13 +176,23 @@ def main():
 
     net = BoxNet(in_ch=2, base=a.base).to(device)
     step, best = 0, -1.0
+    base0 = None                                     # 前のモデルの 今回の検証用での点
+    nswap = 0
     if not a.fresh and os.path.exists(CURRENT):
         try:
             ck = torch.load(CURRENT, map_location=device)
             if int(ck.get("base", a.base)) == a.base:
                 net.load_state_dict(ck["model"])
-                step, best = ck.get("step", 0), float(ck.get("f1") or -1)
-                print("続きから（step %d・F1 %.3f）" % (step, best))
+                step, old = ck.get("step", 0), float(ck.get("f1") or -1)
+                # **前のモデルを 今回の検証用で測り直して、それを越えたら差し替える**
+                # （2026-09-23。本人の報告「枠の学習をしたのに、モデルの中身が古いまま」）。
+                # 前は 前回の検証用で出た F1（列が少ないと 0.97 などになる）と比べていたので、
+                # 材料を足して検証用が変わると、いつまでも越えられず 差し替わらなかった。
+                f0 = val_f1(net, val, device)[0]
+                best = -1.0 if f0 is None else f0
+                base0 = f0
+                print("続きから（step %d・前回の F1 %.3f → 今回の検証用で測り直すと %s）" %
+                      (step, old, "―" if f0 is None else "%.3f" % f0))
         except Exception as e:                               # noqa: BLE001
             print("前の重みは読めませんでした:", e)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
@@ -219,7 +229,9 @@ def main():
             if not a.no_swap:
                 shutil.copyfile(gen, CURRENT)
                 print("  → 差し替えました（F1 %.3f）" % f1)
-    put_progress(state="done", best=round(best, 4), lines=len(tr), epochs=a.epochs)
+                nswap += 1
+    put_progress(state="done", best=round(best, 4), lines=len(tr), epochs=a.epochs,
+                 swapped=nswap, base=None if base0 is None else round(base0, 4))
     print("おわり。いちばん良かった F1 = %.3f" % best)
 
 

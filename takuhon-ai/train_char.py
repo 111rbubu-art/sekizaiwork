@@ -129,13 +129,20 @@ def main():
 
     net = CharNet(len(chars), base=a.base).to(device)
     step, best = 0, -1.0
+    base0 = None                                     # 前のモデルの 今回の検証用での点
+    nswap = 0
     if not a.fresh and os.path.exists(CURRENT):
         try:
             ck = torch.load(CURRENT, map_location=device)
             if list(ck.get("chars") or []) == chars and int(ck.get("base", a.base)) == a.base:
                 net.load_state_dict(ck["model"])
-                step, best = ck.get("step", 0), float(ck.get("acc") or -1)
-                print("続きから（step %d・当たり %.3f）" % (step, best))
+                step, old = ck.get("step", 0), float(ck.get("acc") or -1)
+                # 前のモデルを **今回の検証用で測り直す**（2026-09-23。枠の学習と同じ直し）
+                a0 = score(net, va, chars, device)[0]
+                best = -1.0 if a0 is None else a0
+                base0 = a0
+                print("続きから（step %d・前回の当たり %.3f → 今回の検証用で %s）" %
+                      (step, old, "―" if a0 is None else "%.3f" % a0))
             else:
                 print("字の顔ぶれが変わったので、はじめから学習します。")
         except Exception as e:                               # noqa: BLE001
@@ -177,7 +184,9 @@ def main():
             if not a.no_swap:
                 shutil.copyfile(gen, CURRENT)
                 print("  → 差し替えました（当たり %.3f）" % acc)
-    put_progress(state="done", best=round(best, 4), chars=len(chars), epochs=a.epochs)
+                nswap += 1
+    put_progress(state="done", best=round(best, 4), chars=len(chars), epochs=a.epochs,
+                 swapped=nswap, base=None if base0 is None else round(base0, 4))
     print("おわり。いちばん良かった 当たり = %.3f" % best)
 
 

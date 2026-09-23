@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v37.6";
+var APP_VER = "v37.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -13589,6 +13589,7 @@ var RUBGRPR = {
   date:    "①' 数字＋年/月/日",
   mhmt:    "① 年号〜日（両はし）",
   mh:      "① 年号から下",
+  mhnum:   "① 年号から 数字・年月日が続くあいだ",
   mt:      "① 日・没・歿から上",
   mm:      "①'' 年・月のまわり",
   nentail: "② 才・歳から上（数字のあいだ）",
@@ -14402,6 +14403,42 @@ function rubGrpApply(L, hit, ch, isNum, chs){
                           RUBANCH.mTail.indexOf(c8) >= 0)) return true;
     return false;
   }
+  /* ───── **年号の字が いくつもあるときは、比べて 命日の年号を選ぶ**（v37.7。本人の指示
+     「戒名に年号の文字があると認識してるのはわかるが、それだけで命日とするのは違う。
+       もう一つ年号があるので比べて判断する様にして」）─────
+     前は **いちばん上の** 年号の字（令・平・昭・大・明・治）を 命日のはじめにしていた。
+     戒名の中の「昭」「大」を拾うと、そこから下が ぜんぶ命日になっていた。
+     年号の字ごとに 点を付けて、いちばん命日らしいものを選ぶ：
+       ・すぐ下が 年号の 2 字目（令和・平成・昭和・大正・明治）… +3
+       ・1〜2 字下に 数字 … +2
+       ・6 字下までに 年 … +2
+       ・戒名より小さい字 … +1
+     点が 2 未満なら 年号とはみない（戒名の中の字）。同じ点なら 下の方。 */
+  var era9 = "";
+  if (Object.keys(chs).length){
+    var ERA2 = { "令": "和", "平": "成", "昭": "和", "大": "正", "明": "治" };
+    var bestE = -1, bestS = -1, cands = [];
+    for (var e9 = 0; e9 < nIt9; e9++){
+      var ce = (chs[e9] || "").charAt(0);
+      if (!ce || RUBANCH.mHead.indexOf(ce) < 0 || !ERA2[ce]) continue;
+      var sc9 = 0, why9 = [];
+      if ((chs[e9 + 1] || "").charAt(0) === ERA2[ce]){ sc9 += 3; why9.push(ce + ERA2[ce]); }
+      if (isNum[e9 + 1] || isNum[e9 + 2]){ sc9 += 2; why9.push("数字"); }
+      for (var f9 = e9 + 1; f9 <= e9 + 6 && f9 < nIt9; f9++)
+        if ((chs[f9] || "").charAt(0) === "年"){ sc9 += 2; why9.push("年"); break; }
+      if (small9(L.items[e9])){ sc9 += 1; why9.push("小さい字"); }
+      cands.push((e9 + 1) + " 字目の " + ce + "＝" + sc9 + " 点" + (why9.length ? "（" + why9.join("・") + "）" : ""));
+      if (sc9 >= bestS){ bestS = sc9; bestE = e9; }
+    }
+    if (cands.length){
+      var newMh = (bestS >= 2) ? bestE : -1;
+      if (newMh !== hit.mh || cands.length > 1)
+        era9 = "年号の見くらべ：" + cands.join("／") + " → " +
+               (newMh >= 0 ? (newMh + 1) + " 字目を命日の年号に" : "どれも年号とはみない");
+      hit.mh = newMh;
+      if (newMh >= 0) ch.mh = (chs[newMh] || "").charAt(0); else delete ch.mh;
+    }
+  }
   /* いま当てている決まりの合言葉（v36.3。1 字ごとに控える） */
   var gR9 = "";
   function put9(t9, gk9){
@@ -14434,6 +14471,7 @@ function rubGrpApply(L, hit, ch, isNum, chs){
      （命日は かならず ○年○月○日 の形）。
      いちばん上の「数字＋○」の **数字の並びの頭**から、
      いちばん下の「数字＋○」までを、まるごと命日にする。 */
+  if (era9) did.push(era9);
   var dA = -1, dB = -1, i9;
   for (i9 = 1; i9 < L.items.length; i9++){
     var c9 = (chs[i9] || "").charAt(0);
@@ -14458,7 +14496,18 @@ function rubGrpApply(L, hit, ch, isNum, chs){
        数字＋年月日 の決まりは「ここは かならず命日」を言うだけで、
        **命日の はじめと おわり**は 年号・日/没/歿 が決める。両方を足し合わせる。 */
     var eA9 = "", eB9 = "";
-    if (hit.mh >= 0 && hit.mh < dA){ dA = hit.mh; eA9 = ch.mh; }
+    /* 年号まで のばすのは、**あいだが ぜんぶ 命日の字**（年号の 2 字目・数字・年月日・元。
+       読めない字は 続けて 1 字まで）のときだけ（v37.7。遠い 年号の字は 戒名の中のことがある） */
+    if (hit.mh >= 0 && hit.mh < dA){
+      var DT8 = RUBANCH.mHead2 + RUBANCH.num + RUBANCH.mDate + "元", okE = true, gp8 = 0;
+      for (var t8e = hit.mh + 1; t8e < dA; t8e++){
+        var c8e = (chs[t8e] || "").charAt(0);
+        if (!c8e){ if (++gp8 > 1){ okE = false; break; } continue; }
+        gp8 = 0;
+        if (DT8.indexOf(c8e) < 0){ okE = false; break; }
+      }
+      if (okE){ dA = hit.mh; eA9 = ch.mh; }
+    }
     if (hit.mt >= 0 && hit.mt > dB){ dB = hit.mt; eB9 = ch.mt; }
     var nD9 = 0; gR9 = (eA9 || eB9) ? "mhmt" : "date";
     for (i9 = dA; i9 <= dB && i9 < L.items.length; i9++){ put9(i9, "mei"); nD9++; }
@@ -14485,9 +14534,33 @@ function rubGrpApply(L, hit, ch, isNum, chs){
         did.push("命日 " + (hit.mh+1) + "〜" + (hit.mt+1) + " 字目（" + ch.mh + "…" + ch.mt +
                  "。両はしが分かったので その間ぜんぶ）");
     } else if (hit.mh >= 0){
-      gR9 = "mh";
-      if (mark9(hit.mh, L.items.length - 1, "mei"))
-        did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
+      /* ───── **年号から 数字・年月日 が続くあいだは 命日**（v37.7。本人の報告
+         「年号から数値が認識されたのに 文字の大きさだけで俗名になるのはおかしい」）─────
+         前は `mark9`（戒名ほど大きい字で止まる）だけだったので、命日の字が
+         戒名と同じくらいの大きさの拓本では 1 字も塗れず、⑤ の字幅で 俗名にされていた。
+         年号のあと、年号の 2 字目・数字・年・月・日・没・歿・元 が続くあいだ（読めない字は 1 字まで）
+         は 大きさを見ずに命日。日・没・歿 で おわり。数字が 1 つも無ければ 前のやり方。 */
+      var DT9 = RUBANCH.mHead2 + RUBANCH.num + RUBANCH.mDate + RUBANCH.mTail + "元";
+      var eD9 = hit.mh, gap9 = 0, nN9 = 0;
+      for (var t5 = hit.mh + 1; t5 < L.items.length; t5++){
+        var c5d = (chs[t5] || "").charAt(0);
+        if (L.items[t5].g) break;
+        if (!c5d){ if (++gap9 > 1) break; continue; }
+        if (DT9.indexOf(c5d) < 0) break;
+        gap9 = 0; eD9 = t5;
+        if (isNum[t5]) nN9++;
+        if (RUBANCH.mTail.indexOf(c5d) >= 0) break;
+      }
+      if (nN9 >= 1 && eD9 > hit.mh){
+        gR9 = "mhnum";
+        for (var t6d = hit.mh; t6d <= eD9; t6d++) put9(t6d, "mei");
+        did.push("命日 " + (hit.mh + 1) + "〜" + (eD9 + 1) + " 字目（" + ch.mh +
+                 " から 数字・年月日が続くあいだ。字の大きさは見ない）");
+      } else {
+        gR9 = "mh";
+        if (mark9(hit.mh, L.items.length - 1, "mei"))
+          did.push("命日 " + (hit.mh+1) + " 字目から（" + ch.mh + "）");
+      }
     } else if (hit.mt >= 0){
       /* **はじめが分からないときは、上へさかのぼるだけ**（v27.3）。
          前は 1 字目から塗っていたので、戒名まで命日になっていた。
@@ -14548,7 +14621,16 @@ function rubGrpApply(L, hit, ch, isNum, chs){
   if (hit.zh >= 0 && !L.items[hit.zh].g){
     /* **10 → 6 字**（v36.2。本人の決め）。俗名は長くても 6 字ほど */
     gR9 = "zok";
-    var nZ = mark9(hit.zh, Math.min(L.items.length - 1, hit.zh + 6), "zok");
+    /* **大きさを見ない**（v37.7。本人の報告「俗名と認識しているのに、わりふりが俗名にならない」）。
+       `mark9` は 戒名ほど大きい字で止まるので、俗名を大きく彫った拓本では
+       俗 の字から 1 字も塗れなかった。目印（俗・名・故）がある以上、
+       よその目印（年号・日・士・姉・女）か 別のまとまりに当たるまでは俗名 */
+    var nZ = 0;
+    for (var tZ = hit.zh; tZ <= Math.min(L.items.length - 1, hit.zh + 6); tZ++){
+      if (tZ !== hit.zh && stop9(tZ, "zok")) break;
+      if (isNum[tZ] && tZ !== hit.zh) break;            /* 数字は 命日か年齢 */
+      put9(tZ, "zok"); nZ++;
+    }
     if (nZ) did.push("俗名 " + (hit.zh+1) + " 字目から（" + ch.zh + "）");
   }
   /* ───── **命日のあとに続く字は、戒名ではない**（v30.9。本人の画面

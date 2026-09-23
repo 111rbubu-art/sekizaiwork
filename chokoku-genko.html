@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v38.1";
+var APP_VER = "v38.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -22799,8 +22799,8 @@ async function rubBoxTidy(boxes, q, q0){
        （列の範囲の中）。墨が となりの字と つながっていても、受け持ちの外へは 伸びない
      ・ごく小さい かたまり（枠の面積の 0.5% 未満）は ごみとみて見ない
      ・受け持ちの中の かたまりの 1 割以上（か 30 画素以上）が 枠に入っていなければ、その枠の字とは見ない */
-  function grow(){
-    if (!M || !bs.length) return;
+  /* 墨を つながった かたまりに分ける（4 近傍） */
+  function label(){
     var W2 = M.w, H2 = M.h, lab = new Int32Array(W2 * H2), comps = [], stk = [];
     for (var p0 = 0; p0 < W2 * H2; p0++){
       if (!M.m[p0] || lab[p0]) continue;
@@ -22818,6 +22818,43 @@ async function rubBoxTidy(boxes, q, q0){
       }
       comps.push(c);
     }
+    return comps;
+  }
+  /* ───── **列のふちの墨を はじめに消す**（v38.2。本人の画像
+     「右側の 文字以外の墨で 伸びてしまっています」）─────
+     石のふち・枠の線は 列の左右のはしに沿って **縦に長く** 続く。字の画は 長くても字 1 個ぶん。
+     列の帯（のりしろ前）の **左右のはし 15%** の中で、たてに **字 2 個ぶんより長く** 続く墨を消す。
+     字と くっついていても、長く続く所だけを消すので、字の画（はね など）は残る。
+     ほかに、細い（字の幅の 1/4 未満）のに 字 3 個ぶんより高い かたまり（たての線）も消す。 */
+  function clean(){
+    if (!M || !bs.length) return;
+    var hs0 = bs.map(function(b){ return Math.max(b.w, b.h); }).sort(function(a, b){ return a - b; });
+    var ch0 = (hs0[hs0.length >> 1] || 0) * M.sc;
+    var ws0 = bs.map(function(b){ return b.w; }).sort(function(a, b){ return a - b; });
+    var cw0 = (ws0[ws0.length >> 1] || 0) * M.sc;
+    if (!(ch0 > 0)) return;
+    var qq = q0 || q, bw = (qq.x2 - qq.x1) * M.sc;
+    var lo = Math.floor((qq.x1 - M.x1) * M.sc + bw * 0.15), hi = Math.ceil((qq.x2 - M.x1) * M.sc - bw * 0.15);
+    var W2 = M.w, H2 = M.h, lim = 2 * ch0, gone = 0;
+    for (var x = 0; x < W2; x++){
+      if (x > lo && x < hi) continue;
+      var y = 0;
+      while (y < H2){
+        if (!M.m[y * W2 + x]){ y++; continue; }
+        var y0 = y;
+        while (y < H2 && M.m[y * W2 + x]) y++;
+        if (y - y0 > lim){ for (var k = y0; k < y; k++) M.m[k * W2 + x] = 0; gone++; }
+      }
+    }
+    label().forEach(function(c){
+      var h = c.y1 - c.y0 + 1, w = c.x1 - c.x0 + 1;
+      if (w < 0.25 * cw0 && h > 3 * ch0){ c.px.forEach(function(pp){ M.m[pp] = 0; }); gone++; }
+    });
+    if (gone) st.nEdge = 1;
+  }
+  function grow(){
+    if (!M || !bs.length) return;
+    var W2 = M.w, H2 = M.h, comps = label();
     bs.sort(function(a, b){ return a.y - b.y; });
     var ws = bs.map(function(b){ return b.w; }).sort(function(a, b){ return a - b; });
     var medW = ws[ws.length >> 1] || 0;
@@ -22903,9 +22940,9 @@ async function rubBoxTidy(boxes, q, q0){
     });
   }
   st.nGrow = 0;
-  tighten(); grow(); unlap(); tighten(true);
+  clean(); tighten(); grow(); unlap(); tighten(true);
   bs.sort(function(a, b){ return a.y - b.y; });
-  return { boxes: bs, nTight: st.nTight, nCut: st.nCut, nDup: st.nDup, nGrow: st.nGrow };
+  return { boxes: bs, nTight: st.nTight, nCut: st.nCut, nDup: st.nDup, nGrow: st.nGrow, nEdge: st.nEdge || 0 };
 }
 /* ［AI に枠を描かせる］。いま選んでいる帯（列）を通して、枠を入れかえる。 */
 async function rubBoxAiGo(quiet){
@@ -22970,7 +23007,8 @@ async function rubBoxAiGo(quiet){
       (got.inkPct !== undefined ? "／墨 " + got.inkPct + "%" : "") +
       "）。" + inkTx + "。" +
       (tdy && (tdy.nGrow || tdy.nTight || tdy.nCut || tdy.nDup)
-        ? "枠を整えました（墨まで広げた " + (tdy.nGrow || 0) + "・墨に合わせて締めた " + tdy.nTight + "・重なりを切り分けた " + tdy.nCut +
+        ? "枠を整えました（" + (tdy.nEdge ? "列のふちの墨を外した・" : "") +
+          "墨まで広げた " + (tdy.nGrow || 0) + "・墨に合わせて締めた " + tdy.nTight + "・重なりを切り分けた " + tdy.nCut +
           "・二重を消した " + tdy.nDup + "）。" : "") +
       "ちがう所は枠を直して、［この列の字枠を登録］で教えてください。",
       got.ink !== "sent", true);

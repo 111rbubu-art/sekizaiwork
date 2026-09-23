@@ -573,7 +573,13 @@ async def feedback(
     その縁取りを整えて②へ。組の作りはどちらも同じ（raw.png ／ mask.png）なので、
     入れ先を分けるだけでよい。
     """
-    root = {"shape": SHAPE, "shape_rub": SHAPE_RUB}.get((set_ or "").strip(), DATASET)
+    # **知らない入れ先は はねる**（2026-09-23）。前は 何でも ①（dataset/pairs）へ入れていたので、
+    # サーバーが古くて "shape_rub" を知らなかった頃の ② の組が ① に混ざった（本人の報告）。
+    sk = (set_ or "ink").strip() or "ink"
+    if sk not in ("ink", "shape", "shape_rub"):
+        return JSONResponse({"error": "bad_set", "detail": "入れ先 %s を知りません" % sk},
+                            status_code=400)
+    root = {"shape": SHAPE, "shape_rub": SHAPE_RUB}.get(sk, DATASET)
     name = key.strip() or datetime.now().strftime("pair_%Y%m%d-%H%M%S")
     name = "".join(c for c in name if c.isalnum() or c in "-_." or ord(c) > 127)
     d = os.path.join(root, name)
@@ -1128,8 +1134,46 @@ def pairs(which: str = "pairs", limit: int = 60, offset: int = 0, only: str = "a
         if c:
             chars[c] = chars.get(c, 0) + 1
     return {"total": total, "items": out, "only": only,
+            "misplaced": len(_misplaced(root)),
             "on": len(D.list_pairs(root)), "off": nOff,
             "chars": sorted(chars.items(), key=lambda kv: -kv[1])[:40]}
+
+
+# ───── **入れ先をまちがえた組**（2026-09-23。本人の報告
+# 「読みのデータに、整える用のデータが多数あります。保管場所ミスですかね」）─────
+# 名前が shape_ で始まる組（shape_rub_… と shape_pair_…）は、アプリが ②「整える」（拓本から）として送ったもの。
+# サーバーが "shape_rub" を知らなかった頃は ①（dataset/pairs）へ入ってしまっていた。
+_MOVE_TO = {DATASET: SHAPE_RUB, VALDIR: SHAPE_RUB_VAL}
+
+
+def _misplaced(root):
+    if root not in _MOVE_TO:
+        return []
+    return [d for d in D.list_pairs(root, keep_off=True)
+            if os.path.basename(d).startswith("shape_")]
+
+
+@app.post("/api/takuhon/fix_misplaced")
+def fix_misplaced():
+    """① に混ざった ② の組を、② の入れ物へ移す。**消さない。** 行き先に同じ名前があれば
+    名前に _moved を付けて並べる（どちらが正しいか 人が見て決められるように）。"""
+    moved, bad = [], []
+    for src, dst in _MOVE_TO.items():
+        for d in _misplaced(src):
+            nm = os.path.basename(d)
+            to = os.path.join(dst, nm)
+            k = 1
+            while os.path.exists(to):
+                to = os.path.join(dst, "%s_moved%d" % (nm, k))
+                k += 1
+            try:
+                os.makedirs(dst, exist_ok=True)
+                shutil.move(d, to)
+                moved.append(os.path.basename(to))
+            except OSError as e:
+                bad.append("%s（%s）" % (nm, e))
+    return {"moved": len(moved), "names": moved[:50], "bad": bad,
+            "pairs": len(D.list_pairs(DATASET)), "shape_rub": len(D.list_pairs(SHAPE_RUB))}
 
 
 @app.post("/api/takuhon/pair_off")

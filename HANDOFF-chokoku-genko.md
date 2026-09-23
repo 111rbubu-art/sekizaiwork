@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-23　**chokoku-genko.html = v37.2**／**index_b.html = v1.9.441**／**tekkyo.html = v3.5**
+最終更新: 2026-09-23　**chokoku-genko.html = v37.3**／**index_b.html = v1.9.441**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -6407,3 +6407,14 @@ I 位置が ±10px ばらつく → 分かれる。
 - app.py `feedback`：保存のあと `os.utime(d, None)`。
   確かめ：A→B→A と登録 → 一覧の先頭が A（手元のサーバーで実測）。**サーバーの app.py を入れかえて再起動が要る。**
 - アプリ `rgSave`：知らせに「上書きで」・入れ先（① 読む・学習用 dataset/pairs）・組の名前を出す。
+
+## v37.3 — 1 字の登録の名前・① に混ざった ② の組（本人「字不明の登録の場合は？」「読みのデータに整える用が多数」）
+- **名前がどの拓本でも同じだった**：`rgKey` は `S.rub.name` を使っていたが、どこでも入れていない → いつも「拓本」。
+  別の拓本の 同じ列・同じ何字目・同じ字（字不明どうしは「_字」）が 上書きし合っていた。
+  → `pair_rub_<案件名>-<caseUid>_c<列>-<何字目>`（列の登録 `rubLineKey` と同じ考え）。
+  **字は名前に入れない**（字を直して登録し直すと 2 組になっていた。字は meta.json の char）。
+- **① に混ざった ② の組**：`shape_rub_…`／`shape_pair_…` が dataset/pairs にあった。
+  サーバーが "shape_rub" を知らなかった頃（2026-09-16〜17）に ① へ入ったもの。
+  app.py：`feedback` は知らない set を 400 で はねる。`/pairs` が `misplaced`（名前が shape_ で始まる数）を返す。
+  `POST /api/takuhon/fix_misplaced` … pairs→shape_rub、val→shape_rub_val へ移す（消さない。同名は `_movedN`）。
+  dash：数があれば赤字の知らせと［② 整える へ移す］。②「拓本から」の見出しは「入力（縁取り）」。画面 v2026-09-23a。

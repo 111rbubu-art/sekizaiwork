@@ -601,6 +601,15 @@ async def feedback(
             pass
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
+    # **上書きしたら、組の時刻も新しくする**（2026-09-23。本人の報告
+    # 「①読むに登録するを押しても、拓本AIの貯まったデータで確認できず」）。
+    # 中のファイルを書きかえても **入れ物（フォルダ）の時刻は変わらない**。
+    # 一覧は その時刻で新しい順に並べ、絵の版（mt）にも使っているので、
+    # 登録し直した組が 古い位置に埋もれたまま・絵も前のまま だった。
+    try:
+        os.utime(d, None)
+    except OSError:
+        pass
     return {"status": "saved", "saved_id": name, "replaced": replaced,
             "set": {SHAPE: "shape", SHAPE_RUB: "shape_rub"}.get(root, "ink"),
             "pairs": len(D.list_pairs(root))}

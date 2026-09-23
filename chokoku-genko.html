@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v37.4";
+var APP_VER = "v37.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -22485,7 +22485,7 @@ async function rubBoxAiAll(opt){
    文字に重なっているときもあります」）─────
    AI の枠を そのまま使うのをやめ、あとから 2 つ直す。
    ① **墨に合わせて締める**：枠の中で 墨がある所まで 上下左右を縮める。
-      はしの行・列は 墨が 枠の幅（高さ）の 4% 未満なら「ごみ」とみて 削る。
+      はしの行・列は 墨が 枠の幅（高さ）の 5% 未満なら「ごみ」とみて 削る（v37.5 で 4→5%）。
       墨がほとんど無い枠（墨の画素が 枠の 3% 未満）は さわらない（墨が無い列で 枠を消さないため）。
       縮めすぎ防止：もとの 35% より小さくはしない。まわりに 字の 3% の のりしろ。
    ② **上下の重なりを解く**：横に半分以上 重なる（＝同じ列の）上下の枠が 重なっていたら
@@ -22551,7 +22551,7 @@ async function rubBoxTidy(boxes, q){
         for (var xx = 0; xx < ww; xx++) if (M.m[o + xx]){ row[yy]++; col[xx]++; tot++; }
       }
       if (tot < ww * hh * 0.03) return;                     /* 墨がほとんど無い → さわらない */
-      var rT = Math.max(1, ww * 0.04), cT = Math.max(1, hh * 0.04);
+      var rT = Math.max(1, ww * 0.05), cT = Math.max(1, hh * 0.05);
       var ra = span(row, rT), ca = span(col, cT);
       if (!ra || !ca) return;
       var t = ra[0], bo = ra[1], l = ca[0], r = ca[1];
@@ -22589,9 +22589,107 @@ async function rubBoxTidy(boxes, q){
       }
     }
   }
-  tighten(); unlap(); tighten();
+  /* ───── ⓪ **墨まで広げる**（v37.5。本人の報告「完全に文字より枠の方が小さいし かかってますよね」）─────
+     締めるだけでは、字より小さい枠は直らない。枠ごとに **受け持ち**を決め、その中で
+     枠に かかっている墨の **つながった かたまり**（画のまとまり）が 収まるまで 広げる。
+     ・受け持ち … 上下は となりの枠との あいだの **墨がいちばん少ない行**まで。横は 枠のまん中から 字の幅の中央値の 1.3 倍ずつ
+       （列の範囲の中）。墨が となりの字と つながっていても、受け持ちの外へは 伸びない
+     ・ごく小さい かたまり（枠の面積の 0.5% 未満）は ごみとみて見ない
+     ・受け持ちの中の かたまりの 1 割以上（か 30 画素以上）が 枠に入っていなければ、その枠の字とは見ない */
+  function grow(){
+    if (!M || !bs.length) return;
+    var W2 = M.w, H2 = M.h, lab = new Int32Array(W2 * H2), comps = [], stk = [];
+    for (var p0 = 0; p0 < W2 * H2; p0++){
+      if (!M.m[p0] || lab[p0]) continue;
+      var id = comps.length + 1, c = { x0: W2, y0: H2, x1: -1, y1: -1, px: [] };
+      lab[p0] = id; stk.push(p0);
+      while (stk.length){
+        var pp = stk.pop(), px = pp % W2, py = (pp - px) / W2;
+        c.px.push(pp);
+        if (px < c.x0) c.x0 = px; if (px > c.x1) c.x1 = px;
+        if (py < c.y0) c.y0 = py; if (py > c.y1) c.y1 = py;
+        if (px > 0 && M.m[pp - 1] && !lab[pp - 1]){ lab[pp - 1] = id; stk.push(pp - 1); }
+        if (px < W2 - 1 && M.m[pp + 1] && !lab[pp + 1]){ lab[pp + 1] = id; stk.push(pp + 1); }
+        if (py > 0 && M.m[pp - W2] && !lab[pp - W2]){ lab[pp - W2] = id; stk.push(pp - W2); }
+        if (py < H2 - 1 && M.m[pp + W2] && !lab[pp + W2]){ lab[pp + W2] = id; stk.push(pp + W2); }
+      }
+      comps.push(c);
+    }
+    bs.sort(function(a, b){ return a.y - b.y; });
+    var ws = bs.map(function(b){ return b.w; }).sort(function(a, b){ return a - b; });
+    var medW = ws[ws.length >> 1] || 0;
+    /* 上下の枠のあいだの **境目**。まん中ではなく **墨がいちばん少ない行**（そこが字と字の すき間）。
+       墨の無い行が続いていれば、その続きの まん中。あいだが無い（重なる）ときは まん中 */
+    function cutY(u, o){
+      var ya = u.y + u.h, yb = o.y, mid = (ya + yb) / 2;
+      var r0 = Math.floor(toM(ya, M.y1)), r1 = Math.ceil(toM(yb, M.y1));
+      if (!(r1 - r0 >= 2)) return mid;
+      var c0 = Math.max(0, Math.floor(toM(Math.min(u.x, o.x), M.x1)));
+      var c1 = Math.min(W2, Math.ceil(toM(Math.max(u.x + u.w, o.x + o.w), M.x1)));
+      var best = Infinity, runs = [];
+      for (var r = Math.max(0, r0); r < Math.min(H2, r1); r++){
+        var n = 0, o2 = r * W2;
+        for (var x = c0; x < c1; x++) n += M.m[o2 + x];
+        if (n < best){ best = n; runs = [[r, r]]; }
+        else if (n === best){
+          var L = runs[runs.length - 1];
+          if (L[1] === r - 1) L[1] = r; else runs.push([r, r]);
+        }
+      }
+      if (!runs.length) return mid;
+      runs.sort(function(p, q3){ return (q3[1] - q3[0]) - (p[1] - p[0]); });
+      return M.y1 + ((runs[0][0] + runs[0][1]) / 2 + 0.5) / M.sc;
+    }
+    function toM(v, o){ return (v - o) * M.sc; }
+    /* 受け持ち（拓本の画素）を、広げる前の枠で決めておく */
+    var zones = bs.map(function(b, i){
+      var z0 = q.y1, z1 = q.y2;
+      bs.forEach(function(o, j){
+        if (j === i) return;
+        var ho = Math.min(b.x + b.w, o.x + o.w) - Math.max(b.x, o.x);
+        if (ho < 0.5 * Math.min(b.w, o.w)) return;
+        if (o.y >= b.y + b.h) z1 = Math.min(z1, cutY(b, o));
+        else if (o.y + o.h <= b.y) z0 = Math.max(z0, cutY(o, b));
+      });
+      var half = Math.max(b.w / 2, medW * 1.3), cx = b.x + b.w / 2;
+      return { x0: Math.max(q.x1, Math.min(b.x, cx - half)), x1: Math.min(q.x2, Math.max(b.x + b.w, cx + half)),
+               y0: Math.min(b.y, z0), y1: Math.max(b.y + b.h, z1) };
+    });
+    bs.forEach(function(b, i){
+      var z = zones[i];
+      var zx0 = toM(z.x0, M.x1), zx1 = toM(z.x1, M.x1), zy0 = toM(z.y0, M.y1), zy1 = toM(z.y1, M.y1);
+      var rx0 = toM(b.x, M.x1), rx1 = toM(b.x + b.w, M.x1), ry0 = toM(b.y, M.y1), ry1 = toM(b.y + b.h, M.y1);
+      var minN = (rx1 - rx0) * (ry1 - ry0) * 0.005;
+      var nx0 = rx0, nx1 = rx1, ny0 = ry0, ny1 = ry1, hit = false;
+      comps.forEach(function(c){
+        if (c.x1 < rx0 || c.x0 > rx1 || c.y1 < ry0 || c.y0 > ry1) return;
+        var inZ = 0, inB = 0, a0 = [Infinity, Infinity, -1, -1];
+        for (var t = 0; t < c.px.length; t++){
+          var q2 = c.px[t], qx = q2 % W2, qy = (q2 - qx) / W2;
+          if (qx < zx0 || qx >= zx1 || qy < zy0 || qy >= zy1) continue;
+          inZ++;
+          if (qx >= rx0 && qx < rx1 && qy >= ry0 && qy < ry1) inB++;
+          if (qx < a0[0]) a0[0] = qx; if (qy < a0[1]) a0[1] = qy;
+          if (qx > a0[2]) a0[2] = qx; if (qy > a0[3]) a0[3] = qy;
+        }
+        if (inZ < minN || !(inB >= inZ * 0.1 || inB >= 30)) return;
+        nx0 = Math.min(nx0, a0[0]); ny0 = Math.min(ny0, a0[1]);
+        nx1 = Math.max(nx1, a0[2] + 1); ny1 = Math.max(ny1, a0[3] + 1);
+        hit = true;
+      });
+      if (!hit) return;
+      var X0 = M.x1 + nx0 / M.sc, Y0 = M.y1 + ny0 / M.sc, X1 = M.x1 + nx1 / M.sc, Y1 = M.y1 + ny1 / M.sc;
+      if (X0 < b.x - 0.5 || Y0 < b.y - 0.5 || X1 > b.x + b.w + 0.5 || Y1 > b.y + b.h + 0.5){
+        st.nGrow++;
+        b.x = Math.min(b.x, X0); b.y = Math.min(b.y, Y0);
+        b.w = Math.max(b.x + b.w, X1) - b.x; b.h = Math.max(b.y + b.h, Y1) - b.y;
+      }
+    });
+  }
+  st.nGrow = 0;
+  tighten(); grow(); unlap(); tighten();
   bs.sort(function(a, b){ return a.y - b.y; });
-  return { boxes: bs, nTight: st.nTight, nCut: st.nCut, nDup: st.nDup };
+  return { boxes: bs, nTight: st.nTight, nCut: st.nCut, nDup: st.nDup, nGrow: st.nGrow };
 }
 /* ［AI に枠を描かせる］。いま選んでいる帯（列）を通して、枠を入れかえる。 */
 async function rubBoxAiGo(quiet){
@@ -22636,7 +22734,7 @@ async function rubBoxAiGo(quiet){
   m2.src = "ai";
   m2.boxBy = "ai";                                   /* 枠は AI が描いた（v34.1） */
   m2.boxModel = got.model || {};
-  if (tdy) m2.boxTidy = { t: tdy.nTight, c: tdy.nCut, d: tdy.nDup };   /* 整えた数（v37.4） */
+  if (tdy) m2.boxTidy = { g: tdy.nGrow || 0, t: tdy.nTight, c: tdy.nCut, d: tdy.nDup };   /* 整えた数（v37.4） */
   m2.geo = rubGeoKey();
   rubKeepInk(m2, q);            /* その列の墨を引き継ぐ（v35.7） */
   /* **1 字ずつにも「AI が描いた」印を付ける**（v35.1）。
@@ -22655,8 +22753,8 @@ async function rubBoxAiGo(quiet){
       (got.model && got.model.f1 ? "／この版の当たり具合 F1 " + got.model.f1 : "") +
       (got.inkPct !== undefined ? "／墨 " + got.inkPct + "%" : "") +
       "）。" + inkTx + "。" +
-      (tdy && (tdy.nTight || tdy.nCut || tdy.nDup)
-        ? "枠を整えました（墨に合わせて締めた " + tdy.nTight + "・重なりを切り分けた " + tdy.nCut +
+      (tdy && (tdy.nGrow || tdy.nTight || tdy.nCut || tdy.nDup)
+        ? "枠を整えました（墨まで広げた " + (tdy.nGrow || 0) + "・墨に合わせて締めた " + tdy.nTight + "・重なりを切り分けた " + tdy.nCut +
           "・二重を消した " + tdy.nDup + "）。" : "") +
       "ちがう所は枠を直して、［この列の字枠を登録］で教えてください。",
       got.ink !== "sent", true);

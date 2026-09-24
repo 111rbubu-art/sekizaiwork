@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v38.4";
+var APP_VER = "v38.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -15090,6 +15090,11 @@ function rubAnalyzeReset(){
   S.rub.lineNs = {};
   S.rub.anaLast = null;                 /* 3 ─ 解析 の結果行も消す（v33.6） */
   RUB.aiBand = null; RUB.aiWhy = ""; RUB.aiChar = null;
+  /* **列ごとの墨の控えと、列さがしの つながりも消す**（v38.5。本人の報告
+     「やり直す（消す）をおしても、墨とつながりの枠は消えないです」）。
+     墨は 列ごとの控え（`RUB.inks`。v35.8）から 絵に出していたので、`aiBand` を消しても残っていた。 */
+  RUB.inks = [];
+  RUB.colDbg = null;
   rubSelCol = 0; rubSelItem = -1; rubSelSet = [];
   A = null; RUB.mask = null;
   persist(); rubPanel(); rubRender();
@@ -20064,6 +20069,7 @@ function syncCenters(){
 }
 
 /* --- 拓本パネル --- */
+var RUB_OPEN = {};                 /* 欄の開け閉め（v38.5） */
 function rubPanel(){
   var r = S.rub;
   var loaded = !!RUB.img, mpp = mmPerPx();
@@ -20427,7 +20433,17 @@ function rubPanel(){
     h += '</div>';
   }
   rubTabSync();                    /* 取り込み・取り消しでタブの色を合わせる */
-  $("rubFix").innerHTML = h;
+  /* ───── **開け閉めを覚えておく**（v38.5。本人の指示
+     「4 ─ 直す の中の機能を実行すると、メニューが折りたたまれてしまうので、開いた状態のままにしてほしい」）─────
+     ボタンを押すたびに この欄を作り直すので、details の開け閉めが はじめの形に戻っていた。
+     作り直す前に 名前つきの details の開け閉めを控え、作り直したあとに 戻す。 */
+  var fixEl = $("rubFix");
+  if (fixEl) fixEl.querySelectorAll("details[id]").forEach(function(d9){ RUB_OPEN[d9.id] = d9.open; });
+  fixEl.innerHTML = h;
+  fixEl.querySelectorAll("details[id]").forEach(function(d9){
+    if (RUB_OPEN.hasOwnProperty(d9.id)) d9.open = RUB_OPEN[d9.id];
+    d9.addEventListener("toggle", function(){ RUB_OPEN[d9.id] = d9.open; });
+  });
   var bt = $("btnLineTake"); if (bt) bt.onclick = rubLineTake;
   var bzc = $("btnAnalyzeClr");
   if (bzc) bzc.onclick = rubAnalyzeReset;
@@ -22321,6 +22337,50 @@ function rubColsBuild(keep, side, quiet, src){
   var runs2 = [];
   runs.forEach(function(r){ runs2 = runs2.concat(splitWide(r)); });
   runs = runs2;
+  /* ───── **列は つながり（鎖）ごとに作る**（v38.5。本人の報告
+     「拓本は 3 列なのですが、AI で列を調べるで 2 行と判別します。
+       ただ、つながりの文字枠は 3 列分でいる」）─────
+     上の「横の位置の すき間」で分けるやり方は、すき間の目安が 戒名の字の大きさ（0.6 個ぶん）なので、
+     小さい字の列どうしが近いと 1 列に まとめてしまう。絵の「AI のつながり」で 3 本に分かれていても 2 列になる。
+     鎖（上の字とのつながり）で 列を作り直す：
+       ・同じ鎖（分かれ目のある鎖も 1 本）＝ 1 列
+       ・横に半分以上 重なる鎖どうしは 同じ列（縦に空いて 鎖が切れた列）
+     鎖が取れなかったときだけ、上の すき間のやり方を使う。 */
+  var splPre = null;
+  try { splPre = rubAiSplitFind(keep); } catch(eP){ splPre = null; }
+  var dbP = RUB.colDbg;
+  if (dbP && dbP.boxes && dbP.par && dbP.boxes.length === keep.length){
+    var nP = dbP.boxes.length, rootOf = function(k){ while (dbP.par[k] >= 0) k = dbP.par[k]; return k; };
+    var byR = {};
+    for (var kP = 0; kP < nP; kP++){ var rt = rootOf(kP); (byR[rt] = byR[rt] || []).push(dbP.boxes[kP]); }
+    var comps = Object.keys(byR).map(function(k){
+      var bs = byR[k];
+      return { bs: bs, a: Math.min.apply(null, bs.map(function(q){ return q.x; })),
+               b: Math.max.apply(null, bs.map(function(q){ return q.x + q.w; })) };
+    });
+    /* 横に半分以上 重なる鎖を まとめる（くり返し） */
+    var merged = true;
+    while (merged){
+      merged = false;
+      for (var iP = 0; iP < comps.length && !merged; iP++){
+        for (var jP = iP + 1; jP < comps.length && !merged; jP++){
+          var A9 = comps[iP], B9 = comps[jP];
+          var ov = Math.min(A9.b, B9.b) - Math.max(A9.a, B9.a);
+          if (ov >= 0.5 * Math.min(A9.b - A9.a, B9.b - B9.a)){
+            A9.bs = A9.bs.concat(B9.bs); A9.a = Math.min(A9.a, B9.a); A9.b = Math.max(A9.b, B9.b);
+            comps.splice(jP, 1); merged = true;
+          }
+        }
+      }
+    }
+    var runsC = comps.map(function(cp){
+      return cp.bs.map(function(q){ return { c: q.x + q.w / 2, b: q }; })
+                  .sort(function(p1, p2){ return p1.c - p2.c; });
+    }).sort(function(r1, r2){ return r1[0].c - r2[0].c; });
+    var bigC = runsC.filter(function(r){ return r.length >= ((keep.length >= 12) ? 3 : 2); }).length;
+    var bigR = runs.filter(function(r){ return r.length >= ((keep.length >= 12) ? 3 : 2); }).length;
+    if (bigC > bigR) runs = runsC;               /* 鎖の方が 列を多く見分けたときだけ 入れかえる */
+  }
   /* 1〜2 字しかない列は、拾いまちがいとみて落とす */
   var minN = (keep.length >= 12) ? 3 : 2;
   runs = runs.filter(function(r){ return r.length >= minN; });
@@ -22360,8 +22420,7 @@ function rubColsBuild(keep, side, quiet, src){
      見分けられたら、［列を調べ直す（計算）］と **同じ形**で控える
      （`dir:"bot"`・`topCols`＝上の列・`cols` の `sp`＝下で分かれた列・`yCut`＝境目）。
      こうしておくと、列ごとの墨・枠・読み・絵（緑の線）が そのまま上下を扱える。 */
-  var spl = null;
-  try { spl = rubAiSplitFind(keep); } catch(eS){ spl = null; }
+  var spl = splPre;                          /* 上で調べた分（v38.5） */
   if (spl){
     /* 上の列：分かれ目のある親は 親の幅まるごと。ほかの列は そのまま（親に入るものは 取りこむ） */
     var tops = spl.pars.map(function(pz){ return { a: pz.a, b: pz.b, par: pz }; });

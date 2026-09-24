@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v38.5";
+var APP_VER = "v38.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5236,6 +5236,9 @@ function bindProps(){
       var v = num(e.target.value, 0);
       var tg2 = srcGroup(g) || g;
       if (id === "pTop") tg2.topY = v; else if (id === "pBot") tg2.bottomY = v; else g.dx = v;
+      /* 手で数字を入れたら、拓本の位置は追いかけない（v38.6） */
+      if (tg2.rubPx && id === "pTop") tg2.rubPx.t = null;
+      if (tg2.rubPx && id === "pBot") tg2.rubPx.b = null;
       renderList(); renderStage(); persist();
       if (view !== "sheet") rubRender();
     });
@@ -8277,13 +8280,46 @@ function autoOriginY(){
 /* 自動値が変わったら、すでに置いたガイドも同じだけ動かす */
 function syncOriginY(){
   var v = autoOriginY(), old = num(S.rub.originY, v);
-  if (Math.abs(v - old) < 0.05) return;
+  if (Math.abs(v - old) < 0.05){ rubGroupsFollow(); return; }
   var d = v - old;
   S.groups.forEach(function(g){
     g.topY = +(num(g.topY,0) + d).toFixed(1);
     g.bottomY = +(num(g.bottomY,0) + d).toFixed(1);
   });
   S.rub.originY = v;
+  rubGroupsFollow();
+}
+/* ───── **拓本から決めた行は、全長・較正線を直したら 追いかける**（v38.6。本人の指摘
+   「この仕様だと、拓本の文字丈を後で修正すると、ゴムシートに反映していないので
+     誤った大きさで彫刻してしまいます」）─────
+   前は 拓本の上で決めた行の上端・下端を **その時の全長で mm に直して** しまっていたので、
+   あとで［実測した文字全長］や 上下の較正線を直しても、ゴムシートの字の大きさは前のままだった。
+   拓本の上で決めた行は **拓本の上の位置（画素）** も `rubPx = { t, b }` に覚え、
+   全長・較正線・シートの長さが変わるたびに mm を計算し直す。
+   校正の欄に 手で数字を入れた端は 覚えを外す（手で決めた値を優先）。 */
+function rubGroupsFollow(){
+  if (!mmPerPx()) return 0;
+  var n = 0;
+  (S.groups || []).forEach(function(g){
+    var a = g && g.rubPx;
+    if (!a) return;
+    if (a.t !== null && a.t !== undefined && isFinite(a.t)){
+      var t = +mmOf(a.t).toFixed(1);
+      if (Math.abs(t - num(g.topY, 0)) >= 0.05){ g.topY = t; n++; }
+    }
+    if (a.b !== null && a.b !== undefined && isFinite(a.b)){
+      var b = +mmOf(a.b).toFixed(1);
+      if (Math.abs(b - num(g.bottomY, 0)) >= 0.05){ g.bottomY = b; n++; }
+    }
+  });
+  return n;
+}
+/* 拓本の上で 行の端を決めたときに 覚える（py … 拓本の画素。which … "top"／"bottom"） */
+function rubGroupPin(tg, which, py){
+  if (!tg || !isFinite(py)) return;
+  if (!tg.rubPx) tg.rubPx = { t: null, b: null };
+  if (which === "top") tg.rubPx.t = Math.round(py * 10) / 10;
+  else tg.rubPx.b = Math.round(py * 10) / 10;
 }
 function mmOf(py){
   var r = S.rub, span = (r.calBot - r.calTop);
@@ -18813,6 +18849,9 @@ function bindBothDrag(svg){
           var tg = srcGroup(g) || g;          /* コピーの線を動かしたら元も動く */
           if (k[2] === "top") tg.topY = +mm.toFixed(1);
           else                tg.bottomY = +mm.toFixed(1);
+          /* 拓本の上の位置も覚える（v38.6）。構成の拓本は mmOf(0) から この縮尺で置いてある */
+          var pyK = (RUB.img && mmPerPx()) ? pyOf(mm) : null;
+          if (pyK !== null) rubGroupPin(tg, k[2] === "top" ? "top" : "bottom", pyK);
           g.mode = "range"; if (!g.anchor) g.anchor = "ink";
           renderBoth(); renderList();
         } else if (k[0] === "cal"){
@@ -19882,6 +19921,7 @@ function bindDrag(svg){
           var g = S.groups[+grp[1]];
           var tg = srcGroup(g) || g;      /* コピーの線を動かしたら元も動く */
           if (grp[2] === "top") tg.topY = +mm.toFixed(1); else tg.bottomY = +mm.toFixed(1);
+          rubGroupPin(tg, grp[2] === "top" ? "top" : "bottom", py);     /* v38.6 */
           g.mode = "range"; if (!g.anchor) g.anchor = "ink";
           rubRender(); renderList();
         } else if (k === "calTop" || k === "calBot"){
@@ -20905,6 +20945,7 @@ function bindRub(){
     r.lenAuto = false;
     syncOriginY();
     framesFitRub();                 /* 枠の文字のはじまりも、頭に合わせ直す */
+    rubGroupsFollow();              /* 拓本から決めた行は 拓本の位置へ（v38.6） */
     /* 打っている間は rubRender を呼ばない。絵を描き直しても拓本の見え方は
        変わらないうえ、入力欄の場所を計り直すぶん、打ちごこちが悪くなる。 */
     renderCols(); renderList(); renderProps(); renderStage(); renderBoth(); persist();
@@ -20994,6 +21035,7 @@ function applyDetected(ri, gi, quiet){
   t.mode = "range"; t.anchor = "ink";
   t.topY = +mmOf(g.y0).toFixed(1);
   t.bottomY = +mmOf(g.y1).toFixed(1);
+  rubGroupPin(t, "top", g.y0); rubGroupPin(t, "bottom", g.y1);   /* v38.6 */
   return finishApply(t, quiet, gi);
 }
 function finishApply(t, quiet, gi){

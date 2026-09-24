@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v38.2";
+var APP_VER = "v38.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -15180,6 +15180,62 @@ async function rubInkPerChar(L, tag){
   if (L.band) rubInkPut(L.band, { url: url, sc: SC, id: L.aiId });
   return { n: ok, ink: n1 };
 }
+/* ②b の中身（v38.3）。紫の枠（`ls` の枠）で 列の構成を組み直し、上下の分かれ方が変われば
+   構成を入れかえて 墨と枠を作り直す。noRedo … 作り直さない（試し用）。
+   返り … { tx: 知らせ, ls: 作り直した列（作り直したときだけ）, changed } */
+async function rubColsRecheck(ls, noRedo){
+  var out = { tx: [], ls: null, changed: false };
+  var fin9 = [];
+  ls.forEach(function(L){
+    (L.items || []).forEach(function(it){
+      if (it.px) fin9.push({ x: it.px.x, y: it.px.y, w: it.px.w, h: it.px.h, score: 1 });
+    });
+  });
+  function sig9(ct){
+    if (!ct) return "";
+    return (ct.topN || (ct.cols || []).length) + "/" + (ct.cols || []).length + "/" +
+           (ct.split || []).map(function(z){ return (z.kids || []).length; }).join(",");
+  }
+  function desc9(ct){
+    if (!ct) return "なし";
+    var sp = (ct.cols || []).filter(function(c){ return c.sp; }).length;
+    return "上 " + (ct.topN || (ct.cols || []).length) + " 列" + (sp ? "・下 " + (ct.cols || []).length + " 列" : "");
+  }
+  var ct0 = S.rub.colsTop, sg0 = sig9(ct0), ct1 = null;
+  try { ct1 = rubColsBuild(fin9, _rubCharSide(), true, "box"); } catch(eB){ ct1 = null; }
+  if (ct1 && sig9(ct1) !== sg0){
+    out.changed = true;
+    var mnB = rubColMenu();
+    out.tx.push("紫の枠で 列を見直しました：上 " + mnB.ups.length + " 列" +
+              (mnB.lows.length ? "／下 " + mnB.lows.length + " 列" : "") + "（前は " + desc9(ct0) + "）");
+    /* 分かれた親の列にあった 自動の枠は消す（手で直した・教えた列は残す） */
+    var pars9 = (ct1.split || []);
+    S.rub.lines = (S.rub.lines || []).filter(function(L){
+      if (!L || !L.band) return true;
+      if (L.boxFix || (L.items || []).some(function(it){
+            return it.gBy === "hand" || it.pick || (it.anch && it.anch.hand) || it.byHand; }))
+        return true;
+      var m9 = (L.band.L + L.band.R) / 2;
+      return !pars9.some(function(z){ return m9 >= z.a && m9 <= z.b; });
+    });
+    if (noRedo){ out.tx = out.tx.join("／"); return out; }
+    msg("②b 列の構成が変わったので、墨と枠を作り直しています…", false, true);
+    await uiTick();
+    try { await rubAllGo(); } catch(e){}
+    try { await rubBoxAiAll({ quiet: true, skipFixed: true }); } catch(e){}
+    out.ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+    out.tx.push("枠（作り直し）：" + out.ls.length + " 列・" +
+              out.ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字");
+  } else if (ct1){
+    /* 変わらなければ 前の構成に戻す（つながりの絵は 紫の枠のものが残る） */
+    S.rub.colsTop = ct0; RUB.cols = ct0.cols; persist();
+    out.tx.push("紫の枠で 列を見直しました：変わりなし");
+  } else {
+    S.rub.colsTop = ct0; RUB.cols = ct0.cols; persist();
+  }
+  out.tx = out.tx.join("／");
+  return out;
+}
 async function rubAllAnalyze(opt){
   /* opt.pass2 … ［拓本を解析2（テスト）］。② のあとに
      「1 字ずつの墨 → もう一度 枠の AI」を足す（v36.8） */
@@ -15276,6 +15332,19 @@ async function rubAllAnalyze(opt){
   if (!ls.length){ msg("枠を作れませんでした。［AI に送る絵を見る］で、墨が出ているか確かめてください。", true); return; }
   step.push("枠：" + ls.length + " 列・" +
             ls.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字（" + boxBy9 + "）");
+  /* ───── ②b **できあがった紫の枠で 列の構成を見直す**（v38.3。本人の指摘
+     「列のつながりをみる枠ですが…最終的な紫色の枠の方が精度がいいので、
+       こちらで出した方が列の判断ができると思う」）─────
+     ① の列さがしは、細い窓で 墨なしのまま 枠の AI に通した字（精度が低い）で 鎖をつないでいる。
+     ② の紫の枠（列の墨を見て描き、墨に合わせて整えたもの）で もう一度 鎖をつなぎ、
+     **上下の分かれ方が変わったら** その構成に入れかえて ② を 1 回だけ やり直す。
+     変わらなければ 構成は そのまま（帯が少しずれて 手直しの列と合わなくなるのを避ける）。
+     絵の「AI のつながり」は 紫の枠で つないだものになる。 */
+  if (bm9 && bm9.loaded && S.rub.colsTop && S.rub.colsTop.by === "ai"){
+    var rc9 = await rubColsRecheck(ls, false);
+    if (rc9.tx) step.push(rc9.tx);
+    if (rc9.ls) ls = rc9.ls;
+  }
   /* ───── **2 周目**（［拓本を解析2（テスト）］だけ。v36.8）─────
      ②' 1 周目の枠を使って、**1 字ずつ枠の真ん中で**墨の AI に通し、列の墨を入れかえる
      ②'' その墨で **もう一度 枠の AI**（手で直した列は とばす）
@@ -22215,6 +22284,16 @@ async function rubColsAi(quiet){
     }
     keep.push(b);
   });
+  return rubColsBuild(keep, side, quiet, "scan");
+}
+/* ───── **字の枠の並びから 列の構成を組む**（v38.3 で rubColsAi から分けた）─────
+   src … "scan"（列さがしの細い窓で拾った字）／"box"（できあがった紫の枠。本人の指摘
+         「最終的な紫色の枠の方が精度がいいので、こちらで出した方が列の判断ができる」） */
+function rubColsBuild(keep, side, quiet, src){
+  var mpp = mmPerPx();
+  var ar = rubArea();
+  var W = Math.max(1, ar.x2 - ar.x1);
+  if (!keep || keep.length < 2) throw new Error("字が足りません（" + ((keep && keep.length) || 0) + " 個）");
   /* 横の位置でまとめる（字 0.6 個ぶんより離れていたら 別の列） */
   var cs = keep.map(function(b){ return { c: b.x + b.w/2, b: b }; })
                .sort(function(a, b){ return a.c - b.c; });
@@ -22320,7 +22399,7 @@ async function rubColsAi(quiet){
                       yCut: Math.round(yCut9),
                       topN: tops.length,
                       topCols: tops.map(function(t9){ return { a: t9.a, b: t9.b }; }),
-                      chars: keep.length, v2: 2,
+                      chars: keep.length, v2: 2, src: src,
                       split: spl.pars.map(function(pz){
                         return { a: pz.a, b: pz.b, yCut: pz.yCut, nUp: pz.nUp,
                                  kids: pz.kids.map(function(k9){ return k9.n; }) }; }) };
@@ -22339,7 +22418,7 @@ async function rubColsAi(quiet){
   S.rub.colsTop = { cols: cols, geo: rubGeoKey(), at: Date.now(),
                     rows: 0, how: "ai", by: "ai", side: sideUsed,
                     dir: "top", y0: Math.round(ar.y1), y1: Math.round(ar.y2),
-                    chars: keep.length, v2: 2 };
+                    chars: keep.length, v2: 2, src: src };
   persist();
   if (!quiet)
     msg("AI が <b>" + cols.length + " 列</b>を見つけました（字 " + keep.length + " 個／" +

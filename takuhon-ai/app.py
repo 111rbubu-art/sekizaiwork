@@ -1120,6 +1120,8 @@ def pairs(which: str = "pairs", limit: int = 60, offset: int = 0, only: str = "a
             # "hand"／無し … しきい値で拾ったものを人が直した
             "inkFrom": meta.get("inkFrom", ""),
             "char": meta.get("char", ""), "at": meta.get("at", ""),
+            # 採点する範囲（0〜1。［✂ 範囲］）と その字の枠（512 の切り抜きの画素。あれば）
+            "crop": meta.get("crop"), "box": meta.get("box"),
             # **絵の版**。作り直すと同じ名前で中身だけ変わるので、
             # これを絵の住所に付けないと、**ブラウザが古い絵を出し続ける**
             # （実測：作り直したのに、拓本と正解だけ前の字のままだった）。
@@ -1174,6 +1176,42 @@ def fix_misplaced():
                 bad.append("%s（%s）" % (nm, e))
     return {"moved": len(moved), "names": moved[:50], "bad": bad,
             "pairs": len(D.list_pairs(DATASET)), "shape_rub": len(D.list_pairs(SHAPE_RUB))}
+
+
+@app.post("/api/takuhon/pair_crop")
+def pair_crop(which: str = Form("pairs"), id: str = Form(...), crop: str = Form("")):
+    """組の **採点する範囲** を決める／消す（2026-09-24。本人の案
+    「学習データに編集機能を追加して、トリミングしましょうか。そうすれば枠の有無も気にしなくていい」）。
+
+    crop = "x1,y1,x2,y2"（絵の幅・高さに対する 0〜1）。空なら消す（ぜんぶ採点に戻る）。
+    **絵（raw.png・mask.png）は さわらない**。meta.json の crop に書くだけで、
+    学習（train.py）が 範囲の外を採点しない。"""
+    root = _set_dir(which)
+    if root is None:
+        return JSONResponse({"error": "bad_set"}, status_code=400)
+    d = _pair_dir(root, id)
+    if d is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    mp = os.path.join(d, "meta.json")
+    meta = _read_json(mp, {}) or {}
+    if crop.strip():
+        try:
+            v = [float(t) for t in crop.split(",")]
+        except ValueError:
+            return JSONResponse({"error": "bad_crop"}, status_code=400)
+        if len(v) != 4:
+            return JSONResponse({"error": "bad_crop"}, status_code=400)
+        v = [max(0.0, min(1.0, t)) for t in v]
+        x1, x2 = sorted((v[0], v[2]))
+        y1, y2 = sorted((v[1], v[3]))
+        if x2 - x1 < 0.02 or y2 - y1 < 0.02:
+            return JSONResponse({"error": "too_small"}, status_code=400)
+        meta["crop"] = [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+    else:
+        meta.pop("crop", None)
+    with open(mp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    return {"id": id, "crop": meta.get("crop")}
 
 
 @app.post("/api/takuhon/pair_off")

@@ -69,15 +69,22 @@ def put_curve(rec, fresh=False):
         pass
 
 
-def dice_bce(logit, y):
-    bce = nn.functional.binary_cross_entropy_with_logits(logit, y)
-    p = torch.sigmoid(logit)
+def dice_bce(logit, y, w=None):
+    """w … 採点する範囲（1＝採点・0＝しない）。無ければ ぜんぶ（2026-09-24。［✂ 範囲］）"""
+    if w is None:
+        w = torch.ones_like(y)
+    bce = nn.functional.binary_cross_entropy_with_logits(logit, y, reduction="none")
+    bce = (bce * w).sum() / w.sum().clamp(min=1.0)
+    p = torch.sigmoid(logit) * w
+    y = y * w
     num = 2 * (p * y).sum((1, 2, 3)) + 1.0
     den = p.sum((1, 2, 3)) + y.sum((1, 2, 3)) + 1.0
     return bce + (1 - (num / den)).mean()
 
 
-def iou(pred, y):
+def iou(pred, y, w=None):
+    if w is not None:
+        pred, y = pred * w, y * w
     p = (pred > 0.5).float()
     inter = (p * y).sum((1, 2, 3))
     union = ((p + y) > 0).float().sum((1, 2, 3))
@@ -97,15 +104,20 @@ def batches(items, bs, rng, aug=True):
     idx = list(range(len(items)))
     rng.shuffle(idx)
     for i in range(0, len(idx), bs):
-        xs, ys = [], []
+        xs, ys, ws = [], [], []
         for j in idx[i:i + bs]:
             it = items[j]
             raw, mask, h1, h2 = it["raw"], it["mask"], it["hint1"], it["hint2"]
+            wt = it.get("weight")
+            if wt is None:
+                wt = np.ones_like(mask)
             if aug:
-                raw, mask, h1, h2 = D.augment(raw, mask, h1, h2, rng)
+                raw, mask, h1, h2, wt = D.augment(raw, mask, h1, h2, rng, weight=wt)
             xs.append(D.to_input(raw, h1, h2, HINT_DROP1, HINT_DROP2, rng))
             ys.append(mask[None])
-        yield (torch.from_numpy(np.stack(xs)), torch.from_numpy(np.stack(ys)))
+            ws.append(wt[None])
+        yield (torch.from_numpy(np.stack(xs)), torch.from_numpy(np.stack(ys)),
+               torch.from_numpy(np.stack(ws)))
 
 
 def val_score(net, items, device, use_hint):
@@ -119,8 +131,10 @@ def val_score(net, items, device, use_hint):
             d1 = 0.0 if use_hint else 1.0
             x = D.to_input(it["raw"], it["hint1"], it["hint2"], d1, d1, random.Random(0))
             y = torch.from_numpy(it["mask"][None][None]).to(device)
+            wv = it.get("weight")
+            wv = None if wv is None else torch.from_numpy(wv[None][None]).to(device)
             p = torch.sigmoid(net(torch.from_numpy(x[None]).to(device)))
-            tot += iou(p, y); n += 1
+            tot += iou(p, y, wv); n += 1
     return tot / max(1, n)
 
 
@@ -297,11 +311,11 @@ def main():
     for ep in range(ep0 + 1, a.epochs + 1):
         net.train()
         tot, nb = 0.0, 0
-        for x, y in batches(tr, a.bs, rng):
-            x, y = x.to(device), y.to(device)
+        for x, y, w in batches(tr, a.bs, rng):
+            x, y, w = x.to(device), y.to(device), w.to(device)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
-                loss = dice_bce(net(x), y)
+                loss = dice_bce(net(x).float(), y, w)
             scaler.scale(loss).backward()
             scaler.step(opt); scaler.update()
             tot += loss.item(); nb += 1; step += 1

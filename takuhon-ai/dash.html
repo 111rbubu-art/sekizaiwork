@@ -148,6 +148,18 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
 #memBody .mtab th{background:#fafaf8;color:var(--muted);font-weight:600;font-size:11.5px}
 #memBody .clist{font-size:17px;line-height:1.9;word-break:break-all;letter-spacing:2px}
 /* ───── 読みをあとから入れる（2026-09-22）───── */
+/* ✂ 範囲（2026-09-24） */
+.pair .imw{position:relative}
+.pair .imw img{display:block}
+.pair .crb{position:absolute;border:2px dashed #e0301e;pointer-events:none;box-sizing:border-box}
+.pair .crtag{background:#fdecea;border:1px solid #f1b0a8;color:#b3261e;border-radius:6px;padding:0 5px;font-size:10.5px}
+#crEd{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:11}
+#crEd .crbox{background:var(--card);border-radius:12px;padding:14px;width:min(620px,94vw);max-height:94vh;overflow:auto}
+#crEd .crwrap{position:relative;width:100%;aspect-ratio:1;background:#111;touch-action:none;user-select:none;cursor:crosshair;overflow:hidden}
+#crEd .crwrap img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none}
+#crEd #crMask{opacity:.55;mix-blend-mode:screen;filter:sepia(1) saturate(12) hue-rotate(-40deg) brightness(.9)}
+#crEd #crSel{position:absolute;border:2px solid #e0301e;box-shadow:0 0 0 9999px rgba(0,0,0,.45);pointer-events:none}
+#crEd .crbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
 #chEd{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:10}
 #chEd .cebox{background:var(--card);border-radius:12px;padding:14px;width:min(960px,94vw);
   max-height:92vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}
@@ -194,7 +206,7 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
 
 <div class="wrap">
   <h1>拓本クリーン化 ― 状況<span class="hint" style="font-size:12px;font-weight:400;
-    margin-left:8px;">画面 v2026-09-24a</span></h1>
+    margin-left:8px;">画面 v2026-09-24b</span></h1>
   <p class="sub" id="head">読み込み中…</p>
 
   <div class="cards" id="cards"></div>
@@ -468,6 +480,29 @@ pre.log{margin:8px 0 0;padding:9px 11px;background:#1e1e1b;color:#e6e6e0;border-
      「枠用で学習登録した物に、あとから文字の判別登録を行うことはできますか」
      →「拓本AI の画面で、登録できるようにお願いします」）─────
      枠はさわらず、`ch` だけを入れかえる。枠の学習に出した材料は そのまま使える。 ───── -->
+<!-- **✂ 範囲**（2026-09-24。本人の案「学習データに編集機能を追加して、トリミングしましょうか」）。
+     絵は切らず、採点する範囲だけを決める。外（となりの字など）は 学習で採点しない。 -->
+<div id="crEd" hidden>
+  <div class="crbox">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <b>✂ 採点する範囲</b><span class="hint" id="crSub"></span><span style="flex:1"></span>
+      <button onclick="crClose()">とじる</button>
+    </div>
+    <p class="hint" style="margin:0 0 8px">絵の上で 四角を引いて、<b>この字だけ</b>を囲んでください。
+      外（上下・左右の字）は 学習で採点しません。絵そのものは切りません。赤い半透明は 正解の墨です。</p>
+    <div class="crwrap" id="crWrap">
+      <img id="crRaw" alt=""><img id="crMask" alt="">
+      <div id="crSel" hidden></div>
+    </div>
+    <div class="crbar">
+      <button class="primary" onclick="crSave()">この範囲で保存</button>
+      <button id="crBoxB" onclick="crFromBox()">記録されている字の枠にする</button>
+      <button onclick="crFromMask()">正解の墨に合わせる</button>
+      <button onclick="crClear()">範囲を消す（ぜんぶ採点）</button>
+      <span class="hint" id="crNote"></span>
+    </div>
+  </div>
+</div>
 <div id="chEd" hidden>
   <div class="cebox">
     <div class="cehead">
@@ -878,6 +913,7 @@ async function pairs(reset){
   var only = document.getElementById("only").value;
   var d = await get("/api/takuhon/pairs?which=" + w + "&limit=" + LIMIT + "&only=" + only);
   PAIR_NOW = d.items.map(function(x){ return x.id; });
+  PAIR_BY = {}; d.items.forEach(function(x){ PAIR_BY[x.id] = x; });
   /* **学習に入る数を、いちばん先に言う。** 総数だけ出していたので、
      使わないにした分がどれだけ外れているのか分からなかった。 */
   document.getElementById("pcount").textContent =
@@ -919,17 +955,20 @@ async function pairs(reset){
         '<span>' + (it.off ? '使わない' : '使う') + '</span></label>' +
       '<span class="at">' + esc((it.at||"").replace("T", " ")) + '</span></div>' +
       '<div class="ims">' +
-        '<img src="' + b + 'raw.png' + v + '" alt="' + esc(cap[0]) + '">' +
+        crImg(b + 'raw.png' + v, cap[0], it.crop) +
         '<span class="arw">➡</span>' +
         '<img src="' + b + 'ai.png' + va + '" alt="' + esc(cap[1]) + '" onerror="noAi(this)">' +
-        '<img src="' + b + 'mask.png' + v + '" alt="' + esc(cap[2]) + '">' +
+        crImg(b + 'mask.png' + v, cap[2], it.crop) +
       '</div><div class="cap"><span>' + esc(cap[0]) + '</span><span class="arw"></span>' +
       '<span>' + esc(cap[1]) + '</span><span>' + esc(cap[2]) + '</span></div>' +
       '<div class="hint" style="margin-top:4px;font-size:10.5px">' +
         (it.inkFrom === "trace"
           ? '<span class="aitag" title="［AI お任せ］が拾ったものを人が直した組。' +
             '結果が伸びなくなったら、この組だけ外して学習し直せます">AI発</span> ' : "") +
-        (it.hint1 ? "手1 " : "") + (it.hint2 ? "手2 " : "") + esc(it.id) + '</div></div>';
+        (it.hint1 ? "手1 " : "") + (it.hint2 ? "手2 " : "") + esc(it.id) +
+        (it.crop ? ' <span class="crtag" title="赤い点線の外は 学習で採点しません">範囲あり</span>' : "") +
+        ' <button class="mini" style="font-size:10.5px;padding:1px 6px" onclick="crOpen(\'' + esc(it.id) + '\')">✂ 範囲</button>' +
+        '</div></div>';
   }).join("") || '<p class="hint">まだ 1 組もありません。</p>';
 }
 
@@ -939,6 +978,103 @@ async function fixMis(){
   alert(j.moved + " 組を ② へ移しました" + (j.bad && j.bad.length ? "（移せなかった " + j.bad.length + " 組）" : "") +
         "。① の学習用は " + j.pairs + " 組になりました。");
   tick(); pairs(true);
+}
+/* ---- ✂ 範囲（2026-09-24）---- */
+var PAIR_BY = {};
+var CR = { id: "", r: null, drag: null };
+function crImg(src, alt, crop){
+  var o = '<div class="imw"><img src="' + src + '" alt="' + esc(alt) + '">';
+  if (crop && crop.length === 4)
+    o += '<div class="crb" style="left:' + (crop[0] * 100) + '%;top:' + (crop[1] * 100) + '%;width:' +
+         ((crop[2] - crop[0]) * 100) + '%;height:' + ((crop[3] - crop[1]) * 100) + '%"></div>';
+  return o + '</div>';
+}
+function crOpen(id){
+  var it = PAIR_BY[id]; if (!it) return;
+  CR.id = id; CR.r = it.crop ? it.crop.slice() : null;
+  var b = "/api/takuhon/img/" + it.set + "/" + encodeURIComponent(id) + "/", v = "?v=" + (it.mt || 0);
+  document.getElementById("crRaw").src = b + "raw.png" + v;
+  document.getElementById("crMask").src = b + "mask.png" + v;
+  document.getElementById("crSub").textContent = (it.char || "字不明") + "　" + id;
+  document.getElementById("crBoxB").disabled = !(it.box && it.box.length === 4);
+  document.getElementById("crNote").textContent = CR.r ? "" : "いまは 範囲なし（ぜんぶ採点）";
+  document.getElementById("crEd").hidden = false;
+  crDraw();
+}
+function crClose(){ document.getElementById("crEd").hidden = true; CR.id = ""; }
+function crDraw(){
+  var el = document.getElementById("crSel"), r = CR.r;
+  if (!r){ el.hidden = true; return; }
+  el.hidden = false;
+  el.style.left = (r[0] * 100) + "%"; el.style.top = (r[1] * 100) + "%";
+  el.style.width = ((r[2] - r[0]) * 100) + "%"; el.style.height = ((r[3] - r[1]) * 100) + "%";
+}
+function crAt(e){
+  var bb = document.getElementById("crWrap").getBoundingClientRect();
+  return [Math.max(0, Math.min(1, (e.clientX - bb.left) / bb.width)),
+          Math.max(0, Math.min(1, (e.clientY - bb.top) / bb.height))];
+}
+(function(){
+  var w = document.getElementById("crWrap"); if (!w) return;
+  w.addEventListener("pointerdown", function(e){
+    e.preventDefault(); w.setPointerCapture(e.pointerId);
+    CR.drag = crAt(e); CR.r = [CR.drag[0], CR.drag[1], CR.drag[0], CR.drag[1]]; crDraw();
+  });
+  w.addEventListener("pointermove", function(e){
+    if (!CR.drag) return;
+    var p = crAt(e), a = CR.drag;
+    CR.r = [Math.min(a[0], p[0]), Math.min(a[1], p[1]), Math.max(a[0], p[0]), Math.max(a[1], p[1])];
+    crDraw();
+  });
+  function up(){
+    if (!CR.drag) return;
+    CR.drag = null;
+    if (CR.r && (CR.r[2] - CR.r[0] < 0.02 || CR.r[3] - CR.r[1] < 0.02)) CR.r = null;
+    crDraw();
+    document.getElementById("crNote").textContent = CR.r ? "［この範囲で保存］を押してください" : "";
+  }
+  w.addEventListener("pointerup", up); w.addEventListener("pointercancel", up);
+})();
+function crFromBox(){
+  var it = PAIR_BY[CR.id]; if (!it || !it.box) return;
+  var im = document.getElementById("crRaw"), n = im.naturalWidth || 512, m = 0.03;
+  CR.r = [it.box[0] / n - m, it.box[1] / n - m, it.box[2] / n + m, it.box[3] / n + m]
+           .map(function(t){ return Math.max(0, Math.min(1, t)); });
+  crDraw();
+}
+/* 正解の墨（白）の はしから はしまで＋まわり 4% */
+function crFromMask(){
+  var im = document.getElementById("crMask");
+  if (!im.naturalWidth) return;
+  var W = im.naturalWidth, H = im.naturalHeight, cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  var g = cv.getContext("2d"); g.drawImage(im, 0, 0);
+  var d = g.getImageData(0, 0, W, H).data, x0 = W, y0 = H, x1 = -1, y1 = -1;
+  for (var y = 0; y < H; y++) for (var x = 0; x < W; x++)
+    if (d[(y * W + x) * 4] > 127){ if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0){ document.getElementById("crNote").textContent = "正解の墨が ありません"; return; }
+  var m = 0.04;
+  CR.r = [x0 / W - m, y0 / H - m, (x1 + 1) / W + m, (y1 + 1) / H + m]
+           .map(function(t){ return Math.max(0, Math.min(1, t)); });
+  crDraw();
+}
+async function crSend(crop){
+  var fd = new FormData();
+  fd.append("which", document.getElementById("which").value);
+  fd.append("id", CR.id);
+  fd.append("crop", crop);
+  return await post("/api/takuhon/pair_crop", fd);
+}
+async function crSave(){
+  if (!CR.r){ document.getElementById("crNote").textContent = "先に 四角を引いてください"; return; }
+  try {
+    await crSend(CR.r.map(function(t){ return t.toFixed(4); }).join(","));
+    crClose(); pairs();
+  } catch(e){ document.getElementById("crNote").textContent = "保存できませんでした（" + e + "）"; }
+}
+async function crClear(){
+  try { await crSend(""); CR.r = null; crClose(); pairs(); }
+  catch(e){ document.getElementById("crNote").textContent = "消せませんでした（" + e + "）"; }
 }
 /* ---- 使う／使わない（2026-09-16。本人の指示）----
    **消さずに 学習から外す。** 組の中に印のファイルを置くだけなので、いつでも戻せる。 */

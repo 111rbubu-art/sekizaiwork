@@ -48,7 +48,30 @@ def load_pair(d, size=N):
         "raw": raw,
         "mask": (mask > 0.5).astype(np.float32),
         "hint1": h1, "hint2": h2, "meta": meta, "dir": d,
+        "weight": crop_weight(meta.get("crop"), size),
     }
+
+
+def crop_weight(crop, size=N):
+    """**採点する範囲**（2026-09-24。本人の案「学習データに編集機能を追加して、トリミングしましょうか」）。
+
+    crop = [x1, y1, x2, y2]（絵の幅・高さに対する 0〜1）。拓本AI の画面の［✂ 範囲］で決める。
+    **絵は切らない**（切ると字の大きさが変わり、本番の切り抜きと合わなくなる）。
+    範囲の中＝1・外＝0 の重みを返し、学習では外を採点しない。
+    正解に となりの字を描いていない組（上下の字が 地 のまま）でも、
+    外を採点しなければ「となりの字は墨ではない」と教えずに済む。範囲が無ければ None（ぜんぶ採点）。
+    """
+    try:
+        x1, y1, x2, y2 = [float(v) for v in crop]
+    except (TypeError, ValueError):
+        return None
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    if x2 - x1 < 0.02 or y2 - y1 < 0.02:
+        return None
+    w = np.zeros((size, size), dtype=np.float32)
+    w[int(round(y1 * size)):int(round(y2 * size)), int(round(x1 * size)):int(round(x2 * size))] = 1.0
+    return w
 
 
 OFF = "off"                 # この名前の**空ファイル**があれば「使わない」印
@@ -88,7 +111,7 @@ def to_input(raw, h1, h2, drop1=0.0, drop2=0.0, rng=None):
     return np.stack([raw, a, b], axis=0)
 
 
-def augment(raw, mask, h1, h2, rng=None):
+def augment(raw, mask, h1, h2, rng=None, weight=None):
     """水増し。拓本は向きが決まっているので、左右反転はしない。
     ずらし・明るさ・上下反転しない、の 3 点だけにする（字の形を壊さないため）。"""
     r = rng or random
@@ -107,6 +130,8 @@ def augment(raw, mask, h1, h2, rng=None):
     bg = float(np.median(raw))
     raw2 = shift(raw, bg)
     raw2 = np.clip(raw2 * r.uniform(0.9, 1.1) + r.uniform(-0.05, 0.05), 0.0, 1.0)
+    if weight is not None:
+        return raw2, shift(mask, 0.0), shift(h1, 0.0), shift(h2, 0.0), shift(weight, 0.0)
     return raw2, shift(mask, 0.0), shift(h1, 0.0), shift(h2, 0.0)
 
 

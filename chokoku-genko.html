@@ -2376,7 +2376,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v38.9";
+var APP_VER = "v39.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8280,14 +8280,83 @@ function autoOriginY(){
 /* 自動値が変わったら、すでに置いたガイドも同じだけ動かす */
 function syncOriginY(){
   var v = autoOriginY(), old = num(S.rub.originY, v);
-  if (Math.abs(v - old) < 0.05){ rubGroupsFollow(); return; }
+  /* 拓本の縦の倍率が分かっているときは、位置のずれも 倍率のちがいも
+     `rubVFollow` が まとめて 拓本に合わせ直す（v39.0） */
+  if (mmPerPx()){ S.rub.originY = v; rubVFollow(); return; }
+  if (Math.abs(v - old) < 0.05) return;
   var d = v - old;
   S.groups.forEach(function(g){
     g.topY = +(num(g.topY,0) + d).toFixed(1);
     g.bottomY = +(num(g.bottomY,0) + d).toFixed(1);
   });
   S.rub.originY = v;
-  rubGroupsFollow();
+}
+/* ───── **拓本の縦の倍率・位置が変わったら、校正の行を ぜんぶ 拓本に合わせて ずらす**（v39.0。本人の指示
+   「校正は拓本の位置に新しい行を合わせる作業をしているので、拓本の倍率が変更したら、
+     再度やり直しではなく、自動的に文字の位置を拓本に合わせてずらしてください」）─────
+   v38.6 は「拓本の上で決めた行」だけを追いかけていたので、前に作った行・校正で合わせた行は 動かなかった。
+   ここでは **ぜんぶの行**を、前の縦の写し方（S.rub.vmap＝{o:頭の位置 mm, t:上の較正線 画素, mp:mm/画素}）で
+   拓本の画素に戻し、いまの写し方で mm に直す。
+     ・行の上端・下端 … 拓本の同じ高さへ
+     ・字の縦の大きさ（hMm・1 字ずつの hmm）… 倍率の比で 縦だけ
+     ・字の横幅 … そのまま（横幅を決めていない行は、変える前の横幅を［横幅］に書きとめる）
+   ［実測した文字全長］を打っている間は、打ちはじめの位置から計算する（1 字ずつ打つたびに
+   丸めが積もらないように。`rubVBegin`／`rubVEnd`）。 */
+var RUB_VSNAP = null;
+function rubVCur(){
+  var mp = mmPerPx();
+  return mp ? { o: num(S.rub.originY, autoOriginY()), t: num(S.rub.calTop, 0), mp: mp } : null;
+}
+function rubVSnapTake(){
+  var vm = S.rub.vmap, cur = rubVCur();
+  if (!vm || !(num(vm.mp, 0) > 0)) vm = cur;
+  if (!vm) return null;
+  var rows = null;
+  try { rows = layout(); } catch(eL){ rows = []; }
+  return {
+    vm: { o: vm.o, t: vm.t, mp: vm.mp },
+    gs: (S.groups || []).map(function(g, gi){
+      var row = null;
+      for (var q = 0; q < rows.length; q++) if (rows[q].gi === gi){ row = rows[q]; break; }
+      return { g: g,
+               pt: vm.t + (num(g.topY, 0) - vm.o) / vm.mp,
+               pb: vm.t + (num(g.bottomY, 0) - vm.o) / vm.mp,
+               h: num(g.hMm, 0), w0: num(g.wMm, 0), rw: row ? num(row.w, 0) : 0,
+               ah: (g.adj || []).map(function(a){ return a ? num(a.hmm, 0) : 0; }) };
+    })
+  };
+}
+function rubVBegin(){ if (!RUB_VSNAP) RUB_VSNAP = rubVSnapTake(); }
+function rubVEnd(){ RUB_VSNAP = null; }
+function rubVFollow(){
+  var cur = rubVCur();
+  if (!cur) return 0;                         /* 倍率が無い（全長 0 など）間は さわらない */
+  var vm = S.rub.vmap;
+  if (!vm || !(num(vm.mp, 0) > 0)){ S.rub.vmap = cur; return 0; }
+  var same = Math.abs(vm.o - cur.o) < 1e-6 && Math.abs(vm.t - cur.t) < 1e-6 &&
+             Math.abs(vm.mp - cur.mp) < vm.mp * 1e-9;
+  if (same && !RUB_VSNAP) return 0;
+  var sn = RUB_VSNAP || rubVSnapTake();
+  if (!sn) return 0;
+  /* 横の物差しを とめる：DPI が無い拓本は、はじめの倍率を 横の倍率として控える */
+  if (!(num(S.rub.dpi, 0) > 0) && !(num(S.rub.mppX, 0) > 0)) S.rub.mppX = sn.vm.mp;
+  var k = cur.mp / sn.vm.mp, n = 0;
+  sn.gs.forEach(function(e){
+    var g = e.g;
+    if ((S.groups || []).indexOf(g) < 0) return;
+    g.topY = +(cur.o + (e.pt - cur.t) * cur.mp).toFixed(3);
+    g.bottomY = +(cur.o + (e.pb - cur.t) * cur.mp).toFixed(3);
+    if (Math.abs(k - 1) > 1e-9){
+      if (!(e.w0 > 0) && e.rw > 0) g.wMm = +e.rw.toFixed(2);   /* 横幅は そのまま */
+      else if (e.w0 > 0) g.wMm = e.w0;
+      if (e.h > 0) g.hMm = +(e.h * k).toFixed(3);
+      (g.adj || []).forEach(function(a, i){ if (a && e.ah[i] > 0) a.hmm = +(e.ah[i] * k).toFixed(3); });
+    }
+    n++;
+  });
+  S.rub.vmap = cur;
+  if (!RUB_VSNAP) { /* 1 回きり */ }
+  return n;
 }
 /* ───── **拓本から決めた行は、全長・較正線を直したら 追いかける**（v38.6。本人の指摘
    「この仕様だと、拓本の文字丈を後で修正すると、ゴムシートに反映していないので
@@ -8297,43 +8366,7 @@ function syncOriginY(){
    拓本の上で決めた行は **拓本の上の位置（画素）** も `rubPx = { t, b }` に覚え、
    全長・較正線・シートの長さが変わるたびに mm を計算し直す。
    校正の欄に 手で数字を入れた端は 覚えを外す（手で決めた値を優先）。 */
-function rubGroupsFollow(){
-  var mpF = mmPerPx();
-  if (!mpF) return 0;
-  var n = 0;
-  /* v38.7 で 全長を直したら 列の間隔（横）も合わせ直していたが、やめた（v38.8。本人の指示
-     「縦の補正なのに、横も変化させてませんか？ 横は変化させないで」）。
-     ［実測した文字全長］は **縦の補正**。列の位置・字の横幅は そのまま。 */
-  /* ───── **縦だけ 変える。字の横幅は そのまま**（v38.8。本人の指示「横は変化させないで」）─────
-     横幅を決めていない行は「横幅＝縦の大きさ」で描くので、行を縮めると 字の横幅まで縮んでいた。
-     行の長さが変わる前に、いまの横幅を その行の［横幅］に書きとめてから 縦を変える。
-     縦の大きさを 数字で決めてある行（hMm・1 字ずつの hmm）は、行の長さと同じ割合で 縦だけ変える。 */
-  var rows0 = null;
-  function rowOf(gi){
-    if (!rows0){ try { rows0 = layout(); } catch(eL){ rows0 = []; } }
-    for (var q = 0; q < rows0.length; q++) if (rows0[q].gi === gi) return rows0[q];
-    return null;
-  }
-  (S.groups || []).forEach(function(g, gi){
-    var a = g && g.rubPx;
-    if (!a) return;
-    var t0 = num(g.topY, 0), b0 = num(g.bottomY, 0), t1 = t0, b1 = b0;
-    if (a.t !== null && a.t !== undefined && isFinite(a.t)) t1 = +mmOf(a.t).toFixed(1);
-    if (a.b !== null && a.b !== undefined && isFinite(a.b)) b1 = +mmOf(a.b).toFixed(1);
-    if (Math.abs(t1 - t0) < 0.05 && Math.abs(b1 - b0) < 0.05) return;
-    var k = (b0 - t0) > 0.5 ? (b1 - t1) / (b0 - t0) : 1;
-    if (Math.abs(k - 1) > 1e-4){
-      var row = rowOf(gi);
-      if (row && !(num(g.wMm, 0) > 0) && num(row.w, 0) > 0) g.wMm = +num(row.w, 0).toFixed(2);
-      if (num(g.hMm, 0) > 0 && k > 0 && isFinite(k)) g.hMm = +(num(g.hMm, 0) * k).toFixed(2);
-      (g.adj || []).forEach(function(ad){
-        if (ad && num(ad.hmm, 0) > 0 && k > 0 && isFinite(k)) ad.hmm = +(num(ad.hmm, 0) * k).toFixed(2);
-      });
-    }
-    g.topY = t1; g.bottomY = b1; n++;
-  });
-  return n;
-}
+function rubGroupsFollow(){ return rubVFollow(); }   /* v39.0 から rubVFollow に まとめた */
 /* 拓本の上で 行の端を決めたときに 覚える（py … 拓本の画素。which … "top"／"bottom"） */
 function rubGroupPin(tg, which, py){
   if (!tg || !isFinite(py)) return;
@@ -8368,7 +8401,11 @@ function mmPerPxX(){
   var mp = mmPerPx();
   if (!mp) return null;
   var dpi = num(S.rub && S.rub.dpi, 0);
-  return dpi > 0 ? 25.4 / dpi : mp;
+  if (dpi > 0) return 25.4 / dpi;
+  /* DPI が無い拓本は、全長を はじめて直す前の倍率を 横の倍率として とめておく（v39.0。
+     本人の画像：DPI の無い拓本で 全長を半分にしたら 拓本の絵の横幅まで半分になっていた） */
+  var fx = num(S.rub && S.rub.mppX, 0);
+  return fx > 0 ? fx : mp;
 }
 
 /* --- 表示モード（シート／拓本／構成） --- */
@@ -9444,6 +9481,7 @@ function loadRubImage(src, srcName){
     var dp = dpiFromDataURL(src);
     r.dpi = dp ? dp.x : 0;
     r.dpiSrc = dp ? dp.src : "";
+    if (!keep){ r.mppX = 0; r.vmap = null; }       /* 新しい拓本は 物差しも はじめから（v39.0） */
     if (!keep){
       r.lenAuto = true;
       if (r.dpi) r.realLen = lenFromDpi();
@@ -20965,8 +21003,8 @@ function bindRub(){
   var le0 = $("rLen");
   if (le0 && !le0._bound){
   le0._bound = 1;
-  on("rLen","focus",function(){ calBusy = true; });
-  on("rLen","blur",function(){ calBusy = false; rubRender(); });
+  on("rLen","focus",function(){ calBusy = true; rubVBegin(); });
+  on("rLen","blur",function(){ calBusy = false; rubVEnd(); rubRender(); });
   on("rLen","input",function(e){
     /* ここは 1回だけつなぐので、外側の `r` を使ってはいけない（v19.9）。
        `migrate()` が `S.rub` を作り直すので、古い入れものに書いてしまい、

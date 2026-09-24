@@ -2,7 +2,7 @@
 
   POST /api/takuhon/clean      切り抜きを渡すと、墨の白黒マスク（PNG）を返す
   POST /api/takuhon/feedback   人が直した正解を貯める（学習は回さない。すぐ返す）
-                               set=ink なら①「読む」用、set=shape なら②「整える」用
+                               set=ink なら①「墨出し」用、set=shape なら②「整える」用
   POST /api/takuhon/line       人が直した**列まるごと**を貯める（字の枠と読みつき）
   POST /api/takuhon/boxes      列の切り抜きを渡すと、**1 字ずつの枠**を返す（枠の AI）
   POST /api/takuhon/guess      1 字の切り抜きを渡すと、**読みの候補**を返す（読みの AI）
@@ -86,7 +86,7 @@ TRAINPID = os.path.join(RUNS, "train.pid")
 def _nm(which):
     """画面の①②③④を、ファイルの名前に直す（2026-09-22 に ③枠・④読み を追加）。
 
-    ① 読む   … current（progress_current.json / train_current.log）
+    ① 墨出し   … current（progress_current.json / train_current.log）
     ② 整える … shape
     ③ 枠     … box   （train_box.py が progress_box.json を書く）
     ④ 読み   … char  （train_char.py が progress_char.json を書く）
@@ -98,7 +98,7 @@ def _retire_old():
     """①②で共用していたころの記録を、わきへどける。
 
     **①のものとして拾ってはいけない。** 実際に、②の学習（フォントの癖・1850 組）が
-    ①「読む（拓本）」の欄に「27 / 40 回め」と出て、
+    ①「墨出し（拓本）」の欄に「27 / 40 回め」と出て、
     「拓本の学習はしていないはずだが？」と迷わせた（2026-09-12）。
     どちらの学習だったかは記録に残っていないので、**分かる名前にして外す**のが正しい。
     """
@@ -115,7 +115,7 @@ def _retire_old():
 
 
 def _progress_path(which):
-    """①「読む」と②「整える」を**混ぜない**。名前ごとに別のファイル。"""
+    """①「墨出し」と②「整える」を**混ぜない**。名前ごとに別のファイル。"""
     return os.path.join(RUNS, "progress_%s.json" % _nm(which))
 
 
@@ -146,7 +146,7 @@ def _pair_dir(root, pid):
     """組のフォルダーを、名前から安全に引く。無ければ None。
 
     **日本語の名前を弾かないこと**（2026-09-13 の不具合）。
-    ①「読む」の組は、彫刻原稿アプリが `pair_<家名>_g0-3_<字>` という名前で
+    ①「墨出し」の組は、彫刻原稿アプリが `pair_<家名>_g0-3_<字>` という名前で
     送ってくる（`feedback` は `ord(c) > 127` を通すので、そのまま保存される）。
     ところが絵を返す口は ASCII だけの `SAFE` で見ていたので、
     **①の組の絵がぜんぶ 400 になって、1 枚も出なかった**。
@@ -320,7 +320,7 @@ async def clean(
 ):
     """拓本の切り抜きを、AI に通して返す。
 
-    stage="ink"   … ① 読む（拓本 → 綺麗な墨）
+    stage="ink"   … ① 墨出し（拓本 → 綺麗な墨）
     stage="shape" … ② 整える（綺麗な墨 → 書体らしい形）
     stage="both"  … ①のあと②（本番はこれ）
 
@@ -332,7 +332,7 @@ async def clean(
     want1 = stage in ("ink", "both")
     want2 = stage in ("shape", "both")
     if want1 and not INFO["loaded"]:
-        return JSONResponse({"error": "no_model", "detail": "①「読む」のモデルがありません"},
+        return JSONResponse({"error": "no_model", "detail": "①「墨出し」のモデルがありません"},
                             status_code=503)
     if want2 and not INFO2["loaded"]:
         return JSONResponse({"error": "no_model_shape", "detail": "②「整える」のモデルがありません"},
@@ -376,7 +376,7 @@ async def boxes(
           x,y,w,h は **渡した絵の画素**。アプリはそのまま青枠にできる。
 
     中では
-      ① 墨のモデル（①「読む」）に通して墨を作る（`ink` を渡せば それを使う）
+      ① 墨のモデル（①「墨出し」）に通して墨を作る（`ink` を渡せば それを使う）
       ② 枠のモデルに「拓本＋墨」を渡して、中心の山と 幅・高さを出す
       ③ 山の頂を拾って、枠の並びにする
     たての長い絵を **そのまま 1 度**に通す（列を切らないので、上下で食いちがわない）。
@@ -565,7 +565,7 @@ async def feedback(
 ):
     """人が直した正解を貯める。**同じ key なら上書き**（彫刻原稿アプリと同じ考え方）。
 
-    set="ink"       … ①「読む」用（拓本の切り抜き → 人が直した墨）。dataset/pairs
+    set="ink"       … ①「墨出し」用（拓本の切り抜き → 人が直した墨）。dataset/pairs
     set="shape_rub" … ②「整える」用で、**拓本から取り出したもの**。dataset/shape_rub
     set="shape"     … ②「整える」用で、合成（フォントを荒らしたもの）。dataset/shape
 
@@ -608,7 +608,7 @@ async def feedback(
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     # **上書きしたら、組の時刻も新しくする**（2026-09-23。本人の報告
-    # 「①読むに登録するを押しても、拓本AIの貯まったデータで確認できず」）。
+    # 「①墨出しに登録するを押しても、拓本AIの貯まったデータで確認できず」）。
     # 中のファイルを書きかえても **入れ物（フォルダ）の時刻は変わらない**。
     # 一覧は その時刻で新しい順に並べ、絵の版（mt）にも使っているので、
     # 登録し直した組が 古い位置に埋もれたまま・絵も前のまま だった。
@@ -1405,7 +1405,7 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
                 noswap: bool = Form(False)):
     """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。
 
-    which="ink"   … ①拓本を読む（dataset/pairs → current.pth）
+    which="ink"   … ①墨出し（dataset/pairs → current.pth）
     which="shape" … ②書体らしく整える（→ current_shape.pth）
 
     ②の材料は 2 種類ある（2026-09-16。本人の指摘「整える方は今までと材料が
@@ -1519,7 +1519,7 @@ def trainlog(lines: int = 40, which: str = "ink"):
     """①②で**別々**の画面ログ。
 
     **無いときに古い train.log を出してはいけない。**
-    ②「整える」を回したログが、①「読む（拓本）」の欄に出て、
+    ②「整える」を回したログが、①「墨出し（拓本）」の欄に出て、
     「拓本の学習はしていないのに 1850 組と出ている」と迷わせた（2026-09-13）。
     """
     p = _log_path(which)
@@ -1545,7 +1545,7 @@ def reset(what: str = Form(...), confirm: str = Form(""), which: str = Form("ink
     sh = (which == "shape")
     model = CURRENT2 if sh else CURRENT
     dirs = (SHAPE, SHAPE_VAL) if sh else (DATASET, VALDIR)
-    who = "② 整える" if sh else "① 読む"
+    who = "② 整える" if sh else "① 墨出し"
     done = []
     if what in ("model", "all"):
         try:

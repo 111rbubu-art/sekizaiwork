@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-23　**chokoku-genko.html = v39.3**／**index_b.html = v1.9.441**／**tekkyo.html = v3.5**
+最終更新: 2026-09-23　**chokoku-genko.html = v39.4**／**index_b.html = v1.9.441**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -6641,3 +6641,8 @@ app.py（知らせ・説明）・README.md。中身の名前（set="ink"・which
   画面・案件の中身は変わらない。赤・黒・赤黒 1 枚・SharePoint へ置く SVG すべて buildSVG 経由。
 - 出力のとき 知らせに「縦の伸び縮みを補正して出します（500mm の線が ○ mm だった分）」。
 確かめ：ずれ 1.5 → 赤の出力に scale(1 0.997009)、画面には入らない、0 に戻すと 入らない。
+
+## v39.4 — SharePoint へ置く SVG には 縦の補正を かけない（本人「業者に送るので、不要です」）
+`outSVG(mode, { noScale: true })` → `PLOT_NO_SCALE` を立てて buildSVG の kY を 1 に。`spSaveOutput`（_赤.svg／_黒.svg）で使う。
+赤・黒の出力（この端末のプロッター）と［SVG を保存］は これまでどおり補正する。位置補正（plotOff）は 前から どれにも かかっている（変えていない）。
+確かめ：ずれ 1.5 で 赤の出力は scale あり、noScale の SVG は なし。

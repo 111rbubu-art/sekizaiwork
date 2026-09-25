@@ -1091,6 +1091,17 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <label class="f"><span>上下（下が＋）</span><input type="number" id="shPY" value="0" step="0.5"></label>
         </div>
         <button class="mini" id="btnPlotOff0" style="width:100%;">補正を 0 に戻す</button>
+
+        <!-- 縦の伸び縮み（v39.3。本人の指示） -->
+        <h3 class="sec">出力の縦の伸び縮み（500mm の線）</h3>
+        <label class="f"><span>500 の線までの ずれ mm（長いとき＋・短いとき−）</span>
+          <input type="number" id="shDev500" value="0" step="0.1"></label>
+        <p class="hint" id="shDev500Tx" style="margin:2px 0 4px;"></p>
+        <button class="mini" id="btnDev5000" style="width:100%;">ずれを 0 に戻す</button>
+        <details class="help"><summary>測り方</summary>
+          <p class="hint">出したゴムシートで、<b>いちばん上の文字の上端</b>から <b>赤い破線「500」</b>までを測ります。<br>
+          例）501.5mm あったとき　<b>1.5</b>／498.8mm のとき　<b>−1.2</b><br>
+          出力だけ 縦を合わせ直します（横は変えません）。この端末だけが覚えます。画面の見え方は変わりません。</p></details>
         <details class="help"><summary>ずれたときの入れ方</summary>
           <p class="hint">出したものがずれた分を打ち消します。<br>
           例）幅 90mm でセンターラインが左端から 61mm に出たとき　45 − 61 ＝ <b>−16</b> を「左右」へ。<br>
@@ -2376,7 +2387,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v39.2";
+var APP_VER = "v39.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -3298,6 +3309,21 @@ function plotOff(){
     return { x: num(o.x, 0), y: num(o.y, 0) };
   } catch(e){ return { x:0, y:0 }; }
 }
+/* ───── **出力の縦の伸び縮み**（v39.3。本人の指示「ゴムシートの補正で、実際に500のラインを
+   実物で私が測定しズレている場合、その量を入力して合わせられるようにして。ゴムシートのメニューにいれて」）─────
+   プロッターの送りは 紙の長さ方向に 少し伸び縮みする。500mm の確かめ線（v39.2）を 実物で測って、
+   **ずれた量**（長いとき＋・短いとき−）を入れると、出力だけ 縦を 500 ÷（500＋ずれ）倍にして打ち消す。
+   位置補正と同じく **この端末だけ** が覚える（プロッターごとの癖なので）。画面の見え方と案件の中身は変わらない。 */
+function plotDevY(){
+  try { return num(localStorage.getItem("chokokuPlotDev500"), 0); } catch(e){ return 0; }
+}
+function setPlotDevY(v){
+  try { localStorage.setItem("chokokuPlotDev500", String(+num(v, 0).toFixed(2))); } catch(e){}
+}
+function plotScaleY(){
+  var d = plotDevY();
+  return (d > -250 && Math.abs(d) >= 0.005) ? 500 / (500 + d) : 1;
+}
 function setPlotOff(x, y){
   try { localStorage.setItem("chokokuPlotOff",
         JSON.stringify({ x: +num(x,0).toFixed(2), y: +num(y,0).toFixed(2) })); } catch(e){}
@@ -3577,10 +3603,13 @@ function buildSVG(){
     vx -= po.x; vy -= po.y;
   }
 
+  /* 出力のときだけ、縦の伸び縮みを打ち消す（v39.3）。紙の上はし（y＝0）を もとに 縦だけ */
+  var kY = isPrint ? plotScaleY() : 1;
   var svg =
     '<svg xmlns="http://www.w3.org/2000/svg" width="' + vw + 'mm" height="' + vh + 'mm" ' +
     'viewBox="' + vx.toFixed(3) + ' ' + vy.toFixed(3) + ' ' + vw.toFixed(3) + ' ' + vh.toFixed(3) +
     '" shape-rendering="geometricPrecision">' +
+      (kY !== 1 ? '<g transform="scale(1 ' + kY.toFixed(6) + ')">' : '') +
       safe +
       '<g' + ((SX || SY) ? ' transform="translate(' + SX + ' ' + SY + ')"' : '') + '>' +
         rubLayer +
@@ -3593,6 +3622,7 @@ function buildSVG(){
         (hl.length ? '<g pointer-events="none">' + hl.join("") + '</g>' : '') +
         picks +
       '</g>' +
+      (kY !== 1 ? '</g>' : '') +
     '</svg>';
   return { svg: svg, missing: missing, rows: rows, boxes: boxes, W: W, H: H,
            vw: vw, vh: vh, sx: SX, sy: SY, ox: offX, oy: offY, alt: altSheet };
@@ -5407,6 +5437,20 @@ function plotOffFill(){
     setPlotOff(num($("shPX").value, 0), num($("shPY").value, 0));
   });
 });
+function plotDevFill(){
+  var e = $("shDev500"), t = $("shDev500Tx"), d = plotDevY();
+  if (e && document.activeElement !== e) e.value = d;
+  if (t) t.textContent = Math.abs(d) >= 0.005
+    ? "実物 " + (500 + d).toFixed(1) + " mm → 出力の縦を " + (plotScaleY() * 100).toFixed(3) + "% にします"
+    : "補正なし";
+}
+(function(){
+  var e = $("shDev500"); if (!e) return;
+  e.addEventListener("input", function(){ setPlotDevY(num(e.value, 0)); plotDevFill(); });
+  var b0 = $("btnDev5000");
+  if (b0) b0.onclick = function(){ setPlotDevY(0); plotDevFill(); msg("縦の伸び縮みの補正を 0 に戻しました。"); };
+  plotDevFill();
+})();
 $("btnPlotOff0").onclick = function(){
   setPlotOff(0, 0); plotOffFill(); msg("出力の位置補正を 0 に戻しました。");
 };
@@ -6844,10 +6888,11 @@ function inkExtentMm(){
 
 function printLayer(which){
   if (!FONTS.length){ msg("先にフォントを読み込んでください。", true); return; }
-  var po = plotOff();
-  if (po.x || po.y){
-    msg("出力の位置を 左右 " + po.x.toFixed(1) + " mm　上下 " + po.y.toFixed(1) +
-        " mm ずらして出します。", false, true);
+  var po = plotOff(), dv = plotDevY();
+  if (po.x || po.y || plotScaleY() !== 1){
+    msg((po.x || po.y ? "出力の位置を 左右 " + po.x.toFixed(1) + " mm　上下 " + po.y.toFixed(1) + " mm ずらして出します。" : "") +
+        (plotScaleY() !== 1 ? "　縦の伸び縮みを補正して出します（500mm の線が " + (500 + dv).toFixed(1) +
+          " mm だった分）。" : ""), false, true);
   }
   printMode = which;
   renderStage();
@@ -7068,12 +7113,13 @@ function testCutSVG(){
              '" stroke-linejoin="miter" stroke-linecap="butt">' +
              '<path d="' + d.join(" ") + '"/></g>';
 
-  var po = plotOff(), vx = -po.x, vy = -po.y;
+  var po = plotOff(), vx = -po.x, vy = -po.y, kY7 = plotScaleY();
   return {
     W: W, H: H,
     svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + 'mm" height="' + H + 'mm" ' +
          'viewBox="' + vx.toFixed(3) + ' ' + vy.toFixed(3) + ' ' + W + ' ' + H +
-         '" shape-rendering="geometricPrecision">' + body + '</svg>'
+         '" shape-rendering="geometricPrecision">' +
+         (kY7 !== 1 ? '<g transform="scale(1 ' + kY7.toFixed(6) + ')">' + body + '</g>' : body) + '</svg>'
   };
 }
 

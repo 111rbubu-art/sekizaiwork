@@ -5950,18 +5950,42 @@ function _aiTempleName(t) {
 }
 /* 声の AI の よくある取りちがえ（同じ音の別の字） */
 var AI_HEAR_FIX = [[/横骨|能骨|脳骨|農骨|膿骨/g, '納骨'], [/身影/g, '御影']];
+/* ───── **文字起こしに使うモデル**（v1.9.446。本人の試し「e4b は文字変換されるが、12B は音声が添付されていないと言われる」）─────
+   Ollama の gemma4:12b は ollama show で audio と出るが、音声を受け取れていない（記事にも「Ollama の 12b は文字と画像だけ」）。
+   **文字起こしだけ** e4b（無ければ e2b）を使い、質問に答えるのは チャットで選んだモデルのまま。
+   Ollama の /api/tags で 入っているモデルを 1 回だけ見て決める。localStorage `ai_stt_model` に書けば それを使う。 */
+var _aiSttModelP = null;
+function _aiSttModel(cfg) {
+  var fixed = '';
+  try { fixed = localStorage.getItem('ai_stt_model') || ''; } catch (e) {}
+  if (fixed) return Promise.resolve(fixed);
+  if (!_aiSttModelP) {
+    var base = cfg.endpoint || 'http://localhost:11434';
+    _aiSttModelP = fetch(base + '/api/tags').then(function (r) { return r.ok ? r.json() : { models: [] }; })
+      .then(function (j) {
+        var names = ((j && j.models) || []).map(function (m) { return m.name || m.model || ''; });
+        var pick = null;
+        [/gemma4:e4b/, /e4b/, /gemma4:e2b/, /e2b/].forEach(function (re) {
+          if (!pick) names.some(function (n) { if (re.test(n)) { pick = n; return true; } return false; });
+        });
+        return pick || '';
+      }).catch(function () { _aiSttModelP = null; return ''; });
+  }
+  return _aiSttModelP.then(function (m) { return m || cfg.model || 'gemma4:e4b'; });
+}
 function aiTranscribe(blob) {
   var cfg = getAICfg();
   if (cfg.provider !== 'openai')
     return Promise.reject(new Error('声での問い合わせは、AIの相手が「ローカルLLM（Ollama）」のときだけ使えます（設定 → AI）'));
   var base = cfg.endpoint || 'http://localhost:11434';
-  var vocab = [];
-  return _aiVocab().then(function (v) { vocab = v || []; return _aiWavB64(blob); }).then(function (wv) {
+  var vocab = [], sttModel = '';
+  return _aiSttModel(cfg).then(function (m) { sttModel = m; return _aiVocab(); })
+    .then(function (v) { vocab = v || []; return _aiWavB64(blob); }).then(function (wv) {
     if (wv.sec < 0.3) throw new Error('録音が短すぎます');
     return fetch(base + '/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: cfg.model || 'gemma4:12b', stream: false, think: false,
+        model: sttModel, stream: false, think: false,
         messages: [{ role: 'user',
           content: 'この音声を日本語で文字起こししてください。文字起こしした文だけを出力し、説明や前置きは書かないでください。' +
             (vocab.length ? '\n石材店の業務の話です。次の言葉がよく出てきます。聞こえた音がこれらに近いときは、この書き方にしてください：' +
@@ -5975,7 +5999,7 @@ function aiTranscribe(blob) {
   }).then(function (j) {
     var t = (j && j.message && j.message.content) || '';
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s+|\s+$/g, '');
-    if (!t) throw new Error('文字にできませんでした（モデル ' + (cfg.model || '?') + ' が音声に対応していないかもしれません）');
+    if (!t) throw new Error('文字にできませんでした（モデル ' + (sttModel || '?') + ' が音声に対応していないかもしれません）');
     AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
     return _aiTempleFix(t);
   });
@@ -6952,7 +6976,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.445';
+var APP_VERSION = 'v1.9.446';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

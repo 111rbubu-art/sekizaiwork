@@ -102,6 +102,46 @@ def yomi(text):
     return "".join(out)
 
 
+_HEAD = __import__("re").compile(r"^\s*([^\s、。]{1,6}?)(の|って|で|は)")
+
+
+def head_yomis(text, cap=600):
+    """文の頭の「〇〇の」の 〇〇 について、漢字 1 字ずつの**ありうる読み**を全部組み合わせた一覧。
+    pykakasi は 1 つの読みしか返さない（「上一」→ うえいち）。お寺の名前を 別の字で書かれたとき
+    （浄因寺 → 上一）、音読みの組み合わせ「じょういち」なら お寺の読みと照らせる。業務アプリが使う。"""
+    m = _HEAD.match(text or "")
+    if not m or not _KANJI.search(m.group(1)):
+        return []
+    head = m.group(1)
+    # 「〇〇家」「〇〇さん」は 人の名前。お寺ではない
+    if __import__("re").search(r"(家|さん|様|氏)$", head):
+        return []
+    try:
+        global _KKS
+        if _KKS is None:
+            import pykakasi
+            _KKS = pykakasi.kakasi()
+        from pykakasi.kanji import Kanwa
+        kw = Kanwa()
+        toks = _KKS.convert(__import__("re").sub(r"(寺|院)$", "", head) or head)
+    except Exception:                                        # noqa: BLE001
+        return []
+    # 辞書に 1 語で載っている言葉（高橋・吉田・福寿 など）は、その読みを信じる（ほかの読みは試さない）
+    if len(toks) == 1 and len(toks[0].get("orig", "")) >= 2:
+        return []
+    outs = [""]
+    for c in head:
+        rs = [c]
+        if _KANJI.search(c):
+            t = kw.load(c) or {}
+            rs = sorted({y for y, _ in t.get(c, []) if y}) or [c]
+            rs = [y for y in rs if len(y) <= 3]              # 名乗りの長い読み（のぼる 等）は外す
+            if c == "寺":
+                rs = ["じ"]
+        outs = [o + r for o in outs for r in rs][:cap]
+    return outs
+
+
 def transcribe(wav_b64, prompt, device):
     b = base64.b64decode(wav_b64)
     audio = _wav_to_f32(b)
@@ -124,5 +164,5 @@ def transcribe(wav_b64, prompt, device):
     # 版によっては 渡した見本が頭に付いて返ることがあるので、外す
     if prompt and text.startswith(prompt[:200]):
         text = text[len(prompt[:200]):].strip()
-    return {"text": text, "yomi": yomi(text), "sec": round(sec, 2),
+    return {"text": text, "yomi": yomi(text), "head_yomis": head_yomis(text), "sec": round(sec, 2),
             "ms": int((time.time() - t0) * 1000), "model": MODEL_NAME}

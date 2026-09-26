@@ -5976,6 +5976,8 @@ function _aiTempleName(t) {
 }
 /* 声の AI の よくある取りちがえ（同じ音の別の字） */
 var AI_HEAR_FIX = [[/横骨|能骨|脳骨|農骨|膿骨/g, '納骨'], [/身影/g, '御影'],
+  /* whisper は「納骨日」を「納骨子」と書くことがある（v1.9.454） */
+  [/納骨子/g, '納骨日'],
   /* 「納骨碑」は ふつう使わない言葉（本人「納骨碑は初めて聞きました」）。業務では 納骨日の聞きちがい（v1.9.447） */
   [/納骨碑/g, '納骨日']];
 /* ───── **文字起こしに使うモデル**（v1.9.446。本人の試し「e4b は文字変換されるが、12B は音声が添付されていないと言われる」）─────
@@ -6050,6 +6052,8 @@ function _aiTempleFromYomi(text, yomi) {
       var lim = r.length >= 5 ? 2 : 1;
       for (var L = Math.max(1, r.length - 1); L <= r.length + 2; L++) {
         for (var i = 0; i + L <= Math.min(Y.length, 12); i++) {
+          /* 最初の音が同じものだけ（v1.9.454。「ふくじゅ」が ざっくり読みで「そうふくじ」に当たっていた） */
+          if (Y.charAt(i) !== r.charAt(0)) continue;
           var d = _aiYomiDist(Y.substr(i, L), r);
           if (d <= lim && (!best || d < best.d || (d === best.d && i < best.i))) best = { k: k, d: d, i: i };
         }
@@ -6123,7 +6127,34 @@ function _aiTranscribeWhisper(base, wv) {
     });
   });
 }
-function _aiHearFinish(t, yAll) {
+/* ───── **文の頭を 別の読みでも照らす**（v1.9.454。本人の試し「浄因寺の鈴木家の…」→ whisper「上一の鈴木の…」）─────
+   サーバーが「〇〇の」の 〇〇 を 漢字 1 字ずつのありうる読みで組み合わせた一覧（head_yomis）を返す
+   （上一 → じょういち・うえいち…）。文にお寺が まだ無いときだけ、その一覧と 登録のお寺の読みを照らし、
+   いちばん近いもの（5 文字以上は 2、それ未満は 1 文字ちがいまで）で 〇〇 を置きかえる。 */
+function _aiTempleFromHead(text, heads) {
+  if (!heads || !heads.length) return text;
+  var known = Object.keys(AI_TEMPLE_READ);
+  if (known.some(function (k) { return text.indexOf(k) >= 0; })) return text;
+  var m = String(text).match(/^\s*([^\s、。]{1,6}?)(の|って|で|は)/);
+  if (!m) return text;
+  var best = null;
+  known.forEach(function (k) {
+    AI_TEMPLE_READ[k].forEach(function (r) {
+      var lim = r.length >= 5 ? 2 : 1;
+      heads.forEach(function (h) {
+        h = _aiHira(String(h || ''));
+        if (h.charAt(0) !== r.charAt(0)) return;          /* 最初の音は同じものだけ */
+        var d = _aiYomiDist(h, r), ds = _aiLev(h, r);   /* 同じ近さなら、そのままの読みで近い方 */
+        if (d <= lim && (!best || d < best.d || (d === best.d && ds < best.ds))) best = { k: k, d: d, ds: ds };
+      });
+    });
+  });
+  return best ? String(text).replace(m[1], best.k) : text;
+}
+function _aiHearFinish(t, yAll, heads) {
+  /* 頭の言葉そのものの読みで照らす方が確か（文全体の読みの窓は 語の途中で切れることがある：
+     「じょうじんち」の頭 4 字「じょうじ」が「じこうじ」に当たっていた）。先に頭、次に文全体 */
+  t = _aiTempleFromHead(t, heads);
   t = _aiTempleFromYomi(t, yAll);
   AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
   return _aiTempleFix(t);
@@ -6141,7 +6172,7 @@ function aiTranscribe(blob) {
       var t = String(j.text || '').trim();
       if (!t) return null;
       _aiLastStt = 'whisper ' + base;
-      return _aiHearFinish(t, j.yomi || '');
+      return _aiHearFinish(t, j.yomi || '', j.head_yomis || []);
     }).catch(function (e) {
       try { console.warn('[声] kotoba-whisper に失敗、Ollama に回します', e); } catch (eC) {}
       return null;
@@ -7177,7 +7208,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.453';
+var APP_VERSION = 'v1.9.454';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -312,3 +312,16 @@ v1.9.448 の「AI にお寺を選ばせる」（`_aiTempleLLMFix`）は 小さ�
   `_ollamaFetch` はこれを通してから `_ollamaFetch2` で送る。設定に保存される名前は `gemma4:12b` のまま（切替の表示は「12b（精・GPU）」）。
 - 文字起こしは これまでどおり e4b。
 確かめ（偽の Ollama）：12b → `gemma4-gpu:latest`、e4b → そのまま、gemma4-gpu が無い → `gemma4:12b`。
+
+## GPUマシン：Ollama（Docker）が GPU を見失う件（2026-09-26）
+症状：`ollama ps` で e4b は 100% GPU なのに、新しく読むモデル（12b など）だけ 100% CPU。GPU の空きは十分（sched.go は「fits」）。
+ログに `ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected`、
+`docker exec ollama-docker nvidia-smi` → `Failed to initialize NVML: Unknown Error`。
+原因：Docker＋NVIDIA の既知の症状。`systemctl daemon-reload`（パッケージ更新などでも起きる）でコンテナが GPU の権利を失う。
+すでに GPU をつかんでいた処理は動き続け、後から起動した処理だけ GPU が見えない。
+- 直し方：`docker restart ollama-docker`（Dify は別コンテナなので影響なし）。
+- 見張り：`/usr/local/bin/ollama-gpu-watch.sh` ＋ `ollama-gpu-watch.timer`（5分おき）。GPU が見えなければ再起動し、
+  `journalctl -t ollama-gpu-watch` に記録。入れた直後の daemon-reload で実際に 1 回発動して直った。
+- ollama-docker は docker-compose ではなく `docker run` で作られている（作り直すときは元の設定を `docker inspect` で確かめること）。
+- 12b を GPU に載せた実際の大きさは 8.4GB（CPU 時の見積もり 13GB）。e4b 4.7GB と拓本AIの学習を足しても 24GB に収まる。
+- `num_gpu 99` の gemma4-gpu は原因と無関係だった（v1.9.452 の読み替えは害がないので残してある）。

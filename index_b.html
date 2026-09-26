@@ -5975,6 +5975,33 @@ function _aiSttModel(cfg) {
   }
   return _aiSttModelP.then(function (m) { return m || cfg.model || 'gemma4:e4b'; });
 }
+/* ───── **お寺の名前を AI に直させる**（v1.9.448。本人の試し「慈宏寺」→「自校寺」＝ 読みは同じで 別の漢字）─────
+   ブラウザでは 漢字の読みが分からないので、文字起こしに使ったモデルに もう一度 文字だけで頼む。
+   文に「〇〇寺・〇〇院・〇〇墓地」があり、知っているお寺の名前と一致しないときだけ。
+   お寺の一覧は 読みつき（AI_TEMPLE_READ）＋ データにある寺院名。
+   返ってきた文が 元の文と長さが大きくちがう（勝手に書きかえた）ときは 元の文のまま。 */
+function _aiTempleLLMFix(text, model, base, extra) {
+  var known = Object.keys(AI_TEMPLE_READ).concat(extra || []);
+  var m = String(text || '').match(/[^\s、。のをにがはで]{1,4}(寺|院|墓地)/g) || [];
+  var odd = m.filter(function (w) { return known.indexOf(w) < 0 && !known.some(function (k) { return w.indexOf(k) >= 0; }); });
+  if (!odd.length) return Promise.resolve(text);
+  var lines = Object.keys(AI_TEMPLE_READ).map(function (k) { return k + '（' + AI_TEMPLE_READ[k][0] + '）'; })
+    .concat((extra || []).filter(function (k) { return !AI_TEMPLE_READ[k]; }));
+  return fetch(base + '/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: model, stream: false, think: false,
+      messages: [{ role: 'user', content:
+        '次の文は 音声認識の結果です。文の中のお寺の名前（' + odd.join('・') + '）が、下のお寺のどれかの聞きちがい' +
+        '（同じ読み・近い読みの別の漢字など）なら、正しいお寺の名前に直してください。ほかの部分は一文字も変えないでください。' +
+        '直した文だけを出力してください（説明は書かない）。当てはまるお寺が無ければ、元の文をそのまま出力してください。\n' +
+        'お寺：' + lines.join('、') + '\n文：' + text }] })
+  }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+    var t = String((j && j.message && j.message.content) || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    t = t.replace(/^文[:：]\s*/, '').split('\n')[0].trim();
+    if (!t || Math.abs(t.length - text.length) > Math.max(4, text.length * 0.3)) return text;
+    return t;
+  }).catch(function () { return text; });
+}
 function aiTranscribe(blob) {
   var cfg = getAICfg();
   if (cfg.provider !== 'openai')
@@ -6003,7 +6030,9 @@ function aiTranscribe(blob) {
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s+|\s+$/g, '');
     if (!t) throw new Error('文字にできませんでした（モデル ' + (sttModel || '?') + ' が音声に対応していないかもしれません）');
     AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
-    return _aiTempleFix(t);
+    t = _aiTempleFix(t);
+    var dataTemples = vocab.filter(function (w) { return /(寺|院|墓地)$/.test(w); });
+    return _aiTempleLLMFix(t, sttModel, base, dataTemples);
   });
 }
 function openAIChat() {
@@ -6978,7 +7007,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.447';
+var APP_VERSION = 'v1.9.448';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

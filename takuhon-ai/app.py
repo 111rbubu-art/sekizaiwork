@@ -187,6 +187,8 @@ LOADED_ATB = time.time()
 CURRENTC = os.path.join(RUNS, "char_current.pth")
 NETC, INFOC = load_charnet(CURRENTC, DEVICE)
 LOADED_ATC = time.time()
+if torch.cuda.is_available():                    # 読み込みの取り置きを返す（2026-09-26）
+    torch.cuda.empty_cache()
 
 app = FastAPI(title="拓本クリーン化")
 # 社内のブラウザ（彫刻原稿アプリ）から呼ぶので、同じ LAN からは通す。
@@ -195,6 +197,21 @@ app.add_middleware(
     expose_headers=["X-Model-Step", "X-Model-At", "X-Model-Loaded",
                     "X-Stage", "X-Soft", "X-Infer-Ms"],
 )
+
+
+# ───── **待機中は GPU のメモリを返す**（2026-09-26。本人の指示「拓本AIは待機中です。メモリ開放してください」）─────
+# モデルは小さいのに、nvidia-smi で このサーバーが 6.4GB を持っていた。PyTorch が 使い終わった分を
+# 次のために取り置く（キャッシュ）ため。同じ GPU で Ollama（gemma4）や 音声認識も動かすので、
+# 要求を 1 つ返すたびに 取り置きを返す。モデルの重みは そのまま（読み直しは要らない）。数ミリ秒で済む。
+@app.middleware("http")
+async def _free_gpu_cache(request, call_next):
+    resp = await call_next(request)
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:                                    # noqa: BLE001
+            pass
+    return resp
 
 
 # 読めなかったファイルを、要求のたびに読み直さないための覚え書き（path → 日付）。

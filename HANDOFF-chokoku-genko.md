@@ -6646,3 +6646,10 @@ app.py（知らせ・説明）・README.md。中身の名前（set="ink"・which
 `outSVG(mode, { noScale: true })` → `PLOT_NO_SCALE` を立てて buildSVG の kY を 1 に。`spSaveOutput`（_赤.svg／_黒.svg）で使う。
 赤・黒の出力（この端末のプロッター）と［SVG を保存］は これまでどおり補正する。位置補正（plotOff）は 前から どれにも かかっている（変えていない）。
 確かめ：ずれ 1.5 で 赤の出力は scale あり、noScale の SVG は なし。
+
+## 拓本AI（2026-09-26）— 待機中は GPU のメモリを返す
+本人の nvidia-smi：RTX 3090 24GB、拓本AI のサーバーが 6.4GB（モデルは小さいのに PyTorch の取り置き）、Ollama e4b 4.7GB、
+gemma4:12b は GPU の空きが足りず **100% CPU** で読み込まれていた（UNTIL Forever）。
+- app.py：`@app.middleware("http")` で 要求を返すたびに `torch.cuda.empty_cache()`。起動時の読み込み直後にも 1 回。
+- 12b を GPU に戻す手順（本人）：拓本AI を更新・再起動して空きを作る → `ollama stop gemma4:12b` → 1 回使う → `ollama ps` で 100% GPU。
+- kotoba-whisper（約 2GB）を足しても 24GB に収まる見込み。

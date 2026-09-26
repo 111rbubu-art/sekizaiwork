@@ -5508,7 +5508,7 @@ function _aiTableFacetHints() {
 }
 
 function _aiSearchCustomer(args) {
-  var q = String((args && (args.query || args.name || args.keyword)) || '').trim();
+  var q = _aiFamilyQ(String((args && (args.query || args.name || args.keyword)) || ''));
   if (!q) return { error: 'query（検索語）が空です。顧客名・ふりがなの一部を指定してください。' };
   var grp    = (args && args.group  != null && args.group  !== '') ? String(args.group)  : null;
   var temple = (args && args.temple != null && args.temple !== '') ? _aiNorm(String(args.temple)) : null;
@@ -5522,7 +5522,8 @@ function _aiSearchCustomer(args) {
     var it = list[i];
     if (grp && String(it.Group == null ? '' : it.Group) !== grp) continue;
     // 顧客名・ふりがなで検索（余分なフィールドを除外）
-    var namehay = _aiNorm([it.CusName, it.furigana, it.Cus_ID, it.telephonenumber].map(function(x){ return x == null ? '' : String(x); }).join(' '));
+    /* お墓の名前（〇〇家墓）でも当てる（v1.9.444） */
+    var namehay = _aiNorm([it.CusName, it.furigana, it.Cus_ID, it.telephonenumber, it.HakaName].map(function(x){ return x == null ? '' : String(x); }).join(' '));
     if (namehay.indexOf(nq) === -1) continue;
     // templeが指定された場合はさらに絞り込み
     if (temple) {
@@ -5575,10 +5576,59 @@ function _aiSearchPrice(args) {
   return out;
 }
 
+/* ───── **家の呼び方をそろえる**（v1.9.444。本人の話「○○寺の佐藤家の納骨日を教えて の様に 家を使う事が多い」）─────
+   「佐藤家」「佐藤家墓」「佐藤さん」「佐藤様」「佐藤家の」→「佐藤」。名前も お墓の名義も この形で探す。 */
+function _aiFamilyQ(q) {
+  return String(q == null ? '' : q).trim()
+    .replace(/[　\s]+/g, ' ')
+    .replace(/(家墓|家|さん|様|さま|氏|の)$/,'').replace(/(家墓|家)$/,'').trim();
+}
+/* ───── **納骨の案件を探す**（v1.9.444）─────
+   AIチャットに 納骨日を聞かれても、道具が 顧客・価格表 しかなく 答えられなかった。
+   メニューの検索と同じ 納骨リスト（`_menuSearchCache.noukotsu_all`／`noukotsu`）から、
+   顧客名 または お墓の名義（〇〇家墓）で探し、寺院で絞る。新しい納骨日が先。 */
+function _aiSearchNoukotsu(args) {
+  var q = _aiFamilyQ(String((args && (args.query || args.name || args.family || args.keyword)) || ''));
+  var temple = (args && args.temple != null && args.temple !== '') ? _aiNorm(String(args.temple)) : null;
+  if (!q && !temple) return { error: 'query（家名・顧客名）か temple（寺院名）を指定してください。' };
+  var list = (typeof _menuSearchCache !== 'undefined' && _menuSearchCache)
+    ? (_menuSearchCache['noukotsu_all'] || _menuSearchCache['noukotsu'] || []) : [];
+  if (!list.length) return { error: '納骨のデータが未取得です（ログイン状態やオフラインを確認してください）', count: 0, results: [] };
+  var nq = q ? _aiNorm(q) : '';
+  var hits = [];
+  list.forEach(function (d) {
+    if (nq) {
+      var name = _aiNorm(String(d['_x9867__x5ba2__x540d_'] || d['Title'] || ''));
+      var haka = _aiNorm(String(d['_x304a__x5893__x306e__x540d__x7f'] || ''));
+      if (name.indexOf(nq) < 0 && haka.indexOf(nq) < 0) return;
+    }
+    if (temple && _aiNorm(String(d['_x304a__x5bfa_'] || '')).indexOf(temple) < 0) return;
+    hits.push(d);
+  });
+  hits.sort(function (a, b) {
+    var x = String(a['_x7d0d__x671f__xff08__x7d0d__x9a'] || ''), y = String(b['_x7d0d__x671f__xff08__x7d0d__x9a'] || '');
+    return x < y ? 1 : x > y ? -1 : 0;
+  });
+  var LIMIT = 10;
+  return {
+    totalCount: hits.length, count: Math.min(LIMIT, hits.length),
+    results: hits.slice(0, LIMIT).map(function (d) {
+      return { id: d.id || d.ID || '', 顧客名: d['_x9867__x5ba2__x540d_'] || d['Title'] || '',
+               お墓: (typeof _msHakaLabel === 'function') ? _msHakaLabel(d, 'noukotsu') : (d['_x304a__x5893__x306e__x540d__x7f'] || ''),
+               寺院: d['_x304a__x5bfa_'] || '',
+               納骨日: String(d['_x7d0d__x671f__xff08__x7d0d__x9a'] || '').substring(0, 10),
+               時間: d['_x7d0d__x9aa8__x6642__x9593_'] || '',
+               担当: d['personincharge'] || '', 状態: d['noukotu_kaisi_jyoutai'] || '' };
+    }),
+    note: hits.length > LIMIT ? '全' + hits.length + '件中、納骨日の新しい順に上位' + LIMIT + '件を表示しています。' : ''
+  };
+}
+
 function _execAiTool(name, args) {
   if (name === 'search_customer') return _aiSearchCustomer(args || {});
   if (name === 'search_price')    return _aiSearchPrice(args || {});
-  return { error: '未知のツール: ' + name + '（利用可能: search_customer, search_price）' };
+  if (name === 'search_noukotsu') return _aiSearchNoukotsu(args || {});
+  return { error: '未知のツール: ' + name + '（利用可能: search_customer, search_price, search_noukotsu）' };
 }
 
 function _aiToolSystemPrompt() {
@@ -5594,6 +5644,7 @@ function _aiToolSystemPrompt() {
     '1. search_customer … 顧客を検索。args: {"query":"顧客名またはふりがなの一部", "temple":(任意)寺院名で絞る場合のみ指定, "group":(任意)グループ番号}',
     '   重要: query には顧客名・ふりがな・電話番号のみ入れてください。寺院名は temple パラメーターに分けて指定してください。',
     '   「光明院の小張さん」→ query:"小張" temple:"光明院" のように分けて指定します。',
+    '   「〇〇家」「〇〇さん」「〇〇様」は、家・さん・様を外した名字だけを query に入れます（例：「佐藤家」→ query:"佐藤"）。',
     '   結果の totalCount が実際の合計件数です。「何人」「何件」と聞かれたら totalCount を答えてください。',
     '2. search_price … 価格表を検索。args: {"keyword":"検索語（複数の条件は半角スペースで区切る）", "category":(任意)分類で絞る, "type":"部材" または "石材"（省略時は両方検索）}',
     '   ★keyword には「表に載っている言葉」だけを入れます。品名・分類・産地・色・石材名・寺院名など。',
@@ -5607,7 +5658,11 @@ function _aiToolSystemPrompt() {
     '   断定せず「候補です」と伝えてください。',
     '   石材の検索結果には 石材名・産地・国・色・単価・吸水率・仕入先・仕入価格・特徴・品質 が含まれます。',
     '   吸水率・単価・特徴など石材の特性を聞かれたら、まず search_price で石材名を検索して結果から回答してください。',
-    '   「石目を見せて」「画像を表示して」などの要求があればsearch_priceで石材を検索してください。検索すると石目サンプル画像がチャット画面に自動表示されます。'
+    '   「石目を見せて」「画像を表示して」などの要求があればsearch_priceで石材を検索してください。検索すると石目サンプル画像がチャット画面に自動表示されます。',
+    '3. search_noukotsu … 納骨の案件を検索（納骨日・時間・担当・状態がわかる）。args: {"query":"家名（名字）", "temple":(任意)寺院名}',
+    '   納骨日・納骨の予定・納骨の担当を聞かれたら、このツールを使います。',
+    '   「〇〇寺の佐藤家の納骨日を教えて」→ {"tool":"search_noukotsu","args":{"query":"佐藤","temple":"〇〇寺"}}',
+    '   家・さん・様は外し、寺院名は temple に分けます。同じ家の案件が複数あるときは、全部の納骨日を並べて答えてください。'
   ], _aiTableFacetHints(), [
     '',
     'ツールの実行結果は次の形式で observation として返されます:',
@@ -5834,9 +5889,19 @@ function _aiVocab() {
     }).catch(function () { _aiVocabP = null; return []; });
   }
   var to = new Promise(function (res) { setTimeout(function () { res([]); }, 3000); });
+  /* **お寺の名前も**（v1.9.444。「○○寺の佐藤家」と話すことが多い）。顧客・納骨のデータにある寺院名 */
+  var temples = [];
+  try {
+    var tseen = {};
+    _aiCustomerList().concat((_menuSearchCache && (_menuSearchCache['noukotsu_all'] || _menuSearchCache['noukotsu'])) || [])
+      .forEach(function (d) {
+        var t = String((d && (d.Temple || d['_x304a__x5bfa_'])) || '').trim();
+        if (t && t.length <= 12 && !tseen[t]) { tseen[t] = 1; temples.push(t); }
+      });
+  } catch (e) {}
   return Promise.race([_aiVocabP, to]).then(function (st) {
     var seen = {}, out = [];
-    AI_VOCAB_BASE.concat(st || []).forEach(function (w) { if (!seen[w]) { seen[w] = 1; out.push(w); } });
+    AI_VOCAB_BASE.concat(temples.slice(0, 80), st || []).forEach(function (w) { if (!seen[w]) { seen[w] = 1; out.push(w); } });
     return out;
   });
 }
@@ -6841,7 +6906,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.443';
+var APP_VERSION = 'v1.9.444';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -5975,32 +5975,32 @@ function _aiSttModel(cfg) {
   }
   return _aiSttModelP.then(function (m) { return m || cfg.model || 'gemma4:e4b'; });
 }
-/* ───── **お寺の名前を AI に直させる**（v1.9.448。本人の試し「慈宏寺」→「自校寺」＝ 読みは同じで 別の漢字）─────
-   ブラウザでは 漢字の読みが分からないので、文字起こしに使ったモデルに もう一度 文字だけで頼む。
-   文に「〇〇寺・〇〇院・〇〇墓地」があり、知っているお寺の名前と一致しないときだけ。
-   お寺の一覧は 読みつき（AI_TEMPLE_READ）＋ データにある寺院名。
-   返ってきた文が 元の文と長さが大きくちがう（勝手に書きかえた）ときは 元の文のまま。 */
-function _aiTempleLLMFix(text, model, base, extra) {
-  var known = Object.keys(AI_TEMPLE_READ).concat(extra || []);
-  var m = String(text || '').match(/[^\s、。のをにがはで]{1,4}(寺|院|墓地)/g) || [];
-  var odd = m.filter(function (w) { return known.indexOf(w) < 0 && !known.some(function (k) { return w.indexOf(k) >= 0; }); });
-  if (!odd.length) return Promise.resolve(text);
-  var lines = Object.keys(AI_TEMPLE_READ).map(function (k) { return k + '（' + AI_TEMPLE_READ[k][0] + '）'; })
-    .concat((extra || []).filter(function (k) { return !AI_TEMPLE_READ[k]; }));
-  return fetch(base + '/api/chat', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: model, stream: false, think: false,
-      messages: [{ role: 'user', content:
-        '次の文は 音声認識の結果です。文の中のお寺の名前（' + odd.join('・') + '）が、下のお寺のどれかの聞きちがい' +
-        '（同じ読み・近い読みの別の漢字など）なら、正しいお寺の名前に直してください。ほかの部分は一文字も変えないでください。' +
-        '直した文だけを出力してください（説明は書かない）。当てはまるお寺が無ければ、元の文をそのまま出力してください。\n' +
-        'お寺：' + lines.join('、') + '\n文：' + text }] })
-  }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
-    var t = String((j && j.message && j.message.content) || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    t = t.replace(/^文[:：]\s*/, '').split('\n')[0].trim();
-    if (!t || Math.abs(t.length - text.length) > Math.max(4, text.length * 0.3)) return text;
-    return t;
-  }).catch(function () { return text; });
+/* ───── **お寺は 読みで 照らす**（v1.9.449。本人の試し「慈宏寺」→「浄因寺」、「浄因寺」→「常人地」）─────
+   v1.9.448 の「AI にお寺を選ばせる」は、小さい AI が 別のお寺を選んでしまった（逆効果）ので やめた。
+   代わりに 文字起こしのとき「お寺の名前（文に書いた字）」と「その読み（ひらがな）」も出させ、
+   読みを 登録してあるお寺の読みと **文字の近さ（編集距離）** で照らす。
+   5 文字以上の読みは 2 文字ちがいまで、それより短いものは 1 文字ちがいまで。いちばん近い 1 つだけ。 */
+function _aiLev(a, b) {
+  var m = a.length, n = b.length, d = [], i, j;
+  for (i = 0; i <= m; i++) { d[i] = [i]; }
+  for (j = 1; j <= n; j++) d[0][j] = j;
+  for (i = 1; i <= m; i++) for (j = 1; j <= n; j++)
+    d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a.charAt(i-1) === b.charAt(j-1) ? 0 : 1));
+  return d[m][n];
+}
+function _aiTempleByYomi(yomi) {
+  var y = _aiHira(String(yomi || '')).replace(/[\s　・]/g, '');
+  if (!y) return null;
+  var best = null, bd = 99;
+  Object.keys(AI_TEMPLE_READ).forEach(function (k) {
+    AI_TEMPLE_READ[k].forEach(function (r) {
+      var dd = _aiLev(y, r);
+      if (dd < bd){ bd = dd; best = k; }
+    });
+  });
+  if (best === null) return null;
+  var lim = y.length >= 5 ? 2 : 1;
+  return bd <= lim ? best : null;
 }
 function aiTranscribe(blob) {
   var cfg = getAICfg();
@@ -6014,9 +6014,11 @@ function aiTranscribe(blob) {
     return fetch(base + '/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: sttModel, stream: false, think: false,
+        model: sttModel, stream: false, think: false, format: 'json',
         messages: [{ role: 'user',
-          content: 'この音声を日本語で文字起こししてください。文字起こしした文だけを出力し、説明や前置きは書かないでください。' +
+          content: 'この音声を日本語で文字起こししてください。次の形の JSON だけを出力してください（説明は書かない）：' +
+            '{"text":"文字起こしした文","temple":"文の中のお寺・霊園の名前を、text に書いたとおりの字で（無ければ空）",' +
+            '"temple_yomi":"そのお寺の名前の、聞こえたとおりの読み（ひらがな。無ければ空）"}' +
             (vocab.length ? '\n石材店の業務の話です。次の言葉がよく出てきます。聞こえた音がこれらに近いときは、この書き方にしてください：' +
                             vocab.join('、') : ''),
           images: [wv.b64] }]
@@ -6028,11 +6030,19 @@ function aiTranscribe(blob) {
   }).then(function (j) {
     var t = (j && j.message && j.message.content) || '';
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s+|\s+$/g, '');
+    /* JSON で返ってくる（v1.9.449）。読めなければ 文として扱う */
+    var tp = '', ty = '';
+    try {
+      var o = JSON.parse(t.replace(/^```(json)?|```$/g, '').trim());
+      if (o && typeof o.text === 'string'){ t = o.text.trim(); tp = String(o.temple || '').trim(); ty = String(o.temple_yomi || '').trim(); }
+    } catch (eJ) {}
+    if (tp || ty){
+      var hit = _aiTempleByYomi(ty) || (AI_TEMPLE_READ[tp] ? tp : null) || _aiTempleByYomi(tp);
+      if (hit && tp && t.indexOf(tp) >= 0 && tp !== hit) t = t.split(tp).join(hit);
+    }
     if (!t) throw new Error('文字にできませんでした（モデル ' + (sttModel || '?') + ' が音声に対応していないかもしれません）');
     AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
-    t = _aiTempleFix(t);
-    var dataTemples = vocab.filter(function (w) { return /(寺|院|墓地)$/.test(w); });
-    return _aiTempleLLMFix(t, sttModel, base, dataTemples);
+    return _aiTempleFix(t);
   });
 }
 function openAIChat() {
@@ -7007,7 +7017,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.448';
+var APP_VERSION = 'v1.9.449';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

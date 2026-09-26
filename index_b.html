@@ -5988,19 +5988,52 @@ function _aiLev(a, b) {
     d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a.charAt(i-1) === b.charAt(j-1) ? 0 : 1));
   return d[m][n];
 }
+/* 読みを ざっくりにする（小さい字・のばす音・「う」を外す）。「じきょうじ」と「じこうじ」→「じきじ」「じこじ」（v1.9.451） */
+function _aiKanaLoose(t) { return String(t || '').replace(/[ゃゅょぁぃぅぇぉっーう]/g, ''); }
+/* 2 つの読みの近さ：そのままと ざっくり の 近い方 */
+function _aiYomiDist(a, b) {
+  var d1 = _aiLev(a, b), la = _aiKanaLoose(a), lb = _aiKanaLoose(b);
+  return (la && lb) ? Math.min(d1, _aiLev(la, lb)) : d1;
+}
 function _aiTempleByYomi(yomi) {
   var y = _aiHira(String(yomi || '')).replace(/[\s　・]/g, '');
   if (!y) return null;
   var best = null, bd = 99;
   Object.keys(AI_TEMPLE_READ).forEach(function (k) {
     AI_TEMPLE_READ[k].forEach(function (r) {
-      var dd = _aiLev(y, r);
+      var dd = _aiYomiDist(y, r);
       if (dd < bd){ bd = dd; best = k; }
     });
   });
   if (best === null) return null;
   var lim = y.length >= 5 ? 2 : 1;
   return bd <= lim ? best : null;
+}
+/* ───── **文全体の読みから お寺を探す**（v1.9.451。本人の試し「慈宏寺」→「地蔵地」「自供寺」。AI がお寺の欄を空で返した）─────
+   文にお寺の名前（漢字）が まだ無いとき、文全体の読み（ひらがな）の中から 登録したお寺の読みに近い所を探す
+   （読みの長さ ±1 の窓で 編集距離。5 文字以上は 2、それ未満は 1 文字ちがいまで）。
+   見つかった所が 読みの頭（3 文字以内）なら、文の頭の「〇〇の」「〇〇って」の 〇〇（6 文字まで）を そのお寺に置きかえる。 */
+function _aiTempleFromYomi(text, yomi) {
+  var known = Object.keys(AI_TEMPLE_READ);
+  if (known.some(function (k) { return text.indexOf(k) >= 0; })) return text;
+  var Y = _aiHira(String(yomi || '')).replace(/[\s　、。・]/g, '');
+  if (!Y) return text;
+  var best = null;
+  known.forEach(function (k) {
+    AI_TEMPLE_READ[k].forEach(function (r) {
+      var lim = r.length >= 5 ? 2 : 1;
+      for (var L = Math.max(1, r.length - 1); L <= r.length + 2; L++) {
+        for (var i = 0; i + L <= Math.min(Y.length, 12); i++) {
+          var d = _aiYomiDist(Y.substr(i, L), r);
+          if (d <= lim && (!best || d < best.d || (d === best.d && i < best.i))) best = { k: k, d: d, i: i };
+        }
+      }
+    });
+  });
+  if (!best || best.i > 3) return text;
+  var m = String(text).match(/^\s*([^\s、。]{1,6}?)(の|って|で|は)/);
+  if (!m) return text;
+  return String(text).replace(m[1], best.k);
 }
 function aiTranscribe(blob) {
   var cfg = getAICfg();
@@ -6023,7 +6056,8 @@ function aiTranscribe(blob) {
         messages: [{ role: 'user',
           content: 'この音声を日本語で文字起こししてください。次の形の JSON だけを出力してください（説明は書かない）：' +
             '{"text":"文字起こしした文","temple":"文の中のお寺・霊園の名前を、text に書いたとおりの字で（無ければ空）",' +
-            '"temple_yomi":"そのお寺の名前の、聞こえたとおりの読み（ひらがな。無ければ空）"}' +
+            '"temple_yomi":"そのお寺の名前の、聞こえたとおりの読み（ひらがな。無ければ空）",' +
+            '"yomi":"文全体の、聞こえたとおりの読み（ひらがな）"}' +
             '\n石材店の業務の話です。聞こえたとおりに書いてください。' +
             '下の一覧は 書き方の見本です。**聞こえた音が 一覧の読みと ほぼ同じときだけ** その書き方にし、' +
             '聞こえていない言葉を 一覧から入れてはいけません。\n' +
@@ -6038,15 +6072,19 @@ function aiTranscribe(blob) {
     var t = (j && j.message && j.message.content) || '';
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s+|\s+$/g, '');
     /* JSON で返ってくる（v1.9.449）。読めなければ 文として扱う */
-    var tp = '', ty = '';
+    var tp = '', ty = '', yAll = '';
     try {
       var o = JSON.parse(t.replace(/^```(json)?|```$/g, '').trim());
-      if (o && typeof o.text === 'string'){ t = o.text.trim(); tp = String(o.temple || '').trim(); ty = String(o.temple_yomi || '').trim(); }
+      if (o && typeof o.text === 'string'){
+        t = o.text.trim(); tp = String(o.temple || '').trim(); ty = String(o.temple_yomi || '').trim();
+        yAll = String(o.yomi || '').trim();
+      }
     } catch (eJ) {}
     if (tp || ty){
       var hit = _aiTempleByYomi(ty) || (AI_TEMPLE_READ[tp] ? tp : null) || _aiTempleByYomi(tp);
       if (hit && tp && t.indexOf(tp) >= 0 && tp !== hit) t = t.split(tp).join(hit);
     }
+    t = _aiTempleFromYomi(t, yAll);
     if (!t) throw new Error('文字にできませんでした（モデル ' + (sttModel || '?') + ' が音声に対応していないかもしれません）');
     AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
     return _aiTempleFix(t);
@@ -7024,7 +7062,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.450';
+var APP_VERSION = 'v1.9.451';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

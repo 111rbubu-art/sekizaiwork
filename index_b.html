@@ -4915,16 +4915,42 @@ function _ollamaNativeMessages(messages) {
   });
 }
 
+/* ───── 12b は GPU 版（gemma4-gpu）で呼ぶ（v1.9.452）─────
+   gemma4:12b には GPU の指定（num_gpu）が無く、読み込むときに GPU の空きが足りないと 100% CPU で載り、
+   UNTIL Forever のため そのまま居座っていた。中身が同じで num_gpu 99 を付けた gemma4-gpu があるので、
+   Ollama に gemma4-gpu が入っていれば そちらを呼ぶ。入っていなければ 元の名前のまま。 */
+var _ollamaTagsP = null;
+function _ollamaModel(cfg) {
+  var m = cfg.model || 'llama3';
+  if (!/^gemma4:12b$/.test(m)) return Promise.resolve(m);
+  var base = cfg.endpoint || 'http://localhost:11434';
+  if (!_ollamaTagsP) {
+    _ollamaTagsP = fetch(base + '/api/tags').then(function (r) { return r.ok ? r.json() : { models: [] }; })
+      .then(function (j) { return ((j && j.models) || []).map(function (x) { return x.name || x.model || ''; }); })
+      .catch(function () { _ollamaTagsP = null; return []; });
+  }
+  return _ollamaTagsP.then(function (names) {
+    var g = null;
+    names.some(function (n) { if (/^gemma4-gpu(:|$)/.test(n)) { g = n; return true; } return false; });
+    return g || m;
+  });
+}
+
 function _ollamaFetch(cfg, messages, stream, mode) {
+  return _ollamaModel(cfg).then(function (model) {
+    return _ollamaFetch2(cfg, model, messages, stream, mode);
+  });
+}
+function _ollamaFetch2(cfg, model, messages, stream, mode) {
   var base = cfg.endpoint || 'http://localhost:11434';
   var body;
   if (mode === 'compat') {
-    body = { model: cfg.model || 'llama3', stream: stream, messages: messages };
+    body = { model: model, stream: stream, messages: messages };
     return fetch(base + '/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
   }
-  body = { model: cfg.model || 'llama3', stream: stream, messages: _ollamaNativeMessages(messages) };
+  body = { model: model, stream: stream, messages: _ollamaNativeMessages(messages) };
   if (mode === 'think') body.think = false;   // ← これが速さの本体
   return fetch(base + '/api/chat', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -6139,7 +6165,7 @@ function openAIChat() {
 '<div style="display:flex;align-items:center;gap:6px">' +
 '<select id="model-sw" onchange="_switchModel(this.value)" style="display:none;font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(0,0,0,0.25);color:#fff;cursor:pointer;font-family:inherit">' +
 '<option value="gemma4:e4b">e4b（速）</option>' +
-'<option value="gemma4:12b">12b（精）</option>' +
+'<option value="gemma4:12b">12b（精・GPU）</option>' +
 '</select>' +
 '<button class="hd-btn" onclick="_clear()">🗑️ クリア</button>' +
 '</div></div>' +
@@ -7062,7 +7088,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.451';
+var APP_VERSION = 'v1.9.452';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

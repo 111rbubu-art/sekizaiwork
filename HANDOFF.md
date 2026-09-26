@@ -303,3 +303,12 @@ v1.9.448 の「AI にお寺を選ばせる」（`_aiTempleLLMFix`）は 小さ�
 確かめ（偽の Ollama）：地蔵地（じぞうじ）・自供寺（じきょうじ）→ 慈宏寺、常人地 → 浄因寺、ちょうせんじ → 長泉寺、
 お寺の無い文・「しんじ」は 変えない。
 **小さい AI の聞き取りの限界**：本当に安定させるなら 日本語向けの音声認識（kotoba-whisper など）を GPU の機械に置く案を本人に出した。
+
+## v1.9.452 — AIチャットの 12b は GPU 版（gemma4-gpu）で呼ぶ
+本人の `ollama ps`：`gemma4:12b` が **100% CPU / UNTIL Forever**。`gemma4:12b` には `num_gpu` が無く、読み込む瞬間に GPU の空きが
+足りないと CPU に載り、そのまま居座る。以前作った `gemma4-gpu` は同じ中身に `PARAMETER num_gpu 99`（全部 GPU）を付けたもの。
+しかし チャット右上の切替は `gemma4:12b` を直接呼んでいたので、**gemma4-gpu は誰も呼ばず 起動していなかった**。
+- `_ollamaModel(cfg)`：モデルが `gemma4:12b` のとき `/api/tags` を 1 回見て、`gemma4-gpu` があればその名前で呼ぶ（無ければ元のまま）。
+  `_ollamaFetch` はこれを通してから `_ollamaFetch2` で送る。設定に保存される名前は `gemma4:12b` のまま（切替の表示は「12b（精・GPU）」）。
+- 文字起こしは これまでどおり e4b。
+確かめ（偽の Ollama）：12b → `gemma4-gpu:latest`、e4b → そのまま、gemma4-gpu が無い → `gemma4:12b`。

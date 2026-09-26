@@ -223,3 +223,16 @@ YYYYMMDD_＜テンプレートベース名の__区切り最終グループ＞__�
   `chokoku-genko.html` は `APP_VER` と `<title>` の両方）
 - SP Graph APIの`$expand=fields`で全フィールドを自動取得（`$select`なし）
 - ブール型SPフィールドはPATCH時に文字列`"true"`→`boolean true`への変換が必要
+
+## v1.9.442 — AIチャットに［🎤］（声で問い合わせ。2026-09-26）
+本人の指示「アプリのAIチャットに音声での問い合わせでテストできませんか」。
+- 社内の Ollama の `gemma4:12b` は `ollama show` の Capabilities に **audio** がある（本人の機械で確認）。
+- チャットの窓（`openAIChat` の中の文字列）に［🎤］：押すと録音（MediaRecorder）→ もう一度押すと止めて、親の `aiTranscribe(blob)` を呼ぶ。
+  文字は **入力欄に入れるだけ**（送るのは人。聞きちがいを直せるように）。
+- 親 `aiTranscribe`：`_aiWavB64` で 16kHz・モノラル・16bit の WAV に直し（AudioContext → OfflineAudioContext）、
+  Ollama の `/api/chat` に `images:[WAVのbase64]`・`think:false`・`stream:false`・モデルはチャットで選んでいるもの。
+  AI の相手が ローカルLLM（provider=`openai`）のときだけ。声は社内の機械から外へ出ない。
+- 注意：Ollama v0.30 台で「音声を渡すと考えるモードに入り でたらめを返す」報告があるので think:false にしている。
+  マイクは https のページからしか使えない（GitHub Pages は https）。Ollama の口も今のチャットと同じく届くこと。
+確かめ（Playwright・偽の Ollama）：WAV は RIFF・16000Hz・1ch・長さそのまま、think:false で届く。
+偽のマイクで［🎤］→［⏹］→ 入力欄に文字が入る。実物の聞き取りの具合は未確認。

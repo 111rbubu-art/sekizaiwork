@@ -5782,6 +5782,64 @@ function _fetchStoneImages(imagePaths) {
   }).then(function(results) { return results.filter(Boolean); })
   .catch(function(e) { console.warn('[石目画像] 全体エラー:', e); return []; });
 }
+/* ───── **声で問い合わせる**（v1.9.442。本人の指示「アプリのAIチャットに音声での問い合わせでテストできませんか」）─────
+   チャットの［🎤］で録った声を、**社内の Ollama（gemma4 は audio に対応）** に渡して文字にする。
+   声は外のサービスへは出さない。文字は チャットの入力欄に入れるだけで、送るのは人（聞きちがいを直せるように）。
+     1) 録った音（webm など）を ブラウザで 16kHz・モノラルの WAV に直す
+     2) Ollama の /api/chat に、画像と同じ images 欄で渡す（think:false。v0.30 台は考えるモードで でたらめを返す報告がある）
+   AI の相手が ローカルLLM（Ollama）のときだけ使える。 */
+function _aiWavB64(blob) {
+  return blob.arrayBuffer().then(function (buf) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var ac = new AC();
+    return new Promise(function (res, rej) {
+      ac.decodeAudioData(buf, res, rej);
+    }).then(function (ab) {
+      try { ac.close(); } catch (e) {}
+      var n = Math.max(1, Math.ceil(ab.duration * 16000));
+      var oc = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, n, 16000);
+      var src = oc.createBufferSource(); src.buffer = ab; src.connect(oc.destination); src.start(0);
+      return oc.startRendering();
+    });
+  }).then(function (rb) {
+    var f = rb.getChannelData(0), n = f.length, dv = new DataView(new ArrayBuffer(44 + n * 2));
+    function w(o, t) { for (var i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); }
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    w(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { var v = Math.max(-1, Math.min(1, f[i])); dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7FFF, true); }
+    var u8 = new Uint8Array(dv.buffer), bin = '', CH = 0x8000;
+    for (var k = 0; k < u8.length; k += CH) bin += String.fromCharCode.apply(null, u8.subarray(k, k + CH));
+    return { b64: btoa(bin), sec: n / 16000 };
+  });
+}
+function aiTranscribe(blob) {
+  var cfg = getAICfg();
+  if (cfg.provider !== 'openai')
+    return Promise.reject(new Error('声での問い合わせは、AIの相手が「ローカルLLM（Ollama）」のときだけ使えます（設定 → AI）'));
+  var base = cfg.endpoint || 'http://localhost:11434';
+  return _aiWavB64(blob).then(function (wv) {
+    if (wv.sec < 0.3) throw new Error('録音が短すぎます');
+    return fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: cfg.model || 'gemma4:12b', stream: false, think: false,
+        messages: [{ role: 'user',
+          content: 'この音声を日本語で文字起こししてください。文字起こしした文だけを出力し、説明や前置きは書かないでください。',
+          images: [wv.b64] }]
+      })
+    });
+  }).then(function (r) {
+    if (!r.ok) return r.text().then(function (t) { throw new Error('Ollama ' + r.status + ': ' + t.slice(0, 200)); });
+    return r.json();
+  }).then(function (j) {
+    var t = (j && j.message && j.message.content) || '';
+    t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s+|\s+$/g, '');
+    if (!t) throw new Error('文字にできませんでした（モデル ' + (cfg.model || '?') + ' が音声に対応していないかもしれません）');
+    return t;
+  });
+}
 function openAIChat() {
   aiPingCheck();          /* 開くたびに確かめ直す（直ったときも札が戻る） */
   // 既に開いていれば前面に
@@ -5819,6 +5877,8 @@ function openAIChat() {
 '.ft-row{display:flex;gap:6px}' +
 '#img-btn{padding:0 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:16px;flex-shrink:0;color:#555}' +
 '#img-btn:hover{background:#e0e0e0}' +
+'#mic-btn{padding:0 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:16px;flex-shrink:0;color:#555}' +
+'#mic-btn.rec{background:#fde2e1;border-color:#d33;color:#b00}' +
 '#inp{flex:1;padding:8px 10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:14px;resize:none;line-height:1.4;outline:none}' +
 '#inp:focus{border-color:#4a2a7a}' +
 '#snd{padding:0 16px;background:#4a2a7a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-family:inherit;font-size:14px;min-width:72px}' +
@@ -5838,6 +5898,7 @@ function openAIChat() {
 '<div id="img-strip"></div>' +
 '<div class="ft-row">' +
 '<button id="img-btn" title="画像を添付" onclick="document.getElementById(\'img-file\').click()">📎</button>' +
+'<button id="mic-btn" title="声で入力（押して話す → もう一度押して止める。社内のAIで文字にします）" onclick="_mic()">🎤</button>' +
 '<input type="file" id="img-file" accept="image/*" multiple style="display:none">' +
 '<textarea id="inp" rows="2" placeholder="メッセージを入力（Enter送信 / Shift+Enter改行）&#10;画像はクリップボードからCtrl+Vで貼り付け可"></textarea>' +
 '<button id="snd" onclick="_send()">送信</button>' +
@@ -5989,6 +6050,23 @@ function openAIChat() {
   '}catch(ex){clearInterval(_st);snd.disabled=false;snd.textContent="送信";aiDiv.textContent="❌ 呼び出しエラー: "+(ex.message||ex);aiDiv.classList.add("me");_hist.pop();}' +
 '}' +
 'document.addEventListener("keydown",function(e){if(e.target&&e.target.id==="inp"&&e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();_send();}});' +
+'var _rec=null,_recCh=[];' +
+'function _mic(){' +
+  'var b=document.getElementById("mic-btn"),inp=document.getElementById("inp");' +
+  'if(_rec&&_rec.state==="recording"){_rec.stop();return;}' +
+  'if(!navigator.mediaDevices||!window.MediaRecorder){alert("このブラウザでは録音できません");return;}' +
+  'navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){' +
+    '_recCh=[];_rec=new MediaRecorder(st);' +
+    '_rec.ondataavailable=function(e){if(e.data&&e.data.size)_recCh.push(e.data);};' +
+    '_rec.onstop=function(){st.getTracks().forEach(function(t){t.stop();});b.classList.remove("rec");b.textContent="⏳";b.disabled=true;' +
+      'var bl=new Blob(_recCh,{type:_rec.mimeType||"audio/webm"});' +
+      'if(!window.opener||!window.opener.aiTranscribe){b.textContent="🎤";b.disabled=false;alert("親ウィンドウとの接続が切れています");return;}' +
+      'window.opener.aiTranscribe(bl).then(function(t){inp.value=(inp.value?inp.value+" ":"")+t;inp.focus();})' +
+      '.catch(function(e){alert("声を文字にできませんでした：\\n"+(e.message||e));})' +
+      '.then(function(){b.textContent="🎤";b.disabled=false;});};' +
+    '_rec.start();b.classList.add("rec");b.textContent="⏹";' +
+  '}).catch(function(e){alert("マイクを使えません："+(e.message||e));});' +
+'}' +
 'function _switchModel(m){try{if(window.opener&&window.opener._setAiModel)window.opener._setAiModel(m);}catch(e){}}' +
 'window.addEventListener("load",function(){' +
   'var i=document.getElementById("inp");if(i)i.focus();' +
@@ -6734,7 +6812,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.441';
+var APP_VERSION = 'v1.9.442';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

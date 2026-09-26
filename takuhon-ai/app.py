@@ -24,6 +24,8 @@
   POST /api/takuhon/train      学習を始める（画面から。1 つずつしか走らせない）
   POST /api/takuhon/train/stop 学習を止める
   GET  /api/takuhon/trainlog   学習の画面ログ（うしろの方だけ）
+  POST /api/stt                声（WAV を base64）を文字にする（業務アプリの［🎤］。stt.py）
+  GET  /api/stt/status         声のモデルを読んだか
   GET  /health                 生きているか
 
 考え方
@@ -292,6 +294,29 @@ def _read_gray(b, size=D.N):
     if im.size != (size, size):
         im = im.resize((size, size), Image.BILINEAR)
     return np.asarray(im, dtype=np.float32) / 255.0
+
+
+# ───── **声を文字に**（2026-09-26。業務アプリの AI チャットの［🎤］）─────
+# 中身は stt.py。モデルは初めて呼ばれたときに読む（拓本の仕事の起動は遅くしない）。
+# 重い処理なので async にしない（FastAPI が別の糸で回す）。
+@app.post("/api/stt")
+def stt_post(body: dict):
+    import stt
+    wav = (body or {}).get("wav") or ""
+    if not wav:
+        return JSONResponse({"error": "wav がありません"}, status_code=400)
+    try:
+        return stt.transcribe(wav, (body or {}).get("prompt") or "", DEVICE)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:                                   # noqa: BLE001
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.get("/api/stt/status")
+def stt_status():
+    import stt
+    return stt.status()
 
 
 @app.get("/health")

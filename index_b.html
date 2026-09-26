@@ -6061,10 +6061,101 @@ function _aiTempleFromYomi(text, yomi) {
   if (!m) return text;
   return String(text).replace(m[1], best.k);
 }
+/* ───── **声は まず kotoba-whisper（日本語専用）で**（v1.9.453。本人の試し：e4b だと お寺が 地蔵地・自供寺・御影 と安定しない）─────
+   拓本AI のサーバー（同じ GPU のパソコン）の POST /api/stt に WAV を送る。返りは {text, yomi}。
+   yomi（ひらがな）で 登録のお寺の読みと照らす流れは e4b のときと同じ。
+   送り先の候補（上から、最初に /api/stt/status が返った所を この画面を開いている間 覚える）：
+     ① localStorage `ai_stt_url`（名ざし）
+     ② 拓本AI の住所 `takuhonAiUrl`（［🧠 拓本AI］の右クリックで入れたもの。全員に共有される）
+     ③ Ollama の住所が https://〇〇.ts.net なら https://〇〇.ts.net:8443（拓本AI の Tailscale の口）
+   https の画面から http の住所へは ブラウザが止めるので 候補から外す。
+   どこにも届かない・エラーなら **今までどおり Ollama の e4b** に回す。 */
+var _aiWhisperBaseP = null;
+function _aiWhisperCands() {
+  var out = [], seen = {};
+  function add(u) {
+    u = String(u || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
+    if (!u || seen[u]) return;
+    if (location.protocol === 'https:' && /^http:/i.test(u)) return;
+    seen[u] = 1; out.push(u);
+  }
+  try { add(localStorage.getItem('ai_stt_url')); } catch (e) {}
+  try { add(localStorage.getItem('takuhonAiUrl')); } catch (e) {}
+  try {
+    var ep = String((getAICfg() || {}).endpoint || '');
+    var m = ep.match(/^https:\/\/([^\/:]+\.ts\.net)(:\d+)?/i);
+    if (m) add('https://' + m[1] + ':8443');
+  } catch (e) {}
+  return out;
+}
+function _aiFetchTO(url, opt, ms) {
+  var ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var tm = ac ? setTimeout(function () { ac.abort(); }, ms) : null;
+  var o = Object.assign({}, opt || {}); if (ac) o.signal = ac.signal;
+  return fetch(url, o).then(function (r) { if (tm) clearTimeout(tm); return r; },
+                            function (e) { if (tm) clearTimeout(tm); throw e; });
+}
+function _aiWhisperBase() {
+  if (_aiWhisperBaseP) return _aiWhisperBaseP;
+  var cands = _aiWhisperCands();
+  _aiWhisperBaseP = cands.reduce(function (p, u) {
+    return p.then(function (hit) {
+      if (hit) return hit;
+      return _aiFetchTO(u + '/api/stt/status', {}, 4000)
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { return (j && j.model) ? u : null; })
+        .catch(function () { return null; });
+    });
+  }, Promise.resolve(null)).then(function (hit) { if (!hit) _aiWhisperBaseP = null; return hit; });
+  return _aiWhisperBaseP;
+}
+function _aiTranscribeWhisper(base, wv) {
+  var temples = Object.keys(AI_TEMPLE_READ);
+  var words = ['納骨日', '戒名', '俗名', '命日', '墓誌', '墓石', '彫刻', '白御影', '黒御影', '外柵', '見積', '法要'];
+  /* 初回はモデルを落として読むので 数分かかることがある。長めに待つ */
+  return _aiFetchTO(base + '/api/stt', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ wav: wv.b64, prompt: temples.join('、') + '。' + words.join('、') + '。' })
+  }, 300000).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok || !j || typeof j.text !== 'string') throw new Error('whisper ' + r.status + ': ' + ((j && j.error) || ''));
+      return j;
+    });
+  });
+}
+function _aiHearFinish(t, yAll) {
+  t = _aiTempleFromYomi(t, yAll);
+  AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
+  return _aiTempleFix(t);
+}
+var _aiLastStt = '';          /* 最後に使った文字起こし（確かめ用） */
 function aiTranscribe(blob) {
+  var wv0 = null;
+  return _aiWavB64(blob).then(function (wv) {
+    if (wv.sec < 0.3) throw new Error('録音が短すぎます');
+    wv0 = wv;
+    return _aiWhisperBase();
+  }).then(function (base) {
+    if (!base) return null;
+    return _aiTranscribeWhisper(base, wv0).then(function (j) {
+      var t = String(j.text || '').trim();
+      if (!t) return null;
+      _aiLastStt = 'whisper ' + base;
+      return _aiHearFinish(t, j.yomi || '');
+    }).catch(function (e) {
+      try { console.warn('[声] kotoba-whisper に失敗、Ollama に回します', e); } catch (eC) {}
+      return null;
+    });
+  }).then(function (t) {
+    if (t) return t;
+    _aiLastStt = 'ollama';
+    return _aiTranscribeOllama(blob);
+  });
+}
+function _aiTranscribeOllama(blob) {
   var cfg = getAICfg();
   if (cfg.provider !== 'openai')
-    return Promise.reject(new Error('声での問い合わせは、AIの相手が「ローカルLLM（Ollama）」のときだけ使えます（設定 → AI）'));
+    return Promise.reject(new Error('声を文字にできる所がありません。拓本AI（kotoba-whisper）に届かず、AIの相手も「ローカルLLM（Ollama）」ではありません（設定 → AI）'));
   var base = cfg.endpoint || 'http://localhost:11434';
   /* ───── **ことば帳は短く**（v1.9.450。本人の試し「慈宏寺」→「御影」）─────
      業務の言葉＋寺院名＋価格表の石の名前（200）まで渡していたら、小さい AI が
@@ -6110,10 +6201,8 @@ function aiTranscribe(blob) {
       var hit = _aiTempleByYomi(ty) || (AI_TEMPLE_READ[tp] ? tp : null) || _aiTempleByYomi(tp);
       if (hit && tp && t.indexOf(tp) >= 0 && tp !== hit) t = t.split(tp).join(hit);
     }
-    t = _aiTempleFromYomi(t, yAll);
     if (!t) throw new Error('文字にできませんでした（モデル ' + (sttModel || '?') + ' が音声に対応していないかもしれません）');
-    AI_HEAR_FIX.forEach(function (f) { t = t.replace(f[0], f[1]); });
-    return _aiTempleFix(t);
+    return _aiHearFinish(t, yAll);
   });
 }
 function openAIChat() {
@@ -7088,7 +7177,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.452';
+var APP_VERSION = 'v1.9.453';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

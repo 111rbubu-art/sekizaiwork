@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.436**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.453**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -325,3 +325,17 @@ v1.9.448 の「AI にお寺を選ばせる」（`_aiTempleLLMFix`）は 小さ�
 - ollama-docker は docker-compose ではなく `docker run` で作られている（作り直すときは元の設定を `docker inspect` で確かめること）。
 - 12b を GPU に載せた実際の大きさは 8.4GB（CPU 時の見積もり 13GB）。e4b 4.7GB と拓本AIの学習を足しても 24GB に収まる。
 - `num_gpu 99` の gemma4-gpu は原因と無関係だった（v1.9.452 の読み替えは害がないので残してある）。
+
+## v1.9.453 — 声は まず kotoba-whisper（拓本AI のサーバー）で文字にする
+e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏寺→地蔵地・自供寺・御影）。日本語専用の音声認識に替える。
+- サーバー：`takuhon-ai/stt.py` ＋ app.py の `POST /api/stt`（JSON `{wav: base64 の WAV, prompt}` → `{text, yomi, sec, ms, model}`）、
+  `GET /api/stt/status`。モデル `kotoba-tech/kotoba-whisper-v2.0`（環境変数 `TAKU_STT_MODEL` で替えられる）。
+  **初めて呼ばれたときに** Hugging Face から落として読む（約 1.5GB。初回だけ数分）。GPU は半精度で 1.5GB 前後。
+  prompt（お寺の名前・業務の言葉）で書き方を寄せる。yomi は pykakasi（寺→じ・〇〇家→け・納骨日→のうこつび に直す）。
+  requirements に transformers==4.46.3・pykakasi==2.3.0（update.sh が入れる）。
+- 業務アプリ：`aiTranscribe` は ①`ai_stt_url` ②`takuhonAiUrl` ③Ollama が `https://〇〇.ts.net` なら `:8443` の順に
+  `/api/stt/status` を確かめ、届いた所へ送る（https の画面から http は候補から外す）。返りを `_aiHearFinish`
+  （読みでお寺を照らす・聞きちがい表・読み→漢字）に通す。届かない・失敗なら 今までの Ollama e4b（`_aiTranscribeOllama`）。
+  どちらを使ったかは `_aiLastStt`。Ollama でなくても whisper に届けば声を使える。
+- 確かめ：偽の whisper（自校寺…納骨碑）→「慈宏寺の佐藤家の納骨日を教えて」、500 → Ollama に回る、届かない → Ollama、
+  ts.net → :8443 の候補。本物の app.py を小さい偽モデルで起動し /api/stt が 200・空 wav 400・壊れた wav 400。

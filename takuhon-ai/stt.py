@@ -103,7 +103,7 @@ def yomi(text):
     return "".join(out)
 
 
-_HEAD = __import__("re").compile(r"^\s*([^\s、。]{1,6}?)(の|って|で|は)")
+_HEAD = __import__("re").compile(r"^\s*([^\s、。]{1,6}?)(の|って|で|は|[。、．]?\s*$)")   # 文全体がお寺の名前（「巧妙員」だけ）も
 
 
 def head_yomis(text, cap=600):

@@ -6259,6 +6259,159 @@ function _aiTranscribeOllama(blob) {
     return _aiHearFinish(t, yAll);
   });
 }
+/* ───── **声で画面を開く**（v1.9.456。本人「石材業務アプリを音声で操作できませんか」→「①を作って」）─────
+   右下の［🎤］を押して話す → もう一度押して止める。声は aiTranscribe（kotoba-whisper → だめなら e4b）で文字にし、
+   **決まった言葉で行き先を決める**（AI には選ばせない。速くて まちがえない）。
+   ・画面の中で切りかわるもの（納骨・工事・顧客・価格表・石材価格表・設定・メニュー）は すぐ動く。
+   ・別の窓を開くもの（勤怠・AIチャット・外注・フォント・拓本AI・地図）は、ブラウザが「押していない窓開き」を
+     止めるので、聞き取った結果の札に［▶ 開く］を出し、それを押して開く。
+   ・お寺の名前が入っていれば そのお寺に絞る（「慈宏寺の納骨」→ 納骨・戒切の一覧を 慈宏寺 に絞る、
+     「浄因寺の顧客」→ 顧客リストの 浄因寺、「長泉寺の地図」→ 長泉寺の地図）。
+   ・読み書き（保存・削除）は しない。 */
+var VC_ROUTES = [
+  { id: 'stone',    label: '石材価格表',   re: /石材.{0,2}(価格|値段)|石の(価格|値段)|石材価格表/ },
+  { id: 'price',    label: '価格表',       re: /価格|値段/ },
+  { id: 'kintai',   label: '勤怠・有給申請', re: /勤怠|打刻|有給|出勤|退勤/, win: true },
+  { id: 'gaichu',   label: '外注管理',     re: /外注/, win: true },
+  { id: 'font',     label: 'フォント編集', re: /フォント/, win: true },
+  { id: 'takuhon',  label: '拓本AI',       re: /拓本/, win: true },
+  { id: 'chat',     label: 'AIチャット',   re: /チャット/, win: true },
+  { id: 'settings', label: '設定',         re: /設定/ },
+  { id: 'map',      label: '墓地マップ',   re: /地図|マップ|区画/, win: true },
+  { id: 'noukotsu', label: '納骨・戒切',   re: /納骨|戒切|かいきり|開切|改切/ },
+  { id: 'kouji',    label: '工事関連',     re: /工事/ },
+  { id: 'customer', label: '顧客リスト',   re: /顧客|お客|客/ },
+  { id: 'menu',     label: 'メニュー',     re: /メニュー|トップ|ホーム|最初の画面|戻/ }
+];
+function vcParse(text) {
+  var t = String(text || '').replace(/[\s　。、，,.!！?？]/g, '');
+  var tp = _aiHasTemple(t);
+  var r = null;
+  VC_ROUTES.some(function (x) { if (x.re.test(t)) { r = x; return true; } return false; });
+  if (!r && tp) r = VC_ROUTES.filter(function (x) { return x.id === 'customer'; })[0];   /* お寺の名前だけ → そのお寺の顧客 */
+  return r ? { id: r.id, label: r.label, win: !!r.win, temple: tp } : null;
+}
+function _vcToMenu() {
+  ['price-list-screen', 'stone-price-list-screen', 'settings-screen'].forEach(function (id) {
+    var e = document.getElementById(id); if (e) e.classList.add('hidden');
+  });
+  var ms = document.getElementById('menu-screen');
+  if (ms && ms.classList.contains('hidden')) { try { goToMenu(); } catch (e) {} }
+  try { hideTempleMenu(); } catch (e) {}
+}
+/* 一覧のお寺の絞り込み：一覧が読み終わって お寺の選択肢ができるのを待って 選ぶ（15 秒まで） */
+function _vcSetTemple(tp) {
+  var n = 0;
+  (function tick() {
+    var sel = document.getElementById('srch-temple');
+    var op = sel && Array.prototype.filter.call(sel.options, function (o) { return o.value && o.value.indexOf(tp) >= 0; })[0];
+    if (op) { sel.value = op.value; sel.dispatchEvent(new Event('change')); return; }
+    if (++n < 60) setTimeout(tick, 250);
+  })();
+}
+function vcRun(c) {
+  var id = c.id, tp = c.temple;
+  if (id === 'menu') { _vcToMenu(); return; }
+  if (id === 'noukotsu' || id === 'kouji') { _vcToMenu(); selectMenu(id); if (tp) _vcSetTemple(tp); return; }
+  if (id === 'customer') {
+    _vcToMenu();
+    var gid = null;
+    Object.keys(TEMPLE_GROUP_MAP).forEach(function (k) { if (tp && TEMPLE_GROUP_MAP[k] === tp) gid = k; });
+    showTempleMenu();
+    if (gid) selectTempleGroup(gid, TEMPLE_GROUP_MAP[gid]);
+    else if (tp) selectTempleGroup(8, TEMPLE_GROUP_MAP[8]);    /* 天沼共同 などは 霊園＆共同墓地 の中 */
+    return;
+  }
+  if (id === 'price') { _vcToMenu(); openPriceScreen(); return; }
+  if (id === 'stone') { _vcToMenu(); openStonePriceScreen(); return; }
+  if (id === 'settings') { openSettingsPage(); return; }
+  if (id === 'kintai') { openKintaiWindow(); return; }
+  if (id === 'gaichu') { openGaichuKanri(); return; }
+  if (id === 'font') { openFontEditor(); return; }
+  if (id === 'takuhon') { openTakuhonAi(); return; }
+  if (id === 'chat') { openAIChat(); return; }
+  if (id === 'map') {
+    var mt = tp && MAP_TEMPLES.filter(function (m) { return m.name === tp; })[0];
+    if (mt) window.open('map_b.html?temple=' + mt.id, 'sekizaimap');
+    else { _vcToMenu(); openMapSelect(); }
+  }
+}
+/* 聞き取った結果の札（右下）。win のものは［▶ 開く］を押してもらう */
+function _vcCard(html, btn, ms) {
+  var el = document.getElementById('vc-card');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'vc-card';
+    el.style.cssText = 'position:fixed;right:16px;bottom:140px;z-index:3000;max-width:min(360px,calc(100vw - 32px));background:#fff;border:1px solid #d8cfe8;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.18);padding:10px 12px;font-size:13px;line-height:1.5;color:#222';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = html;
+  if (btn) {
+    var b = document.createElement('button');
+    b.textContent = btn.text; b.style.cssText = 'display:block;margin-top:8px;padding:7px 14px;border:none;border-radius:8px;background:#4a2a7a;color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:13px';
+    b.onclick = function () { el.style.display = 'none'; btn.run(); };
+    el.appendChild(b);
+  }
+  var x = document.createElement('span');
+  x.textContent = '✕'; x.style.cssText = 'position:absolute;top:4px;right:8px;cursor:pointer;color:#999';
+  x.onclick = function () { el.style.display = 'none'; };
+  el.style.position = 'fixed'; el.appendChild(x);
+  el.style.display = 'block';
+  clearTimeout(el._tm);
+  if (ms) el._tm = setTimeout(function () { el.style.display = 'none'; }, ms);
+}
+function _vcEsc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+function vcHandleText(text) {
+  var c = vcParse(text);
+  var said = '🎤「' + _vcEsc(text) + '」';
+  if (!c) {
+    _vcCard(said + '<br><span style="color:#b00">行き先がわかりませんでした。</span><br>' +
+      '<span style="color:#777;font-size:12px">例：「納骨」「慈宏寺の納骨」「工事」「浄因寺の顧客」「価格表」「石材価格表」「地図」「勤怠」「メニュー」</span>', null, 9000);
+    return null;
+  }
+  var what = (c.temple ? c.temple + ' の ' : '') + c.label;
+  function go() {
+    try { vcRun(c); }
+    catch (e) { _vcCard(said + '<br><span style="color:#b00">' + _vcEsc(what) + ' を開けませんでした：' + _vcEsc(e.message || e) + '</span>', null, 8000); }
+  }
+  if (c.win) _vcCard(said + '<br>→ <b>' + _vcEsc(what) + '</b>', { text: '▶ 開く', run: go }, 15000);
+  else { _vcCard(said + '<br>→ <b>' + _vcEsc(what) + '</b> を開きます', null, 4000); go(); }
+  return c;
+}
+var _vcRec = null, _vcCh = [];
+function vcMic() {
+  var b = document.getElementById('vc-mic');
+  if (_vcRec && _vcRec.state === 'recording') { _vcRec.stop(); return; }
+  if (b && b.disabled) return;
+  if (!navigator.mediaDevices || !window.MediaRecorder) { alert('このブラウザでは録音できません'); return; }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) {
+    _vcCh = []; _vcRec = new MediaRecorder(st);
+    _vcRec.ondataavailable = function (e) { if (e.data && e.data.size) _vcCh.push(e.data); };
+    _vcRec.onstop = function () {
+      st.getTracks().forEach(function (t) { t.stop(); });
+      b.classList.remove('rec'); b.textContent = '⏳'; b.disabled = true;
+      var bl = new Blob(_vcCh, { type: _vcRec.mimeType || 'audio/webm' });
+      aiTranscribe(bl).then(function (t) { vcHandleText(t); })
+        .catch(function (e) { _vcCard('<span style="color:#b00">声を文字にできませんでした：' + _vcEsc(e.message || e) + '</span>', null, 8000); })
+        .then(function () { b.textContent = '🎤'; b.disabled = false; });
+    };
+    _vcRec.start(); b.classList.add('rec'); b.textContent = '⏹';
+    _vcCard('🎤 聞いています…　話し終わったら もう一度押してください', null, 0);
+  }).catch(function (e) { alert('マイクを使えません：' + (e.message || e)); });
+}
+document.addEventListener('DOMContentLoaded', function () {
+  if (document.getElementById('vc-mic')) return;
+  var st = document.createElement('style');
+  st.textContent = '#vc-mic{position:fixed;right:16px;bottom:80px;z-index:2999;width:52px;height:52px;border-radius:50%;border:none;' +
+    'background:#4a2a7a;color:#fff;font-size:22px;box-shadow:0 3px 12px rgba(0,0,0,.3);cursor:pointer}' +
+    '#vc-mic.rec{background:#d33;animation:vcPulse 1s infinite}#vc-mic:disabled{background:#999;cursor:wait}' +
+    '#login-screen:not(.hidden)~#vc-mic{display:none}' +      /* ログイン前は出さない */
+    '@keyframes vcPulse{0%,100%{box-shadow:0 0 0 0 rgba(221,51,51,.5)}50%{box-shadow:0 0 0 10px rgba(221,51,51,0)}}';
+  document.head.appendChild(st);
+  var b = document.createElement('button');
+  b.id = 'vc-mic'; b.textContent = '🎤'; b.title = '声で画面を開く（押して話す → もう一度押して止める）';
+  b.onclick = vcMic;
+  document.body.appendChild(b);
+});
 function openAIChat() {
   aiPingCheck();          /* 開くたびに確かめ直す（直ったときも札が戻る） */
   // 既に開いていれば前面に
@@ -7231,7 +7384,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.455';
+var APP_VERSION = 'v1.9.456';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

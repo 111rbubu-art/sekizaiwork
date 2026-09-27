@@ -6654,39 +6654,64 @@ function vcHandleText(text) {
   else { _vcCard(said + '<br>→ <b>' + _vcEsc(what) + '</b> を開きます', null, 4000); go(); }
   return c;
 }
-var _vcRec = null, _vcCh = [];
-function vcMic() {
+/* ───── **押している間だけ聞く**（v1.9.462。本人「クリックしている間は音声可にして。2 度クリックするのは大変」）─────
+   ボタンを押したら録音を始め、離したら止めて文字にする。押したまま ボタンの外へ指がずれても 離すまで続く（pointer capture）。
+   マイクの許可を待っている間に離したら 録らない。0.4 秒より短い押し方は「押したまま話してください」と出すだけ。 */
+var _vcRec = null, _vcCh = [], _vcHeld = false, _vcT0 = 0;
+function vcMicDown(e) {
   var b = document.getElementById('vc-mic');
-  if (_vcRec && _vcRec.state === 'recording') { _vcRec.stop(); return; }
-  if (b && b.disabled) return;
+  if (e) { e.preventDefault(); try { b.setPointerCapture(e.pointerId); } catch (eP) {} }
+  if (!b || b.disabled || (_vcRec && _vcRec.state === 'recording')) return;
   if (!navigator.mediaDevices || !window.MediaRecorder) { alert('このブラウザでは録音できません'); return; }
+  _vcHeld = true; _vcT0 = Date.now();
+  b.classList.add('rec');
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) {
+    if (!_vcHeld) {                        /* 許可を待っている間に離した */
+      st.getTracks().forEach(function (t) { t.stop(); });
+      b.classList.remove('rec');
+      _vcCard('🎤 <b>押している間</b>だけ聞きます。押したまま話して、話し終わったら離してください', null, 5000);
+      return;
+    }
     _vcCh = []; _vcRec = new MediaRecorder(st);
-    _vcRec.ondataavailable = function (e) { if (e.data && e.data.size) _vcCh.push(e.data); };
+    _vcRec.ondataavailable = function (ev) { if (ev.data && ev.data.size) _vcCh.push(ev.data); };
     _vcRec.onstop = function () {
       st.getTracks().forEach(function (t) { t.stop(); });
-      b.classList.remove('rec'); b.textContent = '⏳'; b.disabled = true;
+      b.classList.remove('rec');
+      if (Date.now() - _vcT0 < 400) {
+        _vcCard('🎤 <b>押している間</b>だけ聞きます。押したまま話して、話し終わったら離してください', null, 5000);
+        return;
+      }
+      b.textContent = '⏳'; b.disabled = true;
       var bl = new Blob(_vcCh, { type: _vcRec.mimeType || 'audio/webm' });
       aiTranscribe(bl).then(function (t) { vcHandleText(t); })
-        .catch(function (e) { _vcCard('<span style="color:#b00">声を文字にできませんでした：' + _vcEsc(e.message || e) + '</span>', null, 8000); })
+        .catch(function (err) { _vcCard('<span style="color:#b00">声を文字にできませんでした：' + _vcEsc(err.message || err) + '</span>', null, 8000); })
         .then(function () { b.textContent = '🎤'; b.disabled = false; });
     };
-    _vcRec.start(); b.classList.add('rec'); b.textContent = '⏹';
-    _vcCard('🎤 聞いています…　話し終わったら もう一度押してください', null, 0);
-  }).catch(function (e) { alert('マイクを使えません：' + (e.message || e)); });
+    _vcRec.start();
+    _vcCard('🎤 聞いています…　話し終わったら 指を離してください', null, 0);
+  }).catch(function (err) { _vcHeld = false; b.classList.remove('rec'); alert('マイクを使えません：' + (err.message || err)); });
+}
+function vcMicUp() {
+  if (!_vcHeld) return;
+  _vcHeld = false;
+  if (_vcRec && _vcRec.state === 'recording') _vcRec.stop();
 }
 document.addEventListener('DOMContentLoaded', function () {
   if (document.getElementById('vc-mic')) return;
   var st = document.createElement('style');
   st.textContent = '#vc-mic{position:fixed;right:16px;bottom:80px;z-index:2999;width:52px;height:52px;border-radius:50%;border:none;' +
     'background:#4a2a7a;color:#fff;font-size:22px;box-shadow:0 3px 12px rgba(0,0,0,.3);cursor:pointer}' +
-    '#vc-mic.rec{background:#d33;animation:vcPulse 1s infinite}#vc-mic:disabled{background:#999;cursor:wait}' +
+    '#vc-mic.rec{background:#d33;animation:vcPulse 1s infinite;transform:scale(1.12)}#vc-mic:disabled{background:#999;cursor:wait}' +
+    '#vc-mic{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}' +
     '#login-screen:not(.hidden)~#vc-mic{display:none}' +      /* ログイン前は出さない */
     '@keyframes vcPulse{0%,100%{box-shadow:0 0 0 0 rgba(221,51,51,.5)}50%{box-shadow:0 0 0 10px rgba(221,51,51,0)}}';
   document.head.appendChild(st);
   var b = document.createElement('button');
-  b.id = 'vc-mic'; b.textContent = '🎤'; b.title = '声で画面を開く（押して話す → もう一度押して止める）';
-  b.onclick = vcMic;
+  b.id = 'vc-mic'; b.textContent = '🎤'; b.title = '声で画面を開く（押している間だけ聞きます。話し終わったら離す）';
+  b.addEventListener('pointerdown', vcMicDown);
+  b.addEventListener('pointerup', vcMicUp);
+  b.addEventListener('pointercancel', vcMicUp);
+  b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   document.body.appendChild(b);
 });
 function openAIChat() {
@@ -6747,7 +6772,7 @@ function openAIChat() {
 '<div id="img-strip"></div>' +
 '<div class="ft-row">' +
 '<button id="img-btn" title="画像を添付" onclick="document.getElementById(\'img-file\').click()">📎</button>' +
-'<button id="mic-btn" title="声で入力（押して話す → もう一度押して止める。社内のAIで文字にします）" onclick="_mic()">🎤</button>' +
+'<button id="mic-btn" title="声で入力（押している間だけ聞きます。話し終わったら離す。社内のAIで文字にします）" onpointerdown="_micDown(event)" onpointerup="_micUp()" onpointercancel="_micUp()" oncontextmenu="return false" style="touch-action:none;user-select:none;-webkit-user-select:none">🎤</button>' +
 '<input type="file" id="img-file" accept="image/*" multiple style="display:none">' +
 '<textarea id="inp" rows="2" placeholder="メッセージを入力（Enter送信 / Shift+Enter改行）&#10;画像はクリップボードからCtrl+Vで貼り付け可"></textarea>' +
 '<button id="snd" onclick="_send()">送信</button>' +
@@ -6900,22 +6925,29 @@ function openAIChat() {
 '}' +
 'document.addEventListener("keydown",function(e){if(e.target&&e.target.id==="inp"&&e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();_send();}});' +
 'var _rec=null,_recCh=[];' +
-'function _mic(){' +
+'var _micHeld=false,_micT0=0;' +
+'function _micDown(ev){' +
   'var b=document.getElementById("mic-btn"),inp=document.getElementById("inp");' +
-  'if(_rec&&_rec.state==="recording"){_rec.stop();return;}' +
+  'if(ev){ev.preventDefault();try{b.setPointerCapture(ev.pointerId);}catch(e){}}' +
+  'if(b.disabled||(_rec&&_rec.state==="recording"))return;' +
   'if(!navigator.mediaDevices||!window.MediaRecorder){alert("このブラウザでは録音できません");return;}' +
+  '_micHeld=true;_micT0=Date.now();b.classList.add("rec");' +
   'navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){' +
+    'if(!_micHeld){st.getTracks().forEach(function(t){t.stop();});b.classList.remove("rec");return;}' +
     '_recCh=[];_rec=new MediaRecorder(st);' +
     '_rec.ondataavailable=function(e){if(e.data&&e.data.size)_recCh.push(e.data);};' +
-    '_rec.onstop=function(){st.getTracks().forEach(function(t){t.stop();});b.classList.remove("rec");b.textContent="⏳";b.disabled=true;' +
+    '_rec.onstop=function(){st.getTracks().forEach(function(t){t.stop();});b.classList.remove("rec");' +
+      'if(Date.now()-_micT0<400){b.title="押している間だけ聞きます。押したまま話してください";return;}' +
+      'b.textContent="⏳";b.disabled=true;' +
       'var bl=new Blob(_recCh,{type:_rec.mimeType||"audio/webm"});' +
       'if(!window.opener||!window.opener.aiTranscribe){b.textContent="🎤";b.disabled=false;alert("親ウィンドウとの接続が切れています");return;}' +
       'window.opener.aiTranscribe(bl).then(function(t){inp.value=(inp.value?inp.value+" ":"")+t;inp.focus();})' +
       '.catch(function(e){alert("声を文字にできませんでした：\\n"+(e.message||e));})' +
       '.then(function(){b.textContent="🎤";b.disabled=false;});};' +
-    '_rec.start();b.classList.add("rec");b.textContent="⏹";' +
-  '}).catch(function(e){alert("マイクを使えません："+(e.message||e));});' +
+    '_rec.start();' +
+  '}).catch(function(e){_micHeld=false;b.classList.remove("rec");alert("マイクを使えません："+(e.message||e));});' +
 '}' +
+'function _micUp(){if(!_micHeld)return;_micHeld=false;if(_rec&&_rec.state==="recording")_rec.stop();}' +
 'function _switchModel(m){try{if(window.opener&&window.opener._setAiModel)window.opener._setAiModel(m);}catch(e){}}' +
 'window.addEventListener("load",function(){' +
   'var i=document.getElementById("inp");if(i)i.focus();' +
@@ -7662,7 +7694,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.461';
+var APP_VERSION = 'v1.9.462';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

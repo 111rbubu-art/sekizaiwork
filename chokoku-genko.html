@@ -1262,6 +1262,17 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
             <button class="mini" id="rbCrop">▣ トリミング</button>
             <button class="mini" id="rbCropAll">全体に戻す</button>
           </span>
+          <!-- 見え方（v39.5。本人「コントラストと明るさを変化できるようにして、輪郭を破線で出し、見ながら調整できる機能がほしい」）。
+               明るさ・コントラストは 画面の見た目と 字を拾う計算（しきい値・輪郭・AI に渡す絵）の両方に効く。 -->
+          <span class="bgrp" id="rbLook"><b>見え方</b>
+            <label class="chk" title="明るさ（−100〜＋100）">明るさ <input type="range" id="rbBright" min="-100" max="100" step="1" value="0" style="width:84px;"></label>
+            <label class="chk" title="コントラスト（−100〜＋100）">コントラスト <input type="range" id="rbCont" min="-100" max="100" step="1" value="0" style="width:84px;"></label>
+            <label class="chk" title="この濃さを境に 字と地を分けます（輪郭の破線もこれで引きます）">拾う濃さ <input type="range" id="rbThr" min="1" max="254" step="1" value="128" style="width:84px;"> <span id="rbThrV" class="hint"></span></label>
+            <button class="mini" id="rbThrAuto" title="拾う濃さを 範囲の中から自動で決めます">自動</button>
+            <label class="chk" title="印刷や手書きの黒い字を取り出すとき（拓本は字が白）"><input type="checkbox" id="rbInkBlack" style="width:auto;"> 字が黒</label>
+            <label class="chk" title="拾った字の輪郭を 赤い破線で重ねます"><input type="checkbox" id="rbOutline" style="width:auto;"> 輪郭（破線）</label>
+            <button class="mini" id="rbLookReset" title="明るさ・コントラスト・拾う濃さを元に戻します">元に戻す</button>
+          </span>
           <span class="bgrp"><b>仕上げ</b>
             <button class="mini primary" id="rbEnd">終了</button>
           </span>
@@ -2387,7 +2398,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v39.4";
+var APP_VER = "v39.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8157,6 +8168,19 @@ function rubBar(){
     (cb.x1 <= 0 && cb.y1 <= 0 && cb.x2 >= RUB.W && cb.y2 >= RUB.H);
   set("rbCropAll", null, loaded && cropMode && !whole);
   var e = $("rbEnd"); if (e) e.className = "mini primary";
+  var lk = $("rbLook");
+  if (lk){
+    lk.hidden = !loaded;
+    if (loaded){
+      var tv = Math.round(thr());
+      if ($("rbBright") && document.activeElement !== $("rbBright")) $("rbBright").value = num(S.rub.bright, 0);
+      if ($("rbCont") && document.activeElement !== $("rbCont")) $("rbCont").value = num(S.rub.contrast, 0);
+      if ($("rbThr") && document.activeElement !== $("rbThr")) $("rbThr").value = tv;
+      if ($("rbThrV")) $("rbThrV").textContent = tv + (S.rub.thresh === null || S.rub.thresh === undefined ? "（自動）" : "");
+      if ($("rbInkBlack")) $("rbInkBlack").checked = !S.rub.invert;
+      set("rbThrAuto", S.rub.thresh === null || S.rub.thresh === undefined, true);
+    }
+  }
 }
 /* 回転の中心を置く。何度でもクリックし直せる。 */
 function setPivotAt(q){
@@ -8294,7 +8318,15 @@ function rebuildRub(){
   }
   RUB.W = W; RUB.H = H; RUB.canvas = c;
   try { RUB.data = cx.getImageData(0, 0, W, H); } catch(e){ RUB.data = null; }
-  RUB.mask = null;
+  /* 明るさ・コントラスト（v39.5）。字を拾う計算に使う絵そのものに当てる（画面の見た目は rubRender のフィルター） */
+  var bc = rubBC();
+  if (RUB.data && bc){
+    var lut = new Uint8ClampedArray(256), dd = RUB.data.data;
+    for (var v0 = 0; v0 < 256; v0++) lut[v0] = Math.round(bc.f * (v0 - 128) + 128 + bc.b);
+    for (var p0 = 0; p0 < dd.length; p0 += 4){ dd[p0] = lut[dd[p0]]; dd[p0+1] = lut[dd[p0+1]]; dd[p0+2] = lut[dd[p0+2]]; }
+    try { cx.putImageData(RUB.data, 0, 0); } catch(e){}
+  }
+  RUB.mask = null; RUB.olKey = null;
   /* **拓本を回したら、前の向きで作ったものは捨てる**（v21.78。本人の報告
      「学習に登録でズレていました、回転ズレですかね」）。
      AI の墨（青）と 1 字ずつの枠は、回す前の拓本の上で作ったもの。
@@ -8308,6 +8340,54 @@ function rebuildRub(){
         "押してください。", true);
     (S.rub.lines || []).forEach(function(x){ if (rubIsBoxLine(x)) x.stale = true; });
   }
+}
+/* 明るさ・コントラスト（v39.5）。どちらも 0 なら null。
+   コントラストは よくある式（259·(c+255)/(255·(259−c))、c は ±255）、明るさは ±100 → ±128。 */
+function rubBC(){
+  var b = num(S.rub && S.rub.bright, 0), c = num(S.rub && S.rub.contrast, 0);
+  if (!b && !c) return null;
+  var cc = Math.max(-254, Math.min(254, c * 2.55));
+  return { f: (259 * (cc + 255)) / (255 * (259 - cc)), b: b * 1.28 };
+}
+/* 拾った字の輪郭（v39.5）。解析する範囲の中を しきい値で白黒にして、縁をたどった破線用の path の d。
+   大きい絵は間引いて（60 万ますまで）計算する。小さな粒（鉛筆のざらつき）は 面積で落とす。条件が同じなら作り直さない。 */
+function rubOutlineD(){
+  if (!RUB.data) return "";
+  var q = clampRange(), t = thr(), inv = !!S.rub.invert;
+  var key = [rubGeoKey(), t, inv, num(S.rub.bright, 0), num(S.rub.contrast, 0), q.x1, q.x2, q.y1, q.y2].join("|");
+  if (RUB.olKey === key) return RUB.olD || "";
+  var rw = q.x2 - q.x1, rh = q.y2 - q.y1;
+  var step = Math.max(1, Math.ceil(Math.sqrt(rw * rh / 6e5)));
+  var w = Math.max(1, Math.floor(rw / step)), h = Math.max(1, Math.floor(rh / step));
+  var m = new Float32Array(w * h), d = RUB.data.data, W = RUB.W;
+  for (var j = 0; j < h; j++){
+    var sy = q.y1 + j * step;
+    for (var i = 0; i < w; i++){
+      var p = (sy * W + q.x1 + i * step) * 4;
+      var l = d[p]*0.299 + d[p+1]*0.587 + d[p+2]*0.114;
+      if (isInk(l, t, inv)) m[j*w + i] = 1;
+    }
+  }
+  var loops = traceLoops(m, w, h, 0.5), out = [];
+  var minA = Math.max(6, (rw * rh) / (step * step) * 0.00003);   /* ます の数 */
+  loops.forEach(function(pts){
+    var a = 0;
+    for (var k = 0, n = pts.length; k < n; k++){ var p1 = pts[k], p2 = pts[(k+1) % n]; a += p1[0]*p2[1] - p2[0]*p1[1]; }
+    if (Math.abs(a) / 2 < minA) return;
+    /* 閉じた輪は 始点と終点が同じなので、そのまま間引くと 1 点に潰れる。いちばん遠い点で 2 つに分けて間引く */
+    var far = 0, fd = -1;
+    for (var k2 = 1; k2 < pts.length; k2++){
+      var dx = pts[k2][0] - pts[0][0], dy = pts[k2][1] - pts[0][1];
+      if (dx*dx + dy*dy > fd){ fd = dx*dx + dy*dy; far = k2; }
+    }
+    var s2 = rdp(pts.slice(0, far + 1), 0.5).concat(rdp(pts.slice(far), 0.5).slice(1));
+    if (s2.length < 3) return;
+    out.push("M" + s2.map(function(pt){
+      return (q.x1 + (pt[0] + 0.5) * step).toFixed(1) + "," + (q.y1 + (pt[1] + 0.5) * step).toFixed(1);
+    }).join("L") + "Z");
+  });
+  RUB.olKey = key; RUB.olD = out.join("");
+  return RUB.olD;
 }
 /* 拓本を 180° ひっくり返す。
    スキャナーに上下逆に置いてしまったときの直し。角度の微調整（±15°）とは別。
@@ -19177,6 +19257,22 @@ function bindDemoDrag(svg){
 }
 
 /* --- 拓本ビューの描画 --- */
+/* 画面の見た目の 明るさ・コントラスト（v39.5）。rebuildRub が絵に当てるのと同じ式を SVG のフィルターで */
+function rubBCDefs(){
+  var bc = rubBC(); if (!bc) return "";
+  var sl = bc.f.toFixed(4), ic = ((128 * (1 - bc.f) + bc.b) / 255).toFixed(4);
+  var fn = '<feFuncR type="linear" slope="' + sl + '" intercept="' + ic + '"/>';
+  return '<defs><filter id="rubBCf" color-interpolation-filters="sRGB"><feComponentTransfer>' +
+    fn + fn.replace("feFuncR", "feFuncG") + fn.replace("feFuncR", "feFuncB") + '</feComponentTransfer></filter></defs>';
+}
+function rubOutlineSvg(W, sc){
+  if (!$("rbOutline") || !$("rbOutline").checked || !RUB.data || RUB.olBusy) return "";
+  var dd = rubOutlineD(); if (!dd) return "";
+  /* 画面の上で いつも同じ太さ（1.6px・破線 5px／3px）に見えるよう、表示の倍率で割る */
+  var k = 1 / Math.max(1e-6, sc || 1);
+  return '<path d="' + dd + '" fill="rgba(224,48,30,.07)" stroke="#E0301E" stroke-width="' + (1.6 * k).toFixed(3) +
+    '" stroke-dasharray="' + (5 * k).toFixed(3) + ' ' + (3 * k).toFixed(3) + '" stroke-linejoin="round"/>';
+}
 function rubRender(){
   var st = $("rubstage");
   if (!RUB.img){ st.innerHTML = ""; st.style.width = "auto"; st.style.height = "auto";
@@ -19718,8 +19814,10 @@ function rubRender(){
   st.innerHTML = '<svg width="' + dispW + '" height="' + dispH + '" viewBox="' + (-GUT) + ' 0 ' +
     (W + GUT) + ' ' + H + '">' +
     '<rect x="' + (-GUT) + '" y="0" width="' + GUT + '" height="' + H + '" fill="#EDF0F2"/>' +
-    '<image href="' + r.src + '" x="0" y="0" width="' + W + '" height="' + H + '"' + rotAttr + '/>' +
-    maskLayer + '<g pointer-events="none">' + o.join("") + '</g>' +
+    rubBCDefs() +
+    '<image href="' + r.src + '" x="0" y="0" width="' + W + '" height="' + H + '"' + rotAttr +
+      (rubBC() ? ' filter="url(#rubBCf)"' : '') + '/>' +
+    maskLayer + '<g pointer-events="none">' + o.join("") + rubOutlineSvg(W, sc) + '</g>' +
     /* **回せるのは拓本の絵の上だけ**（v21.26。本人の指摘「枠外でも効くのは
        直感的ではない」）。前は左の余白（GUT）まで受けていた。 */
     ((rubBoxDraw || rubAreaDraw)
@@ -21127,6 +21225,24 @@ function bindRub(){
   bb = $("rbCrop");    if (bb) bb.onclick = function(){ cropMode ? endCrop() : startCrop(); };
   bb = $("rbCropAll"); if (bb) bb.onclick = cropAll;
   bb = $("rbEnd");     if (bb) bb.onclick = endFix;
+  /* 見え方（v39.5）。動かしている間は 画面のフィルターだけすぐ変え、重い作り直し（絵・輪郭）は 少し待ってから */
+  var lookT = null;
+  function lookRedo(now){
+    clearTimeout(lookT);
+    var go = function(){ RUB.olBusy = false; A = null; RUB.mask = null; rebuildRub(); rubBar(); rubPanel(); rubRender(); persist(); };
+    if (now) go(); else { RUB.olBusy = true; rubRender(); lookT = setTimeout(go, 260); }   /* 待つ間は 輪郭を出さない（古い絵の輪郭になるため） */
+  }
+  bb = $("rbBright"); if (bb) bb.oninput = function(e){ S.rub.bright = parseInt(e.target.value, 10) || 0; lookRedo(); };
+  bb = $("rbCont");   if (bb) bb.oninput = function(e){ S.rub.contrast = parseInt(e.target.value, 10) || 0; lookRedo(); };
+  bb = $("rbThr");    if (bb) bb.oninput = function(e){
+    S.rub.thresh = parseInt(e.target.value, 10); RUB.olKey = null;
+    if ($("rbThrV")) $("rbThrV").textContent = e.target.value;
+    clearTimeout(lookT); lookT = setTimeout(function(){ A = null; RUB.mask = null; rubBar(); rubPanel(); rubRender(); persist(); }, 120);
+  };
+  bb = $("rbThrAuto"); if (bb) bb.onclick = function(){ S.rub.thresh = null; A = null; RUB.mask = null; RUB.olKey = null; rubBar(); rubPanel(); rubRender(); persist(); };
+  bb = $("rbInkBlack"); if (bb) bb.onchange = function(e){ S.rub.invert = !e.target.checked; lookRedo(true); };
+  bb = $("rbOutline");  if (bb) bb.onchange = function(){ rubRender(); };
+  bb = $("rbLookReset"); if (bb) bb.onclick = function(){ S.rub.bright = 0; S.rub.contrast = 0; S.rub.thresh = null; lookRedo(true); };
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
     if (locked()){ lockNo(); return; }          /* 回転はロック中は止める（v24.5） */

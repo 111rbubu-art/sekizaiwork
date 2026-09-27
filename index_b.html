@@ -6327,57 +6327,140 @@ function _vcSetTemple(tp) {
   })();
 }
 /* 一覧が読み終わるのを待って（20 秒まで）、「すべて」にして 名前で絞る。納骨で 1 件だけなら その詳細を開く */
+/* ───── **名前は 読み（フリガナ）でも探す**（v1.9.458。本人「漢字は当たらないので読み仮名で探せないです」）─────
+   声の名前は 漢字が当たらない（下山 → 霜山 など）。拓本AI の /api/stt/yomi で 聞き取った名前の ありうる読み を作り
+   （先頭が ふつうの読み）、記録の フリガナ の頭と照らす。順番：
+     ① 漢字がそのまま入っている記録　② ふつうの読みで フリガナの頭が合う記録　③ ほかの読みで合う記録
+   見つかった記録の 名前の頭（言った名前と同じ字数）を「名字」として、名字が 1 つなら 一覧の検索欄にその漢字を入れて絞る。
+   名字が いくつかあれば（下山・霜山）札に ボタンを並べて 選んでもらう。 */
+var VC_NAME_F = {
+  noukotsu: { name: ['_x9867__x5ba2__x540d_', 'Title', '_x304a__x5893__x306e__x540d__x7f'], furi: '_x30d5__x30ea__x30ac__x30ca_', temple: '_x304a__x5bfa_' },
+  kouji:    { name: ['Customers', 'Title', 'HakaName'], furi: 'furigana', temple: 'Temples' },
+  customer: { name: ['CusName', 'Title', 'HakaName'], furi: 'furigana', temple: 'Temple' }
+};
+function _vcKana(s) { return _aiHira(String(s || '')).replace(/[\s　・･]/g, ''); }
+function _vcNameYomis(name) {
+  var own = /^[ぁ-ゖァ-ヶー]+$/.test(name) ? [_vcKana(name)] : [];
+  return _aiWhisperBase().then(function (base) {
+    if (!base) return own;
+    return _aiFetchTO(base + '/api/stt/yomi', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: name }) }, 5000)
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (j) { var y = (j && j.yomis) || []; return y.length ? y : own; });
+  }).catch(function () { return own; });
+}
+function _vcMatchName(items, F, name, yomis, tp) {
+  items = (items || []).filter(function (d) {
+    if (!tp) return true;
+    var t = String(d[F.temple] || ''); return !t || t.indexOf(tp) >= 0;
+  });
+  /* 名字：名前に空白があれば その前、無ければ 言った名前と同じ字数 */
+  function sur1(d) {
+    for (var i = 0; i < F.name.length; i++) {
+      var v = String(d[F.name[i]] || '').trim();
+      if (!v) continue;
+      var sp = v.split(/[\s　]+/);
+      return sp.length > 1 ? sp[0] : v.slice(0, name.length);
+    }
+    return '';
+  }
+  var k = items.filter(function (d) { return F.name.some(function (f) { return d[f] && String(d[f]).replace(/[\s　]/g, '').indexOf(name) >= 0; }); });
+  var via = 'kanji', hits = k;
+  if (!hits.length) {
+    var tiers = [yomis.slice(0, 1), yomis.slice(1)];
+    for (var ti = 0; ti < tiers.length && !hits.length; ti++) {
+      var ys = tiers[ti].filter(function (y) { return y && y.length >= 2; });
+      if (!ys.length) continue;
+      hits = items.filter(function (d) {
+        var f = _vcKana(d[F.furi]);
+        return f && ys.some(function (y) { return f.indexOf(y) === 0; });
+      });
+      via = ti ? 'yomi2' : 'yomi';
+    }
+  }
+  var sur = {};
+  hits.forEach(function (d) { var key = via === 'kanji' ? name : sur1(d); if (key) sur[key] = (sur[key] || 0) + 1; });
+  return { hits: hits, via: via, surnames: Object.keys(sur).map(function (k2) { return { s: k2, n: sur[k2] }; }).sort(function (a, b) { return b.n - a.n; }) };
+}
 function _vcFindInList(mode, name, tp) {
-  var n = 0;
+  var n = 0, F = VC_NAME_F[mode];
+  var yP = _vcNameYomis(name);
   (function tick() {
     var loading = document.querySelector('#list-content .loading');
     if (currentListMode !== mode) return;                         /* 別の画面へ行った */
     if ((!allItems || !allItems.length || loading) && ++n < 80) { setTimeout(tick, 250); return; }
-    var sr = document.getElementById('srch');
-    if (sr) sr.value = name;
-    if (mode === 'noukotsu') {                   /* 「すべて」にする（完了したものも探す）。押したときと同じ中身 */
-      currentFilter = 'all';
-      document.querySelectorAll('.fpill[data-f]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-f') === 'all'); });
-      try { renderList(); } catch (e) {}
-    } else if (mode === 'kouji') {
-      var ka = document.querySelector('.fpill[data-kf="all"]');
-      if (ka && !ka.classList.contains('on')) ka.click();
-      try { renderKoujiList(_koujiCurrentFilter || 'all'); } catch (e) {}
-    } else {
-      try { renderCustomerList(); } catch (e) {}
-    }
-    var hits = (allItems || []).filter(function (d) {
-      var nm = mode === 'kouji' ? [d['Customers'], d['Title'], d['HakaName']]
-             : [d['_x9867__x5ba2__x540d_'], d['Title'], d['_x304a__x5893__x306e__x540d__x7f'], d['CustomerName']];
-      var ok = nm.some(function (x) { return x && String(x).indexOf(name) >= 0; });
-      if (ok && tp) {
-        var t = mode === 'kouji' ? (d['Temples'] || '') : (d['_x304a__x5bfa_'] || '');
-        if (t && String(t).indexOf(tp) < 0) ok = false;
+    yP.then(function (yomis) {
+      if (currentListMode !== mode) return;
+      if (mode === 'noukotsu') {                 /* 「すべて」にする（完了したものも探す）。押したときと同じ中身 */
+        currentFilter = 'all';
+        document.querySelectorAll('.fpill[data-f]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-f') === 'all'); });
+      } else if (mode === 'kouji') {
+        var ka = document.querySelector('.fpill[data-kf="all"]');
+        if (ka && !ka.classList.contains('on')) ka.click();
       }
-      return ok;
+      var r = _vcMatchName(allItems, F, name, yomis, tp);
+      var said = '「' + name + '」' + (r.via !== 'kanji' && yomis[0] ? '（' + yomis[0] + '）' : '') + (tp ? ' ' + tp : '') + '：';
+      function show(q) {
+        var sr = document.getElementById('srch');
+        if (sr) sr.value = q;
+        try {
+          if (mode === 'noukotsu') renderList();
+          else if (mode === 'kouji') renderKoujiList(_koujiCurrentFilter || 'all');
+          else renderCustomerList();
+        } catch (e) {}
+      }
+      function openOne(d) {
+        try {
+          if (mode === 'noukotsu') openDetail(d);
+          else if (mode === 'kouji') showKoujiDetail(d);
+          else showCustomerDetail(d);
+        } catch (e) {}
+      }
+      if (!r.hits.length) {
+        show('');
+        _vcCard(_vcEsc(said) + '<span style="color:#b00">見つかりませんでした</span>（すべて の中で、漢字と フリガナ で探しました）', null, 8000);
+        return;
+      }
+      if (r.surnames.length > 1) {
+        show('');
+        _vcCard(_vcEsc(said) + '名字が いくつかあります。選んでください', r.surnames.slice(0, 6).map(function (x) {
+          return { text: x.s + '（' + x.n + '件）', run: function () { show(x.s); } };
+        }), 20000);
+        return;
+      }
+      var q = r.surnames[0].s;
+      show(q);
+      var via = r.via === 'kanji' ? '' : '（読みで見つけました：' + q + '）';
+      if (r.hits.length === 1) { openOne(r.hits[0]); _vcCard(_vcEsc(said + '1 件 → 開きました' + via), null, 5000); return; }
+      _vcCard(_vcEsc(said + r.hits.length + ' 件あります' + via + '。一覧から選んでください'), null, 7000);
     });
-    var msg = '「' + name + '」' + (tp ? '（' + tp + '）' : '') + '：';
-    if (!hits.length) { _vcCard(_vcEsc(msg) + '<span style="color:#b00">見つかりませんでした</span>（すべて の中で探しました）', null, 7000); return; }
-    if (hits.length === 1 && mode === 'noukotsu') {
-      try { openDetail(hits[0]); } catch (e) {}
-      _vcCard(_vcEsc(msg) + '1 件 → 開きました', null, 4000); return;
-    }
-    if (hits.length === 1 && mode === 'kouji') {
-      try { showKoujiDetail(hits[0]); } catch (e) {}
-      _vcCard(_vcEsc(msg) + '1 件 → 開きました', null, 4000); return;
-    }
-    _vcCard(_vcEsc(msg) + hits.length + ' 件あります。一覧から選んでください', null, 6000);
   })();
+}
+/* 横断検索：メニューの検索が持っている記録（納骨・工事・顧客）を 漢字とフリガナで照らし、名字を検索欄に入れる */
+function _vcFindAll(name, tp) {
+  var ms = document.getElementById('menu-search');
+  function put(q) { if (ms) { ms.value = q; try { menuSearchInput(ms); } catch (e) {} } }
+  _vcNameYomis(name).then(function (yomis) {
+    var C = _menuSearchCache || {}, cus = [];
+    Object.keys(C.customer || {}).forEach(function (g) { cus = cus.concat(C.customer[g] || []); });
+    var rs = [_vcMatchName(C.noukotsu_all || C.noukotsu, VC_NAME_F.noukotsu, name, yomis, tp),
+              _vcMatchName(C.kouji_all || C.kouji, VC_NAME_F.kouji, name, yomis, tp),
+              _vcMatchName(cus, VC_NAME_F.customer, name, yomis, tp)];
+    var sur = {};
+    rs.forEach(function (r) { r.surnames.forEach(function (x) { sur[x.s] = (sur[x.s] || 0) + x.n; }); });
+    var ks = Object.keys(sur).sort(function (a, b) { return sur[b] - sur[a]; });
+    var said = '「' + name + '」' + (yomis[0] ? '（' + yomis[0] + '）' : '') + '：';
+    if (!ks.length) { put(name); _vcCard(_vcEsc(said) + '漢字のまま 検索しました（フリガナでは見つかりませんでした）', null, 7000); return; }
+    if (ks.length === 1) { put(ks[0]); if (ks[0] !== name) _vcCard(_vcEsc(said + '読みで「' + ks[0] + '」を見つけました'), null, 6000); return; }
+    _vcCard(_vcEsc(said) + '名字が いくつかあります。選んでください', ks.slice(0, 6).map(function (k) {
+      return { text: k + '（' + sur[k] + '件）', run: function () { put(k); } };
+    }), 20000);
+  });
 }
 function vcRun(c) {
   var id = c.id, tp = c.temple;
   if (id === 'menu') { _vcToMenu(); return; }
-  if (id === 'find') {
-    _vcToMenu();
-    var ms = document.getElementById('menu-search');
-    if (ms) { ms.value = (tp ? tp + ' ' : '') + c.name; try { menuSearchInput(ms); } catch (e) {} }
-    return;
-  }
+  if (id === 'find') { _vcToMenu(); _vcFindAll(c.name, tp); return; }
   if (id === 'noukotsu' || id === 'kouji') {
     _vcToMenu(); selectMenu(id); if (tp) _vcSetTemple(tp);
     if (c.name) _vcFindInList(id, c.name, tp);
@@ -6387,11 +6470,7 @@ function vcRun(c) {
     _vcToMenu();
     var gid = null;
     Object.keys(TEMPLE_GROUP_MAP).forEach(function (k) { if (tp && TEMPLE_GROUP_MAP[k] === tp) gid = k; });
-    if (c.name && !tp) {            /* お寺が無ければ 顧客リストは開けない（お寺ごと）→ 横断検索 */
-      var ms2 = document.getElementById('menu-search');
-      if (ms2) { ms2.value = c.name; try { menuSearchInput(ms2); } catch (e) {} }
-      return;
-    }
+    if (c.name && !tp) { _vcFindAll(c.name, ''); return; }   /* お寺が無ければ 顧客リストは開けない（お寺ごと）→ 横断検索 */
     showTempleMenu();
     if (gid) { selectTempleGroup(gid, TEMPLE_GROUP_MAP[gid]); if (c.name) _vcFindInList('customer', c.name, ''); }
     else if (tp) selectTempleGroup(8, TEMPLE_GROUP_MAP[8]);    /* 天沼共同 などは 霊園＆共同墓地 の中 */
@@ -6420,12 +6499,12 @@ function _vcCard(html, btn, ms) {
     document.body.appendChild(el);
   }
   el.innerHTML = html;
-  if (btn) {
+  (Array.isArray(btn) ? btn : (btn ? [btn] : [])).forEach(function (btn) {
     var b = document.createElement('button');
-    b.textContent = btn.text; b.style.cssText = 'display:block;margin-top:8px;padding:7px 14px;border:none;border-radius:8px;background:#4a2a7a;color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:13px';
+    b.textContent = btn.text; b.style.cssText = 'display:inline-block;margin:8px 6px 0 0;padding:7px 14px;border:none;border-radius:8px;background:#4a2a7a;color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:13px';
     b.onclick = function () { el.style.display = 'none'; btn.run(); };
     el.appendChild(b);
-  }
+  });
   var x = document.createElement('span');
   x.textContent = '✕'; x.style.cssText = 'position:absolute;top:4px;right:8px;cursor:pointer;color:#999';
   x.onclick = function () { el.style.display = 'none'; };
@@ -7459,7 +7538,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.457';
+var APP_VERSION = 'v1.9.458';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

@@ -313,6 +313,13 @@ def stt_post(body: dict):
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
 
 
+@app.post("/api/stt/yomi")
+def stt_yomi(body: dict):
+    """1 語のありうる読み（業務アプリが 名前をフリガナで探すのに使う）。モデルは使わない"""
+    import stt
+    return {"yomis": stt.word_yomis(str((body or {}).get("text") or ""))}
+
+
 @app.get("/api/stt/status")
 def stt_status():
     import stt

@@ -143,6 +143,39 @@ def head_yomis(text, cap=600):
     return outs
 
 
+def word_yomis(word, cap=300):
+    """名前など 1 語の**ありうる読み**（ひらがな）の一覧。先頭は pykakasi のふつうの読み。
+    声の名前は漢字が当たらない（本人「漢字は当たらないので読み仮名で探せないです」）。
+    業務アプリは この読みで 記録のフリガナを照らす（下山・霜山 → しもやま）。"""
+    w = (word or "").strip()[:8]
+    if not w:
+        return []
+    first = yomi(w)
+    try:
+        from pykakasi.kanji import Kanwa
+        kw = Kanwa()
+    except Exception:                                        # noqa: BLE001
+        return [first] if first else []
+    outs = [""]
+    for c in w:
+        rs = [c]
+        if _KANJI.search(c):
+            t = kw.load(c) or {}
+            rs = sorted({y for y, _ in t.get(c, []) if y and len(y) <= 3}) or [c]
+        else:
+            rs = [c.translate(_KATA2HIRA)]
+        outs = [o + r for o in outs for r in rs][:cap]
+    seen, res = set(), []
+    for y in [first] + outs:
+        if y and y not in seen:
+            seen.add(y)
+            res.append(y)
+    return res[:cap]
+
+
+_KATA2HIRA = {i: i - 0x60 for i in range(0x30A1, 0x30F7)}
+
+
 def _decode(model, proc, feats, prompt, device):
     kw = {"language": "ja", "task": "transcribe", "max_new_tokens": 160}
     if prompt:

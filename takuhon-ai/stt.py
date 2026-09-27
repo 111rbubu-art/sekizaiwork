@@ -32,7 +32,8 @@ _KKS = None
 
 def status():
     return {"model": MODEL_NAME, "loaded": _S["model"] is not None, "loading": _S["loading"],
-            "error": _S["err"], "loaded_at": _S["at"], "device": _S["device"]}
+            "error": _S["err"], "loaded_at": _S["at"], "device": _S["device"],
+            "last": _S.get("last")}                         # 最後に文字にしたもの（確かめ用）
 
 
 def _load(device):
@@ -142,27 +143,44 @@ def head_yomis(text, cap=600):
     return outs
 
 
+def _decode(model, proc, feats, prompt, device):
+    kw = {"language": "ja", "task": "transcribe", "max_new_tokens": 160}
+    if prompt:
+        kw["prompt_ids"] = torch.as_tensor(proc.get_prompt_ids(prompt)).to(device)
+    with torch.inference_mode():
+        ids = model.generate(feats, **kw)
+    text = proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
+    # 版によっては 渡した見本が頭に付いて返ることがあるので、外す
+    if prompt and text.startswith(prompt):
+        text = text[len(prompt):].strip()
+    return text
+
+
+def _pack(text):
+    return {"text": text, "yomi": yomi(text), "head_yomis": head_yomis(text)}
+
+
 def transcribe(wav_b64, prompt, device):
+    """見本（prompt）あり と なし の 2 通りで文字にして、両方返す（2026-09-27）。
+    本人の試し：見本ありだと「長泉寺の杉田家の納骨日を教えて」→「長選」、「…納骨日を教えて」→「…納骨子」と
+    **文が途中で切れる**ことがあった。見本なしは字をまちがえやすいが 最後まで書く。
+    どちらを使うかは業務アプリが決める（お寺が見つかる方、同じなら長い方）。GPU なら 2 回でも 1 秒かからない。"""
     b = base64.b64decode(wav_b64)
     audio = _wav_to_f32(b)
     sec = len(audio) / SR
     if sec < 0.3:
         raise ValueError("録音が短すぎます")
     t0 = time.time()
+    prompt = (prompt or "").strip()[:200]
     with _LOCK:
         _load(device)
         model, proc = _S["model"], _S["proc"]
         feats = proc(audio, sampling_rate=SR, return_tensors="pt").input_features
         feats = feats.to(device, dtype=next(model.parameters()).dtype)
-        kw = {"language": "ja", "task": "transcribe", "max_new_tokens": 160}
-        prompt = (prompt or "").strip()
-        if prompt:
-            kw["prompt_ids"] = torch.as_tensor(proc.get_prompt_ids(prompt[:200])).to(device)
-        with torch.inference_mode():
-            ids = model.generate(feats, **kw)
-        text = proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
-    # 版によっては 渡した見本が頭に付いて返ることがあるので、外す
-    if prompt and text.startswith(prompt[:200]):
-        text = text[len(prompt[:200]):].strip()
-    return {"text": text, "yomi": yomi(text), "head_yomis": head_yomis(text), "sec": round(sec, 2),
-            "ms": int((time.time() - t0) * 1000), "model": MODEL_NAME}
+        t1 = _decode(model, proc, feats, prompt, device)
+        t2 = _decode(model, proc, feats, "", device) if prompt else t1
+    out = _pack(t1)
+    out.update({"alt": _pack(t2), "sec": round(sec, 2),
+                "ms": int((time.time() - t0) * 1000), "model": MODEL_NAME})
+    _S["last"] = {"with_prompt": t1, "no_prompt": t2, "sec": out["sec"], "ms": out["ms"], "at": time.time()}
+    return out

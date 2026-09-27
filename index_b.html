@@ -6288,8 +6288,25 @@ function vcParse(text) {
   var tp = _aiHasTemple(t);
   var r = null;
   VC_ROUTES.some(function (x) { if (x.re.test(t)) { r = x; return true; } return false; });
+  var nm = _vcName(t, r, tp);
+  /* 行き先の言葉が無く 名前だけ（「下山家」）→ メニューの横断検索 */
+  if (!r && nm) return { id: 'find', label: '横断検索', win: false, temple: tp, name: nm };
   if (!r && tp) r = VC_ROUTES.filter(function (x) { return x.id === 'customer'; })[0];   /* お寺の名前だけ → そのお寺の顧客 */
-  return r ? { id: r.id, label: r.label, win: !!r.win, temple: tp } : null;
+  if (r && nm && !/^(noukotsu|kouji|customer)$/.test(r.id)) nm = '';
+  return r ? { id: r.id, label: r.label, win: !!r.win, temple: tp, name: nm } : null;
+}
+/* ───── **名前も言えば その人を開く**（v1.9.457。本人「納骨の下山家 とかで開いてほしい」）─────
+   行き先の言葉・お寺の名前・つなぎの言葉（の・を・開いて・一覧…）を取り除いて、残った 1〜6 字を名前とする。
+   「〇〇家」「〇〇さん」「〇〇様」の 家・さん・様 は外す（一覧の検索は 顧客名 の部分一致なので「下山」で探す）。 */
+function _vcName(t, r, tp) {
+  var s = String(t || '');
+  var m = s.match(/([\u4e00-\u9fff々ヶ\u30a0-\u30ff]{1,6}?)(家|さん|様|氏)(?![\u4e00-\u9fff])/);
+  if (m && !(r && r.re.test(m[1])) && !AI_TEMPLE_READ[m[1]]) return m[1];
+  if (tp) s = s.split(tp).join(' ');
+  if (r) s = s.replace(new RegExp(r.re.source, 'g'), ' ');
+  s = s.replace(/一覧|リスト|画面|記録|情報|詳細|開いて|開け|開く|ひらいて|見せて|出して|表示|探して|検索|して|ください|お願い|です|を|の|で|は|に|から/g, ' ');
+  var w = s.split(/\s+/).filter(function (x) { return x && /[\u4e00-\u9fff々ヶ\u30a0-\u30ff]/.test(x) && x.length <= 6; });
+  return w.length === 1 ? w[0].replace(/(家|さん|様|氏)$/, '') : '';
 }
 function _vcToMenu() {
   ['price-list-screen', 'stone-price-list-screen', 'settings-screen'].forEach(function (id) {
@@ -6309,16 +6326,74 @@ function _vcSetTemple(tp) {
     if (++n < 60) setTimeout(tick, 250);
   })();
 }
+/* 一覧が読み終わるのを待って（20 秒まで）、「すべて」にして 名前で絞る。納骨で 1 件だけなら その詳細を開く */
+function _vcFindInList(mode, name, tp) {
+  var n = 0;
+  (function tick() {
+    var loading = document.querySelector('#list-content .loading');
+    if (currentListMode !== mode) return;                         /* 別の画面へ行った */
+    if ((!allItems || !allItems.length || loading) && ++n < 80) { setTimeout(tick, 250); return; }
+    var sr = document.getElementById('srch');
+    if (sr) sr.value = name;
+    if (mode === 'noukotsu') {                   /* 「すべて」にする（完了したものも探す）。押したときと同じ中身 */
+      currentFilter = 'all';
+      document.querySelectorAll('.fpill[data-f]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-f') === 'all'); });
+      try { renderList(); } catch (e) {}
+    } else if (mode === 'kouji') {
+      var ka = document.querySelector('.fpill[data-kf="all"]');
+      if (ka && !ka.classList.contains('on')) ka.click();
+      try { renderKoujiList(_koujiCurrentFilter || 'all'); } catch (e) {}
+    } else {
+      try { renderCustomerList(); } catch (e) {}
+    }
+    var hits = (allItems || []).filter(function (d) {
+      var nm = mode === 'kouji' ? [d['Customers'], d['Title'], d['HakaName']]
+             : [d['_x9867__x5ba2__x540d_'], d['Title'], d['_x304a__x5893__x306e__x540d__x7f'], d['CustomerName']];
+      var ok = nm.some(function (x) { return x && String(x).indexOf(name) >= 0; });
+      if (ok && tp) {
+        var t = mode === 'kouji' ? (d['Temples'] || '') : (d['_x304a__x5bfa_'] || '');
+        if (t && String(t).indexOf(tp) < 0) ok = false;
+      }
+      return ok;
+    });
+    var msg = '「' + name + '」' + (tp ? '（' + tp + '）' : '') + '：';
+    if (!hits.length) { _vcCard(_vcEsc(msg) + '<span style="color:#b00">見つかりませんでした</span>（すべて の中で探しました）', null, 7000); return; }
+    if (hits.length === 1 && mode === 'noukotsu') {
+      try { openDetail(hits[0]); } catch (e) {}
+      _vcCard(_vcEsc(msg) + '1 件 → 開きました', null, 4000); return;
+    }
+    if (hits.length === 1 && mode === 'kouji') {
+      try { showKoujiDetail(hits[0]); } catch (e) {}
+      _vcCard(_vcEsc(msg) + '1 件 → 開きました', null, 4000); return;
+    }
+    _vcCard(_vcEsc(msg) + hits.length + ' 件あります。一覧から選んでください', null, 6000);
+  })();
+}
 function vcRun(c) {
   var id = c.id, tp = c.temple;
   if (id === 'menu') { _vcToMenu(); return; }
-  if (id === 'noukotsu' || id === 'kouji') { _vcToMenu(); selectMenu(id); if (tp) _vcSetTemple(tp); return; }
+  if (id === 'find') {
+    _vcToMenu();
+    var ms = document.getElementById('menu-search');
+    if (ms) { ms.value = (tp ? tp + ' ' : '') + c.name; try { menuSearchInput(ms); } catch (e) {} }
+    return;
+  }
+  if (id === 'noukotsu' || id === 'kouji') {
+    _vcToMenu(); selectMenu(id); if (tp) _vcSetTemple(tp);
+    if (c.name) _vcFindInList(id, c.name, tp);
+    return;
+  }
   if (id === 'customer') {
     _vcToMenu();
     var gid = null;
     Object.keys(TEMPLE_GROUP_MAP).forEach(function (k) { if (tp && TEMPLE_GROUP_MAP[k] === tp) gid = k; });
+    if (c.name && !tp) {            /* お寺が無ければ 顧客リストは開けない（お寺ごと）→ 横断検索 */
+      var ms2 = document.getElementById('menu-search');
+      if (ms2) { ms2.value = c.name; try { menuSearchInput(ms2); } catch (e) {} }
+      return;
+    }
     showTempleMenu();
-    if (gid) selectTempleGroup(gid, TEMPLE_GROUP_MAP[gid]);
+    if (gid) { selectTempleGroup(gid, TEMPLE_GROUP_MAP[gid]); if (c.name) _vcFindInList('customer', c.name, ''); }
     else if (tp) selectTempleGroup(8, TEMPLE_GROUP_MAP[8]);    /* 天沼共同 などは 霊園＆共同墓地 の中 */
     return;
   }
@@ -6365,10 +6440,10 @@ function vcHandleText(text) {
   var said = '🎤「' + _vcEsc(text) + '」';
   if (!c) {
     _vcCard(said + '<br><span style="color:#b00">行き先がわかりませんでした。</span><br>' +
-      '<span style="color:#777;font-size:12px">例：「納骨」「慈宏寺の納骨」「工事」「浄因寺の顧客」「価格表」「石材価格表」「地図」「勤怠」「メニュー」</span>', null, 9000);
+      '<span style="color:#777;font-size:12px">例：「納骨」「納骨の下山家」「慈宏寺の納骨」「工事」「浄因寺の顧客」「価格表」「石材価格表」「地図」「勤怠」「メニュー」</span>', null, 9000);
     return null;
   }
-  var what = (c.temple ? c.temple + ' の ' : '') + c.label;
+  var what = (c.temple ? c.temple + ' の ' : '') + c.label + (c.name ? '（' + c.name + '）' : '');
   function go() {
     try { vcRun(c); }
     catch (e) { _vcCard(said + '<br><span style="color:#b00">' + _vcEsc(what) + ' を開けませんでした：' + _vcEsc(e.message || e) + '</span>', null, 8000); }
@@ -7384,7 +7459,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.456';
+var APP_VERSION = 'v1.9.457';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

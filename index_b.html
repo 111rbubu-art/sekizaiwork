@@ -628,7 +628,7 @@ body.force-sp #panel-resizer { display: none !important; }
         <div class="menu-search-sticky">
           <div style="display:flex;gap:8px;align-items:center">
             <div style="flex:1;position:relative">
-              <input id="menu-search" type="text" placeholder="🔍 顧客名・〇〇家墓・電話番号で検索..."
+              <input id="menu-search" type="text" placeholder="🔍 顧客名・フリガナ・〇〇家墓・電話番号で検索..."
                 oninput="menuSearchInput(this);document.getElementById('menu-search-clear').style.display=this.value?'flex':'none'"
                 style="width:100%;padding:12px 36px 12px 16px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;"
                 onfocus="this.style.borderColor='rgba(255,255,255,0.5)'"
@@ -1701,9 +1701,65 @@ function _fetchCustomerWithCache(siteId, listIdC, token) {
   });
 }
 
+/* ───── **フリガナでも探す**（v1.9.461。本人「トップページの検索で、フリガナでも検索できるように。
+   ○○家の読みを想像して、フリガナ化して検索に係るようにして」）─────
+   ・ひらがな・カタカナで打ったら 記録のフリガナ（ひらがなにそろえ、空白を除く）に その読みが入っていれば当たり
+     （1 字だけのときは フリガナの頭だけ）。
+   ・漢字で打ったら（「霜山」「下山家」。家・さん・様 は外す）拓本AI の /api/stt/yomi で ありうる読みを作り、
+     フリガナの頭が合う記録も当たりにする。読みの先頭（ふつうの読み）で合うものは そのまま、
+     ほかの読みで合うものは 名前に 打った漢字が 1 字でも入っているときだけ（下山 → 霜山 は「山」が同じ）。
+     読みは 1 回だけ取りに行き（語ごとに覚える）、届いたら 検索欄が同じままなら 結果を描き直す。拓本AI に届かなければ 漢字だけ。 */
+var _msYomiCache = {};
+function _msKana(s) { return _aiHira(String(s || '')).replace(/[\s　・･]/g, ''); }
+function _msIsKana(q) { return /^[\u3041-\u3096\u30a1-\u30f6ー\s　]+$/.test(q); }
+function _msWord(ql) { return String(ql || '').replace(/(家墓|家|さん|様|氏)$/, ''); }
+function _msYomiFor(ql) {
+  var w = _msWord(ql);
+  if (!/[\u4e00-\u9fff々]/.test(w) || w.length > 6) return null;
+  var c = _msYomiCache[w];
+  if (Array.isArray(c)) return c;
+  if (c) return null;
+  _msYomiCache[w] = 'pending';
+  _vcNameYomis(w).then(function (ys) {
+    _msYomiCache[w] = ys || [];
+    var inp = document.getElementById('menu-search');
+    if (ys && ys.length && inp && inp.value.replace(/\s/g, '') === ql) _menuSearchRender(inp.value.trim(), ql);
+  }, function () { _msYomiCache[w] = []; });
+  return null;
+}
+/* 一覧そのものから 名字の読みを覚える：名字（名前の空白の前）が 打った漢字と同じ記録の フリガナの名字。
+   「下山 太郎／シモヤマ タロウ」があれば 下山 = しもやま。辞書のふつうの読み（下山 → げざん）より確か。 */
+function _msLearned(w) {
+  var out = {}, C = _menuSearchCache || {};
+  function look(arr, nk, fk) {
+    (arr || []).forEach(function (d) {
+      var nm = String(d[nk[0]] || d[nk[1]] || '').trim().split(/[\s　]+/);
+      var fu = String(d[fk] || '').trim().split(/[\s　]+/);
+      if (nm.length > 1 && fu.length > 1 && nm[0] === w) { var y = _msKana(fu[0]); if (y.length >= 2) out[y] = 1; }
+    });
+  }
+  look(C.noukotsu_all || C.noukotsu, ['_x9867__x5ba2__x540d_', 'Title'], '_x30d5__x30ea__x30ac__x30ca_');
+  look(C.kouji_all || C.kouji, ['Customers', 'Title'], 'furigana');
+  Object.keys(C.customer || {}).forEach(function (g) { look(C.customer[g], ['CusName', 'Title'], 'furigana'); });
+  return Object.keys(out);
+}
+function _msFuriHit(d, kind, ql, ys) {
+  var f = _msKana(kind === 'noukotsu' ? d['_x30d5__x30ea__x30ac__x30ca_'] : d['furigana']);
+  if (!f) return false;
+  if (_msIsKana(ql)) { var k = _msKana(ql); return k.length >= 2 ? f.indexOf(k) >= 0 : f.indexOf(k) === 0; }
+  /* 漢字：一覧から覚えた読み ＋ 辞書のふつうの読み（ほかの読みは 当たりすぎるので使わない：下山 → もとやま＝元山） */
+  var rs = (ys && ys.readings) || [];
+  for (var i = 0; i < rs.length; i++) if (rs[i].length >= 2 && f.indexOf(rs[i]) === 0) return true;
+  return false;
+}
 function _menuSearchRender(q, ql) {
   var box = document.getElementById('menu-search-results');
   if (!box) return;
+  var _ys = null;
+  if (!/^[0-9\-]+$/.test(ql) && !_msIsKana(ql) && /[\u4e00-\u9fff々]/.test(_msWord(ql))) {
+    var _yl = _msLearned(_msWord(ql)), _yd = _msYomiFor(ql);
+    _ys = { readings: _yl.concat(_yd && _yd[0] && _yl.indexOf(_yd[0]) < 0 ? [_yd[0]] : []) };
+  }
   var isIdSearch  = false;
   var isTelSearch = /^[0-9\-]+$/.test(ql);
 
@@ -1714,14 +1770,14 @@ function _menuSearchRender(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.noukotsu.push(d);
+    if (name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msFuriHit(d,'noukotsu',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.noukotsu.push(d);
   });
   // 工事関連
   (_menuSearchCache['kouji'] || []).forEach(function(d) {
     var name  = (d['Customers'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (name.includes(ql) || _msHakaHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.kouji.push(d);
+    if (name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msFuriHit(d,'kouji',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)) results.kouji.push(d);
   });
 
   // 顧客リスト検索（グループごと10件）
@@ -1732,7 +1788,7 @@ function _menuSearchRender(q, ql) {
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : (d['id'] ? String(d['id']) : ''); // SPのID番号
       var isIdMatch = isIdSearch && spId === ql;
-      return name.includes(ql) || _msHakaHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || isIdMatch;
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msFuriHit(d,'customer',ql,_ys) || (isTelSearch && tel.includes(ql)) || isIdMatch;
     });
     // IDヒットを先頭に移動
     if (isIdSearch) {
@@ -7606,7 +7662,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.460';
+var APP_VERSION = 'v1.9.461';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

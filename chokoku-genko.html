@@ -2457,7 +2457,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v41.5";
+var APP_VER = "v41.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -7518,6 +7518,21 @@ function pxSyncLinked(){
    S.lock = null か { at:"ISO", status:"お客様校正提出", note:"" }。
    解除は［設定］メニューから。だれでも解除できる（暗証番号などは付けない）。 */
 function locked(){ return !!(S && S.lock && S.lock.at); }
+/* **拓本の向きのロック**（v41.6。本人の指示「回して合わせると180°反転は、仕上げが終了ボタンを押したら、ロックして
+   終了ボタンを解除したら、操作できるようにして」）。校正ぜんたいのロック（S.lock）とは別。
+   向きを変えると AI の墨・枠・手書きの輪郭がずれるので、終わったら触れないようにする。 */
+function rubDirLocked(){ return !!(S && S.rub && S.rub.dirLock); }
+function rubDirLockNo(){
+  msg("拓本の向きはロックしています。変えるときは［仕上げ］の［🔒 解除］を押してください。", true);
+}
+function rubDirLockToggle(){
+  if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
+  S.rub.dirLock = !S.rub.dirLock;
+  if (S.rub.dirLock && rotMode) rotMode = null;
+  persist(); rubPanel(); rubRender();
+  msg(S.rub.dirLock ? "拓本の向き（180° 反転・回して合わせる）をロックしました。"
+                    : "ロックを解除しました。180° 反転・回して合わせる が使えます。");
+}
 var LOCK_TOAST = 0;
 function lockNo(){
   var t = Date.now();
@@ -8366,12 +8381,24 @@ function rubBar(){
   var loaded = !!RUB.img;
   set("rbFlip", !!(S.rub && S.rub.flip180), loaded);
   set("rbRot",  !!rotMode, loaded);
+  var dl = loaded && rubDirLocked();
+  ["rbFlip", "rbRot"].forEach(function(id){
+    var b = $(id); if (!b) return;
+    b.disabled = dl; b.title = dl ? "ロック中です。［仕上げ］の［🔒 解除］で使えます" : "";
+  });
   set("rbCrop", !!cropMode, loaded);
   var cb = loaded ? cropBox() : null;
   var whole = !loaded || !S.rub.crop ||
     (cb.x1 <= 0 && cb.y1 <= 0 && cb.x2 >= RUB.W && cb.y2 >= RUB.H);
   set("rbCropAll", null, loaded && cropMode && !whole);
-  var e = $("rbEnd"); if (e) e.className = "mini primary";
+  var e = $("rbEnd");
+  if (e){
+    e.hidden = !loaded;
+    e.className = "mini" + (rubDirLocked() ? "" : " primary");
+    e.textContent = rubDirLocked() ? "🔒 解除" : "終了";
+    e.title = rubDirLocked() ? "ロックを外して、180° 反転・回して合わせる を使えるようにします"
+                             : "180° 反転・回して合わせる をロックします（まちがって向きを変えないように）";
+  }
   hwInfoFill();
   /* 表示の帯（v41.0） */
   var vg = $("rbViewGrp");
@@ -8418,6 +8445,7 @@ function startSpin(){
   if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
   /* 回すと拓本の向きが変わり、AI の墨も枠も合わなくなる（v24.5） */
   if (locked()){ lockNo(); return; }
+  if (rubDirLocked()){ rubDirLockNo(); return; }   /* v41.6 */
   cropMode = false;
   rotMode = "spin";
   if (view !== "rub") setView("rub");
@@ -9063,6 +9091,7 @@ function penDelSel(){
 function rubFlip180(){
   if (!RUB.img){ msg("先に拓本を取り込んでください。", true); return; }
   if (locked()){ lockNo(); return; }          /* v24.5 */
+  if (rubDirLocked()){ rubDirLockNo(); return; }   /* v41.6 */
   var r = S.rub, W = RUB.W, H = RUB.H;
   var mx = function(v){ return W - num(v, 0); };   /* 左右を裏返す */
   var my = function(v){ return H - num(v, 0); };   /* 上下を裏返す */
@@ -14529,6 +14558,7 @@ function rubLineTake(){
 function rubLineFixRot(){
   var L = rubCol();
   if (!L){ msg("先に［この行を見立てる］を押してください。", true); return; }
+  if (rubDirLocked()){ rubDirLockNo(); return; }   /* v41.6 */
   var was = num(S.rub.rot, 0), f0 = rubFrameSt();
   S.rub.rot = Math.round((was - L.deg) * 100) / 100;
   rubPaintRemap(f0, rubFrameSt());        /* 塗りも一緒に動かす */
@@ -21108,9 +21138,9 @@ function rubPanel(){
      ここは「いまどうなっているか」を並べるだけ（v9.1）。 */
   h = "";
   if (loaded){
-    h += '<button class="mini' + (view === "rub" ? " primary" : "") +
-      '" id="rFix" style="width:100%;margin-bottom:8px;">' +
-      (view === "rub" ? "終了" : "✎ 補正する") + '</button>';
+    /* 拓本の画面を開いているときの［終了］は出さない（v41.6。本人「② 補正結果の下の終了ボタンは不要」） */
+    if (view !== "rub")
+      h += '<button class="mini" id="rFix" style="width:100%;margin-bottom:8px;">✎ 補正する</button>';
     var row = function(k, v, id){
       return '<div class="fixrow"><span>' + k + '</span><b' +
         (id ? ' id="' + id + '"' : '') + '>' + v + '</b></div>';
@@ -21118,6 +21148,7 @@ function rubPanel(){
     var cb1 = cropBox(), whole1 = !r.crop ||
       (cb1.x1 <= 0 && cb1.y1 <= 0 && cb1.x2 >= RUB.W && cb1.y2 >= RUB.H);
     h += row("180° 反転", r.flip180 ? "あり" : "なし");
+    if (r.dirLock) h += row("向き", "🔒 ロック中");
     h += row("角度", num(r.rot, 0).toFixed(2) + "°", "rFixRot");
     h += row("トリミング", whole1 ? "全体"
       : (Math.round(cb1.x2 - cb1.x1) + " × " + Math.round(cb1.y2 - cb1.y1) + " px"));
@@ -21888,7 +21919,7 @@ function bindRub(){
   bb = $("rbRot");     if (bb) bb.onclick = function(){ rotMode ? endRot() : startSpin(); };
   bb = $("rbCrop");    if (bb) bb.onclick = function(){ cropMode ? endCrop() : startCrop(); };
   bb = $("rbCropAll"); if (bb) bb.onclick = cropAll;
-  bb = $("rbEnd");     if (bb) bb.onclick = endFix;
+  bb = $("rbEnd");     if (bb) bb.onclick = rubDirLockToggle;   /* v41.6：画面は閉じず、向きをロック／解除 */
   /* 見え方（v39.5）。動かしている間は 画面のフィルターだけすぐ変え、重い作り直し（絵・輪郭）は 少し待ってから */
   var lookT = null;
   function lookRedo(now){

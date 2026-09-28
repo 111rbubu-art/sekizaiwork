@@ -2430,7 +2430,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v40.1";
+var APP_VER = "v40.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8336,16 +8336,16 @@ function rubBar(){
   if (lk){
     lk.hidden = !loaded;
     if (loaded){
-      var tv = Math.round(thr());
+      var tv = Math.round(hwThr());
       if ($("rbBright") && document.activeElement !== $("rbBright")) $("rbBright").value = num(S.rub.bright, 0);
       if ($("rbCont") && document.activeElement !== $("rbCont")) $("rbCont").value = num(S.rub.contrast, 0);
       if ($("rbThr") && document.activeElement !== $("rbThr")) $("rbThr").value = tv;
-      if ($("rbThrV")) $("rbThrV").textContent = tv + (S.rub.thresh === null || S.rub.thresh === undefined ? " 自動" : "");
+      if ($("rbThrV")) $("rbThrV").textContent = tv + (S.rub.hwThresh === null || S.rub.hwThresh === undefined ? " 自動" : "");
       if ($("rbBrightV")) $("rbBrightV").textContent = num(S.rub.bright, 0);
       if ($("rbContV")) $("rbContV").textContent = num(S.rub.contrast, 0);
       if ($("rbInkBlack")) $("rbInkBlack").checked = !hwInkWhite();
       if ($("rbLookD") && S.rub.hwOpen && !$("rbLookD").open) $("rbLookD").open = true;
-      var ta = $("rbThrAuto"); if (ta) ta.className = "mini" + ((S.rub.thresh === null || S.rub.thresh === undefined) ? " primary" : "");
+      var ta = $("rbThrAuto"); if (ta) ta.className = "mini" + ((S.rub.hwThresh === null || S.rub.hwThresh === undefined) ? " primary" : "");
     }
   }
 }
@@ -8486,11 +8486,17 @@ function rebuildRub(){
   RUB.W = W; RUB.H = H; RUB.canvas = c;
   try { RUB.data = cx.getImageData(0, 0, W, H); } catch(e){ RUB.data = null; }
   /* 明るさ・コントラスト（v39.5）。字を拾う計算に使う絵そのものに当てる（画面の見た目は rubRender のフィルター） */
-  var bc = rubBC();
+  var bc = rubBC(), bb0 = rubBCBox(W, H);
+  RUB.bcKey = rubBCKey();
   if (RUB.data && bc){
+    /* 範囲（緑の四角）を描いてあれば その中だけ（v40.2。本人「明るさやコントラストなどは範囲を指定された場合、範囲内の変更して」） */
     var lut = new Uint8ClampedArray(256), dd = RUB.data.data;
     for (var v0 = 0; v0 < 256; v0++) lut[v0] = Math.round(bc.f * (v0 - 128) + 128 + bc.b);
-    for (var p0 = 0; p0 < dd.length; p0 += 4){ dd[p0] = lut[dd[p0]]; dd[p0+1] = lut[dd[p0+1]]; dd[p0+2] = lut[dd[p0+2]]; }
+    for (var yy0 = bb0.y1; yy0 < bb0.y2; yy0++){
+      for (var p0 = (yy0 * W + bb0.x1) * 4, pe = (yy0 * W + bb0.x2) * 4; p0 < pe; p0 += 4){
+        dd[p0] = lut[dd[p0]]; dd[p0+1] = lut[dd[p0+1]]; dd[p0+2] = lut[dd[p0+2]];
+      }
+    }
     try { cx.putImageData(RUB.data, 0, 0); } catch(e){}
   }
   RUB.mask = null; RUB.olKey = null;
@@ -8508,6 +8514,18 @@ function rebuildRub(){
     (S.rub.lines || []).forEach(function(x){ if (rubIsBoxLine(x)) x.stale = true; });
   }
 }
+/* 明るさ・コントラストを当てる所。範囲（緑の四角）があれば その中、無ければ ぜんぶ */
+function rubBCBox(W, H){
+  var b = S.rub && S.rub.allBox;
+  if (b && b.w > 8 && b.h > 8)
+    return { x1: Math.max(0, Math.floor(b.x)), y1: Math.max(0, Math.floor(b.y)),
+             x2: Math.min(W, Math.ceil(b.x + b.w)), y2: Math.min(H, Math.ceil(b.y + b.h)), part: true };
+  return { x1: 0, y1: 0, x2: W, y2: H, part: false };
+}
+function rubBCKey(){
+  var b = S.rub && S.rub.allBox;
+  return [num(S.rub && S.rub.bright, 0), num(S.rub && S.rub.contrast, 0), b ? [b.x, b.y, b.w, b.h].join(",") : ""].join("|");
+}
 /* 明るさ・コントラスト（v39.5）。どちらも 0 なら null。
    コントラストは よくある式（259·(c+255)/(255·(259−c))、c は ±255）、明るさは ±100 → ±128。 */
 function rubBC(){
@@ -8520,8 +8538,7 @@ function rubBC(){
    大きい絵は間引いて（60 万ますまで）計算する。小さな粒（鉛筆のざらつき）は 面積で落とす。条件が同じなら作り直さない。 */
 function rubOutlineD(){
   if (!RUB.data) return "";
-  var q = hwRange(), t = thr(), inv = hwInkWhite();
-  var key = [rubGeoKey(), t, inv, num(S.rub.bright, 0), num(S.rub.contrast, 0), q.x1, q.x2, q.y1, q.y2].join("|");
+  var key = hwKey();
   if (RUB.olKey === key) return RUB.olD || "";
   var loops = rubOutlineLoops(6e5, 0.5);
   RUB.olKey = key;
@@ -8536,18 +8553,34 @@ function rubOutlineD(){
 function hwOpenNow(){ var d = $("rbLookD"); return !!(d && d.open); }
 /* 手書き文字抽出の 字の色（v40.1）。拓本の解析（字が白）とは別に持つ。既定は 黒い字 */
 function hwInkWhite(){ return S.rub && S.rub.hwWhite === true; }
-/* 手書き文字抽出の範囲（v40.1）。AI補正の［2 ─ 範囲］（緑の四角）を描いてあれば その中、無ければ 解析する範囲 */
+/* 手書き文字抽出の範囲（v40.1）。AI補正の［2 ─ 範囲］（緑の四角）を描いてあれば その中、無ければ トリミングの範囲。
+   頭・脚の線（文字丈の線）は 使わない（v40.2。本人「頭のラインや足のラインは範囲や文字の修正については無関係にして、
+   単純に文字丈ラインなので、新しい列がはみ出ても、規制するものではない」。前は 脚の線の下で 輪郭が切れていた） */
 function hwRange(){
   var b = S.rub && S.rub.allBox;
   if (b && b.w > 8 && b.h > 8){
     var x1 = Math.max(0, Math.floor(b.x)), y1 = Math.max(0, Math.floor(b.y));
     return { x1: x1, y1: y1, x2: Math.min(RUB.W, Math.ceil(b.x + b.w)), y2: Math.min(RUB.H, Math.ceil(b.y + b.h)) };
   }
-  return clampRange();
+  var cb = cropBox();
+  return { x1: Math.max(0, Math.floor(cb.x1)), y1: Math.max(0, Math.floor(cb.y1)),
+           x2: Math.min(RUB.W, Math.ceil(cb.x2)), y2: Math.min(RUB.H, Math.ceil(cb.y2)) };
+}
+/* 手書き文字抽出の 拾う濃さ（v40.2）。拓本の解析の しきい値（S.rub.thresh）とは別。自動なら 範囲の中で 大津 */
+function hwThr(){
+  var t = S.rub && S.rub.hwThresh;
+  if (t !== null && t !== undefined) return t;
+  var q = hwRange();
+  return (q.x2 - q.x1 > 2 && q.y2 - q.y1 > 2) ? autoThreshold(q.x1, q.x2, q.y1, q.y2) : 128;
+}
+/* 輪郭の条件（これが同じなら 輪郭も同じ） */
+function hwKey(){
+  var q = hwRange();
+  return [rubGeoKey(), hwThr(), hwInkWhite(), num(S.rub.bright, 0), num(S.rub.contrast, 0), q.x1, q.x2, q.y1, q.y2].join("|");
 }
 function rubOutlineLoops(maxCells, tol){
   if (!RUB.data) return [];
-  var q = hwRange(), t = thr(), inv = hwInkWhite();
+  var q = hwRange(), t = hwThr(), inv = hwInkWhite();
   var rw = q.x2 - q.x1, rh = q.y2 - q.y1;
   var step = Math.max(1, Math.ceil(Math.sqrt(rw * rh / maxCells)));
   var w = Math.max(1, Math.floor(rw / step)), h = Math.max(1, Math.floor(rh / step));
@@ -8595,7 +8628,7 @@ function hwFreeze(){
   var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
   loops.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
   var old = S.hw || {};
-  S.hw = { loops: loops, geo: rubGeoKey(), box: { x1: x1, y1: y1, x2: x2, y2: y2 },
+  S.hw = { loops: loops, geo: rubGeoKey(), key: hwKey(), box: { x1: x1, y1: y1, x2: x2, y2: y2 },
            ci: (old.ci === undefined ? null : old.ci), show: old.show !== false, at: Date.now() };
   persist(); rubPanel(); rubBar(); try { rubRender(); } catch(e){} try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
   msg("確定しました。校正とゴムシートに黒で出ます。");
@@ -8860,6 +8893,7 @@ function hweCommit(){
   var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
   out.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
   S.hw.loops = out; if (out.length) S.hw.box = { x1: x1, y1: y1, x2: x2, y2: y2 }; S.hw.at = Date.now(); S.hw.edited = true;
+  S.hw.key = hwKey();
   hweClose(); persist(); rubPanel(); rubBar(); try { rubRender(); } catch(e){} try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
   msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
 }
@@ -19905,6 +19939,10 @@ function rubOutlineSvg(W, sc){
     o += '<path d="' + dh + '" fill="rgba(220,38,22,.22)" fill-rule="evenodd" stroke="#DC2616" stroke-width="' + (1.4 * k).toFixed(3) + '" stroke-linejoin="round"/>';
   }
   if (!hwOpenNow() || !RUB.data || RUB.olBusy) return o;
+  /* 確定したあとは、条件（範囲・濃さ・明るさ…）を変えるまで 破線を出さない。
+     出すと 直す前の形の破線が 直したあとの輪郭（赤）に重なって、直したのが分からない（v40.2。本人の報告
+     「輪郭を直すで変更した内容が、拓本補正の画面では変更されていない」） */
+  if (o && S.hw && S.hw.key === hwKey()) return o;
   var dd = rubOutlineD(); if (!dd) return o;
   /* 画面の上で いつも同じ太さ（1.6px・破線 5px／3px）に見えるよう、表示の倍率で割る */
   var col = o ? "#F08C00" : "#E0301E";
@@ -19912,6 +19950,9 @@ function rubOutlineSvg(W, sc){
     '" stroke-dasharray="' + (5 * k).toFixed(3) + ' ' + (3 * k).toFixed(3) + '" stroke-linejoin="round"/>';
 }
 function rubRender(){
+  /* 範囲を変えたら、明るさ・コントラストを当てる所も変わるので 絵を作り直す（v40.2） */
+  if (RUB.img && RUB.bcKey !== undefined && RUB.bcKey !== rubBCKey() && rubBC()){ rebuildRub(); }
+  else if (RUB.img) RUB.bcKey = rubBCKey();
   var st = $("rubstage");
   if (!RUB.img){ st.innerHTML = ""; st.style.width = "auto"; st.style.height = "auto";
     var lb0 = $("rubLenBox"); if (lb0) lb0.hidden = true; return; }
@@ -20454,7 +20495,11 @@ function rubRender(){
     '<rect x="' + (-GUT) + '" y="0" width="' + GUT + '" height="' + H + '" fill="#EDF0F2"/>' +
     rubBCDefs() +
     '<image href="' + r.src + '" x="0" y="0" width="' + W + '" height="' + H + '"' + rotAttr +
-      (rubBC() ? ' filter="url(#rubBCf)"' : '') + '/>' +
+      (rubBC() && !rubBCBox(W, H).part ? ' filter="url(#rubBCf)"' : '') + '/>' +
+    (rubBC() && rubBCBox(W, H).part ? (function(){ var bb = rubBCBox(W, H);
+      return '<clipPath id="rubBCclip"><rect x="' + bb.x1 + '" y="' + bb.y1 + '" width="' + (bb.x2 - bb.x1) + '" height="' + (bb.y2 - bb.y1) + '"/></clipPath>' +
+        '<g clip-path="url(#rubBCclip)"><image href="' + r.src + '" x="0" y="0" width="' + W + '" height="' + H + '"' + rotAttr +
+        ' filter="url(#rubBCf)"/></g>'; })() : '') +
     maskLayer + '<g pointer-events="none">' + o.join("") + rubOutlineSvg(W, sc) + '</g>' +
     /* **回せるのは拓本の絵の上だけ**（v21.26。本人の指摘「枠外でも効くのは
        直感的ではない」）。前は左の余白（GUT）まで受けていた。 */
@@ -21830,11 +21875,11 @@ function bindRub(){
   bb = $("rbBright"); if (bb) bb.oninput = function(e){ S.rub.bright = parseInt(e.target.value, 10) || 0; if ($("rbBrightV")) $("rbBrightV").textContent = S.rub.bright; lookRedo(); };
   bb = $("rbCont");   if (bb) bb.oninput = function(e){ S.rub.contrast = parseInt(e.target.value, 10) || 0; if ($("rbContV")) $("rbContV").textContent = S.rub.contrast; lookRedo(); };
   bb = $("rbThr");    if (bb) bb.oninput = function(e){
-    S.rub.thresh = parseInt(e.target.value, 10); RUB.olKey = null;
+    S.rub.hwThresh = parseInt(e.target.value, 10); RUB.olKey = null;
     if ($("rbThrV")) $("rbThrV").textContent = e.target.value;
-    clearTimeout(lookT); lookT = setTimeout(function(){ A = null; RUB.mask = null; rubBar(); rubPanel(); rubRender(); persist(); }, 120);
+    clearTimeout(lookT); lookT = setTimeout(function(){ rubBar(); rubRender(); persist(); }, 120);
   };
-  bb = $("rbThrAuto"); if (bb) bb.onclick = function(){ S.rub.thresh = null; A = null; RUB.mask = null; RUB.olKey = null; rubBar(); rubPanel(); rubRender(); persist(); };
+  bb = $("rbThrAuto"); if (bb) bb.onclick = function(){ S.rub.hwThresh = null; RUB.olKey = null; rubBar(); rubRender(); persist(); };
   bb = $("rbInkBlack"); if (bb) bb.onchange = function(e){ S.rub.hwWhite = !e.target.checked; RUB.olKey = null; rubRender(); persist(); };
   bb = $("rbLookD");    if (bb) bb.ontoggle = function(e){
     S.rub.hwOpen = !!e.target.open;
@@ -21843,7 +21888,7 @@ function bindRub(){
   };
   bb = $("rbLookView"); if (bb) bb.onclick = function(){ setView("rub"); rubRender(); };
   bb = $("hwFreeze");   if (bb) bb.onclick = hwFreeze;
-  bb = $("rbLookReset"); if (bb) bb.onclick = function(){ S.rub.bright = 0; S.rub.contrast = 0; S.rub.thresh = null; lookRedo(true); };
+  bb = $("rbLookReset"); if (bb) bb.onclick = function(){ S.rub.bright = 0; S.rub.contrast = 0; S.rub.hwThresh = null; lookRedo(true); };
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }
     if (locked()){ lockNo(); return; }          /* 回転はロック中は止める（v24.5） */

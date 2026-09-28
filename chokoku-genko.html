@@ -2428,7 +2428,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v39.9";
+var APP_VER = "v40.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -6685,22 +6685,17 @@ $("bRubHome").onclick = function(){
 };
 /* 赤線（v39.7）：引いている間は 校正の画面の押し方を 横取りする。赤線を押せば 選ぶ */
 $("bothstage").addEventListener("click", function(e){
-  var pl = e.target.closest && e.target.closest("[data-pen]");
-  if (!penMode && pl){
-    penSel = +pl.getAttribute("data-pen"); e.stopPropagation(); e.preventDefault();
-    renderBoth(); msg("赤線を選びました。［選んだ赤線を消す］か Delete キーで消せます。"); return;
-  }
+  var pl = e.target.closest && (e.target.closest("[data-pen]") || e.target.closest("[data-pen-end]"));
+  if (!penMode && pl){ e.stopPropagation(); e.preventDefault(); return; }   /* 選ぶのは 押したとき（penDragStart） */
+  if (!penMode && penSel >= 0){ penSel = -1; renderBoth(); }           /* ほかを押したら 選びを外す */
   if (!penMode) return;
   e.stopPropagation(); e.preventDefault();
   var m = bothEvtMm(e); if (!m) return;
   var q = bothPtToRub(m[0], m[1]);
   if (!q){ msg("拓本と［実測した文字全長］が無いと 赤線は引けません。", true); return; }
   if (!penFirst){ penFirst = q; renderBoth(); return; }
-  var a = penFirst, b = q, mpx = mmPerPxX(), mp = mmPerPx();
-  var dx = (b[0] - a[0]) * mpx, dy = (b[1] - a[1]) * mp;
-  var ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
-  if (ang < 4 || ang > 176) b = [b[0], a[1]];              /* 横にそろえる */
-  else if (Math.abs(ang - 90) < 4) b = [a[0], b[1]];      /* 縦にそろえる */
+  var a = penFirst, mpx = mmPerPxX(), mp = mmPerPx();
+  var b = penSnap(a, q);                  /* 水平か垂直だけ（v40.0。本人「斜めはできないようにして」） */
   if (Math.hypot((b[0]-a[0]) * mpx, (b[1]-a[1]) * mp) < 0.5){ msg("短すぎるので引きませんでした。", true); penFirst = null; renderBoth(); return; }
   if (!Array.isArray(S.pen)) S.pen = [];
   S.pen.push({ a: a, b: b }); penFirst = null; penSel = S.pen.length - 1;
@@ -6712,20 +6707,71 @@ $("bothstage").addEventListener("click", function(e){
    まん中ボタンの 画面の移動だけは 通す。 */
 ["pointerdown", "mousedown"].forEach(function(tp){
   window.addEventListener(tp, function(e){
-    if (!penMode || e.button === 1) return;
+    if (e.button === 1) return;
     var bs = $("bothstage"); if (!bs || !bs.contains(e.target)) return;
+    var onPen = e.target.closest && (e.target.closest("[data-pen]") || e.target.closest("[data-pen-end]"));
+    if (!penMode && !onPen) return;
     e.stopPropagation();
+    if (tp === "pointerdown" && !penMode && onPen && e.button === 0) penDragStart(e, onPen);
   }, true);
 });
+/* 引いた赤線を あとから動かす（v40.0。本人「赤線を引いた場合は、後に動かせるようにして」）。
+   線をつかむ → 線ぜんたいを動かす。選んだ線の はしの○をつかむ → その はしだけ 線の向きに沿って 長さを変える。
+   選んでいる線は 矢印キーでも動く（0.5mm、Shift で 5mm）。 */
+function penDragStart(e, el){
+  if (locked()){ lockNo(); return; }
+  var ends = el.getAttribute("data-pen-end"), k = +(ends ? ends.split(":")[0] : el.getAttribute("data-pen"));
+  var L = (S.pen || [])[k]; if (!L) return;
+  e.preventDefault();
+  penSel = k;
+  var m0 = bothEvtMm(e); if (!m0) return;
+  var a0 = L.a.slice(), b0 = L.b.slice(), mpx = mmPerPxX(), mp = mmPerPx(), horiz = (a0[1] === b0[1]);
+  var moved = false;
+  function mv(ev){
+    var m = bothEvtMm(ev); if (!m) return;
+    var dpx = (m[0] - m0[0]) / mpx, dpy = (m[1] - m0[1]) / mp;
+    if (!moved && Math.hypot(m[0] - m0[0], m[1] - m0[1]) < 0.2) return;
+    moved = true;
+    if (ends){
+      var e2 = ends.split(":")[1], p0 = (e2 === "a") ? a0 : b0;
+      L[e2] = horiz ? [+(p0[0] + dpx).toFixed(2), p0[1]] : [p0[0], +(p0[1] + dpy).toFixed(2)];
+    } else {
+      L.a = [+(a0[0] + dpx).toFixed(2), +(a0[1] + dpy).toFixed(2)];
+      L.b = [+(b0[0] + dpx).toFixed(2), +(b0[1] + dpy).toFixed(2)];
+    }
+    renderBoth();
+  }
+  function up(){
+    window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up);
+    renderBoth();
+    if (moved){ persist(); try { renderStage(); } catch(er){} msg(ends ? "赤線の長さを変えました。" : "赤線を動かしました。"); }
+    else msg("赤線を選びました。つかんで動かす・はしの○で長さ・矢印キーで少しずつ。［選んだ赤線を消す］か Delete キーで消せます。");
+  }
+  window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+  renderBoth();
+}
+function penNudge(dxMm, dyMm){
+  var L = (S.pen || [])[penSel]; if (!L) return;
+  var mpx = mmPerPxX(), mp = mmPerPx(); if (!mpx || !mp) return;
+  var dx = dxMm / mpx, dy = dyMm / mp;
+  L.a = [+(L.a[0] + dx).toFixed(2), +(L.a[1] + dy).toFixed(2)];
+  L.b = [+(L.b[0] + dx).toFixed(2), +(L.b[1] + dy).toFixed(2)];
+  persist(); renderBoth(); try { renderStage(); } catch(er){}
+}
 $("bothstage").addEventListener("mousemove", function(e){
   if (!penMode || !penFirst) return;
   var ln = document.getElementById("penRubber"), m = bothEvtMm(e); if (!ln || !m) return;
-  ln.setAttribute("x2", m[0]); ln.setAttribute("y2", m[1]);
+  var q = bothPtToRub(m[0], m[1]); if (!q) return;
+  var b = penSnap(penFirst, q);
+  ln.setAttribute("x2", bothRubX + b[0] * mmPerPxX()); ln.setAttribute("y2", mmOf(b[1]));
 });
 document.addEventListener("keydown", function(e){
   if (e.key === "Escape" && penMode){ penSetMode(false); return; }
-  if ((e.key === "Delete" || e.key === "Backspace") && penSel >= 0 && view === "both" &&
-      !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "")){ e.preventDefault(); penDelSel(); }
+  if (penSel >= 0 && view === "both" && !penMode && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "")){
+    if (e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); penDelSel(); return; }
+    var st = e.shiftKey ? 5 : 0.5, mv = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, -st], ArrowDown: [0, st] }[e.key];
+    if (mv){ e.preventDefault(); e.stopPropagation(); penNudge(mv[0], mv[1]); }
+  }
 });
 /* 校正文字を押すとその字を選ぶ。右クリックで一文字の調整。ゴムシートと同じ。 */
 $("bothstage").addEventListener("click", function(e){
@@ -8867,9 +8913,14 @@ function hwBothSvg(ix, iy, mpx, mp, KN){
     var on = (k === penSel);
     o += '<line x1="' + X(l.a[0]) + '" y1="' + Y(l.a[1]) + '" x2="' + X(l.b[0]) + '" y2="' + Y(l.b[1]) +
       '" stroke="#DC2616" stroke-width="' + (lw * (on ? 2.4 : 1.4)).toFixed(3) + '" pointer-events="none"/>' +
-      (on ? '' : '') +
       '<line data-pen="' + k + '" x1="' + X(l.a[0]) + '" y1="' + Y(l.a[1]) + '" x2="' + X(l.b[0]) + '" y2="' + Y(l.b[1]) +
-      '" stroke="transparent" stroke-width="' + (KN * 0.9).toFixed(3) + '" style="cursor:pointer"/>';
+      '" stroke="transparent" stroke-width="' + (KN * 0.9).toFixed(3) + '" style="cursor:move"/>';
+    /* 選んでいる線は 両はしに つまみ（長さを変える） */
+    if (on) ["a", "b"].forEach(function(e2){
+      o += '<circle data-pen-end="' + k + ':' + e2 + '" cx="' + X(l[e2][0]) + '" cy="' + Y(l[e2][1]) + '" r="' + (KN * 0.32).toFixed(3) +
+        '" fill="#fff" stroke="#DC2616" stroke-width="' + (lw * 1.4).toFixed(3) + '" style="cursor:' +
+        (l.a[1] === l.b[1] ? 'ew-resize' : 'ns-resize') + '"/>';
+    });
   });
   if (penFirst) o += '<circle cx="' + X(penFirst[0]) + '" cy="' + Y(penFirst[1]) + '" r="' + (KN * 0.35).toFixed(3) +
     '" fill="#DC2616" pointer-events="none"/><line id="penRubber" x1="' + X(penFirst[0]) + '" y1="' + Y(penFirst[1]) +
@@ -8892,8 +8943,13 @@ function penSetMode(on){
   penMode = !!on; penFirst = null;
   var b = $("bPen"); if (b) b.className = "mini" + (penMode ? " primary" : "");
   document.body.classList.toggle("pen-mode", penMode);
-  if (penMode) msg("赤線を引きます。はじめの点 → おわりの点 の順に押してください（縦・横に近いときは まっすぐにします）。Esc で やめます。");
+  if (penMode) msg("赤線を引きます。はじめの点 → おわりの点 の順に押してください（水平か垂直だけ）。Esc で やめます。");
   try { renderBoth(); } catch(e){}
+}
+/* 2 点目を 水平か垂直にそろえる。はなれている方の向きにする（mm で比べる） */
+function penSnap(a, q){
+  var mpx = mmPerPxX() || 1, mp = mmPerPx() || 1;
+  return (Math.abs((q[0] - a[0]) * mpx) >= Math.abs((q[1] - a[1]) * mp)) ? [q[0], a[1]] : [a[0], q[1]];
 }
 function penDelSel(){
   if (penSel < 0 || !S.pen || !S.pen[penSel]){ msg("消す赤線を 先に押して選んでください。", true); return; }

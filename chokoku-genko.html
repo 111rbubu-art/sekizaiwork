@@ -35,6 +35,15 @@
   button.go2:hover{background:#FBEBD6;}
   button.red{background:var(--shu);color:#fff;border-color:var(--shu);}
   body.pen-mode #bothstage svg{cursor:crosshair;}
+  #hweOv{position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.55);display:flex;align-items:stretch;justify-content:center;padding:18px;}
+  #hweOv .hweBox{background:#fff;border-radius:10px;display:flex;flex-direction:column;width:min(1100px,100%);overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.35);}
+  #hweOv .hweBar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line,#ddd);}
+  #hweOv .hweGrp{display:inline-flex;gap:3px;}
+  #hweOv .hweScroll{flex:1;overflow:auto;background:#EDF0F2;padding:10px;}
+  #hweOv .hweWrap{position:relative;margin:0 auto;background:#fff;}
+  #hweOv canvas{position:absolute;left:0;top:0;image-rendering:pixelated;}
+  #hweView{opacity:.62;cursor:crosshair;touch-action:none;}
+  #hweCur{position:absolute;pointer-events:none;border:1.5px solid #DC2616;border-radius:50%;display:none;}
   .hwrow{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:12px;}
   .hwrow span{width:74px;flex:none;color:var(--muted);}
   .hwrow input[type=range]{flex:1;min-width:0;}
@@ -2418,7 +2427,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v39.7";
+var APP_VER = "v39.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8496,10 +8505,161 @@ function hwInfoFill(){
     '<div class="hwrow"><span>合わせる線</span><select id="hwCiSel" style="flex:1;">' + opts + '</select></div>' +
     '<label class="chk" style="display:block;"><input type="checkbox" id="hwShow" style="width:auto;"' + (S.hw.show !== false ? ' checked' : '') +
     '> 校正・ゴムシートに出す</label>' +
+    '<button class="mini primary" id="hwEdit" style="width:100%;margin-top:4px;">輪郭を直す（列まるごと）</button>' +
     '<button class="mini" id="hwDel" style="width:100%;margin-top:4px;">決めた輪郭を消す</button>';
+  $("hwEdit").onclick = hwEditOpen;
   $("hwCiSel").onchange = function(e){ S.hw.ci = e.target.value === "" ? null : +e.target.value; persist(); try { renderBoth(); } catch(er){} try { renderStage(); } catch(er){} hwInfoFill(); };
   $("hwShow").onchange = function(e){ S.hw.show = !!e.target.checked; persist(); try { renderBoth(); } catch(er){} try { renderStage(); } catch(er){} };
   $("hwDel").onclick = hwClear;
+}
+/* ───── **輪郭を 列まるごとで直す**（v39.8。本人「出来あがった輪郭を編集できるように」→ 相談で「列まるごとで直す」）─────
+   決めた輪郭（S.hw.loops）を 列の大きさの絵（ます目）に塗り直し、その上を 筆で［塗る］［消す］、押した塊を［塊を消す］。
+   ［決定］で ます目から 輪郭をたどり直して S.hw.loops を置き換える。下に 拓本（見え方の調整つき）を敷く。
+   ます目の細かさは 拓本の画素 1 つに 1〜3 ます（全体で 400 万ますまで）。元に戻すは 20 手まで。 */
+var HWE = null;
+function hwEditOpen(){
+  if (!S.hw || !Array.isArray(S.hw.loops) || !S.hw.loops.length){ msg("先に［この輪郭で決める］を押してください。", true); return; }
+  if (!RUB.canvas){ msg("拓本が読み込まれていません。", true); return; }
+  var b = S.hw.box, mg = 24;
+  var x0 = Math.max(0, Math.floor(b.x1 - mg)), y0 = Math.max(0, Math.floor(b.y1 - mg));
+  var x1 = Math.min(RUB.W, Math.ceil(b.x2 + mg)), y1 = Math.min(RUB.H, Math.ceil(b.y2 + mg));
+  var w0 = Math.max(1, x1 - x0), h0 = Math.max(1, y1 - y0);
+  var k = Math.max(0.5, Math.min(3, Math.sqrt(4e6 / (w0 * h0))));
+  var W = Math.round(w0 * k), H = Math.round(h0 * k);
+  var mask = document.createElement("canvas"); mask.width = W; mask.height = H;
+  var mx = mask.getContext("2d", { willReadFrequently: true });
+  mx.fillStyle = "#000"; mx.beginPath();
+  S.hw.loops.forEach(function(L){ L.forEach(function(p, i){ var X = (p[0] - x0) * k, Y = (p[1] - y0) * k; if (i) mx.lineTo(X, Y); else mx.moveTo(X, Y); }); mx.closePath(); });
+  mx.fill("evenodd");
+  HWE = { k: k, x0: x0, y0: y0, W: W, H: H, mask: mask, mx: mx, undo: [], tool: "paint", brush: 6, zoom: 1, bg: true };
+  var ov = document.createElement("div"); ov.id = "hweOv";
+  ov.innerHTML =
+    '<div class="hweBox"><div class="hweBar">' +
+      '<b>輪郭を直す（列まるごと）</b>' +
+      '<span class="hweGrp"><button class="mini primary" data-t="paint">塗る</button><button class="mini" data-t="erase">消す</button>' +
+      '<button class="mini" data-t="blob" title="押した所につながった塗りを まとめて消します（ごみ取り）">塊を消す</button></span>' +
+      '<label class="hint">太さ <input type="range" id="hweBrush" min="1" max="60" value="6" style="width:90px;vertical-align:middle;"> <b id="hweBrushV">6</b></label>' +
+      '<span class="hweGrp"><button class="mini" id="hweZo">－</button><button class="mini" id="hweZi">＋</button></span>' +
+      '<label class="chk"><input type="checkbox" id="hweBg" checked style="width:auto;"> 拓本を敷く</label>' +
+      '<button class="mini" id="hweUndo">元に戻す</button>' +
+      '<span style="flex:1"></span>' +
+      '<button class="mini" id="hweCancel">やめる</button><button class="mini primary" id="hweOk">決定</button>' +
+    '</div><div class="hweScroll"><div class="hweWrap" id="hweWrap">' +
+      '<canvas id="hweBgC"></canvas><canvas id="hweView"></canvas><div id="hweCur"></div>' +
+    '</div></div><div class="hint" id="hweMsg" style="padding:4px 10px;">青い所が 彫る字です。塗る・消すで直し、［決定］で輪郭をたどり直します。</div></div>';
+  document.body.appendChild(ov);
+  var bg = $("hweBgC"); bg.width = W; bg.height = H;
+  var bx = bg.getContext("2d"); bx.imageSmoothingEnabled = true;
+  bx.drawImage(RUB.canvas, x0, y0, w0, h0, 0, 0, W, H);
+  var vw = $("hweView"); vw.width = W; vw.height = H;
+  HWE.vx = vw.getContext("2d");
+  hweRedraw();
+  /* 画面の高さに合わせた倍率から始める */
+  var sc = ov.querySelector(".hweScroll");
+  HWE.zoom = Math.max(0.1, Math.min(4, (sc.clientHeight - 20) / H));
+  hweZoom(1);
+  ov.querySelectorAll("[data-t]").forEach(function(bt){ bt.onclick = function(){
+    HWE.tool = bt.getAttribute("data-t");
+    ov.querySelectorAll("[data-t]").forEach(function(x){ x.className = "mini" + (x === bt ? " primary" : ""); });
+  }; });
+  $("hweBrush").oninput = function(e){ HWE.brush = +e.target.value; $("hweBrushV").textContent = e.target.value; };
+  $("hweZi").onclick = function(){ hweZoom(1.25); };
+  $("hweZo").onclick = function(){ hweZoom(0.8); };
+  $("hweBg").onchange = function(e){ bg.style.visibility = e.target.checked ? "visible" : "hidden"; };
+  $("hweUndo").onclick = hweUndo;
+  $("hweCancel").onclick = function(){ if (HWE && HWE.undo.length && !confirm("直した所を捨てて閉じますか？")) return; hweClose(); };
+  $("hweOk").onclick = hweCommit;
+  var drawing = false, last = null;
+  function pt(e){ var r = vw.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+  vw.addEventListener("pointerdown", function(e){
+    e.preventDefault(); try { vw.setPointerCapture(e.pointerId); } catch(er){}
+    var p = pt(e);
+    hwePush();
+    if (HWE.tool === "blob"){ hweBlob(p[0], p[1]); return; }
+    drawing = true; last = p; hweStroke(p, p);
+  });
+  vw.addEventListener("pointermove", function(e){
+    var p = pt(e), cur = $("hweCur"), r = HWE.brush * HWE.k * HWE.zoom;
+    if (cur){ cur.style.display = HWE.tool === "blob" ? "none" : "block"; cur.style.width = cur.style.height = (r) + "px";
+      cur.style.left = (p[0] * HWE.zoom - r / 2) + "px"; cur.style.top = (p[1] * HWE.zoom - r / 2) + "px"; }
+    if (!drawing) return; hweStroke(last, p); last = p;
+  });
+  var up = function(){ drawing = false; last = null; };
+  vw.addEventListener("pointerup", up); vw.addEventListener("pointercancel", up);
+  vw.addEventListener("pointerleave", function(){ var c = $("hweCur"); if (c) c.style.display = "none"; });
+  HWE.key = function(e){ if ((e.ctrlKey || e.metaKey) && e.key === "z"){ e.preventDefault(); hweUndo(); } if (e.key === "Escape") $("hweCancel").click(); };
+  document.addEventListener("keydown", HWE.key);
+}
+function hweZoom(f){
+  if (!HWE) return;
+  HWE.zoom = Math.max(0.1, Math.min(8, HWE.zoom * f));
+  var w = Math.round(HWE.W * HWE.zoom) + "px", h = Math.round(HWE.H * HWE.zoom) + "px";
+  ["hweWrap", "hweBgC", "hweView"].forEach(function(id){ var e = $(id); e.style.width = w; e.style.height = h; });
+}
+function hweRedraw(){
+  var v = HWE.vx; v.save(); v.globalCompositeOperation = "copy"; v.drawImage(HWE.mask, 0, 0);
+  v.globalCompositeOperation = "source-in"; v.fillStyle = "#1B6FD6"; v.fillRect(0, 0, HWE.W, HWE.H); v.restore();
+}
+function hwePush(){ try { HWE.undo.push(HWE.mx.getImageData(0, 0, HWE.W, HWE.H)); if (HWE.undo.length > 20) HWE.undo.shift(); } catch(e){} }
+function hweUndo(){ if (!HWE || !HWE.undo.length) return; HWE.mx.putImageData(HWE.undo.pop(), 0, 0); hweRedraw(); }
+function hweStroke(a, b){
+  var er = HWE.tool === "erase", lw = HWE.brush * HWE.k;
+  [[HWE.mx, "#000"], [HWE.vx, "#1B6FD6"]].forEach(function(z){
+    var c = z[0]; c.save(); c.globalCompositeOperation = er ? "destination-out" : "source-over";
+    c.strokeStyle = z[1]; c.fillStyle = z[1]; c.lineWidth = lw; c.lineCap = "round"; c.lineJoin = "round";
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0] + 0.01, b[1]); c.stroke(); c.restore();
+  });
+}
+/* 押した所につながった塗りを まとめて消す（4 方向のつながり） */
+function hweBlob(x, y){
+  var W = HWE.W, H = HWE.H, id = HWE.mx.getImageData(0, 0, W, H), d = id.data;
+  x = Math.round(x); y = Math.round(y);
+  /* 押した所が塗りでなければ、近く（半径 8 ます）の塗りを探す */
+  var at = function(i, j){ return i >= 0 && j >= 0 && i < W && j < H && d[(j * W + i) * 4 + 3] > 127; };
+  if (!at(x, y)){
+    var f = null;
+    for (var r = 1; r <= 8 && !f; r++) for (var dy = -r; dy <= r && !f; dy++) for (var dx = -r; dx <= r && !f; dx++) if (at(x+dx, y+dy)) f = [x+dx, y+dy];
+    if (!f){ HWE.undo.pop(); $("hweMsg").textContent = "そこには 塗りがありません。"; return; }
+    x = f[0]; y = f[1];
+  }
+  var st = [y * W + x], n = 0, N = W * H;
+  while (st.length){
+    var q = st.pop();
+    if (q < 0 || q >= N || d[q * 4 + 3] <= 127) continue;
+    d[q * 4 + 3] = 0; n++;
+    var i = q % W;
+    if (i > 0) st.push(q - 1);           /* 左右は 行をまたがない */
+    if (i < W - 1) st.push(q + 1);
+    st.push(q - W, q + W);
+  }
+  HWE.mx.putImageData(id, 0, 0); hweRedraw();
+  $("hweMsg").textContent = "塊を消しました（" + n + " ます）。";
+}
+function hweCommit(){
+  var W = HWE.W, H = HWE.H, k = HWE.k, d = HWE.mx.getImageData(0, 0, W, H).data, m = new Float32Array(W * H);
+  for (var i = 0, n = W * H; i < n; i++) m[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+  var loops = traceLoops(m, W, H, 0.5), out = [], minA = Math.max(4, 3 * k * k);
+  loops.forEach(function(pts){
+    var a = 0;
+    for (var q = 0, L = pts.length; q < L; q++){ var p1 = pts[q], p2 = pts[(q+1) % L]; a += p1[0]*p2[1] - p2[0]*p1[1]; }
+    if (Math.abs(a) / 2 < minA) return;
+    var far = 0, fd = -1;
+    for (var t = 1; t < pts.length; t++){ var dx = pts[t][0]-pts[0][0], dy = pts[t][1]-pts[0][1]; if (dx*dx+dy*dy > fd){ fd = dx*dx+dy*dy; far = t; } }
+    var s2 = rdp(pts.slice(0, far + 1), 0.35 * k).concat(rdp(pts.slice(far), 0.35 * k).slice(1));
+    if (s2.length < 3) return;
+    out.push(s2.map(function(p){ return [+(HWE.x0 + (p[0] + 0.5) / k).toFixed(2), +(HWE.y0 + (p[1] + 0.5) / k).toFixed(2)]; }));
+  });
+  if (!out.length){ if (!confirm("輪郭が 1 本もありません。このまま決めますか？")) return; }
+  var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  out.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
+  S.hw.loops = out; if (out.length) S.hw.box = { x1: x1, y1: y1, x2: x2, y2: y2 }; S.hw.at = Date.now(); S.hw.edited = true;
+  hweClose(); persist(); rubPanel(); rubBar(); try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
+  msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
+}
+function hweClose(){
+  if (HWE && HWE.key) document.removeEventListener("keydown", HWE.key);
+  var ov = $("hweOv"); if (ov) ov.remove();
+  HWE = null;
 }
 function hwClear(){
   if (!S.hw) return;

@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-27　**chokoku-genko.html = v41.6**／**index_b.html = v1.9.462**／**tekkyo.html = v3.5**
+最終更新: 2026-09-27　**chokoku-genko.html = v41.7**／**index_b.html = v1.9.462**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -6847,3 +6847,10 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
   → `S.rub.dirLock`。rbEnd は `rubDirLockToggle`（画面は閉じない。画面を戻すのは上の切り替え）。
   ロック中は rbFlip・rbRot を disabled、rbEnd の字は「🔒 解除」。`rubFlip180`・`startSpin`・`rubLineFixRot` も止める（右クリックの 180° 反転も）。
   ② 補正結果に「向き 🔒 ロック中」を出す。校正ぜんたいのロック（S.lock）とは別。
+
+## v41.7 — 「文字抽出」に改名、［字が黒］は範囲の下、［拓本補正の画面で見る］を外す、左の［拓本］で拓本補正の画面へ（本人の指示）
+
+- summary.hwsec「手書き文字抽出」→「文字抽出」。
+- rbInkBlack（字が黒（手書き・印刷））を #hwArea（範囲）のすぐ下へ。
+- rbLookView（拓本補正の画面で見る）を削除。
+- 左の［拓本］（#mmGl .rubrow、bindMenuRub）を押すと、拓本を取り込んであれば `setView("rub")`。

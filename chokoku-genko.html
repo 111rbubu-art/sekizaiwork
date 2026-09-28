@@ -34,6 +34,7 @@
   button.go2{background:#FFF7EC;color:#8A4308;border-color:#DCA96B;font-weight:700;}
   button.go2:hover{background:#FBEBD6;}
   button.red{background:var(--shu);color:#fff;border-color:var(--shu);}
+  body.pen-mode #bothstage svg{cursor:crosshair;}
   .hwrow{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:12px;}
   .hwrow span{width:74px;flex:none;color:var(--muted);}
   .hwrow input[type=range]{flex:1;min-width:0;}
@@ -1173,6 +1174,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <label class="chk" style="display:block;margin-top:6px;" title="印刷や手書きの黒い字を取り出すとき（拓本は字が白）"><input type="checkbox" id="rbInkBlack" style="width:auto;"> 字が黒（手書き・印刷）</label>
           <label class="chk" style="display:block;" title="拾った字の輪郭を 赤い破線で重ねます"><input type="checkbox" id="rbOutline" style="width:auto;"> 輪郭を破線で見る</label>
           <p class="hint" style="margin-top:4px;">破線は 解析する範囲（上端・下端・帯）の中だけに出ます。</p>
+          <button class="mini primary" id="hwFreeze" style="width:100%;margin-top:6px;" title="いま破線で見えている輪郭を 決めて、校正とゴムシートに出します">この輪郭で決める</button>
+          <div id="hwInfo" class="hint" style="margin-top:4px;"></div>
         </div>
 
       </div>
@@ -1313,6 +1316,11 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           </span>
           <span class="bgrp"><b>資料</b>
             <button class="mini" id="bDocs" title="お客様からの資料を別の窓で見ます">📄 資料</button>
+          </span>
+          <!-- 赤線（v39.7）：ペンで書く目印の線。拓本の上に引き、ゴムシートの赤（ペン）に出る -->
+          <span class="bgrp"><b>赤線</b>
+            <button class="mini" id="bPen" title="拓本の上に ペンで書く目印の線を引きます（2 点を押す）">＋ 赤線を引く</button>
+            <button class="mini" id="bPenDel" title="押して選んだ赤線を消します（Delete キーでも）">選んだ赤線を消す</button>
           </span>
         </span>
         <span hidden>
@@ -2410,7 +2418,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v39.6";
+var APP_VER = "v39.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -3477,6 +3485,11 @@ function buildSVG(){
       red.push('<line x1="' + hx1.toFixed(2) + '" y1="' + k + '" x2="' + hx2.toFixed(2) + '" y2="' + k + '"/>');
     });
   });
+
+  /* --- 手書き戒名の輪郭（黒＝刃）と 赤線（赤＝ペン）（v39.7） --- */
+  var hwD = hwSheetD();
+  if (hwD) black.push('<path fill-rule="evenodd" d="' + hwD + '"/>');
+  if (!S.hw || S.hw.show !== false) penSheetLines().forEach(function(l){ red.push(l); });
 
   /* --- 赤：確認情報（シートの下側・横書き・パス化） ---
      例）納骨日：9/7　宇田川家（慈宏寺）　石塔、右面、7行目
@@ -6618,12 +6631,48 @@ $("bDim").onchange = function(){
 };
 /* 留めてある置き場所を捨てて、自動の置き方に戻す（v12.9）。
    ガイドラインの並びと、拓本の場所の両方。 */
+$("bPen").onclick = function(){ penSetMode(!penMode); };
+$("bPenDel").onclick = penDelSel;
 $("bRubHome").onclick = function(){
   S.bothOff = {};
   S.rubX = null; S.rubDx = 0;
   renderBoth(); persist();
   msg("ガイドラインの並びと拓本の場所を、自動の置き方に戻しました。");
 };
+/* 赤線（v39.7）：引いている間は 校正の画面の押し方を 横取りする。赤線を押せば 選ぶ */
+$("bothstage").addEventListener("click", function(e){
+  var pl = e.target.closest && e.target.closest("[data-pen]");
+  if (!penMode && pl){
+    penSel = +pl.getAttribute("data-pen"); e.stopPropagation(); e.preventDefault();
+    renderBoth(); msg("赤線を選びました。［選んだ赤線を消す］か Delete キーで消せます。"); return;
+  }
+  if (!penMode) return;
+  e.stopPropagation(); e.preventDefault();
+  var m = bothEvtMm(e); if (!m) return;
+  var q = bothPtToRub(m[0], m[1]);
+  if (!q){ msg("拓本と［実測した文字全長］が無いと 赤線は引けません。", true); return; }
+  if (!penFirst){ penFirst = q; renderBoth(); return; }
+  var a = penFirst, b = q, mpx = mmPerPxX(), mp = mmPerPx();
+  var dx = (b[0] - a[0]) * mpx, dy = (b[1] - a[1]) * mp;
+  var ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+  if (ang < 4 || ang > 176) b = [b[0], a[1]];              /* 横にそろえる */
+  else if (Math.abs(ang - 90) < 4) b = [a[0], b[1]];      /* 縦にそろえる */
+  if (Math.hypot((b[0]-a[0]) * mpx, (b[1]-a[1]) * mp) < 0.5){ msg("短すぎるので引きませんでした。", true); penFirst = null; renderBoth(); return; }
+  if (!Array.isArray(S.pen)) S.pen = [];
+  S.pen.push({ a: a, b: b }); penFirst = null; penSel = S.pen.length - 1;
+  persist(); renderBoth(); try { renderStage(); } catch(er){}
+  msg("赤線を引きました（" + S.pen.length + " 本）。続けて引けます。終わったら［赤線を引く］をもう一度押してください。");
+}, true);
+$("bothstage").addEventListener("mousemove", function(e){
+  if (!penMode || !penFirst) return;
+  var ln = document.getElementById("penRubber"), m = bothEvtMm(e); if (!ln || !m) return;
+  ln.setAttribute("x2", m[0]); ln.setAttribute("y2", m[1]);
+});
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape" && penMode){ penSetMode(false); return; }
+  if ((e.key === "Delete" || e.key === "Backspace") && penSel >= 0 && view === "both" &&
+      !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "")){ e.preventDefault(); penDelSel(); }
+});
 /* 校正文字を押すとその字を選ぶ。右クリックで一文字の調整。ゴムシートと同じ。 */
 $("bothstage").addEventListener("click", function(e){
   var t = e.target.closest && e.target.closest("[data-gi]");
@@ -8180,6 +8229,7 @@ function rubBar(){
     (cb.x1 <= 0 && cb.y1 <= 0 && cb.x2 >= RUB.W && cb.y2 >= RUB.H);
   set("rbCropAll", null, loaded && cropMode && !whole);
   var e = $("rbEnd"); if (e) e.className = "mini primary";
+  hwInfoFill();
   var lk = $("rbLook");
   if (lk){
     lk.hidden = !loaded;
@@ -8370,8 +8420,20 @@ function rubOutlineD(){
   var q = clampRange(), t = thr(), inv = !!S.rub.invert;
   var key = [rubGeoKey(), t, inv, num(S.rub.bright, 0), num(S.rub.contrast, 0), q.x1, q.x2, q.y1, q.y2].join("|");
   if (RUB.olKey === key) return RUB.olD || "";
+  var loops = rubOutlineLoops(6e5, 0.5);
+  RUB.olKey = key;
+  RUB.olD = loops.map(function(L){
+    return "M" + L.map(function(pt){ return pt[0].toFixed(1) + "," + pt[1].toFixed(1); }).join("L") + "Z";
+  }).join("");
+  return RUB.olD;
+}
+/* 拾った字の輪郭を 拓本の画素の座標の輪（[[x,y],…] の並び）で返す（v39.7。画面の破線と［この輪郭で決める］で共通）。
+   maxCells … 間引いたあとの ます の数の上限。tol … 点を間引くときの ずれ（ます）。 */
+function rubOutlineLoops(maxCells, tol){
+  if (!RUB.data) return [];
+  var q = clampRange(), t = thr(), inv = !!S.rub.invert;
   var rw = q.x2 - q.x1, rh = q.y2 - q.y1;
-  var step = Math.max(1, Math.ceil(Math.sqrt(rw * rh / 6e5)));
+  var step = Math.max(1, Math.ceil(Math.sqrt(rw * rh / maxCells)));
   var w = Math.max(1, Math.floor(rw / step)), h = Math.max(1, Math.floor(rh / step));
   var m = new Float32Array(w * h), d = RUB.data.data, W = RUB.W;
   for (var j = 0; j < h; j++){
@@ -8394,14 +8456,140 @@ function rubOutlineD(){
       var dx = pts[k2][0] - pts[0][0], dy = pts[k2][1] - pts[0][1];
       if (dx*dx + dy*dy > fd){ fd = dx*dx + dy*dy; far = k2; }
     }
-    var s2 = rdp(pts.slice(0, far + 1), 0.5).concat(rdp(pts.slice(far), 0.5).slice(1));
+    var s2 = rdp(pts.slice(0, far + 1), tol).concat(rdp(pts.slice(far), tol).slice(1));
     if (s2.length < 3) return;
-    out.push("M" + s2.map(function(pt){
-      return (q.x1 + (pt[0] + 0.5) * step).toFixed(1) + "," + (q.y1 + (pt[1] + 0.5) * step).toFixed(1);
-    }).join("L") + "Z");
+    out.push(s2.map(function(pt){
+      return [+(q.x1 + (pt[0] + 0.5) * step).toFixed(2), +(q.y1 + (pt[1] + 0.5) * step).toFixed(2)];
+    }));
   });
-  RUB.olKey = key; RUB.olD = out.join("");
-  return RUB.olD;
+  return out;
+}
+/* ───── **手書き戒名の輪郭を決める → 校正・ゴムシートへ**（v39.7。本人の依頼
+   「出来上がったら校正で赤線のラインを追加できるように。ゴムシートで、校正で作った赤線ラインと、輪郭を表示できるようにし、輪郭は黒で」）─────
+   S.hw  = { loops:[[[x,y],…],…]（拓本の画素。回転・反転のあとの向き）, geo, box:{x1,y1,x2,y2}, ci:null|中心線, show:true, at }
+   S.pen = [{ a:[x,y], b:[x,y] }]（赤線。これも拓本の画素）
+   拓本の画素 → ゴムシートの mm：縦は mmOf（全長の校正どおり）、横は 中心線に合わせる
+     x = 中心線の x ＋（画素 − その中心線が拓本の上で通る画素）× 横の倍率
+   中心線が拓本の上のどこを通るか（S.rub.centersPx）が無いときは、輪郭の真ん中を その中心線に合わせる。 */
+function hwFreeze(){
+  if (!RUB.data){ msg("先に拓本を取り込んでください。", true); return; }
+  if (!mmPerPx()){ msg("先に［実測した文字全長］を入れてください（大きさが決まりません）。", true); return; }
+  var loops = rubOutlineLoops(4e6, 0.35);
+  if (!loops.length){ msg("輪郭が見つかりませんでした。拾う濃さ・コントラストを確かめてください。", true); return; }
+  var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  loops.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
+  var old = S.hw || {};
+  S.hw = { loops: loops, geo: rubGeoKey(), box: { x1: x1, y1: y1, x2: x2, y2: y2 },
+           ci: (old.ci === undefined ? null : old.ci), show: old.show !== false, at: Date.now() };
+  persist(); rubPanel(); rubBar(); try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
+  msg("輪郭を決めました（" + loops.length + " 本）。校正とゴムシートに黒で出ます。");
+}
+function hwInfoFill(){
+  var el = $("hwInfo"); if (!el) return;
+  if (!S.hw || !Array.isArray(S.hw.loops) || !S.hw.loops.length){ el.innerHTML = "まだ決めていません。"; return; }
+  var n = (S.centers || []).length, ci = hwCi();
+  var opts = '<option value="">自動（' + (ci === null ? "シートの真ん中" : "中心線 " + (ci + 1)) + '）</option>';
+  for (var k = 0; k < n; k++) opts += '<option value="' + k + '"' + (S.hw.ci === k ? " selected" : "") + '>中心線 ' + (k + 1) + '</option>';
+  var stale = S.hw.geo && S.hw.geo !== rubGeoKey();
+  el.innerHTML = '決めた輪郭：<b>' + S.hw.loops.length + ' 本</b>' +
+    (stale ? '<br><span style="color:var(--shu);">拓本の向きを変えたので、合わなくなっています。決め直してください。</span>' : '') +
+    '<div class="hwrow"><span>合わせる線</span><select id="hwCiSel" style="flex:1;">' + opts + '</select></div>' +
+    '<label class="chk" style="display:block;"><input type="checkbox" id="hwShow" style="width:auto;"' + (S.hw.show !== false ? ' checked' : '') +
+    '> 校正・ゴムシートに出す</label>' +
+    '<button class="mini" id="hwDel" style="width:100%;margin-top:4px;">決めた輪郭を消す</button>';
+  $("hwCiSel").onchange = function(e){ S.hw.ci = e.target.value === "" ? null : +e.target.value; persist(); try { renderBoth(); } catch(er){} try { renderStage(); } catch(er){} hwInfoFill(); };
+  $("hwShow").onchange = function(e){ S.hw.show = !!e.target.checked; persist(); try { renderBoth(); } catch(er){} try { renderStage(); } catch(er){} };
+  $("hwDel").onclick = hwClear;
+}
+function hwClear(){
+  if (!S.hw) return;
+  if (!confirm("決めた輪郭を消しますか？（赤線は残ります）")) return;
+  S.hw = null; persist(); rubPanel(); rubBar(); try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
+}
+/* 合わせる中心線。決めていなければ、拓本の上の位置が 輪郭の真ん中にいちばん近い中心線、それも無ければ 0 */
+function hwCi(){
+  var n = (S.centers || []).length;
+  if (!n) return null;
+  if (S.hw && S.hw.ci !== null && S.hw.ci !== undefined && S.hw.ci >= 0 && S.hw.ci < n) return S.hw.ci;
+  var b = S.hw && S.hw.box, mid = b ? (b.x1 + b.x2) / 2 : null, best = 0, bd = 1e18;
+  if (mid !== null) (S.centers || []).forEach(function(c, ci){
+    var ap = bothAnchorPx(ci);
+    if (ap !== null && Math.abs(ap - mid) < bd){ bd = Math.abs(ap - mid); best = ci; }
+  });
+  return best;
+}
+/* 拓本の画素 → ゴムシートの mm。出せないときは null */
+function hwMapFn(){
+  var mpx = mmPerPxX(); if (!mpx || !mmPerPx()) return null;
+  var ci = hwCi();
+  var ap = (ci === null) ? null : bothAnchorPx(ci);
+  if (ap === null){
+    var b = S.hw && S.hw.box;
+    ap = b ? (b.x1 + b.x2) / 2 : RUB.W / 2;
+  }
+  /* 中心線が 1 本も無いときは シートの横の真ん中に置く */
+  var go = (ci === null) ? { x: 0, y: 0 } : glOffOf(glOf(ci));
+  var cx = (ci === null) ? num(S.sheet && S.sheet.w, 90) / 2 : num(cenAt(ci).x, 45) + go.x;
+  return function(px, py){ return [cx + (px - ap) * mpx, mmOf(py) + go.y]; };
+}
+function hwSheetD(){
+  if (!S.hw || !S.hw.show || !Array.isArray(S.hw.loops) || !S.hw.loops.length) return "";
+  var f = hwMapFn(); if (!f) return "";
+  return S.hw.loops.map(function(L){
+    return "M" + L.map(function(p){ var q = f(p[0], p[1]); return q[0].toFixed(3) + "," + q[1].toFixed(3); }).join("L") + "Z";
+  }).join("");
+}
+function penSheetLines(){
+  var f = hwMapFn(); if (!f || !Array.isArray(S.pen)) return [];
+  return S.pen.map(function(l){ var a = f(l.a[0], l.a[1]), b = f(l.b[0], l.b[1]);
+    return '<line x1="' + a[0].toFixed(3) + '" y1="' + a[1].toFixed(3) + '" x2="' + b[0].toFixed(3) + '" y2="' + b[1].toFixed(3) + '"/>'; });
+}
+/* 校正の画面：拓本の絵の上（左はし ix・上はし iy、倍率 mpx・mp）に 輪郭（黒の破線）と 赤線 */
+var penMode = false, penFirst = null, penSel = -1;
+function hwBothSvg(ix, iy, mpx, mp, KN){
+  var o = "", X = function(px){ return (ix + px * mpx).toFixed(3); }, Y = function(py){ return (iy + py * mp).toFixed(3); };
+  var lw = Math.max(0.12, KN * 0.12);
+  if (S.hw && S.hw.show && Array.isArray(S.hw.loops) && S.hw.loops.length){
+    var d = S.hw.loops.map(function(L){ return "M" + L.map(function(p){ return X(p[0]) + "," + Y(p[1]); }).join("L") + "Z"; }).join("");
+    o += '<path d="' + d + '" fill="rgba(17,17,17,.18)" fill-rule="evenodd" stroke="#111" stroke-width="' + lw.toFixed(3) +
+      '" stroke-dasharray="' + (lw * 4).toFixed(3) + ' ' + (lw * 2.5).toFixed(3) + '" pointer-events="none"/>';
+  }
+  (S.pen || []).forEach(function(l, k){
+    var on = (k === penSel);
+    o += '<line x1="' + X(l.a[0]) + '" y1="' + Y(l.a[1]) + '" x2="' + X(l.b[0]) + '" y2="' + Y(l.b[1]) +
+      '" stroke="#DC2616" stroke-width="' + (lw * (on ? 2.4 : 1.4)).toFixed(3) + '" pointer-events="none"/>' +
+      (on ? '' : '') +
+      '<line data-pen="' + k + '" x1="' + X(l.a[0]) + '" y1="' + Y(l.a[1]) + '" x2="' + X(l.b[0]) + '" y2="' + Y(l.b[1]) +
+      '" stroke="transparent" stroke-width="' + (KN * 0.9).toFixed(3) + '" style="cursor:pointer"/>';
+  });
+  if (penFirst) o += '<circle cx="' + X(penFirst[0]) + '" cy="' + Y(penFirst[1]) + '" r="' + (KN * 0.35).toFixed(3) +
+    '" fill="#DC2616" pointer-events="none"/><line id="penRubber" x1="' + X(penFirst[0]) + '" y1="' + Y(penFirst[1]) +
+    '" x2="' + X(penFirst[0]) + '" y2="' + Y(penFirst[1]) + '" stroke="#DC2616" stroke-width="' + lw.toFixed(3) +
+    '" stroke-dasharray="' + (lw * 3).toFixed(3) + ' ' + (lw * 2).toFixed(3) + '" pointer-events="none"/>';
+  return o;
+}
+/* 校正の画面の点（mm）→ 拓本の画素。拓本が無い・全長が無いときは null */
+function bothPtToRub(x, y){
+  var mpx = mmPerPxX(), py = pyOf(y);
+  if (!mpx || py === null || bothRubX === null || bothRubX === undefined) return null;
+  return [+((x - bothRubX) / mpx).toFixed(2), +py.toFixed(2)];
+}
+function bothEvtMm(e){
+  var sv = $("bothstage") && $("bothstage").querySelector("svg"); if (!sv || !sv.getScreenCTM) return null;
+  var p = sv.createSVGPoint(); p.x = e.clientX; p.y = e.clientY;
+  try { var m = p.matrixTransform(sv.getScreenCTM().inverse()); return [m.x, m.y]; } catch(er){ return null; }
+}
+function penSetMode(on){
+  penMode = !!on; penFirst = null;
+  var b = $("bPen"); if (b) b.className = "mini" + (penMode ? " primary" : "");
+  document.body.classList.toggle("pen-mode", penMode);
+  if (penMode) msg("赤線を引きます。はじめの点 → おわりの点 の順に押してください（縦・横に近いときは まっすぐにします）。Esc で やめます。");
+  try { renderBoth(); } catch(e){}
+}
+function penDelSel(){
+  if (penSel < 0 || !S.pen || !S.pen[penSel]){ msg("消す赤線を 先に押して選んでください。", true); return; }
+  S.pen.splice(penSel, 1); penSel = -1; persist(); renderBoth(); try { renderStage(); } catch(e){}
+  msg("赤線を 1 本消しました。");
 }
 /* 拓本を 180° ひっくり返す。
    スキャナーに上下逆に置いてしまったときの直し。角度の微調整（±15°）とは別。
@@ -18922,6 +19110,7 @@ function renderBoth(){
       /* 重ねているときは文字を透かす。下の拓本が見えないと見比べられない。 */
       '<g fill="#111" stroke="none"' + (ov ? ' fill-opacity="0.45"' : '') + '>' +
         glyphs.join("") + '</g>' +
+      (hasRub ? '<g>' + hwBothSvg(bothRubX, iy, mpx, mp, KN) + '</g>' : '') +     /* 手書きの輪郭・赤線（v39.7） */
       '<g pointer-events="none">' + hl.join("") + '</g>' +
       dims +
       '<g class="glhit">' + glHit + '</g>' +
@@ -21257,6 +21446,7 @@ function bindRub(){
   bb = $("rbInkBlack"); if (bb) bb.onchange = function(e){ S.rub.invert = !e.target.checked; lookRedo(true); };
   bb = $("rbOutline");  if (bb) bb.onchange = function(e){ if (e.target.checked && view !== "rub") setView("rub"); rubRender(); };
   bb = $("rbLookView"); if (bb) bb.onclick = function(){ setView("rub"); rubRender(); };
+  bb = $("hwFreeze");   if (bb) bb.onclick = hwFreeze;
   bb = $("rbLookReset"); if (bb) bb.onclick = function(){ S.rub.bright = 0; S.rub.contrast = 0; S.rub.thresh = null; lookRedo(true); };
   on("rPivot","click",function(){
     if (rotMode){ endRot(); return; }

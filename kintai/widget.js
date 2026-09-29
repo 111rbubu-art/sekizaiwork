@@ -353,14 +353,15 @@ function ktwPunch(type) {
   }
 
   KTW.busy = true;
-  KTW.msg = { text: '位置を確認しています…' };
+  var exempt = ktGeoExempt(KTW.emp);      // 出勤場所の確認の対象外（v0.10.3）
+  KTW.msg = { text: exempt ? '打刻しています…' : '位置を確認しています…' };
   ktwDraw();
 
   var clientTime = new Date().toISOString();
   var wd = ktwWorkDate();
 
-  ktGetLocation().then(function (loc) {
-    var site = ktJudgeSite(loc, KTW.sites);
+  (exempt ? Promise.resolve({ status: KT_GEO_EXEMPT }) : ktGetLocation()).then(function (loc) {
+    var site = exempt ? { name: KT_GEO_EXEMPT_SITE, dist: null } : ktJudgeSite(loc, KTW.sites);
     var fields = {
       Title:          KTW.emp.Title,
       PunchType:      type,

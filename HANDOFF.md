@@ -455,3 +455,11 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - 管理タブ「日ごとの一覧」の日付の左右に ◀ ▶、右に［今日］。日付の下に 曜日と 平日／所定休日／法定休日。
 - 管理タブでは ← → キーでも動く（入力欄で打っているときは動かない）。`ktAdminDayMove`（app.js）。
+
+## 勤怠 v0.10.3 ／ index_b v1.9.463 — 出勤場所の確認の対象外（本人「出勤場所の調査を対象外にしたい従業員を設定できるようにして」）
+
+- 社員マスタに列 `GeoExempt`（はい/いいえ）を足す（**本人が SharePoint で作る**。kintai/SETUP.md §1-1）。
+- 管理タブのいちばん下「出勤場所の確認」で 社員ごとに［対象外にする］／［確認するに戻す］（`ktSetGeoExempt` → 社員マスタを PATCH）。
+- 対象外の人（`ktGeoExempt`、util.js）：打刻で位置を取らない（app.js・widget.js）。LocationStatus＝「対象外」、SiteName＝「位置確認なし」。
+  `ktEvalReview` は LocationStatus＝対象外 の打刻に 場所・移動の要確認を出さない（対象外にする前の打刻は そのまま）。位置情報の同意の画面も出さない。
+- index_b は kintai の util.js?v=4・widget.js?v=6 に上げた。

@@ -60,7 +60,9 @@ function ktEvalReview(p, prev) {
       reasons.push('端末の時刻が' + Math.round(Math.abs(drift) / 60) + '分ずれています');
     }
   }
-  if (p.LocationStatus && p.LocationStatus !== '取得成功') {
+  if (p.LocationStatus === KT_GEO_EXEMPT) {
+    // 出勤場所の確認の対象外の社員（v0.10.3）。場所の要確認は出さない
+  } else if (p.LocationStatus && p.LocationStatus !== '取得成功') {
     reasons.push('位置情報' + p.LocationStatus);
   } else {
     // 事業所外と測位精度は別々の問題なので、両方あてはまれば両方出す
@@ -69,7 +71,7 @@ function ktEvalReview(p, prev) {
       reasons.push('測位精度が粗い（' + p.AccuracyM + 'm）');
     }
   }
-  var travel = ktCheckTravel(prev, { lat: p.Lat, lon: p.Lon },
+  var travel = p.LocationStatus === KT_GEO_EXEMPT ? '' : ktCheckTravel(prev, { lat: p.Lat, lon: p.Lon },
                              prev && prev._time, p._time);
   if (travel) reasons.push(travel);
 
@@ -377,17 +379,19 @@ function ktPunch(type) {
 
   KT.busy = true;
   ktRender();
-  ktToast('位置を確認しています…');
+  ktToast(ktGeoExempt(KT.emp) ? '打刻しています…' : '位置を確認しています…');
 
   var clientTime = new Date().toISOString();
   var wd = ktWorkDateNow();
 
-  var locPromise = (KT.consent === false)
+  var exempt = ktGeoExempt(KT.emp);
+  var locPromise = exempt ? Promise.resolve({ status: KT_GEO_EXEMPT })
+    : (KT.consent === false)
     ? Promise.resolve({ status: '同意なし' })
     : ktGetLocation();
 
   locPromise.then(function (loc) {
-    var site = ktJudgeSite(loc, KT.sites);
+    var site = exempt ? { name: KT_GEO_EXEMPT_SITE, dist: null } : ktJudgeSite(loc, KT.sites);
     var fields = {
       Title:          KT.emp.Title,
       PunchType:      type,
@@ -1235,6 +1239,20 @@ function ktViewAdmin() {
   });
   h += '</tbody></table></div></div>';
 
+  // 出勤場所の確認（位置情報）の対象外（v0.10.3。本人「出勤場所の調査を対象外にしたい従業員を設定できるように」）
+  h += '<div class="card"><h2>出勤場所の確認</h2>';
+  h += '<p class="muted" style="margin:0 0 .6rem">「対象外」にした人は、打刻のときに位置を取らず、' +
+       '出勤場所の要確認（事業所外・位置情報なし など）も出ません。打刻の時刻は ふつうに記録します。</p>';
+  h += '<div class="tw"><table><thead><tr><th>社員</th><th>出勤場所の確認</th><th></th></tr></thead><tbody>';
+  actives.forEach(function (e) {
+    var ex = ktGeoExempt(e);
+    h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>' +
+         '<td>' + (ex ? '<span class="badge cau">対象外</span>' : '<span class="badge ok">確認する</span>') + '</td>' +
+         '<td><button class="btn ghost" data-geoex="' + ktEsc(e._id) + '" data-on="' + (ex ? '0' : '1') + '" ' +
+         'style="padding:.2rem .5rem;font-size:.75rem">' + (ex ? '確認するに戻す' : '対象外にする') + '</button></td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+
   return h;
 }
 
@@ -1350,6 +1368,23 @@ function ktRender() {
   ktBind();
 }
 
+/* 出勤場所の確認の対象外を 切り替える（v0.10.3）。社員マスタの GeoExempt（はい/いいえ）に書く */
+function ktSetGeoExempt(itemId, on) {
+  var e = KT.employees.filter(function (x) { return x._id === itemId; })[0];
+  if (!e) return;
+  var msg = on ? (e.EmpName || e.Title) + ' さんを 出勤場所の確認の対象外にします。\n打刻のときに位置を取らなくなります。よろしいですか？'
+               : (e.EmpName || e.Title) + ' さんの 出勤場所の確認を 元に戻します。';
+  if (!window.confirm(msg)) return;
+  ktUpdate('employees', itemId, { GeoExempt: on }).then(function () {
+    e.GeoExempt = on;
+    ktToast((e.EmpName || e.Title) + '：' + (on ? '出勤場所の確認 対象外' : '出勤場所の確認 する'));
+    ktRender();
+  }).catch(function (err) {
+    ktToast('変更できませんでした：' + (err.message || err) +
+            '（社員マスタに GeoExempt 列（はい/いいえ）があるか、社員マスタを編集できる権限があるか 確かめてください。SETUP.md §1-1）', true);
+  });
+}
+
 /* 日ごとの一覧の日付を n 日動かす（v0.10.2） */
 function ktAdminDayMove(n) {
   KT.adminDate = ktYmdAddDays(KT.adminDate || ktToday(), n);
@@ -1406,6 +1441,9 @@ function ktBind() {
   if ($('ad-import')) $('ad-import').onclick = function () { location.href = './import.html'; };
   if ($('ad-holidays')) $('ad-holidays').onclick = function () { location.href = './holidays.html'; };
   if ($('ad-leaveinit')) $('ad-leaveinit').onclick = function () { location.href = './leaveinit.html'; };
+  document.querySelectorAll('[data-geoex]').forEach(function (b) {
+    b.onclick = function () { ktSetGeoExempt(b.dataset.geoex, b.dataset.on === '1'); };
+  });
 
   if ($('lv-type')) {
     $('lv-type').onchange = function () {
@@ -1506,7 +1544,8 @@ function ktStart() {
       .then(function () { return Promise.all([ktLoadPunches(), ktLoadLeave()]); })
       .then(function () {
         // 位置情報について一度も回答していなければ説明画面を出す
-        if (KT.consent === null) {
+        // 出勤場所の確認の対象外の人には 出さない（v0.10.3）
+        if (KT.consent === null && !ktGeoExempt(KT.emp)) {
           $('consent-screen').classList.remove('hide');
           return;
         }

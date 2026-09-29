@@ -250,3 +250,10 @@ function ktPayFileTag(ym) {
   var p = ktPayRange(ym).payYm.split('-');
   return p[0] + '年' + (+p[1]) + '月支給分';
 }
+
+/* 出勤場所の確認（位置情報）の対象外の社員か（v0.10.3）。
+   社員マスタの GeoExempt が「はい」なら、打刻のときに位置を取らず、場所の要確認も出さない。
+   打刻には LocationStatus = KT_GEO_EXEMPT、SiteName = KT_GEO_EXEMPT_SITE を入れる。 */
+var KT_GEO_EXEMPT = '対象外';
+var KT_GEO_EXEMPT_SITE = '位置確認なし';
+function ktGeoExempt(emp) { return !!(emp && emp.GeoExempt === true); }

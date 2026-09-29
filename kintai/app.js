@@ -961,7 +961,15 @@ function ktViewAdmin() {
 
   // 日次一覧
   h += '<div class="card"><h2>日ごとの一覧</h2>';
-  h += '<label class="f" for="ad-date">日付</label><input type="date" id="ad-date" value="' + KT.adminDate + '">';
+  // 日付は ◀ ▶ で1日ずつ動かせる（v0.10.2。本人「矢印で日付を移動できるようにして」）
+  h += '<label class="f" for="ad-date">日付</label>';
+  h += '<div class="btnrow" style="margin:0 0 .3rem;align-items:center;flex-wrap:nowrap">';
+  h += '<button class="btn ghost" id="ad-dprev" title="前の日（←キー）" aria-label="前の日">◀</button>';
+  h += '<input type="date" id="ad-date" value="' + KT.adminDate + '" style="flex:1;min-width:0">';
+  h += '<button class="btn ghost" id="ad-dnext" title="次の日（→キー）" aria-label="次の日">▶</button>';
+  h += '<button class="btn ghost" id="ad-dtoday">今日</button></div>';
+  h += '<p class="muted" style="margin:0 0 .4rem">' + ktEsc(ktYmdLabelFull(KT.adminDate)) + '（' +
+       ktDayKindLabel(ktDayKind(KT.adminDate, KT.holidays)) + '）</p>';
   h += '<div class="tw"><table><thead><tr><th>社員</th><th>出勤</th><th>退勤</th><th>休憩</th>' +
        '<th>労働</th><th>時間外</th><th>出勤場所</th><th>退勤場所</th><th></th></tr></thead><tbody>';
   var actives = KT.employees.filter(function (e) { return e.Active !== false; });
@@ -1342,6 +1350,21 @@ function ktRender() {
   ktBind();
 }
 
+/* 日ごとの一覧の日付を n 日動かす（v0.10.2） */
+function ktAdminDayMove(n) {
+  KT.adminDate = ktYmdAddDays(KT.adminDate || ktToday(), n);
+  ktRender();
+}
+/* 管理タブでは ← → キーでも日付を動かす。入力欄で打っているときは動かさない */
+document.addEventListener('keydown', function (e) {
+  if (KT.tab !== 'admin' || !KT.isAdmin || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  var t = e.target, tag = t && t.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+  e.preventDefault();
+  ktAdminDayMove(e.key === 'ArrowLeft' ? -1 : 1);
+});
+
 function ktBind() {
   document.querySelectorAll('[data-punch]').forEach(function (b) {
     b.onclick = function () {
@@ -1376,6 +1399,9 @@ function ktBind() {
   if ($('ad-prev'))   $('ad-prev').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01', -1)); ktRender(); };
   if ($('ad-next'))   $('ad-next').onclick   = function () { KT.adminYm = ktYm(ktYmdAddMonths(KT.adminYm + '-01',  1)); ktRender(); };
   if ($('ad-date'))   $('ad-date').onchange  = function () { KT.adminDate = this.value; ktRender(); };
+  if ($('ad-dprev'))  $('ad-dprev').onclick  = function () { ktAdminDayMove(-1); };
+  if ($('ad-dnext'))  $('ad-dnext').onclick  = function () { ktAdminDayMove(1); };
+  if ($('ad-dtoday')) $('ad-dtoday').onclick = function () { KT.adminDate = ktToday(); ktRender(); };
   if ($('ad-csv'))    $('ad-csv').onclick    = ktExportCsv;
   if ($('ad-import')) $('ad-import').onclick = function () { location.href = './import.html'; };
   if ($('ad-holidays')) $('ad-holidays').onclick = function () { location.href = './holidays.html'; };

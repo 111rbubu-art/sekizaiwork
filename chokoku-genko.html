@@ -2460,7 +2460,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.0";
+var APP_VER = "v42.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8783,7 +8783,7 @@ function hwEditOpen(){
       '<label class="hint" style="color:inherit;">① 縁をなめらかに ' + '<input type="range" id="hweSmv" min="0" max="10" step="1" style="width:110px;vertical-align:middle;" title="縁の ガタガタ・小さなトゲ・細いくびれを ならす強さ（0＝ならさない）">' + ' <b id="hweSmvV"></b></label>' +
       '<label class="hint" style="color:inherit;">② ゴミ・穴を消す ' + '<input type="range" id="hweSpk" min="0" max="10" step="1" style="width:110px;vertical-align:middle;" title="小さな点（ゴミ）と、字の中の小さな白い穴を 消す大きさ（0＝消さない）">' + ' <b id="hweSpkV"></b></label>' +
       '<label class="chk" title="SVG・出力で、輪郭を 短い直線の つながりではなく なめらかな曲線（ベジェ）で出します。字の角は 角のまま"><input type="checkbox" id="hweCurve" style="width:auto;"> ③ 曲線で出す</label>' +
-      '<label class="chk" title="仕上がり（① ② を掛けたもの）を 濃い赤と黒い線で、手で直した塗りを うすい赤で 見せます"><input type="checkbox" id="hwePrv" checked style="width:auto;"> 仕上がりを見る</label>' +
+      '<label class="chk" title="仕上がり（① ② を掛けたもの）を 半透明の赤と黒い線で、いまの線（掛ける前）を 青い点線で 見せます"><input type="checkbox" id="hwePrv" checked style="width:auto;"> 仕上がりを見る</label>' +
     '</div>' +
     '<div class="hweScroll"><div class="hweWrap" id="hweWrap">' +
       '<canvas id="hweBgC"></canvas><canvas id="hweView"></canvas><canvas id="hwePrvC"></canvas><canvas id="hweSelC"></canvas><div id="hweCur"></div>' +
@@ -8861,6 +8861,7 @@ function hwEditOpen(){
     hwePush();
     if (HWE.tool === "blob"){ hweBlob(p[0], p[1]); hwePreviewSoon(); return; }
     drawing = true; last = p; hweStroke(p, p);
+    vw.style.opacity = "1";         /* 塗っている間は 塗りを はっきり見せる（放すと 仕上がりの表示に戻る） */
   });
   vw.addEventListener("pointermove", function(e){
     var p = pt(e), cur = $("hweCur"), r = HWE.brush * HWE.k * HWE.zoom;
@@ -8999,17 +9000,18 @@ function hweCommit(){
   msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
 }
 /* ます目の塗りから 輪郭をたどる（決定と 仕上がりの線 で同じもの。v41.9）。返すのは 拓本の画素 */
-function hweTrace(){
+function hweTrace(raw){
   var W = HWE.W, H = HWE.H, k = HWE.k, d = HWE.mx.getImageData(0, 0, W, H).data, m = new Float32Array(W * H);
   for (var i = 0, n = W * H; i < n; i++) m[i] = d[i * 4 + 3] / 255;
   /* ② ゴミ・穴を消す → ① 縁をなめらかに の順に、仕上がりにだけ掛ける（塗りは そのまま。v42.0） */
-  var spk = hwSpeckLv(), smo = hwSmoothLv(), mmM = hwMmPerMask();
+  /* raw … ①② を掛けない（いまの線を見せる用。v42.1） */
+  var spk = raw ? 0 : hwSpeckLv(), smo = raw ? 0 : hwSmoothLv(), mmM = hwMmPerMask();
   var st = { ink: 0, hole: 0 };
   if (spk) st = hwCleanF(m, W, H, hwSpeckA(spk) / (mmM * mmM));
   /* 画素の角ではなく 濃さの境目をたどる（v41.8）。ぼかしてから たどると、縁が ます目の階段にならない。
      ① の強さ＝ぼかしの幅（3 回の箱ぼかしで 幅 ≒ 1.7r） */
   hwBlurF(m, W, H, smo ? Math.max(1, hwSmR(smo) / mmM / 1.7) : 1);
-  HWE.lastClean = st;
+  if (!raw) HWE.lastClean = st;
   var loops = traceLoops(m, W, H, 0.5), out = [], minA = Math.max(4, 3 * k * k);
   /* 間引きの幅は mm で決める（① の強さで少し広げる）。拓本の解像度が変わっても 同じ仕上がりになる */
   var tolM = Math.max(0.35 * k, (0.02 + 0.012 * smo) / mmM);
@@ -9041,24 +9043,34 @@ function hwePreview(){
     return curve ? hwCurveD(P) : "M" + P.map(function(q){ return q[0].toFixed(2) + "," + q[1].toFixed(2); }).join("L") + "Z";
   }).join("");
   HWE.prvPath = d ? new Path2D(d) : null;
+  /* いまの線（①② を掛ける前）も 青い点線で重ねる（v42.1。本人「赤の墨を半透明にして、現行のラインが分かるように」） */
+  var d0 = hweTrace(true).map(function(L){
+    return "M" + L.map(toM).map(function(q){ return q[0].toFixed(2) + "," + q[1].toFixed(2); }).join("L") + "Z";
+  }).join("");
+  HWE.curPath = d0 ? new Path2D(d0) : null;
   hwePrvDraw();
   var ms = $("hweMsg");
   var cl = HWE.lastClean || { ink: 0, hole: 0 };
-  if (ms) ms.textContent = "濃い赤と黒い線＝［決定］したときの仕上がり（" + loops.length + " 本・点 " + pts + (curve ? "・曲線" : "・直線") + "）" +
+  if (ms) ms.textContent = "黒い線と うすい赤＝［決定］したときの仕上がり（" + loops.length + " 本・点 " + pts + (curve ? "・曲線" : "・直線") + "）" +
     (hwSpeckLv() ? "。ゴミ " + cl.ink + " 個・穴 " + cl.hole + " 個を消しています" : "") +
-    "。うすい赤＝手で直した塗り。";
+    "。青い点線＝いまの線（① ② を掛ける前）。";
 }
 function hwePrvDraw(){
   if (!HWE || !HWE.px) return;
   var c = HWE.px; c.clearRect(0, 0, HWE.W, HWE.H);
   var on = $("hwePrv"), show = !(on && !on.checked) && !!HWE.prvPath;
-  var vw = $("hweView"); if (vw) vw.style.opacity = show ? ".3" : "1";
+  var vw = $("hweView"); if (vw) vw.style.opacity = show ? ".15" : "1";   /* 仕上がりを見る間は 塗りの赤を ごくうすく（青い点線で いまの線を見せる） */
   if (!show) return;
   var pa = HWE.prvPath;
   c.save();
   c.lineJoin = "round"; c.lineCap = "round";
-  c.fillStyle = "#DC2616"; c.fill(pa, "evenodd");   /* 仕上がり＝濃い赤。手で直した塗りは下に うすく見える */
-  c.strokeStyle = "#111"; c.lineWidth = Math.max(0.6, 1.6 / HWE.zoom); c.stroke(pa);
+  c.fillStyle = "rgba(220,38,22,.38)"; c.fill(pa, "evenodd");   /* 仕上がり＝半透明の赤（下の拓本と いまの線が透けて見える） */
+  c.strokeStyle = "#111"; c.lineWidth = Math.max(0.6, 1.5 / HWE.zoom); c.stroke(pa);
+  /* いまの線は 黒い線の上に描く（重なっていても 点線が見える）。太さ・点の間は 画面の上で 2px・8px になるように */
+  if (HWE.curPath){
+    c.save(); c.strokeStyle = "#0A84FF"; c.lineWidth = Math.max(0.6, 2.2 / HWE.zoom);
+    c.setLineDash([8 / HWE.zoom, 6 / HWE.zoom]); c.stroke(HWE.curPath); c.restore();
+  }
   c.restore();
 }
 /* ───── プロッター用の仕上げ（v41.8）─────

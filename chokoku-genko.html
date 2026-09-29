@@ -48,6 +48,7 @@
   #hweOv .hweScroll{flex:1;overflow:auto;background:#EDF0F2;padding:10px;}
   #hweOv .hweWrap{position:relative;margin:0 auto;background:#fff;}
   #hweOv canvas{position:absolute;left:0;top:0;image-rendering:pixelated;}
+  #hweOv #hwePrvC{pointer-events:none;image-rendering:auto;}
   #hweView{opacity:.62;cursor:crosshair;touch-action:none;}
   #hweSelC{opacity:.75;pointer-events:none;}
   #hweCur{position:absolute;pointer-events:none;border:1.5px solid #DC2616;border-radius:50%;display:none;}
@@ -2459,7 +2460,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v41.8";
+var APP_VER = "v41.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8781,10 +8782,11 @@ function hwEditOpen(){
       '<button class="mini" id="hweClean" title="小さな点（ゴミ）と、字の中の小さな白い穴を 消します（④ の強さで 大きさが変わります）">② ゴミ・穴を消す</button>' +
       '<label class="chk" title="SVG・出力で、輪郭を 短い直線の つながりではなく なめらかな曲線（ベジェ）で出します。字の角は 角のまま"><input type="checkbox" id="hweCurve" style="width:auto;"> ③ 曲線で出す</label>' +
       '<label class="hint">④ なめらかさ <input type="range" id="hweSmv" min="1" max="10" step="1" style="width:90px;vertical-align:middle;"> <b id="hweSmvV"></b></label>' +
+      '<label class="chk" title="［決定］したときの 仕上がりの輪郭を 黒い線で重ねます（③ ④ も すぐ反映）"><input type="checkbox" id="hwePrv" checked style="width:auto;"> 仕上がりの線を見る</label>' +
       '<span class="hint" id="hweSmInfo"></span>' +
     '</div>' +
     '<div class="hweScroll"><div class="hweWrap" id="hweWrap">' +
-      '<canvas id="hweBgC"></canvas><canvas id="hweView"></canvas><canvas id="hweSelC"></canvas><div id="hweCur"></div>' +
+      '<canvas id="hweBgC"></canvas><canvas id="hweView"></canvas><canvas id="hwePrvC"></canvas><canvas id="hweSelC"></canvas><div id="hweCur"></div>' +
     '</div></div><div class="hint" id="hweMsg" style="padding:4px 10px;">赤い所が 彫る字です。塗る・消す・選ぶで直し、［決定］で輪郭をたどり直します。ホイールで拡大縮小、まん中ボタンで つかんで動かせます。</div></div>';
   document.body.appendChild(ov);
   var bg = $("hweBgC"); bg.width = W; bg.height = H;
@@ -8793,11 +8795,13 @@ function hwEditOpen(){
   var vw = $("hweView"); vw.width = W; vw.height = H;
   HWE.vx = vw.getContext("2d");
   var sc9 = $("hweSelC"); sc9.width = W; sc9.height = H; HWE.sx = sc9.getContext("2d");
+  var pv9 = $("hwePrvC"); pv9.width = W; pv9.height = H; HWE.px = pv9.getContext("2d");
   hweRedraw();
   /* 画面の高さに合わせた倍率から始める */
   var sc = ov.querySelector(".hweScroll");
   HWE.zoom = Math.max(0.1, Math.min(4, (sc.clientHeight - 20) / H));
   hweZoom(1);
+  hwePreview();
   /* ホイールで拡大縮小（マウスの所を中心に）。まん中ボタンで つかんで動かす（v39.9。本人「マウスのセンターで拡大縮小できるように」） */
   sc.addEventListener("wheel", function(e){ e.preventDefault(); hweZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
   sc.addEventListener("mousedown", function(e){ if (e.button === 1) e.preventDefault(); });
@@ -8827,14 +8831,15 @@ function hwEditOpen(){
   $("hweSmooth").onclick = hweSmoothEdge;
   $("hweClean").onclick = hweCleanSpecks;
   $("hweCurve").checked = S.hw.curve !== false;
-  $("hweCurve").onchange = function(e){ S.hw.curve = !!e.target.checked; persist(); try { renderStage(); } catch(er){} try { renderBoth(); } catch(er){} };
+  $("hweCurve").onchange = function(e){ S.hw.curve = !!e.target.checked; persist(); try { renderStage(); } catch(er){} try { renderBoth(); } catch(er){} hwePreview(); };
+  $("hwePrv").onchange = function(){ hwePreview(); };
   $("hweSmv").value = hwSmoothLv();
   var smInfo = function(){
     var lv = hwSmoothLv(); $("hweSmvV").textContent = lv;
     $("hweSmInfo").textContent = "（ならす幅 " + hwSmR(lv).toFixed(2) + "mm／消す大きさ " + hwSpeckA(lv).toFixed(1) + "mm² 未満）";
   };
   smInfo();
-  $("hweSmv").oninput = function(e){ S.hw.smooth = +e.target.value; smInfo(); persist(); };
+  $("hweSmv").oninput = function(e){ S.hw.smooth = +e.target.value; smInfo(); persist(); hwePreviewSoon(); };
   var drawing = false, last = null;
   function pt(e){ var r = vw.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
   var selDrag = null;
@@ -8854,7 +8859,7 @@ function hwEditOpen(){
       selDrag = { m: "rect", p0: p, p1: p }; hweSelDraw(selDrag); return;
     }
     hwePush();
-    if (HWE.tool === "blob"){ hweBlob(p[0], p[1]); return; }
+    if (HWE.tool === "blob"){ hweBlob(p[0], p[1]); hwePreviewSoon(); return; }
     drawing = true; last = p; hweStroke(p, p);
   });
   vw.addEventListener("pointermove", function(e){
@@ -8871,6 +8876,7 @@ function hwEditOpen(){
   });
   var up = function(){
     if (selDrag && selDrag.m === "rect") hweSelLift(selDrag.p0, selDrag.p1);
+    if (drawing) hwePreviewSoon();
     selDrag = null; drawing = false; last = null;
   };
   vw.addEventListener("pointerup", up); vw.addEventListener("pointercancel", up);
@@ -8892,8 +8898,9 @@ function hweZoom(f, cx, cy){
   /* マウスの所の ます（拡大の中心） */
   var mx = (cx !== undefined && r0) ? (cx - r0.left) / z0 : null, my = (cy !== undefined && r0) ? (cy - r0.top) / z0 : null;
   HWE.zoom = Math.max(0.1, Math.min(12, HWE.zoom * f));
+  hwePrvDraw();                    /* 線の太さだけ 合わせ直す（たどり直さない） */
   var w = Math.round(HWE.W * HWE.zoom) + "px", h = Math.round(HWE.H * HWE.zoom) + "px";
-  ["hweWrap", "hweBgC", "hweView", "hweSelC"].forEach(function(id){ var e = $(id); if (e){ e.style.width = w; e.style.height = h; } });
+  ["hweWrap", "hweBgC", "hweView", "hwePrvC", "hweSelC"].forEach(function(id){ var e = $(id); if (e){ e.style.width = w; e.style.height = h; } });
   if (mx !== null && sc){
     var r1 = wr.getBoundingClientRect();
     sc.scrollLeft += (r1.left + mx * HWE.zoom) - cx;
@@ -8938,7 +8945,7 @@ function hweSelPut(){
   if (!HWE || !HWE.sel) return;
   var sl = HWE.sel, w = sl.w * sl.s, h = sl.h * sl.s;
   HWE.mx.save(); HWE.mx.imageSmoothingEnabled = true; HWE.mx.drawImage(sl.F, sl.cx - w / 2, sl.cy - h / 2, w, h); HWE.mx.restore();
-  HWE.sel = null; hweRedraw(); hweSelDraw();
+  HWE.sel = null; hweRedraw(); hweSelDraw(); hwePreviewSoon();
   $("hweMsg").textContent = "はめました。";
 }
 function hweRedraw(){
@@ -8946,7 +8953,7 @@ function hweRedraw(){
   v.globalCompositeOperation = "source-in"; v.fillStyle = "#DC2616"; v.fillRect(0, 0, HWE.W, HWE.H); v.restore();
 }
 function hwePush(){ try { HWE.undo.push(HWE.mx.getImageData(0, 0, HWE.W, HWE.H)); if (HWE.undo.length > 20) HWE.undo.shift(); } catch(e){} }
-function hweUndo(){ if (!HWE || !HWE.undo.length) return; HWE.sel = null; HWE.mx.putImageData(HWE.undo.pop(), 0, 0); hweRedraw(); hweSelDraw(); }
+function hweUndo(){ if (!HWE || !HWE.undo.length) return; HWE.sel = null; HWE.mx.putImageData(HWE.undo.pop(), 0, 0); hweRedraw(); hweSelDraw(); hwePreviewSoon(); }
 function hweStroke(a, b){
   var er = HWE.tool === "erase", lw = HWE.brush * HWE.k;
   [[HWE.mx, "#000"], [HWE.vx, "#DC2616"]].forEach(function(z){
@@ -8982,6 +8989,17 @@ function hweBlob(x, y){
 }
 function hweCommit(){
   hweSelPut();
+  var out = hweTrace();
+  if (!out.length){ if (!confirm("輪郭が 1 本もありません。このまま決めますか？")) return; }
+  var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  out.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
+  S.hw.loops = out; if (out.length) S.hw.box = { x1: x1, y1: y1, x2: x2, y2: y2 }; S.hw.at = Date.now(); S.hw.edited = true;
+  S.hw.key = hwKey();
+  hweClose(); persist(); rubPanel(); rubBar(); try { rubRender(); } catch(e){} try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
+  msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
+}
+/* ます目の塗りから 輪郭をたどる（決定と 仕上がりの線 で同じもの。v41.9）。返すのは 拓本の画素 */
+function hweTrace(){
   var W = HWE.W, H = HWE.H, k = HWE.k, d = HWE.mx.getImageData(0, 0, W, H).data, m = new Float32Array(W * H);
   for (var i = 0, n = W * H; i < n; i++) m[i] = d[i * 4 + 3] / 255;
   /* 画素の角ではなく 濃さの境目をたどる（v41.8）。少しだけぼかしてから たどると、縁が ます目の階段にならない */
@@ -8999,13 +9017,38 @@ function hweCommit(){
     if (s2.length < 3) return;
     out.push(s2.map(function(p){ return [+(HWE.x0 + (p[0] + 0.5) / k).toFixed(3), +(HWE.y0 + (p[1] + 0.5) / k).toFixed(3)]; }));
   });
-  if (!out.length){ if (!confirm("輪郭が 1 本もありません。このまま決めますか？")) return; }
-  var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-  out.forEach(function(L){ L.forEach(function(p){ x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); }); });
-  S.hw.loops = out; if (out.length) S.hw.box = { x1: x1, y1: y1, x2: x2, y2: y2 }; S.hw.at = Date.now(); S.hw.edited = true;
-  S.hw.key = hwKey();
-  hweClose(); persist(); rubPanel(); rubBar(); try { rubRender(); } catch(e){} try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
-  msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
+  return out;
+}
+/* ───── **仕上がりの線を 字の画面に重ねる**（v41.9。本人「ボタンを押したら、文字の画面で変化させてほしい」）─────
+   ①②で塗りを変えたとき、④を動かしたとき、③を入れ切りしたとき、塗る・消すを放したときに、
+   ［決定］したら こうなる という輪郭を 黒い線（③が入なら 曲線）で すぐ描き直す。 */
+var hwePrvT = null;
+function hwePreviewSoon(){ clearTimeout(hwePrvT); hwePrvT = setTimeout(hwePreview, 150); }
+function hwePreview(){
+  if (!HWE || !HWE.px) return;
+  var on = $("hwePrv"); if (on && !on.checked){ HWE.prvPath = null; hwePrvDraw(); return; }
+  var loops = hweTrace(), k = HWE.k, curve = S.hw.curve !== false, pts = 0;
+  var toM = function(p){ return [(p[0] - HWE.x0) * k - 0.5, (p[1] - HWE.y0) * k - 0.5]; };
+  var d = loops.map(function(L){
+    pts += L.length;
+    var P = L.map(toM);
+    return curve ? hwCurveD(P) : "M" + P.map(function(q){ return q[0].toFixed(2) + "," + q[1].toFixed(2); }).join("L") + "Z";
+  }).join("");
+  HWE.prvPath = d ? new Path2D(d) : null;
+  hwePrvDraw();
+  var ms = $("hweMsg");
+  if (ms) ms.textContent = "黒い線＝［決定］したときの輪郭（" + loops.length + " 本・点 " + pts + "）" + (curve ? "、曲線で出します。" : "、直線で出します。");
+}
+function hwePrvDraw(){
+  if (!HWE || !HWE.px) return;
+  var c = HWE.px; c.clearRect(0, 0, HWE.W, HWE.H);
+  var on = $("hwePrv"); if ((on && !on.checked) || !HWE.prvPath) return;
+  var pa = HWE.prvPath;
+  c.save();
+  c.lineJoin = "round"; c.lineCap = "round";
+  c.fillStyle = "rgba(255,255,255,.28)"; c.fill(pa, "evenodd");   /* 赤の上で 線が見やすいよう 少し白く */
+  c.strokeStyle = "#111"; c.lineWidth = Math.max(0.6, 1.6 / HWE.zoom); c.stroke(pa);
+  c.restore();
 }
 /* ───── プロッター用の仕上げ（v41.8）─────
    ① 縁をなめらかに … ます目の塗りを ぼかして 半分の濃さで 切り直す（ガタガタ・トゲ・細いくびれが丸まる）
@@ -9013,7 +9056,7 @@ function hweCommit(){
    ③ 曲線で出す     … hwSheetD が ベジェ曲線（C）で出す。曲がりの急な所は 角として残す
    ④ なめらかさ     … 1〜10。① のならす幅、② の消す大きさ、決定のときの間引きの幅 */
 function hwSmoothLv(){ var v = num(S.hw && S.hw.smooth, 4); return Math.max(1, Math.min(10, Math.round(v))); }
-function hwSmR(lv){ return 0.06 + 0.04 * lv; }              /* mm。4 → 0.22mm */
+function hwSmR(lv){ return 0.1 + 0.07 * lv; }               /* mm。4 → 0.38mm（v41.9 で強めた。本人「文字の画面で変化させて」） */
 function hwSpeckA(lv){ return 0.2 * lv; }                   /* mm²。4 → 0.8mm² */
 function hwMmPerMask(){ var m = mmPerPx(); return (m ? m : 0.1) / (HWE ? HWE.k : 1); }
 /* 箱ぼかしを 3 回（ほぼ ガウスぼかし）。f は 0〜1 の Float32Array。r は ます */
@@ -9052,7 +9095,8 @@ function hweSmoothEdge(){
   var a = hweAlpha();
   hwBlurF(a.f, HWE.W, HWE.H, r);
   hwePutAlpha(a.id, function(i){ return a.f[i] >= 0.5; });
-  $("hweMsg").textContent = "縁をならしました（幅 " + hwSmR(lv).toFixed(2) + "mm）。まだ粗ければ もう一度、ならしすぎたら［元に戻す］。";
+  hwePreview();
+  $("hweMsg").textContent = "縁をならしました（幅 " + hwSmR(lv).toFixed(2) + "mm）。黒い線が 仕上がりです。まだ粗ければ もう一度、ならしすぎたら［元に戻す］。";
 }
 function hweCleanSpecks(){
   if (!HWE) return;
@@ -9080,7 +9124,8 @@ function hweCleanSpecks(){
     else if (!edge){ nHole++; comp.forEach(function(q2){ ink[q2] = 1; }); }
   }
   hwePutAlpha(a.id, function(i){ return ink[i] === 1; });
-  $("hweMsg").textContent = "ゴミ " + nInk + " 個・穴 " + nHole + " 個を消しました（" + hwSpeckA(hwSmoothLv()).toFixed(1) + "mm² 未満）。";
+  hwePreview();
+  $("hweMsg").textContent = "ゴミ " + nInk + " 個・穴 " + nHole + " 個を消しました（" + hwSpeckA(hwSmoothLv()).toFixed(1) + "mm² 未満）。黒い線が 仕上がりです。";
 }
 /* 輪（mm の点の並び）を なめらかな曲線の path に（③）。Catmull-Rom をベジェに直す。
    曲がりが 55° より急な点は 角として残し、手前と先の線を まっすぐ入れる。

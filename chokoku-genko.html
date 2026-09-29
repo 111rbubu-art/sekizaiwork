@@ -44,6 +44,7 @@
   #hweOv .hweBox{background:#fff;border-radius:10px;display:flex;flex-direction:column;width:min(1100px,100%);overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.35);}
   #hweOv .hweBar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line,#ddd);}
   #hweOv .hweGrp{display:inline-flex;gap:3px;}
+  #hweOv .hweBar2{background:#FFF7ED;}
   #hweOv .hweScroll{flex:1;overflow:auto;background:#EDF0F2;padding:10px;}
   #hweOv .hweWrap{position:relative;margin:0 auto;background:#fff;}
   #hweOv canvas{position:absolute;left:0;top:0;image-rendering:pixelated;}
@@ -2458,7 +2459,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v41.7";
+var APP_VER = "v41.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8773,7 +8774,16 @@ function hwEditOpen(){
       '<button class="mini" id="hweUndo">元に戻す</button>' +
       '<span style="flex:1"></span>' +
       '<button class="mini" id="hweCancel">やめる</button><button class="mini primary" id="hweOk">決定</button>' +
-    '</div><div class="hweScroll"><div class="hweWrap" id="hweWrap">' +
+    '</div>' +
+    /* プロッター用の仕上げ（v41.8。本人「輪郭があまり綺麗でない為、プロッター出力時に綺麗に切れない」→ 1〜4 をこの画面に） */
+    '<div class="hweBar hweBar2"><b>プロッター用の仕上げ</b>' +
+      '<button class="mini" id="hweSmooth" title="縁の ガタガタ・小さなトゲ・細いくびれを ならします（④ の強さで）">① 縁をなめらかに</button>' +
+      '<button class="mini" id="hweClean" title="小さな点（ゴミ）と、字の中の小さな白い穴を 消します（④ の強さで 大きさが変わります）">② ゴミ・穴を消す</button>' +
+      '<label class="chk" title="SVG・出力で、輪郭を 短い直線の つながりではなく なめらかな曲線（ベジェ）で出します。字の角は 角のまま"><input type="checkbox" id="hweCurve" style="width:auto;"> ③ 曲線で出す</label>' +
+      '<label class="hint">④ なめらかさ <input type="range" id="hweSmv" min="1" max="10" step="1" style="width:90px;vertical-align:middle;"> <b id="hweSmvV"></b></label>' +
+      '<span class="hint" id="hweSmInfo"></span>' +
+    '</div>' +
+    '<div class="hweScroll"><div class="hweWrap" id="hweWrap">' +
       '<canvas id="hweBgC"></canvas><canvas id="hweView"></canvas><canvas id="hweSelC"></canvas><div id="hweCur"></div>' +
     '</div></div><div class="hint" id="hweMsg" style="padding:4px 10px;">赤い所が 彫る字です。塗る・消す・選ぶで直し、［決定］で輪郭をたどり直します。ホイールで拡大縮小、まん中ボタンで つかんで動かせます。</div></div>';
   document.body.appendChild(ov);
@@ -8814,6 +8824,17 @@ function hwEditOpen(){
   $("hweUndo").onclick = hweUndo;
   $("hweCancel").onclick = function(){ if (HWE && HWE.undo.length && !confirm("直した所を捨てて閉じますか？")) return; hweClose(); };
   $("hweOk").onclick = hweCommit;
+  $("hweSmooth").onclick = hweSmoothEdge;
+  $("hweClean").onclick = hweCleanSpecks;
+  $("hweCurve").checked = S.hw.curve !== false;
+  $("hweCurve").onchange = function(e){ S.hw.curve = !!e.target.checked; persist(); try { renderStage(); } catch(er){} try { renderBoth(); } catch(er){} };
+  $("hweSmv").value = hwSmoothLv();
+  var smInfo = function(){
+    var lv = hwSmoothLv(); $("hweSmvV").textContent = lv;
+    $("hweSmInfo").textContent = "（ならす幅 " + hwSmR(lv).toFixed(2) + "mm／消す大きさ " + hwSpeckA(lv).toFixed(1) + "mm² 未満）";
+  };
+  smInfo();
+  $("hweSmv").oninput = function(e){ S.hw.smooth = +e.target.value; smInfo(); persist(); };
   var drawing = false, last = null;
   function pt(e){ var r = vw.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
   var selDrag = null;
@@ -8962,17 +8983,21 @@ function hweBlob(x, y){
 function hweCommit(){
   hweSelPut();
   var W = HWE.W, H = HWE.H, k = HWE.k, d = HWE.mx.getImageData(0, 0, W, H).data, m = new Float32Array(W * H);
-  for (var i = 0, n = W * H; i < n; i++) m[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+  for (var i = 0, n = W * H; i < n; i++) m[i] = d[i * 4 + 3] / 255;
+  /* 画素の角ではなく 濃さの境目をたどる（v41.8）。少しだけぼかしてから たどると、縁が ます目の階段にならない */
+  hwBlurF(m, W, H, 1);
   var loops = traceLoops(m, W, H, 0.5), out = [], minA = Math.max(4, 3 * k * k);
+  /* 間引きの幅は mm で決める（④ なめらかさ）。拓本の解像度が変わっても 同じ仕上がりになる */
+  var mmM = hwMmPerMask(), tolM = Math.max(0.35 * k, (0.02 + 0.012 * hwSmoothLv()) / mmM);
   loops.forEach(function(pts){
     var a = 0;
     for (var q = 0, L = pts.length; q < L; q++){ var p1 = pts[q], p2 = pts[(q+1) % L]; a += p1[0]*p2[1] - p2[0]*p1[1]; }
     if (Math.abs(a) / 2 < minA) return;
     var far = 0, fd = -1;
     for (var t = 1; t < pts.length; t++){ var dx = pts[t][0]-pts[0][0], dy = pts[t][1]-pts[0][1]; if (dx*dx+dy*dy > fd){ fd = dx*dx+dy*dy; far = t; } }
-    var s2 = rdp(pts.slice(0, far + 1), 0.35 * k).concat(rdp(pts.slice(far), 0.35 * k).slice(1));
+    var s2 = rdp(pts.slice(0, far + 1), tolM).concat(rdp(pts.slice(far), tolM).slice(1));
     if (s2.length < 3) return;
-    out.push(s2.map(function(p){ return [+(HWE.x0 + (p[0] + 0.5) / k).toFixed(2), +(HWE.y0 + (p[1] + 0.5) / k).toFixed(2)]; }));
+    out.push(s2.map(function(p){ return [+(HWE.x0 + (p[0] + 0.5) / k).toFixed(3), +(HWE.y0 + (p[1] + 0.5) / k).toFixed(3)]; }));
   });
   if (!out.length){ if (!confirm("輪郭が 1 本もありません。このまま決めますか？")) return; }
   var x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
@@ -8981,6 +9006,115 @@ function hweCommit(){
   S.hw.key = hwKey();
   hweClose(); persist(); rubPanel(); rubBar(); try { rubRender(); } catch(e){} try { renderBoth(); } catch(e){} try { renderStage(); } catch(e){}
   msg("輪郭を直しました（" + out.length + " 本）。校正とゴムシートに入っています。");
+}
+/* ───── プロッター用の仕上げ（v41.8）─────
+   ① 縁をなめらかに … ます目の塗りを ぼかして 半分の濃さで 切り直す（ガタガタ・トゲ・細いくびれが丸まる）
+   ② ゴミ・穴を消す … 小さな塗りの塊と、塗りの中の小さな穴を 消す
+   ③ 曲線で出す     … hwSheetD が ベジェ曲線（C）で出す。曲がりの急な所は 角として残す
+   ④ なめらかさ     … 1〜10。① のならす幅、② の消す大きさ、決定のときの間引きの幅 */
+function hwSmoothLv(){ var v = num(S.hw && S.hw.smooth, 4); return Math.max(1, Math.min(10, Math.round(v))); }
+function hwSmR(lv){ return 0.06 + 0.04 * lv; }              /* mm。4 → 0.22mm */
+function hwSpeckA(lv){ return 0.2 * lv; }                   /* mm²。4 → 0.8mm² */
+function hwMmPerMask(){ var m = mmPerPx(); return (m ? m : 0.1) / (HWE ? HWE.k : 1); }
+/* 箱ぼかしを 3 回（ほぼ ガウスぼかし）。f は 0〜1 の Float32Array。r は ます */
+function hwBlurF(f, W, H, r){
+  r = Math.max(1, Math.round(r));
+  var tmp = new Float32Array(f.length);
+  function pass(src, dst, n, lines, stride, step){
+    var win = 2 * r + 1, last = n - 1;
+    for (var l = 0; l < lines; l++){
+      var base = l * step, acc = 0;
+      for (var i = -r; i <= r; i++) acc += src[base + (i < 0 ? 0 : (i > last ? last : i)) * stride];
+      for (var i2 = 0; i2 < n; i2++){
+        dst[base + i2 * stride] = acc / win;
+        var ia = i2 + r + 1, ib = i2 - r;
+        acc += src[base + (ia > last ? last : ia) * stride] - src[base + (ib < 0 ? 0 : ib) * stride];
+      }
+    }
+  }
+  for (var t = 0; t < 3; t++){ pass(f, tmp, W, H, 1, W); pass(tmp, f, H, W, W, 1); }
+  return f;
+}
+function hweAlpha(){
+  var id = HWE.mx.getImageData(0, 0, HWE.W, HWE.H), d = id.data, f = new Float32Array(HWE.W * HWE.H);
+  for (var i = 0; i < f.length; i++) f[i] = d[i * 4 + 3] / 255;
+  return { id: id, f: f };
+}
+function hwePutAlpha(id, on){
+  var d = id.data;
+  for (var i = 0, n = HWE.W * HWE.H; i < n; i++){ d[i*4] = d[i*4+1] = d[i*4+2] = 0; d[i*4+3] = on(i) ? 255 : 0; }
+  HWE.mx.putImageData(id, 0, 0); hweRedraw();
+}
+function hweSmoothEdge(){
+  if (!HWE) return;
+  hweSelPut(); hwePush();
+  var lv = hwSmoothLv(), r = Math.max(1, hwSmR(lv) / hwMmPerMask() / 1.7);   /* 3 回の箱ぼかしで 幅 ≒ 1.7r */
+  var a = hweAlpha();
+  hwBlurF(a.f, HWE.W, HWE.H, r);
+  hwePutAlpha(a.id, function(i){ return a.f[i] >= 0.5; });
+  $("hweMsg").textContent = "縁をならしました（幅 " + hwSmR(lv).toFixed(2) + "mm）。まだ粗ければ もう一度、ならしすぎたら［元に戻す］。";
+}
+function hweCleanSpecks(){
+  if (!HWE) return;
+  hweSelPut(); hwePush();
+  var W = HWE.W, H = HWE.H, N = W * H, a = hweAlpha(), ink = new Uint8Array(N);
+  for (var i = 0; i < N; i++) ink[i] = a.f[i] >= 0.5 ? 1 : 0;
+  var mm = hwMmPerMask(), minN = hwSpeckA(hwSmoothLv()) / (mm * mm);
+  var seen = new Uint8Array(N), nInk = 0, nHole = 0;
+  /* 同じ値（塗り or 地）で つながった塊をたどり、小さければ 裏返す。地は ふちに触れていれば 穴ではない */
+  for (var s0 = 0; s0 < N; s0++){
+    if (seen[s0]) continue;
+    var v = ink[s0], st = [s0], comp = [], edge = false;
+    seen[s0] = 1;
+    while (st.length){
+      var q = st.pop(); comp.push(q);
+      var x = q % W, y = (q - x) / W;
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) edge = true;
+      if (x > 0 && !seen[q-1] && ink[q-1] === v){ seen[q-1] = 1; st.push(q-1); }
+      if (x < W-1 && !seen[q+1] && ink[q+1] === v){ seen[q+1] = 1; st.push(q+1); }
+      if (y > 0 && !seen[q-W] && ink[q-W] === v){ seen[q-W] = 1; st.push(q-W); }
+      if (y < H-1 && !seen[q+W] && ink[q+W] === v){ seen[q+W] = 1; st.push(q+W); }
+    }
+    if (comp.length >= minN) continue;
+    if (v === 1){ nInk++; comp.forEach(function(q2){ ink[q2] = 0; }); }
+    else if (!edge){ nHole++; comp.forEach(function(q2){ ink[q2] = 1; }); }
+  }
+  hwePutAlpha(a.id, function(i){ return ink[i] === 1; });
+  $("hweMsg").textContent = "ゴミ " + nInk + " 個・穴 " + nHole + " 個を消しました（" + hwSpeckA(hwSmoothLv()).toFixed(1) + "mm² 未満）。";
+}
+/* 輪（mm の点の並び）を なめらかな曲線の path に（③）。Catmull-Rom をベジェに直す。
+   曲がりが 55° より急な点は 角として残し、手前と先の線を まっすぐ入れる。
+   手（制御点）は 線の長さの 1/3 までにして、はみ出し（ふくらみ過ぎ）を防ぐ。 */
+function hwCurveD(P){
+  var n = P.length;
+  if (n > 3 && Math.abs(P[0][0] - P[n-1][0]) < 1e-6 && Math.abs(P[0][1] - P[n-1][1]) < 1e-6){ P = P.slice(0, -1); n--; }
+  if (n < 3) return "M" + P.map(function(p){ return p[0].toFixed(3) + "," + p[1].toFixed(3); }).join("L") + "Z";
+  var at = function(i){ return P[(i + n) % n]; };
+  var corner = [], cosLim = Math.cos(55 * Math.PI / 180);
+  for (var i = 0; i < n; i++){
+    var a = at(i-1), b = at(i), c = at(i+1);
+    var ux = b[0]-a[0], uy = b[1]-a[1], vx = c[0]-b[0], vy = c[1]-b[1];
+    var lu = Math.hypot(ux, uy) || 1e-9, lv = Math.hypot(vx, vy) || 1e-9;
+    corner.push((ux*vx + uy*vy) / (lu*lv) < cosLim);
+  }
+  /* 点 i での向き（角なら 無し） */
+  var tan = function(i){
+    if (corner[(i + n) % n]) return null;
+    var a = at(i-1), c = at(i+1), tx = c[0]-a[0], ty = c[1]-a[1], L = Math.hypot(tx, ty) || 1e-9;
+    return [tx / L, ty / L];
+  };
+  var f = function(v){ return v.toFixed(3); };
+  var d = "M" + f(at(0)[0]) + "," + f(at(0)[1]);
+  for (var j = 0; j < n; j++){
+    var p0 = at(j), p1 = at(j+1), L2 = Math.hypot(p1[0]-p0[0], p1[1]-p0[1]);
+    var t0 = tan(j), t1 = tan(j+1), h = L2 / 3;
+    if (!t0 && !t1){ d += "L" + f(p1[0]) + "," + f(p1[1]); continue; }
+    var dx = (p1[0]-p0[0]) / (L2 || 1e-9), dy = (p1[1]-p0[1]) / (L2 || 1e-9);
+    var c1 = t0 ? [p0[0] + t0[0]*h, p0[1] + t0[1]*h] : [p0[0] + dx*h, p0[1] + dy*h];
+    var c2 = t1 ? [p1[0] - t1[0]*h, p1[1] - t1[1]*h] : [p1[0] - dx*h, p1[1] - dy*h];
+    d += "C" + f(c1[0]) + "," + f(c1[1]) + " " + f(c2[0]) + "," + f(c2[1]) + " " + f(p1[0]) + "," + f(p1[1]);
+  }
+  return d + "Z";
 }
 function hweClose(){
   if (HWE && HWE.key) document.removeEventListener("keydown", HWE.key);
@@ -9023,7 +9157,9 @@ function hwMapFn(){
 function hwSheetD(){
   if (!S.hw || !Array.isArray(S.hw.loops) || !S.hw.loops.length) return "";
   var f = hwMapFn(); if (!f) return "";
+  var curve = S.hw.curve !== false;      /* ③ 曲線で出す（v41.8。既定は 入） */
   return S.hw.loops.map(function(L){
+    if (curve) return hwCurveD(L.map(function(p){ return f(p[0], p[1]); }));
     return "M" + L.map(function(p){ var q = f(p[0], p[1]); return q[0].toFixed(3) + "," + q[1].toFixed(3); }).join("L") + "Z";
   }).join("");
 }

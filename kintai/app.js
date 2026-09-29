@@ -1062,7 +1062,7 @@ function ktViewAdmin() {
        '（）内は給与ソフト用の小数時間。</p>';
   ktLoadAdminExtras();
   var nokRes = KT.nokState === 'ok'
-    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to) : null;
+    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to, KT.holidays) : null;
   h += '<div class="tw"><table><thead><tr><th>社員</th><th>勤務</th>' +
        '<th>時間外<br><span class="sub">25%</span></th>' +
        '<th>深夜<br><span class="sub">+25%</span></th>' +
@@ -1077,10 +1077,11 @@ function ktViewAdmin() {
   var payCell = function (e, s) {
     if (ktIsOfficer(e)) return '<td class="n muted">対象外</td>';
     if (KT.payState !== 'ok') return '<td class="n muted">' + (KT.payState === 'err' ? '読めません' : '…') + '</td>';
-    var r = ktOtPay(s, ktPayOf(e));
-    if (!r) return '<td class="n muted">単価未設定</td>';
+    var r = ktOtPay(s, ktPayOf(e), ktYearSched(+mr.to.slice(0, 4), KT.holidays, e).monthHours);
+    if (!r) return '<td class="n muted">月給未設定</td>';
     yenTot.ot += r.total;
-    var tip = '単価 ' + r.unit.toFixed(2) + '円／時' +
+    var tip = '単価 ' + r.unit.toFixed(2) + '円／時（月給 ÷ ' + r.hours.toFixed(2) + '時間' +
+      (r.hoursAuto ? '＝休日から計算' : '＝KintaiPay に入力') + '）' +
       '\n時間外（60時間まで）' + ktYenStr(r.ot) + '\n60時間超 ' + ktYenStr(r.ot60) +
       '\n法定休日 ' + ktYenStr(r.holiday) + '\n深夜の上乗せ ' + ktYenStr(r.night);
     return '<td class="n" title="' + ktEsc(tip) + '">' + ktYenStr(r.total) +
@@ -1118,7 +1119,17 @@ function ktViewAdmin() {
   h += '<p class="muted" style="margin:.3rem 0 0;font-size:.8rem">残業代 ＝ 月給 ÷ 月平均所定労働時間 × 割増率' +
        '（時間外 ' + KT_RATE.overtime + '・60時間超 ' + KT_RATE.overtime60 + '・法定休日 ' + KT_RATE.legalHoliday +
        '・深夜 +' + KT_RATE.nightAdd + '）。金額にカーソルを合わせると内訳が出ます。' +
-       ' ' + ktEsc(KT_NOKOTSU.label) + 'は 納骨リストの 納骨・納骨戒切・お骨だし で、納骨担当が正社員の回数です。</p>';
+       ' ' + ktEsc(KT_NOKOTSU.label) + 'は 納骨リストの 納骨・納骨戒切・お骨だし のうち 定休日の分で、納骨担当が正社員の回数です。</p>';
+  var ys = ktYearSched(+mr.to.slice(0, 4), KT.holidays, null);
+  h += '<p class="muted" style="margin:.2rem 0 0;font-size:.8rem">月平均所定労働時間（' + ys.year + '年）＝ 所定労働日 ' +
+       ys.workDays + '日（休日 ' + ys.offDays + '日。うち会社の休日の画面で登録 ' + ys.regDays + '日）× ' +
+       ktMinToHm(ys.dayMin) + ' ÷ 12 ＝ <b>' + ys.monthHours.toFixed(2) + '時間</b>。' +
+       'KintaiPay に MonthlyHours を入れた人はそちらを使います。</p>';
+  if (ys.missing.length) {
+    h += '<div class="alert cau">' + ys.year + '年の ' + ktEsc(ys.missing.join('・')) +
+         ' が会社の休日に登録されていないようです。登録しないと 所定労働日が多く数えられ、残業代の単価が低くなります。' +
+         '下の［会社の休日を設定する］から入れてください。</div>';
+  }
   if (KT.payState === 'err') {
     h += '<div class="alert cau">給与の単価（KintaiPay リスト）が読めません：' + ktEsc(KT.payErr || '') +
          '。SETUP.md §1-7 の手順でリストを作ってください。</div>';
@@ -1258,10 +1269,10 @@ function ktExportSummaryCsv() {
                '出勤日数', '勤務時間', '勤務時間(小数)', '法定内時間', '法定内(小数)',
                '時間外時間', '時間外(小数)', '深夜時間', '深夜(小数)',
                '法定休日時間', '法定休日(小数)', '要確認日数',
-               '基礎単価(円/時)', '時間外手当(60h以内)', '時間外手当(60h超)', '法定休日手当', '深夜手当',
+               '月平均所定労働時間', '基礎単価(円/時)', '時間外手当(60h以内)', '時間外手当(60h超)', '法定休日手当', '深夜手当',
                '残業代合計', '納骨回数', KT_NOKOTSU.label]];
   var nokRes = KT.nokState === 'ok'
-    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to) : null;
+    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to, KT.holidays) : null;
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
     var s  = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow(), e));
@@ -1275,10 +1286,11 @@ function ktExportSummaryCsv() {
       ktMinToHm(s.legalHolidayMin), ktMinToDec(s.legalHolidayMin),
       s.reviewDays
     ].concat((function () {
-      var r = (!ktIsOfficer(e) && KT.payState === 'ok') ? ktOtPay(s, ktPayOf(e)) : null;
+      var r = (!ktIsOfficer(e) && KT.payState === 'ok')
+        ? ktOtPay(s, ktPayOf(e), ktYearSched(+mr.to.slice(0, 4), KT.holidays, e).monthHours) : null;
       var b = nokRes ? (nokRes.byEmp[e.Title] || { count: 0 }) : null;
       return [
-        r ? r.unit.toFixed(2) : '', r ? r.ot : '', r ? r.ot60 : '', r ? r.holiday : '', r ? r.night : '',
+        r ? r.hours.toFixed(2) : '', r ? r.unit.toFixed(2) : '', r ? r.ot : '', r ? r.ot60 : '', r ? r.holiday : '', r ? r.night : '',
         r ? r.total : '',
         b ? b.count : '', b ? b.count * KT_NOKOTSU.amount : ''
       ];

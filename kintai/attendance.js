@@ -271,8 +271,10 @@ function ktYen(v) {
   if (!(v > 0)) return 0;
   return (KT_OTPAY && KT_OTPAY.yenRound === 'ceil') ? Math.ceil(v - 1e-9) : Math.round(v);
 }
-function ktOtPay(s, pay) {
+function ktOtPay(s, pay, autoHours) {
   var sal = Number((pay || {}).MonthlySalary), hrs = Number((pay || {}).MonthlyHours);
+  var auto = false;
+  if (!(hrs > 0) && autoHours > 0) { hrs = autoHours; auto = true; }
   if (!(sal > 0) || !(hrs > 0)) return null;
   var unit = sal / hrs;
   var perMin = unit / 60;
@@ -285,7 +287,43 @@ function ktOtPay(s, pay) {
     night:    ktYen((s.nightMin || 0) * perMin * KT_RATE.nightAdd)
   };
   r.total = r.ot + r.ot60 + r.holiday + r.night;
+  r.hours = hrs; r.hoursAuto = auto;
   return r;
+}
+
+/* ── 月平均所定労働時間を 休日から計算する（v0.10.1。本人「計算できませんか？」）──
+   その年（1/1〜12/31）の日を1日ずつ見て、休日でない日（ktDayKind が ''）を所定労働日に数える。
+   休日＝土日・毎月14日15日（config.js）＋ KintaiHolidays（正月・5月・夏 など、会社の休日の画面で登録したもの）。
+   1日の所定 ＝ 社員マスタの 始業〜終業 − 休憩（無ければ 8時間）。
+   月平均 ＝ 所定労働日数 × 1日の所定 ÷ 12。KintaiPay に MonthlyHours を入れた人はそちらが優先。 */
+function ktDailySchedMin(emp) {
+  var hm = function (v) {
+    var m = /^(\d{1,2}):(\d{2})/.exec(String(v || '').trim());
+    return m ? (+m[1]) * 60 + (+m[2]) : null;
+  };
+  var a = hm((emp || {}).WorkStart), b = hm((emp || {}).WorkEnd);
+  if (a == null || b == null || b <= a) return KT_WORK.dailyLegalMin;
+  return Math.min(KT_WORK.dailyLegalMin, Math.max(0, b - a - ktBreakMinOf(emp)));
+}
+function ktYearSched(year, holidays, emp) {
+  var d = year + '-01-01', end = year + '-12-31';
+  var work = 0, off = 0;
+  while (d <= end) {
+    if (ktDayKind(d, holidays)) off++; else work++;
+    d = ktYmdAddDays(d, 1);
+  }
+  var reg = (holidays || []).filter(function (h) {
+    return String(h.HolidayDate || '').slice(0, 4) === String(year) && h.HolidayType !== '平日';
+  });
+  // 正月・5月・夏の休みが 会社の休日リストに入っているか（入っていないと 所定日数が多すぎる）
+  var has = function (mm) { return reg.some(function (h) { return String(h.HolidayDate).slice(5, 7) === mm; }); };
+  var missing = [];
+  if (!has('01')) missing.push('正月');
+  if (!has('05')) missing.push('5月の連休');
+  if (!has('08')) missing.push('夏休み');
+  var dayMin = ktDailySchedMin(emp);
+  return { year: year, workDays: work, offDays: off, regDays: reg.length, dayMin: dayMin,
+           monthHours: work * dayMin / 60 / 12, missing: missing };
 }
 
 /* ── 納骨の手当（v0.10.0）──────────────────────────────
@@ -305,7 +343,7 @@ function ktNokNames(v) {
     return x.replace(/(様|さん|氏)$/, '').trim();
   }).filter(Boolean);
 }
-function ktNokotsuCount(items, employees, payRows, from, to) {
+function ktNokotsuCount(items, employees, payRows, from, to, holidays) {
   var C = KT_NOKOTSU, byEmp = {}, skipped = [];
   var payBy = {};
   (payRows || []).forEach(function (p) { payBy[p.Title] = p; });
@@ -320,6 +358,8 @@ function ktNokotsuCount(items, employees, payRows, from, to) {
     if (C.kinds.indexOf(kind) < 0) return;
     var d = ktNokDate(it[C.fDate]);
     if (!d || d < from || d > to) return;
+    // 定休日（土日・14日15日・正月・5月・夏 など会社の休日）の納骨だけが手当の対象（本人の指示）
+    var offDay = !!ktDayKind(d, holidays);
     ktNokNames(it[C.fPerson]).forEach(function (n) {
       var hit = emps.filter(function (x) {
         return x.key ? x.key === n : (x.full && x.full.indexOf(n) === 0);
@@ -327,6 +367,7 @@ function ktNokotsuCount(items, employees, payRows, from, to) {
       if (!hit.length) { skipped.push({ date: d, name: n, why: '社員マスタに無い名前（外注先など）' }); return; }
       if (hit.length > 1) { skipped.push({ date: d, name: n, why: '同じ姓の社員が ' + hit.length + ' 人（KintaiPay の NokotsuName で分けてください）' }); return; }
       var e = hit[0].e;
+      if (!offDay) { skipped.push({ date: d, name: n, why: '平日の納骨（定休日ではない）' }); return; }
       if (e.EmpType !== '正社員') { skipped.push({ date: d, name: n, why: (e.EmpType || '種別なし') + 'のため対象外' }); return; }
       var b = byEmp[e.Title] || (byEmp[e.Title] = { count: 0, dates: [] });
       b.count++; b.dates.push(d);

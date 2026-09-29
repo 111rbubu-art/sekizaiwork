@@ -135,6 +135,32 @@ function ktLoadMasters() {
   });
 }
 
+/* ── 月次集計の金額に使うもの（管理者だけ。v0.10.0）──────────
+   KT.pay … KintaiPay（月給・所定時間・納骨リストでの呼び名）。管理者だけが読める権限にしておく。
+   KT.nok … 業務アプリの納骨リスト（納骨担当・分類・納骨日の3列だけ）。
+   どちらも管理タブを初めて開いたときに1回だけ読む。読み終えたら描き直す。 */
+function ktLoadAdminExtras() {
+  if (KT.payState || !KT.isAdmin) return;
+  KT.payState = 'loading'; KT.nokState = 'loading';
+  var redraw = function () { if (KT.tab === 'admin') ktRender(); };
+  ktList('pay').then(function (r) { KT.pay = r; KT.payState = 'ok'; })
+    .catch(function (e) { KT.pay = []; KT.payState = 'err'; KT.payErr = e.message || String(e); })
+    .then(redraw);
+  var C = KT_NOKOTSU;
+  ktFetchAll(C.listId + '/items?$top=999&$expand=fields($select=' +
+             [C.fPerson, C.fKind, C.fDate].join(',') + ')')
+    .then(function (items) {
+      KT.nok = items.map(function (it) { return it.fields || {}; });
+      KT.nokState = 'ok';
+    })
+    .catch(function (e) { KT.nok = []; KT.nokState = 'err'; KT.nokErr = e.message || String(e); })
+    .then(redraw);
+}
+function ktPayOf(emp) {
+  return (KT.pay || []).filter(function (p) { return p.Title === emp.Title; })[0] || null;
+}
+function ktYenStr(v) { return '¥' + Math.round(v).toLocaleString('ja-JP'); }
+
 /* 位置情報の同意も打刻ログに記録する。
    打刻ログは追記専用でサーバが時刻と本人を押すため、同意の記録先として最も確実。
    （社員マスタを本人が編集できるようにすると、入社日まで書き換えられてしまう） */
@@ -1034,13 +1060,40 @@ function ktViewAdmin() {
        (KT_PAY.payMonthLag === 1 ? '翌月' : KT_PAY.payMonthLag + 'か月後') + '払い。' +
        ktYmdLabelFull(mr.from) + ' 〜 ' + ktYmdLabelFull(mr.to) + ' の勤務です。' +
        '（）内は給与ソフト用の小数時間。</p>';
+  ktLoadAdminExtras();
+  var nokRes = KT.nokState === 'ok'
+    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to) : null;
   h += '<div class="tw"><table><thead><tr><th>社員</th><th>勤務</th>' +
        '<th>時間外<br><span class="sub">25%</span></th>' +
        '<th>深夜<br><span class="sub">+25%</span></th>' +
        '<th>法定休日<br><span class="sub">35%</span></th>' +
-       '<th>出勤</th><th>要確認</th></tr></thead><tbody>';
+       '<th>出勤</th><th>要確認</th>' +
+       '<th>残業代<br><span class="sub">円未満切上げ</span></th>' +
+       '<th>' + ktEsc(KT_NOKOTSU.label) + '<br><span class="sub">1回 ' + ktYenStr(KT_NOKOTSU.amount) + '</span></th>' +
+       '</tr></thead><tbody>';
 
   var totals = { workMin: 0, otMin: 0, nightMin: 0, legalHolidayMin: 0, workDays: 0, reviewDays: 0 };
+  var yenTot = { ot: 0, nok: 0, nokN: 0 };
+  var payCell = function (e, s) {
+    if (ktIsOfficer(e)) return '<td class="n muted">対象外</td>';
+    if (KT.payState !== 'ok') return '<td class="n muted">' + (KT.payState === 'err' ? '読めません' : '…') + '</td>';
+    var r = ktOtPay(s, ktPayOf(e));
+    if (!r) return '<td class="n muted">単価未設定</td>';
+    yenTot.ot += r.total;
+    var tip = '単価 ' + r.unit.toFixed(2) + '円／時' +
+      '\n時間外（60時間まで）' + ktYenStr(r.ot) + '\n60時間超 ' + ktYenStr(r.ot60) +
+      '\n法定休日 ' + ktYenStr(r.holiday) + '\n深夜の上乗せ ' + ktYenStr(r.night);
+    return '<td class="n" title="' + ktEsc(tip) + '">' + ktYenStr(r.total) +
+           '<br><span class="sub">単価 ' + Math.round(r.unit).toLocaleString('ja-JP') + '円</span></td>';
+  };
+  var nokCell = function (e) {
+    if (KT.nokState !== 'ok') return '<td class="n muted">' + (KT.nokState === 'err' ? '読めません' : '…') + '</td>';
+    var b = nokRes.byEmp[e.Title];
+    if (!b) return '<td class="n">—</td>';
+    yenTot.nok += b.count * KT_NOKOTSU.amount; yenTot.nokN += b.count;
+    return '<td class="n" title="' + ktEsc(b.dates.map(ktMdLabel).join('、')) + '">' +
+           ktYenStr(b.count * KT_NOKOTSU.amount) + '<br><span class="sub">' + b.count + '回</span></td>';
+  };
   var cell = function (min) {
     return '<td class="n">' + ktMinToHm(min) +
            '<br><span class="sub">' + ktMinToDec(min) + '</span></td>';
@@ -1052,13 +1105,41 @@ function ktViewAdmin() {
     h += '<tr><td>' + ktEsc(e.EmpName || e.Title) + '</td>';
     h += cell(s.workMin) + cell(s.otMin) + cell(s.nightMin) + cell(s.legalHolidayMin);
     h += '<td class="n">' + s.workDays + '日</td>';
-    h += '<td class="n">' + (s.reviewDays ? s.reviewDays + '日' : '—') + '</td></tr>';
+    h += '<td class="n">' + (s.reviewDays ? s.reviewDays + '日' : '—') + '</td>';
+    h += payCell(e, s) + nokCell(e) + '</tr>';
   });
   h += '<tr style="font-weight:700"><td>合計</td>';
   h += cell(totals.workMin) + cell(totals.otMin) + cell(totals.nightMin) + cell(totals.legalHolidayMin);
   h += '<td class="n">' + totals.workDays + '日</td>';
-  h += '<td class="n">' + (totals.reviewDays ? totals.reviewDays + '日' : '—') + '</td></tr>';
+  h += '<td class="n">' + (totals.reviewDays ? totals.reviewDays + '日' : '—') + '</td>';
+  h += '<td class="n">' + ktYenStr(yenTot.ot) + '</td>';
+  h += '<td class="n">' + ktYenStr(yenTot.nok) + '<br><span class="sub">' + yenTot.nokN + '回</span></td></tr>';
   h += '</tbody></table></div>';
+  h += '<p class="muted" style="margin:.3rem 0 0;font-size:.8rem">残業代 ＝ 月給 ÷ 月平均所定労働時間 × 割増率' +
+       '（時間外 ' + KT_RATE.overtime + '・60時間超 ' + KT_RATE.overtime60 + '・法定休日 ' + KT_RATE.legalHoliday +
+       '・深夜 +' + KT_RATE.nightAdd + '）。金額にカーソルを合わせると内訳が出ます。' +
+       ' ' + ktEsc(KT_NOKOTSU.label) + 'は 納骨リストの 納骨・納骨戒切・お骨だし で、納骨担当が正社員の回数です。</p>';
+  if (KT.payState === 'err') {
+    h += '<div class="alert cau">給与の単価（KintaiPay リスト）が読めません：' + ktEsc(KT.payErr || '') +
+         '。SETUP.md §1-7 の手順でリストを作ってください。</div>';
+  }
+  if (KT.nokState === 'err') {
+    h += '<div class="alert cau">納骨リストが読めません：' + ktEsc(KT.nokErr || '') + '</div>';
+  }
+  if (nokRes && nokRes.skipped.length) {
+    // 外注先などは毎月出るので、名前ごとにまとめて小さく出す
+    var sk = {};
+    nokRes.skipped.forEach(function (x) {
+      var k = x.name + '｜' + x.why;
+      (sk[k] || (sk[k] = { name: x.name, why: x.why, dates: [] })).dates.push(ktMdLabel(x.date));
+    });
+    h += '<details style="margin-top:.4rem"><summary class="muted" style="font-size:.8rem">' +
+         '手当に数えなかった納骨担当（' + nokRes.skipped.length + '件）</summary><ul style="font-size:.8rem;margin:.3rem 0">';
+    Object.keys(sk).forEach(function (k) {
+      h += '<li>' + ktEsc(sk[k].name) + ' … ' + ktEsc(sk[k].why) + '（' + ktEsc(sk[k].dates.join('、')) + '）</li>';
+    });
+    h += '</ul></details>';
+  }
   if (totals.reviewDays) {
     h += '<div class="alert cau">要確認の日が残っています。給与を確定する前に、' +
          '上の「要確認の打刻」で内容を確かめてください。</div>';
@@ -1176,7 +1257,11 @@ function ktExportSummaryCsv() {
   var rows = [['社員番号', '氏名', '支給月', '締め期間開始', '締め期間終了',
                '出勤日数', '勤務時間', '勤務時間(小数)', '法定内時間', '法定内(小数)',
                '時間外時間', '時間外(小数)', '深夜時間', '深夜(小数)',
-               '法定休日時間', '法定休日(小数)', '要確認日数']];
+               '法定休日時間', '法定休日(小数)', '要確認日数',
+               '基礎単価(円/時)', '時間外手当(60h以内)', '時間外手当(60h超)', '法定休日手当', '深夜手当',
+               '残業代合計', '納骨回数', KT_NOKOTSU.label]];
+  var nokRes = KT.nokState === 'ok'
+    ? ktNokotsuCount(KT.nok, KT.employees, KT.pay, mr.from, mr.to) : null;
   KT.employees.filter(function (e) { return e.Active !== false; }).forEach(function (e) {
     var ps = KT.punches.filter(function (p) { return p.Title === e.Title; });
     var s  = ktSummarize(ktComputeRangeExact(mr.from, mr.to, ps, KT.holidays, ktWorkDateNow(), e));
@@ -1189,7 +1274,15 @@ function ktExportSummaryCsv() {
       ktMinToHm(s.nightMin),       ktMinToDec(s.nightMin),
       ktMinToHm(s.legalHolidayMin), ktMinToDec(s.legalHolidayMin),
       s.reviewDays
-    ]);
+    ].concat((function () {
+      var r = (!ktIsOfficer(e) && KT.payState === 'ok') ? ktOtPay(s, ktPayOf(e)) : null;
+      var b = nokRes ? (nokRes.byEmp[e.Title] || { count: 0 }) : null;
+      return [
+        r ? r.unit.toFixed(2) : '', r ? r.ot : '', r ? r.ot60 : '', r ? r.holiday : '', r ? r.night : '',
+        r ? r.total : '',
+        b ? b.count : '', b ? b.count * KT_NOKOTSU.amount : ''
+      ];
+    })()));
   });
   ktDownloadCsv(rows, '勤怠_' + ktPayFileTag(KT.adminYm) + '_集計.csv');
 }

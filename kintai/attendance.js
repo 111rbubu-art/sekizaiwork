@@ -259,3 +259,79 @@ function ktComputeRangeExact(from, to, punches, holidays, openDate, emp) {
     return ktYmdDiffDays(d.date, from) >= 0 && ktYmdDiffDays(d.date, to) <= 0;
   });
 }
+
+/* ── 残業代の金額（v0.10.0）─────────────────────────────
+   pay … KintaiPay の行 { MonthlySalary, MonthlyHours }
+   s   … ktSummarize の結果
+   単価 = 月給 ÷ 月平均所定労働時間。割増率は KT_RATE。
+   時間外のうち月60時間を超えた分（ot60Min）は 1.50、残りは 1.25。
+   深夜は 時間外・法定休日と重なっても +0.25 を上乗せする（労基法37条）。
+   金額は種類ごとに円未満を切り上げる（KT_OTPAY.yenRound）。 */
+function ktYen(v) {
+  if (!(v > 0)) return 0;
+  return (KT_OTPAY && KT_OTPAY.yenRound === 'ceil') ? Math.ceil(v - 1e-9) : Math.round(v);
+}
+function ktOtPay(s, pay) {
+  var sal = Number((pay || {}).MonthlySalary), hrs = Number((pay || {}).MonthlyHours);
+  if (!(sal > 0) || !(hrs > 0)) return null;
+  var unit = sal / hrs;
+  var perMin = unit / 60;
+  var ot60 = s.ot60Min || 0, ot = Math.max(0, (s.otMin || 0) - ot60);
+  var r = {
+    unit:     unit,
+    ot:       ktYen(ot  * perMin * KT_RATE.overtime),
+    ot60:     ktYen(ot60 * perMin * KT_RATE.overtime60),
+    holiday:  ktYen((s.legalHolidayMin || 0) * perMin * KT_RATE.legalHoliday),
+    night:    ktYen((s.nightMin || 0) * perMin * KT_RATE.nightAdd)
+  };
+  r.total = r.ot + r.ot60 + r.holiday + r.night;
+  return r;
+}
+
+/* ── 納骨の手当（v0.10.0）──────────────────────────────
+   納骨リストの行から、締め期間 from〜to に入る 納骨・納骨戒切・お骨だし を拾い、
+   納骨担当（姓だけ・2人のこともある）を 社員マスタの正社員に当てる。
+   返すもの：
+     byEmp[社員番号] = { count, dates: ['YYYY-MM-DD', …] }
+     skipped = [{ date, name, why }]   … 数えなかった名前（外注・役員・同じ姓が2人 など）
+   名前の当て方：KintaiPay の NokotsuName があればそれ、無ければ 氏名の空白より前（姓）。
+   氏名に空白が無いときは、担当の名前で始まるかで見る。 */
+function ktNokDate(v) {
+  var m = /(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/.exec(String(v || ''));
+  return m ? m[1] + '-' + ktPad(+m[2]) + '-' + ktPad(+m[3]) : '';
+}
+function ktNokNames(v) {
+  return String(v || '').split(/[、,，・･\/／\s　&＆+＋]+/).map(function (x) {
+    return x.replace(/(様|さん|氏)$/, '').trim();
+  }).filter(Boolean);
+}
+function ktNokotsuCount(items, employees, payRows, from, to) {
+  var C = KT_NOKOTSU, byEmp = {}, skipped = [];
+  var payBy = {};
+  (payRows || []).forEach(function (p) { payBy[p.Title] = p; });
+  var emps = (employees || []).map(function (e) {
+    var nm = String(e.EmpName || '').trim();
+    var alias = String((payBy[e.Title] || {}).NokotsuName || '').trim();
+    var sp = nm.split(/[\s　]+/);
+    return { e: e, key: alias || (sp.length > 1 ? sp[0] : ''), full: nm.replace(/[\s　]+/g, '') };
+  });
+  (items || []).forEach(function (it) {
+    var kind = String(it[C.fKind] || '').trim();
+    if (C.kinds.indexOf(kind) < 0) return;
+    var d = ktNokDate(it[C.fDate]);
+    if (!d || d < from || d > to) return;
+    ktNokNames(it[C.fPerson]).forEach(function (n) {
+      var hit = emps.filter(function (x) {
+        return x.key ? x.key === n : (x.full && x.full.indexOf(n) === 0);
+      });
+      if (!hit.length) { skipped.push({ date: d, name: n, why: '社員マスタに無い名前（外注先など）' }); return; }
+      if (hit.length > 1) { skipped.push({ date: d, name: n, why: '同じ姓の社員が ' + hit.length + ' 人（KintaiPay の NokotsuName で分けてください）' }); return; }
+      var e = hit[0].e;
+      if (e.EmpType !== '正社員') { skipped.push({ date: d, name: n, why: (e.EmpType || '種別なし') + 'のため対象外' }); return; }
+      var b = byEmp[e.Title] || (byEmp[e.Title] = { count: 0, dates: [] });
+      b.count++; b.dates.push(d);
+    });
+  });
+  Object.keys(byEmp).forEach(function (k) { byEmp[k].dates.sort(); });
+  return { byEmp: byEmp, skipped: skipped };
+}

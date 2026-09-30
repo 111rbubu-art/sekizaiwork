@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.2";
+var APP_VER = "v42.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -15687,10 +15687,11 @@ function rubGrpApply(L, hit, ch, isNum, chs){
        ・6 字下までに 年 … +2
        ・戒名より小さい字 … +1
      点が 2 未満なら 年号とはみない（戒名の中の字）。同じ点なら 下の方。 */
-  var era9 = "";
+  var era9 = "", bestHasNen9 = false;   /* 選んだ年号が「平成」「年」の両方で当たったか（v42.3） */
   if (Object.keys(chs).length){
     var ERA2 = { "令": "和", "平": "成", "昭": "和", "大": "正", "明": "治" };
     var bestE = -1, bestS = -1, cands = [];
+    bestHasNen9 = false;
     for (var e9 = 0; e9 < nIt9; e9++){
       var ce = (chs[e9] || "").charAt(0);
       if (!ce || RUBANCH.mHead.indexOf(ce) < 0 || !ERA2[ce]) continue;
@@ -15706,6 +15707,7 @@ function rubGrpApply(L, hit, ch, isNum, chs){
       if (small9(L.items[e9])){ sc9 += 1; why9.push("小さい字"); }
       cands.push((e9 + 1) + " 字目の " + ce + "＝" + sc9 + " 点" + (why9.length ? "（" + why9.join("・") + "）" : ""));
       if (sc9 >= bestS){ bestS = sc9; bestE = e9; }
+      if (e9 === bestE) bestHasNen9 = why9.indexOf("年") >= 0 && why9.indexOf(ce + ERA2[ce]) >= 0;
     }
     if (cands.length){
       var newMh = (bestS >= 2) ? bestE : -1;
@@ -15804,6 +15806,17 @@ function rubGrpApply(L, hit, ch, isNum, chs){
         if (!c8e){ if (++gp8 > 1){ okE = false; break; } continue; }
         gp8 = 0;
         if (DT8.indexOf(c8e) < 0){ okE = false; break; }
+      }
+      /* ───── **年号＋2 字目＋年 がそろっていれば、あいだの字が読みちがいでも 命日**（v42.3。本人の報告
+         「ここまで読めていて 命日を俗名と間違える」＝ 平成元年七月六日 の 平成元年 が 俗名に）─────
+         あいだの 1 字（元 など）を ほかの字に読みちがえると、年号まで のばせず、
+         残った 平成○年 が 字幅で 俗名にされていた。年号の見くらべで「平成」と「年」の両方が当たった年号で、
+         年号から 6 字以内なら、あいだの字は問わない。 */
+      /* 2 字目も読みちがえたとき（平戍无年 など）は、命日の頭のすぐ上が 年 で、年号から 5 字以内なら 同じく入れる */
+      var nenJust9 = (chs[dA - 1] || "").charAt(0) === "年" && dA - hit.mh <= 5;
+      if (!okE && ((bestHasNen9 && dA - hit.mh <= 6) || nenJust9)){
+        okE = true;
+        did.push("（年号 " + esc(ch.mh) + " から 年 までの あいだに 読めない・ちがう字があるが、年号＋年 がそろっているので 命日に入れた）");
       }
       if (okE){ dA = hit.mh; eA9 = ch.mh; }
     }
@@ -15922,7 +15935,19 @@ function rubGrpApply(L, hit, ch, isNum, chs){
       }
     }
     gR9 = "nentail";
-    if (markBack9(nB, nA, "nen"))
+    /* ───── **数字＋才・歳 が読めていれば、字の大きさは見ない**（v42.3。本人の報告「年齢も判別できていない」）─────
+       `markBack9` は 戒名ほど大きい字で止まるので、年齢を大きく彫った拓本では 1 字も塗れず、
+       字幅で 俗名・戒名にされていた（命日の v37.7 と同じ直し）。 */
+    var nNum7 = 0;
+    for (var tN7 = nA; tN7 < nB; tN7++) if (isNum[tN7]) nNum7++;
+    if (nNum7 >= 1 && nA < nB){
+      var nP7 = 0;
+      for (var tP7 = nB; tP7 >= nA; tP7--){
+        if (L.items[tP7].g && L.items[tP7].g !== "nen") break;
+        put9(tP7, "nen"); nP7++;
+      }
+      if (nP7) did.push("年齢 " + (nB - nP7 + 2) + "〜" + (nB+1) + " 字目（数字＋" + ch.nt + "。字の大きさは見ない）");
+    } else if (markBack9(nB, nA, "nen"))
       did.push("年齢 " + (nA+1) + "〜" + (nB+1) + " 字目（…" + ch.nt + "）");
   } else if (nA >= 0){
     gR9 = "nenhead";
@@ -15974,7 +15999,11 @@ function rubGrpApply(L, hit, ch, isNum, chs){
     for (t8 = restA; t8 <= restB; t8++) if (L.items[t8].g) allFree = false;
     if (allFree && (nNum >= 1 || (restB - restA + 1) <= 6)){
       gR9 = "nenaft";
-      if (mark9(restA, restB, "nen"))
+      /* 数字が 2 つ以上あれば 字の大きさは見ない（v42.3。上の 年齢 と同じ理由） */
+      if (nNum >= 2){
+        for (t8 = restA; t8 <= restB; t8++) put9(t8, "nen");
+        did.push("年齢 " + (restA+1) + "〜" + (restB+1) + " 字目（命日のあとの数字。字の大きさは見ない）");
+      } else if (mark9(restA, restB, "nen"))
         did.push("年齢 " + (restA+1) + "〜" + (restB+1) + " 字目（命日のあとの数字）");
     }
   }

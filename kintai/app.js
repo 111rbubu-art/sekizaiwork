@@ -769,7 +769,7 @@ function ktDayTable(days, showPlace) {
     var cls = d.review ? 'rev' : (d.kind ? 'hol' : '');
     h += '<tr class="' + cls + '">';
     h += '<td>' + ktEsc(ktYmdLabel(d.date)) + '</td>';
-    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
+    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) + (d.countFrom ? '<br><span class="sub">' + ktHm(d.countFrom) + 'から</span>' : '') : '—') + '</td>';
     h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
     h += '<td class="n">' + (d.breakMin || 0) + ktDeemedMark(d) + '</td>';
     h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';
@@ -989,7 +989,7 @@ function ktViewAdmin() {
     var out  = outs[outs.length - 1];
     h += '<tr class="' + (d.review ? 'rev' : '') + '">';
     h += '<td>' + ktEsc(e.EmpName || e.Title) + '</td>';
-    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) : '—') + '</td>';
+    h += '<td class="n">' + (d.clockIn ? ktHm(d.clockIn) + (d.countFrom ? '<br><span class="sub">' + ktHm(d.countFrom) + 'から</span>' : '') : '—') + '</td>';
     h += '<td class="n">' + (d.clockOut ? ktHm(d.clockOut) : '—') + '</td>';
     h += '<td class="n">' + (d.breakMin || 0) + ktDeemedMark(d) + '</td>';
     h += '<td class="n">' + (d.workMin ? ktMinToHm(d.workMin) : '—') + '</td>';

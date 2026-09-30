@@ -3,7 +3,7 @@
    会社の運用に合わせて変更するのは、原則このファイルだけです。
    ============================================================ */
 
-var KINTAI_VERSION = 'v0.10.3';
+var KINTAI_VERSION = 'v0.10.4';
 
 /* ── Microsoft 365 / SharePoint ──────────────────────────── */
 var KT_TENANT_ID = 'c78b3598-1933-4363-91f1-744a380bd9c9';
@@ -43,6 +43,12 @@ var KT_WORK = {
   nightStartHour: 22,    // 深夜の開始 22:00
   nightEndHour:   5,     // 深夜の終了 翌5:00
   roundToMinute:  true,  // 1分単位で計算する（切り捨ては労基法違反）
+  // 始業前の出勤の繰り上げ（v0.10.4。本人「7:45までなら8:00に繰り上げてください」）。
+  // 平日に 始業の earlyGraceMin 分前〜始業 に出勤を押したら、始業から数える。
+  // それより早い出勤は 早出として打刻どおり数える。始業は社員マスタの WorkStart（無ければ defaultStart）。
+  // 就業規則に「始業前の打刻は始業時刻から労働時間とする」旨を書いておくこと。
+  earlyGraceMin:  15,
+  defaultStart:   '08:00',
   breakRule: [           // 労働時間に応じて必要な休憩（労基法34条）
     { overMin: 480, needMin: 60 },
     { overMin: 360, needMin: 45 }

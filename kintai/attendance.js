@@ -67,6 +67,19 @@ function ktDayKind(ymd, holidays) {
   return '';
 }
 
+/* 始業前の繰り上げ（v0.10.4）。平日で、始業の KT_WORK.earlyGraceMin 分前〜始業 の出勤なら、
+   始業の時刻（ミリ秒）を返す。あてはまらなければ null。 */
+function ktStartRound(ymd, inMs, kind, emp) {
+  var g = +KT_WORK.earlyGraceMin || 0;
+  if (!g || kind) return null;                               // 休日は 始業が無いので 繰り上げない
+  var m = /^(\d{1,2}):(\d{2})/.exec(String((emp || {}).WorkStart || KT_WORK.defaultStart || '').trim());
+  if (!m) return null;
+  var base = ktParseYmd(ymd);
+  if (!base) return null;
+  var startMs = base.getTime() + ((+m[1]) * 60 + (+m[2])) * 60000;
+  return (inMs >= startMs - g * 60000 && inMs < startMs) ? startMs : null;
+}
+
 function ktDayKindLabel(kind) {
   return kind === 'legal' ? '法定休日' : kind === 'company' ? '所定休日' : '平日';
 }
@@ -119,6 +132,9 @@ function ktComputeDay(ymd, punches, holidays, isOpen, emp) {
 
   var inMs  = new Date(d.clockIn).getTime();
   var outMs = new Date(d.clockOut).getTime();
+  // 始業前 15 分以内の出勤は 始業から数える（v0.10.4）。打刻そのものは そのまま残す
+  var adj = ktStartRound(ymd, inMs, kind, emp);
+  if (adj && adj < outMs) { inMs = adj; d.countFrom = new Date(adj).toISOString(); }
   if (outMs <= inMs) { d.alerts.push('退勤が出勤より前になっています'); return d; }
 
   // 休憩の区間をつくる（開始と終了を順に対応させる）

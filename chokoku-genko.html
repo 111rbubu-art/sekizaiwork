@@ -749,11 +749,16 @@
   #rceEd .segb{border:0;border-radius:0;padding:4px 12px;background:#fff;cursor:pointer;font-size:12px}
   #rceEd .segb.on{background:#2c6fbb;color:#fff;font-weight:700}
   #rceEd .segb+.segb{border-left:1px solid #e3e3df}
+  #rceInkGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:10px}
   #rceGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:10px}
   #rceEd .cebox2{border:1px solid #e3e3df;border-radius:8px;padding:5px;background:#fff;text-align:center}
   #rceEd .cebox2.has{border-color:#2c6fbb;background:#f2f8fb}
   #rceEd .cebox2 img{width:100%;aspect-ratio:1;object-fit:contain;background:#f4f4f2;border-radius:5px;display:block}
   #rceEd .cebox2 .no{font-size:10.5px;color:#77776f}
+  #rceEd .cebox2.ink{cursor:pointer;position:relative}
+  #rceEd .cebox2.ink.noink{border-color:#E4B9B3}
+  #rceEd .inkmenu{position:absolute;left:4px;right:4px;bottom:4px;display:flex;flex-direction:column;gap:3px;z-index:2}
+  #rceEd .inkmenu button{font-size:11px;padding:3px 2px}
   #rceEd .cebox2 input{width:100%;text-align:center;font-size:20px;padding:2px;border:1px solid #e3e3df;border-radius:6px;margin-top:3px}
   #rceBxWrap{max-height:62vh;overflow:auto;background:#f4f4f2;border:1px solid #e3e3df;border-radius:8px;padding:8px;text-align:center}
   #rceBxIn{position:relative;display:inline-block;line-height:0;touch-action:none;user-select:none;-webkit-user-select:none}
@@ -1585,6 +1590,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
     <span class="seg" id="rceSeg">
       <button class="segb on" data-t="ch">✎ 読みを入れる</button>
       <button class="segb" data-t="bx">□ 枠を直す</button>
+      <button class="segb" data-t="ink">■ 墨を直す</button>
     </span>
     <div id="rcePaneCh">
       <div class="cebar">
@@ -1609,6 +1615,10 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       </div>
       <p class="hint" id="rceBxNote" style="margin:0 0 8px"></p>
       <div id="rceBxWrap"></div>
+    </div>
+    <div id="rcePaneInk" hidden>
+      <p class="hint" style="margin:0 0 8px">青＝AI の墨。字を押すと［🤖 墨AI に通す］［✎ 修正］を選べます。修正は 学習に登録する画面で 墨を塗る・消すで直します。</p>
+      <div id="rceInkGrid"></div>
     </div>
   </div>
 </div>
@@ -2537,7 +2547,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v43.9";
+var APP_VER = "v44.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -25367,10 +25377,78 @@ function rceTab(t){
   if (RCE.tab === "ch" && RCE.boxes.length && $("rceGrid").querySelector("input")){
     var v = rceVals(); RCE.boxes.forEach(function(b, i){ b.ch = v[i] || ""; });
   }
+  /* 墨を直す は 保存した枠で（墨 AI・学習画面は 拓本の枠を使うので）。直しかけがあれば 先に保存する（v44.0） */
+  if (t === "ink" && RCE.tab !== "ink"){
+    try { rceWrite(); } catch(e){ alert("先に保存できませんでした（" + ((e && e.message) || "") + "）。"); return; }
+    RCE.tab = "ink"; rceReload(function(){ rceTab("ink"); }); return;
+  }
   RCE.tab = t;
-  $("rcePaneCh").hidden = (t !== "ch"); $("rcePaneBx").hidden = (t !== "bx");
+  $("rcePaneCh").hidden = (t !== "ch"); $("rcePaneBx").hidden = (t !== "bx"); $("rcePaneInk").hidden = (t !== "ink");
   Array.prototype.forEach.call(document.querySelectorAll("#rceSeg .segb"), function(b){ b.classList.toggle("on", b.dataset.t === t); });
-  if (t === "bx"){ rceBxDraw(); $("rceTtl").textContent = "枠を直す"; } else rceDraw();
+  if (t === "bx"){ rceBxDraw(); $("rceTtl").textContent = "枠を直す"; }
+  else if (t === "ink"){ rceInkDraw(); $("rceTtl").textContent = "墨を直す"; }
+  else rceDraw();
+}
+/* 拓本の枠から 絵と枠を 取り直す（保存のあと） */
+function rceReload(done){
+  var L = (S.rub.lines || [])[RCE.ci]; if (!L) return;
+  var sh = rubLineShot(L); if (!sh) return;
+  RCE.sh = sh; RCE.undo = []; RCE.sel = -1;
+  RCE.boxes = sh.boxes.map(function(b){ return { x: b.x, y: b.y, w: b.w, h: b.h, ch: b.ch || "", g: b.g || "" }; });
+  var im = new Image();
+  im.onload = function(){ RCE.im = im; if (done) done(); };
+  im.src = sh.cv.toDataURL("image/png");
+}
+/* ───── **墨を直す**（v44.0。本人「枠を直すのラベルの隣に、墨を直すを入れて、読みを入れると同じように墨が入った文字を並べて、
+   文字をクリックすると、墨AIに通す と 修正 が選べるように。修正を選ぶと学習に登録画面を開く」）─────
+   字ごとに 切り抜き＋AI の墨（青）を並べる。押すと［🤖 墨AI に通す］（rubAiOne）／［✎ 修正］（この画面を閉じて rgOpenAt＝学習に登録する画面）。 */
+async function rceInkDraw(){
+  var g = $("rceInkGrid"), L = (S.rub.lines || [])[RCE.ci];
+  if (!L || !RCE.boxes.length){ g.innerHTML = '<p class="hint">この列には枠がありません。</p>'; return; }
+  g.innerHTML = '<p class="hint">墨を読んでいます…</p>';
+  var ink = null;
+  try { ink = await rubLineInkShot(L, RCE.sh); } catch(e){}
+  var n = 96, cells = RCE.boxes.map(function(b, i){
+    var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
+    var c = cv.getContext("2d"); c.fillStyle = "#f4f4f2"; c.fillRect(0, 0, n, n);
+    var sd = Math.max(b.w, b.h) * RCE_PAD, cx = b.x + b.w / 2, cy = b.y + b.h / 2, has = false;
+    if (RCE.im) c.drawImage(RCE.im, cx - sd / 2, cy - sd / 2, sd, sd, 0, 0, n, n);
+    if (ink){
+      var t = document.createElement("canvas"); t.width = n; t.height = n;
+      var tc = t.getContext("2d"); tc.drawImage(ink, cx - sd / 2, cy - sd / 2, sd, sd, 0, 0, n, n);
+      /* 墨は 青に染めて 半分すかして重ねる */
+      var d = tc.getImageData(0, 0, n, n), a = d.data, k = 0;
+      for (var q = 0; q < a.length; q += 4){
+        var v = a[q];                                   /* _inkCropCv は 白＝墨・黒＝地 */
+        a[q] = 30; a[q + 1] = 110; a[q + 2] = 220; a[q + 3] = Math.round(v * 0.6);
+        if (v > 127) k++;
+      }
+      tc.putImageData(d, 0, 0); c.drawImage(t, 0, 0); has = k > 0;
+    }
+    return '<div class="cebox2 ink' + (has ? " has" : " noink") + '" data-i="' + i + '">' +
+      '<img src="' + cv.toDataURL("image/png") + '" alt="' + (i + 1) + '">' +
+      '<div class="no">' + (i + 1) + ' 字目' + (b.ch ? '「' + esc(b.ch) + '」' : '') + (has ? '' : '<br><span style="color:#B00020">墨なし</span>') + '</div></div>';
+  });
+  g.innerHTML = (ink ? '' : '<p class="hint" style="grid-column:1/-1;color:#B00020;margin:0">この列には まだ AI の墨がありません。字を押して［🤖 墨AI に通す］で 1 字ずつ出せます。</p>') + cells.join("");
+  Array.prototype.forEach.call(g.querySelectorAll(".cebox2.ink"), function(el){
+    el.onclick = function(e){
+      if (e.target.closest(".inkmenu")) return;
+      Array.prototype.forEach.call(g.querySelectorAll(".inkmenu"), function(m){ m.remove(); });
+      var i = +el.dataset.i, m = document.createElement("div"); m.className = "inkmenu";
+      m.innerHTML = '<button class="mini primary" data-a="ai">🤖 墨AI に通す</button><button class="mini" data-a="fix">✎ 修正</button>';
+      el.appendChild(m);
+      m.querySelector('[data-a="ai"]').onclick = async function(){
+        m.innerHTML = '<span class="hint">AI に通しています…</span>';
+        await rubAiOne({ ci: RCE.ci, i: i });
+        if (!$("rceEd").hidden && RCE.tab === "ink") rceInkDraw();
+      };
+      m.querySelector('[data-a="fix"]').onclick = function(){
+        var ci = RCE.ci;
+        rceClose();
+        rgOpenAt({ ci: ci, i: i });
+      };
+    };
+  });
 }
 function rceCut(b, n){
   var cv = document.createElement("canvas"); cv.width = n; cv.height = n;
@@ -25448,6 +25526,7 @@ function rceBxNote(){
   $("rceBxNote").innerHTML = (i >= 0 ? '<b>' + (i + 1) + ' 枠目</b>を選んでいます。' : '枠を押すと選べます。') +
     '<b>まん中をつかんで動かす</b>／<b>四すみ・辺をつかんで大きさを変える</b>。' +
     '［＋ 枠を足す］を押してから、絵の上を四角に引くと足せます。読みは枠についてまわります（割ったら上の枠に残ります）。' +
+    '<b>ホイールで拡大縮小</b>、<b>まん中ボタンで つかんで動かす</b>。' +
     'いま <b>' + RCE.boxes.length + ' 枠</b>（読み ' + RCE.boxes.filter(function(b){ return b.ch; }).length + ' 字）。';
 }
 function rceBxDraw(){
@@ -25483,6 +25562,7 @@ function rceBxBind(){
   inw.classList.toggle("adding", RCE_ADD);
   var k = rceBxScale(), im = RCE.im, drag = null;
   inw.addEventListener("pointerdown", function(e){
+    if (e.button === 1) return;                       /* まん中ボタンは 動かす（rceBind） */
     var h = e.target.closest("i[data-h]"), bb = e.target.closest(".bb"), r = inw.getBoundingClientRect();
     var px = (e.clientX - r.left) / k, py = (e.clientY - r.top) / k;
     if (RCE_ADD && !bb){
@@ -25620,6 +25700,31 @@ function rceGo(d){
   Object.keys(m).forEach(function(id){ var b = $(id); if (b) b.onclick = m[id]; });
   var a = $("rceAll"); if (a) a.onkeydown = function(e){ if (e.key === "Enter") m.rceFill(); };
   var z = $("rceBxZoom"); if (z) z.onchange = function(){ RCE.zoom = +z.value || 0; rceBxDraw(); };
+  /* ───── 枠を直す：ホイールで拡大縮小（マウスの所を中心に）、まん中ボタンで つかんで動かす（v44.0。本人の指示）───── */
+  var bw = $("rceBxWrap");
+  if (bw){
+    bw.addEventListener("wheel", function(e){
+      var inw = $("rceBxIn"); if (!inw || !RCE.im) return;
+      e.preventDefault();
+      var k0 = rceBxScale(), r0 = inw.getBoundingClientRect();
+      var ix = (e.clientX - r0.left) / k0, iy = (e.clientY - r0.top) / k0;
+      RCE.zoom = Math.max(0.2, Math.min(10, k0 * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      if (z) z.value = "0";
+      rceBxDraw();
+      var inw2 = $("rceBxIn"), r1 = inw2.getBoundingClientRect(), k1 = rceBxScale();
+      bw.scrollLeft += (r1.left + ix * k1) - e.clientX;
+      bw.scrollTop  += (r1.top  + iy * k1) - e.clientY;
+    }, { passive: false });
+    bw.addEventListener("mousedown", function(e){ if (e.button === 1) e.preventDefault(); });
+    bw.addEventListener("pointerdown", function(e){
+      if (e.button !== 1) return;
+      e.preventDefault(); e.stopPropagation();
+      var sx = e.clientX, sy = e.clientY, l0 = bw.scrollLeft, t0 = bw.scrollTop;
+      var mv = function(ev){ bw.scrollLeft = l0 - (ev.clientX - sx); bw.scrollTop = t0 - (ev.clientY - sy); };
+      var up = function(){ window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
+      window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+    }, true);
+  }
   var w = $("rceEd"); if (w) w.onclick = function(e){ if (e.target === w) rceClose(); };
   document.addEventListener("keydown", function(e){
     if (!w || w.hidden) return;

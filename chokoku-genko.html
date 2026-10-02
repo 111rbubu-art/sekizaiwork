@@ -739,11 +739,13 @@
     display:flex;align-items:center;justify-content:center;padding:24px;}
   #aiRegWin[hidden]{display:none !important;}
   /* 学習画面の 読み・枠の直し（v43.7。拓本AI の画面［✎ 読み・枠］と同じ形） */
-  #rceEd{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:6000}
+  #rceEd{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:6000}
   #rceEd[hidden]{display:none !important;}
-  #rceEd .cebox{background:#fff;color:#22221f;border-radius:12px;padding:14px;width:min(960px,94vw);
+  /* 上の位置は いつも同じ（面を切りかえても 窓が動かない）。見出しをつかんで 動かせる（v44.1） */
+  #rceEd .cebox{position:absolute;left:50%;top:4vh;transform:translateX(-50%);background:#fff;color:#22221f;border-radius:12px;padding:14px;width:min(960px,94vw);
     max-height:92vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}
-  #rceEd .cehead{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  #rceEd .cehead{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;cursor:move;user-select:none}
+  #rceEd .cehead button{cursor:pointer}
   #rceEd .cebar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   #rceEd .seg{display:inline-flex;border:1px solid #e3e3df;border-radius:8px;overflow:hidden;margin:0 0 10px}
   #rceEd .segb{border:0;border-radius:0;padding:4px 12px;background:#fff;cursor:pointer;font-size:12px}
@@ -2547,7 +2549,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v44.0";
+var APP_VER = "v44.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -18378,7 +18380,9 @@ async function rgOpen(i){
             拓本にはない直線を覚えさせてしまう。 */
          lockOut: false,
          saved1: false, saved2: false };
+  RG.ink0 = new Uint8Array(RG.ink);                 /* 開いたときの墨（閉じるときに 直したかを見る。v44.1） */
   rubSelItem = i;
+  $("rgX").textContent = RG_BACK ? "← 墨を直すへ戻る" : "閉じる";
   if (!fresh)
     msg("この列の AI の墨がありません（まだ AI に通していないか、拓本を回しました）。" +
         "いまはしきい値で拾った墨を出しています。AI の墨から直したいときは、" +
@@ -18386,7 +18390,59 @@ async function rgOpen(i){
   $("regWin").hidden = false;
   rgRender(); rubRender();
 }
-function rgClose(){ RG = null; $("regWin").hidden = true; }
+/* ───── **直した墨を 拓本の墨に入れる**（v44.1。本人の報告「修正しても、拓本補正に行くと反映されていません」）─────
+   学習に登録する画面の墨（RG.ink、枠の 1.2 倍の四角を TAKU_N ます）を、その列の AI の墨（RUB.aiBand／L.aiUrl）の
+   同じ所に **置きかえて**書く（消した所は消える）。閉じるときと ① 墨出しに登録したときに走る。 */
+async function rgApplyInk(){
+  if (!RG || !RG.ink) return false;
+  if (RG.ink0 && RG.ink0.length === RG.ink.length){
+    var same = true; for (var q = 0; q < RG.ink.length; q++) if (RG.ink[q] !== RG.ink0[q]){ same = false; break; }
+    if (same) return false;
+  }
+  var L = rubCol(); if (!L) return false;
+  var SC = Math.min(1, 2000 / Math.max(RUB.W, RUB.H)), A = null;
+  if (RUB.aiBand && RUB.aiBand.map && RUB.aiBand.geo === rubGeoKey() && (!L.aiId || RUB.aiBand.id === L.aiId)) A = RUB.aiBand;
+  else if (L.aiUrl && (!L.geo || L.geo === rubGeoKey())){
+    var g0 = await rgBandFromUrl(L.aiUrl, L.aiSc);
+    if (g0) A = { map: new Uint8Array(g0.map), mw: g0.mw, mh: g0.mh, sc: g0.sc, geo: rubGeoKey(), id: (++AIBAND_SEQ),
+                  at: new Date().toLocaleString("ja-JP"), n: 0, all: 0, pitchMm: null, inkMm2: null, url: L.aiUrl };
+  }
+  if (!A){
+    var mw0 = Math.max(1, Math.round(RUB.W * SC)), mh0 = Math.max(1, Math.round(RUB.H * SC));
+    A = { map: new Uint8Array(mw0 * mh0), mw: mw0, mh: mh0, sc: SC, geo: rubGeoKey(), id: (++AIBAND_SEQ),
+          at: new Date().toLocaleString("ja-JP"), n: 0, all: 0, pitchMm: null, inkMm2: null, url: "" };
+  }
+  var N = RG.n || TAKU_N, st = RG.side / N, mw = A.mw, mh = A.mh;
+  var X0 = Math.max(0, Math.floor(RG.cx0 * A.sc)), Y0 = Math.max(0, Math.floor(RG.cy0 * A.sc));
+  var X1 = Math.min(mw - 1, Math.ceil((RG.cx0 + RG.side) * A.sc)), Y1 = Math.min(mh - 1, Math.ceil((RG.cy0 + RG.side) * A.sc));
+  for (var Y = Y0; Y <= Y1; Y++){
+    var yy = Math.floor((Y / A.sc - RG.cy0) / st); if (yy < 0 || yy >= N) continue;
+    for (var X = X0; X <= X1; X++){
+      var xx = Math.floor((X / A.sc - RG.cx0) / st); if (xx < 0 || xx >= N) continue;
+      A.map[Y * mw + X] = RG.ink[yy * N + xx] ? 255 : 0;
+    }
+  }
+  var cv = document.createElement("canvas"); cv.width = mw; cv.height = mh;
+  var cg = cv.getContext("2d"), im2 = cg.createImageData(mw, mh), o2 = im2.data;
+  for (var k2 = 0, k3 = 0; k2 < o2.length; k2 += 4, k3++){ o2[k2] = 30; o2[k2 + 1] = 110; o2[k2 + 2] = 220; o2[k2 + 3] = A.map[k3]; }
+  cg.putImageData(im2, 0, 0);
+  A.url = cv.toDataURL("image/png"); A.at = new Date().toLocaleString("ja-JP");
+  RUB.aiBand = A;
+  L.aiUrl = A.url; L.aiSc = A.sc; L.aiId = A.id; L.geo = rubGeoKey();
+  try { rubInkPut(L.band || { L: S.rub.bandL, R: S.rub.bandR, T: -1, B: -1 }, A); } catch(e){}
+  RG.ink0 = new Uint8Array(RG.ink);
+  persist();
+  return true;
+}
+/* 墨を直す（読み・枠の画面）から来たときは、閉じると そこへ戻る（v44.1。本人「修正の登録画面に行くと、戻れません」） */
+var RG_BACK = null;
+async function rgClose(){
+  var put = false;
+  try { put = await rgApplyInk(); } catch(e){}
+  RG = null; $("regWin").hidden = true;
+  if (put){ try { rubPanel(); rubRender(); } catch(e){} msg("直した墨を 拓本の墨に入れました。", false); }
+  if (RG_BACK){ var bk = RG_BACK; RG_BACK = null; rceOpen(bk.ci, "ink"); }
+}
 function rgCur(){ return RG ? (RG.step === 2 ? RG.shape : RG.ink) : null; }
 /* 形の**輪郭のます**だけを取り出す（v21.73。本人の指示
    「もう少し、縁取りの状態を目立つようにして輪郭だけ強調させてほしい」）。
@@ -18881,7 +18937,8 @@ async function rgSave(which){
     var r = await fetch(base + "/api/takuhon/feedback", { method: "POST", body: fd });
     if (!r.ok){ throw new Error("HTTP " + r.status); }
     var j = await r.json();
-    if (which === 1) RG.saved1 = true; else RG.saved2 = true;
+    if (which === 1){ RG.saved1 = true; try { if (await rgApplyInk()){ rubPanel(); rubRender(); } } catch(eA){} }
+    else RG.saved2 = true;
     /* **登録した字は、手本帳にも入れる**（v31.0。本人の話
        「フォントは楷書なので、学習している物が使えればいいのですが」）。
        いま登録した墨は、この拓本のほんものの字形。手本合わせで使う。 */
@@ -25370,7 +25427,11 @@ function rceOpen(ci, tab){
   $("rceEd").hidden = false;
   rceAtShow();
   var im = new Image();
-  im.onload = function(){ RCE.im = im; rceTab(tab === "bx" ? "bx" : "ch"); };
+  im.onload = function(){
+    RCE.im = im;
+    if (tab === "ink"){ RCE.tab = "ink"; rceTab("ink"); }      /* 開いたばかりなので 保存は要らない */
+    else rceTab(tab === "bx" ? "bx" : "ch");
+  };
   im.src = sh.cv.toDataURL("image/png");
 }
 function rceTab(t){
@@ -25445,6 +25506,7 @@ async function rceInkDraw(){
       m.querySelector('[data-a="fix"]').onclick = function(){
         var ci = RCE.ci;
         rceClose();
+        RG_BACK = { ci: ci, i: i };                  /* 閉じたら 墨を直す に戻る */
         rgOpenAt({ ci: ci, i: i });
       };
     };
@@ -25726,6 +25788,27 @@ function rceGo(d){
     }, true);
   }
   var w = $("rceEd"); if (w) w.onclick = function(e){ if (e.target === w) rceClose(); };
+  /* 見出しをつかんで 窓を動かす（v44.1。本人「学習画面を動かせるようにして」）。置いた所は 覚えておく */
+  var hd = w && w.querySelector(".cehead"), bx9 = w && w.querySelector(".cebox");
+  if (hd && bx9){
+    try { var ps9 = JSON.parse(localStorage.getItem("rcePos") || "null"); if (ps9){ bx9.style.left = ps9.l + "px"; bx9.style.top = ps9.t + "px"; bx9.style.transform = "none"; } } catch(e){}
+    hd.addEventListener("pointerdown", function(e){
+      if (e.button !== 0 || e.target.closest("button, input, select, label")) return;
+      var r = bx9.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+      bx9.style.transform = "none"; bx9.style.left = r.left + "px"; bx9.style.top = r.top + "px";
+      var mv = function(ev){
+        var l = Math.max(-r.width + 80, Math.min(window.innerWidth - 80, ev.clientX - sx));
+        var t = Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - sy));
+        bx9.style.left = l + "px"; bx9.style.top = t + "px";
+      };
+      var up = function(){
+        window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up);
+        try { localStorage.setItem("rcePos", JSON.stringify({ l: parseFloat(bx9.style.left), t: parseFloat(bx9.style.top) })); } catch(e){}
+      };
+      window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+      e.preventDefault();
+    });
+  }
   document.addEventListener("keydown", function(e){
     if (!w || w.hidden) return;
     if (e.key === "Escape"){ rceClose(); return; }

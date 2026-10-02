@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-27　**chokoku-genko.html = v42.7**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
+最終更新: 2026-09-27　**chokoku-genko.html = v42.8**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -6935,3 +6935,11 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
 - `rubToGuidesApply`：センターラインを足す（x は 拓本の左右の差 × mmPerPxX。行が無ければ かたまりをシートの まん中、あれば いまの行の左 ADD_GAP）。`centersPx` に 拓本の x。
   文字グループ `mkGroup` ＋ `role`（kai/zok/mei/nen/hoka）・hMm・wMm・`byRubAi`、`rubGroupPin` で rubPx（全長を直すと rubVFollow で追いかける）。gl は 線ごとに新しく。
 - 行の構成（renderCols の groupCard）に まとまりの札（色つき）を出す。
+
+## v42.8 — 拓本で測った字（墨＝字面）を フォントの全角枠の大きさに直す（本人の指摘「フォントの枠は余白がある、拓本は余白がない。そのまま写すと余白分だけ字が小さくなる」）
+
+- `rubToGuidesApply`：文字グループに `inkSize = { h, w, chars:[[h,w]…] }`（拓本で測った字面 mm）を控え、`grpInkFit(g)` で直す。
+  全角の高さ ＝ Σ 字面の高さ ÷ Σ フォントの字面の比（`glyphInk` の (top−bot)/upem）、幅も同じ。字ごとに足すので 一・二 が混じっても くるわない。□・フォントに無い字は飛ばす。
+- フォントが無いときは控えだけ。`addFont` のあとに `grpInkFitPending()` で まだの行を直す。
+- 文字グループの欄に［拓本の墨の大きさに合わせ直す］（`pInkFit`）。フォント・字を変えたあとに押す。
+- 試し（IPA ゴシック、平の字面比 0.83×0.90）：戒名 字面 30×27 → 全角 34.0×30.5、命日 17×15.3 → 20.2×18.5。

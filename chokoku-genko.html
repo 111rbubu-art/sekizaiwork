@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.7";
+var APP_VER = "v42.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -2663,6 +2663,8 @@ function addFont(bytes, name){
   readOS2(F);
   FONTS.push(F);
   glyphCache = {}; inkCache = {};
+  /* 拓本から作った行で、まだ 字面→全角枠 に直していないものを 直す（v42.8） */
+  setTimeout(function(){ try { if (grpInkFitPending()) { renderAll(); persist(); } } catch(e){} }, 0);
   return FONTS.length - 1;
 }
 
@@ -5288,6 +5290,12 @@ function renderProps(){
       miss.map(function(m){ return (m.i + 1) + "文字目「" + esc(m.ch) + "」"; }).join("、") + '</div>';
   }
 
+  /* 拓本から作った行：字面に合わせ直す（v42.8）。フォントや字を変えたあとに 押す */
+  if (g.inkSize){
+    h += '<button class="mini" id="pInkFit" style="width:100%;margin:4px 0;" title="拓本で測った 墨の高さ・幅（' +
+      num(g.inkSize.h, 0).toFixed(1) + '×' + num(g.inkSize.w, 0).toFixed(1) + 'mm）に、いまのフォントの字面が合うよう 大きさを直します">' +
+      '拓本の墨の大きさに合わせ直す</button>';
+  }
   /* ［詳細］は、めったに使わないので いちばん下（v20.3） */
   h += '<h3 class="sec">詳細</h3>';
   h += '<button class="mini" id="pMore" style="width:100%;margin-bottom:4px;">' +
@@ -5439,6 +5447,13 @@ function bindProps(){
   });
   on("cAuto","click",function(){ autoTighten(g); renderAll(); });
   on("pMore","click",function(){ showDetail = !showDetail; renderProps(); });
+  on("pInkFit","click",function(){
+    var gg = S.groups[sel]; if (!gg || !gg.inkSize) return;
+    if (!FONTS.length){ msg("先にフォントを読み込んでください。", true); return; }
+    if (grpInkFit(gg)){ renderAll(); persist();
+      msg("拓本の墨の大きさに合わせて、字の大きさを 縦 " + gg.hMm.toFixed(1) + "・横 " + gg.wMm.toFixed(1) + " mm にしました。"); }
+    else msg("合わせられる字がありませんでした（□ だけ、またはフォントに無い字）。", true);
+  });
 }
 
 /* 字面の縦が小さい文字（一・二・ニ など）の前後を自動で詰める。
@@ -8280,6 +8295,7 @@ function rubToGuidesPlan(){
       var ws = r.its.map(function(it){ return num(it.wMm, 0) || it.px.w * mpx; });
       var tx = r.its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
       return { g: r.g, text: tx, n: r.its.length, unk: (tx.match(/□/g) || []).length,
+               inkChars: hs.map(function(h9, k9){ return [+h9.toFixed(2), +ws[k9].toFixed(2)]; }),
                pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
                hMm: avg(hs), wMm: avg(ws) };
     });
@@ -8287,6 +8303,41 @@ function rubToGuidesPlan(){
     out.push({ cx: ln.cx, rows: rows, w: +(wMax * 1.1 || 30.3).toFixed(1) });
   });
   return { lines: out, mpx: mpx };
+}
+/* ───── **字面（墨の大きさ）から 全角枠の大きさへ**（v42.8。本人の指摘
+   「ガイドラインでできた物はフォント登録で、枠は余白があります。拓本は余白はないので
+     その設定をコピーすると単純にガイドラインの文字が余白分だけ小さくなります」）─────
+   拓本で測ったのは 見える墨の高さ・幅（字面）。文字グループの hMm・wMm は フォントの全角枠（余白こみ）の大きさ。
+   その行の字ごとに フォントの字面の比（字面の高さ ÷ 全角）を測り、
+     全角の高さ ＝ Σ 拓本の字面の高さ ÷ Σ フォントの字面の比   （幅も同じ）
+   で直す。字ごとに比を足し合わせるので、一・二 のような 背の低い字が混じっても くるわない。
+   フォントが まだ無いときは 控え（g.inkSize）だけ持っておき、フォントを読んだときに直す（grpInkFitPending）。 */
+function grpInkFit(g){
+  var K = g && g.inkSize; if (!K) return false;
+  var F = FR(g.fontIdx); if (!F || !F.upem) return false;
+  var chs = Array.from(String(g.text || "")), ax = g.axes || {};
+  var per = Array.isArray(K.chars) && K.chars.length === chs.length ? K.chars : null;
+  var sH = 0, sRH = 0, sW = 0, sRW = 0, n = 0;
+  chs.forEach(function(c, i){
+    if (!c || c === "□" || /\s/.test(c)) return;
+    var gid = shapeOne(c, ax, g.fontIdx); if (!gid) return;
+    var r = glyphInk(gid, ax, g.fontIdx); if (!r) return;
+    var rh = (r.top - r.bot) / F.upem, rw = (r.right - r.left) / F.upem;
+    if (!(rh > 0.05 && rh <= 1.2) || !(rw > 0.05 && rw <= 1.2)) return;
+    var ih = per ? num(per[i][0], 0) : num(K.h, 0), iw = per ? num(per[i][1], 0) : num(K.w, 0);
+    if (!(ih > 0) || !(iw > 0)) return;
+    sH += ih; sRH += rh; sW += iw; sRW += rw; n++;
+  });
+  if (!n) return false;
+  g.hMm = +(sH / sRH).toFixed(2);
+  g.wMm = +(sW / sRW).toFixed(2);
+  K.fit = { font: F.name, n: n, at: Date.now() };
+  return true;
+}
+function grpInkFitPending(){
+  var k = 0;
+  (S.groups || []).forEach(function(g){ if (g && g.inkSize && !g.inkSize.fit && grpInkFit(g)) k++; });
+  return k;
 }
 function rubToGuidesOpen(){
   var P = rubToGuidesPlan();
@@ -8346,7 +8397,11 @@ function rubToGuidesApply(P){
     ln.rows.forEach(function(r, ri){
       if (r.top == null) return;
       var g = Object.assign(mkGroup(String(ri + 1), r.text, +r.top.toFixed(2), +r.bot.toFixed(2), 1.15),
-        { col: ci, role: r.g, hMm: +r.hMm.toFixed(2), wMm: +r.wMm.toFixed(2), byRubAi: Date.now() });
+        { col: ci, role: r.g, hMm: +r.hMm.toFixed(2), wMm: +r.wMm.toFixed(2), byRubAi: Date.now(),
+          /* 拓本で測ったのは 墨の大きさ（字面）。フォントの大きさは 全角枠（余白こみ）なので、
+             そのまま入れると 余白の分だけ字が小さくなる（v42.8。本人の指摘）。測った値を控えて、フォントの字面の比で 直す */
+          inkSize: { h: +r.hMm.toFixed(2), w: +r.wMm.toFixed(2), chars: r.inkChars } });
+      grpInkFit(g);
       rubGroupPin(g, "top", r.pt); rubGroupPin(g, "bottom", r.pb);
       S.groups.push(g); nG++;
     });
@@ -8356,8 +8411,11 @@ function rubToGuidesApply(P){
   setSub("group");
   renderAll(); rubPanel(); try { if (view !== "sheet") rubRender(); } catch(e){}
   persist();
+  var nFit = S.groups.filter(function(g){ return g.inkSize && g.inkSize.fit; }).length;
   msg("解析結果から センターライン " + P.lines.length + " 本・文字グループ " + nG + " 個を" +
-      (ci0 ? " いまの行の左に足しました" : "作りました") + "。字の大きさは まとまりごとの平均です。");
+      (ci0 ? " いまの行の左に足しました" : "作りました") + "。字の大きさは まとまりごとの平均で、" +
+      (FONTS.length ? "フォントの余白の分を足して 拓本の墨の大きさに合わせています。"
+                    : "フォントを読み込むと、余白の分を足して 拓本の墨の大きさに合わせ直します。"));
 }
 function rubReadFixOpen(ev, hit){
   var el = $("rubMenu"), L = (S.rub.lines || [])[hit.ci], it = L && L.items && L.items[hit.i];

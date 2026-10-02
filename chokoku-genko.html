@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v43.1";
+var APP_VER = "v43.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5296,8 +5296,9 @@ function renderProps(){
       num(g.inkSize.h, 0).toFixed(1) + '×' + num(g.inkSize.w, 0).toFixed(1) + 'mm、拓本の字「' + esc(String(g.inkSize.src || "")) + '」）に、いまのフォントで 同じ字を彫ったときの大きさを出します。行の字を打ちかえても 大きさは この拓本の字で決めます">' +
       '拓本の墨の大きさに合わせ直す</button>' +
       '<label class="chk" style="display:block;margin:0 0 4px;font-size:12px;"><input type="checkbox" id="pInkNichi" style="width:auto;"' +
-      (S.rub && S.rub.fitNichi ? ' checked' : '') + '> 「日」の縦と横を拓本に合わせる' +
-      (g.inkSize.nichi && g.inkSize.nichi.n ? '（日 ' + g.inkSize.nichi.n + ' 字を 縦 ' + g.inkSize.nichi.h.toFixed(1) + '・横 ' + g.inkSize.nichi.w.toFixed(1) + ' mm に）' : '') + '</label>';
+      (S.rub && S.rub.fitNichi ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる' +
+      (g.inkSize.nichi && g.inkSize.nichi.n ? '（' + g.inkSize.nichi.n + ' 字：' +
+        (g.inkSize.nichi.list || []).map(function(x){ return esc(x.c); }).join("・") + '）' : '') + '</label>';
   }
   /* ［詳細］は、めったに使わないので いちばん下（v20.3） */
   h += '<h3 class="sec">詳細</h3>';
@@ -5460,9 +5461,10 @@ function bindProps(){
     if (!FONTS.length){ msg("先にフォントを読み込んでください。", true); return; }
     if (grpInkFit(gg)){ renderAll(); persist();
       msg("拓本の墨の大きさに合わせて、字の大きさを 縦 " + gg.hMm.toFixed(1) + "・横 " + gg.wMm.toFixed(1) + " mm にしました" +
-          (gg.inkSize.nichi && gg.inkSize.nichi.n ? "。「日」" + gg.inkSize.nichi.n + " 字は 拓本の日に合わせて 縦 " +
-             gg.inkSize.nichi.h.toFixed(1) + "・横 " + gg.inkSize.nichi.w.toFixed(1) + " mm にしました" :
-           S.rub.fitNichi ? "（この行には 拓本の「日」か 行の「日」が無いので、日 は合わせていません）" : "") + "。"); }
+          (gg.inkSize.nichi && gg.inkSize.nichi.n ? "。拓本と同じ字 " + gg.inkSize.nichi.n + " 字（" +
+             gg.inkSize.nichi.list.map(function(x){ return esc(x.c) + " " + x.h.toFixed(1) + "×" + x.w.toFixed(1); }).join("、") +
+             " mm）は 拓本の字に合わせました" :
+           S.rub.fitNichi ? "（拓本と同じ字が無いので、字ごとには合わせていません）" : "") + "。"); }
     else msg("合わせられる字がありませんでした（□ だけ、またはフォントに無い字）。", true);
   });
 }
@@ -8304,11 +8306,15 @@ function rubToGuidesPlan(){
       var a = r.its[0], z = r.its[r.its.length - 1];
       var hs = r.its.map(function(it){ return num(it.hMm, 0) || it.px.h * mp; });
       var ws = r.its.map(function(it){ return num(it.wMm, 0) || it.px.w * mpx; });
+      /* 平均は 尼 を除く（小さく彫ることが多い。v43.2） */
+      var keep9 = r.its.map(function(it){ return (it.pick || (it.anch && it.anch.ch) || "").charAt(0) !== "尼"; });
+      var hsA = hs.filter(function(v, k){ return keep9[k]; }), wsA = ws.filter(function(v, k){ return keep9[k]; });
+      if (!hsA.length){ hsA = hs; wsA = ws; }
       var tx = r.its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
       return { g: r.g, text: tx, n: r.its.length, unk: (tx.match(/□/g) || []).length,
                inkChars: hs.map(function(h9, k9){ return [+h9.toFixed(2), +ws[k9].toFixed(2)]; }),
                pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
-               hMm: avg(hs), wMm: avg(ws) };
+               hMm: avg(hsA), wMm: avg(wsA) };
     });
     var wMax = Math.max.apply(null, rows.map(function(r){ return r.wMm; }).concat([0]));
     out.push({ cx: ln.cx, rows: rows, w: +(wMax * 1.1 || 30.3).toFixed(1) });
@@ -8335,6 +8341,7 @@ function grpInkFit(g){
   /* 行の大きさは いつも ぜんぶの字で決める。「日」のオプションは 下の grpNichiFit で 日 の字だけに効かせる（v43.1） */
   chs.forEach(function(c, i){
     if (!c || c === "□" || /\s/.test(c)) return;
+    if (c === "尼") return;            /* 尼 は小さく彫ることが多いので 平均に入れない（v43.2。本人の指示） */
     var gid = shapeOne(c, ax, g.fontIdx); if (!gid) return;
     var r = glyphInk(gid, ax, g.fontIdx); if (!r) return;
     var rh = (r.top - r.bot) / F.upem, rw = (r.right - r.left) / F.upem;
@@ -8356,38 +8363,55 @@ function grpInkFit(g){
    拓本の 日 の墨の縦・横 と フォントの 日 の墨の縦・横 が同じになる大きさにする。
    拓本の 日 は 作ったときの読み（inkSize.src）の中の 日（いくつかあれば 平均）。
    行の字を打ちかえても、新しい字の中の 日 に効く。オプションを切ると、ここで入れた分だけ外す（印 adj.nichi）。 */
+/* v43.2 で 日 のほかにも広げた（本人の指示）：
+     ・戒名 … 院・居・士・信・姉・尼 は 拓本の同じ字に合わせる
+     ・命日・年齢 … 拓本と同じ字（年・月・日・才・歳・数字 など）は 拓本の同じ字に合わせる
+     ・どのまとまりでも 日 は合わせる（前のまま）
+   拓本の同じ字が いくつもあれば その平均。行の大きさ（hMm・wMm）は さわらない。 */
+var RUB_FIT_KAI = "院居士信姉尼";
+function grpCharFitWant(g, c){
+  if (c === "日") return true;
+  if (g.role === "kai") return RUB_FIT_KAI.indexOf(c) >= 0;
+  if (g.role === "mei" || g.role === "nen") return !!c && c !== "□" && !/\s/.test(c);
+  return false;
+}
 function grpNichiFit(g, F){
   var K = g && g.inkSize; if (!K) return 0;
   var chs = Array.from(String(g.text || ""));
   if (!Array.isArray(g.adj)) g.adj = [];
   var undo = function(){
-    var k = 0;
-    g.adj.forEach(function(a){ if (a && a.nichi){ delete a.hmm; delete a.wmm; delete a.nichi; k++; } });
-    return k;
+    g.adj.forEach(function(a){ if (a && a.nichi){ delete a.hmm; delete a.wmm; delete a.nichi; } });
   };
   K.nichi = null;
   if (!(S.rub && S.rub.fitNichi)){ undo(); return 0; }
   F = F || FR(g.fontIdx); if (!F || !F.upem) return 0;
   var src = Array.from(String(K.src || "")), per = Array.isArray(K.chars) && K.chars.length === src.length ? K.chars : null;
-  if (!per){ undo(); return 0; }
-  var hs = [], ws = [];
-  src.forEach(function(c, i){ if (c === "日" && per[i]){ hs.push(num(per[i][0], 0)); ws.push(num(per[i][1], 0)); } });
-  if (!hs.length){ undo(); return 0; }
-  var avg = function(a){ return a.reduce(function(x, y){ return x + y; }, 0) / a.length; };
-  var ih = avg(hs), iw = avg(ws);
-  var gid = shapeOne("日", g.axes || {}, g.fontIdx); if (!gid){ undo(); return 0; }
-  var r = glyphInk(gid, g.axes || {}, g.fontIdx);
-  var rh = (r.top - r.bot) / F.upem, rw = (r.right - r.left) / F.upem;
-  if (!(rh > 0.05) || !(rw > 0.05) || !(ih > 0) || !(iw > 0)){ undo(); return 0; }
-  var hmm = +(ih / rh).toFixed(2), wmm = +(iw / rw).toFixed(2), k = 0;
   undo();
+  if (!per) return 0;
+  /* 拓本の字ごとの 墨の縦・横（同じ字は平均） */
+  var inkBy = {};
+  src.forEach(function(c, i){
+    if (!per[i] || !grpCharFitWant(g, c)) return;
+    var e = inkBy[c] || (inkBy[c] = { h: 0, w: 0, n: 0 });
+    e.h += num(per[i][0], 0); e.w += num(per[i][1], 0); e.n++;
+  });
+  var list = [], k = 0, emBy = {};
+  Object.keys(inkBy).forEach(function(c){
+    var e = inkBy[c], ih = e.h / e.n, iw = e.w / e.n;
+    var gid = shapeOne(c, g.axes || {}, g.fontIdx); if (!gid) return;
+    var r = glyphInk(gid, g.axes || {}, g.fontIdx);
+    var rh = (r.top - r.bot) / F.upem, rw = (r.right - r.left) / F.upem;
+    if (!(rh > 0.03) || !(rw > 0.03) || !(ih > 0) || !(iw > 0)) return;
+    emBy[c] = { h: +(ih / rh).toFixed(2), w: +(iw / rw).toFixed(2) };
+  });
   chs.forEach(function(c, i){
-    if (c !== "日") return;
+    var em = emBy[c]; if (!em) return;
     var a = g.adj[i] || (g.adj[i] = {});
     if ((a.hmm > 0 || a.wmm > 0) && !a.nichi) return;     /* 人が手で入れた大きさは さわらない */
-    a.hmm = hmm; a.wmm = wmm; a.nichi = 1; k++;
+    a.hmm = em.h; a.wmm = em.w; a.nichi = 1; k++;
   });
-  K.nichi = { h: hmm, w: wmm, ink: [+ih.toFixed(2), +iw.toFixed(2)], n: k };
+  Object.keys(emBy).forEach(function(c){ if (chs.indexOf(c) >= 0) list.push({ c: c, h: emBy[c].h, w: emBy[c].w }); });
+  K.nichi = { n: k, list: list, h: list[0] ? list[0].h : 0, w: list[0] ? list[0].w : 0 };
   return k;
 }
 function grpInkFitPending(){
@@ -8423,8 +8447,8 @@ function rubToGuidesOpen(){
     '<table class="r2g" style="width:100%;border-collapse:collapse;font-size:12px;">' +
       '<thead><tr><th>線</th><th>まとまり</th><th>字</th><th>字数</th><th>上〜下 mm</th><th>高さ × 幅 mm</th></tr></thead><tbody>' + rowsH + '</tbody></table>' +
     '<div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-top:10px;">' +
-      '<label class="chk" style="margin-right:auto;" title="入れると、行の中の「日」の字だけ、墨の縦・横が 拓本の日と同じになる大きさにします。ほかの字は そのままです">' +
-      '<input type="checkbox" id="r2gNichi" style="width:auto;"' + (S.rub.fitNichi ? ' checked' : '') + '> 「日」の縦と横を拓本に合わせる</label>' +
+      '<label class="chk" style="margin-right:auto;" title="入れると、日（どの行でも）・戒名の 院居士信姉尼・命日と年齢の 拓本と同じ字 だけ、墨の縦・横が 拓本の同じ字と同じになる大きさにします。ほかの字は そのままです">' +
+      '<input type="checkbox" id="r2gNichi" style="width:auto;"' + (S.rub.fitNichi ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる</label>' +
       '<button class="mini" id="r2gNo">やめる</button><button class="mini primary" id="r2gGo">作る</button></div></div>';
   document.body.appendChild(ov);
   ov.querySelectorAll(".r2g th, .r2g td").forEach(function(td){ td.style.cssText += ";border-bottom:1px solid #eee;padding:3px 5px;text-align:left;"; });

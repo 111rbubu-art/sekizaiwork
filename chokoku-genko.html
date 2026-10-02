@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.6";
+var APP_VER = "v42.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -4348,8 +4348,11 @@ function renderCols(){
   function groupCard(gi){
     var miss = (window._missing || []).filter(function(m){ return m.gi === gi; }).length;
     var g = S.groups[gi];
+    var rg9 = g && g.role && rubGrpOf(g.role);       /* まとまりの札（v42.7） */
     var card = '<div class="grow' + (gi === sel ? " on" : "") + '" data-gi="' + gi + '" draggable="true"' +
       ' title="つかんで、ほかのセンターラインへ動かせます">' +
+      (rg9 ? '<span class="grole" style="flex:none;font-size:10px;padding:0 4px;border:1px solid ' + rg9.c + ';color:' + rg9.c +
+             ';border-radius:8px;margin-right:3px;white-space:nowrap;">' + rg9.nm + '</span>' : '') +
       '<input type="text" class="gtxt" data-gi="' + gi + '" draggable="false"' +
         ' value="' + esc(String(g && g.text || "")) + '" placeholder="（未入力）">' +
       (miss ? '<span class="warn">字なし ' + miss + '</span>' : '') +
@@ -8227,6 +8230,135 @@ function rgOpenAt(hit){
    枠の右クリック →［✏ 読みを直して登録］。正しい字を入れて［直して登録］を押すと、
    その字の読みを人が決めたものにし（`pick`・`anch.hand`）、その字枠を 切り抜き・墨・読み と一緒に 拓本AI へ送る（`rubLineReg`）。
    AI の候補（`it.ai`）があれば ボタンで選べる。拓本AI に つながらないときは 読みだけ直す。 */
+/* ───── **拓本AI の解析結果から ガイドラインを作る**（v42.7。本人の指示
+   「拓本AIの解析結果より、ガイドラインの作成をできるようにしてほしい」→ 検討のうえ
+   「まとまり毎でいいです／字の大きさは ひとまず 各まとまりの縦横毎で平均値／ガイドラインが既にある場合は追加で／まとまり札はつけていい」）─────
+   ・解析した列（S.rub.lines）ごとに センターラインを 1 本。拓本の上で 横の位置が近い列（上下に分かれた列）は 同じ線にまとめる。
+     線どうしの間は 拓本の上の左右の差を mm に直したまま。いまの行があれば その左へ（縦書きなので 足す行は左）。
+   ・列の中で 同じまとまり（it.g）が続く所を 文字グループ 1 つに。
+     字＝読み（読めない字は □）、上端・下端＝最初の字の上〜最後の字の下（mmOf）、拓本の位置も覚える（rubPx。全長を直すと追いかける）。
+     字の大きさ＝そのまとまりの字の 高さ・幅 の平均（hMm・wMm）。札＝ g.role（kai/zok/mei/nen/hoka）。
+   ・まず 下見の表を出し、［作る］で入れる。 */
+function rubToGuidesPlan(){
+  var mp = mmPerPx(), mpx = mmPerPxX() || mp;
+  if (!mp) return { err: "先に［実測した文字全長］を入れてください（大きさが決まりません）。" };
+  var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
+  if (!ls.length) return { err: "先に［拓本AI解析］で 枠を作ってください。" };
+  var cols = ls.map(function(L){
+    var its = L.items.filter(function(it){ return it && it.px; });
+    var cx = its.map(function(it){ return it.px.x + it.px.w / 2; }).sort(function(a, b){ return a - b; });
+    var ws = its.map(function(it){ return it.px.w; }).sort(function(a, b){ return a - b; });
+    return { L: L, its: its, cx: cx.length ? cx[cx.length >> 1] : 0, wpx: ws.length ? ws[ws.length >> 1] : 0,
+             y0: its.length ? Math.min.apply(null, its.map(function(it){ return it.px.y; })) : 0 };
+  }).filter(function(c){ return c.its.length; });
+  /* 横の位置が近い列（字幅の半分以内）は 同じセンターラインに */
+  cols.sort(function(a, b){ return a.cx - b.cx; });
+  var lines = [];
+  cols.forEach(function(c){
+    var last = lines[lines.length - 1];
+    if (last && Math.abs(c.cx - last.cx) < Math.max(c.wpx, last.wpx) * 0.5){ last.cols.push(c); return; }
+    lines.push({ cx: c.cx, wpx: c.wpx, cols: [c] });
+  });
+  lines.forEach(function(ln){ ln.cols.sort(function(a, b){ return a.y0 - b.y0; }); });
+  /* 縦書き：右の線から並べる */
+  lines.sort(function(a, b){ return b.cx - a.cx; });
+  var avg = function(a){ return a.length ? a.reduce(function(x, y){ return x + y; }, 0) / a.length : 0; };
+  var out = [];
+  lines.forEach(function(ln, li){
+    var rows = [];
+    ln.cols.forEach(function(c){
+      var run = null;
+      c.its.forEach(function(it){
+        var g = it.g || "hoka";
+        if (!run || run.g !== g){ run = { g: g, its: [] }; rows.push(run); }
+        run.its.push(it);
+      });
+    });
+    rows = rows.map(function(r){
+      var a = r.its[0], z = r.its[r.its.length - 1];
+      var hs = r.its.map(function(it){ return num(it.hMm, 0) || it.px.h * mp; });
+      var ws = r.its.map(function(it){ return num(it.wMm, 0) || it.px.w * mpx; });
+      var tx = r.its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
+      return { g: r.g, text: tx, n: r.its.length, unk: (tx.match(/□/g) || []).length,
+               pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
+               hMm: avg(hs), wMm: avg(ws) };
+    });
+    var wMax = Math.max.apply(null, rows.map(function(r){ return r.wMm; }).concat([0]));
+    out.push({ cx: ln.cx, rows: rows, w: +(wMax * 1.1 || 30.3).toFixed(1) });
+  });
+  return { lines: out, mpx: mpx };
+}
+function rubToGuidesOpen(){
+  var P = rubToGuidesPlan();
+  if (P.err){ msg(P.err, true); return; }
+  var old = $("r2gOv"); if (old) old.remove();
+  var ov = document.createElement("div"); ov.id = "r2gOv";
+  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.45);display:flex;align-items:center;justify-content:center;padding:18px;";
+  var nR = 0, nU = 0;
+  var rowsH = P.lines.map(function(ln, li){
+    return ln.rows.map(function(r, ri){
+      nR++; nU += r.unk;
+      var go = rubGrpOf(r.g) || { nm: r.g, c: "#666" };
+      return '<tr>' + (ri === 0 ? '<td rowspan="' + ln.rows.length + '" style="vertical-align:top;white-space:nowrap;">線 ' + (li + 1) + '</td>' : '') +
+        '<td><span style="color:' + go.c + ';border:1px solid ' + go.c + ';border-radius:8px;padding:0 5px;font-size:11px;">' + go.nm + '</span></td>' +
+        '<td style="font-size:15px;">' + esc(r.text) + (r.unk ? ' <span style="color:#B00020;font-size:11px;">□ ' + r.unk + '</span>' : '') + '</td>' +
+        '<td class="n">' + r.n + '</td>' +
+        '<td class="n">' + (r.top != null ? r.top.toFixed(1) + '〜' + r.bot.toFixed(1) : '—') + '</td>' +
+        '<td class="n">' + r.hMm.toFixed(1) + ' × ' + r.wMm.toFixed(1) + '</td></tr>';
+    }).join("");
+  }).join("");
+  var had = (S.centers || []).length;
+  ov.innerHTML = '<div style="background:#fff;border-radius:10px;max-width:760px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
+    '<b>解析結果から ガイドラインを作る（下見）</b>' +
+    '<p class="hint" style="margin:4px 0 8px;">センターライン ' + P.lines.length + ' 本・文字グループ ' + nR + ' 個を ' +
+      (had ? '<b>いまのガイドラインの左に 足します</b>' : '作ります') + '。字の大きさは まとまりごとの 高さ × 幅 の平均（mm）です。' +
+      (nU ? '<br><span style="color:#B00020;">読めなかった字 ' + nU + ' 字は □ で入れます。あとで直してください（枠の右クリック［✏ 読みを直して登録］で直してから作ると 字も入ります）。</span>' : '') + '</p>' +
+    '<table class="r2g" style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr><th>線</th><th>まとまり</th><th>字</th><th>字数</th><th>上〜下 mm</th><th>高さ × 幅 mm</th></tr></thead><tbody>' + rowsH + '</tbody></table>' +
+    '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px;">' +
+      '<button class="mini" id="r2gNo">やめる</button><button class="mini primary" id="r2gGo">作る</button></div></div>';
+  document.body.appendChild(ov);
+  ov.querySelectorAll(".r2g th, .r2g td").forEach(function(td){ td.style.cssText += ";border-bottom:1px solid #eee;padding:3px 5px;text-align:left;"; });
+  $("r2gNo").onclick = function(){ ov.remove(); };
+  $("r2gGo").onclick = function(){ ov.remove(); rubToGuidesApply(P); };
+}
+function rubToGuidesApply(P){
+  if (!Array.isArray(S.centers)) S.centers = [];
+  if (!Array.isArray(S.groups)) S.groups = [];
+  padCentersPx();
+  var mpx = P.mpx, ng = 0, allL = 1e9;
+  (S.centers || []).forEach(function(c, i){
+    ng = Math.max(ng, num(c.gl, 0) + 1);
+    allL = Math.min(allL, num(c.x, 0) - (cenW(i) || num(c.w, 0) || 30.3) / 2);
+  });
+  /* いちばん右の線の x。行が無ければ シートの まん中に かたまりごと置く。あれば いまの行の左へ */
+  var r0 = P.lines[0], l9 = P.lines[P.lines.length - 1];
+  var spanMm = (r0.cx - l9.cx) * mpx;
+  var xR = (S.centers.length)
+    ? allL - ADD_GAP - r0.w / 2
+    : num(S.sheet.w, 90) / 2 + spanMm / 2;
+  var nG = 0, ci0 = S.centers.length;
+  P.lines.forEach(function(ln){
+    var x = xR - (r0.cx - ln.cx) * mpx;
+    S.centers.push({ x: +x.toFixed(1), w: ln.w, fit: false, gl: ng++ });
+    S.rub.centersPx.push(Math.round(ln.cx));
+    var ci = S.centers.length - 1;
+    ln.rows.forEach(function(r, ri){
+      if (r.top == null) return;
+      var g = Object.assign(mkGroup(String(ri + 1), r.text, +r.top.toFixed(2), +r.bot.toFixed(2), 1.15),
+        { col: ci, role: r.g, hMm: +r.hMm.toFixed(2), wMm: +r.wMm.toFixed(2), byRubAi: Date.now() });
+      rubGroupPin(g, "top", r.pt); rubGroupPin(g, "bottom", r.pb);
+      S.groups.push(g); nG++;
+    });
+  });
+  sel = S.groups.length - 1; charSel = 0; charPicked = false;
+  try { migrate(); } catch(e){}
+  setSub("group");
+  renderAll(); rubPanel(); try { if (view !== "sheet") rubRender(); } catch(e){}
+  persist();
+  msg("解析結果から センターライン " + P.lines.length + " 本・文字グループ " + nG + " 個を" +
+      (ci0 ? " いまの行の左に足しました" : "作りました") + "。字の大きさは まとまりごとの平均です。");
+}
 function rubReadFixOpen(ev, hit){
   var el = $("rubMenu"), L = (S.rub.lines || [])[hit.ci], it = L && L.items && L.items[hit.i];
   if (!el || !it) return;
@@ -21603,6 +21735,12 @@ function rubPanel(){
     } else if (!ct){
       h += '<p class="hint" style="margin:4px 0 0;">まだ解析していません。</p>';
     }
+    /* 解析結果から ガイドラインを作る（v42.7） */
+    if ((S.rub.lines || []).some(function(L9){ return L9 && L9.items && L9.items.length; }))
+      h += '<div style="margin:6px 0 0;"><button class="mini" id="btnRubToGl" ' +
+        'title="解析した列ごとに センターラインを、戒名・俗名・命日・年齢 のまとまりごとに 文字グループを作ります。' +
+        '読み・上下の位置・字の大きさ（まとまりごとの平均）も入れます。いまのガイドラインには 足します">' +
+        '📐 解析結果からガイドラインを作る</button></div>';
 
     /* ───── **1 つずつ実行する**（v41.0。本人「直すは、拓本AI解析を個別に実行できるようにしている物。
        メニューとしては、解析の中に入れた方がいい。拓本AI解析が押されて、実行されたものは、ラベルに色を付けて 実行済マークを付けて」）─────
@@ -21846,6 +21984,7 @@ function rubPanel(){
       ((e && e.message) || "") + "）。", true); }
     bza.disabled = false; bza.textContent = "拓本を解析";
   };
+  var btg = $("btnRubToGl"); if (btg) btg.onclick = rubToGuidesOpen;
   var bz2 = $("btnAnalyze2");
   if (bz2) bz2.onclick = async function(){
     bz2.disabled = true; bz2.textContent = "解析しています…";

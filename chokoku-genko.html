@@ -2549,7 +2549,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v44.3";
+var APP_VER = "v44.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5389,6 +5389,7 @@ function renderProps(){
     h += '<button class="mini" id="pInkFit" style="width:100%;margin:4px 0;" title="拓本で測った 墨の高さ・幅（' +
       num(g.inkSize.h, 0).toFixed(1) + '×' + num(g.inkSize.w, 0).toFixed(1) + 'mm、拓本の字「' + esc(String(g.inkSize.src || "")) + '」）に、いまのフォントで 同じ字を彫ったときの大きさを出します。行の字を打ちかえても 大きさは この拓本の字で決めます">' +
       '拓本の墨の大きさに合わせ直す</button>' +
+      '<details style="margin:2px 0 4px;"><summary style="cursor:pointer;font-size:12px;">🔍 大きさの内訳</summary>' + grpSizeTable(g) + '</details>' +
       '<label class="chk" style="display:block;margin:0 0 4px;font-size:12px;"><input type="checkbox" id="pInkNichi" style="width:auto;"' +
       (rubFitOn() ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる' +
       (g.inkSize.nichi && g.inkSize.nichi.n ? '（' + g.inkSize.nichi.n + ' 字：' +
@@ -8391,16 +8392,18 @@ function rubToGuidesPlan(){
     var rows = [];
     ln.cols.forEach(function(c){
       var run = null;
+      var li9 = (S.rub.lines || []).indexOf(c.L);
       c.its.forEach(function(it){
         var g = it.g || "hoka";
-        if (!run || run.g !== g){ run = { g: g, its: [] }; rows.push(run); }
+        if (!run || run.g !== g){ run = { g: g, its: [], li: li9 }; rows.push(run); }
         run.its.push(it);
       });
     });
     rows = rows.map(function(r){
       var a = r.its[0], z = r.its[r.its.length - 1];
-      var hs = r.its.map(function(it){ return num(it.hMm, 0) || it.px.h * mp; });
-      var ws = r.its.map(function(it){ return num(it.wMm, 0) || it.px.w * mpx; });
+      /* 字の大きさは いつも いまの枠（px）から（v44.4。it.hMm は 枠を直したあと 古いままのことがある） */
+      var hs = r.its.map(function(it){ return it.px.h * mp; });
+      var ws = r.its.map(function(it){ return it.px.w * mpx; });
       /* 平均は 尼 を除く（小さく彫ることが多い。v43.2） */
       var keep9 = r.its.map(function(it){ var c9 = (it.pick || (it.anch && it.anch.ch) || "").charAt(0); return c9 !== "尼" && c9 !== "日"; });
       var hsA = hs.filter(function(v, k){ return keep9[k]; }), wsA = ws.filter(function(v, k){ return keep9[k]; });
@@ -8410,7 +8413,7 @@ function rubToGuidesPlan(){
                /* [字面の高さ mm, 幅 mm, 拓本の上の 字の真ん中 x 画素, 上端 y 画素]（後ろ 2 つは 尼 の位置合わせ用。v43.3） */
                inkChars: hs.map(function(h9, k9){ var b9 = r.its[k9].px;
                  return [+h9.toFixed(2), +ws[k9].toFixed(2), +(b9.x + b9.w / 2).toFixed(1), +b9.y.toFixed(1)]; }),
-               pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
+               li: r.li, pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
                hMm: avg(hsA), wMm: avg(wsA) };
     });
     var wMax = Math.max.apply(null, rows.map(function(r){ return r.wMm; }).concat([0]));
@@ -8426,8 +8429,35 @@ function rubToGuidesPlan(){
      全角の高さ ＝ Σ 拓本の字面の高さ ÷ Σ フォントの字面の比   （幅も同じ）
    で直す。字ごとに比を足し合わせるので、一・二 のような 背の低い字が混じっても くるわない。
    フォントが まだ無いときは 控え（g.inkSize）だけ持っておき、フォントを読んだときに直す（grpInkFitPending）。 */
+/* ───── **いまの拓本の枠から 測り直す**（v44.4。本人の報告「明らかに同じ文字で大きさが異なる…命日にある六という字、拓本にもあり、枠は修正しています」）─────
+   ガイドラインを作ったときの 字の大きさ（inkSize.chars）は その時の枠の写し。あとで枠を直すと 古いままだった。
+   作ったときの 列（link.li）・まとまり（link.g）・上下（link.pt〜pb）で いまの枠を拾い直し、src・chars・平均を入れかえる。 */
+function grpInkLive(K){
+  var lk = K && K.link; if (!lk) return false;
+  var L = (S.rub.lines || [])[lk.li]; if (!L || !L.items || !L.items.length) return false;
+  var mp = mmPerPx(), mpx = mmPerPxX() || mp; if (!mp) return false;
+  var hs0 = L.items.map(function(it){ return it.px ? it.px.h : 0; }).filter(Boolean).sort(function(a, b){ return a - b; });
+  var tol = (hs0.length ? hs0[hs0.length >> 1] : 20) * 0.6;
+  var its = L.items.filter(function(it){
+    if (!it || !it.px || (it.g || "hoka") !== lk.g) return false;
+    var cy = it.px.y + it.px.h / 2;
+    return cy >= lk.pt - tol && cy <= lk.pb + tol;
+  }).sort(function(a, b){ return a.px.y - b.px.y; });
+  if (!its.length) return false;
+  K.src = its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
+  K.chars = its.map(function(it){ var b = it.px;
+    return [+(b.h * mp).toFixed(2), +(b.w * mpx).toFixed(2), +(b.x + b.w / 2).toFixed(1), +b.y.toFixed(1)]; });
+  var keep = K.chars.filter(function(c, k){ var ch = K.src.charAt(k); return ch !== "尼" && ch !== "日"; });
+  if (!keep.length) keep = K.chars;
+  K.h = +(keep.reduce(function(a, c){ return a + c[0]; }, 0) / keep.length).toFixed(2);
+  K.w = +(keep.reduce(function(a, c){ return a + c[1]; }, 0) / keep.length).toFixed(2);
+  lk.pt = +its[0].px.y.toFixed(1); lk.pb = +(its[its.length - 1].px.y + its[its.length - 1].px.h).toFixed(1);
+  K.liveAt = Date.now();
+  return true;
+}
 function grpInkFit(g){
   var K = g && g.inkSize; if (!K) return false;
+  grpInkLive(K);
   var F = FR(g.fontIdx); if (!F || !F.upem) return false;
   /* **拓本に彫ってある字で比べる**（v42.9。本人「実際には拓本とガイドラインの文字は異なります」）。
      行の字（g.text）は あとで新しい字に打ちかえるので、測った時の 拓本の読み（K.src）を使う。
@@ -8576,6 +8606,31 @@ function grpAmaPos(g){
   if (n) K.ama = { n: n }; else delete K.ama;
   return n;
 }
+/* 大きさの内訳（v44.4。本人「原因を追究したい」）：行の字ごとに 決め方・拓本の枠・フォントの墨の比・入れた大きさ */
+function grpSizeTable(g){
+  var K = g.inkSize || {}, F = FR(g.fontIdx), chs = Array.from(String(g.text || ""));
+  var src = Array.from(String(K.src || "")), per = Array.isArray(K.chars) && K.chars.length === src.length ? K.chars : null;
+  var f1 = function(v){ return (+v).toFixed(1); };
+  var rows = chs.map(function(c, i){
+    var a = (g.adj || [])[i] || {}, how = "", rub = "—", rat = "—";
+    var idx = []; if (per) src.forEach(function(s9, k){ if (s9 === c) idx.push(k); });
+    if (idx.length) rub = idx.map(function(k){ return f1(per[k][0]) + "×" + f1(per[k][1]); }).join(" / ");
+    if (F){ var gid = shapeOne(c, g.axes || {}, g.fontIdx);
+      if (gid){ var r = glyphInk(gid, g.axes || {}, g.fontIdx); rat = ((r.top - r.bot) / F.upem).toFixed(2) + "×" + ((r.right - r.left) / F.upem).toFixed(2); } }
+    if (a.nichi) how = "拓本の同じ字" + (idx.length > 1 ? "（" + idx.length + " 字の平均）" : "");
+    else if (a.hmm > 0 || a.wmm > 0) how = "手で入れた";
+    else if (!grpCharFitWant(g, c)) how = "行の大きさ（合わせる字ではない）";
+    else if (!idx.length) how = "行の大きさ（拓本に無い字）";
+    else if (!rubFitOn()) how = "行の大きさ（オプションが切）";
+    else how = "行の大きさ（まだ合わせていない）";
+    var hh = a.hmm > 0 ? a.hmm : num(g.hMm, 0), ww = a.wmm > 0 ? a.wmm : num(g.wMm, 0);
+    return '<tr><td style="font-size:14px;">' + esc(c) + '</td><td>' + esc(how) + '</td><td>' + rub + '</td><td>' + rat + '</td><td><b>' + f1(hh) + '×' + f1(ww) + '</b></td></tr>';
+  }).join("");
+  return '<div style="font-size:11px;line-height:1.5;margin-top:3px;">拓本の字「' + esc(K.src || "") + '」' +
+    (K.liveAt ? '（' + new Date(K.liveAt).toLocaleTimeString("ja-JP") + ' に いまの枠で測り直し）' : '（作ったときの枠）') +
+    '<table style="width:100%;border-collapse:collapse;margin-top:2px;"><tr style="color:var(--muted);"><td>字</td><td>決め方</td><td>拓本の枠 mm</td><td>墨の比</td><td>入れた mm</td></tr>' +
+    rows + '</table><div style="color:var(--muted);">行の大きさ ' + f1(num(g.hMm, 0)) + '×' + f1(num(g.wMm, 0)) + ' mm（拓本の枠の平均 ' + f1(num(K.h, 0)) + '×' + f1(num(K.w, 0)) + '）</div></div>';
+}
 function grpInkFitPending(){
   var k = 0;
   (S.groups || []).forEach(function(g){ if (g && g.inkSize && !g.inkSize.fit && grpInkFit(g)){ k++; grpAmaPos(g); } });
@@ -8645,7 +8700,9 @@ function rubToGuidesApply(P){
         { col: ci, role: r.g, hMm: +r.hMm.toFixed(2), wMm: +r.wMm.toFixed(2), byRubAi: Date.now(),
           /* 拓本で測ったのは 墨の大きさ（字面）。フォントの大きさは 全角枠（余白こみ）なので、
              そのまま入れると 余白の分だけ字が小さくなる（v42.8。本人の指摘）。測った値を控えて、フォントの字面の比で 直す */
-          inkSize: { h: +r.hMm.toFixed(2), w: +r.wMm.toFixed(2), chars: r.inkChars, src: r.text } });
+          inkSize: { h: +r.hMm.toFixed(2), w: +r.wMm.toFixed(2), chars: r.inkChars, src: r.text,
+                     /* 拓本の どの列の どの字か（v44.4。枠を直したら 合わせ直すときに 測り直す） */
+                     link: { li: r.li, g: r.g, pt: +r.pt.toFixed(1), pb: +r.pb.toFixed(1) } } });
       grpInkFit(g);
       rubGroupPin(g, "top", r.pt); rubGroupPin(g, "bottom", r.pb);
       S.groups.push(g); nG++;

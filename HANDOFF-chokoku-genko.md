@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-27　**chokoku-genko.html = v43.5**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
+最終更新: 2026-09-27　**chokoku-genko.html = v43.6**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -6997,3 +6997,13 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
   ［直す］＝変えた字だけ pick・anch.hand・readFix、まとまりを付け直し、板を描き直す。［直して登録］＝そのうえで `rubLineReg(L)`（上書き）。
 - ［✎ この列を直す］は［✎ 枠を直す］に名前を変えた（中身は同じ）。
 - 試し：太才郎七十一□ → 2 字目を 市、7 字目を 才 に直す → 七十一才 が年齢、太市郎 は（命日の無い列なので字幅で）戒名。
+
+## v43.6 — 学習画面の 読み・枠の直しは 拓本AI の画面で（本人「文字の読みと枠編集は、拓本AIで作ったUIにして」）
+
+- v43.5 の 欄で読みを直す（rubRegReadOpen）は やめた。学習画面の列カード：［✏ 読みを直す］［✎ 枠を直す］＝ `rubTakuEdit(ci, "ch"|"bx")`：
+  まだ登録していなければ 先に `rubLineReg`、そのあと 拓本AI の画面を `base/?edit=列の登録名&tab=ch|bx` で 別窓（takuEdit）に開く。
+- ［⬇ 直しを取り込む］（登録ずみの列）＝ `rubTakuPull`：GET /api/takuhon/line/{id} の boxes を crop（x,y,sc）で 拓本の画素に戻して L.items を作り直す。
+  いちばん重なる前の枠から g・ai・hMm・wMm を引き継ぎ、読みが変わった字は 人が決めた読み（readFix.from="taku"）。boxFix、rubLineRestat、まとまり付け直し。
+- **takuhon-ai/dash.html**：`?edit=…&tab=…` で その列の［✎ 読み・枠］（ceOpen）を開く。tab=bx は 絵を読んでから 枠を直す 側へ。
+  → GPU 機で `bash /opt/takuhon-ai/update.sh` が要る。
+- 試し（拓本AI をまねた口）：枠を直す → 先に登録 → /?edit=…&tab=bx を開く → 取り込む で 太市郎七十一才（2 字 変わった）、太市郎＝俗名・七十一才＝年齢。

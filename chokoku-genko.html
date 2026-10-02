@@ -2459,7 +2459,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v43.5";
+var APP_VER = "v43.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -25253,55 +25253,75 @@ function rubRegEdit(ci){
   msg((ci + 1) + " 列目に移りました。字枠を直してから［⬆ 選択した列］を押すと、" +
       "<b>前の分に上書き</b>されます。", false, true);
 }
-/* ───── **学習画面で 読みを直す**（v43.5。本人「登録した教材を見る画面で、修正も出来るようにして」）─────
-   列のカードの［✏ 読みを直す］で、その列の字を 1 字ずつ 入れる欄を出す（番号は 絵の枠の番号と同じ）。
-   ［直す］… 変えた字だけ 人が決めた読みにする（pick・anch.hand・readFix）。まとまりも付け直す。
-   ［直して登録］… そのうえで この列を 拓本AI に登録し直す（前の分に上書き）。 */
-function rubRegReadOpen(btn, ci){
+/* ───── **読み・枠の直しは 拓本AI の画面で**（v43.6。本人「文字の読みと枠編集は、拓本AIで作ったUIにして」）─────
+   学習画面の［✏ 読みを直す］［✎ 枠を直す］は、拓本AI の画面（dash.html の［✎ 読み・枠］＝ ceOpen）を
+   その列で開く（/?edit=列の登録名&tab=ch|bx）。まだ登録していない列は 先に登録する。
+   あちらで保存したら［⬇ 直しを取り込む］：サーバーの 枠・読み（meta.json）を この拓本の枠に戻す
+   （登録したときの切り抜き crop で 拓本の画素へ）。まとまりは付け直す。 */
+async function rubTakuEdit(ci, tab, btn){
   var L = (S.rub.lines || [])[ci]; if (!L) return;
-  var box = btn.parentNode.querySelector('.regReadBox[data-ci="' + ci + '"]'); if (!box) return;
-  if (!box.hidden){ box.hidden = true; box.innerHTML = ""; return; }
-  var h = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;">';
-  L.items.forEach(function(it, i){
-    var c = it.pick || (it.anch && it.anch.ch) || "";
-    var ai = it.anch && it.anch.by === "ai";
-    h += '<label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#9fb0c3;">' + (i + 1) +
-      '<input type="text" maxlength="2" data-i="' + i + '" value="' + esc(c) + '" placeholder="□" ' +
-      'style="width:30px;font-size:16px;text-align:center;padding:1px;' + (c ? (ai ? '' : 'background:#e8f5e9;') : 'background:#fde7e7;') + '"></label>';
-  });
-  h += '</div><div style="display:flex;gap:4px;">' +
-    '<button class="mini" data-act="fix">直す</button>' +
-    '<button class="mini primary" data-act="reg">直して登録</button>' +
-    '<span style="font-size:10px;color:#9fb0c3;align-self:center;">赤＝読めていない／緑＝人が決めた</span></div>';
-  box.innerHTML = h; box.hidden = false;
-  var go = async function(reg){
-    var nFix = 0;
-    Array.prototype.forEach.call(box.querySelectorAll("input[data-i]"), function(inp){
-      var i = +inp.dataset.i, it = L.items[i]; if (!it) return;
-      var ch = Array.from(String(inp.value || "").trim())[0] || "";
-      var was = it.pick || (it.anch && it.anch.ch) || "";
-      if (!ch || ch === was) return;
-      it.pick = ch; it.anch = { ch: ch, by: "hand", hand: 1, was: was || "" };
-      it.readFix = { was: was || "", at: Date.now() };
-      nFix++;
-    });
-    if (nFix){
-      try { var keep = rubSelCol; rubSelCol = ci; rubGrpFromRead(false, true); rubSelCol = keep; } catch(e){}
-      persist(); rubPanel(); rubRender();
-    }
-    if (!reg){ msg(nFix ? (ci + 1) + " 列目の読みを " + nFix + " 字 直しました。" : "変わった字はありません。"); rubRegViewNow(); return; }
-    if (!takuApiBase()){ msg((nFix ? nFix + " 字 直しました。" : "") + takuAiOffNote() + "ので、登録はできませんでした。", true); rubRegViewNow(); return; }
-    msg((ci + 1) + " 列目を 拓本AI に登録しています…", false, true);
+  var base = takuApiBase(); if (!base){ msg(takuAiOffNote() + "。", true); return; }
+  /* 窓は 押したときに開く（あとで開くと ブラウザに止められる） */
+  var w = window.open("about:blank", "takuEdit");
+  if (!L.regAt){
+    if (btn){ btn.disabled = true; btn.textContent = "先に登録しています…"; }
     try {
-      var j = await rubLineReg(L);
+      await rubLineReg(L);
       L.regAt = new Date().toISOString(); persist();
-      msg((ci + 1) + " 列目" + (nFix ? "の読みを " + nFix + " 字 直して" : "を") + " 拓本AI に登録しました" +
-          (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
-    } catch(e){ msg("登録できませんでした（" + esc((e && e.message) || "") + "）。", true); }
-    rubRegViewNow();
+    } catch(e){
+      if (w) w.close();
+      msg("先に登録できませんでした（" + esc((e && e.message) || "") + "）。", true);
+      rubRegViewNow(); return;
+    }
+  }
+  var url = base + "/?edit=" + encodeURIComponent(rubLineKey(L)) + "&tab=" + (tab === "bx" ? "bx" : "ch");
+  if (w) w.location.href = url; else window.open(url, "takuEdit");
+  msg((ci + 1) + " 列目を 拓本AI の画面で開きました。直して保存したら、ここの［⬇ 直しを取り込む］を押してください。", false, true);
+  rubRegViewNow();
+}
+async function rubTakuPull(ci, btn){
+  var L = (S.rub.lines || [])[ci]; if (!L) return;
+  var base = takuApiBase(); if (!base){ msg(takuAiOffNote() + "。", true); return; }
+  if (btn){ btn.disabled = true; btn.textContent = "取り込んでいます…"; }
+  var m = null;
+  try {
+    var r = await fetch(base + "/api/takuhon/line/" + encodeURIComponent(rubLineKey(L)));
+    if (!r.ok) throw await takuErr(r, "列を読む口（/api/takuhon/line/…）");
+    m = await r.json();
+  } catch(e){ msg("取り込めませんでした（" + esc((e && e.message) || "") + "）。", true); rubRegViewNow(); return; }
+  var c = m && m.crop, bx = (m && m.boxes) || [];
+  if (!c || !bx.length){ msg("拓本AI に この列の枠がありませんでした。", true); rubRegViewNow(); return; }
+  var sc0 = num(c.sc, 1) || 1, old = L.items.slice(), nCh = 0;
+  var iou = function(a, b){
+    var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y), x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+    var I = Math.max(0, x2 - x1) * Math.max(0, y2 - y1), U = a.w * a.h + b.w * b.h - I;
+    return U > 0 ? I / U : 0;
   };
-  box.querySelector('[data-act="fix"]').onclick = function(){ go(false); };
-  box.querySelector('[data-act="reg"]').onclick = function(){ go(true); };
+  var items = bx.map(function(b){
+    var px = { x: +(c.x + b.x / sc0).toFixed(1), y: +(c.y + b.y / sc0).toFixed(1),
+               w: +(b.w / sc0).toFixed(1), h: +(b.h / sc0).toFixed(1) };
+    /* 前の枠で いちばん重なるものから まとまり・AI の候補を引き継ぐ */
+    var best = null, bv = 0.3;
+    old.forEach(function(o){ if (o && o.px){ var v = iou(px, o.px); if (v > bv){ bv = v; best = o; } } });
+    var it = { px: px };
+    if (best){ ["g", "gBy", "gR", "ai", "hMm", "wMm"].forEach(function(k){ if (best[k] !== undefined) it[k] = best[k]; }); }
+    var ch = String(b.ch || "").charAt(0);
+    var was = best ? (best.pick || (best.anch && best.anch.ch) || "") : "";
+    if (ch){
+      if (best && was === ch && best.anch) it.anch = best.anch;
+      else { it.pick = ch; it.anch = { ch: ch, by: "hand", hand: 1, was: was || "" }; it.readFix = { was: was || "", at: Date.now(), from: "taku" }; nCh++; }
+    }
+    return it;
+  });
+  items.sort(function(a, b){ return (a.px.y + a.px.h / 2) - (b.px.y + b.px.h / 2); });
+  L.items = items; L.boxFix = true;
+  var keep = rubSelCol; rubSelCol = ci;
+  try { rubLineRestat(); } catch(e){}
+  try { rubGrpFromRead(false, true); } catch(e){}
+  rubSelCol = keep;
+  persist(); rubPanel(); rubRender();
+  msg((ci + 1) + " 列目に 拓本AI の直しを取り込みました（枠 " + items.length + "・読みが変わった字 " + nCh + "）。", false);
+  rubRegViewNow();
 }
 /* ── いまの拓本（送るもの・送ったもの） ── */
 async function rubRegViewNow(){
@@ -25358,11 +25378,13 @@ async function rubRegViewNow(){
     body.appendChild(rubRegCard(cv, ci + " 列目", sub,
       '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ ' +
       (L.regAt ? '登録し直す（上書き）' : 'この列を教材登録') + '</button>' +
-      '<button class="mini regRead" data-ci="' + (ci - 1) + '" ' +
-      'title="この列の読みを 1 字ずつ直します（v43.5）">✏ 読みを直す</button>' +
-      '<button class="mini regEdit" data-ci="' + (ci - 1) + '" ' +
-      'title="板を閉じて この列に移り、字枠を直せるようにします">✎ 枠を直す</button>' +
-      '<div class="regReadBox" data-ci="' + (ci - 1) + '" hidden></div>' +
+      /* 読み・枠の直しは 拓本AI の画面（✎ 読み・枠）で（v43.6。本人「文字の読みと枠編集は、拓本AIで作ったUIにして」） */
+      '<button class="mini regTaku" data-ci="' + (ci - 1) + '" data-tab="ch" ' +
+      'title="拓本AI の画面で この列の読みを直します（まだ登録していなければ 先に登録します）">✏ 読みを直す</button>' +
+      '<button class="mini regTaku" data-ci="' + (ci - 1) + '" data-tab="bx" ' +
+      'title="拓本AI の画面で この列の枠を直します（まだ登録していなければ 先に登録します）">✎ 枠を直す</button>' +
+      (L.regAt ? '<button class="mini regPull" data-ci="' + (ci - 1) + '" ' +
+        'title="拓本AI の画面で直した 読み・枠 を、この拓本の枠に取り込みます">⬇ 直しを取り込む</button>' : '') +
       /* **登録しない、とはっきり言えるようにする**（v34.9。本人の指示
          「登録しない場合は ボタンを押さなければいいのでしょうが 分かりづらいので、
            登録しないボタンをつけて」）。
@@ -25388,8 +25410,11 @@ async function rubRegViewNow(){
   Array.prototype.forEach.call(body.querySelectorAll(".regEdit"), function(b){
     b.onclick = function(){ rubRegEdit(+b.dataset.ci); };
   });
-  Array.prototype.forEach.call(body.querySelectorAll(".regRead"), function(b){
-    b.onclick = function(){ rubRegReadOpen(b, +b.dataset.ci); };
+  Array.prototype.forEach.call(body.querySelectorAll(".regTaku"), function(b){
+    b.onclick = function(){ rubTakuEdit(+b.dataset.ci, b.dataset.tab, b); };
+  });
+  Array.prototype.forEach.call(body.querySelectorAll(".regPull"), function(b){
+    b.onclick = function(){ rubTakuPull(+b.dataset.ci, b); };
   });
   Array.prototype.forEach.call(body.querySelectorAll(".regSkip"), function(b){
     b.onclick = function(){

@@ -2549,7 +2549,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v44.7";
+var APP_VER = "v44.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5548,7 +5548,7 @@ function bindProps(){
   on("pMore","click",function(){ showDetail = !showDetail; renderProps(); });
   on("pInkNichi","change",function(e){
     S.rub.fitNichi = !!e.target.checked;
-    var gg = S.groups[sel]; if (gg && gg.inkSize){ grpNichiFit(gg); grpAmaPos(gg); }
+    var gg = S.groups[sel]; if (gg && gg.inkSize){ grpInkLive(gg.inkSize); grpNichiFit(gg); grpAmaPos(gg); }
     renderAll(); persist();
   });
   on("pInkFit","click",function(){
@@ -5559,7 +5559,8 @@ function bindProps(){
           (gg.inkSize.nichi && gg.inkSize.nichi.n ? "。拓本と同じ字 " + gg.inkSize.nichi.n + " 字（" +
              gg.inkSize.nichi.list.map(function(x){ return esc(x.c) + " " + x.h.toFixed(1) + "×" + x.w.toFixed(1); }).join("、") +
              " mm）は 拓本の字に合わせました" :
-           rubFitOn() ? "（拓本と同じ字が無いので、字ごとには合わせていません）" : "") + "。"); }
+           rubFitOn() ? "（拓本と同じ字が無いので、字ごとには合わせていません）" : "") + "。" +
+          (gg.inkSize.liveMiss ? "<br><b style='color:#c00'>⚠ 拓本の枠が見つからず、作ったときの大きさのままです。</b>" : "")); }
     else msg("合わせられる字がありませんでした（□ だけ、またはフォントに無い字）。", true);
   });
 }
@@ -8432,10 +8433,36 @@ function rubToGuidesPlan(){
 /* ───── **いまの拓本の枠から 測り直す**（v44.4。本人の報告「明らかに同じ文字で大きさが異なる…命日にある六という字、拓本にもあり、枠は修正しています」）─────
    ガイドラインを作ったときの 字の大きさ（inkSize.chars）は その時の枠の写し。あとで枠を直すと 古いままだった。
    作ったときの 列（link.li）・まとまり（link.g）・上下（link.pt〜pb）で いまの枠を拾い直し、src・chars・平均を入れかえる。 */
+/* v44.8（本人の報告「拓本補正の画面で、枠の大きさを変更しても、校正で…合わせるに反映されません」）：
+   列の番号（link.li）や まとまり（link.g）は 解析のやり直し・まとまりの付け直しで変わり、v44.4 より前に作った行には link が無い。
+   そのときは 古い控えのまま黙って使っていた。まず **字の位置**（控えの 真ん中 x・上端 y）で いちばん近い いまの枠を 1 字ずつ拾う。 */
+function grpInkLivePos(K, mp, mpx){
+  var ch = K && K.chars; if (!Array.isArray(ch) || !ch.length) return false;
+  if (ch.some(function(c){ return !c || c.length < 4; })) return false;
+  var all = [];
+  (S.rub.lines || []).forEach(function(L){ (L && L.items || []).forEach(function(it){ if (it && it.px) all.push(it); }); });
+  if (!all.length) return false;
+  var used = [], its = [];
+  for (var k = 0; k < ch.length; k++){
+    var c = ch[k], hp = num(c[0], 0) / mp, wp = num(c[1], 0) / mpx;
+    var cx = num(c[2], 0), cy = num(c[3], 0) + hp / 2, best = null, bd = 1e9;
+    all.forEach(function(it){
+      if (used.indexOf(it) >= 0) return;
+      var b = it.px, d = Math.hypot(b.x + b.w / 2 - cx, b.y + b.h / 2 - cy);
+      if (d < bd){ bd = d; best = it; }
+    });
+    if (!best || bd > Math.max(hp, wp, best.px.h, best.px.w) * 0.6) return false;
+    used.push(best); its.push(best);
+  }
+  return its;
+}
 function grpInkLive(K){
-  var lk = K && K.link; if (!lk) return false;
-  var L = (S.rub.lines || [])[lk.li]; if (!L || !L.items || !L.items.length) return false;
+  if (!K) return false;
   var mp = mmPerPx(), mpx = mmPerPxX() || mp; if (!mp) return false;
+  var its0 = grpInkLivePos(K, mp, mpx);
+  if (its0){ grpInkLiveSet(K, its0, mp, mpx, true); return true; }
+  var lk = K.link; if (!lk){ K.liveMiss = Date.now(); return false; }
+  var L = (S.rub.lines || [])[lk.li]; if (!L || !L.items || !L.items.length){ K.liveMiss = Date.now(); return false; }
   var hs0 = L.items.map(function(it){ return it.px ? it.px.h : 0; }).filter(Boolean).sort(function(a, b){ return a - b; });
   var tol = (hs0.length ? hs0[hs0.length >> 1] : 20) * 0.6;
   var its = L.items.filter(function(it){
@@ -8443,17 +8470,25 @@ function grpInkLive(K){
     var cy = it.px.y + it.px.h / 2;
     return cy >= lk.pt - tol && cy <= lk.pb + tol;
   }).sort(function(a, b){ return a.px.y - b.px.y; });
-  if (!its.length) return false;
-  K.src = its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
+  if (!its.length){ K.liveMiss = Date.now(); return false; }
+  grpInkLiveSet(K, its, mp, mpx, false);
+  return true;
+}
+function grpInkLiveSet(K, its, mp, mpx, keepSrc){
+  var src9 = its.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
+  /* 位置で拾ったときは 字の数が同じなので、読みが □ の所だけ 控えの読みを残す */
+  if (keepSrc && K.src && Array.from(K.src).length === its.length){
+    var o9 = Array.from(K.src); K.src = Array.from(src9).map(function(c, k){ return c === "□" ? o9[k] : c; }).join("");
+  } else K.src = src9;
   K.chars = its.map(function(it){ var b = it.px;
     return [+(b.h * mp).toFixed(2), +(b.w * mpx).toFixed(2), +(b.x + b.w / 2).toFixed(1), +b.y.toFixed(1)]; });
   var keep = K.chars.filter(function(c, k){ var ch = K.src.charAt(k); return ch !== "尼" && ch !== "日"; });
   if (!keep.length) keep = K.chars;
   K.h = +(keep.reduce(function(a, c){ return a + c[0]; }, 0) / keep.length).toFixed(2);
   K.w = +(keep.reduce(function(a, c){ return a + c[1]; }, 0) / keep.length).toFixed(2);
-  lk.pt = +its[0].px.y.toFixed(1); lk.pb = +(its[its.length - 1].px.y + its[its.length - 1].px.h).toFixed(1);
-  K.liveAt = Date.now();
-  return true;
+  var lk = K.link;
+  if (lk){ lk.pt = +its[0].px.y.toFixed(1); lk.pb = +(its[its.length - 1].px.y + its[its.length - 1].px.h).toFixed(1); }
+  K.liveAt = Date.now(); delete K.liveMiss;
 }
 function grpInkFit(g){
   var K = g && g.inkSize; if (!K) return false;
@@ -8576,7 +8611,8 @@ function rubFitAllGroups(){
     nAll += nc.n;
     var go = rubGrpOf(g.role);
     rep.push((go ? go.nm : "行") + "「" + esc(String(g.text || "").slice(0, 12)) + "」" +
-      (nc.n ? "：" + nc.list.map(function(x){ return esc(x.c); }).join("・") + (nA ? "（尼は位置も）" : "") : "：同じ字なし"));
+      (nc.n ? "：" + nc.list.map(function(x){ return esc(x.c); }).join("・") + (nA ? "（尼は位置も）" : "") : "：同じ字なし") +
+      (g.inkSize.liveMiss ? " <b style='color:#c00'>⚠ 拓本の枠が見つからず、作ったときの大きさのまま</b>" : ""));
   });
   renderAll(); try { rubPanel(); } catch(e){} persist();
   msg("拓本に合わせました（" + nAll + " 字）。<br>" + rep.join("<br>"), false, true);

@@ -2459,7 +2459,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v43.4";
+var APP_VER = "v43.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -22116,6 +22116,14 @@ function rubPanel(){
 
     h += '</div></details>';
 
+    /* ───── 4 ─ 修正と学習（v43.5。本人「1 つずつ実行するの下に、4－修正と学習 という項目を追加し、学習画面へ というボタンを設けて。
+       その内容は 登録した教材を見る と同じとして、登録した教材を見る画面で 修正も出来るようにして」）───── */
+    h += '<p class="hint" style="margin:12px 0 2px;"><b>4 ─ 修正と学習</b></p>' +
+      '<div class="aigrp"><button class="mini primary" id="btnLearnWin" ' +
+      'title="列ごとに 切り抜き・墨・枠・読み を並べて見せます。読みを直して、そのまま 拓本AI に登録（教材に）できます">' +
+      '📚 学習画面へ</button>' +
+      '<span class="hint" style="margin-left:6px;">読みの直し・枠の直し・教材の登録</span></div>';
+
     /* 5 ─ 覚えたもの（手本帳・1 字の大きさ）は 外した（v40.9。本人「基本的に不要と思っています」）。
        AI で読む前の しくみ。中身（手本帳・S.rub.learnBox）は消さず、AI につながらないときの代わりと
        デバッグ欄の 計算のやり方が そのまま使う。 */
@@ -22198,6 +22206,7 @@ function rubPanel(){
     bza.disabled = false; bza.textContent = "拓本を解析";
   };
   var btg = $("btnRubToGl"); if (btg) btg.onclick = rubToGuidesOpen;
+  var blw = $("btnLearnWin"); if (blw) blw.onclick = function(){ rubRegView("now"); };
   var bz2 = $("btnAnalyze2");
   if (bz2) bz2.onclick = async function(){
     bz2.disabled = true; bz2.textContent = "解析しています…";
@@ -25244,6 +25253,56 @@ function rubRegEdit(ci){
   msg((ci + 1) + " 列目に移りました。字枠を直してから［⬆ 選択した列］を押すと、" +
       "<b>前の分に上書き</b>されます。", false, true);
 }
+/* ───── **学習画面で 読みを直す**（v43.5。本人「登録した教材を見る画面で、修正も出来るようにして」）─────
+   列のカードの［✏ 読みを直す］で、その列の字を 1 字ずつ 入れる欄を出す（番号は 絵の枠の番号と同じ）。
+   ［直す］… 変えた字だけ 人が決めた読みにする（pick・anch.hand・readFix）。まとまりも付け直す。
+   ［直して登録］… そのうえで この列を 拓本AI に登録し直す（前の分に上書き）。 */
+function rubRegReadOpen(btn, ci){
+  var L = (S.rub.lines || [])[ci]; if (!L) return;
+  var box = btn.parentNode.querySelector('.regReadBox[data-ci="' + ci + '"]'); if (!box) return;
+  if (!box.hidden){ box.hidden = true; box.innerHTML = ""; return; }
+  var h = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;">';
+  L.items.forEach(function(it, i){
+    var c = it.pick || (it.anch && it.anch.ch) || "";
+    var ai = it.anch && it.anch.by === "ai";
+    h += '<label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#9fb0c3;">' + (i + 1) +
+      '<input type="text" maxlength="2" data-i="' + i + '" value="' + esc(c) + '" placeholder="□" ' +
+      'style="width:30px;font-size:16px;text-align:center;padding:1px;' + (c ? (ai ? '' : 'background:#e8f5e9;') : 'background:#fde7e7;') + '"></label>';
+  });
+  h += '</div><div style="display:flex;gap:4px;">' +
+    '<button class="mini" data-act="fix">直す</button>' +
+    '<button class="mini primary" data-act="reg">直して登録</button>' +
+    '<span style="font-size:10px;color:#9fb0c3;align-self:center;">赤＝読めていない／緑＝人が決めた</span></div>';
+  box.innerHTML = h; box.hidden = false;
+  var go = async function(reg){
+    var nFix = 0;
+    Array.prototype.forEach.call(box.querySelectorAll("input[data-i]"), function(inp){
+      var i = +inp.dataset.i, it = L.items[i]; if (!it) return;
+      var ch = Array.from(String(inp.value || "").trim())[0] || "";
+      var was = it.pick || (it.anch && it.anch.ch) || "";
+      if (!ch || ch === was) return;
+      it.pick = ch; it.anch = { ch: ch, by: "hand", hand: 1, was: was || "" };
+      it.readFix = { was: was || "", at: Date.now() };
+      nFix++;
+    });
+    if (nFix){
+      try { var keep = rubSelCol; rubSelCol = ci; rubGrpFromRead(false, true); rubSelCol = keep; } catch(e){}
+      persist(); rubPanel(); rubRender();
+    }
+    if (!reg){ msg(nFix ? (ci + 1) + " 列目の読みを " + nFix + " 字 直しました。" : "変わった字はありません。"); rubRegViewNow(); return; }
+    if (!takuApiBase()){ msg((nFix ? nFix + " 字 直しました。" : "") + takuAiOffNote() + "ので、登録はできませんでした。", true); rubRegViewNow(); return; }
+    msg((ci + 1) + " 列目を 拓本AI に登録しています…", false, true);
+    try {
+      var j = await rubLineReg(L);
+      L.regAt = new Date().toISOString(); persist();
+      msg((ci + 1) + " 列目" + (nFix ? "の読みを " + nFix + " 字 直して" : "を") + " 拓本AI に登録しました" +
+          (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
+    } catch(e){ msg("登録できませんでした（" + esc((e && e.message) || "") + "）。", true); }
+    rubRegViewNow();
+  };
+  box.querySelector('[data-act="fix"]').onclick = function(){ go(false); };
+  box.querySelector('[data-act="reg"]').onclick = function(){ go(true); };
+}
 /* ── いまの拓本（送るもの・送ったもの） ── */
 async function rubRegViewNow(){
   var body = $("aiRegBody"), info = $("aiRegInfo");
@@ -25299,8 +25358,11 @@ async function rubRegViewNow(){
     body.appendChild(rubRegCard(cv, ci + " 列目", sub,
       '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ ' +
       (L.regAt ? '登録し直す（上書き）' : 'この列を教材登録') + '</button>' +
+      '<button class="mini regRead" data-ci="' + (ci - 1) + '" ' +
+      'title="この列の読みを 1 字ずつ直します（v43.5）">✏ 読みを直す</button>' +
       '<button class="mini regEdit" data-ci="' + (ci - 1) + '" ' +
-      'title="板を閉じて この列に移り、字枠を直せるようにします">✎ この列を直す</button>' +
+      'title="板を閉じて この列に移り、字枠を直せるようにします">✎ 枠を直す</button>' +
+      '<div class="regReadBox" data-ci="' + (ci - 1) + '" hidden></div>' +
       /* **登録しない、とはっきり言えるようにする**（v34.9。本人の指示
          「登録しない場合は ボタンを押さなければいいのでしょうが 分かりづらいので、
            登録しないボタンをつけて」）。
@@ -25325,6 +25387,9 @@ async function rubRegViewNow(){
     (takuApiBase() ? '' : '　<b style="color:#ffb3b3;">' + esc(takuAiOffNote()) + '</b>');
   Array.prototype.forEach.call(body.querySelectorAll(".regEdit"), function(b){
     b.onclick = function(){ rubRegEdit(+b.dataset.ci); };
+  });
+  Array.prototype.forEach.call(body.querySelectorAll(".regRead"), function(b){
+    b.onclick = function(){ rubRegReadOpen(b, +b.dataset.ci); };
   });
   Array.prototype.forEach.call(body.querySelectorAll(".regSkip"), function(b){
     b.onclick = function(){

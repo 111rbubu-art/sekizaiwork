@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.5";
+var APP_VER = "v42.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8222,6 +8222,70 @@ function rgOpenAt(hit){
   if (hit.ci !== rubSelCol){ rubSelCol = hit.ci; rubSelItem = -1; rubSelSet = []; rubPanel(); rubRender(); }
   rgOpen(hit.i);
 }
+/* ───── **読みを直して 拓本AI に登録する**（v42.6。本人「AIでの読取ですが、間違った読み方したものや、
+   読めなかったものを拓本補正画面で登録できるようにして」）─────
+   枠の右クリック →［✏ 読みを直して登録］。正しい字を入れて［直して登録］を押すと、
+   その字の読みを人が決めたものにし（`pick`・`anch.hand`）、その字枠を 切り抜き・墨・読み と一緒に 拓本AI へ送る（`rubLineReg`）。
+   AI の候補（`it.ai`）があれば ボタンで選べる。拓本AI に つながらないときは 読みだけ直す。 */
+function rubReadFixOpen(ev, hit){
+  var el = $("rubMenu"), L = (S.rub.lines || [])[hit.ci], it = L && L.items && L.items[hit.i];
+  if (!el || !it) return;
+  var was = it.pick || (it.anch && it.anch.ch) || "";
+  var cands = (Array.isArray(it.ai) ? it.ai : []).slice(0, 6).filter(function(c){ return c && c.ch; });
+  el.innerHTML =
+    '<div class="nhd">' + (hit.ci + 1) + ' 列目の ' + (hit.i + 1) + ' 字目の 読みを直す</div>' +
+    '<div class="hint" style="margin:0 0 4px;">いまの読み：' + (was ? '<b>「' + esc(was) + '」</b>' +
+      (it.anch && it.anch.by === "ai" ? '（AI）' : (it.anch && it.anch.hand) ? '（手で直した）' : '') : '読めていません') + '</div>' +
+    (cands.length ? '<div class="hint" style="margin:0 0 2px;">AI の候補</div><div style="display:flex;flex-wrap:wrap;gap:3px;margin:0 0 6px;">' +
+      cands.map(function(c){ return '<button class="mini" data-rc="' + esc(c.ch) + '">' + esc(c.ch) +
+        (c.p != null ? ' <span style="color:var(--muted);font-size:10px;">' + Math.round(c.p * 100) + '%</span>' : '') + '</button>'; }).join("") + '</div>' : '') +
+    '<div style="display:flex;gap:4px;align-items:center;">正しい字 <input type="text" id="rdFixIn" maxlength="2" value="' + esc(was) +
+      '" style="width:52px;font-size:20px;text-align:center;"></div>' +
+    '<div style="display:flex;gap:4px;margin-top:6px;">' +
+      '<button class="mini primary" id="rdFixGo">直して登録</button>' +
+      '<button class="mini" id="rdFixOnly" title="拓本AI には送らず、この画面の読みだけ直します">読みだけ直す</button>' +
+      '<button class="mini" id="rdFixNo">やめる</button></div>';
+  el.hidden = false;
+  var w = el.offsetWidth, hh = el.offsetHeight;
+  el.style.left = Math.max(6, Math.min(window.innerWidth  - w  - 6, ev.clientX + 6)) + "px";
+  el.style.top  = Math.max(6, Math.min(window.innerHeight - hh - 6, ev.clientY - 8)) + "px";
+  var inp = $("rdFixIn"); inp.focus(); inp.select();
+  Array.prototype.forEach.call(el.querySelectorAll("[data-rc]"), function(b){
+    b.onclick = function(){ inp.value = b.dataset.rc; inp.focus(); };
+  });
+  var go = function(reg){
+    var ch = Array.from(String(inp.value || "").trim())[0] || "";
+    if (!ch){ msg("正しい字を 1 字 入れてください。", true); inp.focus(); return; }
+    rubMenuClose();
+    rubReadFixSet(hit, ch, reg);
+  };
+  $("rdFixGo").onclick = function(){ go(true); };
+  $("rdFixOnly").onclick = function(){ go(false); };
+  $("rdFixNo").onclick = rubMenuClose;
+  inp.onkeydown = function(e){ if (e.key === "Enter"){ e.preventDefault(); go(true); } else if (e.key === "Escape") rubMenuClose(); };
+}
+async function rubReadFixSet(hit, ch, reg){
+  var L = (S.rub.lines || [])[hit.ci], it = L && L.items && L.items[hit.i];
+  if (!it) return;
+  var was = it.pick || (it.anch && it.anch.ch) || "";
+  it.pick = ch;
+  it.anch = { ch: ch, by: "hand", hand: 1, was: was || "" };
+  it.readFix = { was: was || "", at: Date.now() };      /* まちがい／読めなかった の控え */
+  /* 読みが変わったので まとまりも付け直す（手で付けたまとまりは そのまま） */
+  try { if (hit.ci !== rubSelCol) rubSelCol = hit.ci; rubGrpFromRead(false, true); } catch(e){}
+  persist(); rubPanel(); rubRender();
+  var head = (hit.ci + 1) + " 列目 " + (hit.i + 1) + " 字目を「" + esc(ch) + "」に直しました" +
+    (was && was !== ch ? "（前は「" + esc(was) + "」）" : was ? "" : "（前は 読めていませんでした）");
+  if (!reg){ msg(head + "。", false); return; }
+  if (!takuApiBase()){ msg(head + "。" + takuAiOffNote() + "ので、拓本AI への登録は できませんでした。", true); return; }
+  msg(head + "。拓本AI に登録しています…", false, true);
+  try {
+    var j = await rubLineReg(L, [hit.i]);
+    it.readFix.reg = Date.now(); persist();
+    msg(head + "。拓本AI に 教材として登録しました" + (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
+  } catch(e){ msg(head + "。ただ、拓本AI への登録は できませんでした（" + esc((e && e.message) || "") + "）。", true); }
+  rubPanel();
+}
 function rubMenuOpen(ev, pt, hit){
   var el = $("rubMenu"); if (!el || !RUB.img) return;
   /* **字の枠を右クリックしたときは、その字の道具を先に出す**（v24.7。本人の指示
@@ -8268,7 +8332,9 @@ function rubMenuOpen(ev, pt, hit){
     }).join("") +
       '<button class="mini" data-a="g:" style="color:var(--muted);">なし</button>';
     h += '<div class="nhd" style="margin-top:6px;">この字</div>';
-    h += '<button class="mini primary" data-a="ai1">⬛ この字だけ AI に通す</button>';
+    h += '<button class="mini primary" data-a="rdfix" title="AI が まちがえた字・読めなかった字を 正しい字に直して、拓本AI に 教材として登録します">' +
+      '✏ 読みを直して登録' + (itH && !(itH.pick || (itH.anch && itH.anch.ch)) ? '（読めていない字）' : '') + '</button>';
+    h += '<button class="mini" data-a="ai1">⬛ この字だけ AI に通す</button>';
     h += '<button class="mini" data-a="learn">✎ 学習画面でひらく</button>';
     h += '<div class="nhd" style="margin-top:6px;">拓本の補正</div>';
   } else {
@@ -8302,6 +8368,7 @@ function rubMenuOpen(ev, pt, hit){
         rubSelItem = hit.i;
       }
       if (a === "learn"){ rgOpenAt(hit); }
+      else if (a === "rdfix"){ pickHit(); rubReadFixOpen(ev, hit); }
       else if (a === "ai1"){ rubAiOne(hit); }
       else if (a === "del1"){ pickHit(); rubPanel(); rubItemDel(); }
       else if (a === "bx-up"){    pickHit(); rubBoxAdd(-1); }
@@ -16750,9 +16817,16 @@ async function rubAllAnalyze(opt){
   /* 3 ─ 解析 の結果を 1 行で残す（v33.6） */
   S.rub.anaLast = { tx: (opt.pass2 ? "［解析2］" : "") + step.join("／") +
     (hs.length ? "／字 高さ " + _med(hs).toFixed(1) +
-    "mm・横 " + _med(ws).toFixed(1) + "mm" : "") + (gTx ? "／" + gTx : ""), ts: Date.now() };
+    "mm・横 " + _med(ws).toFixed(1) + "mm" : "") + (gTx ? "／" + gTx : ""), ts: Date.now(),
+    /* 解析結果のラベルを押したときに 並べて見せる中身（v42.6） */
+    steps: step.slice(),
+    size: hs.length ? "高さ " + _med(hs).toFixed(1) + "mm・横 " + _med(ws).toFixed(1) + "mm" +
+      (ps.length ? "・字送り " + _med(ps).toFixed(1) + "mm" : "") : "",
+    grp: gTx };
   persist();
-  msg(sum, false, true);
+  /* 結果は ふきだしに長々と出さず、［📋 解析結果］のラベルで見せる（v42.6。本人「解析結果のラベルをクリックすると表示する様に。
+     メニューに結果が表示されるとわかりづらいのでやめて」） */
+  msg("拓本AI解析が終わりました。結果は 3 ─ 解析 の［📋 解析結果］を押すと見られます。", false);
 }
 async function rubRejudge(){
   if (AIBAND_BUSY) return;
@@ -21513,11 +21587,22 @@ function rubPanel(){
       'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
       '手本帳・覚えた大きさ・較正・範囲は残ります">やり直す（消す）</button>';
     var an9 = S.rub.anaLast;
-    h += '<p class="hint" style="margin:4px 0 0;">' +
-      (an9 && an9.tx
-        ? esc(an9.tx)
-        : (ct ? '前に調べた列：' + ((ct.cols || []).length) + ' 列。そのまま解析できます。'
-              : 'まだ解析していません。')) + '</p>';
+    /* 解析結果は ラベルを押したときだけ見せる（v42.6。本人の指示）。開け閉めは id で覚える（RUB_OPEN） */
+    if (an9 && an9.tx){
+      var at9 = an9.ts ? new Date(an9.ts) : null;
+      var lines9 = (an9.steps && an9.steps.length) ? an9.steps.slice() : String(an9.tx).split("／");
+      if (an9.size) lines9.push("字の大きさ：" + an9.size);
+      if (an9.grp) lines9.push("まとまり：" + an9.grp);
+      h += '<details id="anaRes" class="anares" style="margin:6px 0 0;">' +
+        '<summary style="cursor:pointer;display:inline-block;padding:2px 10px;border:1px solid #B45309;border-radius:12px;' +
+        'color:#B45309;font-size:12px;background:#fff;">📋 解析結果' +
+        (at9 ? '（' + (at9.getMonth() + 1) + '/' + at9.getDate() + ' ' + String(at9.getHours()).padStart(2, "0") + ':' +
+               String(at9.getMinutes()).padStart(2, "0") + '）' : '') + '</summary>' +
+        '<ul class="hint" style="margin:4px 0 0;padding-left:18px;line-height:1.6;">' +
+        lines9.map(function(x){ return '<li>' + esc(x) + '</li>'; }).join("") + '</ul></details>';
+    } else if (!ct){
+      h += '<p class="hint" style="margin:4px 0 0;">まだ解析していません。</p>';
+    }
 
     /* ───── **1 つずつ実行する**（v41.0。本人「直すは、拓本AI解析を個別に実行できるようにしている物。
        メニューとしては、解析の中に入れた方がいい。拓本AI解析が押されて、実行されたものは、ラベルに色を付けて 実行済マークを付けて」）─────

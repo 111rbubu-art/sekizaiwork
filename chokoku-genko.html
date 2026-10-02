@@ -2455,7 +2455,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v42.4";
+var APP_VER = "v42.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -30330,17 +30330,20 @@ async function spSaveProject(){
 var ST = { mode: null, pick: null, rowTpl: "", busy: null };
 /* はじめの画面の中に出す「工事フォルダの画像」の一覧（v19.1）。
    kind は "docs"（資料の登録）か "rub"（拓本の取り込み）。 */
-function stPickOpen(kind){
+function stPickOpen(kind, path){
   if (ST.busy) return;                            /* 読み込み中は動かさない */
-  if (ST.pick && ST.pick.kind === kind){ ST.pick = null; startRender(); return; }
-  ST.pick = { kind: kind, items: [], loading: true };
+  if (!path && ST.pick && ST.pick.kind === kind){ ST.pick = null; startRender(); return; }
+  /* path … いま見ているフォルダーまでの道（[{id,name},…]。空なら 工事フォルダ）。v42.5 */
+  path = path || [];
+  var dir = path.length ? path[path.length - 1].id : null;
+  ST.pick = { kind: kind, items: [], loading: true, path: path };
   startRender();
-  spImageList().then(function(list){
+  spImageList(dir, true).then(function(list){
     if (!ST.pick || ST.pick.kind !== kind) return;
-    ST.pick = { kind: kind, items: list, loading: false };
+    ST.pick = { kind: kind, items: list, loading: false, path: path };
     startRender();
   }).catch(function(e){
-    ST.pick = { kind: kind, items: [], loading: false, err: spErrText(e) };
+    ST.pick = { kind: kind, items: [], loading: false, err: spErrText(e), path: path };
     startRender();
   });
 }
@@ -30348,14 +30351,26 @@ function stPickHtml(kind){
   var q = ST.pick;
   if (!q || q.kind !== kind) return "";
   var h = '<div class="stpick">';
+  var pth = q.path || [];
+  /* いまの場所（v42.5）。フォルダーに入ったら［↑ 上へ］で戻る */
+  h += '<div class="stpath" style="display:flex;gap:6px;align-items:center;margin:0 0 6px;font-size:12px;">' +
+    (pth.length ? '<button class="mini" data-sa="' + kind + '-up-dir">↑ 上へ</button>' : '') +
+    '<span>📁 工事フォルダ' + pth.map(function(p){ return ' ＞ ' + esc(p.name); }).join("") + '</span></div>';
   if (q.loading) h += '<span class="none">工事フォルダを見ています…</span>';
   else if (q.err) h += '<span class="none" style="color:var(--shu);">' + esc(q.err) + '</span>';
-  else if (!q.items.length) h += '<span class="none">画像がありません。</span>';
+  else if (!q.items.length) h += '<span class="none">画像もフォルダーもありません。</span>';
   else {
     /* 名前だけでは分からないので、小さな絵で並べる（v19.5）。 */
     h += '<div class="sthumbs">';
     q.items.forEach(function(it, i){
       if (kind === "rub" && isTxtName(it.name)) return;      /* 拓本に文字は使えない */
+      if (it.folder){                                         /* フォルダー（v42.5）。押すと中を見る */
+        h += '<button class="sthumb" data-sa="' + kind + '-dir" data-si="' + i + '" title="' + esc(it.name) + '"' +
+          (ST.busy ? " disabled" : "") + '><div class="sthv"><span class="stmk">📁</span></div>' +
+          '<div class="sthn">' + esc(it.name) + '</div><div class="sths">' +
+          (it.folder.childCount != null ? it.folder.childCount + " 件" : "フォルダー") + '</div></button>';
+        return;
+      }
       var on = (kind === "docs") && !!docFind(it.id);
       var now = (kind === "rub") && (S.rub && S.rub.srcName === it.name);
       var th = spThumbOf(it);
@@ -30650,9 +30665,10 @@ function stPicks(k){
   }
   if (k === "docs"){
     if (!docsReady()) return '<span class="none">本体アプリから開くと登録できます。</span>';
-    h += '<button class="mini" data-sa="docs-up">パソコンから入れる</button>';
+    /* 工事フォルダを先に（v42.5。本人「パソコンと工事フォルダのボタンの位置を逆にして」） */
     h += '<button class="mini' + (ST.pick && ST.pick.kind === "docs" ? " primary" : "") +
       '" data-sa="docs-pick">工事フォルダから選ぶ</button>';
+    h += '<button class="mini" data-sa="docs-up">パソコンから入れる</button>';
     if ((S.docs || []).length) h += '<button class="mini" data-sa="docs-see">見る</button>';
     h += stPickHtml("docs");
     h += '<div class="dcadd">' + docAddHtml("stDc") + '</div>';
@@ -30711,6 +30727,16 @@ function stDo(a, si){
     sel = 0; migrate(); renderAll(); persist(); msg("入れた行を消しました。");
   }
   else if (a === "docs-up"){ $("fDoc").click(); }
+  else if (a === "docs-dir" || a === "rub-dir"){
+    var kd = a.split("-")[0], dI = ST.pick && ST.pick.items[i];
+    if (dI && dI.folder) stPickOpen(kd, (ST.pick.path || []).concat([{ id: dI.id, name: dI.name }]));
+    return;
+  }
+  else if (a === "docs-up-dir" || a === "rub-up-dir"){
+    var ku = a.split("-")[0];
+    stPickOpen(ku, (ST.pick && ST.pick.path || []).slice(0, -1));
+    return;
+  }
   else if (a === "docs-pick"){ stPickOpen("docs"); return; }
   else if (a === "docs-see"){ docWinOpen(0); return; }
   else if (a === "docs-take"){
@@ -31038,7 +31064,17 @@ async function spChildren(id){
   try { return await graph("/drives/" + SP.cfg.driveId + "/items/" + id + "/children" + SPCH); }
   catch(e){ return await graph("/drives/" + SP.cfg.driveId + "/items/" + id + "/children" + SPCH0); }
 }
-async function spImageList(){
+/* フォルダーの中を見る（v42.5。本人「この画面で、ファイルがフォルダーに入っていると選べない」）。
+   dirId を渡すと そのフォルダーの中（フォルダーと 画像・文字）を返す。フォルダーは { folder:true } のまま、先に並べる。
+   withDirs が true なら、工事フォルダの いちばん上でも フォルダーを返す（はじめの画面の一覧で使う）。 */
+async function spImageList(dirId, withDirs){
+  if (dirId && dirId !== SP.cfg.folderId){
+    var r9 = await spChildren(dirId);
+    var ds9 = (r9.value || []).filter(function(x){ return x.folder; });
+    var fs9 = (r9.value || []).filter(function(x){ return !x.folder && isDocName(x.name); });
+    var byN9 = function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); };
+    return ds9.sort(byN9).concat(fs9.sort(byN9));
+  }
   var ids = [SP.cfg.folderId];
   var top = await spChildren(SP.cfg.folderId);
   (top.value || []).forEach(function(x){
@@ -31053,6 +31089,12 @@ async function spImageList(){
   var seen = {};
   out = out.filter(function(x){ if (seen[x.id]) return false; seen[x.id] = 1; return true; });
   out.sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
+  if (withDirs){
+    /* 資料フォルダの中身は もう並べてあるので、資料フォルダそのものは出さない */
+    var dirs = (top.value || []).filter(function(x){ return x.folder && !sameName(x.name, DOCS_DIR); });
+    dirs.sort(function(a, b){ return String(a.name).localeCompare(String(b.name), "ja"); });
+    out = dirs.concat(out);
+  }
   return out;
 }
 /* 共有フォルダーの画像を、拓本や資料に使えるデータ URL にする（v19.1） */

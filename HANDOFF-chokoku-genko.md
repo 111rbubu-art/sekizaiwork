@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-09-27　**chokoku-genko.html = v43.8**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
+最終更新: 2026-09-27　**chokoku-genko.html = v43.9**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -7026,3 +7026,10 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
 - **takuhon-ai/dash.html**：`?edit=…&tab=…` を受ける。列の並びは /api/takuhon/lines?order=new（覚えたもの と同じ新しい順）で 前の列／次の列 が使える。edit=first は いちばん新しい列。
   → GPU 機で `bash /opt/takuhon-ai/update.sh` が要る。
 - 試し：学習画面へ → 先に登録 → /?edit=line_…&tab=ch を開く。dash.html?edit=lnB → lnB の［✎ 読み・枠］が 2 / 3 列目 で開く。
+
+## v43.9 — v43.8 を戻し、読み・枠の画面（v43.7 の rce）を ［📚 学習画面へ］から じかに開く（本人「おなじUIにしてと言ったでしょ。拓本AIとつながないでとも」）
+
+- v43.8（拓本AI の画面を開く・dash.html の ?edit=）は 取り消した（chokoku-genko.html と dash.html を v43.7 の形へ）。
+- ［📚 学習画面へ］＝ `rceOpen(いまの列 か 枠のある いちばん左の列, "ch")`。拓本AI の［✎ 読み・枠］と同じ形の画面が すぐ出る。サーバーには つながない。
+- 見た目を 本人の画像に寄せた：見出しの横は 列の登録名（rubLineKey）、「まとめて入れる」は 入力欄の上、説明に「（その枠は読みの学習に入りません）」。
+- 学習画面（登録した教材を見る）の列カードの［✏ 読みを直す］［✎ 枠を直す］も rceOpen のまま。

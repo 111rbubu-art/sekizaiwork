@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.467**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.468**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -496,3 +496,9 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - map_b：pick のときは 上に帯（`_pickBanner`）。顧客の区画の窓では 新規の登録ボタンの代わりに［🔗 この顧客を「…」に結ぶ］（`vpPickLink`）→ 開いたアプリの窓へ postMessage（`sekizaiLinkCus`）。opener が無ければ `index_b.html?linkjob=&kind=&cus=` を sekizaiviewer で開く（`checkLinkJobParam`）。顧客の無い区画では 帯に「顧客リストにありません」。
 - index_b：`_linkJobCustomer` が 確かめ（confirm）→ PATCH で Cus_ID を入れ、空いている 顧客No・フリガナ・電話・郵便番号・住所1/2・お墓の名前 を 顧客リストから埋める（入っている欄は さわらない。項目名の対応は `_linkMap()`）。詳細を開いていれば 描き直し、地図の窓に 結果を返す（帯に「✓ 結びました」→ 少しして閉じる）。
 - 試し：2 つの窓で 納骨の案件 777 → 地図で 顧客 602 → PATCH に Cus_ID 602・顧客No・フリガナ・お墓の名前（電話は 入っていたので 入れない）。
+
+## index_b v1.9.468 — 画面の下の方が ときどき押せない（見えない層）を直す（本人の報告）
+
+- 本人：「スマホでも…墓石確認タブの現地撮影、ダウンリストも効かず、カメラボタンも動作しなかった。下側にあると稀に操作できなくなる。見えないレイヤーが入っていないか」。以前の「入金日・MFクラウド入金NO にカーソルが入らない」も 同じ原因の見込み。
+- 原因：保存のお知らせ `#save-toast`（showSaveToast）は 下から 70px・真ん中・z-index 9999 に出て、4 秒後に opacity 0 にするだけで 消さない。透明のまま 押したものを受け止めていた（何か保存・読み込みをしたあと＝「ときどき」）。
+- 直し：`pointer-events:none`（お知らせに押すものは無い）、薄くなったあと visibility hidden、横幅は 画面内に収める。試し：出ている間も消えたあとも 下のボタンに 押したものが届く。

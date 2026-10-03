@@ -1342,6 +1342,7 @@ function renderPlotNoCustomer(plotName){
   window._vpPlotMemo = { templeId: _templeId, plotName: plotName, item: null };
   _vpAttachTarget = null;
   _vpShowDetailBtn(false);        // 顧客リストへの行き先が無いので隠す
+  if (_PICK) _pickBanner('「' + _pickEsc(plotName) + '」は 顧客リストにありません。ほかの区画を押すか、アプリの［🆕 顧客リスト新規登録］で登録してください', true);
 
   var opts = PLOT_STATUS_LIST.map(function(v){ return '<option value="' + v + '">' + v + '</option>'; }).join('');
   body.innerHTML =
@@ -1494,6 +1495,55 @@ function _vpShowDetailBtn(show){
   if (b) b.style.display = show ? '' : 'none';
   var nj = document.getElementById('vp-newjob');
   if (nj) nj.style.display = show ? 'flex' : 'none';
+  /* 案件から「区画を選ぶ」で開いたときは、新規の登録ボタンの代わりに［この顧客を案件に結ぶ］（v1.9.467） */
+  if (nj && _PICK){
+    nj.innerHTML = '<button class="btn" onclick="vpPickLink()" style="flex:1;background:#b85c00;border-color:#b85c00">🔗 この顧客を「' +
+      _pickEsc(_PICK.label) + '」に結ぶ</button>';
+  }
+}
+/* ───── **案件から 区画を選んで 顧客を結ぶ**（v1.9.467。本人「納骨リストと工事関連にすでに仮登録されている案件で、
+   墓地で確認後、地図から顧客IDを登録できるようにしたい」→ 提案の A）─────
+   index_b の案件の詳細［🗺 地図で区画を選んで顧客を結ぶ］が map_b.html?temple=…&pick=nok|kouji&job=<案件の ID>&jl=<名前> を開く。
+   上に帯を出し、区画を押して 顧客の窓の［🔗 この顧客を…に結ぶ］で、開いた アプリの窓（opener）へ 顧客を渡す。
+   書き込みは アプリ側（確かめてから）。opener が無いときは アプリの窓を URL で開いて渡す。 */
+var _PICK = (function(){
+  var q = new URLSearchParams(location.search), k = q.get('pick'), j = q.get('job');
+  return (k && j) ? { kind: k === 'kouji' ? 'kouji' : 'nok', job: j, label: q.get('jl') || '案件' } : null;
+})();
+function _pickEsc(t){ return String(t || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+function _pickBanner(msg, warn){
+  if (!_PICK) return;
+  var b = document.getElementById('pick-banner');
+  if (!b){
+    b = document.createElement('div'); b.id = 'pick-banner';
+    b.style.cssText = 'position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:3000;background:#b85c00;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.3);font-size:13px;font-weight:600;display:flex;gap:10px;align-items:center;max-width:94vw';
+    document.body.appendChild(b);
+  }
+  b.style.background = warn ? '#a01818' : '#b85c00';
+  b.innerHTML = '<span>' + msg + '</span><button onclick="window.close()" style="background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.5);color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font-family:inherit">やめる</button>';
+}
+if (_PICK) {
+  var _pickInit = function(){ _pickBanner('📌 「' + _pickEsc(_PICK.label) + '」（' + (_PICK.kind === 'kouji' ? '工事' : '納骨') + '）の区画を押してください'); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _pickInit); else _pickInit();
+  window.addEventListener('message', function(e){
+    if (e.origin !== location.origin || !e.data || e.data.type !== 'sekizaiLinkCusDone') return;
+    if (e.data.ok){ _pickBanner('✓ 結びました。アプリの案件に 顧客ID ' + _pickEsc(e.data.cusId) + ' を入れました。この窓は閉じてかまいません'); setTimeout(function(){ try { window.close(); } catch(_){ } }, 2500); }
+    else _pickBanner('結べませんでした：' + _pickEsc(e.data.err || 'やめました'), !!e.data.err);
+  });
+}
+function vpPickLink(){
+  var f = window._vpCurrentCustomer || {};
+  var id = f['id'] || f['ID'];
+  if (!_PICK || !id) { alert('顧客リストの ID が分かりません。'); return; }
+  var cus = {};
+  ['CusName','Title','furigana','telephonenumber','CusNumber','Zipcode','address_1','address_2','HakaName','Temple','_x006d_ap1'].forEach(function(k){ if (f[k] != null) cus[k] = f[k]; });
+  cus.id = String(id);
+  closeViewerPopup();
+  var msg = { type: 'sekizaiLinkCus', kind: _PICK.kind, job: _PICK.job, cus: cus };
+  if (window.opener && !window.opener.closed){
+    try { window.opener.postMessage(msg, location.origin); window.opener.focus(); _pickBanner('アプリの窓で 確かめてください…'); return; } catch(e){}
+  }
+  window.open(VIEWER_URL + '?linkjob=' + encodeURIComponent(_PICK.job) + '&kind=' + _PICK.kind + '&cus=' + encodeURIComponent(id), 'sekizaiviewer');
 }
 /* 顧客の窓から 新規作成（納骨・戒切／工事関連）。ビューアー（index_b）で 顧客を入れた 新規作成の窓を開く */
 function vpNewJob(kind){

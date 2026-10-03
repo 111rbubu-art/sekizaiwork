@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.466**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.467**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -489,3 +489,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - map_b：顧客の区画の窓（renderPlotCustomer）に［⛩ 納骨・戒切に登録］［🏗 工事関連に登録］（`#vp-newjob`。区画メモでは隠す＝`_vpShowDetailBtn`）。押すと `index_b.html?newjob=nok|kouji&cus=<顧客リストの ID>` を ビューアーの窓（sekizaiviewer）で開く（`vpNewJob`）。
 - index_b：`checkNewJobParam`（起動の checkMapParam の次）。顧客リストの その 1 件を Graph で読み、お寺の選択肢が入るのを待って 顧客リストからの新規と同じ `openNewJobModal`／`openNewKoujiFromCustomer` を開く（顧客名・フリガナ・電話・住所・お寺・顧客No・顧客リストID・墓石情報が入る）。URL の newjob は すぐ消す（再読み込みで また開かない）。
+
+## index_b v1.9.467 ／ map_b — 仮登録の案件に 地図で区画を選んで 顧客IDを結ぶ（本人の要望、提案の A）
+
+- index_b：顧客リストID（Cus_ID）が空の 納骨・戒切／工事関連 の詳細の「機能」に［🗺 地図で区画を選んで顧客を結ぶ］（`pickCusOnMap`）。案件のお寺の墓地マップ（`_topTempleMap`）を `map_b.html?temple=…&pick=nok|kouji&job=<案件ID>&jl=<名前>` で 新しい窓に開く。マップが無いお寺は 知らせる。
+- map_b：pick のときは 上に帯（`_pickBanner`）。顧客の区画の窓では 新規の登録ボタンの代わりに［🔗 この顧客を「…」に結ぶ］（`vpPickLink`）→ 開いたアプリの窓へ postMessage（`sekizaiLinkCus`）。opener が無ければ `index_b.html?linkjob=&kind=&cus=` を sekizaiviewer で開く（`checkLinkJobParam`）。顧客の無い区画では 帯に「顧客リストにありません」。
+- index_b：`_linkJobCustomer` が 確かめ（confirm）→ PATCH で Cus_ID を入れ、空いている 顧客No・フリガナ・電話・郵便番号・住所1/2・お墓の名前 を 顧客リストから埋める（入っている欄は さわらない。項目名の対応は `_linkMap()`）。詳細を開いていれば 描き直し、地図の窓に 結果を返す（帯に「✓ 結びました」→ 少しして閉じる）。
+- 試し：2 つの窓で 納骨の案件 777 → 地図で 顧客 602 → PATCH に Cus_ID 602・顧客No・フリガナ・お墓の名前（電話は 入っていたので 入れない）。

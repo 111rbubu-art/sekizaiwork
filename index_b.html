@@ -7782,7 +7782,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.466';
+var APP_VERSION = 'v1.9.467';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8108,6 +8108,7 @@ function startApp() {
   if (templeSelect) templeSelect.style.display = '';
   checkMapParam();
   checkNewJobParam();
+  checkLinkJobParam();
   // 価格表・石材価格表 画面への直接リンク対応
   (function() {
     var p = new URLSearchParams(location.search);
@@ -12540,6 +12541,8 @@ function showKoujiTab(i, d) {
     var newCusBtnKouji = !editMode && !d['Cus_ID']
       ? '<button onclick="openNewCusReg(currentItem,\'kouji\')" style="' + _bSt + ';background:#7a3a1a">🆕 顧客リスト新規登録</button>'
       : '';
+    if (!editMode && !d['Cus_ID'])
+      newCusBtnKouji = '<button onclick="pickCusOnMap(currentItem,\'kouji\')" style="' + _bSt + ';background:#b85c00">🗺 地図で区画を選んで顧客を結ぶ</button>' + newCusBtnKouji;
     var connectBtnKouji = (d['telephonenumber'] || '').trim()
       ? '<button onclick="registerOutlookContact(currentItem,\'kouji\')" style="' + _bSt + ';background:#0078d4">📇 連絡先登録</button>'
       : '';
@@ -23052,6 +23055,98 @@ function uploadJpegToCustomer(blob, itemId, cusName) {
    map_b.html が index_b.html?newjob=nok|kouji&cus=<顧客リストの ID> を開く。
    顧客リストの その 1 件を読み、顧客リストの画面からの新規と同じ道（openNewJobModal／openNewKoujiFromCustomer）で
    顧客名・フリガナ・電話・住所・お寺・顧客No などを入れた 新規作成の窓を開く。お寺の選択肢が読み終わるのを待ってから開く。 */
+/* ───── **案件から 地図で区画を選んで 顧客を結ぶ**（v1.9.467。本人の要望の A）─────
+   仮登録（顧客リストID が空）の案件の詳細に［🗺 地図で区画を選んで顧客を結ぶ］。そのお寺の墓地マップを「選ぶ」で開き、
+   区画の顧客を受け取ったら 確かめてから 案件に Cus_ID を入れる。空いている欄（顧客No・フリガナ・電話・郵便番号・住所・お墓の名前）は
+   顧客リストから埋める（入っている欄は さわらない）。 */
+function _linkMap() { return {
+  nok:   { list: '3ae4bd1d-47b8-4300-aab5-6b828aa0e480', name: ['_x9867__x5ba2__x540d_', 'Title'],
+           fill: { CusNumber: '_x9867_No', furigana: '_x30d5__x30ea__x30ac__x30ca_', telephonenumber: '_x96fb__x8a71__x756a__x53f7_',
+                   Zipcode: '_x90f5__x4fbf__x756a__x53f7_', address_1: '_x4f4f__x6240_1', address_2: '_x4f4f__x6240_2', HakaName: '_x304a__x5893__x306e__x540d__x7f' } },
+  kouji: { list: null, name: ['Customers', 'Title'],
+           fill: { CusNumber: 'no', furigana: 'furigana', telephonenumber: 'telephonenumber',
+                   Zipcode: 'Zipcode', address_1: 'address_xff11_', address_2: 'address_xff12_', HakaName: 'HakaName' } }
+}; }
+function pickCusOnMap(d, kind) {
+  var temple = kind === 'kouji' ? (d['Temples'] || '') : (d['_x304a__x5bfa_'] || '');
+  var mp = temple ? _topTempleMap(String(temple).trim()) : null;
+  if (!mp) { alert('「' + (temple || 'お寺なし') + '」の墓地マップがありません。顧客リストIDを 手で入れてください。'); return; }
+  var nm = (kind === 'kouji' ? (d['HakaName'] ? d['HakaName'] + '家' : (d['Customers'] || d['Title'])) : (d['HakaName'] || d['_x304a__x5893__x306e__x540d__x7f'] ? (d['HakaName'] || d['_x304a__x5893__x306e__x540d__x7f']) + '家' : (d['_x9867__x5ba2__x540d_'] || d['Title']))) || '案件';
+  window.open('map_b.html?temple=' + mp.id + '&pick=' + kind + '&job=' + encodeURIComponent(d['id'] || d['ID']) + '&jl=' + encodeURIComponent(nm), '_blank');
+}
+function _linkFindJob(kind, id) {
+  id = String(id);
+  if (currentItem && String(currentItem['id'] || currentItem['ID']) === id) return currentItem;
+  var pools = [allItems || [], _menuSearchCache[kind === 'kouji' ? 'kouji' : 'noukotsu'] || []];
+  for (var i = 0; i < pools.length; i++) {
+    for (var j = 0; j < pools[i].length; j++) if (String(pools[i][j]['id'] || pools[i][j]['ID']) === id) return pools[i][j];
+  }
+  return null;
+}
+function _linkJobCustomer(kind, jobId, cus, reply) {
+  var M = _linkMap()[kind === 'kouji' ? 'kouji' : 'nok'];
+  var listId = M.list || KOUJI_LIST_ID;
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var done = function (ok, err) { if (reply) try { reply({ type: 'sekizaiLinkCusDone', ok: ok, err: err || '', cusId: cus.id }); } catch (e) {} };
+  var tok;
+  getToken().then(function (resp) {
+    tok = resp.accessToken;
+    var d = _linkFindJob(kind, jobId);
+    if (d) return d;
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + encodeURIComponent(jobId) + '?$expand=fields',
+      { headers: { Authorization: 'Bearer ' + tok } }).then(function (r) {
+        if (!r.ok) throw new Error('案件 ' + jobId + ' が読めません（' + r.status + '）');
+        return r.json();
+      }).then(function (it) { var f = it.fields || {}; f['id'] = it.id; f['ID'] = it.id; return f; });
+  }).then(function (d) {
+    var jobName = d[M.name[0]] || d[M.name[1]] || '';
+    var fields = { 'Cus_ID': parseInt(cus.id, 10) || cus.id }, fills = [];
+    var LBL = { CusNumber: '顧客No', furigana: 'フリガナ', telephonenumber: '電話', Zipcode: '郵便番号', address_1: '住所1', address_2: '住所2', HakaName: 'お墓の名前' };
+    Object.keys(M.fill).forEach(function (k) {
+      var v = cus[k], f = M.fill[k];
+      if (v != null && String(v).trim() !== '' && !(d[f] != null && String(d[f]).trim() !== '')) { fields[f] = v; fills.push(LBL[k]); }
+    });
+    var cname = cus.CusName || cus.Title || '';
+    var warn = (d['Cus_ID'] ? '\n⚠ この案件には もう 顧客リストID ' + d['Cus_ID'] + ' が入っています（入れかえます）。' : '');
+    if (!confirm('「' + jobName + '」（' + (kind === 'kouji' ? '工事関連' : '納骨・戒切') + '）に\n顧客リストの「' + cname + '」（ID ' + cus.id + '）を結びます。' +
+        (fills.length ? '\n空いている ' + fills.join('・') + ' も 顧客リストから入れます。' : '') + warn + '\n\nよろしいですか。')) { done(false, ''); return; }
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + encodeURIComponent(jobId) + '/fields', {
+      method: 'PATCH', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(fields)
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(r.status + ': ' + t.substring(0, 200)); });
+      Object.keys(fields).forEach(function (k) { d[k] = fields[k]; });
+      showSaveToast(true, '🔗 「' + jobName + '」に 顧客ID ' + cus.id + '（' + cname + '）を結びました');
+      done(true);
+      try {
+        if (currentItem && String(currentItem['id']) === String(jobId)) {
+          if (kind === 'kouji') showKoujiDetail(currentItem); else openDetail(currentItem);
+        }
+      } catch (e) {}
+    });
+  }).catch(function (e) {
+    showSaveToast(false, '結べませんでした：' + e.message);
+    done(false, e.message);
+  });
+}
+window.addEventListener('message', function (e) {
+  if (e.origin !== location.origin || !e.data || e.data.type !== 'sekizaiLinkCus') return;
+  var src = e.source;
+  _linkJobCustomer(e.data.kind, e.data.job, e.data.cus || {}, function (m) { try { src.postMessage(m, location.origin); } catch (_) {} });
+});
+/* 地図の窓に opener が無いとき（スマホで別の窓になった など）は URL で受け取る：?linkjob=<案件>&kind=nok|kouji&cus=<顧客ID> */
+function checkLinkJobParam() {
+  var p = new URLSearchParams(location.search);
+  var job = p.get('linkjob'), kind = p.get('kind'), cus = p.get('cus');
+  if (!job || !cus) return;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  getToken().then(function (resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/29524f89-0370-44ea-8d01-161f34e5a1ab/items/' + encodeURIComponent(cus) + '?$expand=fields',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function (r) { if (!r.ok) throw new Error('顧客 ' + cus + ' が読めません（' + r.status + '）'); return r.json(); })
+    .then(function (it) { var f = it.fields || {}; f.id = String(it.id); _linkJobCustomer(kind, job, f, null); })
+    .catch(function (e) { showSaveToast(false, '結べませんでした：' + e.message); });
+}
 function checkNewJobParam() {
   var p = new URLSearchParams(location.search);
   var kind = p.get('newjob'), cus = p.get('cus');
@@ -27890,6 +27985,9 @@ function showTab(i, d) {
     var newCusBtnNok = !editMode && !d['Cus_ID']
       ? '<button onclick="openNewCusReg(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#7a3a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🆕 顧客リスト新規登録</button>'
       : '';
+    /* 地図で区画を選んで 顧客を結ぶ（v1.9.467） */
+    if (!editMode && !d['Cus_ID'])
+      newCusBtnNok = '<button onclick="pickCusOnMap(currentItem,\'nok\')" style="padding:8px 16px;background:#b85c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">🗺 地図で区画を選んで顧客を結ぶ</button>' + newCusBtnNok;
     var nokFolderPassVal = d['FolderPass'] || '';
     var teishutsuBtnNok = nokFolderPassVal
       ? '<button onclick="openSubmissionFolder(currentItem,\'noukotsu\')" style="padding:8px 16px;background:#0a6a6a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📄 提出資料</button>'

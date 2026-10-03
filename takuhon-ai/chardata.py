@@ -85,9 +85,19 @@ def _cut(im, b, pad=PAD):
     return im.crop(box)
 
 
-def from_lines(root):
-    """登録した列から、読みのついた 1 字を集める。返りは [((拓本 64×64, 墨 64×64 または None), 字)]。"""
+STATS = {}
+
+
+def from_lines(root, make_ink=None):
+    """登録した列から、読みのついた 1 字を集める。返りは [((拓本 64×64, 墨 64×64 または None), 字)]。
+
+    make_ink … 墨の無い列（`ink.png` が無い）に 墨を作る関数（拓本の PIL → 墨の PIL。白＝墨）。
+               渡せば 作った墨を `ink_made.png` に控えて 次からは それを使う（2026-10-03。
+               本人「読みの学習材料は 列に入っていて、墨付きではないですが良いのですか」→
+               墨の無い列が 拓本＋墨 の学習から 抜けていたため）。
+    STATS に 列の数（ink＝登録された墨／made＝作った墨／none＝墨なし）を入れる。"""
     out = []
+    STATS.clear(); STATS.update(ink=0, made=0, none=0)
     if not os.path.isdir(root):
         return out
     for name in sorted(os.listdir(root)):
@@ -100,13 +110,30 @@ def from_lines(root):
             im = Image.open(os.path.join(d, "raw.png")).convert("L")
         except (OSError, ValueError):
             continue
-        ik = None
+        ik, src = None, "none"
         try:
             ik = Image.open(os.path.join(d, "ink.png")).convert("L")
-            if ik.size != im.size:
-                ik = ik.resize(im.size, Image.NEAREST)
+            src = "ink"
         except OSError:
             ik = None
+        if ik is not None and float((np.asarray(ik) > 127).mean()) < 0.002:
+            ik, src = None, "none"               # 墨が ほぼ空（古い登録）は 無いのと同じ
+        if ik is None and make_ink is not None:
+            fm = os.path.join(d, "ink_made.png")
+            try:
+                ik = Image.open(fm).convert("L")
+                src = "made"
+            except OSError:
+                try:
+                    ik = make_ink(im)
+                    if ik is not None:
+                        ik.save(fm)
+                        src = "made"
+                except Exception:                            # noqa: BLE001
+                    ik = None
+        if ik is not None and ik.size != im.size:
+            ik = ik.resize(im.size, Image.NEAREST)
+        STATS[src] = STATS.get(src, 0) + 1
         for b in (m.get("boxes") or []):
             ch = (b.get("ch") or "").strip()
             if len(ch) != 1:

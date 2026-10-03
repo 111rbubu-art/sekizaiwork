@@ -399,6 +399,10 @@ python3 train_char.py --compare --epochs 40   # 結果は runs/char_compare.json
 python3 train_char.py --mode both --fresh     # 決めた見せ方で 学び直して 差し替える（以後 夜の学習も この見せ方）
 ```
 
+墨を使う見せ方で学ぶときは、**墨の無い列（`ink.png` が無い・ほぼ空）に 墨出しのモデルで墨を作って**使う
+（`ink_made.png` に控える。登録された `ink.png` には さわらない）。最初に「列 ○ 本：登録された墨 ○・作った墨 ○・墨なし ○」と出る。
+比べる（--compare）ときだけは 登録された墨のある列で そろえる。
+
 彫刻原稿アプリは v45.3 から 読むとき（/api/takuhon/guess）に その字の墨も送る。拓本だけのモデルなら サーバーは墨を使わない。
 
 貯まり具合は `curl -s localhost:8077/api/takuhon/status | python3 -m json.tool` の

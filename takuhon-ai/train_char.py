@@ -92,6 +92,32 @@ def score(net, items, chars, device, bs=64):
     return ok1 / n, ok3 / n
 
 
+def ink_maker(device):
+    """墨の無い列に 墨を作る（墨出しのモデル runs/current.pth。サーバーの _ink_of と同じ通し方）。無ければ None。"""
+    try:
+        from unet import load_model
+    except Exception:                                        # noqa: BLE001
+        return None
+    net, info = load_model(os.path.join(RUNS, "current.pth"), device)
+    if not info.get("loaded"):
+        print("墨出しのモデルが無いので、墨の無い列は 墨を作れません（%s）" % info.get("why"))
+        return None
+    from PIL import Image
+
+    @torch.no_grad()
+    def make(im):
+        raw = np.asarray(im.convert("L"), dtype=np.float32) / 255.0
+        H, W = raw.shape
+        z = np.zeros_like(raw)
+        x = np.stack([raw, z, z], axis=0)
+        ph, pw = (16 - H % 16) % 16, (16 - W % 16) % 16
+        if ph or pw:
+            x = np.pad(x, ((0, 0), (0, ph), (0, pw)))
+        y = torch.sigmoid(net(torch.from_numpy(x[None]).to(device)))[0, 0].cpu().numpy()
+        return Image.fromarray(((y[:H, :W] > 0.5) * 255).astype(np.uint8), mode="L")
+    return make
+
+
 def current_mode():
     try:
         return torch.load(CURRENT, map_location="cpu").get("mode") or "raw"
@@ -237,11 +263,16 @@ def main():
     torch.manual_seed(a.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    got = C.from_lines(a.lines or LINES) + C.from_chars(a.chars or CHARS)
+    mode = a.mode or current_mode()
+    # 墨を使う見せ方では、墨の無い列に 墨出しのモデルで墨を作る（比べるときは 登録された墨だけで そろえる）
+    mk = ink_maker(device) if (mode != "raw" and not a.compare) else None
+    got = C.from_lines(a.lines or LINES, make_ink=mk) + C.from_chars(a.chars or CHARS)
+    st = C.STATS
+    print("列 %d 本：登録された墨 %d・作った墨 %d・墨なし %d" %
+          (st.get("ink", 0) + st.get("made", 0) + st.get("none", 0), st.get("ink", 0), st.get("made", 0), st.get("none", 0)))
     if a.compare:
         compare(a, got, device)
         return
-    mode = a.mode or current_mode()
     chars, tr, va, by = split(got, mode, a.min_per_char, rng)
     if len(chars) < 2:
         print("学習できる字が %d しかありません（1 字につき %d 枚以上が要ります）。"

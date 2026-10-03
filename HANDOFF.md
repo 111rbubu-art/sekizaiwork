@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.465**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.466**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -484,3 +484,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - 札の横並びと［👥］［🗺］のボタンを外し、検索欄の ＃ID の下に プルダウン `#top-temple-sel`（⛩ 全お寺／お寺名（件数））。選ぶと 白地・太字で 選んでいるのが分かる。
 - 下のカード：お寺を選んでいると「顧客リスト（○○）」「墓地マップ（○○）」に変わり、押すと そのお寺へ（`_topTempleCustomer`／`_topTempleMapOpen`）。マップの無いお寺は「このお寺のマップはありません」と出て、押すと いままでの選び画面。全お寺に戻すと もとの表示・動き。
+
+## index_b v1.9.466 ／ map_b — 墓地マップの顧客の窓から 納骨・戒切／工事関連 に登録（本人「マップのこのウィンドウから、工事と納骨リストへの登録をできる様にしたい」）
+
+- map_b：顧客の区画の窓（renderPlotCustomer）に［⛩ 納骨・戒切に登録］［🏗 工事関連に登録］（`#vp-newjob`。区画メモでは隠す＝`_vpShowDetailBtn`）。押すと `index_b.html?newjob=nok|kouji&cus=<顧客リストの ID>` を ビューアーの窓（sekizaiviewer）で開く（`vpNewJob`）。
+- index_b：`checkNewJobParam`（起動の checkMapParam の次）。顧客リストの その 1 件を Graph で読み、お寺の選択肢が入るのを待って 顧客リストからの新規と同じ `openNewJobModal`／`openNewKoujiFromCustomer` を開く（顧客名・フリガナ・電話・住所・お寺・顧客No・顧客リストID・墓石情報が入る）。URL の newjob は すぐ消す（再読み込みで また開かない）。

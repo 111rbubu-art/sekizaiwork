@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-10-03　**chokoku-genko.html = v45.2**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
+最終更新: 2026-10-03　**chokoku-genko.html = v45.3**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -7127,3 +7127,11 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
 - そのあとの 数字〜才・歳（6 字まで）は 年齢（理由 `kyonen`）。前は「数字＋年」の決まりで「享年七十二歳」が まるごと命日になっていた。
 - ガイドラインを作る下見は 戒名・命日・俗名・行年・年齢 の順。`grpCharFitWant` で kyo も 命日・年齢と同じく 拓本と同じ字を合わせる。
 - 本人の質問「読む AI は墨か拓本か」：読みの AI（/api/takuhon/guess）は 回転を直した拓本（RUB.canvas）から 枠の 1.15 倍で切った 1 字を見る（墨ではない。学習も raw.png）。枠の AI（/api/takuhon/boxes）は 拓本＋墨 の両方。
+
+## v45.3 — 読みの AI に墨も見せる／学習画面で もう一度読ませる・① 枠 ② 墨 ③ 読み の順（本人の指示）
+
+- 本人「墨で見たほうが、精度が上がると思う」→ 拓本だけ・墨だけ・拓本＋墨 を 比べて決めることにした。
+- takuhon-ai：`chardata.py`（`fit_ink`・`stack`・`MODES`。列の `ink.png`＝白が墨 を 同じ所で切る。augment は 傾き・ずらしを全部の面に同じだけ、明るさは拓本だけ）、`charnet.py`（`in_ch`・重みに `mode`）、`train_char.py`（`--mode raw|ink|both`、`--compare` で 3 通りを同じ検証用で比べ `runs/char_compare.json`。`--mode` 無しは いまのモデルの見せ方）、`app.py` の /api/takuhon/guess（`ink` を受け取る。モデルが墨を使うのに来なければ 墨のモデルで作る。返りに `mode`・`ink`）。README §5x に使い方。手元の小さな試しの字で 比べる・both で学ぶ・読む まで通した。
+- アプリ：`rubCharInkCv`（列の墨 L.aiUrl か 控えから 拓本と同じ正方形で 128px）。`rubGuessAi(it, L)` が `ink` も送る。
+- 学習画面：タブを ① □ 枠を直す ② ■ 墨を直す ③ ✎ 読みを入れる の順に、はじめは ①。③ に［🤖 いまの枠と墨で AI にもう一度読ませる］（`rceReadAi`：先に保存 → 字ごとに rubGuessAi → 人が入れた読みは そのまま、確かなら読みに、迷えば候補。候補 3 つを 字の下に出し 押すと入る `rceCandHtml`）。
+- サーバー側は 本人の PC で 更新（update.sh）と `train_char.py --compare` を回してもらう必要あり。

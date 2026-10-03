@@ -30,10 +30,11 @@ def _blk(a, b):
 
 
 class CharNet(nn.Module):
-    def __init__(self, n_cls, base=32):
+    """in_ch … 入力の枚数（拓本だけ・墨だけ＝1、拓本＋墨＝2。chardata.MODES）"""
+    def __init__(self, n_cls, base=32, in_ch=1):
         super().__init__()
         c = [base, base * 2, base * 4, base * 8]
-        self.f = nn.Sequential(_blk(1, c[0]), _blk(c[0], c[1]), _blk(c[1], c[2]), _blk(c[2], c[3]))
+        self.f = nn.Sequential(_blk(in_ch, c[0]), _blk(c[0], c[1]), _blk(c[1], c[2]), _blk(c[2], c[3]))
         self.head = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(),
                                   nn.Dropout(0.2), nn.Linear(c[3], n_cls))
 
@@ -57,7 +58,8 @@ def load_charnet(path, device, base=32):
     if not chars:
         info["why"] = "字の一覧が入っていません"
         return None, info
-    net = CharNet(len(chars), base=int(ck.get("base", base))).to(device)
+    mode = ck.get("mode") or "raw"                 # 古い重みは 拓本だけ
+    net = CharNet(len(chars), base=int(ck.get("base", base)), in_ch=2 if mode == "both" else 1).to(device)
     try:
         net.load_state_dict(ck["model"])
     except Exception as e:                                   # noqa: BLE001
@@ -66,13 +68,13 @@ def load_charnet(path, device, base=32):
     net.eval()
     info.update(loaded=True, step=ck.get("step", 0), acc=ck.get("acc"), top3=ck.get("top3"),
                 chars=len(chars), samples=ck.get("samples"), at=ck.get("at"),
-                base=int(ck.get("base", base)), why=None, char_list="".join(chars))
+                base=int(ck.get("base", base)), why=None, char_list="".join(chars), mode=mode)
     return (net, chars), info
 
 
 @torch.no_grad()
 def guess(pair, x, top=5):
-    """候補を高い順に返す。x は (1,1,64,64) の tensor。"""
+    """候補を高い順に返す。x は (1,C,64,64) の tensor（C は 見せ方の枚数）。"""
     net, chars = pair
     p = torch.softmax(net(x), dim=1)[0]
     k = min(top, len(chars))

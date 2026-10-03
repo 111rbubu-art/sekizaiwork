@@ -10,6 +10,13 @@
   5. 世代は runs/char_YYYYmmdd-HHMM.pth に残す
 
 **2 枚しかない字は学習に入れない**（覚えようがなく、検証も取れないため）。
+
+**見せ方（mode）**（2026-10-03。本人「墨で見たほうが、精度が上がると思う」）
+  python3 train_char.py --compare --epochs 40     拓本だけ・墨だけ・拓本＋墨 を **同じ字・同じ検証用**で比べる
+                                                  （墨のある字だけを使う。char_current.pth は さわらない）
+                                                  結果は runs/char_compare.json
+  python3 train_char.py --mode both --fresh       決めた見せ方で 学び直して 差し替える
+  --mode を付けなければ いまの char_current.pth の見せ方（無ければ 拓本だけ）。夜の学習もこれ。
 """
 import argparse
 import json
@@ -63,7 +70,8 @@ def put_curve(rec, fresh=False):
 
 @torch.no_grad()
 def score(net, items, chars, device, bs=64):
-    """当たり具合。acc＝いちばん上が合っていた割合、top3＝上位 3 つに入っていた割合。"""
+    """当たり具合。acc＝いちばん上が合っていた割合、top3＝上位 3 つに入っていた割合。
+    items は [((C,64,64), 字)]（見せ方に合わせて重ねたもの）。"""
     if not items:
         return None, None
     net.eval()
@@ -71,7 +79,7 @@ def score(net, items, chars, device, bs=64):
     ok1 = ok3 = 0
     for i in range(0, len(items), bs):
         part = items[i:i + bs]
-        x = torch.from_numpy(np.stack([a[None] for a, _ in part])).to(device)
+        x = torch.from_numpy(np.stack([a for a, _ in part])).to(device)
         y = [idx[c] for _, c in part]
         p = net(x)
         t3 = torch.topk(p, min(3, len(chars)), dim=1).indices.cpu().numpy()
@@ -82,6 +90,127 @@ def score(net, items, chars, device, bs=64):
                 ok3 += 1
     n = len(items)
     return ok1 / n, ok3 / n
+
+
+def current_mode():
+    try:
+        return torch.load(CURRENT, map_location="cpu").get("mode") or "raw"
+    except Exception:                                        # noqa: BLE001
+        return "raw"
+
+
+def split(got, mode, min_per, rng):
+    """見せ方に合わせて重ね、字ごとに 15% を検証に取り分ける。"""
+    by = defaultdict(list)
+    for (raw, ink), ch in got:
+        x = C.stack(raw, ink, mode)
+        if x is not None:
+            by[ch].append(x)
+    chars = sorted([c for c, v in by.items() if len(v) >= min_per])
+    tr, va = [], []
+    for c in chars:
+        v = by[c][:]
+        rng.shuffle(v)
+        k = max(1, int(len(v) * 0.15))
+        va += [(x, c) for x in v[:k]]
+        tr += [(x, c) for x in v[k:]]
+    return chars, tr, va, by
+
+
+def run(a, mode, chars, tr, va, device, rng, swap=True, resume=True, gen_name=None, quiet=False):
+    """1 つの見せ方で学ぶ。返りは (いちばん良い acc, その時の top3, 前のモデルの点)。"""
+    net = CharNet(len(chars), base=a.base, in_ch=C.chans(mode)).to(device)
+    step, best, best3 = 0, -1.0, None
+    base0 = None                                     # 前のモデルの 今回の検証用での点
+    if resume and not a.fresh and os.path.exists(CURRENT):
+        try:
+            ck = torch.load(CURRENT, map_location=device)
+            if (list(ck.get("chars") or []) == chars and int(ck.get("base", a.base)) == a.base
+                    and (ck.get("mode") or "raw") == mode):
+                net.load_state_dict(ck["model"])
+                step, old = ck.get("step", 0), float(ck.get("acc") or -1)
+                # 前のモデルを **今回の検証用で測り直す**（2026-09-23。枠の学習と同じ直し）
+                a0 = score(net, va, chars, device)[0]
+                best = -1.0 if a0 is None else a0
+                base0 = a0
+                print("続きから（step %d・前回の当たり %.3f → 今回の検証用で %s）" %
+                      (step, old, "―" if a0 is None else "%.3f" % a0))
+            else:
+                print("字の顔ぶれ・見せ方が変わったので、はじめから学習します。")
+        except Exception as e:                               # noqa: BLE001
+            print("前の重みは読めませんでした:", e)
+    opt = torch.optim.Adam(net.parameters(), lr=a.lr)
+    lossf = nn.CrossEntropyLoss(label_smoothing=0.05)
+    idx = {c: i for i, c in enumerate(chars)}
+    nswap = 0
+    for ep in range(1, a.epochs + 1):
+        net.train()
+        t0, tot, nb = time.time(), 0.0, 0
+        order = list(range(len(tr)))
+        rng.shuffle(order)
+        for i in range(0, len(order), a.bs):
+            part = [tr[j] for j in order[i:i + a.bs]]
+            x = torch.from_numpy(np.stack([C.augment(img, rng, mode) for img, _ in part])).to(device)
+            y = torch.tensor([idx[c] for _, c in part], device=device)
+            loss = lossf(net(x), y)
+            opt.zero_grad(); loss.backward(); opt.step()
+            tot += float(loss.detach()); nb += 1; step += 1
+        acc, top3 = score(net, va, chars, device)
+        rec = {"ep": ep, "loss": round(tot / max(1, nb), 4),
+               "acc": None if acc is None else round(acc, 4),
+               "top3": None if top3 is None else round(top3, 4),
+               "sec": round(time.time() - t0, 1), "mode": mode}
+        put_curve(rec)
+        put_progress(state="running", epochs=a.epochs, step=step, best=round(best, 4),
+                     chars=len(chars), n=len(tr), **rec)
+        if not quiet or ep % 10 == 0 or ep == a.epochs:
+            print("[%s] ep %3d  loss %.4f  当たり %s  上位3 %s  (%.1fs)" %
+                  (mode, ep, rec["loss"], rec["acc"], rec["top3"], rec["sec"]))
+        if acc is not None and acc > best:
+            best, best3 = acc, top3
+            ck = {"model": net.state_dict(), "base": a.base, "step": step, "chars": chars,
+                  "mode": mode, "acc": round(acc, 4), "top3": round(top3, 4), "samples": len(tr),
+                  "note": a.note, "at": datetime.now().isoformat(timespec="seconds")}
+            gen = os.path.join(RUNS, gen_name or ("char_%s.pth" % datetime.now().strftime("%Y%m%d-%H%M")))
+            torch.save(ck, gen)
+            if swap:
+                shutil.copyfile(gen, CURRENT)
+                print("  → 差し替えました（当たり %.3f）" % acc)
+                nswap += 1
+    return best, best3, base0, nswap
+
+
+def compare(a, got, device):
+    """3 つの見せ方を **同じ字・同じ検証用** で比べる。墨のある字だけを使う。"""
+    have = [g for g in got if g[0][1] is not None]
+    print("墨のある字 %d 枚（墨の無い %d 枚は 比べるときは使いません）" % (len(have), len(got) - len(have)))
+    # 取り分けを そろえるため、同じ種で 同じ順に
+    res = {}
+    for mode in C.MODES:
+        rng = random.Random(a.seed)
+        torch.manual_seed(a.seed)
+        chars, tr, va, _ = split(have, mode, a.min_per_char, rng)
+        if len(chars) < 2:
+            print("比べられる字が足りません（%d 種）。" % len(chars))
+            return
+        if mode == C.MODES[0]:
+            print("字 %d 種／学習 %d 枚・検証 %d 枚　%s" % (len(chars), len(tr), len(va), device))
+        put_curve({"ep": 0, "start": True, "chars": len(chars), "n": len(tr), "mode": mode},
+                  fresh=(mode == C.MODES[0]))
+        best, best3, _, _ = run(a, mode, chars, tr, va, device, rng, swap=False, resume=False,
+                                gen_name="char_cmp_%s.pth" % mode, quiet=True)
+        res[mode] = {"acc": round(best, 4), "top3": None if best3 is None else round(best3, 4),
+                     "chars": len(chars), "train": len(tr), "val": len(va)}
+    nm = {"raw": "拓本だけ", "ink": "墨だけ  ", "both": "拓本＋墨"}
+    print("\n─── 比べた結果（同じ検証用 %d 枚）───" % res["raw"]["val"])
+    for m in C.MODES:
+        print("  %s  当たり %.3f   上位3 %.3f" % (nm[m], res[m]["acc"], res[m]["top3"] or 0))
+    win = max(C.MODES, key=lambda m: (res[m]["acc"], res[m]["top3"] or 0))
+    print("いちばん良いのは %s。使うなら:  python3 train_char.py --mode %s --fresh" % (nm[win].strip(), win))
+    with open(os.path.join(RUNS, "char_compare.json"), "w", encoding="utf-8") as f:
+        json.dump({"at": datetime.now().isoformat(timespec="seconds"), "epochs": a.epochs,
+                   "result": res, "best": win}, f, ensure_ascii=False, indent=1)
+    put_progress(state="done", compare=res, best_mode=win)
 
 
 def main():
@@ -95,6 +224,9 @@ def main():
     ap.add_argument("--chars", default="", help="手本帳の置き場（既定 dataset/chars）")
     ap.add_argument("--min-per-char", type=int, default=3,
                     help="この枚数に満たない字は学習に入れない")
+    ap.add_argument("--mode", default="", choices=["", "raw", "ink", "both"],
+                    help="見せ方（拓本だけ raw・墨だけ ink・拓本＋墨 both）。無ければ いまのモデルと同じ")
+    ap.add_argument("--compare", action="store_true", help="3 つの見せ方を比べるだけ（差し替えない）")
     ap.add_argument("--note", default="")
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--no-swap", dest="no_swap", action="store_true")
@@ -106,10 +238,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     got = C.from_lines(a.lines or LINES) + C.from_chars(a.chars or CHARS)
-    by = defaultdict(list)
-    for img, ch in got:
-        by[ch].append(img)
-    chars = sorted([c for c, v in by.items() if len(v) >= a.min_per_char])
+    if a.compare:
+        compare(a, got, device)
+        return
+    mode = a.mode or current_mode()
+    chars, tr, va, by = split(got, mode, a.min_per_char, rng)
     if len(chars) < 2:
         print("学習できる字が %d しかありません（1 字につき %d 枚以上が要ります）。"
               "彫刻原稿アプリで［この列を AI に登録］と 手本帳の［控える］を回してください。"
@@ -117,76 +250,12 @@ def main():
         put_progress(state="few", chars=len(chars), need=a.min_per_char,
                      have={c: len(v) for c, v in sorted(by.items())})
         return
-    tr, va = [], []
-    for c in chars:
-        v = by[c][:]
-        rng.shuffle(v)
-        k = max(1, int(len(v) * 0.15))
-        va += [(x, c) for x in v[:k]]
-        tr += [(x, c) for x in v[k:]]
-    print("字 %d 種／学習 %d 枚・検証 %d 枚　%s" % (len(chars), len(tr), len(va), device))
+    print("見せ方 %s／字 %d 種／学習 %d 枚・検証 %d 枚　%s" % (mode, len(chars), len(tr), len(va), device))
     print("　" + "・".join("%s%d" % (c, len(by[c])) for c in chars))
-
-    net = CharNet(len(chars), base=a.base).to(device)
-    step, best = 0, -1.0
-    base0 = None                                     # 前のモデルの 今回の検証用での点
-    nswap = 0
-    if not a.fresh and os.path.exists(CURRENT):
-        try:
-            ck = torch.load(CURRENT, map_location=device)
-            if list(ck.get("chars") or []) == chars and int(ck.get("base", a.base)) == a.base:
-                net.load_state_dict(ck["model"])
-                step, old = ck.get("step", 0), float(ck.get("acc") or -1)
-                # 前のモデルを **今回の検証用で測り直す**（2026-09-23。枠の学習と同じ直し）
-                a0 = score(net, va, chars, device)[0]
-                best = -1.0 if a0 is None else a0
-                base0 = a0
-                print("続きから（step %d・前回の当たり %.3f → 今回の検証用で %s）" %
-                      (step, old, "―" if a0 is None else "%.3f" % a0))
-            else:
-                print("字の顔ぶれが変わったので、はじめから学習します。")
-        except Exception as e:                               # noqa: BLE001
-            print("前の重みは読めませんでした:", e)
-    opt = torch.optim.Adam(net.parameters(), lr=a.lr)
-    lossf = nn.CrossEntropyLoss(label_smoothing=0.05)
-    idx = {c: i for i, c in enumerate(chars)}
-    put_curve({"ep": 0, "start": True, "chars": len(chars), "n": len(tr)}, fresh=True)
-
-    for ep in range(1, a.epochs + 1):
-        net.train()
-        t0, tot, nb = time.time(), 0.0, 0
-        order = list(range(len(tr)))
-        rng.shuffle(order)
-        for i in range(0, len(order), a.bs):
-            part = [tr[j] for j in order[i:i + a.bs]]
-            x = torch.from_numpy(np.stack([C.augment(img, rng)[None] for img, _ in part])).to(device)
-            y = torch.tensor([idx[c] for _, c in part], device=device)
-            loss = lossf(net(x), y)
-            opt.zero_grad(); loss.backward(); opt.step()
-            tot += float(loss.detach()); nb += 1; step += 1
-        acc, top3 = score(net, va, chars, device)
-        rec = {"ep": ep, "loss": round(tot / max(1, nb), 4),
-               "acc": None if acc is None else round(acc, 4),
-               "top3": None if top3 is None else round(top3, 4),
-               "sec": round(time.time() - t0, 1)}
-        put_curve(rec)
-        put_progress(state="running", epochs=a.epochs, step=step, best=round(best, 4),
-                     chars=len(chars), n=len(tr), **rec)
-        print("ep %3d  loss %.4f  当たり %s  上位3 %s  (%.1fs)" %
-              (ep, rec["loss"], rec["acc"], rec["top3"], rec["sec"]))
-        if acc is not None and acc > best:
-            best = acc
-            ck = {"model": net.state_dict(), "base": a.base, "step": step, "chars": chars,
-                  "acc": round(acc, 4), "top3": round(top3, 4), "samples": len(tr),
-                  "note": a.note, "at": datetime.now().isoformat(timespec="seconds")}
-            gen = os.path.join(RUNS, "char_%s.pth" % datetime.now().strftime("%Y%m%d-%H%M"))
-            torch.save(ck, gen)
-            if not a.no_swap:
-                shutil.copyfile(gen, CURRENT)
-                print("  → 差し替えました（当たり %.3f）" % acc)
-                nswap += 1
+    put_curve({"ep": 0, "start": True, "chars": len(chars), "n": len(tr), "mode": mode}, fresh=True)
+    best, _, base0, nswap = run(a, mode, chars, tr, va, device, rng, swap=not a.no_swap)
     put_progress(state="done", best=round(best, 4), chars=len(chars), epochs=a.epochs,
-                 swapped=nswap, base=None if base0 is None else round(base0, 4))
+                 swapped=nswap, base=None if base0 is None else round(base0, 4), mode=mode)
     print("おわり。いちばん良かった 当たり = %.3f" % best)
 
 

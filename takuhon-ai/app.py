@@ -497,6 +497,7 @@ def _ink_of(raw):
 @app.post("/api/takuhon/guess")
 async def guess_char(
     file: UploadFile = File(...),
+    ink: UploadFile = File(None),
     top: int = Form(5),
 ):
     """**1 字の切り抜き**を渡すと、読みの候補を返す（2026-09-21）。
@@ -515,13 +516,32 @@ async def guess_char(
     a = CD.fit(im)
     if a is None:
         return JSONResponse({"error": "too_small"}, status_code=400)
+    # **墨も見る**（2026-10-03）。モデルの見せ方（mode）が 墨を使うなら、送られた墨（白＝墨・拓本と同じ切り抜き）を使う。
+    #   送られなければ ここで墨のモデルに通して作る（質は落ちる）。どれを使ったかを返す。
+    mode = INFOC.get("mode") or "raw"
+    k, ink_src = None, "none"
+    if mode != "raw":
+        if ink is not None:
+            ik = Image.open(__import__("io").BytesIO(await ink.read())).convert("L")
+            if ik.size != im.size:
+                ik = ik.resize(im.size, Image.NEAREST)
+            k, ink_src = CD.fit_ink(ik), "sent"
+        elif INFO.get("loaded"):
+            _reload_if_new()
+            w0, h0 = im.size
+            raw0 = np.asarray(im, dtype=np.float32) / 255.0
+            m = _ink_of(raw0)
+            k, ink_src = CD.fit_ink(Image.fromarray((m * 255).astype(np.uint8)[:h0, :w0], mode="L")), "made"
+        if k is None:
+            k = np.zeros_like(a)
+    x0 = CD.stack(a, k, mode)
     t0 = time.time()
-    x = torch.from_numpy(a[None][None]).to(DEVICE)
+    x = torch.from_numpy(x0[None]).to(DEVICE)
     cands = char_guess_top(NETC, x, top=max(1, min(int(top), 10)))
-    return {"cands": cands, "ms": int((time.time() - t0) * 1000),
+    return {"cands": cands, "ms": int((time.time() - t0) * 1000), "mode": mode, "ink": ink_src,
             "model": {"step": INFOC.get("step"), "at": INFOC.get("at"),
                       "acc": INFOC.get("acc"), "top3": INFOC.get("top3"),
-                      "chars": INFOC.get("chars")}}
+                      "chars": INFOC.get("chars"), "mode": mode}}
 
 
 @app.post("/api/takuhon/chars")

@@ -391,6 +391,16 @@ python3 train_char.py --epochs 60     # 読み（1 字につき 3 枚以上あ�
 3 つまとめて回すなら `bash train-nightly.sh`。夜の自動実行（`takuhon-train.timer`）も
 これを呼ぶようにしてある。
 
+**読みに 墨も見せる**（2026-10-03）。読みの AI の見せ方は 3 通り：拓本だけ（raw・いままで）／墨だけ（ink）／拓本＋墨（both）。
+どれが当たるかは 同じ字・同じ検証用で 比べて決める（墨のある字だけを使う。いまのモデルは さわらない）:
+
+```bash
+python3 train_char.py --compare --epochs 40   # 結果は runs/char_compare.json と 画面の最後の表
+python3 train_char.py --mode both --fresh     # 決めた見せ方で 学び直して 差し替える（以後 夜の学習も この見せ方）
+```
+
+彫刻原稿アプリは v45.3 から 読むとき（/api/takuhon/guess）に その字の墨も送る。拓本だけのモデルなら サーバーは墨を使わない。
+
 貯まり具合は `curl -s localhost:8077/api/takuhon/status | python3 -m json.tool` の
 `lines`（列の数）・`box`・`char` で分かる。
 彫刻原稿アプリの［🔍 登録した字枠を見る］→［サーバーに貯まった分］でも、絵で見られる。

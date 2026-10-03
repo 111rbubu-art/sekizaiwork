@@ -1590,11 +1590,15 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       <button class="mini" id="rceClose">閉じる</button>
     </div>
     <span class="seg" id="rceSeg">
-      <button class="segb on" data-t="ch">✎ 読みを入れる</button>
-      <button class="segb" data-t="bx">□ 枠を直す</button>
-      <button class="segb" data-t="ink">■ 墨を直す</button>
+      <button class="segb on" data-t="bx">① □ 枠を直す</button>
+      <button class="segb" data-t="ink">② ■ 墨を直す</button>
+      <button class="segb" data-t="ch">③ ✎ 読みを入れる</button>
     </span>
-    <div id="rcePaneCh">
+    <div id="rcePaneCh" hidden>
+      <div class="cebar">
+        <button class="mini primary" id="rceAiRead" title="いま保存した枠と、その列の墨で、読みの AI に もう一度 読ませます。人が入れた読みは そのまま。迷った字は 候補を下に出します">🤖 いまの枠と墨で AI にもう一度読ませる</button>
+        <span class="hint" id="rceAiNote"></span>
+      </div>
       <div class="cebar">
         <label style="flex:1;display:block;">まとめて入れる
           <input type="text" id="rceAll" style="width:100%;display:block;margin-top:2px;" placeholder="例）令和五年　上から順に入ります。空ける所は □"></label>
@@ -1604,7 +1608,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
       <p class="hint" style="margin:0 0 8px">1 枠に 1 字。読めない枠は <b>空のまま</b>にしてください（その枠は読みの学習に入りません）。枠そのものは変わりません。</p>
       <div id="rceGrid"></div>
     </div>
-    <div id="rcePaneBx" hidden>
+    <div id="rcePaneBx">
       <div class="cebar">
         <button class="mini" id="rceBxDel">🗑 この枠を消す</button>
         <button class="mini" id="rceBxCut">✂ 上下に割る</button>
@@ -2549,7 +2553,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v45.2";
+var APP_VER = "v45.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -22505,7 +22509,7 @@ function rubPanel(){
        その内容は 登録した教材を見る と同じとして、登録した教材を見る画面で 修正も出来るようにして」）───── */
     h += '<p class="hint" style="margin:12px 0 2px;"><b>4 ─ 修正と学習</b></p>' +
       '<div class="aigrp"><button class="mini primary" id="btnLearnWin" ' +
-      'title="読みを入れる／枠を直す 画面を いま選んでいる列で開きます（拓本AI の［✎ 読み・枠］と同じ形。サーバーには つながない）。前の列／次の列 で ほかの列も直せます">' +
+      'title="① 枠を直す ② 墨を直す ③ 読みを入れる の画面を いま選んでいる列で開きます（拓本AI の［✎ 読み・枠］と同じ形。サーバーには つながない）。前の列／次の列 で ほかの列も直せます">' +
       '📚 学習画面へ</button>' +
       /* 登録した教材を見る も ここへ（v44.2。本人「🔍 登録した教材を見る を 4 ─ 修正と学習へ移動し、他の学習メニューは削除」）。
          教材の登録は この板の 列ごとの［⬆ この列を教材登録］で */
@@ -22586,7 +22590,7 @@ function rubPanel(){
   var blw = $("btnLearnWin"); if (blw) blw.onclick = function(){
     var ids9 = rceIds();
     if (!ids9.length){ msg("先に［拓本AI解析］で 枠を作ってください。", true); return; }
-    rceOpen(ids9.indexOf(rubSelCol) >= 0 ? rubSelCol : ids9[0], "ch");
+    rceOpen(ids9.indexOf(rubSelCol) >= 0 ? rubSelCol : ids9[0], "bx");
   };
   var bz2 = $("btnAnalyze2");
   if (bz2) bz2.onclick = async function(){
@@ -25315,18 +25319,37 @@ function rubCharCv(it, pad){
   g.drawImage(rubSrcCv(), cx - s/2, cy - s/2, s, s, 0, 0, n, n);
   return cv;
 }
-/* 1 字ぶん聞く。返りは [{ch,p}, ...]（高い順） */
-async function rubGuessAi(it){
+/* 1 字ぶんの **墨**（白＝墨・黒＝地）を 拓本と同じ所・同じ大きさで切る（v45.3）。
+   列の墨（L.aiUrl。向きが合っているとき）を使い、無ければ その所の墨の控え。どれも無ければ null */
+function rubCharInkCv(it, L, pad){
+  var b = it && it.px; if (!b || !RUB.img) return Promise.resolve(null);
+  var s = Math.max(b.w, b.h) * (pad || 1.15);
+  var cx = b.x + b.w/2, cy = b.y + b.h/2;
+  var url = (L && L.aiUrl && (!L.geo || L.geo === rubGeoKey())) ? L.aiUrl
+          : rubInkUrlAt({ x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h });
+  return _inkCropCv(url, cx - s/2, cy - s/2, s, s, 128, 128);
+}
+/* 1 字ぶん聞く。返りは [{ch,p}, ...]（高い順）。
+   **墨も送る**（v45.3。本人「墨で見たほうが、精度が上がると思う」）。読みのモデルが 墨を使う見せ方なら サーバーが使う */
+async function rubGuessAi(it, L){
   var base = takuApiBase();
   if (!base) throw new Error(takuAiOffNote());
   var cv = rubCharCv(it); if (!cv) throw new Error("切り抜けません");
   var fd = new FormData();
   fd.append("file", await new Promise(function(res){ cv.toBlob(res, "image/png"); }), "c.png");
+  var ik = null;
+  try { ik = await rubCharInkCv(it, L || rubColOf(it)); } catch(e){ ik = null; }
+  if (ik) fd.append("ink", await new Promise(function(res){ ik.toBlob(res, "image/png"); }), "ink.png");
   fd.append("top", "5");
   var r = await fetch(base + "/api/takuhon/guess", { method: "POST", body: fd });
   if (!r.ok) throw await takuErr(r, "読みの AI（/api/takuhon/guess）");
   var j = await r.json();
-  return { cands: j.cands || [], model: j.model || {} };
+  return { cands: j.cands || [], model: j.model || {}, ink: j.ink || "" };
+}
+function rubColOf(it){
+  var ls = S.rub.lines || [];
+  for (var i = 0; i < ls.length; i++) if (ls[i] && ls[i].items && ls[i].items.indexOf(it) >= 0) return ls[i];
+  return null;
 }
 /* いまの列を、ぜんぶ AI に読ませる。
    はっきりしている字（いちばん上が 0.5 以上）だけ読みに入れ、
@@ -25342,7 +25365,7 @@ async function rubReadAiGo(quiet){
     if (it.anch && it.anch.hand) continue;          /* 人が決めた読みは触らない */
     msg("AI に読ませています… " + (i+1) + " / " + L.items.length, false, true);
     try {
-      var g = await rubGuessAi(it);
+      var g = await rubGuessAi(it, L);
       mdl = g.model;
       it.ai = g.cands;                              /* 候補は残す（選び直せるように） */
       /* **どれだけ確かなら読みに入れるか**（v34.4）。
@@ -25650,7 +25673,7 @@ function rceOpen(ci, tab){
   var L = (S.rub.lines || [])[ci]; if (!L) return;
   var sh = rubLineShot(L); if (!sh){ msg("この列の絵が作れませんでした。", true); return; }
   var ids = rceIds();
-  RCE = { ci: ci, sh: sh, im: null, sel: -1, undo: [], zoom: RCE.zoom || 0, tab: "ch", ids: ids, at: ids.indexOf(ci),
+  RCE = { ci: ci, sh: sh, im: null, sel: -1, undo: [], zoom: RCE.zoom || 0, tab: "bx", ids: ids, at: ids.indexOf(ci), cand: false,
           boxes: sh.boxes.map(function(b){ return { x: b.x, y: b.y, w: b.w, h: b.h, ch: b.ch || "", g: b.g || "" }; }) };
   $("rceSub").textContent = rubLineKey(L);
   $("rceAll").value = "";
@@ -25660,7 +25683,7 @@ function rceOpen(ci, tab){
   im.onload = function(){
     RCE.im = im;
     if (tab === "ink"){ RCE.tab = "ink"; rceTab("ink"); }      /* 開いたばかりなので 保存は要らない */
-    else rceTab(tab === "bx" ? "bx" : "ch");
+    else rceTab(tab === "ch" ? "ch" : "bx");                    /* はじめは ① 枠を直す（v45.3。本人の指示の順） */
   };
   im.src = sh.cv.toDataURL("image/png");
 }
@@ -25756,8 +25779,14 @@ function rceDraw(){
     return '<div class="cebox2' + (b.ch ? " has" : "") + '" id="rce-' + i + '">' +
       '<img src="' + rceCut(b, 96) + '" alt="' + (i + 1) + '"><div class="no">' + (i + 1) + ' 字目</div>' +
       /* maxlength は付けない（ローマ字入力の変換が できなくなる）。決まってから 1 字に切る */
-      '<input type="text" lang="ja" autocomplete="off" data-i="' + i + '" value="' + esc(b.ch || "") + '"></div>';
+      '<input type="text" lang="ja" autocomplete="off" data-i="' + i + '" value="' + esc(b.ch || "") + '">' + rceCandHtml(i) + '</div>';
   }).join("");
+  Array.prototype.forEach.call(g.querySelectorAll(".rceCand button"), function(bt){
+    bt.onclick = function(){
+      var el = g.querySelector('input[data-i="' + bt.dataset.i + '"]'); if (!el) return;
+      el.value = bt.dataset.c; rceTake(el, false);
+    };
+  });
   Array.prototype.forEach.call(g.querySelectorAll("input"), function(el){
     el.addEventListener("compositionstart", function(){ el.dataset.imeOn = "1"; });
     el.addEventListener("compositionend", function(){ delete el.dataset.imeOn; rceTake(el, true); });
@@ -25766,6 +25795,52 @@ function rceDraw(){
   });
   rceCount();
   var f0 = g.querySelector("input"); if (f0) f0.focus();
+}
+/* AI の候補（読ませ直したあとだけ。押すと その字を入れる） */
+function rceCandHtml(i){
+  if (!RCE.cand) return "";
+  var L = (S.rub.lines || [])[RCE.ci], its = L && L.items;
+  if (!its || its.length !== RCE.boxes.length) return "";
+  var cs = (its[i] && Array.isArray(its[i].ai) ? its[i].ai : []).slice(0, 3);
+  if (!cs.length) return "";
+  return '<div class="rceCand" style="display:flex;gap:2px;justify-content:center;margin-top:2px;">' + cs.map(function(c){
+    return '<button class="mini" data-i="' + i + '" data-c="' + esc(c.ch) + '" style="padding:0 4px;min-width:0;font-size:13px;" title="AI の候補 ' +
+      Math.round(num(c.p, 0) * 100) + '%">' + esc(c.ch) + '<span style="font-size:9px;color:#888;">' + Math.round(num(c.p, 0) * 100) + '</span></button>';
+  }).join("") + '</div>';
+}
+/* ───── **いまの枠と墨で もう一度 読ませる**（v45.3。本人「枠を直すと、AIはかわるので…読みも 墨と枠の状態で
+   もう一度AIに読ませる機能を追加して」）─────
+   直しかけを 先に保存し（rceWrite）、保存した枠ごとに 拓本の切り抜き＋その列の墨 を 読みの AI に送る（rubGuessAi）。
+   人が決めた読み（anch.hand）は さわらない。確かなら 読みに入れ、迷えば 候補だけ（下に 3 つ出す。押すと入る）。 */
+async function rceReadAi(){
+  if (!takuApiBase()){ alert(takuAiOffNote() + "。"); return; }
+  try { rceWrite(); } catch(e){ alert("先に保存できませんでした（" + ((e && e.message) || "") + "）。"); return; }
+  var L = (S.rub.lines || [])[RCE.ci]; if (!L) return;
+  var bt = $("rceAiRead"), note = $("rceAiNote");
+  bt.disabled = true;
+  var ok = 0, hold = 0, keep = 0, ng = 0, last = "", inkN = 0;
+  for (var i = 0; i < L.items.length; i++){
+    var it = L.items[i];
+    if (it.anch && it.anch.hand){ keep++; continue; }
+    note.textContent = "読ませています… " + (i + 1) + " / " + L.items.length;
+    try {
+      var g = await rubGuessAi(it, L);
+      if (g.ink === "sent") inkN++;
+      it.ai = g.cands;
+      var top = g.cands[0], sec = g.cands[1];
+      var sure = top && (top.p >= 0.35 || (top.p >= 0.2 && (!sec || top.p >= sec.p * 2)));
+      if (sure){ it.anch = { ch: top.ch, by: "ai", p: top.p }; delete it.pick; ok++; }
+      else hold++;
+    } catch(e){ ng++; last = (e && e.message) || ""; }
+  }
+  if (ok){ var k9 = rubSelCol; rubSelCol = RCE.ci; try { rubGrpFromRead(false, true); } catch(e){} rubSelCol = k9; }
+  persist();
+  bt.disabled = false;
+  RCE.cand = true;
+  rceReload(function(){ rceDraw(); });
+  note.textContent = ng ? "AI に通せませんでした（" + last + "）"
+    : "読んだ " + ok + " 字・迷った " + hold + " 字（候補を下に）" + (keep ? "・人が入れた " + keep + " 字は そのまま" : "") +
+      "・墨も送った " + inkN + " 字";
 }
 function rceTake(el, go){
   var g = $("rceGrid"), i = +el.dataset.i;
@@ -25982,6 +26057,7 @@ function rceGo(d){
   rceOpen(RCE.ids[at], tab);
 }
 (function rceBind(){
+  $("rceAiRead").onclick = rceReadAi;
   var sg = $("rceSeg");
   if (sg) sg.addEventListener("click", function(e){ var b = e.target.closest(".segb"); if (b) rceTab(b.dataset.t); });
   window.addEventListener("resize", function(){ if (!$("rceEd").hidden && RCE.tab === "bx") rceBxDraw(); });

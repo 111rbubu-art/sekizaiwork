@@ -7135,3 +7135,8 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
 - アプリ：`rubCharInkCv`（列の墨 L.aiUrl か 控えから 拓本と同じ正方形で 128px）。`rubGuessAi(it, L)` が `ink` も送る。
 - 学習画面：タブを ① □ 枠を直す ② ■ 墨を直す ③ ✎ 読みを入れる の順に、はじめは ①。③ に［🤖 いまの枠と墨で AI にもう一度読ませる］（`rceReadAi`：先に保存 → 字ごとに rubGuessAi → 人が入れた読みは そのまま、確かなら読みに、迷えば候補。候補 3 つを 字の下に出し 押すと入る `rceCandHtml`）。
 - サーバー側は 本人の PC で 更新（update.sh）と `train_char.py --compare` を回してもらう必要あり。
+
+### 読みの見せ方を「拓本＋墨」に切りかえた（2026-10-03・本人の PC で実施）
+
+- `train_char.py --compare --epochs 40`（検証用 138 字）：拓本だけ 0.978／上位3 0.993、墨だけ 0.957／0.978、**拓本＋墨 0.986／1.000**。
+- `train_char.py --mode both --fresh --epochs 60` → 当たり 0.993 で char_current.pth を差し替え。以後 夜の学習も both。

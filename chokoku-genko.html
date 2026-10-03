@@ -2549,7 +2549,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v44.8";
+var APP_VER = "v44.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5875,7 +5875,7 @@ function setZoom(v, which){
   else renderStage();
 }
 
-/* 中央ペインを掴んで動かせるようにする（中ボタン、または背景の左ドラッグ） */
+/* 中央ペインを掴んで動かせるようにする（中ボタン。左ドラッグでは動かさない v44.9） */
 /* 中央のプレビューでダブルクリックすると、その場で文字を入力できる */
 var edGi = null, edOrig = "";
 function openInlineEditor(gi, clientX, clientY){
@@ -6713,7 +6713,6 @@ function makePannable(id){
   el.addEventListener("mousedown", function(e){ if (e.button === 1) e.preventDefault(); });
   el.addEventListener("auxclick",  function(e){ if (e.button === 1) e.preventDefault(); });
   el.addEventListener("pointerdown", function(e){
-    var onHandle = e.target.closest && e.target.closest("[data-k]");
     if (placing && id === "rubwrap" && e.button === 0) return;   /* 置いている最中は掴まない */
     if (id === "stagewrap" && e.target.closest && e.target.closest("#inlineEd")) return;
     /* 文字の位置を動かすのは、文字の上をつかんだときだけ。
@@ -6722,7 +6721,9 @@ function makePannable(id){
         e.target.closest && e.target.closest("[data-ci]")){ startSheetDrag(e); return; }
     /* ゴムシートでは、左ドラッグは「行を囲んで選ぶ」に使う（v16.1）。
        画面を動かすのは、まん中ボタン・ホイール・スクロールバー。 */
-    if (e.button === 1 || (e.button === 0 && !onHandle && !(id === "stagewrap" && view === "sheet"))){
+    /* **左ボタンでは 画面を動かさない**（v44.9。本人「マウスセンターで移動と左クリックでも移動できるので、
+       左クリックは移動は除外して、選択を主に任せたい」）。動かすのは まん中ボタン・ホイール・スクロールバー。 */
+    if (e.button === 1){
       armed = true; on = false; pid = e.pointerId;
       sx = e.clientX; sy = e.clientY; l = el.scrollLeft; t = el.scrollTop;
       if (e.button === 1) e.preventDefault();
@@ -8364,11 +8365,54 @@ function rgOpenAt(hit){
      字＝読み（読めない字は □）、上端・下端＝最初の字の上〜最後の字の下（mmOf）、拓本の位置も覚える（rubPx。全長を直すと追いかける）。
      字の大きさ＝そのまとまりの字の 高さ・幅 の平均（hMm・wMm）。札＝ g.role（kai/zok/mei/nen/hoka）。
    ・まず 下見の表を出し、［作る］で入れる。 */
+/* ───── **ガイドラインを作る列を選ぶ**（v44.9。本人「拓本の列が複数ある場合に、どの列か指定させなければならないので、
+   ガイドラインを作るのメニュー項目に、列の選択を追加して」）─────
+   S.rub.glCols＝作る列の番号（S.rub.lines の何番目）。まだ選んでいなければ いま選んでいる列だけ。 */
+function rubGlColsAll(){
+  var a = [];
+  (S.rub.lines || []).forEach(function(L, i){ if (L && L.items && L.items.length) a.push(i); });
+  return a;
+}
+function rubGlColsGet(){
+  var all = rubGlColsAll();
+  if (Array.isArray(S.rub.glCols)) return S.rub.glCols.filter(function(i){ return all.indexOf(i) >= 0; });
+  return all.indexOf(rubSelCol) >= 0 ? [rubSelCol] : all.slice(0, 1);
+}
+function rubGlColsHtml(){
+  var all = rubGlColsAll(), on = rubGlColsGet();
+  if (!all.length) return "";
+  return '<div id="rbGlCols" style="margin:6px 0 0;font-size:12px;line-height:1.9;">作る列：' +
+    all.map(function(i){
+      var L = S.rub.lines[i];
+      var tx = L.items.map(function(it){ return Array.from(String(it.pick || (it.anch && it.anch.ch) || ""))[0] || "□"; }).join("");
+      return '<label class="chk" style="display:inline-block;margin:0 8px 0 0;white-space:nowrap;" title="' + esc(tx) + '">' +
+        '<input type="checkbox" data-glc="' + i + '" style="width:auto;"' + (on.indexOf(i) >= 0 ? ' checked' : '') + '> 列 ' + (i + 1) +
+        ' <span style="color:#666;">' + esc(tx.slice(0, 6)) + (tx.length > 6 ? '…' : '') + '</span></label>';
+    }).join("") +
+    (all.length > 1 ? ' <button class="mini" id="rbGlAll" style="padding:0 6px;">全て</button> <button class="mini" id="rbGlNone" style="padding:0 6px;">外す</button>' : '') + '</div>';
+}
+function rubGlColsBind(){
+  var box = $("rbGlCols"); if (!box) return;
+  var save = function(a){ S.rub.glCols = a; persist(); };
+  box.querySelectorAll("input[data-glc]").forEach(function(cb){
+    cb.onchange = function(){
+      var a = rubGlColsGet().slice(), i = +cb.getAttribute("data-glc"), k = a.indexOf(i);
+      if (cb.checked && k < 0) a.push(i); if (!cb.checked && k >= 0) a.splice(k, 1);
+      a.sort(function(x, y){ return x - y; }); save(a);
+    };
+  });
+  var bA = $("rbGlAll"), bN = $("rbGlNone");
+  if (bA) bA.onclick = function(){ save(rubGlColsAll()); rubPanel(); };
+  if (bN) bN.onclick = function(){ save([]); rubPanel(); };
+}
 function rubToGuidesPlan(){
   var mp = mmPerPx(), mpx = mmPerPxX() || mp;
   if (!mp) return { err: "先に［実測した文字全長］を入れてください（大きさが決まりません）。" };
   var ls = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
   if (!ls.length) return { err: "先に［拓本AI解析］で 枠を作ってください。" };
+  var pick9 = rubGlColsGet();
+  ls = ls.filter(function(L){ return pick9.indexOf(S.rub.lines.indexOf(L)) >= 0; });
+  if (!ls.length) return { err: "ガイドラインを作る列を 1 つ以上 選んでください（5 ─ ガイドラインを作る の 列のチェック）。" };
   var cols = ls.map(function(L){
     var its = L.items.filter(function(it){ return it && it.px; });
     var cx = its.map(function(it){ return it.px.x + it.px.w / 2; }).sort(function(a, b){ return a - b; });
@@ -22414,7 +22458,7 @@ function rubPanel(){
         '<div class="aigrp"><button class="mini primary" id="btnRubToGl" ' +
         'title="解析した列ごとに センターラインを、戒名・俗名・命日・年齢 のまとまりごとに 文字グループを作ります。' +
         '読み・上下の位置・字の大きさ（まとまりごとの平均）も入れます。いまのガイドラインには 足します">' +
-        '📐 解析結果からガイドラインを作る</button></div>';
+        '📐 解析結果からガイドラインを作る</button>' + rubGlColsHtml() + '</div>';
 
     /* 5 ─ 覚えたもの（手本帳・1 字の大きさ）は 外した（v40.9。本人「基本的に不要と思っています」）。
        AI で読む前の しくみ。中身（手本帳・S.rub.learnBox）は消さず、AI につながらないときの代わりと
@@ -22478,6 +22522,7 @@ function rubPanel(){
     bza.disabled = false; bza.textContent = "拓本を解析";
   };
   var btg = $("btnRubToGl"); if (btg) btg.onclick = rubToGuidesOpen;
+  rubGlColsBind();
   /* ［📚 学習画面へ］は 読み・枠の画面を じかに開く（v43.9。本人「おなじUIにしてと言ったでしょ。拓本AIとつながないで」）。
      いま選んでいる列。枠が無ければ 枠のある いちばん左の列 */
   var blw = $("btnLearnWin"); if (blw) blw.onclick = function(){

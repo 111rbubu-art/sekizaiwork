@@ -7788,6 +7788,100 @@ function deleteGcalEvent() {
   });
 }
 
+/* ───── **工事関連の 納骨（お骨出し）を Googleカレンダーへ**（v1.9.470）─────
+   納骨・戒切と同じカレンダー・同じログイン（gcalSignIn）。案件の見分けは description の 'sekizaiwork-kjnok:<工事の ID>'。
+   題は 納骨と同じ形：「担当 納骨　○○家(お寺No)依頼：顧客名」。日付だけなら 終日、時間があれば 1 時間。
+   入力しかけ（未保存）があれば 先に保存する（Google のログインで ページが入れかわっても 消えないように）。 */
+function _kjNokIdent(itemId) { return 'sekizaiwork-kjnok:' + itemId; }
+function _kjNokData() {
+  var spec = _hakaSpecData || (currentItem ? loadHakaSpec(currentItem) : {}) || {};
+  return spec['納骨（お骨出し）'] || null;
+}
+function _kjNokBuildEvent(d, k) {
+  var date = String(k['日付'] || '').substring(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  var tm = _toHankakuTime(String(k['時間'] || '')).trim();
+  tm = /^\d{1,2}:\d{2}/.test(tm) ? tm.substring(0, 5) : '';
+  var start, end;
+  if (tm) {
+    if (tm.length === 4) tm = '0' + tm;
+    var h = parseInt(tm.split(':')[0], 10), m = tm.split(':')[1];
+    start = { dateTime: date + 'T' + tm + ':00', timeZone: 'Asia/Tokyo' };
+    end = { dateTime: date + 'T' + String((h + 1) % 24).padStart(2, '0') + ':' + m + ':00', timeZone: 'Asia/Tokyo' };
+  } else {
+    var nx = new Date(date + 'T00:00:00+09:00'); nx.setDate(nx.getDate() + 1);
+    start = { date: date }; end = { date: nx.toISOString().substring(0, 10) };
+  }
+  var name = d['Customers'] || d['Title'] || '';
+  var haka = d['HakaName'] ? d['HakaName'] + '家' : (name ? name.split(/\s/)[0] + '家' : '');
+  var templeNo = (d['Temples'] || '') + (d['no'] || '');
+  var work = k['区分'] || '納骨', tanto = k['担当者'] || '';
+  return {
+    summary: (tanto ? tanto + ' ' : '') + work + '\u3000' + haka + (templeNo ? '(' + templeNo + ')' : '') + (name ? '依頼：' + name : ''),
+    description: ['工事関連：' + (d['category'] || ''),
+      k['時間状態'] ? '時間状態：' + k['時間状態'] : '',
+      k['備考'] ? '備考：' + k['備考'] : '',
+      _kjNokIdent(d['id'] || '')].filter(Boolean).join('\n'),
+    start: start, end: end
+  };
+}
+function _kjNokFind(token, itemId, date, cb) {
+  var ident = _kjNokIdent(itemId);
+  var base = date ? new Date(date + 'T00:00:00+09:00') : new Date();
+  var t0 = new Date(base); t0.setMonth(t0.getMonth() - 3);
+  var t1 = new Date(base); t1.setMonth(t1.getMonth() + 3);
+  fetch('https://www.googleapis.com/calendar/v3/calendars/' + _GCAL_CALENDAR_ID + '/events?q=' + encodeURIComponent(ident) +
+    '&timeMin=' + encodeURIComponent(t0.toISOString()) + '&timeMax=' + encodeURIComponent(t1.toISOString()) + '&maxResults=10&fields=items(id,description)',
+    { headers: { Authorization: 'Bearer ' + token } })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var f = (j.items || []).filter(function (ev) { return ev.description && ev.description.indexOf(ident) >= 0; })[0];
+      cb(f ? f.id : null, j.error);
+    }).catch(function () { cb(null); });
+}
+function kjNokGcalRegister(silent, _retry) {
+  if (!currentItem) return;
+  var d = currentItem, k = _kjNokData();
+  if (!k || !k['日付']) { showSaveToast(false, '納骨（お骨出し）の日付を入れてください'); return; }
+  if (_hakaSpecDirty) {                       // 先に保存（ログインで ページが入れかわっても 消えないように）
+    saveHakaSpec(d, _hakaSpecData || {}).then(function () { _hakaSpecDirty = false; _refreshHakaSpecSaveBtn(); kjNokGcalRegister(silent, _retry); })
+      .catch(function (e) { showSaveToast(false, '先に保存できませんでした: ' + e.message); });
+    return;
+  }
+  var ev = _kjNokBuildEvent(d, k);
+  if (!ev) { showSaveToast(false, '日付が読めません'); return; }
+  showSaveToast(null, '📅 Googleカレンダーに登録中...');
+  try { sessionStorage.setItem('gcal_kjnok', '1'); } catch (e) {}
+  gcalSignIn(function (token) {
+    try { sessionStorage.removeItem('gcal_kjnok'); } catch (e) {}
+    _kjNokFind(token, d['id'], String(k['日付']).substring(0, 10), function (exId) {
+      fetch('https://www.googleapis.com/calendar/v3/calendars/' + _GCAL_CALENDAR_ID + '/events' + (exId ? '/' + exId : ''), {
+        method: exId ? 'PUT' : 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(ev)
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (res.id) showSaveToast(true, '📅 ' + (k['区分'] || '納骨') + 'を カレンダーに' + (exId ? '更新' : '登録') + 'しました');
+        else if (_gcalIsAuthErr(res.error) && !_retry) { _gcalClearToken(); setTimeout(function () { kjNokGcalRegister(silent, true); }, 300); }
+        else showSaveToast(false, 'カレンダー登録エラー: ' + ((res.error && res.error.message) || ''));
+      }).catch(function (e) { showSaveToast(false, 'エラー: ' + e.message); });
+    });
+  });
+}
+function kjNokGcalDelete() {
+  if (!currentItem) return;
+  var d = currentItem, k = _kjNokData() || {};
+  if (!confirm('この工事の 納骨（お骨出し）を Googleカレンダーから削除しますか？')) return;
+  showSaveToast(null, '📅 カレンダーから削除中...');
+  gcalSignIn(function (token) {
+    _kjNokFind(token, d['id'], String(k['日付'] || '').substring(0, 10), function (exId) {
+      if (!exId) { showSaveToast(false, '登録済みの予定が見つかりません'); return; }
+      fetch('https://www.googleapis.com/calendar/v3/calendars/' + _GCAL_CALENDAR_ID + '/events/' + exId, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } })
+        .then(function (r) { showSaveToast(r.ok || r.status === 204, (r.ok || r.status === 204) ? '📅 カレンダーから削除しました' : '削除エラー: ' + r.status); })
+        .catch(function (e) { showSaveToast(false, 'エラー: ' + e.message); });
+    });
+  });
+}
+
 // ボタン表示更新
 function _gcalUpdateBtn(hasEvent) {
   var regBtn = document.getElementById('gcal-reg-btn');
@@ -7796,7 +7890,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.469';
+var APP_VERSION = 'v1.9.470';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8095,6 +8189,18 @@ function startApp() {
                   showSaveToast(true, '✅ Google認証完了。カレンダー登録を実行します');
                   setTimeout(function() { registerGcalEvent(); }, 500);
                 }, 800);
+              }, 800);
+            } else if (currentListMode === 'kouji' && sessionStorage.getItem('gcal_kjnok')) {
+              /* 工事の 納骨（お骨出し）から入ったときは 開き直して 続けて登録（v1.9.470） */
+              sessionStorage.removeItem('gcal_kjnok');
+              selectMenu('kouji');
+              setTimeout(function() {
+                showKoujiDetailAt(_restoredItem, 2);
+                setTimeout(function() {
+                  _hakaSpecData = loadHakaSpec(currentItem); _hakaSpecDirty = false;
+                  showSaveToast(true, '✅ Google認証完了。カレンダー登録を実行します');
+                  setTimeout(function() { kjNokGcalRegister(true); }, 500);
+                }, 900);
               }, 800);
             } else {
               showSaveToast(true, '✅ Google認証完了。再度登録ボタンを押してください');
@@ -12935,6 +13041,17 @@ var HAKA_SPEC_CATEGORY_FIELDS = {
     { k:'工事内容', t:'textarea', rows:2 },
     { k:'使用材料', t:'text' },
     { k:'備考',     t:'textarea', rows:3 }
+  ],
+  /* 工事に付く 納骨・お骨出し（v1.9.470。本人「工事関連の工事仕様に追加区分として、納骨（お骨だし）を追加したい
+     納骨かお骨出しか選択と、日時、時間状態、担当者、備考を入力できるようにして googleカレンダーに反映できるように」）。
+     時間状態の選択肢は 納骨・戒切の「納骨時間状態」と同じ。カレンダーは この分類の見出しの［📅］から（_kjNokGcal…） */
+  '納骨（お骨出し）': [
+    { k:'区分',     t:'select', opts:['納骨','お骨出し'] },
+    { k:'日付',     t:'date' },
+    { k:'時間',     t:'time' },
+    { k:'時間状態', t:'select', opts:['本堂でお経開始','墓前でお経開始','墓前で集合（お経無）','自宅等の他場所でお経開始'] },
+    { k:'担当者',   t:'text' },
+    { k:'備考',     t:'textarea', rows:3 }
   ]
 };
 
@@ -14655,6 +14772,15 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
         '</div>'
       );
     }
+    if (f.t === 'date' || f.t === 'time') {
+      return fldWrap(status,
+        '<label style="' + lblStyle + '">' + label + '</label>' +
+        '<div style="display:flex;gap:4px;align-items:stretch">' +
+          '<input type="' + f.t + '"' + dis + ' value="' + _hakaSpecEsc(val) + '" onchange="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" oninput="updateHakaSpecField(\'' + catJs + '\',\'' + keyJs + '\',this.value)" style="' + inpStyle + ';flex:1;min-width:0' + disStyle + '">' +
+          statusBtn +
+        '</div>'
+      );
+    }
     // text
     return fldWrap(status,
       '<label style="' + lblStyle + '">' + label + '</label>' +
@@ -14795,9 +14921,14 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
       'onmouseover="this.style.background=\'rgba(255,255,255,0.4)\'" onmouseout="this.style.background=\'rgba(255,255,255,0.25)\'">🪨 見積請求書作成</button>'
     : '';
 
+  var gcalBtnKj = (cat === '納骨（お骨出し）')
+    ? '<button onclick="kjNokGcalRegister()" style="margin-left:auto;padding:3px 12px;background:rgba(255,255,255,0.25);color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:12px;cursor:pointer;font-size:11px;font-family:inherit;font-weight:600">📅 カレンダー登録／更新</button>' +
+      '<button onclick="kjNokGcalDelete()" style="padding:3px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:12px;cursor:pointer;font-size:11px;font-family:inherit">🗑 カレンダーから削除</button>'
+    : '';
+  if (gcalBtnKj && !isPrimary) removeBtn = removeBtn.replace('margin-left:auto;', '');
   return '<div class="sec">' +
-    '<span class="sec-hdr" style="background:#5a3a00;color:#fff;display:flex;align-items:center;gap:8px">' +
-      '<span>🪦 ' + cat + '</span>' + emptyBadge + tekkyoBtn + removeBtn +
+    '<span class="sec-hdr" style="background:#5a3a00;color:#fff;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<span>🪦 ' + cat + '</span>' + emptyBadge + tekkyoBtn + gcalBtnKj + removeBtn +
     '</span>' +
     '<div style="padding:8px 6px">' + bodyHtml + '</div>' +
     '</div>';
@@ -14870,6 +15001,10 @@ function saveHakaSpecCurrent() {
     _hakaSpecDirty = false;
     showSaveToast(true, '工事仕様を保存しました');
     renderHakaSpecTab(d);
+    /* 納骨（お骨出し）に日付があれば カレンダーにも（納骨・戒切の保存と同じく 聞いてから。v1.9.470） */
+    var kn = spec['納骨（お骨出し）'];
+    if (kn && kn['日付'] && (spec.categories || []).indexOf('納骨（お骨出し）') >= 0 &&
+        confirm('納骨（お骨出し）を Googleカレンダーに登録／更新しますか？')) setTimeout(function(){ kjNokGcalRegister(true); }, 300);
   }).catch(function(e) {
     showSaveToast(false, '保存失敗: ' + e.message);
   });

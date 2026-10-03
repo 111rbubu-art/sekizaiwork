@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.469**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.470**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -507,3 +507,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - `_topTempleOkNok`／`_topTempleOkKouji`／`_topTempleOkCus`（顧客は そのお寺のグループは まるごと、霊園・他寺院（8・10）は 顧客の Temple で）を `_menuSearchRender`（候補の一覧）と `_menuSearchRenderInCard`（カードと 顧客リストの検索結果）に入れた。ID 検索（＃ID）は そのまま。
 - お寺を選ぶと 検索欄の案内が「🔍 ○○ の中を…」に。検索中に お寺を選び直したら 探し直す。
+
+## index_b v1.9.470 — 工事関連の工事仕様に「納骨（お骨出し）」の分類（本人の指示）
+
+- `HAKA_SPEC_CATEGORY_FIELDS['納骨（お骨出し）']`：区分（納骨／お骨出し）・日付（date）・時間（time）・時間状態（納骨・戒切の「納骨時間状態」と同じ 4 つ）・担当者・備考。工事仕様の［＋ 分類項目を追加］で足す。入力欄に `t:'date'`／`t:'time'` を足した（renderHakaSpecCategoryBlock の renderField）。
+- 見出しに［📅 カレンダー登録／更新］［🗑 カレンダーから削除］（`kjNokGcalRegister`／`kjNokGcalDelete`）。納骨・戒切と同じカレンダー・ログイン。題「担当 区分　○○家(お寺No)依頼：顧客名」、説明に 工事の分類・時間状態・備考・`sekizaiwork-kjnok:<工事ID>`（これで 同じ予定を探して 更新・削除）。時間が無ければ 終日。
+- 未保存なら 先に工事仕様を保存してから登録。工事仕様の［💾 保存］で この分類に日付があれば「カレンダーに登録／更新しますか」と聞く。Google のログインで ページが入れかわったときは 工事の詳細（工事仕様タブ）を開き直して 続けて登録（sessionStorage `gcal_kjnok`）。
+- 注意：勤怠の納骨手当（ktNokotsuCount）は 納骨・戒切リストの 担当者 だけを数える。工事の 納骨（お骨出し）は まだ数えていない。

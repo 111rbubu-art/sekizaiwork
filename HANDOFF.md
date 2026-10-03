@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.463**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.464**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -472,3 +472,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 画面：日ごとの一覧・本人の履歴の 出勤の下に「8:00から」。
 - 試し：7:44→8h16m（時間外 16 分）、7:45・7:50・7:59→8h、8:05→7h55m。
 - 就業規則に「始業前の打刻は始業時刻から労働時間とする（会社が命じた早出を除く）」を入れてもらう。
+
+## index_b v1.9.464 — トップ画面の お寺フィルター（本人「トップ画面で、お寺のフィルターを作ってほしい、工事関連や納骨リストをそのお寺の物を表示させ、マップや顧客リストのリンクも出すようにして」）
+
+- 検索欄の下に お寺の札（`#top-temple-bar`）。札は 納骨・工事の 未完了（`_menuSearchCache`）に出てくる お寺から作る（顧客リストのグループ順 → ほかは件数順、件数つき）。選んだお寺は この端末に覚える（localStorage `topTemple`）。
+- 選ぶと `loadMenuNauchi` の 納骨・戒切／工事関連 の欄を そのお寺の 未完了 ぜんぶ にする（社内連絡が無くても出す。件数バッジも）。［⛩ 全お寺］で もとの「社内連絡・新規・新着報告」だけに戻る。
+- 札の下に［👥 ○○ の顧客リスト］（`_topTempleCustomer`：TEMPLE_GROUP_MAP のお寺は selectTempleGroup、霊園・他寺院は 顧客リストの Temple からグループ 8/10 を探して selectEireiTemple）と［🗺 ○○ の墓地マップ］（MAP_TEMPLES に合うお寺だけ。map_b.html?temple=…）。
+- カード（納骨・戒切／工事関連）から一覧に入ると 一覧の お寺の絞り込み（srch-temple）にも入れる（`_topTempleApply` → `_vcSetTemple`）。

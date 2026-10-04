@@ -1,10 +1,17 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.493**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.493**／**index.html = v1.9.493**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
+
+
+## 本番へ展開：index_b.html → index.html（v1.9.493）・map_b.html → map.html（本人「index_b.htmlはテスト用。現状OKだからindex.htmlに展開」）
+- index.html は v1.8.235 → **v1.9.493**（index_b.html の中身をそのまま。中の `map_b.html`→`map.html`、`index_b.html`→`index.html` に置き換え）。
+- index_b の 地図まわり（お寺フィルター・地図から登録・地図で顧客を結ぶ）は map_b.html と組なので、map.html も map_b.html の中身に（`VIEWER_URL='index.html'`）。
+- index_b.html／map_b.html は テスト用として そのまま残す（中身は 本番と同じ。以後の試しは _b で → よければ また同じ置き換えで展開）。
+- 展開のやり方：`python3` で 読み込み → `.replace("map_b.html","map.html").replace("index_b.html","index.html")` → 書き出し。前の本番は git の履歴にある。
 
 ## ファイルの ⋯ メニューに「ダウンロード」（v1.9.436。本人の指示）
 

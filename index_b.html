@@ -7892,7 +7892,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.491';
+var APP_VERSION = 'v1.9.492';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22038,7 +22038,8 @@ function _pdfViewOpen(filePath) {
   var name = String(filePath).split('/').pop();
   var old = document.getElementById('pdf-view'); if (old) old.remove();
   if (_PV && _PV.io) { try { _PV.io.disconnect(); } catch (e) {} }
-  _PV = { path: filePath, name: name, pdf: null, zoom: 0, sizes: [], webUrl: null, io: null };
+  _PV = { path: filePath, name: name, pdf: null, zoom: 0, sizes: [], io: null };
+  _pvaInit(_PV);
   var ov = document.createElement('div'); ov.id = 'pdf-view';
   ov.style.cssText = 'position:fixed;inset:0;z-index:10030;background:#525659;display:flex;flex-direction:column;font-family:inherit';
   ov.innerHTML =
@@ -22050,10 +22051,11 @@ function _pdfViewOpen(filePath) {
       '<button data-pv="in" class="pv-b" title="拡大">＋</button>' +
       '<button data-pv="fit" class="pv-b">幅に合わせる</button>' +
       '<span style="flex:1"></span>' +
+      '<button data-pv="ann" class="pv-b" title="文字・線・矢印・四角・蛍光ペンを 書き込む">✏️ 書き込み</button>' +
       '<button data-pv="print" class="pv-b">🖨 印刷</button>' +
-      '<button data-pv="edit" class="pv-b" style="background:#2a7a4a;border-color:#2a7a4a">✏️ 編集（ページ整理）</button>' +
+      '<button data-pv="edit" class="pv-b" style="background:#2a7a4a;border-color:#2a7a4a">📑 ページ整理</button>' +
       '<button data-pv="close" class="pv-b">✕ 閉じる</button>' +
-    '</div>' +
+    '</div>' + _pvaToolbarHtml() +
     '<div style="flex:1;display:flex;min-height:0">' +
       '<div id="pv-side" style="width:20%;min-width:80px;flex:none;overflow-y:auto;background:#3b3f42;border-right:1px solid #2a2d30;padding:10px 8px;box-sizing:border-box"></div>' +
       '<div id="pv-body" style="flex:1;min-width:0;overflow:auto;padding:16px 8px;cursor:grab;-webkit-overflow-scrolling:touch">' +
@@ -22066,20 +22068,31 @@ function _pdfViewOpen(filePath) {
     '#pdf-view .pv-th .pv-tb{flex:1;background:#fff;border:3px solid transparent;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.4);min-height:30px}' +
     '#pdf-view .pv-th.cur{color:#fff;font-weight:bold}#pdf-view .pv-th.cur .pv-tb{border-color:#e8a33d}#pdf-view .pv-th:hover .pv-tb{border-color:#9ab}' +
     '#pdf-view .pv-th canvas{display:block;width:100%}' +
-    '#pdf-view .pv-pg{background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4);position:relative;flex:none}#pdf-view .pv-pg canvas{display:block;width:100%;height:100%}';
+    '#pdf-view .pv-b.on{background:#e8a33d;border-color:#e8a33d;color:#1a2535;font-weight:bold}' +
+    '#pdf-view .pv-pg{background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4);position:relative;flex:none}#pdf-view .pv-pg>canvas{display:block;width:100%;height:100%}' + _pvaCss();
   ov.appendChild(st);
+  var tools = document.getElementById('pv-tools');
+  tools.addEventListener('click', _pvaToolbarClick);
+  tools.addEventListener('change', _pvaToolbarChange);
   var body = document.getElementById('pv-body');
   ov.addEventListener('click', function (e) {
     var b = e.target.closest('[data-pv]'); if (!b) return;
     var a = b.getAttribute('data-pv');
-    if (a === 'close') _pdfViewClose();
+    if (a === 'close') { if (!_PV.annDirty || !_pvaCount() || confirm('書き込みを 保存せずに 閉じますか。')) _pdfViewClose(); }
+    else if (a === 'ann') _pvaToggle();
     else if (a === 'in') _pdfViewZoom(_PV.zoom * 1.25);
     else if (a === 'out') _pdfViewZoom(_PV.zoom / 1.25);
     else if (a === 'fit') _pdfViewZoom(_pdfViewFitZoom());
     else if (a === 'print') _pdfViewPrint();
-    else if (a === 'edit') { var p = _PV.path, n = _PV.name; _pdfViewClose(); _pdfOrgOpen([{ path: p, name: n }]); }
+    else if (a === 'edit') {
+      if (_PV.annDirty && _pvaCount() && !confirm('書き込みを 保存していません。このまま ページ整理へ進むと 書き込みは 消えます。よろしいですか。')) return;
+      var p = _PV.path, n = _PV.name; _pdfViewClose(); _pdfOrgOpen([{ path: p, name: n }]); }
   });
-  _PV.onKey = function (e) { if (e.key === 'Escape' && document.getElementById('pdf-view') && !document.getElementById('pdf-org')) _pdfViewClose(); };
+  _PV.onKey = function (e) {
+    if (!document.getElementById('pdf-view') || document.getElementById('pdf-org')) return;
+    if (_pvaKey(e)) return;
+    if (e.key === 'Escape' && !(_PV && _PV.editing)) { if (!_PV.annDirty || !_pvaCount() || confirm('書き込みを 保存せずに 閉じますか。')) _pdfViewClose(); }
+  };
   document.addEventListener('keydown', _PV.onKey);
   body.addEventListener('wheel', function (e) {
     if (!e.ctrlKey || !_PV || !_PV.pdf) return;
@@ -22090,6 +22103,7 @@ function _pdfViewOpen(filePath) {
   var drag = null;
   body.addEventListener('mousedown', function (e) {
     if (e.button !== 0 && e.button !== 1) return;
+    if (e.button === 0 && _PV && _PV.annOn) return;   // 書き込み中は 左ボタンで 描く（移動は ホイールボタン）
     drag = { x: e.clientX, y: e.clientY, l: body.scrollLeft, t: body.scrollTop }; body.style.cursor = 'grabbing'; e.preventDefault();
   });
   window.addEventListener('mousemove', _PV.onMove = function (e) { if (!drag) return; body.scrollLeft = drag.l - (e.clientX - drag.x); body.scrollTop = drag.t - (e.clientY - drag.y); });
@@ -22124,20 +22138,400 @@ function _pdfViewOpen(filePath) {
     });
   });
 }
+/* ───── **PDF に 書き込み**（v1.9.492。本人「ビューワーにテキストボックスと線を追加する機能」→ 文字は 絵で・中身に書き込む・矢印・蛍光ペンも）─────
+   ［✏️ 書き込み］で 道具の段が出る：↖ 選ぶ・T 文字・／ 線・→ 矢印・□ 四角・🖍 蛍光ペン、色・太さ・文字の大きさ・太字、↶ 元に戻す・🗑 消す・💾 上書き保存。
+   書き込みは ページの座標（pt、ビューワーの 1 倍の向き）で _PV.ann[ページ番号] に持ち、画面は 各ページの上の SVG に描く。
+   保存は ページごとに 書き込みを 透明の絵（最大 216dpi）にして pdf-lib で ページに貼る（文字は 絵なので 日本語の字体を入れなくてよい）。
+   ページが 回転していても 合うよう、絵は PDF の向き（回転前）で作る（pdf.js の convertToPdfPoint から 変換を求める）。 */
+var _PVA_COLORS = [['#e00000', '赤'], ['#0050d0', '青'], ['#000000', '黒'], ['#008a2e', '緑'], ['#ffe600', '黄'], ['#ff6fcf', 'ピンク'], ['#5ad1ff', '水色']];
+var _PVA_FONT = '"Noto Sans JP","Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","Meiryo",sans-serif';
+function _pvaToolbarHtml() {
+  var tb = function (k, l, t) { return '<button data-pvt="' + k + '" class="pva-b" title="' + t + '">' + l + '</button>'; };
+  return '<div id="pv-tools" style="display:none;background:#26364b;color:#fff;padding:6px 12px;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px">' +
+    tb('sel', '↖ 選ぶ', '書き込みを 選ぶ・動かす（文字は ダブルクリックで 直す）') + tb('text', 'T 文字', 'クリックした所に 文字') +
+    tb('line', '／ 線', 'ドラッグで 線（Shift で 水平・垂直・45°）') + tb('arrow', '→ 矢印', 'ドラッグで 矢印（Shift で 水平・垂直・45°）') +
+    tb('rect', '□ 四角', 'ドラッグで 四角') + tb('marker', '🖍 蛍光ペン', 'なぞって 蛍光ペン（Shift で まっすぐ）') +
+    '<span class="pva-sep"></span>' +
+    _PVA_COLORS.map(function (c) { return '<button data-pvc="' + c[0] + '" class="pva-c" title="' + c[1] + '" style="background:' + c[0] + '"></button>'; }).join('') +
+    '<span class="pva-sep"></span>太さ <select id="pva-w" class="pva-s">' + [1, 2, 3, 5, 8].map(function (w) { return '<option value="' + w + '"' + (w === 2 ? ' selected' : '') + '>' + w + '</option>'; }).join('') + '</select>' +
+    ' 文字 <select id="pva-fs" class="pva-s">' + [8, 10, 12, 14, 18, 24, 32, 48, 72].map(function (w) { return '<option value="' + w + '"' + (w === 14 ? ' selected' : '') + '>' + w + '</option>'; }).join('') + '</select>' +
+    '<label style="display:flex;align-items:center;gap:2px;cursor:pointer"><input type="checkbox" id="pva-b">太字</label>' +
+    '<span class="pva-sep"></span>' +
+    '<button data-pva="undo" class="pva-b" title="元に戻す（Ctrl+Z）">↶ 元に戻す</button>' +
+    '<button data-pva="del" class="pva-b" title="選んだ書き込みを消す（Delete）">🗑 消す</button>' +
+    '<span id="pva-info" style="opacity:.8;margin-left:4px;width:150px;white-space:nowrap;overflow:hidden;color:#ffd27a"></span>' +
+    '<span style="flex:1"></span>' +
+    '<button data-pva="save" class="pva-b" style="background:#2a7a4a;border-color:#2a7a4a;font-weight:bold">💾 上書き保存</button>' +
+  '</div>';
+}
+function _pvaCss() {
+  return '#pdf-view .pva-b{background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:7px;padding:4px 9px;font-size:12px;cursor:pointer;font-family:inherit}' +
+    '#pdf-view .pva-b.on{background:#e8a33d;border-color:#e8a33d;color:#1a2535;font-weight:bold}' +
+    '#pdf-view .pva-c{width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.5);cursor:pointer;padding:0}#pdf-view .pva-c.on{border-color:#fff;box-shadow:0 0 0 2px #e8a33d}' +
+    '#pdf-view .pva-s{font-size:12px;padding:1px 2px;border-radius:4px}#pdf-view .pva-sep{width:1px;height:20px;background:rgba(255,255,255,.25);margin:0 4px}' +
+    '#pdf-view .pv-ann{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}' +
+    '#pdf-view.ann-on .pv-ann{pointer-events:auto;cursor:crosshair}#pdf-view.ann-on.t-sel .pv-ann{cursor:default}#pdf-view.ann-on.t-text .pv-ann{cursor:text}' +
+    '#pdf-view .pva-ed{position:absolute;z-index:5;background:rgba(255,255,255,.85);border:1px dashed #0050d0;outline:none;resize:none;overflow:hidden;padding:0;margin:0;line-height:1.25;white-space:pre;font-family:' + _PVA_FONT.replace(/"/g, "'") + '}';
+}
+function _pvaInit(pv) {
+  pv.ann = {}; pv.undo = []; pv.annOn = false; pv.tool = 'line'; pv.color = '#e00000'; pv.mcolor = '#ffe600';
+  pv.lw = 2; pv.fs = 14; pv.bold = false; pv.sel = null; pv.annDirty = false;
+}
+function _pvaCount() {
+  if (!_PV || !_PV.ann) return 0;
+  var n = 0; for (var k in _PV.ann) n += (_PV.ann[k] || []).length; return n;
+}
+function _pvaToggle(on) {
+  var pv = _PV; if (!pv) return;
+  pv.annOn = on == null ? !pv.annOn : on;
+  var ov = document.getElementById('pdf-view'), tl = document.getElementById('pv-tools'), bt = document.querySelector('#pdf-view [data-pv="ann"]');
+  if (ov) ov.classList.toggle('ann-on', pv.annOn);
+  if (tl) tl.style.display = pv.annOn ? 'flex' : 'none';
+  if (bt) bt.classList.toggle('on', pv.annOn);
+  if (!pv.annOn) { _pvaEndEdit(); pv.sel = null; _pvaDrawAll(); }
+  _pvaUi();
+}
+function _pvaUi() {
+  var pv = _PV; if (!pv) return;
+  var ov = document.getElementById('pdf-view'); if (!ov) return;
+  ['sel', 'text', 'line', 'arrow', 'rect', 'marker'].forEach(function (t) { ov.classList.toggle('t-' + t, pv.tool === t); });
+  Array.prototype.forEach.call(ov.querySelectorAll('[data-pvt]'), function (b) { b.classList.toggle('on', b.getAttribute('data-pvt') === pv.tool); });
+  var col = pv.tool === 'marker' ? pv.mcolor : pv.color;
+  var si = pv.sel && _pvaItem(pv.sel); if (si) col = si.c;
+  Array.prototype.forEach.call(ov.querySelectorAll('[data-pvc]'), function (b) { b.classList.toggle('on', b.getAttribute('data-pvc') === col); });
+  /* 指で描く道具の間は 画面が動かないように（↖ 選ぶ のときは 指で動かせる） */
+  Array.prototype.forEach.call(ov.querySelectorAll('.pv-ann'), function (s) { s.style.touchAction = (pv.annOn && pv.tool !== 'sel') ? 'none' : ''; });
+  var inf = document.getElementById('pva-info'); if (inf) inf.textContent = (_pvaCount() && pv.annDirty) ? '未保存の書き込み ' + _pvaCount() + ' 個' : '';
+}
+function _pvaItem(sel) { return sel && _PV && _PV.ann[sel.pi] ? _PV.ann[sel.pi][sel.i] : null; }
+function _pvaPush() {
+  var pv = _PV; pv.undo.push(JSON.stringify(pv.ann)); if (pv.undo.length > 100) pv.undo.shift();
+  pv.annDirty = true;
+}
+function _pvaUndo() {
+  var pv = _PV; if (!pv || !pv.undo.length) return;
+  _pvaEndEdit(true);
+  pv.ann = JSON.parse(pv.undo.pop()); pv.sel = null; pv.annDirty = pv.undo.length > 0 || _pvaCount() > 0;
+  _pvaDrawAll(); _pvaUi();
+}
+function _pvaDel() {
+  var pv = _PV; if (!pv || !pv.sel) return;
+  _pvaPush(); pv.ann[pv.sel.pi].splice(pv.sel.i, 1); var pi = pv.sel.pi; pv.sel = null; _pvaDraw(pi); _pvaUi();
+}
+/* 文字の 大きさを 測る（枠・選んだ印・入力欄に使う） */
+function _pvaTextBox(it) {
+  var c = _pvaTextBox.cv || (_pvaTextBox.cv = document.createElement('canvas').getContext('2d'));
+  c.font = (it.b ? 'bold ' : '') + it.s + 'px ' + _PVA_FONT;
+  var lines = String(it.txt || '').split('\n'), w = 0;
+  lines.forEach(function (l) { w = Math.max(w, c.measureText(l).width); });
+  return { x: it.x, y: it.y, w: Math.max(w, it.s * 0.6), h: it.s * 1.25 * lines.length };
+}
+function _pvaBox(it) {
+  if (it.t === 'text') return _pvaTextBox(it);
+  if (it.t === 'rect') return { x: Math.min(it.x, it.x + it.w), y: Math.min(it.y, it.y + it.h), w: Math.abs(it.w), h: Math.abs(it.h) };
+  var xs, ys;
+  if (it.t === 'marker') { xs = it.pts.map(function (p) { return p[0]; }); ys = it.pts.map(function (p) { return p[1]; }); }
+  else { xs = [it.x1, it.x2]; ys = [it.y1, it.y2]; }
+  var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+  return { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 };
+}
+function _pvaArrowHead(it) {
+  var L = Math.max(7, it.w * 4), dx = it.x2 - it.x1, dy = it.y2 - it.y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
+  var ux = dx / len, uy = dy / len, bx = it.x2 - ux * L, by = it.y2 - uy * L, hw = L * 0.45;
+  return { bx: bx, by: by, pts: [[it.x2, it.y2], [bx - uy * hw, by + ux * hw], [bx + uy * hw, by - ux * hw]] };
+}
+/* SVG に 描く（画面用） */
+function _pvaSvgItem(it, i, pi) {
+  var pv = _PV, z = pv.zoom || 1, hitW = Math.max(10 / z, ((it.t === 'rect' ? it.lw : it.w) || 0) + 6 / z);
+  var g = '<g data-ai="' + i + '">', e = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+  if (pv.editing && pv.editing.pi === pi && pv.editing.i === i) return '';
+  if (it.t === 'line' || it.t === 'arrow') {
+    var x2 = it.x2, y2 = it.y2, head = '';
+    if (it.t === 'arrow') { var h = _pvaArrowHead(it); x2 = h.bx; y2 = h.by; head = '<polygon points="' + h.pts.map(function (p) { return p.join(','); }).join(' ') + '" fill="' + it.c + '"/>'; }
+    g += '<line x1="' + it.x1 + '" y1="' + it.y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="' + it.c + '" stroke-width="' + it.w + '" stroke-linecap="' + (it.t === 'arrow' ? 'butt' : 'round') + '"/>' + head +
+      '<line x1="' + it.x1 + '" y1="' + it.y1 + '" x2="' + it.x2 + '" y2="' + it.y2 + '" stroke="transparent" stroke-width="' + hitW + '"/>';
+  } else if (it.t === 'rect') {
+    var b = _pvaBox(it);
+    g += '<rect x="' + b.x + '" y="' + b.y + '" width="' + b.w + '" height="' + b.h + '" fill="none" stroke="' + it.c + '" stroke-width="' + (it.lw || 2) + '"/>' +
+      '<rect x="' + b.x + '" y="' + b.y + '" width="' + b.w + '" height="' + b.h + '" fill="none" stroke="transparent" stroke-width="' + hitW + '"/>';
+  } else if (it.t === 'marker') {
+    var pts = it.pts.map(function (p) { return p.join(','); }).join(' ');
+    g += '<polyline points="' + pts + '" fill="none" stroke="' + it.c + '" stroke-opacity=".4" stroke-width="' + it.w + '" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (it.t === 'text') {
+    var tb = _pvaTextBox(it);
+    g += '<rect x="' + tb.x + '" y="' + tb.y + '" width="' + tb.w + '" height="' + tb.h + '" fill="transparent"/>';
+    String(it.txt || '').split('\n').forEach(function (l, k) {
+      g += '<text x="' + it.x + '" y="' + (it.y + it.s * (0.95 + k * 1.25)) + '" font-size="' + it.s + '" font-weight="' + (it.b ? 'bold' : 'normal') + '" fill="' + it.c + '" style="font-family:' + _PVA_FONT.replace(/"/g, "'") + ';white-space:pre">' + e(l) + '</text>';
+    });
+  }
+  if (pv.sel && pv.sel.pi === pi && pv.sel.i === i) {
+    var sb = _pvaBox(it), pad = 3 / z;
+    g += '<rect x="' + (sb.x - pad) + '" y="' + (sb.y - pad) + '" width="' + (sb.w + pad * 2) + '" height="' + (sb.h + pad * 2) + '" fill="none" stroke="#1e88ff" stroke-width="' + (1.2 / z) + '" stroke-dasharray="' + (4 / z) + ' ' + (3 / z) + '" pointer-events="none"/>';
+  }
+  return g + '</g>';
+}
+function _pvaDraw(pi) {
+  var svg = document.querySelector('#pv-pages .pv-pg[data-pi="' + pi + '"] .pv-ann'); if (!svg || !_PV) return;
+  svg.innerHTML = (_PV.ann[pi] || []).map(function (it, i) { return _pvaSvgItem(it, i, pi); }).join('');
+}
+function _pvaDrawAll() { if (_PV) for (var i = 1; i <= _PV.sizes.length; i++) _pvaDraw(i); }
+/* ページの上に 書き込み用の SVG を置き、操作を つなぐ */
+function _pvaAttach(d, pi) {
+  var s = _PV.sizes[pi - 1];
+  var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'pv-ann'); svg.setAttribute('viewBox', '0 0 ' + s.w + ' ' + s.h); svg.setAttribute('preserveAspectRatio', 'none');
+  d.appendChild(svg);
+  svg.addEventListener('pointerdown', function (e) { _pvaDown(e, svg, pi); });
+  svg.addEventListener('dblclick', function (e) {
+    var pv = _PV; if (!pv || !pv.annOn) return;
+    var g = e.target.closest && e.target.closest('[data-ai]'); if (!g) return;
+    var i = +g.getAttribute('data-ai'), it = pv.ann[pi][i];
+    if (it && it.t === 'text') { e.preventDefault(); _pvaEdit(pi, i); }
+  });
+  _pvaDraw(pi);
+}
+function _pvaPt(e, svg) {
+  var r = svg.getBoundingClientRect(), z = _PV.zoom;
+  return [(e.clientX - r.left) / z, (e.clientY - r.top) / z];
+}
+function _pvaSnap(x0, y0, x, y) {
+  var dx = x - x0, dy = y - y0, a = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4), L = Math.sqrt(dx * dx + dy * dy);
+  return [x0 + Math.cos(a) * L, y0 + Math.sin(a) * L];
+}
+function _pvaDown(e, svg, pi) {
+  var pv = _PV; if (!pv || !pv.annOn || (e.button !== 0 && e.pointerType === 'mouse')) return;
+  var p = _pvaPt(e, svg), g = e.target.closest && e.target.closest('[data-ai]'), hit = g ? +g.getAttribute('data-ai') : -1;
+  if (pv.editing) { _pvaEndEdit(); if (pv.tool === 'text') { e.preventDefault(); return; } }
+  var R = function (v) { return Math.round(v * 10) / 10; };
+  if (pv.tool === 'sel' || (pv.tool === 'text' && hit >= 0 && pv.ann[pi][hit].t === 'text' && !(pv.sel && pv.sel.pi === pi && pv.sel.i === hit))) {
+    var prevSel = pv.sel; pv.sel = hit >= 0 ? { pi: pi, i: hit } : null;
+    if (prevSel && prevSel.pi !== pi) _pvaDraw(prevSel.pi);
+    _pvaDraw(pi); _pvaUi();
+    if (hit < 0) return;
+    e.preventDefault();
+    var it = pv.ann[pi][hit], orig = JSON.stringify(it), moved = false;
+    var mv = function (ev) {
+      var q = _pvaPt(ev, svg), dx = q[0] - p[0], dy = q[1] - p[1];
+      if (!moved && Math.abs(dx) + Math.abs(dy) < 2 / pv.zoom) return;
+      if (!moved) { _pvaPush(); moved = true; }
+      var o = JSON.parse(orig);
+      if (it.t === 'text' || it.t === 'rect') { it.x = R(o.x + dx); it.y = R(o.y + dy); }
+      else if (it.t === 'marker') it.pts = o.pts.map(function (pp) { return [R(pp[0] + dx), R(pp[1] + dy)]; });
+      else { it.x1 = R(o.x1 + dx); it.y1 = R(o.y1 + dy); it.x2 = R(o.x2 + dx); it.y2 = R(o.y2 + dy); }
+      _pvaDraw(pi);
+    };
+    var up = function () { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); _pvaUi(); };
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    return;
+  }
+  e.preventDefault();
+  if (pv.sel) { var ps = pv.sel; pv.sel = null; _pvaDraw(ps.pi); }
+  if (pv.tool === 'text') {
+    if (hit >= 0 && pv.ann[pi][hit].t === 'text') { _pvaEdit(pi, hit); return; }
+    _pvaPush();
+    var arr = pv.ann[pi] || (pv.ann[pi] = []);
+    arr.push({ t: 'text', x: R(p[0]), y: R(p[1] - pv.fs * 0.6), s: pv.fs, c: pv.color, b: pv.bold, txt: '' });
+    _pvaEdit(pi, arr.length - 1, true);
+    return;
+  }
+  _pvaPush();
+  var list = pv.ann[pi] || (pv.ann[pi] = []), nw;
+  if (pv.tool === 'marker') nw = { t: 'marker', pts: [[R(p[0]), R(p[1])]], c: pv.mcolor, w: Math.max(10, pv.lw * 5) };
+  else if (pv.tool === 'rect') nw = { t: 'rect', x: R(p[0]), y: R(p[1]), w: 0, h: 0, c: pv.color, lw: pv.lw };
+  else nw = { t: pv.tool, x1: R(p[0]), y1: R(p[1]), x2: R(p[0]), y2: R(p[1]), c: pv.color, w: pv.lw };
+  list.push(nw);
+  var idx = list.length - 1;
+  try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+  var mv2 = function (ev) {
+    var q = _pvaPt(ev, svg);
+    if (nw.t === 'marker') {
+      if (ev.shiftKey) nw.pts = [nw.pts[0], [R(q[0]), nw.pts[0][1]]];   // Shift：まっすぐ（横）
+      else { var lp = nw.pts[nw.pts.length - 1]; if (Math.abs(lp[0] - q[0]) + Math.abs(lp[1] - q[1]) > 1.5 / pv.zoom) nw.pts.push([R(q[0]), R(q[1])]); }
+    } else if (nw.t === 'rect') { nw.w = R(q[0] - nw.x); nw.h = R(q[1] - nw.y); }
+    else { if (ev.shiftKey) q = _pvaSnap(nw.x1, nw.y1, q[0], q[1]); nw.x2 = R(q[0]); nw.y2 = R(q[1]); }
+    _pvaDraw(pi);
+  };
+  var up2 = function () {
+    svg.removeEventListener('pointermove', mv2); svg.removeEventListener('pointerup', up2); svg.removeEventListener('pointercancel', up2);
+    var b = _pvaBox(nw);
+    var tiny = nw.t === 'marker' ? (nw.pts.length < 2) : (b.w + b.h < 3);
+    if (tiny) { list.splice(idx, 1); pv.undo.pop(); pv.annDirty = pv.undo.length > 0; }
+    else if (nw.t === 'rect') { nw.x = b.x; nw.y = b.y; nw.w = b.w; nw.h = b.h; }
+    _pvaDraw(pi); _pvaUi();
+  };
+  svg.addEventListener('pointermove', mv2); svg.addEventListener('pointerup', up2); svg.addEventListener('pointercancel', up2);
+}
+/* 文字の 入力欄 */
+function _pvaEdit(pi, i, isNew) {
+  var pv = _PV, it = pv.ann[pi][i]; if (!it) return;
+  _pvaEndEdit();
+  var d = document.querySelector('#pv-pages .pv-pg[data-pi="' + pi + '"]'); if (!d) return;
+  if (!isNew) _pvaPush();
+  pv.editing = { pi: pi, i: i, isNew: !!isNew }; pv.sel = { pi: pi, i: i };
+  _pvaDraw(pi);
+  var z = pv.zoom, ta = document.createElement('textarea'); ta.className = 'pva-ed'; ta.value = it.txt || '';
+  ta.style.left = (it.x * z) + 'px'; ta.style.top = (it.y * z) + 'px';
+  ta.style.fontSize = (it.s * z) + 'px'; ta.style.color = it.c; ta.style.fontWeight = it.b ? 'bold' : 'normal';
+  var fit = function () {
+    it.txt = ta.value; var b = _pvaTextBox(it);
+    ta.style.width = (b.w * z + it.s * z) + 'px'; ta.style.height = (b.h * z + 4) + 'px';
+  };
+  ta.addEventListener('input', fit);
+  ta.addEventListener('keydown', function (e) { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); _pvaEndEdit(); } });
+  ta.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+  ta.addEventListener('blur', function () { setTimeout(function () { if (pv.editing && pv.editing.ta === ta) _pvaEndEdit(); }, 0); });
+  d.appendChild(ta); pv.editing.ta = ta; fit();
+  ta.focus(); setTimeout(function () { if (document.activeElement !== ta && pv.editing && pv.editing.ta === ta) ta.focus(); }, 0);
+}
+function _pvaEndEdit(silent) {
+  var pv = _PV; if (!pv || !pv.editing) return;
+  var ed = pv.editing; pv.editing = null;
+  var it = pv.ann[ed.pi] && pv.ann[ed.pi][ed.i];
+  if (ed.ta) { if (it) it.txt = ed.ta.value.replace(/\s+$/, ''); ed.ta.remove(); }
+  if (it && !it.txt) { pv.ann[ed.pi].splice(ed.i, 1); pv.sel = null; if (ed.isNew) { pv.undo.pop(); pv.annDirty = pv.undo.length > 0; } }
+  if (!silent) { _pvaDraw(ed.pi); _pvaUi(); }
+}
+/* 道具の段の 操作 */
+function _pvaToolbarClick(e) {
+  var pv = _PV; if (!pv) return;
+  var t = e.target.closest('[data-pvt]'), c = e.target.closest('[data-pvc]'), a = e.target.closest('[data-pva]');
+  if (t) { _pvaEndEdit(); pv.tool = t.getAttribute('data-pvt'); if (pv.tool !== 'sel' && pv.sel) { var ps = pv.sel; pv.sel = null; _pvaDraw(ps.pi); } _pvaUi(); }
+  else if (c) {
+    var col = c.getAttribute('data-pvc'), it = _pvaItem(pv.sel);
+    if (it) { _pvaPush(); it.c = col; if (pv.editing && pv.editing.ta) pv.editing.ta.style.color = col; _pvaDraw(pv.sel.pi); }
+    if (pv.tool === 'marker' || (it && it.t === 'marker')) pv.mcolor = col; else pv.color = col;
+    _pvaUi();
+  } else if (a) {
+    var k = a.getAttribute('data-pva');
+    if (k === 'undo') _pvaUndo(); else if (k === 'del') _pvaDel(); else if (k === 'save') _pvaSave();
+  }
+}
+function _pvaToolbarChange(e) {
+  var pv = _PV; if (!pv) return;
+  var it = _pvaItem(pv.sel), id = e.target.id;
+  if (id === 'pva-w') { pv.lw = +e.target.value; if (it && it.t !== 'text') { _pvaPush(); if (it.t === 'marker') it.w = Math.max(10, pv.lw * 5); else if (it.t === 'rect') it.lw = pv.lw; else it.w = pv.lw; _pvaDraw(pv.sel.pi); } }
+  else if (id === 'pva-fs') { pv.fs = +e.target.value; if (it && it.t === 'text') { _pvaPush(); it.s = pv.fs; _pvaRefreshEdit(); _pvaDraw(pv.sel.pi); } }
+  else if (id === 'pva-b') { pv.bold = e.target.checked; if (it && it.t === 'text') { _pvaPush(); it.b = pv.bold; _pvaRefreshEdit(); _pvaDraw(pv.sel.pi); } }
+  _pvaUi();
+}
+function _pvaRefreshEdit() {
+  var pv = _PV; if (!pv.editing) return;
+  var ed = pv.editing; _pvaEndEdit(true); _pvaEdit(ed.pi, ed.i); pv.undo.pop();
+}
+/* 書き込みを PDF に 焼き込む → 新しい PDF の中身（Uint8Array） */
+function _pvaBake() {
+  var pv = _PV;
+  return new Promise(function (res) { _loadPdfLib(res); }).then(function () {
+    if (!window.PDFLib) throw new Error('PDF の部品を読み込めませんでした');
+    return PDFLib.PDFDocument.load(pv.bytes.slice(), { ignoreEncryption: true });
+  }).then(function (doc) {
+    var pis = Object.keys(pv.ann).filter(function (k) { return (pv.ann[k] || []).length; }).map(Number);
+    return pis.reduce(function (pr, pi) {
+      return pr.then(function () { return pv.pdf.getPage(pi); }).then(function (pg) {
+        var vp = pg.getViewport({ scale: 1 }), v = pg.view, W = v[2] - v[0], H = v[3] - v[1];
+        var S = Math.min(3, Math.sqrt(16e6 / (W * H)));
+        var cv = document.createElement('canvas'); cv.width = Math.round(W * S); cv.height = Math.round(H * S);
+        var ctx = cv.getContext('2d');
+        /* ビューワーの座標 → PDF の座標 → 絵の座標（回転前・上下反転） */
+        var m = function (x, y) { var q = vp.convertToPdfPoint(x, y); return [(q[0] - v[0]) * S, (v[3] - q[1]) * S]; };
+        var o = m(0, 0), ax = m(1, 0), ay = m(0, 1);
+        ctx.setTransform(ax[0] - o[0], ax[1] - o[1], ay[0] - o[0], ay[1] - o[1], o[0], o[1]);
+        _pvaPaint(ctx, pv.ann[pi]);
+        return doc.embedPng(cv.toDataURL('image/png')).then(function (img) {
+          doc.getPage(pi - 1).drawImage(img, { x: v[0], y: v[1], width: W, height: H });
+        });
+      });
+    }, Promise.resolve()).then(function () { return doc.save(); });
+  });
+}
+function _pvaPaint(ctx, items) {
+  (items || []).forEach(function (it) {
+    ctx.save(); ctx.strokeStyle = ctx.fillStyle = it.c; ctx.lineJoin = 'round';
+    if (it.t === 'line' || it.t === 'arrow') {
+      var x2 = it.x2, y2 = it.y2;
+      if (it.t === 'arrow') {
+        var h = _pvaArrowHead(it); x2 = h.bx; y2 = h.by;
+        ctx.beginPath(); ctx.moveTo(h.pts[0][0], h.pts[0][1]); ctx.lineTo(h.pts[1][0], h.pts[1][1]); ctx.lineTo(h.pts[2][0], h.pts[2][1]); ctx.closePath(); ctx.fill();
+      }
+      ctx.lineWidth = it.w; ctx.lineCap = it.t === 'arrow' ? 'butt' : 'round';
+      ctx.beginPath(); ctx.moveTo(it.x1, it.y1); ctx.lineTo(x2, y2); ctx.stroke();
+    } else if (it.t === 'rect') {
+      ctx.lineWidth = it.lw || 2; ctx.strokeRect(it.x, it.y, it.w, it.h);
+    } else if (it.t === 'marker') {
+      ctx.globalAlpha = 0.4; ctx.lineWidth = it.w; ctx.lineCap = 'round';
+      ctx.beginPath(); it.pts.forEach(function (p, k) { if (k) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+      if (it.pts.length === 1) ctx.lineTo(it.pts[0][0] + 0.01, it.pts[0][1]);
+      ctx.stroke();
+    } else if (it.t === 'text') {
+      ctx.font = (it.b ? 'bold ' : '') + it.s + 'px ' + _PVA_FONT; ctx.textBaseline = 'alphabetic';
+      String(it.txt || '').split('\n').forEach(function (l, k) { ctx.fillText(l, it.x, it.y + it.s * (0.95 + k * 1.25)); });
+    }
+    ctx.restore();
+  });
+}
+/* 上書き保存（前の版は SharePoint に残る） */
+function _pvaSave() {
+  var pv = _PV; if (!pv) return;
+  _pvaEndEdit();
+  if (!_pvaCount()) { alert('書き込みが ありません。'); return; }
+  if (!confirm('「' + pv.name + '」に 書き込みを 入れて 上書きします（前の版は SharePoint に残ります）。\n保存すると 書き込みは PDF の中身になり、このあと 動かしたり 直したりは できません。よろしいですか。')) return;
+  showSaveToast(null, '💾 書き込みを 保存しています…');
+  var nb;
+  _pvaBake().then(function (bytes) {
+    nb = bytes;
+    return getToken().then(function (resp) {
+      var enc = pv.path.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+        method: 'PUT', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/pdf' }, body: bytes
+      });
+    });
+  }).then(function (r) {
+    if (!r.ok) throw new Error('保存に失敗 (' + r.status + ')');
+    if (_PV !== pv) return;
+    pv.bytes = new Uint8Array(nb); pv.ann = {}; pv.undo = []; pv.sel = null; pv.annDirty = false;
+    var old = pv.pdf;
+    return window.pdfjsLib.getDocument({ data: pv.bytes.slice() }).promise.then(function (pdf) {
+      pv.pdf = pdf; try { old.destroy(); } catch (e) {}
+      var body = document.getElementById('pv-body'), st = body ? body.scrollTop : 0;
+      _pdfViewBuild(); if (body) body.scrollTop = st;
+      _pvaUi();
+      showSaveToast(true, '💾 ' + pv.name + ' に 書き込みを 保存しました');
+    });
+  }).catch(function (e) { showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e)); });
+}
+/* キー：Delete で消す・Ctrl+Z で戻す・Esc で選ぶのをやめる */
+function _pvaKey(e) {
+  var pv = _PV; if (!pv || !pv.annOn || pv.editing) return false;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return false;
+  if ((e.key === 'Delete' || e.key === 'Backspace') && pv.sel) { e.preventDefault(); _pvaDel(); return true; }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); _pvaUndo(); return true; }
+  if (e.key === 'Escape' && pv.sel) { var ps = pv.sel; pv.sel = null; _pvaDraw(ps.pi); _pvaUi(); return true; }
+  return false;
+}
 /* **印刷**（v1.9.488）。PC は PDF そのものを 見えない枠に入れて ブラウザの印刷（線や文字が きれい）。
    スマホ・うまくいかないときは ページを 絵（約 150dpi）にして 印刷する。 */
 function _pdfViewPrint() {
   if (!_PV || !_PV.pdf || !_PV.bytes) { alert('まだ読み込み中です。'); return; }
+  _pvaEndEdit();
+  if (_pvaCount()) {   // 書き込みも いっしょに 印刷（保存は しない）
+    var pv = _PV;
+    _pvaBake().then(function (b) { _pdfViewPrintBytes(new Uint8Array(b)); })
+      .catch(function (e) { alert('印刷の用意ができませんでした: ' + ((e && e.message) || e)); });
+    return;
+  }
+  _pdfViewPrintBytes(_PV.bytes);
+}
+function _pdfViewPrintBytes(bytes) {
   var old = document.getElementById('pv-print'); if (old) old.remove();
   var fr = document.createElement('iframe'); fr.id = 'pv-print';
   fr.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0';
   var pc = (typeof isPC !== 'function' || isPC());
   if (pc) {
-    var url = URL.createObjectURL(new Blob([_PV.bytes], { type: 'application/pdf' }));
+    var url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
     fr.onload = function () {
       setTimeout(function () {
         try { fr.contentWindow.focus(); fr.contentWindow.print(); }
-        catch (e) { fr.remove(); _pdfViewPrintImg(); }
+        catch (e) { fr.remove(); _pdfViewPrintImg(bytes); }
       }, 300);
     };
     fr.src = url;
@@ -22145,24 +22539,33 @@ function _pdfViewPrint() {
     setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
     return;
   }
-  _pdfViewPrintImg();
+  _pdfViewPrintImg(bytes);
 }
-function _pdfViewPrintImg() {
+function _pdfViewPrintImg(bytes) {
   var pv = _PV; if (!pv || !pv.pdf) return;
   showSaveToast(true, '🖨 印刷の用意をしています…');
-  var imgs = [], chain = Promise.resolve();
-  for (var i = 1; i <= pv.pdf.numPages; i++) (function (pi) {
-    chain = chain.then(function () {
-      return pv.pdf.getPage(pi).then(function (pg) {
-        var vp = pg.getViewport({ scale: 150 / 72 });
-        var cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
-        return pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(function () {
-          var v1 = pg.getViewport({ scale: 1 });
-          imgs.push({ src: cv.toDataURL('image/jpeg', 0.92), w: v1.width, h: v1.height });
-        });
-      });
+  var imgs = [], doc = null;
+  var chain = (bytes && bytes !== pv.bytes) ? window.pdfjsLib.getDocument({ data: bytes.slice() }).promise.then(function (d) { doc = d; }) : Promise.resolve().then(function () { doc = pv.pdf; });
+  chain = chain.then(function () {
+    var c2 = Promise.resolve();
+    for (var i = 1; i <= doc.numPages; i++) (function (pi) {
+      c2 = c2.then(function () { return _pdfViewPrintPage(doc, pi, imgs); });
+    })(i);
+    return c2;
+  });
+  _pdfViewPrintImgGo(chain, imgs, pv);
+}
+function _pdfViewPrintPage(doc, pi, imgs) {
+  return doc.getPage(pi).then(function (pg) {
+    var vp = pg.getViewport({ scale: 150 / 72 });
+    var cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    return pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(function () {
+      var v1 = pg.getViewport({ scale: 1 });
+      imgs.push({ src: cv.toDataURL('image/jpeg', 0.92), w: v1.width, h: v1.height });
     });
-  })(i);
+  });
+}
+function _pdfViewPrintImgGo(chain, imgs, pv) {
   chain.then(function () {
     var old = document.getElementById('pv-print'); if (old) old.remove();
     var fr = document.createElement('iframe'); fr.id = 'pv-print';
@@ -22212,6 +22615,7 @@ function _pdfViewBuild() {
     var d = document.createElement('div'); d.className = 'pv-pg'; d.setAttribute('data-pi', i + 1);
     d.style.width = Math.round(s.w * _PV.zoom) + 'px'; d.style.height = Math.round(s.h * _PV.zoom) + 'px';
     wrap.appendChild(d);
+    _pvaAttach(d, i + 1);
     if (io) io.observe(d); else _pdfViewRender(d);
   });
   var z = document.getElementById('pv-zoom'); if (z) z.textContent = Math.round(_PV.zoom * 100) + '%';
@@ -22268,7 +22672,8 @@ function _pdfViewRender(d) {
     var cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
     return pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(function () {
       if (_PV !== pv || pv.zoom !== zoom) return;
-      d.innerHTML = ''; d.appendChild(cv);
+      var oc = d.querySelector(':scope > canvas'); if (oc) oc.remove();
+      d.insertBefore(cv, d.firstChild);   // 書き込みの SVG は 残す
     });
   }).catch(function () { d._z = null; });
 }

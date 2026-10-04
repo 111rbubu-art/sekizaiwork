@@ -7892,7 +7892,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.484';
+var APP_VERSION = 'v1.9.485';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21854,10 +21854,10 @@ function _pdfMergeUpdateBar() {
   info.style.cssText = 'flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
   info.textContent = '📑 結合順 ' + names;
   var runBtn = document.createElement('button');
-  runBtn.textContent = '🔗 ' + _pdfMergeSel.length + '件のPDFを結合';
+  /* 選んだ PDF を ページ整理の画面で 並べてから 結合（v1.9.485） */
+  runBtn.textContent = '📑 ' + _pdfMergeSel.length + '件を ページ整理・結合';
   runBtn.style.cssText = 'padding:7px 14px;background:#2a7a4a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:700;flex-shrink:0';
-  if (_pdfMergeSel.length < 2) { runBtn.disabled = true; runBtn.style.opacity = '0.5'; runBtn.style.cursor = 'default'; }
-  runBtn.addEventListener('click', _pdfMergeRun);
+  runBtn.addEventListener('click', function(){ _pdfOrgOpen(_pdfMergeSel.slice()); });
   var clrBtn = document.createElement('button');
   clrBtn.textContent = '✕ 選択解除';
   clrBtn.style.cssText = 'padding:7px 12px;background:rgba(255,255,255,0.2);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;flex-shrink:0';
@@ -21922,6 +21922,224 @@ function _pdfMergeRun() {
       _pdfMergeUpdateBar();
     });
   });
+}
+
+/* ───── **PDF のページ整理**（v1.9.485。本人「やりたいことは、複数のファイルの融合、ページの削除、ページの順番変更」）─────
+   ページを 絵（PDF.js で 縮小表示）で並べ、ドラッグ（スマホは ◀ ▶）で 並べ替え、✕ で 削除、⟳ で 回転。
+   ［＋ 同じフォルダのPDF］［＋ PCから］で ほかの PDF を足して 結合。
+   保存は pdf-lib：［💾 新しいファイルで保存］（同じフォルダ）か、1 つの PDF だけのときは［⬆ 元のファイルに上書き］（前の版は SharePoint に残る）。 */
+var _PO = null;
+function _loadPdfJs(cb) {
+  if (window.pdfjsLib) { cb(); return; }
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+  s.onload = function () {
+    try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch (e) {}
+    cb();
+  };
+  s.onerror = function () { cb(); };
+  document.head.appendChild(s);
+}
+var _PO_COLORS = ['#1a5a9a', '#2a7a4a', '#a0522d', '#7b52ab', '#b8860b', '#c0392b', '#008b8b'];
+function _pdfOrgOpen(files) {
+  if (!files || !files.length) return;
+  _PO = { srcs: [], pages: [], folder: String(files[0].path).replace(/\/[^\/]+$/, ''), single: files.length === 1 ? files[0] : null };
+  var ov = document.getElementById('pdf-org'); if (ov) ov.remove();
+  ov = document.createElement('div'); ov.id = 'pdf-org';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10040;background:#eef1f5;display:flex;flex-direction:column;font-family:inherit';
+  ov.innerHTML =
+    '<div style="background:#1a2535;color:#fff;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<b style="font-size:15px;margin-right:6px">📑 PDF ページ整理</b>' +
+      '<button data-po="addsp" class="po-b">＋ 同じフォルダのPDF</button>' +
+      '<button data-po="addpc" class="po-b">＋ PCから</button>' +
+      '<span id="po-info" style="font-size:12px;opacity:.75;margin-left:6px"></span>' +
+      '<span style="flex:1"></span>' +
+      '<button data-po="savenew" class="po-b" style="background:#2a7a4a;border-color:#2a7a4a">💾 新しいファイルで保存</button>' +
+      '<button data-po="overwrite" class="po-b" style="background:#b8860b;border-color:#b8860b;display:none">⬆ 元のファイルに上書き</button>' +
+      '<button data-po="close" class="po-b">✕ 閉じる</button>' +
+    '</div>' +
+    '<div style="padding:6px 14px;font-size:12px;color:#555;background:#fff;border-bottom:1px solid #dde">ページを ドラッグで並べ替え（スマホは ◀ ▶）・✕ で削除・⟳ で回転。色の帯は どのファイルのページかの印です。</div>' +
+    '<div id="po-files" style="padding:6px 14px 0;display:flex;gap:6px;flex-wrap:wrap"></div>' +
+    '<div id="po-grid" style="flex:1;overflow:auto;padding:14px;display:flex;flex-wrap:wrap;gap:12px;align-content:flex-start"></div>' +
+    '<input type="file" id="po-pc" accept="application/pdf" multiple style="display:none">';
+  document.body.appendChild(ov);
+  var st = document.createElement('style');
+  st.textContent = '#pdf-org .po-b{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:inherit}' +
+    '#pdf-org .po-card{width:150px;background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.15);padding:6px;cursor:grab;position:relative}' +
+    '#pdf-org .po-card.drag{opacity:.4}#pdf-org .po-card.over{outline:3px solid #1a5a9a}' +
+    '#pdf-org .po-card canvas{width:100%;display:block;border:1px solid #e3e3e3;background:#fafafa}' +
+    '#pdf-org .po-tools{display:flex;gap:3px;margin-top:4px}#pdf-org .po-tools button{flex:1;border:1px solid #ccd;background:#f6f7f9;border-radius:5px;cursor:pointer;font-size:12px;padding:2px 0;font-family:inherit}';
+  ov.appendChild(st);
+  ov.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-po]'); if (!b) return;
+    var a = b.getAttribute('data-po');
+    if (a === 'close') { if (!_PO.dirty || confirm('保存せずに閉じますか。')) { ov.remove(); _PO = null; } }
+    else if (a === 'addpc') document.getElementById('po-pc').click();
+    else if (a === 'addsp') _pdfOrgPickSp();
+    else if (a === 'savenew') _pdfOrgSave(false);
+    else if (a === 'overwrite') _pdfOrgSave(true);
+  });
+  document.getElementById('po-pc').onchange = function () {
+    var fs = Array.prototype.slice.call(this.files || []); this.value = '';
+    fs.reduce(function (pr, f) { return pr.then(function () { return f.arrayBuffer().then(function (buf) { return _pdfOrgAdd(f.name, null, buf); }); }); }, Promise.resolve());
+  };
+  document.getElementById('po-grid').innerHTML = '<div style="color:#888">読み込んでいます…</div>';
+  _loadPdfLib(function () { _loadPdfJs(function () {
+    if (!window.PDFLib || !window.pdfjsLib) { alert('PDF の部品を読み込めませんでした。通信環境を確かめてください。'); return; }
+    getToken().then(function (resp) {
+      return files.reduce(function (pr, f) {
+        return pr.then(function () {
+          var enc = String(f.path).split('/').map(encodeURIComponent).join('/');
+          return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+            .then(function (r) { if (!r.ok) throw new Error(f.name + ' を読めません (' + r.status + ')'); return r.arrayBuffer(); })
+            .then(function (buf) { return _pdfOrgAdd(f.name, f.path, buf); });
+        });
+      }, Promise.resolve());
+    }).then(function () { _PO.dirty = false; _pdfOrgInfo(); })
+      .catch(function (e) { alert('読み込みエラー: ' + ((e && e.message) || e)); });
+  }); });
+}
+/* 1 つの PDF を足す（ページの絵も作る） */
+function _pdfOrgAdd(name, path, buf) {
+  var si = _PO.srcs.length, color = _PO_COLORS[si % _PO_COLORS.length];
+  var bytes = new Uint8Array(buf);
+  var src = { name: name, path: path, bytes: bytes, color: color, lib: null };
+  _PO.srcs.push(src);
+  return PDFLib.PDFDocument.load(bytes.slice(), { ignoreEncryption: true }).then(function (doc) {
+    src.lib = doc;
+    return window.pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  }).then(function (pdf) {
+    var n = pdf.numPages, chain = Promise.resolve();
+    for (var i = 1; i <= n; i++) (function (pi) {
+      chain = chain.then(function () {
+        return pdf.getPage(pi).then(function (pg) {
+          var vp = pg.getViewport({ scale: 1 }), sc = 280 / vp.width;
+          var cv = document.createElement('canvas'); var v2 = pg.getViewport({ scale: sc });
+          cv.width = Math.round(v2.width); cv.height = Math.round(v2.height);
+          return pg.render({ canvasContext: cv.getContext('2d'), viewport: v2 }).promise.then(function () {
+            _PO.pages.push({ si: si, pi: pi - 1, rot: 0, thumb: cv.toDataURL('image/jpeg', 0.7), id: si + '-' + pi });
+            _pdfOrgDraw();
+          });
+        });
+      });
+    })(i);
+    return chain;
+  }).then(function () { _PO.dirty = true; _pdfOrgInfo(); });
+}
+function _pdfOrgInfo() {
+  var inf = document.getElementById('po-info'); if (!inf || !_PO) return;
+  inf.textContent = _PO.srcs.length + ' ファイル・' + _PO.pages.length + ' ページ';
+  var ow = document.querySelector('#pdf-org [data-po="overwrite"]');
+  if (ow) ow.style.display = (_PO.single && _PO.srcs.length === 1) ? '' : 'none';
+  var fl = document.getElementById('po-files');
+  if (fl) fl.innerHTML = _PO.srcs.map(function (s) {
+    return '<span style="font-size:11.5px;background:#fff;border-left:6px solid ' + s.color + ';border-radius:4px;padding:3px 8px;box-shadow:0 1px 2px rgba(0,0,0,.1)">' + _edtEsc(s.name) + '</span>';
+  }).join('');
+}
+function _pdfOrgDraw() {
+  var g = document.getElementById('po-grid'); if (!g || !_PO) return;
+  g.innerHTML = '';
+  _PO.pages.forEach(function (p, idx) {
+    var src = _PO.srcs[p.si];
+    var c = document.createElement('div'); c.className = 'po-card'; c.draggable = true; c.dataset.idx = idx;
+    c.style.borderTop = '5px solid ' + src.color;
+    c.innerHTML = '<div style="font-size:11px;color:#555;margin-bottom:3px;display:flex;justify-content:space-between"><b>' + (idx + 1) + '</b><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px">' + _edtEsc(src.name) + ' p' + (p.pi + 1) + '</span></div>' +
+      '<div style="overflow:hidden"><img src="' + p.thumb + '" style="width:100%;display:block;border:1px solid #e3e3e3;transform:rotate(' + p.rot + 'deg)"></div>' +
+      '<div class="po-tools"><button data-a="l" title="前へ">◀</button><button data-a="r" title="次へ">▶</button><button data-a="rot" title="右に90°回す">⟳</button><button data-a="del" title="このページを外す" style="color:#c00">✕</button></div>';
+    c.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-a]'); if (!b) return;
+      var a = b.getAttribute('data-a'), i = +c.dataset.idx;
+      if (a === 'del') _PO.pages.splice(i, 1);
+      else if (a === 'rot') _PO.pages[i].rot = (_PO.pages[i].rot + 90) % 360;
+      else if (a === 'l' && i > 0) _PO.pages.splice(i - 1, 0, _PO.pages.splice(i, 1)[0]);
+      else if (a === 'r' && i < _PO.pages.length - 1) _PO.pages.splice(i + 1, 0, _PO.pages.splice(i, 1)[0]);
+      _PO.dirty = true; _pdfOrgDraw(); _pdfOrgInfo();
+    });
+    c.addEventListener('dragstart', function (e) { _PO.dragFrom = +c.dataset.idx; c.classList.add('drag'); try { e.dataTransfer.setData('text/plain', c.dataset.idx); } catch (_) {} });
+    c.addEventListener('dragend', function () { c.classList.remove('drag'); });
+    c.addEventListener('dragover', function (e) { e.preventDefault(); c.classList.add('over'); });
+    c.addEventListener('dragleave', function () { c.classList.remove('over'); });
+    c.addEventListener('drop', function (e) {
+      e.preventDefault(); c.classList.remove('over');
+      var from = _PO.dragFrom, to = +c.dataset.idx; if (from == null || from === to) return;
+      _PO.pages.splice(to, 0, _PO.pages.splice(from, 1)[0]);
+      _PO.dragFrom = null; _PO.dirty = true; _pdfOrgDraw();
+    });
+    g.appendChild(c);
+  });
+}
+/* 同じフォルダの PDF を選んで足す */
+function _pdfOrgPickSp() {
+  getToken().then(function (resp) {
+    var enc = _PO.folder.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name,file&$top=500', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var pdfs = (j.value || []).filter(function (x) { return x.file && /\.pdf$/i.test(x.name); });
+        if (!pdfs.length) { alert('このフォルダに PDF がありません。'); return; }
+        var m = document.createElement('div');
+        m.style.cssText = 'position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+        m.innerHTML = '<div style="background:#fff;border-radius:10px;padding:14px;width:min(460px,92vw);max-height:80vh;overflow:auto">' +
+          '<b>足す PDF を選んでください</b><div style="font-size:11px;color:#888;margin:2px 0 8px">' + _edtEsc(_PO.folder) + '</div>' +
+          pdfs.map(function (x, i) { return '<label style="display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox" value="' + i + '"> ' + _edtEsc(x.name) + '</label>'; }).join('') +
+          '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button data-m="no" style="padding:6px 14px">やめる</button><button data-m="ok" style="padding:6px 14px;background:#1a5a9a;color:#fff;border:none;border-radius:6px">足す</button></div></div>';
+        document.body.appendChild(m);
+        m.addEventListener('click', function (e) {
+          var b = e.target.closest('[data-m]'); if (!b) { if (e.target === m) m.remove(); return; }
+          if (b.getAttribute('data-m') === 'no') { m.remove(); return; }
+          var picks = Array.prototype.map.call(m.querySelectorAll('input:checked'), function (c) { return pdfs[+c.value]; });
+          m.remove();
+          picks.reduce(function (pr, x) {
+            return pr.then(function () {
+              var p2 = _PO.folder + '/' + x.name, e2 = p2.split('/').map(encodeURIComponent).join('/');
+              return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + e2 + ':/content', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
+                .then(function (r) { return r.arrayBuffer(); }).then(function (buf) { return _pdfOrgAdd(x.name, p2, buf); });
+            });
+          }, Promise.resolve());
+        });
+      });
+  }).catch(function (e) { alert('フォルダを読めません: ' + e.message); });
+}
+/* 保存（新しいファイル／元に上書き） */
+function _pdfOrgSave(overwrite) {
+  if (!_PO || !_PO.pages.length) { alert('ページが 1 枚もありません。'); return; }
+  var path;
+  if (overwrite) {
+    if (!confirm('「' + _PO.single.name + '」を この並びで 上書きします（前の版は SharePoint に残ります）。よろしいですか。')) return;
+    path = _PO.single.path;
+  } else {
+    var def = _PO.srcs.length > 1 ? '結合_' + _PO.srcs[0].name.replace(/\.pdf$/i, '') + '_他' + (_PO.srcs.length - 1) + '件.pdf'
+                                  : _PO.srcs[0].name.replace(/\.pdf$/i, '') + '_整理.pdf';
+    var nm = prompt('新しいファイルの名前（保存先：' + _PO.folder + '）', def);
+    if (nm === null) return; nm = nm.trim(); if (!nm) return;
+    if (!/\.pdf$/i.test(nm)) nm += '.pdf';
+    path = _PO.folder + '/' + nm;
+  }
+  showSaveToast(null, '📑 PDF を作っています…');
+  PDFLib.PDFDocument.create().then(function (out) {
+    return _PO.pages.reduce(function (pr, p) {
+      return pr.then(function () {
+        return out.copyPages(_PO.srcs[p.si].lib, [p.pi]).then(function (cp) {
+          var pg = cp[0];
+          if (p.rot) pg.setRotation(PDFLib.degrees(((pg.getRotation().angle || 0) + p.rot) % 360));
+          out.addPage(pg);
+        });
+      });
+    }, Promise.resolve()).then(function () { return out.save(); });
+  }).then(function (bytes) {
+    return getToken().then(function (resp) {
+      var enc = path.split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+        method: 'PUT', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/pdf' }, body: bytes
+      });
+    });
+  }).then(function (r) {
+    if (!r.ok) throw new Error('保存に失敗 (' + r.status + ')');
+    _PO.dirty = false;
+    showSaveToast(true, '📑 ' + path.split('/').pop() + ' を保存しました（' + _PO.pages.length + ' ページ）');
+    var ov = document.getElementById('pdf-org'); if (ov) ov.remove(); _PO = null;
+    try { _pdfMergeClear(); _pdfMergeReload(); } catch (e) {}
+  }).catch(function (e) { showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e)); });
 }
 
 function loadFolderExplorer(folderPass, folderLinkObj, isRoot) {
@@ -22584,6 +22802,7 @@ function _showFolderItemMenu(e, item, currentPath) {
     menuItems.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(filePath, null); }]);
     if (isImgItem && currentItem) menuItems.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(filePath); }]);
     menuItems.push(['⬇️', 'ダウンロード', function(){ _hideFolderMenu(); downloadFolderFile(filePath, item.name); }]);
+    if (/\.pdf$/i.test(item.name)) menuItems.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOrgOpen([{ path: filePath, name: item.name }]); }]);
     menuItems.push(['🔄', '差し替え（更新をアップ）', function(){ _hideFolderMenu(); _folderReplaceFile(item, currentPath); }]);
     if (currentItem) _gaichuMenuPubItems(item.name, (currentListMode==='kouji'?'kouji':'noukotsu'), {source:'drive', driveId:item.id, name:item.name}).forEach(function(mi){ menuItems.push(mi); });
     menuItems.push(null);
@@ -22629,6 +22848,7 @@ function _showHakaSpecItemMenu(e, cat, fname, fpath, hasThumb) {
   var menuItems = [];
   menuItems.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(fpath, null); }]);
   menuItems.push(['⬇️', 'ダウンロード', function(){ _hideFolderMenu(); downloadFolderFile(fpath, fname); }]);
+  if (/\.pdf$/i.test(fname)) menuItems.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOrgOpen([{ path: fpath, name: fname }]); }]);
   menuItems.push(['↗️', '開く', function(){ _hideFolderMenu(); openFolderFile(fpath); }]);
   if (/\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(fname) && currentItem) {
     menuItems.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(fpath); }]);
@@ -22673,6 +22893,7 @@ function _showNokPhotoItemMenu(e, cat, fname, fpath, hasThumb) {
   var menuItems = [];
   menuItems.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(fpath, null); }]);
   menuItems.push(['⬇️', 'ダウンロード', function(){ _hideFolderMenu(); downloadFolderFile(fpath, fname); }]);
+  if (/\.pdf$/i.test(fname)) menuItems.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOrgOpen([{ path: fpath, name: fname }]); }]);
   menuItems.push(['↗️', '開く', function(){ _hideFolderMenu(); openFolderFile(fpath); }]);
   if (isImg && currentItem) {
     menuItems.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(fpath); }]);

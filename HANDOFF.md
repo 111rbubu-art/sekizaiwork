@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.483**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.484**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -589,3 +589,7 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - 青い丸（`.hdl`）：印刷の `.elem .hdl{display:none}` が 画面用の `.elem.sel .hdl{display:block}` より弱く（詳しさで負け）、選んだままだと 印刷に出ていた → `.elem .hdl,.elem.sel .hdl{display:none!important}`、枠の破線も !important。試し：印刷の見た目で 前は block、直したあと none。
 - 白紙の 2 枚目：用紙と ちょうど同じ高さの `.page` が 端数で 1 枚を超えると 次の紙に送られる → 印刷のときだけ `.page` の高さを 用紙より 0.6mm 低く（pageSizeCss と 用紙・向きを変えたとき の 3 か所）、最後の page-wrap の後ろで改ページしない。
+
+## index_b v1.9.484 — 基本情報の「機能」のボタン名（本人の指示）
+
+- 連絡先登録 → 電話帳登録、顧客リストに完了情報を登録 → 顧リストへ完了登録、取り込み → 顧リストから情報取得（工事・納骨とも。本人の書いたとおり「顧リスト」）。

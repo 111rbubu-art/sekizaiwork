@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.477**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.478**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -558,3 +558,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - 工事仕様の写真・図面（`renderHakaSpecPhotoList` の list）：名前の所に spFileClick（1 回＝拡大、見本が無い形式は開く）／spFileDbl（2 回＝開く）を付けた（納骨の写真リストと同じ）。
 - データタブのフォルダ表示のリスト（`_renderFolderFileRow`）も 1 回で拡大・2 回で開く に そろえた（前は 2 回だけ）。
+
+## index_b v1.9.478 — 撤去の見積請求書・施工計算書を 資料作成タブの 帳票類 へ（本人の指示）
+
+- `_koujiDocsExtraBtns(d)`（帳票類の 彫刻原稿の下）：工事仕様の分類（主・追加。`_hakaSpecActiveCats`）に 撤去 があれば［🪨 撤去 見積請求書］（openTekkyoForKouji）、墓新規・修繕 があれば［🧮 施工計算書］（openFoundCalc。前の出し方と同じ条件）。
+- 工事仕様タブの 見出しの［🧮 施工計算］と 撤去の分類の［🪨 見積請求書作成］は 外した。

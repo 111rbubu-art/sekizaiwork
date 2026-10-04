@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.489**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.490**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -623,3 +623,9 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 本人「データタブ、フォルダータブで表示しているPDFをダブルクリックしても立ち上がりません」。
 - 原因：`renderFolderContents` の 絵表示（グリッド）の dblclick が `spFileDbl` を通らず `openFolderFile`（古い開き方）を直に呼んでいた。→ `spFileDbl(filePath)` に。
 - ついでに：見本の絵が無い PDF の 1 回クリック、⋯ メニューの［↗️ 開く］も PDF はビューワー（`_pdfViewOpen`）。
+
+### v1.9.490 PDF ビューワー：左 1/5 にページ一覧（パワーポイント風）・PC/SP で開くボタンを外す
+- 本人「PCソフトで開く、やsharepointで開くは不要／左1/5くらいにページの一覧表に　イメージはパワーポイント」。
+- `#pv-side`（幅 20%・最小 80px）に 全ページの絵（`_pdfViewSide`／`_pdfViewSideThumb`、見えている所だけ描く）。クリックで `_pdfViewGo(pi)`。
+  今のページは 橙の枠（`_pdfViewPageNo` が `.cur` を付け、一覧から外れていれば 一覧もスクロール）。
+- ［🖥 PCのソフトで開く］［🌐 SharePointで開く］と webUrl の取得は 削除。ダウンロードは ⋯ メニューに残る。

@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.487**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.488**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -612,3 +612,9 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 本人「サムネの大きさを倍に／追加するPDFは画面下側にサムネ付きで表示」。
 - ページのカード 150→300px、絵は 幅 560px で作る。
 - 下に `#po-tray`（棚）：`_pdfOrgPickSp` が `children?$expand=thumbnails` で同じフォルダの PDF を取り、`_pdfOrgTrayDraw` で絵つきカード。クリック＝うしろに足す、上のページへドラッグ＝その前に足す（`_pdfOrgTrayAdd(i, at)`、空いた所へのドロップはうしろ）。入っているファイルは「✓ 入っています」（もう一度足すときは確認）。上の［📂 同じフォルダのPDF］と棚の見出しで たたむ／ひらく。
+
+### v1.9.488 PDF 棚の絵を 300px・拡大縮小／ビューワーに印刷
+- 本人「追加する PDF を画面下に表示は、幅300pxのサムネにして、拡大縮小できるように／ビューワーで印刷機能も」。
+- 棚：絵の幅 既定 300px、見出し右の［－］スライダー［＋］で 120〜600px（`_pdfOrgTrayW`/`_pdfOrgTraySize`、localStorage `pdfOrgTrayW`）。棚の高さは 最大 55vh。
+  SharePoint の絵が無い PDF は `_pdfOrgTrayThumb` が PDF.js で 1 ページ目を描く（`x._thumb` に覚え、読んだ中身 `x._buf` は 足すときに使い回す）。
+- ビューワー［🖨 印刷］`_pdfViewPrint`：PC は PDF そのもの（blob）を 見えない iframe に入れて print()。スマホ／失敗時は `_pdfViewPrintImg`（各ページ 150dpi の絵、@page は 1 ページ目の寸法・余白 0）。

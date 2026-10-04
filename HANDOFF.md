@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.479**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.480**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -567,3 +567,7 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 ## index_b v1.9.479 — 資料作成タブの 帳票類を 保存済資料の上に 横並び（本人の指示）
 
 - `_renderKoujiDocsCardGrid`：帳票類（封筒・領収書・彫刻原稿・条件つきの 施工計算書／撤去 見積請求書）を 青い帯に 横並び（狭いと折り返す）、その下に 保存済資料を 全幅で。
+
+## index_b v1.9.480 — 資料作成の 型の一覧から［全て／🏗工／📿納］を外す（本人の指示）
+
+- `_renderDynamicSections`：工事の資料作成は 工事関連の型（targetList＝kouji）、納骨の資料作成は 納骨リストの型（noukotsu）だけを いつも出す（`_tplFilterDefault`）。［1列／2列］は 残した。

@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.478**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.479**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -563,3 +563,7 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - `_koujiDocsExtraBtns(d)`（帳票類の 彫刻原稿の下）：工事仕様の分類（主・追加。`_hakaSpecActiveCats`）に 撤去 があれば［🪨 撤去 見積請求書］（openTekkyoForKouji）、墓新規・修繕 があれば［🧮 施工計算書］（openFoundCalc。前の出し方と同じ条件）。
 - 工事仕様タブの 見出しの［🧮 施工計算］と 撤去の分類の［🪨 見積請求書作成］は 外した。
+
+## index_b v1.9.479 — 資料作成タブの 帳票類を 保存済資料の上に 横並び（本人の指示）
+
+- `_renderKoujiDocsCardGrid`：帳票類（封筒・領収書・彫刻原稿・条件つきの 施工計算書／撤去 見積請求書）を 青い帯に 横並び（狭いと折り返す）、その下に 保存済資料を 全幅で。

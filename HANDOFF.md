@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.492**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.493**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -645,3 +645,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 保存 `_pvaSave`→`_pvaBake`：ページごとに 書き込みを 透明 PNG（最大 216dpi・1600 万画素まで）にして pdf-lib `drawImage` で ページの view 全体に貼る。
   変換は pdf.js `viewport.convertToPdfPoint` から 求めた アフィン（回転ページでも合う。テストで 90° 回転ページも確認）。保存後は 新しい中身で 読み直し、書き込みは 消える（中身になった）。
 - 印刷は 未保存の書き込みも 焼き込んだ物で 印刷（保存はしない）。閉じる／ページ整理へ／Esc は 未保存なら 確認。ページ整理ボタンは「📑 ページ整理」に名前変更。
+
+### v1.9.493 PDF ビューワー「読み込みエラー: Failed to fetch」
+- 本人の画面：Graph `:/content` の 転送先（SharePoint `download.aspx?...tempauth=`）で `net::ERR_CONNECTION_RESET`。
+- 共通の `_spFetchBytes(path)`：① `@microsoft.graph.downloadUrl` を もらって 直に読む ② だめなら `:/content` ③ 交互に 3 回まで（0.8 秒・1.6 秒あけて）。404/403 は やり直さない。
+  ビューワー・ページ整理（開く・棚の絵・棚から足す）で使う。ビューワーの エラーには［🔄 もう一度 読む］。

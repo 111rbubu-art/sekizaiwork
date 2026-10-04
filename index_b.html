@@ -7892,7 +7892,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.492';
+var APP_VERSION = 'v1.9.493';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22016,16 +22016,12 @@ function _pdfOrgOpen(files) {
   });
   _loadPdfLib(function () { _loadPdfJs(function () {
     if (!window.PDFLib || !window.pdfjsLib) { alert('PDF の部品を読み込めませんでした。通信環境を確かめてください。'); return; }
-    getToken().then(function (resp) {
-      return files.reduce(function (pr, f) {
-        return pr.then(function () {
-          var enc = String(f.path).split('/').map(encodeURIComponent).join('/');
-          return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
-            .then(function (r) { if (!r.ok) throw new Error(f.name + ' を読めません (' + r.status + ')'); return r.arrayBuffer(); })
-            .then(function (buf) { return _pdfOrgAdd(f.name, f.path, buf); });
-        });
-      }, Promise.resolve());
-    }).then(function () { _PO.dirty = false; _pdfOrgInfo(); _pdfOrgPickSp(); })
+    files.reduce(function (pr, f) {
+      return pr.then(function () {
+        return _spFetchBytes(f.path).catch(function (e) { throw new Error(f.name + ': ' + ((e && e.message) || e)); })
+          .then(function (buf) { return _pdfOrgAdd(f.name, f.path, buf); });
+      });
+    }, Promise.resolve()).then(function () { _PO.dirty = false; _pdfOrgInfo(); _pdfOrgPickSp(); })
       .catch(function (e) { alert('読み込みエラー: ' + ((e && e.message) || e)); });
   }); });
 }
@@ -22033,6 +22029,42 @@ function _pdfOrgOpen(files) {
    PDF.js で 全ページを 縦に並べて見る。［－］［＋］［幅に合わせる］・Ctrl＋ホイールで 拡大縮小、左ドラッグで 移動。
    ［✏️ 編集（ページ整理）］で ページ整理（_pdfOrgOpen）へ。［🖨 印刷］。左 1/5 に ページ一覧（v1.9.490）。
    ページの絵は 見えている所だけ 作る（ページが多くても重くならないように）。 */
+/* **SharePoint の ファイルの中身を 確実に読む**（v1.9.493。本人「読み込みエラー: Failed to fetch」＝ Graph の :/content が
+   SharePoint の download.aspx へ転送された先で 通信が切れた（ERR_CONNECTION_RESET））。
+   ① 先に downloadUrl（鍵つきの直リンク）を もらって そこから読む ② だめなら :/content ③ 合わせて 3 回まで 間をあけて やり直す。 */
+function _spFetchBytes(path) {
+  var enc = String(path).split('/').map(encodeURIComponent).join('/');
+  var base = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc;
+  var one = function (k) {
+    return getToken().then(function (resp) {
+      var h = { headers: { Authorization: 'Bearer ' + resp.accessToken } };
+      if (k % 2 === 0) {
+        return fetch(base + '?$select=id,@microsoft.graph.downloadUrl', h).then(function (r) {
+          if (!r.ok) throw new Error('読めません (' + r.status + ')');
+          return r.json();
+        }).then(function (j) {
+          var u = j && j['@microsoft.graph.downloadUrl'];
+          if (!u) return fetch(base + ':/content', h);
+          return fetch(u, { cache: 'no-store' });
+        });
+      }
+      return fetch(base + ':/content', Object.assign({ cache: 'no-store' }, h));
+    }).then(function (r) {
+      if (!r.ok) { var er = new Error('読めません (' + r.status + ')'); er.status = r.status; throw er; }
+      return r.arrayBuffer();
+    });
+  };
+  var tryN = function (k) {
+    return one(k).catch(function (e) {
+      if (k >= 2 || (e && (e.status === 404 || e.status === 403))) throw e;
+      return new Promise(function (r) { setTimeout(r, 800 * (k + 1)); }).then(function () { return tryN(k + 1); });
+    });
+  };
+  return tryN(0).catch(function (e) {
+    if (e && /Failed to fetch|NetworkError|network/i.test(e.message || '')) e = new Error('通信が切れました（3 回やり直しても 読めませんでした）。回線の具合を確かめて、もう一度 開いてください。');
+    throw e;
+  });
+}
 var _PV = null;
 function _pdfViewOpen(filePath) {
   var name = String(filePath).split('/').pop();
@@ -22112,12 +22144,7 @@ function _pdfViewOpen(filePath) {
   _loadPdfJs(function () {
     if (!window.pdfjsLib) { alert('PDF の部品を読み込めませんでした。通信環境を確かめてください。'); return; }
     var pv = _PV;
-    getToken().then(function (resp) {
-      var enc = String(filePath).split('/').map(encodeURIComponent).join('/');
-      var base = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc;
-      var h = { headers: { Authorization: 'Bearer ' + resp.accessToken } };
-      return fetch(base + ':/content', h).then(function (r) { if (!r.ok) throw new Error('読めません (' + r.status + ')'); return r.arrayBuffer(); });
-    }).then(function (buf) {
+    _spFetchBytes(filePath).then(function (buf) {
       pv.bytes = new Uint8Array(buf);
       return window.pdfjsLib.getDocument({ data: pv.bytes.slice() }).promise;
     }).then(function (pdf) {
@@ -22134,7 +22161,11 @@ function _pdfViewOpen(filePath) {
       _pdfViewBuild();
     }).catch(function (e) {
       var pg = document.getElementById('pv-pages');
-      if (pg) pg.innerHTML = '<div style="color:#fff;padding:40px">読み込みエラー: ' + _escHtml((e && e.message) || String(e)) + '</div>';
+      if (pg) {
+        pg.innerHTML = '<div style="color:#fff;padding:40px;line-height:1.8">読み込みエラー: ' + _escHtml((e && e.message) || String(e)) +
+          '<br><button class="pv-b" style="margin-top:10px;font-size:14px;padding:7px 18px">🔄 もう一度 読む</button></div>';
+        pg.querySelector('button').addEventListener('click', function () { _pdfViewClose(); _pdfViewOpen(filePath); });
+      }
     });
   });
 }
@@ -22873,11 +22904,7 @@ function _pdfOrgTraySize(w) {
 function _pdfOrgTrayThumb(x, card) {
   if (!_PO || !window.pdfjsLib) return;
   var p2 = _PO.trayFolder + '/' + x.name;
-  var got = x._buf ? Promise.resolve(x._buf) : getToken().then(function (resp) {
-    var e2 = p2.split('/').map(encodeURIComponent).join('/');
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + e2 + ':/content', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
-  });
+  var got = x._buf ? Promise.resolve(x._buf) : _spFetchBytes(p2);
   got.then(function (buf) {
     x._buf = buf;
     return window.pdfjsLib.getDocument({ data: new Uint8Array(buf).slice() }).promise;
@@ -22923,11 +22950,7 @@ function _pdfOrgTrayAdd(i, at) {
   if (_PO.srcs.some(function (s) { return s.path === p2; }) && !confirm(x.name + ' は もう入っています。もう一度 足しますか。')) return;
   _PO.busy = true;
   var before = _PO.pages.length;
-  (x._buf ? Promise.resolve(x._buf.slice(0)) : getToken().then(function (resp) {
-    var e2 = p2.split('/').map(encodeURIComponent).join('/');
-    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + e2 + ':/content', { headers: { Authorization: 'Bearer ' + resp.accessToken } })
-      .then(function (r) { if (!r.ok) throw new Error(x.name + ' を読めません (' + r.status + ')'); return r.arrayBuffer(); });
-  })).then(function (buf) { return _pdfOrgAdd(x.name, p2, buf); })
+  (x._buf ? Promise.resolve(x._buf.slice(0)) : _spFetchBytes(p2).catch(function (e) { throw new Error(x.name + ': ' + ((e && e.message) || e)); })).then(function (buf) { return _pdfOrgAdd(x.name, p2, buf); })
     .then(function () {
       if (at != null && at < before) {
         var added = _PO.pages.splice(before, _PO.pages.length - before);

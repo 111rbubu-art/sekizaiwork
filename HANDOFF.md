@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.473**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.474**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -535,3 +535,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - `spFileDbl`：写真（jpg/png/gif/webp/bmp/heic）は `previewFolderImage`（× あり・applyImgZoom で拡大と移動・原寸を読む）。写真以外は いままでどおり openFolderFile（Office は アプリ、PDF は ブラウザ）。
 - 原寸の窓に［🌐 SharePointで開く］（前の動き）を残した。名前の後ろに「（原寸）」。
+
+## index_b v1.9.474 — PDF のダブルクリックも PC のソフトで（本人の要望）
+
+- PDF には Office のような起動の合言葉（ms-word: など）が無く、ブラウザから PC のソフトを じかに起動できない。PC では `_openWithDesktopApp` で PDF を 保存（ドライブは downloadFolderFile、直リンクは fetch→_saveBlobAs）し、下に［🌐 ブラウザで開く］の帯。スマホは これまでどおり ブラウザで見る。
+- ブラウザ側で「この種類のファイルを常に開く」（Chrome・Edge のダウンロード一覧の … ）にすると、保存のあと 既定の PDF ソフトで自動で開く。Windows の .pdf の既定アプリも Acrobat 等に。

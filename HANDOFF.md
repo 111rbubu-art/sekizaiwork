@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.471**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.472**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -520,3 +520,7 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 項目の定義に `st`：`st:false` は 状態ボタンなし（区分・日付・時間・時間状態。備考は もとから無し）、`st:['kari','confirmed']` は その順だけで回す（担当者。はじめは 仮予定）。`cycleHakaSpecStatus` は `_hakaSpecFieldDef` で その順を見る。ほかの分類は いままでどおり 未定→検討→最新→確定。
 - 状態 `kari`（仮予定）を HAKA_SPEC_STATUSES に足した。3 字以上の札は 横書き（縦では収まらないため）。
 - カレンダーの題：担当者が 確定でなければ 頭に【仮】。確定にして 登録し直すと 外れる。
+
+## index_b v1.9.472 — カレンダーの題は「お骨出し」→「骨出」（本人「見やすくするために」）
+
+- 工事の 納骨（お骨出し）（`_kjNokBuildEvent`）と 納骨・戒切（`_gcalBuildEvent` の分類が 骨出し・骨だし）の 両方。画面の選択肢は「お骨出し」のまま。すでに登録した予定は 登録し直すと 変わる。

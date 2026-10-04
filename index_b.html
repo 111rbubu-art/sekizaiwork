@@ -7892,7 +7892,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.475';
+var APP_VERSION = 'v1.9.476';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22350,32 +22350,17 @@ function _openWithDesktopApp(data, name, filePath) {
   }
 }
 
-/* ───── **PDF を PC のソフトで直して、手間なく SharePoint に戻す**（v1.9.475。本人「ダウンロードして編集してアップロードするのが手間…
-   ダウンロードフォルダを使って、編集後、アップロード後に完全に削除するなら良いです」）─────
-   ・最初に 1 回、［📁 ダウンロードフォルダを使う］で ダウンロードフォルダを選んでもらう（File System Access。PC の Chrome・Edge）。
-     選んだフォルダの合鍵（handle）は IndexedDB の 'edtDirHandle' に。
-   ・PDF をダブルクリック → 同じ名前の古いファイルを消してから ふつうに保存（ブラウザの「常に開く」で Acrobat 等が開く）。
-     どのファイルを SharePoint のどこから持ってきたかを localStorage 'edtTracks' に。
-   ・画面を開いている間 4 秒ごとに そのファイルの 更新時刻を見て、保存し直されたら 帯で知らせる。
-     ［⬆ SharePointに上書き］→ もとの場所へ上書き（SharePoint に前の版は残る）→ 手元のファイルを消す。
-     ［✕ 直さない］→ 手元のファイルを消して 見張りをやめる。［あとで］→ 次に保存し直されるまで 黙る。
-   ・読み直すと 許可が外れることがある。そのときは 帯の［許可する］を 1 回。 */
-function _edtSupported() { return !!(window.showDirectoryPicker && window.indexedDB); }
-var _edtDir = null, _edtTimer = null, _edtAsk = {};
+/* ───── **PDF を PC のソフトで直して、手間なく SharePoint に戻す**（v1.9.475 → v1.9.476 で作り直し）─────
+   v1.9.475 は ダウンロードフォルダを まるごと見張る形だったが、Chrome・Edge は **ダウンロードフォルダそのもの**を
+   サイトに使わせない（「システム ファイルが含まれているため…このフォルダを開くことができません」）。本人「ダウンロードそのままでいい」。
+   そこで **フォルダではなく ファイル 1 つ**を選んでもらう形にした（ファイルの選択は ダウンロードの中でも できる）。
+   ・PDF をダブルクリック → ふつうに保存（ブラウザの「常に開く」で PDF ソフトが開く）。持ってきた先を localStorage 'edtTracks' に。
+   ・上に 帯「📝 見積書.pdf を直しています［⬆ 直したら SharePointに上書き］［✕ やめる］」（読み直しても 出し直す）。
+   ・［⬆…上書き］→ ダウンロードフォルダが開いた ファイル選択 → そのファイルを選ぶ → 元の場所へ上書き（前の版は SharePoint に残る）
+     → 手元のファイルを 消す（ファイルの合鍵 handle.remove。PDF ソフトが開いたままだと 消せないので そのときは 閉じてから消すよう 知らせる）。 */
+function _edtSupported() { return !!window.showOpenFilePicker; }
 function _edtTracks() { try { return JSON.parse(localStorage.getItem('edtTracks') || '[]'); } catch (e) { return []; } }
 function _edtSave(t) { try { localStorage.setItem('edtTracks', JSON.stringify(t)); } catch (e) {} }
-function _edtGetDir() {
-  if (_edtDir) return Promise.resolve(_edtDir);
-  return idbGet('edtDirHandle').then(function (r) { _edtDir = (r && r.data) || null; return _edtDir; }).catch(function () { return null; });
-}
-function _edtPerm(dir, ask) {
-  if (!dir || !dir.queryPermission) return Promise.resolve(false);
-  return dir.queryPermission({ mode: 'readwrite' }).then(function (st) {
-    if (st === 'granted') return true;
-    if (!ask) return false;
-    return dir.requestPermission({ mode: 'readwrite' }).then(function (s2) { return s2 === 'granted'; });
-  }).catch(function () { return false; });
-}
 /* 帯（上のまん中）。buttons＝[[文字, 関数, 強調]] */
 function _edtBar(id, html, buttons) {
   var old = document.getElementById(id); if (old) old.remove();
@@ -22399,139 +22384,75 @@ function _edtBar(id, html, buttons) {
   host.appendChild(bar);
 }
 function _edtEsc(t) { return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+function _edtBarId(name) { return 'edt-' + btoa(unescape(encodeURIComponent(name))).replace(/[^a-z0-9]/gi, ''); }
 /* ダブルクリックから */
 function _edtOpen(filePath, name, webUrl) {
-  _edtGetDir().then(function (dir) {
-    if (!dir) {
-      _edtBar('edt-setup', '📁 <b>直して SharePoint に戻す</b>ために、最初に 1 回だけ <b>ダウンロードフォルダ</b>を選んでください。<br><span style="opacity:.75;font-size:11px">ブラウザの保存先と同じフォルダを選びます。直したファイルは 上書きのあと 自動で消します。</span>', [
-        ['📁 ダウンロードフォルダを使う', function () {
-          window.showDirectoryPicker({ id: 'sekizaiDl', mode: 'readwrite', startIn: 'downloads' }).then(function (d) {
-            _edtDir = d; return idbSet('edtDirHandle', d);
-          }).then(function () { _edtBar('edt-setup', ''); _edtOpen(filePath, name, webUrl); })
-            .catch(function (e) { if (e && e.name !== 'AbortError') showSaveToast(false, 'フォルダを使えませんでした: ' + e.message); });
-        }, true],
-        ['今回は ふつうに保存', function () { _edtBar('edt-setup', ''); downloadFolderFile(filePath, name); }],
-        ['✕', function () { _edtBar('edt-setup', ''); }]
-      ]);
-      return;
-    }
-    _edtPerm(dir, false).then(function (ok) {
-      if (!ok) {
-        _edtBar('edt-perm', '🔑 ダウンロードフォルダを使う 許可が 切れています。', [
-          ['許可して開く', function () { _edtPerm(dir, true).then(function (ok2) { _edtBar('edt-perm', ''); if (ok2) _edtOpen(filePath, name, webUrl); else downloadFolderFile(filePath, name); }); }, true],
-          ['ふつうに保存', function () { _edtBar('edt-perm', ''); downloadFolderFile(filePath, name); }]
-        ]);
-        return;
-      }
-      var tr = _edtTracks(), old = tr.filter(function (x) { return x.name === name; })[0];
-      var go = function () {
-        /* 同じ名前が残っていると「名前 (1).pdf」になるので 先に消す */
-        dir.removeEntry(name).catch(function () {}).then(function () {
-          tr = _edtTracks().filter(function (x) { return x.name !== name; });
-          tr.push({ name: name, path: filePath, web: webUrl || '', at: Date.now(), base: 0, seen: 0 });
-          _edtSave(tr);
-          downloadFolderFile(filePath, name);
-          showSaveToast(true, '⬇ ' + name + ' を保存しました。直して保存すると、ここに［⬆ SharePointに上書き］が出ます');
-          _edtStart();
-        });
-      };
-      if (old && old.base && old.seen > old.base) {
-        if (!confirm('「' + name + '」は 前に直したまま、まだ SharePoint に戻していません。\n手元の直したファイルを捨てて、SharePoint から 取り直しますか。')) return;
-      }
-      go();
-    });
-  });
+  var tr = _edtTracks().filter(function (x) { return x.path !== filePath; });
+  tr.push({ name: name, path: filePath, web: webUrl || '', at: Date.now() });
+  _edtSave(tr);
+  downloadFolderFile(filePath, name);
+  _edtShow(tr[tr.length - 1]);
 }
-/* 見張り：保存し直されたら 帯を出す */
-function _edtStart() {
-  if (_edtTimer) return;
-  _edtTimer = setInterval(_edtTick, 4000);
-  _edtTick();
-}
-function _edtTick() {
-  var tr = _edtTracks();
-  if (!tr.length) { clearInterval(_edtTimer); _edtTimer = null; return; }
-  _edtGetDir().then(function (dir) {
-    if (!dir) return;
-    return _edtPerm(dir, false).then(function (ok) {
-      if (!ok) {
-        _edtBar('edt-perm', '🔑 直しているファイルが ' + tr.length + ' 件あります。見張るには 許可が要ります。', [
-          ['許可する', function () { _edtPerm(dir, true).then(function () { _edtBar('edt-perm', ''); _edtTick(); }); }, true],
-          ['あとで', function () { _edtBar('edt-perm', ''); }]
-        ]);
-        return;
-      }
-      _edtBar('edt-perm', '');
-      var changed = false;
-      return Promise.all(tr.map(function (t) {
-        if (t.del) {                                   // 上書き済み：消せたら 見張りをやめる
-          return dir.removeEntry(t.name).then(function () { t.gone = 1; changed = true; })
-            .catch(function (e) { if (e && e.name === 'NotFoundError') { t.gone = 1; changed = true; } });
-        }
-        return dir.getFileHandle(t.name).then(function (h) { return h.getFile(); }).then(function (f) {
-          if (!t.base) { if (f.size > 0) { t.base = f.lastModified; changed = true; } return; }   // 保存し終わった時刻を もとに
-          if (f.lastModified > t.base + 1500 && f.lastModified !== t.seen) {
-            t.seen = f.lastModified; changed = true;
-            _edtAsk[t.name] = true;
-          }
-          if (_edtAsk[t.name]) _edtShowAsk(t);
-        }).catch(function () {
-          /* 見つからない：まだ保存中か、手で消された。1 日たったら 見張りをやめる */
-          if (Date.now() - t.at > 86400000) { t.gone = 1; changed = true; }
-        });
-      })).then(function () {
-        if (changed) _edtSave(tr.filter(function (t) { return !t.gone; }));
-      });
-    });
-  });
-}
-function _edtShowAsk(t) {
-  var id = 'edt-ask-' + btoa(unescape(encodeURIComponent(t.name))).replace(/[^a-z0-9]/gi, '');
-  if (document.getElementById(id)) return;
-  _edtBar(id, '📝 <b>' + _edtEsc(t.name) + '</b> が 直されました。<br><span style="opacity:.75;font-size:11px">SharePoint：' + _edtEsc(t.path) + '</span>', [
-    ['⬆ SharePointに上書き', function (b) { b.disabled = true; b.textContent = '上書きしています…'; _edtUpload(t, id); }, true],
-    ['あとで', function () { _edtAsk[t.name] = false; _edtBar(id, ''); }],
-    ['✕ 直さない（消す）', function () {
-      if (!confirm('手元の「' + t.name + '」を消して、SharePoint には戻しません。よろしいですか。')) return;
-      _edtGetDir().then(function (dir) { return dir && dir.removeEntry(t.name).catch(function () {}); }).then(function () {
-        _edtSave(_edtTracks().filter(function (x) { return x.name !== t.name; })); delete _edtAsk[t.name]; _edtBar(id, '');
-      });
+function _edtShow(t) {
+  _edtBar(_edtBarId(t.name), '📝 <b>' + _edtEsc(t.name) + '</b> を直しています。<br><span style="opacity:.75;font-size:11px">PDF のソフトで直して上書き保存したら、［⬆ 直したら SharePointに上書き］で ダウンロードの中の そのファイルを選んでください。</span>', [
+    ['⬆ 直したら SharePointに上書き', function (b) { _edtUpload(t, b); }, true],
+    ['✕ やめる', function () {
+      if (!confirm('「' + t.name + '」の 直しをやめます（SharePoint には戻しません）。\\n手元のファイルは そのまま残ります。')) return;
+      _edtSave(_edtTracks().filter(function (x) { return x.path !== t.path; }));
+      _edtBar(_edtBarId(t.name), '');
     }]
   ]);
 }
-function _edtUpload(t, barId) {
-  var dir;
-  _edtGetDir().then(function (d) { dir = d; return dir.getFileHandle(t.name); }).then(function (h) { return h.getFile(); })
-    .then(function (file) {
-      return getToken().then(function (resp) {
-        var enc = String(t.path).split('/').map(encodeURIComponent).join('/');
-        return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
-          method: 'PUT', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': file.type || 'application/octet-stream' }, body: file
-        });
-      });
-    }).then(function (r) {
-      if (!r.ok) return r.text().then(function (x) { throw new Error(r.status + ': ' + x.substring(0, 160)); });
-      /* 上書きできたら 手元は 完全に消す。Acrobat が開いたままだと Windows では消せないので、
-         そのときは「消す待ち」にして 見張りのたびに消し直す（閉じたら消える） */
-      return dir.removeEntry(t.name).then(function () { return true; }).catch(function () { return false; });
-    }).then(function (gone) {
-      var tr = _edtTracks();
-      if (gone) tr = tr.filter(function (x) { return x.name !== t.name; });
-      else tr.forEach(function (x) { if (x.name === t.name) x.del = 1; });
-      _edtSave(tr);
-      delete _edtAsk[t.name];
-      _edtBar(barId, '');
-      showSaveToast(true, '⬆ ' + t.name + ' を SharePoint に上書きしました' +
-        (gone ? '。手元のファイルを消しました' : '。PDF のソフトを閉じると 手元のファイルを消します'));
-      if (!gone) _edtStart();
-    }).catch(function (e) {
-      _edtBar(barId, '');
-      _edtAsk[t.name] = true;
-      showSaveToast(false, '上書きできませんでした: ' + ((e && e.message) || e) + '（Acrobat で開いたままだと 読めないことがあります。閉じてから もう一度）');
+function _edtUpload(t, btn) {
+  var ext = (String(t.name).split('.').pop() || '').toLowerCase();
+  var opt = { startIn: 'downloads', multiple: false };
+  if (ext === 'pdf') opt.types = [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }];
+  var fh, file;
+  window.showOpenFilePicker(opt).then(function (hs) {
+    fh = hs[0];
+    /* 名前が ちがう（「見積書 (1).pdf」など）ときは 確かめる */
+    var base = function (n) { return String(n).replace(/\s*\(\d+\)(?=\.[^.]+$)/, ''); };
+    if (base(fh.name) !== base(t.name) &&
+        !confirm('選んだのは「' + fh.name + '」です。\\nSharePoint の「' + t.name + '」に 上書きしますか。')) throw { name: 'AbortError' };
+    return fh.getFile();
+  }).then(function (f) {
+    file = f;
+    if (btn) { btn.disabled = true; btn.textContent = '上書きしています…'; }
+    return getToken();
+  }).then(function (resp) {
+    var enc = String(t.path).split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
+      method: 'PUT', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': file.type || 'application/octet-stream' }, body: file
     });
+  }).then(function (r) {
+    if (!r.ok) return r.text().then(function (x) { throw new Error(r.status + ': ' + x.substring(0, 160)); });
+    _edtSave(_edtTracks().filter(function (x) { return x.path !== t.path; }));
+    _edtBar(_edtBarId(t.name), '');
+    /* 上書きできたら 手元は 完全に消す（Chrome・Edge の handle.remove。消す許可を 1 回聞かれることがある） */
+    if (!fh.remove) { showSaveToast(true, '⬆ ' + t.name + ' を SharePoint に上書きしました（手元のファイルは 手で消してください）'); return; }
+    return (fh.requestPermission ? fh.requestPermission({ mode: 'readwrite' }) : Promise.resolve('granted')).then(function (st) {
+      if (st !== 'granted') throw new Error('perm');
+      return fh.remove();
+    }).then(function () {
+      showSaveToast(true, '⬆ ' + t.name + ' を SharePoint に上書きし、手元のファイルを消しました');
+    }).catch(function () {
+      showSaveToast(true, '⬆ ' + t.name + ' を SharePoint に上書きしました（手元のファイルは消せませんでした。PDF のソフトを閉じてから 手で消してください）');
+    });
+  }).catch(function (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '⬆ 直したら SharePointに上書き'; }
+    if (e && e.name === 'AbortError') return;
+    showSaveToast(false, '上書きできませんでした: ' + ((e && e.message) || e));
+  });
 }
-/* 起動したら 見張りを再開（直しかけが残っていれば） */
-setTimeout(function () { try { if (_edtSupported() && _edtTracks().length) _edtStart(); } catch (e) {} }, 3000);
+/* 読み直したら 直しかけの帯を 出し直す（3 日たったものは 片づける） */
+setTimeout(function () {
+  try {
+    if (!_edtSupported()) return;
+    var tr = _edtTracks().filter(function (t) { return Date.now() - t.at < 3 * 86400000; });
+    _edtSave(tr);
+    tr.forEach(_edtShow);
+  } catch (e) {}
+}, 3000);
 
 /* ファイルを、そのまま手元に落とす（v1.9.436。本人の指示
    「データタブで、ファイルのサブメニューにダウンロードを追加して」）。

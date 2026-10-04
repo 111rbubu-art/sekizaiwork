@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.488**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.489**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -618,3 +618,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 棚：絵の幅 既定 300px、見出し右の［－］スライダー［＋］で 120〜600px（`_pdfOrgTrayW`/`_pdfOrgTraySize`、localStorage `pdfOrgTrayW`）。棚の高さは 最大 55vh。
   SharePoint の絵が無い PDF は `_pdfOrgTrayThumb` が PDF.js で 1 ページ目を描く（`x._thumb` に覚え、読んだ中身 `x._buf` は 足すときに使い回す）。
 - ビューワー［🖨 印刷］`_pdfViewPrint`：PC は PDF そのもの（blob）を 見えない iframe に入れて print()。スマホ／失敗時は `_pdfViewPrintImg`（各ページ 150dpi の絵、@page は 1 ページ目の寸法・余白 0）。
+
+### v1.9.489 PDF ビューワーが データ／フォルダータブで 立ち上がらない
+- 本人「データタブ、フォルダータブで表示しているPDFをダブルクリックしても立ち上がりません」。
+- 原因：`renderFolderContents` の 絵表示（グリッド）の dblclick が `spFileDbl` を通らず `openFolderFile`（古い開き方）を直に呼んでいた。→ `spFileDbl(filePath)` に。
+- ついでに：見本の絵が無い PDF の 1 回クリック、⋯ メニューの［↗️ 開く］も PDF はビューワー（`_pdfViewOpen`）。

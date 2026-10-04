@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.486**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.487**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -607,3 +607,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 操作：［－］［＋］［幅に合わせる］・Ctrl＋ホイール（マウス位置中心）・左ドラッグで移動・Esc で閉じる。最初は 1 ページ全体が見える倍率。
 - ［✏️ 編集（ページ整理）］→ ビューワーを閉じて `_pdfOrgOpen([{path,name}])`（1 ファイルなので［⬆ 元のファイルに上書き］も出る）。
 - 前の動きは ボタンで残す：［🖥 PCのソフトで開く］（`openFolderFile`→ PC は `_edtOpen` の 編集して戻す）、［🌐 SharePointで開く］。
+
+### v1.9.487 PDF ページ整理：サムネ倍・下に「同じフォルダの PDF」の棚
+- 本人「サムネの大きさを倍に／追加するPDFは画面下側にサムネ付きで表示」。
+- ページのカード 150→300px、絵は 幅 560px で作る。
+- 下に `#po-tray`（棚）：`_pdfOrgPickSp` が `children?$expand=thumbnails` で同じフォルダの PDF を取り、`_pdfOrgTrayDraw` で絵つきカード。クリック＝うしろに足す、上のページへドラッグ＝その前に足す（`_pdfOrgTrayAdd(i, at)`、空いた所へのドロップはうしろ）。入っているファイルは「✓ 入っています」（もう一度足すときは確認）。上の［📂 同じフォルダのPDF］と棚の見出しで たたむ／ひらく。

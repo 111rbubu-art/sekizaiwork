@@ -7892,7 +7892,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.485';
+var APP_VERSION = 'v1.9.486';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21999,6 +21999,184 @@ function _pdfOrgOpen(files) {
       .catch(function (e) { alert('読み込みエラー: ' + ((e && e.message) || e)); });
   }); });
 }
+/* ───── **PDF ビューワー**（v1.9.486。本人「PDFをダブルクリックしたら、ビューワーとして立ち上がって、編集ボタンを押すと、ページの整理等ができる様に」）─────
+   PDF.js で 全ページを 縦に並べて見る。［－］［＋］［幅に合わせる］・Ctrl＋ホイールで 拡大縮小、左ドラッグで 移動。
+   ［✏️ 編集（ページ整理）］で ページ整理（_pdfOrgOpen）へ。前の動き（PC のソフトで開く・SharePoint で開く）も ボタンで残す。
+   ページの絵は 見えている所だけ 作る（ページが多くても重くならないように）。 */
+var _PV = null;
+function _pdfViewOpen(filePath) {
+  var name = String(filePath).split('/').pop();
+  var old = document.getElementById('pdf-view'); if (old) old.remove();
+  if (_PV && _PV.io) { try { _PV.io.disconnect(); } catch (e) {} }
+  _PV = { path: filePath, name: name, pdf: null, zoom: 0, sizes: [], webUrl: null, io: null };
+  var ov = document.createElement('div'); ov.id = 'pdf-view';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10030;background:#525659;display:flex;flex-direction:column;font-family:inherit';
+  ov.innerHTML =
+    '<div style="background:#1a2535;color:#fff;padding:8px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+      '<b style="font-size:14px;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _escHtml(name) + '">📄 ' + _escHtml(name) + '</b>' +
+      '<span id="pv-page" style="font-size:12px;opacity:.8;margin:0 6px"></span>' +
+      '<button data-pv="out" class="pv-b" title="縮小">－</button>' +
+      '<span id="pv-zoom" style="font-size:12px;min-width:44px;text-align:center"></span>' +
+      '<button data-pv="in" class="pv-b" title="拡大">＋</button>' +
+      '<button data-pv="fit" class="pv-b">幅に合わせる</button>' +
+      '<span style="flex:1"></span>' +
+      '<button data-pv="edit" class="pv-b" style="background:#2a7a4a;border-color:#2a7a4a">✏️ 編集（ページ整理）</button>' +
+      '<button data-pv="app" class="pv-b">🖥 PCのソフトで開く</button>' +
+      '<button data-pv="sp" class="pv-b">🌐 SharePointで開く</button>' +
+      '<button data-pv="close" class="pv-b">✕ 閉じる</button>' +
+    '</div>' +
+    '<div id="pv-body" style="flex:1;overflow:auto;padding:16px 8px;cursor:grab;-webkit-overflow-scrolling:touch">' +
+      '<div id="pv-pages" style="display:flex;flex-direction:column;align-items:center;gap:12px;min-width:min-content">' +
+        '<div style="color:#fff;opacity:.8;padding:40px">読み込んでいます…</div></div></div>';
+  document.body.appendChild(ov);
+  var st = document.createElement('style');
+  st.textContent = '#pdf-view .pv-b{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:5px 11px;font-size:12.5px;cursor:pointer;font-family:inherit}' +
+    '#pdf-view .pv-pg{background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4);position:relative;flex:none}#pdf-view .pv-pg canvas{display:block;width:100%;height:100%}';
+  ov.appendChild(st);
+  var body = document.getElementById('pv-body');
+  ov.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pv]'); if (!b) return;
+    var a = b.getAttribute('data-pv');
+    if (a === 'close') _pdfViewClose();
+    else if (a === 'in') _pdfViewZoom(_PV.zoom * 1.25);
+    else if (a === 'out') _pdfViewZoom(_PV.zoom / 1.25);
+    else if (a === 'fit') _pdfViewZoom(_pdfViewFitZoom());
+    else if (a === 'edit') { var p = _PV.path, n = _PV.name; _pdfViewClose(); _pdfOrgOpen([{ path: p, name: n }]); }
+    else if (a === 'app') openFolderFile(_PV.path);
+    else if (a === 'sp') { if (_PV.webUrl) window.open(_PV.webUrl, '_blank'); else openFolderFile(_PV.path); }
+  });
+  _PV.onKey = function (e) { if (e.key === 'Escape' && document.getElementById('pdf-view') && !document.getElementById('pdf-org')) _pdfViewClose(); };
+  document.addEventListener('keydown', _PV.onKey);
+  body.addEventListener('wheel', function (e) {
+    if (!e.ctrlKey || !_PV || !_PV.pdf) return;
+    e.preventDefault();
+    _pdfViewZoom(_PV.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e);
+  }, { passive: false });
+  /* 左ドラッグで 移動（スマホは 指で そのまま動く） */
+  var drag = null;
+  body.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 && e.button !== 1) return;
+    drag = { x: e.clientX, y: e.clientY, l: body.scrollLeft, t: body.scrollTop }; body.style.cursor = 'grabbing'; e.preventDefault();
+  });
+  window.addEventListener('mousemove', _PV.onMove = function (e) { if (!drag) return; body.scrollLeft = drag.l - (e.clientX - drag.x); body.scrollTop = drag.t - (e.clientY - drag.y); });
+  window.addEventListener('mouseup', _PV.onUp = function () { if (drag) { drag = null; body.style.cursor = 'grab'; } });
+  body.addEventListener('scroll', _pdfViewPageNo);
+  _loadPdfJs(function () {
+    if (!window.pdfjsLib) { alert('PDF の部品を読み込めませんでした。通信環境を確かめてください。'); return; }
+    var pv = _PV;
+    getToken().then(function (resp) {
+      var enc = String(filePath).split('/').map(encodeURIComponent).join('/');
+      var base = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc;
+      var h = { headers: { Authorization: 'Bearer ' + resp.accessToken } };
+      fetch(base + '?$select=webUrl', h).then(function (r) { return r.json(); }).then(function (d) { if (d && d.webUrl) pv.webUrl = d.webUrl; }).catch(function () {});
+      return fetch(base + ':/content', h).then(function (r) { if (!r.ok) throw new Error('読めません (' + r.status + ')'); return r.arrayBuffer(); });
+    }).then(function (buf) {
+      return window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+    }).then(function (pdf) {
+      if (_PV !== pv) return;
+      pv.pdf = pdf;
+      var chain = Promise.resolve();
+      for (var i = 1; i <= pdf.numPages; i++) (function (pi) {
+        chain = chain.then(function () { return pdf.getPage(pi).then(function (pg) { var vp = pg.getViewport({ scale: 1 }); pv.sizes.push({ w: vp.width, h: vp.height }); }); });
+      })(i);
+      return chain;
+    }).then(function () {
+      if (_PV !== pv || !pv.pdf) return;
+      pv.zoom = _pdfViewFitZoom(true);   // 最初は 1 ページが まるごと見える大きさ
+      _pdfViewBuild();
+    }).catch(function (e) {
+      var pg = document.getElementById('pv-pages');
+      if (pg) pg.innerHTML = '<div style="color:#fff;padding:40px">読み込みエラー: ' + _escHtml((e && e.message) || String(e)) + '</div>';
+    });
+  });
+}
+function _pdfViewClose() {
+  var ov = document.getElementById('pdf-view'); if (ov) ov.remove();
+  if (_PV) {
+    if (_PV.io) { try { _PV.io.disconnect(); } catch (e) {} }
+    if (_PV.onKey) document.removeEventListener('keydown', _PV.onKey);
+    if (_PV.onMove) window.removeEventListener('mousemove', _PV.onMove);
+    if (_PV.onUp) window.removeEventListener('mouseup', _PV.onUp);
+    if (_PV.pdf) { try { _PV.pdf.destroy(); } catch (e) {} }
+  }
+  _PV = null;
+}
+/* 幅に合わせる倍率（いちばん広いページが 画面の幅に収まる。whole のときは 1 ページ目が 高さにも収まる。大きくても 等倍の 2 倍まで） */
+function _pdfViewFitZoom(whole) {
+  var body = document.getElementById('pv-body'); if (!body || !_PV || !_PV.sizes.length) return 1;
+  var mw = 0; _PV.sizes.forEach(function (s) { if (s.w > mw) mw = s.w; });
+  var z = (body.clientWidth - 40) / mw;
+  if (whole) z = Math.min(z, (body.clientHeight - 32) / _PV.sizes[0].h);
+  return Math.min(2, Math.max(0.1, z));
+}
+function _pdfViewBuild() {
+  var wrap = document.getElementById('pv-pages'); if (!wrap || !_PV) return;
+  if (_PV.io) { try { _PV.io.disconnect(); } catch (e) {} }
+  wrap.innerHTML = '';
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function (ents) {
+    ents.forEach(function (en) { if (en.isIntersecting) _pdfViewRender(en.target); });
+  }, { root: document.getElementById('pv-body'), rootMargin: '600px 0px' }) : null;
+  _PV.io = io;
+  _PV.sizes.forEach(function (s, i) {
+    var d = document.createElement('div'); d.className = 'pv-pg'; d.setAttribute('data-pi', i + 1);
+    d.style.width = Math.round(s.w * _PV.zoom) + 'px'; d.style.height = Math.round(s.h * _PV.zoom) + 'px';
+    wrap.appendChild(d);
+    if (io) io.observe(d); else _pdfViewRender(d);
+  });
+  var z = document.getElementById('pv-zoom'); if (z) z.textContent = Math.round(_PV.zoom * 100) + '%';
+  _pdfViewPageNo();
+}
+function _pdfViewRender(d) {
+  if (!_PV || !_PV.pdf) return;
+  var zoom = _PV.zoom, pi = +d.getAttribute('data-pi');
+  if (d._z === zoom) return;
+  d._z = zoom;
+  var pv = _PV;
+  pv.pdf.getPage(pi).then(function (pg) {
+    if (_PV !== pv || pv.zoom !== zoom) return;
+    var dpr = Math.min(3, window.devicePixelRatio || 1);
+    var vp = pg.getViewport({ scale: zoom * dpr });
+    var cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    return pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(function () {
+      if (_PV !== pv || pv.zoom !== zoom) return;
+      d.innerHTML = ''; d.appendChild(cv);
+    });
+  }).catch(function () { d._z = null; });
+}
+/* 拡大縮小（Ctrl＋ホイールのときは マウスの所を 中心に） */
+function _pdfViewZoom(z, ev) {
+  if (!_PV || !_PV.pdf) return;
+  z = Math.min(5, Math.max(0.1, z));
+  var body = document.getElementById('pv-body'); if (!body) return;
+  var r = body.getBoundingClientRect();
+  var mx = ev ? ev.clientX - r.left : body.clientWidth / 2, my = ev ? ev.clientY - r.top : body.clientHeight / 2;
+  var k = z / _PV.zoom;
+  var nl = (body.scrollLeft + mx) * k - mx, nt = (body.scrollTop + my) * k - my;
+  _PV.zoom = z;
+  var wrap = document.getElementById('pv-pages');
+  Array.prototype.forEach.call(wrap.children, function (d, i) {
+    var s = _PV.sizes[i]; d.style.width = Math.round(s.w * z) + 'px'; d.style.height = Math.round(s.h * z) + 'px';
+  });
+  body.scrollLeft = nl; body.scrollTop = nt;
+  var zl = document.getElementById('pv-zoom'); if (zl) zl.textContent = Math.round(z * 100) + '%';
+  clearTimeout(_PV.zt);
+  _PV.zt = setTimeout(function () {
+    if (!_PV) return;
+    var br = body.getBoundingClientRect();
+    Array.prototype.forEach.call(wrap.children, function (d) {
+      var dr = d.getBoundingClientRect();
+      if (dr.bottom > br.top - 600 && dr.top < br.bottom + 600) _pdfViewRender(d);
+      else d._z = null;
+    });
+  }, 180);
+}
+function _pdfViewPageNo() {
+  var lab = document.getElementById('pv-page'), body = document.getElementById('pv-body'), wrap = document.getElementById('pv-pages');
+  if (!lab || !body || !wrap || !_PV || !_PV.sizes.length) return;
+  var mid = body.getBoundingClientRect().top + body.clientHeight / 3, cur = 1;
+  Array.prototype.forEach.call(wrap.children, function (d, i) { if (d.getBoundingClientRect().top <= mid) cur = i + 1; });
+  lab.textContent = cur + ' / ' + _PV.sizes.length + ' ページ';
+}
 /* 1 つの PDF を足す（ページの絵も作る） */
 function _pdfOrgAdd(name, path, buf) {
   var si = _PO.srcs.length, color = _PO_COLORS[si % _PO_COLORS.length];
@@ -23265,6 +23443,8 @@ function spFileDbl(fpath) {
   /* **写真は アプリの中の窓で 原寸を開く**（v1.9.473。本人「ダブルクリックで開くと、閉じるボタンもなく、移動やズームがやりずらい。
      1クリックと同じような操作感に」）。前は SharePoint の画面を 新しいタブで開いていた。そちらは 窓の［🌐 SharePointで開く］から */
   if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(fpath)) { previewFolderImage(fpath); return; }
+  /* PDF は アプリの中の ビューワーで（v1.9.486）。PC のソフトで開くのは ビューワーの［🖥 PCのソフトで開く］から */
+  if (/\.pdf$/i.test(fpath)) { _pdfViewOpen(fpath); return; }
   openFolderFile(fpath);
 }
 function previewFolderImage(filePath) {

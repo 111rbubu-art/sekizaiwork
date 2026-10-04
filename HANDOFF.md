@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.493**／**index.html = v1.9.493**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.494**／**index.html = v1.9.494**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -657,3 +657,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 本人の画面：Graph `:/content` の 転送先（SharePoint `download.aspx?...tempauth=`）で `net::ERR_CONNECTION_RESET`。
 - 共通の `_spFetchBytes(path)`：① `@microsoft.graph.downloadUrl` を もらって 直に読む ② だめなら `:/content` ③ 交互に 3 回まで（0.8 秒・1.6 秒あけて）。404/403 は やり直さない。
   ビューワー・ページ整理（開く・棚の絵・棚から足す）で使う。ビューワーの エラーには［🔄 もう一度 読む］。
+
+### v1.9.494 納骨リスト：資料作成タブを 依頼・資料 の上へ（index.html にも展開）
+- 本人「納骨リストも、工事関連と同様に、資料作成タブの内容を依頼内容タブ内上部に移動して、依頼内容を依頼・資料に変更」。
+- タブ：基本情報／**依頼・資料**／墓石確認／進捗・請求／📂 データ／追加分／その他（資料作成 4 は 外した。`openDetailAt`・`showTab` は 4 が来たら 1 へ）。
+- 依頼・資料：上に 青の「📑 資料」（`_nokDocsBoxHtml`：帳票類 横並び＝封筒・領収書・彫刻原稿／保存済資料／テンプレートは `<details>` で 押すと開く）、
+  下に 茶の「📝 依頼内容」（編集ボタン＋ 依頼明細・依頼内容・納骨・彫刻）。`_nokDocsBoxLoad` で 保存済資料とテンプレートを読む。`renderNokDocsTab` は 残してあるが もう呼ばれない。
+- 以後 index_b で直したら、同じ置き換えで index.html にも出す（本人は index.html を本番で使う）。

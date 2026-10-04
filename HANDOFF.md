@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.482**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.483**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -584,3 +584,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 工事のタブ：基本情報・日程・手配関連・**仕様・資料**・データ・その他（資料作成タブ＝4 は 外した。仕様・資料の上に まとめてある）。
 - `.tab-cus-label`（👥顧客）：紫の札（白い字・11.5px）を 上付け（align-self:flex-start、下だけ角丸）。工事・納骨とも。
 - 仕様・資料：資料は 青い枠（#eaf3fc／#9cc3ea、中の 保存済資料・テンプレートも 白と青に）、工事仕様は 茶の枠（#fbf5ea／#d8bf95）。
+
+## index_b v1.9.483 — 資料制作の印刷：選んだ字の青い丸が印刷される・白紙の 2 枚目（本人の報告）
+
+- 青い丸（`.hdl`）：印刷の `.elem .hdl{display:none}` が 画面用の `.elem.sel .hdl{display:block}` より弱く（詳しさで負け）、選んだままだと 印刷に出ていた → `.elem .hdl,.elem.sel .hdl{display:none!important}`、枠の破線も !important。試し：印刷の見た目で 前は block、直したあと none。
+- 白紙の 2 枚目：用紙と ちょうど同じ高さの `.page` が 端数で 1 枚を超えると 次の紙に送られる → 印刷のときだけ `.page` の高さを 用紙より 0.6mm 低く（pageSizeCss と 用紙・向きを変えたとき の 3 か所）、最後の page-wrap の後ろで改ページしない。

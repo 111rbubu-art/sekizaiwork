@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.495**／**index.html = v1.9.495**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.496**／**index.html = v1.9.496**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -670,3 +670,12 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - カード：👥 顧客リスト＝紫の帯、🗺️ 墓地マップ＝緑の帯。押したカードは その色で光る（`.menu-card-active` を カード別に上書き）。
 - お寺選び `#menu-temple[data-mode=cus|map]`：`_templeMenuMode()` が 見出しバナー（紫／緑・アイコン・説明）を出し、お寺ボタンも 同じ色の帯＋👥／🗺️。
 - 墓地マップの並びは `_mapTemplesSorted()`＝ TEMPLE_GROUP_MAP の番号順（願泉寺→宗福寺→慈宏寺→光明院→福寿院→長泉寺→浄因寺→天沼共同（霊園＆共同墓地の所）→久我山墓地）。
+
+### v1.9.496 データタブの ⋯ メニューを 1 つに・顧客リストの添付にも ⋯（index.html にも展開）
+- 本人「データタブで、リスト表示の時のメニューと、サムネ表示の時のメニューが異なる／顧客リストの添付ファイルにも、メニューを追加して、リストサムネに設定できるように」。
+- 写真・図面（`_showHakaSpecItemMenu`）・納骨の写真・資料（`_showNokPhotoItemMenu`）・📁 フォルダー（`_showFolderItemMenu` のファイル）を 共通の `_driveFileMenu(e,o)` に。
+  並び：↗️ 開く／📷 原寸をコピー／📌 リストサムネに設定（画像）／⬇️ ダウンロード／📑 ページ整理（PDF）／🔄 差し替え／外注公開 ｜ 📋 コピー／✂️ 切り取り ｜ ✏️ 名前変更／🗑️ 削除。
+  写真タブからの コピー／切り取りは id を取ってから クリップボードへ（📁 フォルダーで 貼り付け）。名前変更は 工事の 確定／最新 の印も 新しい名前へ付け替え。差し替え・名前変更のあとは その表示を 読み直す（`_folderRenameItem`／`_folderReplaceFile` に after、`_folderSetClipboard` に noReload）。
+- 描き方は `_fileMenuRender`（はみ出さない位置。添付のメニューも これを使う）。
+- 顧客リストの添付：案件のデータタブの「顧客の添付」（`loadLinkedCusAttachments`）と 顧客の画面（`loadCustomerAttachments`。前の ✕／削除ボタンは ⋯ の中へ）に ⋯。
+  `_showAttachmentItemMenu(…, areaId)`：開く・原寸をコピー・📌 リストサムネに設定・ダウンロード ｜ 削除。サムネの相手は `_thumbTargetJob()`＝ 案件（顧客タブを案件の中から開いているときは 元の案件）。顧客リストだけを開いているときは 出さない。`_uploadKoujiThumbBlob(blob, name, target)`。

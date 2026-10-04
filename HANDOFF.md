@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.476**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.477**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -553,3 +553,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - Chrome・Edge は ダウンロードフォルダ そのものを サイトに使わせない。本人「ダウンロードそのままでいい」→ フォルダの見張り（v1.9.475）をやめた。
 - PDF のダブルクリック（PC・showOpenFilePicker のあるブラウザ）：ふつうに保存し、上に 帯「📝 … を直しています［⬆ 直したら SharePointに上書き］［✕ やめる］」（localStorage 'edtTracks'。読み直しても 出し直す。3 日で片づけ）。
 - ［⬆…］→ ファイル選択（startIn: downloads）で そのファイルを選ぶ → 名前がちがえば確かめ（「(1)」は同じとみる）→ Graph PUT で上書き → `handle.remove()` で 手元を消す（消す許可を 1 回聞かれることがある。PDF ソフトが開いたままだと消せないので 知らせる）。
+
+## index_b v1.9.477 — リスト表示でも 押して開ける（本人「データタブの写真、図面タブ内では、リスト表示にすると、クリックしても開くことが出来ません」）
+
+- 工事仕様の写真・図面（`renderHakaSpecPhotoList` の list）：名前の所に spFileClick（1 回＝拡大、見本が無い形式は開く）／spFileDbl（2 回＝開く）を付けた（納骨の写真リストと同じ）。
+- データタブのフォルダ表示のリスト（`_renderFolderFileRow`）も 1 回で拡大・2 回で開く に そろえた（前は 2 回だけ）。

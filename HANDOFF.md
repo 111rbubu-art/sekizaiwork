@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.474**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.475**／**index.html = v1.8.235**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -540,3 +540,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 - PDF には Office のような起動の合言葉（ms-word: など）が無く、ブラウザから PC のソフトを じかに起動できない。PC では `_openWithDesktopApp` で PDF を 保存（ドライブは downloadFolderFile、直リンクは fetch→_saveBlobAs）し、下に［🌐 ブラウザで開く］の帯。スマホは これまでどおり ブラウザで見る。
 - ブラウザ側で「この種類のファイルを常に開く」（Chrome・Edge のダウンロード一覧の … ）にすると、保存のあと 既定の PDF ソフトで自動で開く。Windows の .pdf の既定アプリも Acrobat 等に。
+
+## index_b v1.9.475 — PDF を PC のソフトで直して 手間なく SharePoint に戻す（本人「ダウンロードフォルダを使って、編集後、アップロード後に完全に削除するなら良い」）
+
+- PC の Chrome・Edge（File System Access）。PDF のダブルクリック（`_openWithDesktopApp` → `_edtOpen`）：最初に 1 回［📁 ダウンロードフォルダを使う］（showDirectoryPicker。合鍵は IndexedDB 'edtDirHandle'）。同じ名前の古いファイルを消してから ふつうに保存（ブラウザの「常に開く」で PDF ソフトが開く）。見張りの一覧は localStorage 'edtTracks'（名前・SharePoint のパス・保存時刻）。
+- 4 秒ごとの見張り（`_edtTick`）：保存し終わった更新時刻を もとにし、それより新しくなったら 上に帯「📝 … が直されました［⬆ SharePointに上書き］［あとで］［✕ 直さない（消す）］」。上書きは Graph の PUT …:/content（SharePoint に前の版は残る）→ 手元を removeEntry。PDF ソフトが開いたままで消せないときは「消す待ち」（del）にして、見張りのたびに消し直す。
+- 読み直して 許可が外れたら 帯の［許可する］。スマホ・ほかのブラウザ・SP 添付（ドライブでない）は これまでどおり。
+- 試し：OPFS のフォルダで 保存 → 直す → 帯 → 上書き（PUT 1 回）→ 手元が消え 一覧も空。

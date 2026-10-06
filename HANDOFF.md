@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.504**／**index.html = v1.9.504**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.505**／**index.html = v1.9.505**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -730,3 +730,6 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 
 ### v1.9.504 彫刻校正の依頼内容に 戒切納期
 - 本人「戒切納期は復活させて、依頼内容の依頼日の次に」。`NK_T1R_CARDS_CHO`：分類・依頼日・戒切納期。
+
+### v1.9.505 彫刻校正のカードに サムネ写真は出さない
+- 本人「彫刻校正のカードはサムネ写真は不要」。`_choCardHtml(d, idx, '')`。

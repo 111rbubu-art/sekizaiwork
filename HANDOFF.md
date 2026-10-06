@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.496**／**index.html = v1.9.496**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.497**／**index.html = v1.9.497**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -679,3 +679,10 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 描き方は `_fileMenuRender`（はみ出さない位置。添付のメニューも これを使う）。
 - 顧客リストの添付：案件のデータタブの「顧客の添付」（`loadLinkedCusAttachments`）と 顧客の画面（`loadCustomerAttachments`。前の ✕／削除ボタンは ⋯ の中へ）に ⋯。
   `_showAttachmentItemMenu(…, areaId)`：開く・原寸をコピー・📌 リストサムネに設定・ダウンロード ｜ 削除。サムネの相手は `_thumbTargetJob()`＝ 案件（顧客タブを案件の中から開いているときは 元の案件）。顧客リストだけを開いているときは 出さない。`_uploadKoujiThumbBlob(blob, name, target)`。
+
+### v1.9.497 地図で区画を選んで顧客を結ぶ：「結べませんでした」（index.html・map.html にも展開）
+- 本人「マップに移動し、区画をクリックして、この顧客を結ぶをクリックしても 結べませんでした と出ます」。
+- 原因：確かめの confirm を アプリの窓（opener）で出していた。地図の窓が前だと アプリは裏のタブで、Chrome は 裏のタブの confirm を出さずに false で返す → 地図に「結べませんでした：やめました」。
+- 直し：2 段にした。地図 → アプリ `{type:'sekizaiLinkCus', plan:true}` → アプリは 文だけ作って `{type:'sekizaiLinkCusPlan', text}` を返す
+  → 地図の窓で confirm → OK なら `{…, go:true}` → アプリは confirm なしで PATCH → `sekizaiLinkCusDone`。15 秒 返事が無ければ「アプリを再読み込みして」と出す。
+  `_linkJobCustomer(kind, job, cus, reply, opts{plan,go})`。URL で来たとき（checkLinkJobParam）は これまでどおり アプリで確かめる。

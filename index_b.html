@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.497';
+var APP_VERSION = 'v1.9.498';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -26747,7 +26747,16 @@ function _nokCardHtml(d, idx, _separators) {
         ? (chkComp ? '校正:完' : '校正')
         : (chkComp ? '彫刻:完' : '彫刻');
       var chkStat;
-      if (chkCancel) chkStat = 'なし';
+      /* 彫刻校正は 進み具合（FileJson）が あれば それで出す（v1.9.498） */
+      var choSt = (bunrui2 === '彫刻校正') ? _choStage(d) : null;
+      if (choSt) {
+        var choS = _choSteps(d);
+        if (chkCancel) chkStat = 'なし';
+        else if (_choDone(choS, 's6')) chkStat = chkNyukin ? '完了' : (chkSeikyu ? '入金待' : '請求製待');
+        else chkStat = ({ s1: '内容連絡待', s2: '校正中', s3: '了承待', s4: 'ゴム製作待', s5: '納品待' })[choSt.k] || '校正中';
+        chkLabel = _choDone(choS, 's6') ? '校正:完' : ('校正' + choSt.n);
+      }
+      else if (chkCancel) chkStat = 'なし';
       else if (chkNyukin && chkComp) chkStat = '完了';
       else if (chkSeikyu && !chkNyukin) chkStat = '入金待';
       else if (chkComp && !chkSeikyu) chkStat = '請求製待';
@@ -27293,8 +27302,8 @@ function openDetailAt(d, tabIdx) {
   // 彫刻校正は業者間の仕事なので、墓石確認は出さない（本人の指示）
   var _isChoKosei = (G(d,'分類') || '') === '彫刻校正';
   tabs.innerHTML =
-    _t(0,'基本情報') + _t(1,'依頼・資料') + (_isChoKosei ? '' : _t(2,'墓石確認')) + _t(3,'進捗・請求') +
-    _t(5,'📂 データ') + _t(6,'追加分') + _t(7,'その他') +   // 資料作成（4）は 依頼・資料 の上へ（v1.9.494）
+    _t(0,'基本情報') + _t(1,'依頼・資料') + (_isChoKosei ? '' : _t(2,'墓石確認')) + _t(3, _isChoKosei ? '進み具合' : '進捗・請求') +
+    _t(5,'📂 データ') + (_isChoKosei ? '' : _t(6,'追加分')) + _t(7,'その他') +   // 彫刻校正は 追加工事なし（v1.9.498）   // 資料作成（4）は 依頼・資料 の上へ（v1.9.494）
     '<button class="tab-reload" onclick="reloadCurrentDetail()" title="再読み込み" style="margin-left:4px;padding:4px 10px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit">🔄</button>' +
     _cusTabs;
   showTab(tabIdx, d);
@@ -28703,8 +28712,8 @@ var NK_T0B_CARDS=[
    使わないので出さず、かわりに **○○家（お墓の名義）** を出す（本人の指示）。
    並べ替えの覚えは prefix ごとなので、't0bc' と別にして ふつうの並びを壊さない。 */
 var NK_T0B_CARDS_CHO=[
-  {label:'顧客名',    fld:function(d,it){return efld('顧客名',it,'顧客名',G(d,'顧客名'));}},
-  {label:'お寺',      fld:function(d,it){return efld('お寺',it,'お寺',G(d,'お寺'));}},
+  /* 顧客＝ 同業者。顧客名の欄に 業者名を入れる。お寺は使わない（v1.9.498。本人の指示） */
+  {label:'業者名',    fld:function(d,it){return efld('業者名',it,'顧客名',G(d,'顧客名'));}},
   {label:'○○家',     fld:function(d,it){return efld('○○家',it,'_x304a__x5893__x306e__x540d__x7f',d['_x304a__x5893__x306e__x540d__x7f']||'');}},
 ];
 var NK_T0A_CARDS=[
@@ -29404,6 +29413,119 @@ function saveRequestDetails() {
 }
 // ===========================================
 
+// ===== 彫刻校正の 進み具合（v1.9.498）=====
+var CHO_STEPS = [
+  { k: 's1', n: '①', t: '拓本を受取' },
+  { k: 's2', n: '②', t: '彫刻内容を受取' },
+  { k: 's3', n: '③', t: '校正し連絡', multi: true },
+  { k: 's4', n: '④', t: '了承' },
+  { k: 's5', n: '⑤', t: 'ゴム制作' },
+  { k: 's6', n: '⑥', t: 'ゴム納品' }
+];
+function _choFj(d) {
+  var o = {};
+  try { o = JSON.parse((d && d['FileJson']) || '{}') || {}; } catch (e) { o = {}; }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) o = { _old: (d && d['FileJson']) || '' };
+  if (!o.choKosei || typeof o.choKosei !== 'object') o.choKosei = {};
+  if (!o.choKosei.steps || typeof o.choKosei.steps !== 'object') o.choKosei.steps = {};
+  return o;
+}
+function _choSteps(d) { return _choFj(d).choKosei.steps; }
+function _choDone(st, k) { var v = st[k]; return Array.isArray(v) ? v.length > 0 : !!(v && v.date); }
+/* いまの段階（一覧のタグ・見出しに使う）。何も無ければ null */
+function _choStage(d) {
+  var st = _choSteps(d), last = null;
+  CHO_STEPS.forEach(function (c) { if (_choDone(st, c.k)) last = c; });
+  return last;
+}
+function _choMe() {
+  var n = (typeof _loginSurname !== 'undefined' && _loginSurname) || '';
+  if (!n) try { var a = msalApp.getActiveAccount(); n = (a && (a.name || a.username)) || ''; } catch (e) {}
+  return n;
+}
+function _choToday() { var t = new Date(); return t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2); }
+function _choStepsHtml(d) {
+  var st = _choSteps(d), E = function (v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+  var row = function (c, rec, idx) {
+    var di = idx == null ? '' : ',' + idx;
+    return '<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+      '<span style="color:#2a7a4a;font-weight:700">✓</span>' +
+      '<input type="date" value="' + E(rec.date) + '" onchange="_choSet(\'' + c.k + '\',\'date\',this.value' + di + ')" style="font-size:12.5px;padding:2px 4px;border:1px solid #ccd;border-radius:5px;font-family:inherit">' +
+      '<input type="text" value="' + E(rec.by) + '" placeholder="担当" onchange="_choSet(\'' + c.k + '\',\'by\',this.value' + di + ')" style="width:84px;font-size:12.5px;padding:3px 6px;border:1px solid #ccd;border-radius:5px;font-family:inherit">' +
+      '<button onclick="_choUndo(\'' + c.k + '\'' + di + ')" title="取り消す" style="font-size:11px;padding:2px 8px;border:1px solid #e0b4b4;background:#fff;color:#c0392b;border-radius:5px;cursor:pointer;font-family:inherit">取消</button></span>';
+  };
+  var next = null;
+  CHO_STEPS.forEach(function (c) { if (!next && !_choDone(st, c.k)) next = c.k; });
+  return '<div style="display:flex;flex-direction:column;gap:6px;padding:4px 2px">' + CHO_STEPS.map(function (c) {
+    var done = _choDone(st, c.k), isNext = c.k === next;
+    var body = '';
+    if (c.multi) {
+      var arr = Array.isArray(st[c.k]) ? st[c.k] : [];
+      body = arr.map(function (r, i) {
+        return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12px;color:#555;min-width:64px">' + (i + 1) + ' 回目</span>' + row(c, r, i) + '</div>';
+      }).join('') +
+        '<button onclick="_choDo(\'' + c.k + '\')" style="align-self:flex-start;margin-top:2px;font-size:12.5px;padding:5px 12px;border-radius:7px;cursor:pointer;font-family:inherit;' +
+        (isNext ? 'background:#1a5a9a;color:#fff;border:none' : 'background:#fff;color:#1a5a9a;border:1px solid #9cc3ea') + '">' +
+        (arr.length ? '＋ ' + (arr.length + 1) + ' 回目の校正を連絡した' : '連絡した（今日）') + '</button>';
+    } else if (done) {
+      body = row(c, st[c.k]);
+    } else {
+      body = '<button onclick="_choDo(\'' + c.k + '\')" style="align-self:flex-start;font-size:12.5px;padding:5px 12px;border-radius:7px;cursor:pointer;font-family:inherit;' +
+        (isNext ? 'background:#1a5a9a;color:#fff;border:none' : 'background:#fff;color:#1a5a9a;border:1px solid #9cc3ea') + '">済にする（今日）</button>';
+    }
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:9px;border:1px solid ' + (done ? '#bfe3cb' : (isNext ? '#9cc3ea' : '#e3e6ea')) + ';background:' + (done ? '#f1faf3' : (isNext ? '#f2f8fe' : '#fff')) + '">' +
+      '<div style="min-width:132px;font-weight:700;font-size:13.5px;color:' + (done ? '#2a7a4a' : '#334') + '">' + c.n + ' ' + c.t + (isNext ? '<div style="font-size:10.5px;color:#1a5a9a;font-weight:600">← 次はここ</div>' : '') + '</div>' +
+      '<div style="flex:1;display:flex;flex-direction:column;gap:5px">' + body + '</div></div>';
+  }).join('') + '</div>';
+}
+/* 書く：FileJson を読み直して choKosei だけ 入れかえる（ほかの中身は 残す） */
+function _choSave(mut) {
+  var d = currentItem; if (!d) return;
+  var o = _choFj(d);
+  mut(o.choKosei.steps);
+  o.choKosei.updated = new Date().toISOString();
+  var str = JSON.stringify(o);
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
+  var prev = d['FileJson'];
+  d['FileJson'] = str;
+  var box = document.getElementById('cho-steps'); if (box) box.innerHTML = _choStepsHtml(d);
+  getToken().then(function (resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + d['id'] + '/fields', {
+      method: 'PATCH', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify({ FileJson: str })
+    });
+  }).then(function (r) {
+    if (!r.ok) return r.text().then(function (t) { throw new Error(r.status + ': ' + t.substring(0, 160)); });
+    showSaveToast(true, '進み具合を保存しました');
+    try { if (typeof renderList === 'function' && currentListMode === 'noukotsu') renderList(); highlightActiveCard(d['id']); } catch (e) {}
+  }).catch(function (e) {
+    d['FileJson'] = prev; var bx = document.getElementById('cho-steps'); if (bx) bx.innerHTML = _choStepsHtml(d);
+    showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e));
+  });
+}
+function _choDo(k) {
+  var c = CHO_STEPS.filter(function (x) { return x.k === k; })[0]; if (!c) return;
+  var rec = { date: _choToday(), by: _choMe() };
+  _choSave(function (st) {
+    if (c.multi) { if (!Array.isArray(st[k])) st[k] = []; st[k].push(rec); }
+    else st[k] = rec;
+  });
+}
+function _choSet(k, f, v, idx) {
+  _choSave(function (st) {
+    var r = (idx != null && Array.isArray(st[k])) ? st[k][idx] : st[k];
+    if (r) r[f] = v;
+  });
+}
+function _choUndo(k, idx) {
+  var c = CHO_STEPS.filter(function (x) { return x.k === k; })[0]; if (!c) return;
+  if (!confirm(c.n + ' ' + c.t + (idx != null ? '（' + (idx + 1) + ' 回目）' : '') + ' を 取り消しますか。')) return;
+  _choSave(function (st) {
+    if (idx != null && Array.isArray(st[k])) { st[k].splice(idx, 1); if (!st[k].length) delete st[k]; }
+    else delete st[k];
+  });
+}
+
 // ===== 納骨セクションの分類別折りたたみルール =====
 // secKey → デフォルト開く分類リスト
 var _NK_SEC_RULES = {
@@ -29553,6 +29675,9 @@ function showTab(i, d) {
       ? '<button onclick="registerOutlookContact(currentItem,\'noukotsu\')" style="padding:8px 14px;background:#0078d4;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit">📇 電話帳登録</button>'
       : '';
     var gcalDelBtnNok = '<button id="gcal-del-btn" onclick="deleteGcalEvent()" style="padding:8px 14px;background:#c00;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;display:none">📅 カレンダー削除</button>';
+    /* 彫刻校正は 顧客＝同業者。顧客リスト・電話帳・地図の ボタンは 出さない（v1.9.498） */
+    var _choK = (G(d,'分類') || '') === '彫刻校正';
+    if (_choK) { connectBtnNok = ''; cusRegBtnNok = ''; newCusBtnNok = ''; }
     var nokEditBtn = '<button class="edit-btn" onclick="toggleEditMode(currentItem,' + i + ')" style="float:none;margin:0">' + (editMode?'✅ 保存':'✏️ 編集') + '</button>' + (editMode?'<button class="edit-btn cancel" onclick="cancelEdit(' + i + ')" style="float:none;margin:0">✖ 戻る</button>':'');
     var nokEditNote = editMode?'<div class="edit-note">✏️ 編集中 — 保存ボタンでSharePointに反映されます</div>':'';
     var cusLinkBtnNok = d['Cus_ID']
@@ -29568,7 +29693,7 @@ function showTab(i, d) {
         '<div style="flex:0 0 16px"></div>' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
           _btnGroup('機能', connectBtnNok + (cusRegBtnNok || '') + (newCusBtnNok || '') + gcalDelBtnNok +
-            _cusMapImportBtns(d, 'padding:8px 16px;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit')) +
+            (_choK ? '' : _cusMapImportBtns(d, 'padding:8px 16px;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit'))) +
         '</div>' +
       '</div>' + nokEditNote +
       // 社内連絡（セクションなし・全幅）
@@ -29614,16 +29739,16 @@ function showTab(i, d) {
       nkgBar('t1r') +
       nkgCanvas('t1r',NK_T1R_CARDS,d,itemId) +
       '</div>' +
+      ((G(d,'分類') || '') === '彫刻校正' ? '' :     // 彫刻校正は 納骨・彫刻を こちらでしない（v1.9.498）
       _nkSec('nok_date', d, 'bg4', '', '納骨',
         nkgBar('t1n') + nkgCanvas('t1n',NK_T1N_CARDS,d,itemId)) +
       _nkSec('choukoku', d, 'bg4', '', '彫刻',
-        nkgBar('t1c') + nkgCanvas('t1c',NK_T1C_CARDS,d,itemId)) +
+        nkgBar('t1c') + nkgCanvas('t1c',NK_T1C_CARDS,d,itemId))) +
       '</div>';
     _nokDocsBoxLoad();
     bindEditInputs(itemId);
     nkgInit('t1r',NK_T1R_CARDS);
-    nkgInit('t1n',NK_T1N_CARDS);
-    nkgInit('t1c',NK_T1C_CARDS);
+    if ((G(d,'分類') || '') !== '彫刻校正') { nkgInit('t1n',NK_T1N_CARDS); nkgInit('t1c',NK_T1C_CARDS); }
     // 💰 依頼明細を初期化・描画
     loadRequestDetails(d);
     refreshRequestDetailsUI();
@@ -29662,6 +29787,26 @@ function showTab(i, d) {
     nkgInit('t2s',NK_T2S_CARDS);
     nkgInit('t2k',NK_T2K_CARDS);
     nkgInit('t2h',NK_T2H_CARDS);
+  } else if (i === 3 && (G(d,'分類') || '') === '彫刻校正') {
+    /* **彫刻校正の 進み具合**（v1.9.498）。① 拓本を受取 ② 彫刻内容を受取 ③ 校正し連絡（何回でも）④ 了承 ⑤ ゴム制作 ⑥ ゴム納品。
+       記録は FileJson の choKosei（ほかの中身は残す）。押した人（ログインの苗字）と 今日の日付を 自動で入れる */
+    b.innerHTML = editBtnHtml +
+      '<div class="sec"><span class="sec-hdr bg1">完了状態</span>' +
+      '<div class="fgrid">' +
+      (editMode ?
+        '<div class="fi"><label class="edit-label">✏️ 完了</label><select class="edit-field" data-id="' + itemId + '" data-field="_x524a__x9664_">' +
+          '<option value="true"' + (nokOk ? ' selected' : '') + '>完了</option>' +
+          '<option value="false"' + (!nokOk ? ' selected' : '') + '>未完了</option>' +
+        '</select></div>' :
+        '<div class="fi"><label>完了</label><span class="pill ' + (nokOk ? 'pg' : 'py') + '">' + (nokOk ? '完了' : '未完了') + '</span></div>') +
+      '</div></div>' +
+      '<div class="sec"><span class="sec-hdr bg3">進み具合（彫刻校正）</span><div id="cho-steps">' + _choStepsHtml(d) + '</div></div>' +
+      '<div class="sec"><span class="sec-hdr bg5" style="display:flex;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap">請求・入金' + _mfBtnsHtml() + '</span>' +
+      nkgBar('t3b') +
+      nkgCanvas('t3b',NK_T3B_CARDS,d,itemId) +
+      '</div>';
+    bindEditInputs(itemId);
+    nkgInit('t3b',NK_T3B_CARDS);
   } else if (i === 3) {
     b.innerHTML = editBtnHtml +
       '<div class="sec"><span class="sec-hdr bg1">完了状態</span>' +

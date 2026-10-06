@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.497**／**index.html = v1.9.497**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.498**／**index.html = v1.9.498**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -686,3 +686,14 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 直し：2 段にした。地図 → アプリ `{type:'sekizaiLinkCus', plan:true}` → アプリは 文だけ作って `{type:'sekizaiLinkCusPlan', text}` を返す
   → 地図の窓で confirm → OK なら `{…, go:true}` → アプリは confirm なしで PATCH → `sekizaiLinkCusDone`。15 秒 返事が無ければ「アプリを再読み込みして」と出す。
   `_linkJobCustomer(kind, job, cus, reply, opts{plan,go})`。URL で来たとき（checkLinkJobParam）は これまでどおり アプリで確かめる。
+
+### v1.9.498 納骨・戒切の 分類「彫刻校正」専用の画面（index.html にも展開）
+- 本人「彫刻校正は納骨と納骨彫刻と大きく異なる。顧客が同業者。フリガナ・電話番号・お寺・顧客No・顧客リストIDは使わない。
+  流れは ①拓本を受取 ②彫刻内容を受取 ③校正し連絡 ④了承 ⑤ゴム制作 ⑥ゴム納品。納骨や彫刻・追加工事は無い。SP に項目を足さず FileJson に記録」。
+  業者名＝顧客名の欄、業者側の担当・連絡先は記録しない、カレンダー不要、担当は押した人を自動で。
+- タブ：基本情報／依頼・資料／**進み具合**（進捗・請求の代わり）／データ／その他（墓石確認・追加分は出さない）。
+- 基本情報：`NK_T0B_CARDS_CHO` は 業者名（顧客名）・○○家。お寺は外した。電話帳・顧客リスト登録・地図で結ぶ・地図／取り込み のボタンは出さない。
+- 依頼・資料：納骨・彫刻の欄は出さない（依頼明細・依頼内容・資料は残す）。
+- 進み具合：`CHO_STEPS`（s1〜s6、③ s3 は 回数を重ねる配列）。［済にする（今日）］で `{date, by:_loginSurname}`。日付・担当は その場で直せる、取消あり。
+  記録は **FileJson**（内部名 FileJson）の `choKosei.steps`。書くときは FileJson を読み直して choKosei だけ入れかえる（ほかの中身は残す。JSON でない中身は `_old` に退避）。`_choSave`。
+- 一覧のタグ：進み具合があれば「校正③」＋ 内容連絡待／校正中／了承待／ゴム製作待／納品待、⑥後は 請求製待／入金待／完了。無ければ これまでの判定。

@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.499';
+var APP_VERSION = 'v1.9.500';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -29217,7 +29217,7 @@ function initNkChkCards(d){
 
 // ===== 💰 依頼明細（RequestDetails JSON）=====
 var _reqDetails = null;
-var _reqDetailsPresets = ['彫刻', '納骨作業', '骨出し作業', '朱取', 'クリーニング', '花立交換', '値引き', 'その他'];
+var _reqDetailsPresets = ['彫刻', '納骨作業', '骨出し作業', '朱取', 'クリーニング', '花立交換', '値引き', '校正とゴム作成', 'その他'];
 
 function loadRequestDetails(d) {
   _reqDetails = { items: [] };
@@ -29254,14 +29254,14 @@ function _autoFillReqDetails(d) {
   else if (cat === '戒切')     { addItem('彫刻'); }
   else if (cat === '骨出し')   { addItem('骨出し作業'); }
   else if (cat === '彫刻校正') {   // 既定は「校正とゴム作成」3,000 円（v1.9.499。変わるときは 直して保存）
-    if (!_reqDetails.items.length) _reqDetails.items.push({ name: '校正とゴム作成', amount: 3000, memo: '', _memoOpen: false });
+    if (!_reqDetails.items.length) _reqDetails.items.push({ name: '校正とゴム作成', amount: 3000, memo: '', _memoOpen: true });
   }
   if (redMark.indexOf('朱取必要') >= 0 || redMark === '朱有') addItem('朱取');
 }
 
 function _isMultilineName(name) {
   if (!name) return false;
-  return name.indexOf('彫刻') >= 0 || name.indexOf('戒名') >= 0;
+  return name.indexOf('彫刻') >= 0 || name.indexOf('戒名') >= 0 || name.indexOf('校正') >= 0;   // 校正とゴム作成も 彫刻内容を 複数行で（v1.9.500）
 }
 
 function refreshRequestDetailsUI() {
@@ -29488,6 +29488,8 @@ function _choStepsHtml(d) {
 /* 日付を入れる／消す。③ は idx 番目（新しい行なら 足す） */
 function _choDate(k, idx, v) {
   var c = CHO_STEPS.filter(function (x) { return x.k === k; })[0]; if (!c) return;
+  /* ⑥ ゴム納品の日付を はじめて入れたとき、業者が 小泉石材・内田なら 外注管理（GaiLists）へ 1 行（v1.9.500） */
+  if (k === 's6' && v && currentItem && !_choDone(_choSteps(currentItem), 's6')) setTimeout(function () { _choGaiAdd(currentItem, v); }, 300);
   _choSave(function (st) {
     if (c.multi) {
       if (!Array.isArray(st[k])) st[k] = [];
@@ -29546,6 +29548,67 @@ function _choUndo(k, idx) {
     if (idx != null && Array.isArray(st[k])) { st[k].splice(idx, 1); if (!st[k].length) delete st[k]; }
     else delete st[k];
   });
+}
+
+/* ───── **彫刻校正 → 外注管理（GaiLists）**（v1.9.500。本人「顧客名が小泉石材、内田の場合、外注管理である GaiLists に内容を入れて。
+   ⑥ゴム納品の日付を入れたとき。依頼明細 1 行目の 詳細・メモの 1 行目＋彫刻校正 を件名（項目）に。金額は 売上金（業者→庄司）」）─────
+   列：日付／項目／対象者／__PowerAppsId__／売上金（業者→庄司）。ほかの列は null（計算の列を 壊さない）。
+   入れたら FileJson の choKosei.gai に 覚え、2 回目は 入れない。 */
+function _choGaiTarget(d) {
+  var n = String(G(d, '顧客名') || '').replace(/[\s　]/g, '');
+  if (n.indexOf('小泉') >= 0) return '小泉石材';
+  if (n.indexOf('内田') >= 0) return '内田';
+  return null;
+}
+function _choGaiTitle(d) {
+  var items = [];
+  try { var p = JSON.parse(d['RequestDetails'] || '{}'); if (p && Array.isArray(p.items)) items = p.items; } catch (e) {}
+  if (!items.length && _reqDetails && currentItem === d) items = _reqDetails.items || [];
+  var memo = String((items[0] && items[0].memo) || '').split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean)[0] || '';
+  return (memo ? memo + ' ' : '') + '彫刻校正';
+}
+function _choGaiAdd(d, ymd) {
+  var who = _choGaiTarget(d); if (!who) return;
+  var fj = _choFj(d);
+  if (fj.choKosei.gai && fj.choKosei.gai.at) { showSaveToast(true, '外注管理には ' + fj.choKosei.gai.at.substring(0, 10) + ' に入れてあります（もう一度は入れません）'); return; }
+  var title = _choGaiTitle(d), amt = _nokReqTotal(d);
+  if (!confirm('外注管理（GaiLists）に 1 行 入れます。\n\n日付：' + ymd + '\n項目：' + title + '\n対象者：' + who + '\n売上金（業者→庄司）：' + amt.toLocaleString() + ' 円\n\nよろしいですか。')) return;
+  var m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  var serial = m ? Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000) : ymd;
+  var guid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); });
+  var url = GAICHU_XLSX_URL, b64 = btoa(unescape(encodeURIComponent(url)));
+  var enc = 'u!' + b64.replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+  var tok, base, tbl = encodeURIComponent(GAICHU_TABLE_NAME || 'GaiLists');
+  var gf = function (u, o) { o = o || {}; return fetch(u, { method: o.method || 'GET', headers: Object.assign({ Authorization: 'Bearer ' + tok }, o.body ? { 'Content-Type': 'application/json' } : {}), body: o.body ? JSON.stringify(o.body) : undefined })
+    .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(r.status + ': ' + t.substring(0, 160)); }); return r.status === 204 ? {} : r.json(); }); };
+  showSaveToast(null, '外注管理に 入れています…');
+  getGaichuGraphToken().then(function (t) {
+    tok = t;
+    return gf('https://graph.microsoft.com/v1.0/shares/' + enc + '/driveItem?$select=id,parentReference');
+  }).then(function (di) {
+    base = 'https://graph.microsoft.com/v1.0/drives/' + di.parentReference.driveId + '/items/' + di.id + '/workbook';
+    return gf(base + '/tables/' + tbl + '/columns?$select=name,index&$top=200');
+  }).then(function (cr) {
+    var cols = (cr.value || []).slice().sort(function (a, b) { return a.index - b.index; }).map(function (c) { return String(c.name); });
+    var nz = function (x) { return x.replace(/[\s　（）()]/g, ''); };
+    var row = cols.map(function (c) {
+      var n = nz(c);
+      if (c === '__PowerAppsId__') return guid;
+      if (n === '日付') return serial;
+      if (n === '項目') return title;
+      if (n === '対象者') return who;
+      if (n.indexOf('売上金') === 0 && n.indexOf('業者→庄司') >= 0) return amt;
+      return null;
+    });
+    if (row.indexOf(title) < 0 || row.indexOf(who) < 0 || row.indexOf(amt) < 0)
+      throw new Error('GaiLists の列（日付・項目・対象者・売上金（業者→庄司））が 見つかりません：' + cols.join('／'));
+    return gf(base + '/tables/' + tbl + '/rows', { method: 'POST', body: { index: null, values: [row] } });
+  }).then(function () {
+    var fj2 = _choFj(d); fj2.choKosei.gai = { at: new Date().toISOString(), date: ymd, who: who, title: title, amount: amt, id: guid };
+    d['FileJson'] = JSON.stringify(fj2);
+    _choSave(function () {});
+    showSaveToast(true, '外注管理に 入れました：' + who + '　' + title + '　' + amt.toLocaleString() + ' 円');
+  }).catch(function (e) { showSaveToast(false, '外注管理に 入れられませんでした: ' + ((e && e.message) || e)); });
 }
 
 // ===== 納骨セクションの分類別折りたたみルール =====

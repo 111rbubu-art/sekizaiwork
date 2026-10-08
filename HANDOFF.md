@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.512**／**index.html = v1.9.512**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.513**／**index.html = v1.9.513**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -792,3 +792,14 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - 新規作成の窓（分類＝彫刻校正）の［📋 拓本を選ぶ］ボタンを、データタブの［📋 拓本データ］と 同じ 点線の枠（`#ni-cho-rubdrop`）に。
   タップで選ぶ（`niRubFiles`）・ドラッグで落とす（`niRubDrop`）。どちらも `niRubAdd` で `niRubStore` に足す（足していける。✕ 取り消すで 空に）。
   データタブと同じく ファイルの種類は 絞らない。
+
+### v1.9.513 新規登録のときに フォルダーも作る（納骨・工事関連）
+- 本人「新規登録をする際に、フォルダーの作成をしてしまいましょう。納骨や工事関連も対象」。
+- 納骨・戒切（`submitNewItem`）：添付のあと `doRub` で **分類に関係なく** `createNokFolder(…, {silent:true})`（テンプレートのコピーも いつもどおり）。
+  彫刻校正で 拓本を選んでいれば そのあと `uploadTakuhonFiles`。
+- 工事関連（`submitNewKouji`）：顧客の添付コピーのあと `doFolder` で `createKoujiFolder(…, {silent:true})`。
+  `createKoujiFolder(item, opts)` に silent を足した（確かめなし・同じ名前があれば それを使う・Promise を返す・失敗を投げる・詳細の描き直しは しない）。
+- どちらも フォルダーが作れなくても 登録は済んでいるので 窓は閉じる。「登録しました」の あとに
+  「フォルダーを作れませんでした（登録は済んでいます。詳細の［📁 フォルダー作成］から作れます）」を出す（拓本だけ失敗なら その旨）。
+- ついでに直した：`createKoujiFolder` が 開いている案件（`currentItem`）の Folder_Pass を **id を見ずに** 書きかえていた → 同じ id のときだけ。
+  `buildKoujiFolderPath` の 受付日の「/」を「-」に（受付日は 詳細で直すと YYYY/MM/DD で保存されるので、そのままだと 下にフォルダーが できる）。

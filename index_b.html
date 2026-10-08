@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.514';
+var APP_VERSION = 'v1.9.515';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -19920,38 +19920,70 @@ function _gaichuUpdateDoneFirst(){
   if(changed) _gaichuDoneFirstSave(o);
 }
 function _gaichuDoneFirstTs(cid){ var o=_gaichuDoneFirstAll(); return (o[cid] && o[cid].ts) ? o[cid].ts : 0; }
-function _gaichuDoneHot(cid){ var at=_gaichuDoneFirstTs(cid); return _gaichuDoneUnread(cid) && at && (Math.floor(Date.now()/1000)-at)<24*3600; }
+function _gaichuDoneHot(cid){
+  var at=_gaichuDoneFirstTs(cid); if(!(_gaichuDoneUnread(cid) && at && (Math.floor(Date.now()/1000)-at)<24*3600)) return false;
+  /* 完了日が 3 日以上前なら 新着（24時間）にしない（v1.9.515。このパソコンで はじめて気づいただけの 古い完了報告を 新着に見せない） */
+  var m=String((_gaichuDoneMap[cid]||{}).date||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return !m || (Date.now()-new Date(+m[1], +m[2]-1, +m[3]).getTime()) < 3*24*3600*1000;
+}
+/* 報告の 新着（24時間）：**外注先が 報告した時刻**で決める（v1.9.515。本人「ポータルでは 1 ヶ月以上前の報告なのに、
+   アプリでは 24 時間の新着になっているのは 違和感」。前は このパソコンで はじめて気づいた時刻で 決めていたので、
+   既読の記録が無いパソコンでは 古い報告も 新着になった）。時刻が分からないとき（古いポータル）は これまでどおり */
+var _gaichuLastMap=null; // { 区分ID: 外注先からの 最後の報告（写真・コメント）の時刻 UNIX秒 }
+function _gaichuRepHot(cid){
+  var rep=(_gaichuRepMap&&_gaichuRepMap[cid])||0; if(!(rep>0 && rep>_gaichuSeenCount(cid))) return false;
+  var now=Math.floor(Date.now()/1000), last=_gaichuLastMap&&_gaichuLastMap[cid];
+  if(last) return (now-last)<24*3600;
+  var at=_gaichuFirstTs(cid); return !!(at && (now-at)<24*3600);
+}
 // アイテム→ポータル区分ID（工事: k-／納骨: n-,c-,t-）
 function _gaichuItemPortalIds(d, mode){ var rid=d&&d['id']; if(!rid) return []; return (mode==='kouji')?['k-'+rid]:['n-'+rid,'c-'+rid,'t-'+rid]; }
 // このアイテムに未読の報告/完了があり、検知から24時間以内か（トップ画面/一覧の上位表示用）
 function _gaichuItemHot(d, mode){
   if(!_gaichuRepMap && !_gaichuDoneMap) return false;
-  var now=Math.floor(Date.now()/1000);
-  return _gaichuItemPortalIds(d,mode).some(function(cid){
-    var rep=(_gaichuRepMap&&_gaichuRepMap[cid])||0; var at=_gaichuFirstTs(cid);
-    var repHot = rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600;
-    return repHot || _gaichuDoneHot(cid);
-  });
+  return _gaichuItemPortalIds(d,mode).some(function(cid){ return _gaichuRepHot(cid) || _gaichuDoneHot(cid); });
 }
 // 新着報告→新規登録→その他 の順に並べる比較関数を返す
 function _reportFirstCmp(mode){ return function(a,b){ var ha=_gaichuItemHot(a,mode)?0:1, hb=_gaichuItemHot(b,mode)?0:1; if(ha!==hb) return ha-hb; return _newFirstCmp(a,b); }; }
 // トップ画面用のバッジ（新着24時間のみ）：🆕報告／🏁完了報告
 function _gaichuMenuRepBadge(d, mode){
-  var ids=_gaichuItemPortalIds(d,mode), now=Math.floor(Date.now()/1000), html='';
-  if(ids.some(function(cid){ var rep=(_gaichuRepMap&&_gaichuRepMap[cid])||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (now-at)<24*3600; }))
+  var ids=_gaichuItemPortalIds(d,mode), html='';
+  if(ids.some(_gaichuRepHot))
     html+='<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🆕報告</span>';
   if(ids.some(_gaichuDoneHot))
     html+='<span style="background:#1a7a3a;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;line-height:1.5;margin-right:2px">🏁完了報告</span>';
   return html;
 }
+var _gaichuSumBusy=null;   // 取りに行っている最中なら それを使う（一覧を 続けて描いたとき 何度も 取りに行かない）
 function _gaichuLoadSummary(){
   var cfg=_gaichuCfg(); if(!cfg.url||!cfg.secret) return Promise.resolve();
-  var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','summary');
-  return _gaichuPost(cfg.url,fd).then(function(res){
-    _gaichuRepMap={}; _gaichuDoneMap={};
-    if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; _gaichuDoneMap[x.id]={done:!!x.done, date:x.cdate||''}; });
-    _gaichuUpdateFirstSeen(); _gaichuUpdateDoneFirst();
-  }).catch(function(){});
+  if(_gaichuSumBusy) return _gaichuSumBusy;
+  /* listall（まとめ と同じ）で、件数と 外注先からの 最後の報告の時刻（写真＝ftimes、コメント＝ts）を出す（v1.9.515） */
+  var fd=new FormData(); fd.append('secret',cfg.secret); fd.append('action','listall');
+  _gaichuSumBusy=_gaichuPost(cfg.url,fd).then(function(res){
+    if(!(res&&res.ok&&Array.isArray(res.cases))) throw new Error('listall');
+    var rm={}, dm={}, lm={};
+    res.cases.forEach(function(e){
+      var reps=(e.files||[]).filter(function(p){ return String(p).indexOf('報告/')===0; });
+      var ext=(Array.isArray(e.comments)?e.comments:[]).filter(function(c){ return !(c && c.side==='shoji'); });   // 庄司の返信は 数えない
+      rm[e.id]=reps.length+ext.length;
+      var last=0;
+      reps.forEach(function(p){ last=Math.max(last, _gaichuTlTs(p, e.ftimes)); });
+      ext.forEach(function(c){ last=Math.max(last, _gaichuCmTs(c)); });
+      lm[e.id]=last;
+      var pg=e.progress; dm[e.id]={done:!!(pg&&pg.done), date:(pg&&pg.done&&pg.date)||''};
+    });
+    _gaichuRepMap=rm; _gaichuDoneMap=dm; _gaichuLastMap=lm;
+  }).catch(function(){
+    var fd2=new FormData(); fd2.append('secret',cfg.secret); fd2.append('action','summary');
+    return _gaichuPost(cfg.url,fd2).then(function(res){
+      _gaichuRepMap={}; _gaichuDoneMap={}; _gaichuLastMap=null;
+      if(res&&res.ok&&Array.isArray(res.cases)) res.cases.forEach(function(x){ _gaichuRepMap[x.id]=x.rep||0; _gaichuDoneMap[x.id]={done:!!x.done, date:x.cdate||''}; });
+    });
+  }).then(function(){ _gaichuUpdateFirstSeen(); _gaichuUpdateDoneFirst(); })
+    .catch(function(){})
+    .then(function(){ _gaichuSumBusy=null; });
+  return _gaichuSumBusy;
 }
 // 一覧ラベルの区分色（データタブのファイルラベルもこれに合わせる）
 function _gaichuListChipColor(t){ return t==='chokoku'?'#6a3ea5':t==='tsuikou'?'#c2691c':'#2e7d32'; }
@@ -19980,7 +20012,7 @@ function _gaichuMarkListNew(){
     var published=chips.length>0;
     var isNew=ids.some(function(cid){ return _gaichuReportShow(cid, _gaichuRepMap[cid]||0); });
     // 未読報告があり、かつ検知から24時間以内なら「新着（HOT）」（端末ローカルで判定）
-    var hot=ids.some(function(cid){ var rep=_gaichuRepMap[cid]||0; var at=_gaichuFirstTs(cid); return rep>0 && rep>_gaichuSeenCount(cid) && at && (nowSec-at)<HOT; });
+    var hot=ids.some(_gaichuRepHot);   // 報告の時刻で 24 時間（v1.9.515）
     var doneNew=ids.some(_gaichuDoneUnread);   // 未読の完了報告
     var doneHot=ids.some(_gaichuDoneHot);      // 24時間以内の完了報告
     var ex=row.querySelector('.gp-listtag');

@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.508';
+var APP_VERSION = 'v1.9.509';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8645,6 +8645,7 @@ function openNewItemModal() {
     var el = document.getElementById(id); if(el) el.value = '';
   });
   ['ni-haka-sec','ni-cus-attach-sec'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
+  niRubStore = []; var rl = document.getElementById('ni-cho-rubfile-list'); if (rl) rl.textContent = '（まだ選んでいません）';
   ['ni-temple','ni-bunrui','ni-nok-state','ni-got-ms','ni-cho-kamei','ni-cho-tera','ni-cho-rub'].forEach(function(id){
     var el = document.getElementById(id); if(el) el.value = '';
   });
@@ -8673,7 +8674,7 @@ function niApplyBunrui() {
   var HIDE = { '彫刻校正': ['ni-sec-post', 'ni-sec-nok', 'ni-wrap-furi', 'ni-wrap-tel',
                           'ni-wrap-cusno', 'ni-wrap-cusid', 'ni-haka-sec',
                           'ni-wrap-temple', 'ni-wrap-informer', 'ni-wrap-sculptor', 'ni-wrap-gotms', 'ni-wrap-mscontrib'] };
-  var SHOW = { '彫刻校正': ['ni-wrap-kaikiri', 'ni-wrap-cho-kamei', 'ni-wrap-cho-tera', 'ni-wrap-cho-rub'] };
+  var SHOW = { '彫刻校正': ['ni-wrap-kaikiri', 'ni-wrap-cho-kamei', 'ni-wrap-cho-tera', 'ni-wrap-cho-rub', 'ni-wrap-cho-rubfile'] };
   var sel = document.getElementById('ni-bunrui');
   var b = sel ? sel.value : '';
   var hide = HIDE[b] || [], show = SHOW[b] || [];
@@ -8694,12 +8695,24 @@ function niApplyBunrui() {
     hk.style.display = 'none';
     hk.querySelectorAll('input,select,textarea').forEach(function(f){ f.value = ''; });
   }
-  ['ni-wrap-kaikiri','ni-wrap-cho-kamei','ni-wrap-cho-tera','ni-wrap-cho-rub'].forEach(function(id){
+  ['ni-wrap-kaikiri','ni-wrap-cho-kamei','ni-wrap-cho-tera','ni-wrap-cho-rub','ni-wrap-cho-rubfile'].forEach(function(id){
     var el = document.getElementById(id); if (!el) return;
     var on = show.indexOf(id) >= 0;
     el.style.display = on ? '' : 'none';
     if (!on) el.querySelectorAll('input,select,textarea').forEach(function(f){ f.value = ''; });
   });
+}
+/* 新規作成で 選んだ 拓本のファイル（v1.9.509） */
+var niRubStore = [];
+function niRubFiles(inp) {
+  niRubStore = niRubStore.concat(Array.prototype.slice.call(inp.files || []));
+  inp.value = '';
+  var l = document.getElementById('ni-cho-rubfile-list');
+  if (l) l.innerHTML = niRubStore.length
+    ? niRubStore.map(function (f) { return '📄 ' + _escHtml(f.name); }).join('　') + ' <a href="javascript:void(0)" onclick="niRubStore=[];this.parentNode.textContent=\'（まだ選んでいません）\'" style="color:#c00;margin-left:6px">✕ 取り消す</a>'
+    : '（まだ選んでいません）';
+  var rd = document.getElementById('ni-cho-rub');
+  if (niRubStore.length && rd && !rd.value) rd.value = todayStr();   // 拓本を上げるなら 受取日は 今日に
 }
 // 隠れている欄の値は使わない
 function niVal(id) {
@@ -8817,6 +8830,8 @@ function submitNewItem() {
   var msContrib= document.getElementById('ni-ms-contrib').value.trim();
   var kaikiri  = niVal('ni-kaikiri');
   var choKamei = niVal('ni-cho-kamei'), choTera = niVal('ni-cho-tera'), choRub = niVal('ni-cho-rub');
+  var choRubFiles = (bunrui === '彫刻校正') ? niRubStore.slice() : [];
+  if (choRubFiles.length && !choRub) choRub = todayStr();
   temple = niVal('ni-temple'); informer = niVal('ni-informer');
   sculptor = niVal('ni-sculptor'); gotMs = niVal('ni-got-ms'); msContrib = niVal('ni-ms-contrib');
   // 分類で隠してある欄は、打ちかけが残っていても送らない
@@ -8937,15 +8952,25 @@ function submitNewItem() {
       submitBtn.textContent = '添付コピー中...';
       _copyCusAttachSelected('ni-cus-attach-area', siteId2, listId2, newItemId, cb);
     };
+    /* 彫刻校正の 拓本（v1.9.509）：フォルダーを作って そのトップへ。うまくいかなくても 登録は済んでいるので 先へ進む */
+    var doRub = function(cb) {
+      if (!choRubFiles.length || !newItemId) { cb(); return; }
+      submitBtn.textContent = 'フォルダー作成・拓本アップ中...';
+      var dj = Object.assign({ id: newItemId }, fields);
+      Promise.resolve(createNokFolder(dj, { silent: true }))
+        .then(function () { if (!dj['FolderPass']) throw new Error('フォルダーが できませんでした'); return uploadTakuhonFiles(choRubFiles, dj); })
+        .catch(function (e) { showSaveToast(false, '拓本を上げられませんでした（登録は済んでいます）: ' + ((e && e.message) || e)); })
+        .then(function () { cb(); });
+    };
     if (niFileStore.length > 0 && newItemId) {
       submitBtn.textContent = 'ファイル添付中...';
       niUploadAttachments(newItemId, function() {
         doCopy(function() {
-          afterAttach();
+          doRub(afterAttach);
         });
       });
     } else {
-      doCopy(afterAttach);
+      doCopy(function () { doRub(afterAttach); });
     }
   })
   .catch(function(e) {
@@ -11813,6 +11838,12 @@ function buildNokFolderPath(d) {
   var haka     = d['_x304a__x5893__x306e__x540d__x7f'] ? '_' + d['_x304a__x5893__x306e__x540d__x7f'] : '';
   var cusId    = d['Cus_ID'] ? String(d['Cus_ID']) : '';
   var category = d['_x5206__x985e_'] || '';
+  /* 彫刻校正で お寺が無いとき（v1.9.509）：/工事受付/彫刻校正/日付_業者名＜寺名_家名＞_彫刻校正（寺名・家名は 依頼明細の JSON） */
+  if (!temple && category === '彫刻校正') {
+    var kt = (typeof _reqKT === 'function') ? _reqKT(d) : { kamei: '', tera: '' };
+    var inner = [kt.tera, kt.kamei].filter(Boolean).join('_');
+    return '/工事受付/彫刻校正/' + date + '_' + customer + (inner ? '＜' + inner + '＞' : '') + '_彫刻校正';
+  }
   var folderName = date + '_' + customer + '＜' + temple + haka + cusId + '＞' + (category ? '_' + category : '');
   return '/工事受付/' + temple + '/' + folderName;
 }
@@ -11840,17 +11871,29 @@ function _saveFolderFieldsNok(itemId, sharingUrl, folderPath, token) {
   });
 }
 
-function createNokFolder(item) {
+/* opts.silent（v1.9.509）：確かめを出さずに作る（同じ名前があれば それを使う）。Promise を返す。新規作成で 拓本を 一緒に上げるときに使う */
+function createNokFolder(item, opts) {
+  opts = opts || {};
   var d = item;
   if (!d['RequestDate'] || !d['_x9867__x5ba2__x540d_']) {
+    if (opts.silent) return Promise.reject(new Error('受付日と顧客名が無いので フォルダーを作れません'));
     alert('受付日と顧客名は必須です。入力してから再度お試しください。');
     return;
   }
   var folderPath = buildNokFolderPath(d);
-  if (!confirm('以下のフォルダーを作成します：\n\n' + folderPath + '\n\n実行しますか？')) return;
+  if (!opts.silent && !confirm('以下のフォルダーを作成します：\n\n' + folderPath + '\n\n実行しますか？')) return;
   showSaveToast(null, 'フォルダーを作成中...');
-  getToken().then(function(resp) {
+  return getToken().then(function(resp) {
     var token = resp.accessToken;
+    /* 親（/工事受付/彫刻校正 など）が無ければ 先に作る。あれば そのまま（409 は 気にしない） */
+    var parent = folderPath.replace(/\/[^\/]*$/, '');
+    var ensureParent = (parent && parent !== '/工事受付' && /^\/工事受付\/彫刻校正$/.test(parent))
+      ? fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parent.split('/').map(encodeURIComponent).join('/') + ':', {
+          method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }).catch(function(){})
+      : Promise.resolve();
+    return ensureParent.then(function(){ return token; });
+  }).then(function(token) {
     var encodedPath = folderPath.split('/').map(encodeURIComponent).join('/');
     var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + ':';
     return fetch(driveUrl, {
@@ -11860,7 +11903,7 @@ function createNokFolder(item) {
     })
     .then(function(r) {
       if (r.status === 409) {
-        if (!confirm('同名のフォルダーが既に存在します。\n\n' + folderPath + '\n\nこのフォルダーをリストに登録しますか？')) throw new Error('キャンセルしました');
+        if (!opts.silent && !confirm('同名のフォルダーが既に存在します。\n\n' + folderPath + '\n\nこのフォルダーをリストに登録しますか？')) throw new Error('キャンセルしました');
         return fetch(driveUrl + '?$select=id,webUrl', { headers: { 'Authorization': 'Bearer ' + token } })
           .then(function(r2) {
             if (!r2.ok) throw new Error('既存フォルダーの取得に失敗しました');
@@ -11898,7 +11941,7 @@ function createNokFolder(item) {
                 var catEntry = (cfg2.noukotsuCategoryMap || []).find(function(m){ return m.c === category2; });
                 var catFolder = catEntry ? catEntry.t : '';
                 showSaveToast(null, 'テンプレートをコピー中...');
-                _odCopyFolderContents(token, cfg2.templateRoot + '/' + cfg2.common, driveItemId)
+                return _odCopyFolderContents(token, cfg2.templateRoot + '/' + cfg2.common, driveItemId)
                   .catch(function(e){ console.warn('共通テンプレートコピー失敗:', e.message); })
                   .then(function() {
                     if (!catFolder) return;
@@ -11907,15 +11950,15 @@ function createNokFolder(item) {
                   })
                   .then(function() {
                     showSaveToast(true, 'フォルダー作成・テンプレートコピー完了');
-                    renderNokDataTab(d);
+                    if (!opts.silent) renderNokDataTab(d);
                   });
               } else {
-                renderNokDataTab(d);
+                if (!opts.silent) renderNokDataTab(d);
               }
             });
         });
     });
-  }).catch(function(e) { showSaveToast(false, 'フォルダー作成エラー: ' + e.message); });
+  }).catch(function(e) { showSaveToast(false, 'フォルダー作成エラー: ' + e.message); if (opts.silent) throw e; });
 }
 
 // srcPath 内の全アイテム（ファイル・フォルダー）を destId にコピー
@@ -14467,17 +14510,17 @@ function handleTakuhonDrop(e) {
   var files = (e.dataTransfer && e.dataTransfer.files) ? Array.prototype.slice.call(e.dataTransfer.files) : [];
   if (files.length) uploadTakuhonFiles(files);
 }
-function uploadTakuhonFiles(files) {
-  var d = currentItem || {};
+function uploadTakuhonFiles(files, d2) {
+  var d = d2 || currentItem || {};
   var folderPass = d['FolderPass'] || '';
-  if (!folderPass) { showSaveToast(false, 'FolderPass がありません'); return; }
+  if (!folderPass) { showSaveToast(false, 'FolderPass がありません'); return Promise.resolve(false); }
   var t = new Date();
   var dateRaw = t.getFullYear() + ('0' + (t.getMonth() + 1)).slice(-2) + ('0' + t.getDate()).slice(-2);
   var base = dateRaw + '_拓本';
   var targetPath = folderPass; // フォルダートップ（サブフォルダーなし）
   var _token = '';
   var _existing = {};
-  getToken().then(function(resp) {
+  return getToken().then(function(resp) {
     _token = resp.accessToken;
     var enc = targetPath.split('/').map(encodeURIComponent).join('/');
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$select=name&$top=999', {
@@ -14501,9 +14544,11 @@ function uploadTakuhonFiles(files) {
       });
     }, Promise.resolve());
   }).then(function() {
-    showSaveToast(true, files.length + '件アップロード完了（フォルダートップ）');
+    showSaveToast(true, '拓本 ' + files.length + '件アップロード完了（フォルダートップ）');
+    return true;
   }).catch(function(e) {
     showSaveToast(false, 'アップロードエラー: ' + e.message);
+    return false;
   });
 }
 
@@ -29606,6 +29651,10 @@ function _choStepsHtml(d) {
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12px;color:#888;min-width:52px">' + (arr.length + 1) + ' 回目</span>' + row(c, null, arr.length, true) + '</div>';
     } else {
       body = row(c, done ? st[c.k] : null, null, !done);
+      /* ①：拓本を上げる（v1.9.509）。フォルダーのトップへ（データタブの［📋 拓本データ］と同じ） */
+      if (c.k === 's1') body += '<div style="display:flex;align-items:center;gap:6px"><input type="file" id="cho-rub-inp" multiple accept="image/*,application/pdf,.pdf" style="display:none" onchange="_choRubUp(this)">' +
+        '<button onclick="document.getElementById(\'cho-rub-inp\').click()" style="align-self:flex-start;font-size:12px;padding:4px 10px;border:1px solid #8fb0d8;background:#eef4fb;color:#2a5a8a;border-radius:6px;cursor:pointer;font-family:inherit">📋 拓本を上げる</button>' +
+        (d['FolderPass'] ? '' : '<span style="font-size:10.5px;color:#888">（フォルダーが無ければ 作ってから 上げます）</span>') + '</div>';
       /* ⑥：外注管理（GaiLists）へ 入れたか。入っていなければ やり直しのボタン（v1.9.501） */
       if (c.k === 's6' && done && _choGaiTarget(d)) {
         var gai = _choFj(d).choKosei.gai;
@@ -29618,6 +29667,22 @@ function _choStepsHtml(d) {
       '<div style="min-width:132px;font-weight:700;font-size:13.5px;color:' + (done ? '#2a7a4a' : '#334') + '">' + c.n + ' ' + c.t + (isNext ? '<div style="font-size:10.5px;color:#1a5a9a;font-weight:600">← 次はここ</div>' : '') + '</div>' +
       '<div style="flex:1;display:flex;flex-direction:column;gap:5px">' + body + '</div></div>';
   }).join('') + '</div>';
+}
+/* 進み具合 ① から 拓本を上げる（v1.9.509）。フォルダーが無ければ 作ってから。① の日付が空なら 今日を入れる */
+function _choRubUp(inp) {
+  var files = Array.prototype.slice.call(inp.files || []); inp.value = '';
+  var d = currentItem; if (!files.length || !d) return;
+  var go = function () {
+    return uploadTakuhonFiles(files, d).then(function (ok) {
+      if (ok && currentItem === d && !_choDone(_choSteps(d), 's1')) _choDate('s1', null, _choToday());
+    });
+  };
+  if (d['FolderPass']) { go(); return; }
+  if (!confirm('この案件の フォルダーが まだ ありません。作ってから 拓本を上げますか。\n\n' + buildNokFolderPath(d))) return;
+  Promise.resolve(createNokFolder(d, { silent: true })).then(function () {
+    if (!d['FolderPass']) throw new Error('フォルダーが できませんでした');
+    return go();
+  }).catch(function (e) { showSaveToast(false, '拓本を上げられませんでした: ' + ((e && e.message) || e)); });
 }
 /* 日付を入れる／消す。③ は idx 番目（新しい行なら 足す） */
 function _choDate(k, idx, v) {
@@ -31201,6 +31266,16 @@ function openImageViewer(imgs, startIdx) {
               <input id="ni-cho-rub" class="ni-inp" type="date">
               <button class="ni-today" onclick="document.getElementById('ni-cho-rub').value=todayStr()">今日</button>
             </div>
+          </div>
+          <!-- 彫刻校正：拓本のファイル（v1.9.509）。登録のあと フォルダーを作って そのトップに「日付_拓本」で上げる -->
+          <div class="ni-full" id="ni-wrap-cho-rubfile" style="display:none">
+            <label class="ni-lbl">拓本のファイル（画像・PDF）</label>
+            <input type="file" id="ni-cho-rubfile" multiple accept="image/*,application/pdf,.pdf" style="display:none" onchange="niRubFiles(this)">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="ni-today" style="padding:7px 12px;font-size:12px" onclick="document.getElementById('ni-cho-rubfile').click()">📋 拓本を選ぶ</button>
+              <span id="ni-cho-rubfile-list" style="font-size:12px;color:#555">（まだ選んでいません）</span>
+            </div>
+            <div style="font-size:10.5px;color:#888;margin-top:3px">登録のときに 案件のフォルダーを作り、そのトップに 保存します（データタブの［📋 拓本データ］と同じ所）</div>
           </div>
           <div id="ni-wrap-sculptor">
             <label class="ni-lbl">彫刻者名（SculptureName）</label>

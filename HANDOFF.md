@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.508**／**index.html = v1.9.508**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.509**／**index.html = v1.9.509**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -755,3 +755,13 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
   依頼情報提供者・彫刻者名・原稿受取日・原稿提供者（戒名彫刻の欄）は隠す、彫刻グループに［拓本受取］（`ni-cho-rub`）。
 - 登録（`submitNewItem`）：彫刻校正は お寺なしで可。RequestDetails＝`{items:[{name:'校正とゴム作成',amount:3000,kamei,tera}]}`、
   拓本受取があれば FileJson＝`{choKosei:{steps:{s1:{date,by}}}}`。ほかの分類は これまでどおり（お寺 必須）。隠した欄の値は送らない（`niVal`）。
+
+## v1.9.509 — 彫刻校正：拓本を アップロード
+- 拓本の置き場所：案件フォルダーの トップに「YYYYMMDD_拓本.拡張子」（`uploadTakuhonFiles`。データタブの［📋 拓本データ］と同じ）。
+- 彫刻校正で お寺が無いときの フォルダー（`buildNokFolderPath`）：`/工事受付/彫刻校正/日付_業者名＜寺名_家名＞_彫刻校正`
+  （寺名・家名は 依頼明細 JSON の tera／kamei。両方 空なら ＜＞ なし）。親の `/工事受付/彫刻校正` が無ければ 先に作る。
+- `createNokFolder(item, {silent:true})`：確かめなしで作り、同じ名前があれば それを使う。Promise を返す（silent のときは 失敗を投げる）。
+  `uploadTakuhonFiles` も Promise を返す（成功＝true／失敗＝false）。
+- 新規作成の窓（分類＝彫刻校正）：［📋 拓本を選ぶ］（`ni-cho-rubfile`／`niRubFiles`／`niRubStore`）。選ぶと 拓本受取が空なら 今日。
+  登録のあと 添付のあとに `doRub`：フォルダーを作って 拓本を上げる。失敗しても 登録は済んでいる旨を 出して 先へ。
+- 詳細の 進み具合 ① 拓本受取：［📋 拓本を上げる］（`_choRubUp`）。フォルダーが無ければ 確かめてから 作る。上がったら ① が空なら 今日。

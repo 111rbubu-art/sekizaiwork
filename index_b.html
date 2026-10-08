@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.509';
+var APP_VERSION = 'v1.9.510';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11838,10 +11838,11 @@ function buildNokFolderPath(d) {
   var haka     = d['_x304a__x5893__x306e__x540d__x7f'] ? '_' + d['_x304a__x5893__x306e__x540d__x7f'] : '';
   var cusId    = d['Cus_ID'] ? String(d['Cus_ID']) : '';
   var category = d['_x5206__x985e_'] || '';
-  /* 彫刻校正で お寺が無いとき（v1.9.509）：/工事受付/彫刻校正/日付_業者名＜寺名_家名＞_彫刻校正（寺名・家名は 依頼明細の JSON） */
-  if (!temple && category === '彫刻校正') {
+  /* 彫刻校正（v1.9.509／v1.9.510）：いつも /工事受付/彫刻校正/日付_業者名＜寺名_家名＞_彫刻校正。
+     寺名・家名は 依頼明細の JSON。空なら 前の作り方で入っている お寺／○○家（お墓の名義）の列 */
+  if (category === '彫刻校正') {
     var kt = (typeof _reqKT === 'function') ? _reqKT(d) : { kamei: '', tera: '' };
-    var inner = [kt.tera, kt.kamei].filter(Boolean).join('_');
+    var inner = [kt.tera || temple, kt.kamei || (d['_x304a__x5893__x306e__x540d__x7f'] || '')].filter(Boolean).join('_');
     return '/工事受付/彫刻校正/' + date + '_' + customer + (inner ? '＜' + inner + '＞' : '') + '_彫刻校正';
   }
   var folderName = date + '_' + customer + '＜' + temple + haka + cusId + '＞' + (category ? '_' + category : '');
@@ -11871,6 +11872,21 @@ function _saveFolderFieldsNok(itemId, sharingUrl, folderPath, token) {
   });
 }
 
+/* 親の /工事受付/彫刻校正 が無ければ 先に作る。あれば そのまま（409 は 気にしない）。ほかの親は 何もしない */
+function _nokEnsureChoParent(token, folderPath) {
+  var parent = folderPath.replace(/\/[^\/]*$/, '');
+  if (parent !== '/工事受付/彫刻校正') return Promise.resolve();
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parent.split('/').map(encodeURIComponent).join('/') + ':', {
+    method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }).catch(function(){});
+}
+/* 彫刻校正：保存のとき、今の フォルダーの場所が 決まりの場所と ずれていたら 移す（v1.9.510。本人「保存ボタンを押した際に、
+   現状の保存場所とズレている様であれば、変更して保存」。寺名・家名を 後から足したときも 同じ） */
+function _choFolderSync(d) {
+  if (!d || (d['_x5206__x985e_'] || '') !== '彫刻校正') return;
+  var cur = d['FolderPass'] || '';
+  if (cur && buildNokFolderPath(d) !== cur) _renameNokFolder(d, cur);
+}
 /* opts.silent（v1.9.509）：確かめを出さずに作る（同じ名前があれば それを使う）。Promise を返す。新規作成で 拓本を 一緒に上げるときに使う */
 function createNokFolder(item, opts) {
   opts = opts || {};
@@ -11885,14 +11901,7 @@ function createNokFolder(item, opts) {
   showSaveToast(null, 'フォルダーを作成中...');
   return getToken().then(function(resp) {
     var token = resp.accessToken;
-    /* 親（/工事受付/彫刻校正 など）が無ければ 先に作る。あれば そのまま（409 は 気にしない） */
-    var parent = folderPath.replace(/\/[^\/]*$/, '');
-    var ensureParent = (parent && parent !== '/工事受付' && /^\/工事受付\/彫刻校正$/.test(parent))
-      ? fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parent.split('/').map(encodeURIComponent).join('/') + ':', {
-          method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }).catch(function(){})
-      : Promise.resolve();
-    return ensureParent.then(function(){ return token; });
+    return _nokEnsureChoParent(token, folderPath).then(function(){ return token; });
   }).then(function(token) {
     var encodedPath = folderPath.split('/').map(encodeURIComponent).join('/');
     var driveUrl = 'https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedPath + ':';
@@ -12003,9 +12012,12 @@ function _renameNokFolder(d, oldFolderPass) {
   var newFolderName  = newFolderPath.split('/').pop();
   var newParentPath  = newFolderPath.substring(0, newFolderPath.lastIndexOf('/'));
   var oldParentPath  = oldFolderPass.substring(0, oldFolderPass.lastIndexOf('/'));
-  showSaveToast(null, 'フォルダー名を更新中...');
+  showSaveToast(null, newParentPath !== oldParentPath ? 'フォルダーを ' + newParentPath + ' へ移動中...' : 'フォルダー名を更新中...');
+  var token;
   getToken().then(function(resp) {
-    var token = resp.accessToken;
+    token = resp.accessToken;
+    return newParentPath !== oldParentPath ? _nokEnsureChoParent(token, newFolderPath) : null;   // 移し先の /工事受付/彫刻校正 が無ければ 作る（v1.9.510）
+  }).then(function() {
     var encodedOldPath = oldFolderPass.split('/').map(encodeURIComponent).join('/');
     var patchBody = { name: newFolderName };
     if (newParentPath !== oldParentPath) {
@@ -12017,6 +12029,8 @@ function _renameNokFolder(d, oldFolderPass) {
       body: JSON.stringify(patchBody)
     })
     .then(function(r) {
+      if (r.status === 409) throw new Error('移し先に 同じ名前のフォルダーが あります（' + newFolderPath + '）');
+      if (r.status === 404) throw new Error('今のフォルダーが 見つかりません（' + oldFolderPass + '）');
       if (!r.ok) return r.json().then(function(e) { throw new Error(e.error ? e.error.message : r.status); });
       return r.json();
     })
@@ -28534,7 +28548,8 @@ function toggleEditMode(d, tabIdx) {
             // buildNokFolderPath が使う項目：お寺／依頼日／顧客名／お墓の名義／Cus_ID／分類
             var _nokFolderFields = ['_x304a__x5bfa_','RequestDate','_x9867__x5ba2__x540d_','_x304a__x5893__x306e__x540d__x7f','Cus_ID','_x5206__x985e_'];
             var _oldNokPass = d['FolderPass'] || '';
-            if (_oldNokPass && _nokFolderFields.some(function(f){ return _chgKeys[f]; })) {
+            if ((d['_x5206__x985e_'] || '') === '彫刻校正') _choFolderSync(d);   // 彫刻校正は ずれていれば いつでも（v1.9.510）
+            else if (_oldNokPass && _nokFolderFields.some(function(f){ return _chgKeys[f]; })) {
               _renameNokFolder(d, _oldNokPass);
             }
           }
@@ -28576,6 +28591,7 @@ function toggleEditMode(d, tabIdx) {
         setTimeout(function(){ _confirmGcalRegister(); }, 200);
       }
       redraw(d);
+      if (LIST_NAME === '納骨・戒切') _choFolderSync(d);   // 彫刻校正：変えなくても 保存で 場所を合わせる（v1.9.510）
     }
   } else {
     redraw(d);
@@ -29586,6 +29602,7 @@ function saveRequestDetails() {
     currentItem['RequestDetails'] = JSON.stringify(cleaned);
     _reqDetails = cleaned;
     showSaveToast(true, '💰 依頼明細を保存しました');
+    _choFolderSync(currentItem);   // 彫刻校正：寺名・家名が 変わったら フォルダーも（v1.9.510）
   }).catch(function(e) {
     showSaveToast(false, '保存エラー: ' + (e && e.message || e));
   }).then(function() {

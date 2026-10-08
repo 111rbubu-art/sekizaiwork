@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.510';
+var APP_VERSION = 'v1.9.511';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11842,7 +11842,8 @@ function buildNokFolderPath(d) {
      寺名・家名は 依頼明細の JSON。空なら 前の作り方で入っている お寺／○○家（お墓の名義）の列 */
   if (category === '彫刻校正') {
     var kt = (typeof _reqKT === 'function') ? _reqKT(d) : { kamei: '', tera: '' };
-    var inner = [kt.tera || temple, kt.kamei || (d['_x304a__x5893__x306e__x540d__x7f'] || '')].filter(Boolean).join('_');
+    var tera0 = (temple === '他寺院等' || temple === '霊園＆共同墓地') ? '' : temple;   // グループの名前は 寺名にしない（v1.9.511）
+    var inner = [kt.tera || tera0, kt.kamei || (d['_x304a__x5893__x306e__x540d__x7f'] || '')].filter(Boolean).join('_');
     return '/工事受付/彫刻校正/' + date + '_' + customer + (inner ? '＜' + inner + '＞' : '') + '_彫刻校正';
   }
   var folderName = date + '_' + customer + '＜' + temple + haka + cusId + '＞' + (category ? '_' + category : '');
@@ -11879,6 +11880,15 @@ function _nokEnsureChoParent(token, folderPath) {
   return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + parent.split('/').map(encodeURIComponent).join('/') + ':', {
     method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify({ folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }).catch(function(){});
+}
+/* パスから フォルダーの id（移すときの parentReference は id で渡す。パスだと 400 になる。v1.9.511） */
+function _odFolderIdByPath(token, path) {
+  return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + path.split('/').map(encodeURIComponent).join('/') + ':?$select=id', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  }).then(function(r) {
+    if (!r.ok) throw new Error('移し先のフォルダーが 見つかりません（' + path + '）');
+    return r.json();
+  }).then(function(j) { return j.id; });
 }
 /* 彫刻校正：保存のとき、今の フォルダーの場所が 決まりの場所と ずれていたら 移す（v1.9.510。本人「保存ボタンを押した際に、
    現状の保存場所とズレている様であれば、変更して保存」。寺名・家名を 後から足したときも 同じ） */
@@ -12016,13 +12026,13 @@ function _renameNokFolder(d, oldFolderPass) {
   var token;
   getToken().then(function(resp) {
     token = resp.accessToken;
-    return newParentPath !== oldParentPath ? _nokEnsureChoParent(token, newFolderPath) : null;   // 移し先の /工事受付/彫刻校正 が無ければ 作る（v1.9.510）
-  }).then(function() {
+    if (newParentPath === oldParentPath) return null;
+    return _nokEnsureChoParent(token, newFolderPath)   // 移し先の /工事受付/彫刻校正 が無ければ 作る（v1.9.510）
+      .then(function() { return _odFolderIdByPath(token, newParentPath); });
+  }).then(function(parentId) {
     var encodedOldPath = oldFolderPass.split('/').map(encodeURIComponent).join('/');
     var patchBody = { name: newFolderName };
-    if (newParentPath !== oldParentPath) {
-      patchBody.parentReference = { path: '/drives/' + DRIVE_ID + '/root:' + newParentPath.split('/').map(encodeURIComponent).join('/') };
-    }
+    if (parentId) patchBody.parentReference = { driveId: DRIVE_ID, id: parentId };
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedOldPath + ':', {
       method: 'PATCH',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -12070,13 +12080,14 @@ function _renameKoujiFolder(d, oldFolderPass) {
   var oldParentPath = oldFolderPass.substring(0, oldFolderPass.lastIndexOf('/'));
   var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
   showSaveToast(null, 'フォルダー名を更新中...');
+  var token;
   getToken().then(function(resp) {
-    var token = resp.accessToken;
+    token = resp.accessToken;
+    return newParentPath !== oldParentPath ? _odFolderIdByPath(token, newParentPath) : null;   // 移し先は id で（v1.9.511）
+  }).then(function(parentId) {
     var encodedOldPath = oldFolderPass.split('/').map(encodeURIComponent).join('/');
     var patchBody = { name: newFolderName };
-    if (newParentPath !== oldParentPath) {
-      patchBody.parentReference = { path: '/drives/' + DRIVE_ID + '/root:' + newParentPath.split('/').map(encodeURIComponent).join('/') };
-    }
+    if (parentId) patchBody.parentReference = { driveId: DRIVE_ID, id: parentId };
     return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encodedOldPath + ':', {
       method: 'PATCH',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },

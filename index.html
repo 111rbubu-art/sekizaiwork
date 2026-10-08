@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.515';
+var APP_VERSION = 'v1.9.516';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22086,7 +22086,7 @@ function _pdfMergeUpdateBar() {
   /* 選んだ PDF を ページ整理の画面で 並べてから 結合（v1.9.485） */
   runBtn.textContent = '📑 ' + _pdfMergeSel.length + '件を ページ整理・結合';
   runBtn.style.cssText = 'padding:7px 14px;background:#2a7a4a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:700;flex-shrink:0';
-  runBtn.addEventListener('click', function(){ _pdfOrgOpen(_pdfMergeSel.slice()); });
+  runBtn.addEventListener('click', function(){ _pdfOpenOrg(_pdfMergeSel.slice()); });   // 別ウインドウで（v1.9.516）
   var clrBtn = document.createElement('button');
   clrBtn.textContent = '✕ 選択解除';
   clrBtn.style.cssText = 'padding:7px 12px;background:rgba(255,255,255,0.2);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;flex-shrink:0';
@@ -22293,6 +22293,60 @@ function _spFetchBytes(path) {
     if (e && /Failed to fetch|NetworkError|network/i.test(e.message || '')) e = new Error('通信が切れました（3 回やり直しても 読めませんでした）。回線の具合を確かめて、もう一度 開いてください。');
     throw e;
   });
+}
+/* ───── **PDF ビューワーを 別ウインドウで**（v1.9.516。本人「PDFのビューワーは新しいウインドウで表示させてほしい」）─────
+   pdfview.html を 新しいウインドウで開き、そこへ ビューワー・書き込み・ページ整理・印刷の 関数を そのまま写して 動かす
+   （向こうの window・document で動くので、中身は この画面の ビューワーと同じ）。サインイン（getToken）と
+   一覧の描き直し（_pdfMergeClear／_pdfMergeReload）は この画面のものを使う。
+   スマホ、または ポップアップが止められたときは これまでどおり この画面の上に出す。 */
+var _pvReqs = {};
+function _pdfWinOpen(kind, arg) {
+  if (!isPC()) return false;
+  var name = 'pdfv' + Date.now();
+  var W = Math.min(screen.availWidth || 1400, 1600), H = screen.availHeight || 900;
+  var w = null;
+  try { w = window.open('pdfview.html', name, 'width=' + W + ',height=' + H + ',left=' + (screen.availLeft || 0) + ',top=' + (screen.availTop || 0) + ',resizable=yes,scrollbars=yes'); } catch (e) {}
+  if (!w) return false;
+  _pvReqs[name] = { kind: kind, arg: arg };
+  try { w.focus(); } catch (e) {}
+  return true;
+}
+function _pdfOpenView(path) { if (!_pdfWinOpen('view', path)) _pdfViewOpen(path); }
+function _pdfOpenOrg(files) { if (!_pdfWinOpen('org', files)) _pdfOrgOpen(files); }
+/* pdfview.html から 呼ばれる：関数を写して 開く */
+function _pvInstall(w) {
+  var req = _pvReqs[w.name]; delete _pvReqs[w.name];
+  if (!req) throw new Error('もう一度 アプリから 開いてください');
+  var names = Object.keys(window).filter(function (k) { return /^(_pdfView|_pva|_pdfOrg)/.test(k) && typeof window[k] === 'function'; })
+    .concat(['_loadPdfLib', '_loadPdfJs', '_spFetchBytes', 'showSaveToast', '_escHtml', '_edtEsc', 'isPC']);
+  w.eval('var _PV = null, _PO = null, _pvIsPopup = true;' +
+    'var DRIVE_ID = ' + JSON.stringify(DRIVE_ID) + ', _PO_COLORS = ' + JSON.stringify(_PO_COLORS) +
+    ', _PVA_COLORS = ' + JSON.stringify(_PVA_COLORS) + ', _PVA_FONT = ' + JSON.stringify(_PVA_FONT) + ';\n' +
+    names.map(function (n) { return window[n].toString(); }).join('\n'));
+  w.getToken = function () { return getToken(); };
+  w._pdfMergeClear = function () { try { _pdfMergeClear(); } catch (e) {} };
+  w._pdfMergeReload = function () { try { _pdfMergeReload(); } catch (e) {} };
+  /* 保存したら この画面の 一覧も 描き直す（SharePoint へ 書いたのを 見張る） */
+  var of = w.fetch, rt = null;
+  w.fetch = function (u, o) {
+    var pr = of.apply(w, arguments);
+    if (o && o.method === 'PUT' && /\/content/.test(String(u))) pr.then(function (r) {
+      if (r && r.ok) { clearTimeout(rt); rt = setTimeout(function () { try { _pdfMergeReload(); } catch (e) {} }, 1500); }
+    }, function () {});
+    return pr;
+  };
+  /* 書き込み・ページ整理を 保存せずに ウインドウを閉じようとしたら 確かめる */
+  w.addEventListener('beforeunload', function (e) {
+    var dirty = (w._PV && w._PV.annDirty && w._pvaCount()) || (w._PO && w._PO.dirty);
+    if (dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+  if (req.kind === 'org') { w.document.title = '📑 ページ整理'; w._pdfOrgOpen(req.arg); }
+  else { w.document.title = '📄 ' + String(req.arg).split('/').pop(); w._pdfViewOpen(req.arg); }
+  /* ［✕ 閉じる］で ビューワーも ページ整理も 無くなったら ウインドウを閉じる（ビューワー → ページ整理 の 入れかえでは 閉じない） */
+  var gone = function () { return !w.document.getElementById('pdf-view') && !w.document.getElementById('pdf-org'); };
+  new w.MutationObserver(function () {
+    if (gone()) w.setTimeout(function () { if (gone()) w.close(); }, 60);
+  }).observe(w.document.body, { childList: true });
 }
 var _PV = null;
 function _pdfViewOpen(filePath) {
@@ -24033,11 +24087,11 @@ function _driveFileMenu(e, o) {
   };
   var it = { id: o.item && o.item.id, name: fname };
   var mi = [];
-  mi.push(['↗️', '開く', function(){ _hideFolderMenu(); if (isPdf) _pdfViewOpen(fpath); else if (isImg) previewFolderImage(fpath); else openFolderFile(fpath); }]);
+  mi.push(['↗️', '開く', function(){ _hideFolderMenu(); if (isPdf) _pdfOpenView(fpath); else if (isImg) previewFolderImage(fpath); else openFolderFile(fpath); }]);
   mi.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(fpath, null); }]);
   if (isImg && currentItem && currentListMode !== 'customer') mi.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(fpath); }]);
   mi.push(['⬇️', 'ダウンロード', function(){ _hideFolderMenu(); downloadFolderFile(fpath, fname); }]);
-  if (isPdf) mi.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOrgOpen([{ path: fpath, name: fname }]); }]);
+  if (isPdf) mi.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOpenOrg([{ path: fpath, name: fname }]); }]);
   mi.push(['🔄', '差し替え（更新をアップ）', function(){ _hideFolderMenu(); _folderReplaceFile(it, dir, o.ctx === 'folder' ? null : reload); }]);
   if (currentItem && o.gaichu) _gaichuMenuPubItems(fname, (currentListMode==='kouji'?'kouji':'noukotsu'), o.gaichu).forEach(function(x){ mi.push(x); });
   mi.push(null);
@@ -24091,7 +24145,7 @@ function _showFolderItemMenu(e, item, currentPath) {
     menuItems.push(['📷', '原寸をコピー', function(){ _hideFolderMenu(); _copyFolderFileToClipboard(filePath, null); }]);
     if (isImgItem && currentItem) menuItems.push(['📌', 'リストサムネに設定', function(){ _hideFolderMenu(); setKoujiPlacePic(filePath); }]);
     menuItems.push(['⬇️', 'ダウンロード', function(){ _hideFolderMenu(); downloadFolderFile(filePath, item.name); }]);
-    if (/\.pdf$/i.test(item.name)) menuItems.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOrgOpen([{ path: filePath, name: item.name }]); }]);
+    if (/\.pdf$/i.test(item.name)) menuItems.push(['📑', 'ページ整理（削除・並べ替え・結合）', function(){ _hideFolderMenu(); _pdfOpenOrg([{ path: filePath, name: item.name }]); }]);
     menuItems.push(['🔄', '差し替え（更新をアップ）', function(){ _hideFolderMenu(); _folderReplaceFile(item, currentPath); }]);
     if (currentItem) _gaichuMenuPubItems(item.name, (currentListMode==='kouji'?'kouji':'noukotsu'), {source:'drive', driveId:item.id, name:item.name}).forEach(function(mi){ menuItems.push(mi); });
     menuItems.push(null);
@@ -24482,7 +24536,7 @@ function spFileClick(fpath, isImg) {
     // シングルクリックで中身を確かめられるようにする。原本を開くのはダブルクリック。
     if (tu) { _previewFolderThumbLarge(tu, fpath.split('/').pop()); return; }
     if (isImg) { previewFolderImage(fpath); return; }  // 画像なのに見本が無いときだけ原本を出す
-    if (/\.pdf$/i.test(fpath)) { _pdfViewOpen(fpath); return; }  // 見本の無い PDF は ビューワーで
+    if (/\.pdf$/i.test(fpath)) { _pdfOpenView(fpath); return; }  // 見本の無い PDF は ビューワーで（別ウインドウ。v1.9.516）
     openFolderFile(fpath);                             // 見本を作れない形式はそのまま開く
   }, 250);
 }
@@ -24492,7 +24546,7 @@ function spFileDbl(fpath) {
      1クリックと同じような操作感に」）。前は SharePoint の画面を 新しいタブで開いていた。そちらは 窓の［🌐 SharePointで開く］から */
   if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(fpath)) { previewFolderImage(fpath); return; }
   /* PDF は アプリの中の ビューワーで（v1.9.486。v1.9.490 で PC のソフト／SharePoint で開くボタンは 本人の希望で外した。⋯ メニューの ダウンロードは残る） */
-  if (/\.pdf$/i.test(fpath)) { _pdfViewOpen(fpath); return; }
+  if (/\.pdf$/i.test(fpath)) { _pdfOpenView(fpath); return; }   // 別ウインドウで（v1.9.516）
   openFolderFile(fpath);
 }
 function previewFolderImage(filePath) {

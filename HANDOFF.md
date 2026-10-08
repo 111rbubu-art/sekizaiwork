@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.515**／**index.html = v1.9.515**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.516**／**index.html = v1.9.516**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -833,3 +833,17 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
   一覧（`_gaichuMarkListNew`）・トップ（`_gaichuMenuRepBadge`）・並べ替え（`_gaichuItemHot`）で使う。
 - `_gaichuDoneHot`：完了日が 3 日以上前の 完了報告は 24 時間の新着にしない（progress.json には 時刻が無いので 完了日で）。
 - 小さい 🆕報告／🏁完了報告（未読の印）は これまでどおり（この端末で まだ見ていない）。案件の［🌐 公開中］を開けば 消える。
+
+### v1.9.516 PDF ビューワー・ページ整理を 別ウインドウで（pdfview.html）
+- 本人「PDFのビューワーは新しいウインドウで表示させてほしい」。
+- 新しい `pdfview.html`（index.html／index_b.html で共通）。開くと `window.opener._pvInstall(window)` を呼ぶ。
+- `_pvInstall(w)`：この画面の `_pdfView*`／`_pva*`／`_pdfOrg*` の関数と `_loadPdfLib`・`_loadPdfJs`・`_spFetchBytes`・`showSaveToast`・`_escHtml`・`_edtEsc`・`isPC` を
+  `toString()` で 向こうへ写して `w.eval`（向こうの window・document で動くので、中身は これまでの ビューワーと同じ）。
+  `_PV`・`_PO`・`DRIVE_ID`・色の表なども 写す。`getToken`・`_pdfMergeClear`・`_pdfMergeReload` は この画面のものを呼ぶ。
+  → **ビューワーの関数で この画面の別のものを使い始めたら、写す一覧（`.concat([...])`）に足すこと**（足りないと 向こうで ReferenceError）。
+- 向こうで SharePoint へ PUT（:/content）が 成功したら、1.5 秒後に この画面の 一覧を描き直す（`_pdfMergeReload`）。
+- 保存していない 書き込み・ページ整理が あるのに ウインドウを閉じようとしたら 確かめる（beforeunload）。
+- ［✕ 閉じる］で ビューワーも ページ整理も 無くなったら ウインドウを閉じる（ビューワー → ページ整理 の入れかえでは 閉じない。MutationObserver）。
+- 呼ぶ所：PDF の ダブルクリック／見本の無い PDF の クリック（`spFileDbl`・`spFileClick`）、⋯メニューの［開く］［📑 ページ整理］、結合バー → `_pdfOpenView`／`_pdfOpenOrg`。
+  スマホ（`isPC()` が false）や ポップアップが止められたときは これまでどおり この画面の上に出す。
+- 業務アプリの画面を 閉じると、向こうで サインインできないので 保存できない（pdfview.html だけ 直接開くと「業務アプリの画面から 開いてください」）。

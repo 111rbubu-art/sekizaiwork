@@ -2562,7 +2562,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v46.6";
+var APP_VER = "v46.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -30686,7 +30686,7 @@ async function peAiAutoGo(){
   peAutoAskHide();
   var b = $("peAiAuto"), gEl = $("peGrow");
   var snap = { ai: PE.aiInk || null, grow: gEl ? gEl.value : 0, auto: true };
-  var was = b ? b.textContent : "";
+  var was = b ? b.textContent : "", pe = PE;
   PE_AUTO = true;
   if (b){ b.disabled = true; b.textContent = "① AI お任せ…"; }
   var ok = false, shot = null, traceAi = null;
@@ -30723,7 +30723,7 @@ async function peAiAutoGo(){
     PE_AUTO = false;
     if (b){ b.disabled = false; b.textContent = was || "AI オート"; }
   }
-  if (!ok) return;
+  if (!ok || PE !== pe) return;                /* 待っている間に 字が変わった（v46.7） */
   /* まとめて 1 手ぶんの控え。［↶ 1つ戻す］でも、［取り消す］でも元に戻る。 */
   PE.undo.push(snap);
   if (PE.undo.length > 60) PE.undo.shift();
@@ -30890,6 +30890,18 @@ function peAutoAskHide(){
   PE_AUTO_SHAPEAI = null; PE_AUTO_PAINT0 = 0;
   if (PE) peRender();                    /* ①の青い線を消す */
 }
+/* **AI の返事が来たとき、まだ同じ字の作字画面か**（v46.7。本人の報告「校正タブで『合』を作字で編集し、
+   決定を押したら『秋』になった。再現しない」）。
+   ［AI 拓本解析］［AI 書体補正］［AI オート］は AI サーバーの返事を待つ（数秒）。その間に ［決定］［取消］で閉じて
+   別の字の作字画面を開くと、前の字（例：秋）の墨が 返ってきた時点の PE（＝今の字：合）に入っていた。
+   そのまま［現トレースから字を作る］→［決定］すると、合の位置に 秋の形が入る。
+   開いた PE と 今の PE が ちがえば、返ってきた結果は 使わずに捨てる。 */
+function peAiStale(pe){
+  if (PE === pe) return false;
+  msg("「" + ((pe && Array.from(String(pe.ch || ""))[0]) || "") + "」の AI の結果が届きましたが、" +
+      (PE ? "別の字の作字画面に移っていた" : "作字画面を閉じていた") + "ので、使いませんでした。", true);
+  return true;
+}
 $("peAiTrace").onclick = function(){ peAiTraceGo(); };
 /* `quiet` … ［AI オート］から続けて呼ぶとき。知らせを出さず、通ったかどうかを返す。 */
 async function peAiTraceGo(quiet){
@@ -30899,11 +30911,12 @@ async function peAiTraceGo(quiet){
   if (!P){ msg("先に拓本を敷いて、この字に重ねてください。", true); return false; }
   var sh = takuShot();
   if (!sh){ msg("拓本を切り出せませんでした。", true); return false; }
-  var b = $("peAiTrace");
+  var b = $("peAiTrace"), pe = PE;
   if (b){ b.disabled = true; b.textContent = "AI に通しています…"; }
   var got;
   try { got = await traceAskShot(P.G, sh); }
   finally { if (b){ b.disabled = false; peAiTraceShow(); } }
+  if (peAiStale(pe)) return false;              /* 待っている間に 字が変わった（v46.7） */
   if (!got || !got.ink){
     msg("［AI 拓本解析］は かかりませんでした。" + ((got && got.note) || ""), true);
     return false;
@@ -30934,7 +30947,7 @@ function peAiTraceShow(){
 $("peAiShape").onclick = function(){ peAiShapeGo(); };
 async function peAiShapeGo(quiet){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return false; }
-  var b = $("peAiShape");
+  var b = $("peAiShape"), pe = PE;
   /* **②に渡すのは、いつでも「①の墨（縁を広げる前）＋人の直し」**
      （v21.87。本人の指摘「AI 書体補正が何度も押せてしまって、押すたびに
      文字が大きくなる不具合あり」）。
@@ -30971,12 +30984,14 @@ async function peAiShapeGo(quiet){
      ［現トレースから字を作る］を押したときに、直した所で①②へ振り分ける。 */
   if (!PE_AUTO){
     try { svNote = (await takuSave(true, shot)) || ""; } catch(e2){}
+    if (peAiStale(pe)){ if (b){ b.disabled = false; peAiShapeShow(); } return false; }   /* v46.7 */
   }
   if (aiTrace && svNote)
     svNote += "（AI 拓本解析から直した墨として残しました）";
   var got;
   try { got = await traceAskAI(P.G, P.ink, "shape"); }
   finally { if (b){ b.disabled = false; peAiShapeShow(); } }
+  if (peAiStale(pe)) return false;              /* 待っている間に 字が変わった（v46.7） */
   if (!got || !got.ink){
     msg((svNote ? svNote + "。" : "") +
         "［AI 書体補正］は かかりませんでした。" + ((got && got.note) || ""), true);

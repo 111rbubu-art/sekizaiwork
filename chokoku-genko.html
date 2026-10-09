@@ -2562,7 +2562,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v46.5";
+var APP_VER = "v46.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -7953,7 +7953,44 @@ function bindLock(){
     lockNext();
   };
 }
+/* **作業中の控えは 窓（案件）ごとに**（v46.6。本人「1つの案件で作業しながら、別の案件の彫刻原稿を起動すると、
+   今開いている物が上書きされる。別々で立ち上がるように」）。本体アプリは 案件ごとに 窓の名前（cg_n_123・cg_k_45）を
+   変えて開くので、その名前で localStorage（chokoku.state）と IndexedDB（rub）の 置き場を分ける。
+   ほかの窓が 書いても 上書きされない。単体で開いたとき（名前なし）は これまでどおりの置き場。
+   置き場が増えすぎないよう、使った順に 8 案件まで残す（古いものは 消す。案件ファイルは SharePoint に残っている）。 */
+var CG_SLOT = /^cg_[a-z]_[A-Za-z0-9_-]{1,60}$/.test(window.name || "") ? window.name : "";
+var CG_STATE_KEY = CG_SLOT ? "chokoku.state." + CG_SLOT : "chokoku.state";
+var CG_RUB_KEY = CG_SLOT ? "rub." + CG_SLOT : "rub";
+function cgSlotTouch(){
+  if (!CG_SLOT) return;
+  try {
+    var o = JSON.parse(localStorage.getItem("chokoku.slots") || "{}") || {};
+    o[CG_SLOT] = Date.now();
+    var ks = Object.keys(o).sort(function(a, b){ return o[b] - o[a]; });
+    ks.slice(8).forEach(function(k){ cgSlotDrop(k); delete o[k]; });
+    localStorage.setItem("chokoku.slots", JSON.stringify(o));
+  } catch(e){}
+}
+function cgSlotDrop(k){
+  try { localStorage.removeItem("chokoku.state." + k); } catch(e){}
+  idb().then(function(db){ db.transaction("kv","readwrite").objectStore("kv").delete("rub." + k); }).catch(function(){});
+}
+/* 入りきらないときは、いちばん古い ほかの案件の控えから 消して やり直す */
+function cgSetState(str){
+  for (var i = 0; i < 8; i++){
+    try { localStorage.setItem(CG_STATE_KEY, str); return; }
+    catch(e){
+      var o = {}; try { o = JSON.parse(localStorage.getItem("chokoku.slots") || "{}") || {}; } catch(e2){}
+      var old = Object.keys(o).filter(function(k){ return k !== CG_SLOT; }).sort(function(a, b){ return o[a] - o[b]; })[0];
+      if (!old) throw e;
+      cgSlotDrop(old); delete o[old];
+      try { localStorage.setItem("chokoku.slots", JSON.stringify(o)); } catch(e3){}
+    }
+  }
+}
+var _cgTouched = false;
 function persist(){
+  if (!_cgTouched){ _cgTouched = true; cgSlotTouch(); }
   try {
     /* 画像本体は IndexedDB に置く。localStorage には入れない。 */
     S.view = view;
@@ -7963,7 +8000,7 @@ function persist(){
        ここにも入れると 同じものを 2 重に置くことになるので外す
        （案件ファイルへの写しは、そのまま入る）。 */
     delete copy.rub.tehon; delete copy.rub.tehonNg;
-    localStorage.setItem("chokoku.state", JSON.stringify(copy));
+    cgSetState(JSON.stringify(copy));
   } catch(e){}
 }
 /* 起動して前回の続きを戻すときの、進み具合。
@@ -7980,7 +8017,9 @@ function tick(){ return new Promise(function(r){ setTimeout(r, 0); }); }
 
 async function restore(){
   try {
-    var raw = localStorage.getItem("chokoku.state");
+    /* この窓の 置き場。まだ無ければ これまでの置き場（別の案件なら 受け取ったときに 捨てる） */
+    var raw = localStorage.getItem(CG_STATE_KEY);
+    if (!raw && CG_SLOT) raw = localStorage.getItem("chokoku.state");
     if (raw){
       var o = JSON.parse(raw);
       if (o && Array.isArray(o.groups)) S = o;
@@ -11420,13 +11459,17 @@ function loadRubImage(src, srcName){
   im.src = src;
 }
 async function saveRubCache(src){
-  try { var db = await idb(); db.transaction("kv","readwrite").objectStore("kv").put(src, "rub"); } catch(e){}
+  try { var db = await idb(); db.transaction("kv","readwrite").objectStore("kv").put(src, CG_RUB_KEY); } catch(e){}
 }
 async function loadRubCache(){
   try { var db = await idb();
     return await new Promise(function(res){
-      var rq = db.transaction("kv").objectStore("kv").get("rub");
-      rq.onsuccess = function(){ res(rq.result || null); }; rq.onerror = function(){ res(null); };
+      var st = db.transaction("kv").objectStore("kv"), rq = st.get(CG_RUB_KEY);
+      rq.onsuccess = function(){
+        if (rq.result || !CG_SLOT){ res(rq.result || null); return; }
+        var r2 = st.get("rub"); r2.onsuccess = function(){ res(r2.result || null); }; r2.onerror = function(){ res(null); };   /* これまでの置き場 */
+      };
+      rq.onerror = function(){ res(null); };
     });
   } catch(e){ return null; }
 }

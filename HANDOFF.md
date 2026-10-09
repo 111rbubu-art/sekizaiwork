@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-09-19
-**index_b.html = v1.9.517**／**index.html = v1.9.517**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.518**／**index.html = v1.9.518**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -861,3 +861,8 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
   そのあと 選んだ JPEG を ダウンロード（Gmail の作成画面には 自動で付けられないので、ドラッグで 付けてもらう）。③ に 今日の行が無ければ 足す。
 - 彫刻原稿へ渡す 家名・寺名：分類＝彫刻校正は 依頼明細の 家名・寺名（確認資料の ファイル名「家名-確認資料-日付-時刻.jpg」に 出る）。
 - メモ：テスト環境（LANG なし）の Chromium は 日本語の ダウンロード名を「download」にする。LANG=C.UTF-8 なら 日本語のまま（Windows の Chrome は問題なし）。
+
+### v1.9.518 彫刻原稿を 案件ごとに 別の窓で（chokoku-genko v46.6 と組）
+- 本人「彫刻原稿で 1 つの案件の作業中に 別の案件の彫刻原稿を起動すると 上書きされる。別々で立ち上がるように」。
+- `openChokokuGenko`：窓の名前を `cg_n_<id>`（納骨リスト）／`cg_k_<id>`（工事関連）に。開いた窓は `_cgWins` に覚え、同じ案件なら 前に出して 案件の情報だけ渡す。
+  彫刻原稿の側は この名前で 作業中の控え（localStorage・IndexedDB）を分ける（HANDOFF-chokoku-genko.md v46.6）。

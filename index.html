@@ -7904,7 +7904,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.516';
+var APP_VERSION = 'v1.9.517';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8427,8 +8427,8 @@ function _chokokuGenkoHandoff(d) {
     driveName: 'ドキュメント',
     folderPath: _getItemFolderPath(d),   // 例: /納骨/慈宏寺/... 読み込みも保存もここが基準
     info: {
-      temple:       String(G(d, 'お寺') || ''),
-      family:       v('_x304a__x5893__x306e__x540d__x7f'),                                    // お墓の名義
+      temple:       (G(d, '分類') === '彫刻校正' && _reqKT(d).tera) || String(G(d, 'お寺') || ''),        // 彫刻校正は 依頼明細の 寺名（v1.9.517）
+      family:       (G(d, '分類') === '彫刻校正' && _reqKT(d).kamei) || v('_x304a__x5893__x306e__x540d__x7f'),   // お墓の名義（彫刻校正は 依頼明細の 家名）
       customer:     String(G(d, '顧客名') || d['Customers'] || ''),                            // 顧客名（彫刻原稿の見出しに出す）
       date:         String(G(d, '納骨日') || '').slice(0, 10),                                // 納骨日（2026/09/01）そのまま
       chokokuBasho: v('_x5f6b__x523b__x5834__x6240_'),                                        // 彫刻予定場所
@@ -26796,7 +26796,8 @@ var SP_UI_KEYS = [
   'receipt.master.v1', // 領収書の原本（題字・差出人・添え状・社印。会社ぜんぶで共通）
   'receipt.seq.v1',    // 領収書番号の枝番（日付ごと。ほかのパソコンと重ならないように）
   'ai_endpoint_openai', // AI（Ollama）の接続先（同上。APIキーは端末ごとのまま）
-  'ai_voice_dict_v1'  // 声の言葉帳（お寺の読み・聞きちがい。全員で共通）
+  'ai_voice_dict_v1',  // 声の言葉帳（お寺の読み・聞きちがい。全員で共通）
+  'cho_mail_v1'       // 彫刻校正の メール：業者ごとの宛先・件名と本文の ひな形（全員で共通。v1.9.517）
 ];
 var _spUiSaveTimer = null;
 function loadSettingsFromSP(){
@@ -29821,6 +29822,8 @@ function _choStepsHtml(d) {
         return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12px;color:#555;min-width:52px">' + (i + 1) + ' 回目</span>' + row(c, r, i) + '</div>';
       }).join('') +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12px;color:#888;min-width:52px">' + (arr.length + 1) + ' 回目</span>' + row(c, null, arr.length, true) + '</div>';
+      /* ③：確認資料（JPEG）を 業者へ メール（v1.9.517） */
+      if (c.k === 's3') body += '<button onclick="_choMailOpen()" style="align-self:flex-start;font-size:12px;padding:4px 10px;border:1px solid #c5a3e0;background:#f6effc;color:#5a2a8a;border-radius:6px;cursor:pointer;font-family:inherit">✉️ 校正を送る（Gmail）</button>';
     } else {
       body = row(c, done ? st[c.k] : null, null, !done);
       /* ①：拓本を上げる（v1.9.509）。フォルダーのトップへ（データタブの［📋 拓本データ］と同じ） */
@@ -29855,6 +29858,179 @@ function _choRubUp(inp) {
     if (!d['FolderPass']) throw new Error('フォルダーが できませんでした');
     return go();
   }).catch(function (e) { showSaveToast(false, '拓本を上げられませんでした: ' + ((e && e.message) || e)); });
+}
+/* ───── **彫刻校正：校正（確認資料）を 業者へ メール**（v1.9.517。本人「文字校正が出来上がったら 依頼業者にメールする。いつも同じ作業なので効率化」
+   → 「カレンダーは会社の代表、メールは従業員の Gmail」「Google アカウントが複数」「送る資料は 確認資料タブで JPEG で出力されるもの」）─────
+   ［✉️ 校正を送る］→ 確かめの窓：送る Gmail（この パソコンに 登録した中から）・宛先（業者ごとに 覚える）・件名・本文（ひな形から）・
+   添付する 確認資料（案件フォルダーの JPEG。名前に「確認資料」が入る 新しいものを 先に選ぶ）。
+   ［Gmail を開く］で、選んだ アカウントの Gmail の 新規作成を 宛先・件名・本文 入りで開き、選んだ JPEG を このパソコンに ダウンロードする
+   （Gmail の作成画面は ファイルを 自動では付けられないので、ダウンロードした JPEG を ドラッグで 付けて 送る）。③ に 今日の日付も 入れる。
+   宛先・ひな形は SharePoint の 共通設定（cho_mail_v1）、Gmail の一覧は この パソコンだけ（gmail_accts_v1）。 */
+var _CHO_MAIL_DEF = {
+  subject: '【彫刻校正】{案件}　校正のご確認',
+  body: '{業者名}\nご担当者様\n\nいつもお世話になっております。\n{案件}の彫刻校正ができましたので、お送りいたします。\n添付の確認資料をご確認のうえ、ご返信いただけますと幸いです。\n\n【彫刻内容】\n{彫刻内容}\n\nよろしくお願いいたします。\n\n庄司石材店　{差出人}'
+};
+function _choMailCfg() {
+  var o = null; try { o = JSON.parse(localStorage.getItem('cho_mail_v1') || 'null'); } catch (e) {}
+  if (!o || typeof o !== 'object') o = {};
+  if (!o.to || typeof o.to !== 'object') o.to = {};
+  return o;
+}
+function _choMailCfgSave(o) { try { localStorage.setItem('cho_mail_v1', JSON.stringify(o)); } catch (e) {} try { saveSettingsToSP(); } catch (e) {} }
+function _choMailAccts() {
+  var o = null; try { o = JSON.parse(localStorage.getItem('gmail_accts_v1') || 'null'); } catch (e) {}
+  if (!o || !Array.isArray(o.list)) o = { list: [], last: '' };
+  return o;
+}
+function _choMailAcctsSave(o) { try { localStorage.setItem('gmail_accts_v1', JSON.stringify(o)); } catch (e) {} }
+/* 差し込み：{業者名}{家名}{寺名}{案件}{彫刻内容}{差出人}{日付} */
+function _choMailVars(d) {
+  var kt = _reqKT(d), items = [];
+  try { var p = JSON.parse(d['RequestDetails'] || '{}'); if (p && Array.isArray(p.items)) items = p.items; } catch (e) {}
+  var kamei = kt.kamei || '', tera = kt.tera || '';
+  var t = new Date();
+  return {
+    '業者名': d['_x9867__x5ba2__x540d_'] || '', '家名': kamei, '寺名': tera,
+    '案件': kamei && tera ? kamei + '（' + tera + '）' : (kamei || tera || 'ご依頼分'),
+    '彫刻内容': String((items[0] && items[0].memo) || '').trim(),
+    '差出人': (typeof _loginSurname !== 'undefined' && _loginSurname) || '',
+    '日付': (t.getMonth() + 1) + '月' + t.getDate() + '日'
+  };
+}
+function _choMailFill(tpl, v) { return String(tpl || '').replace(/\{(業者名|家名|寺名|案件|彫刻内容|差出人|日付)\}/g, function (m, k) { return v[k] || ''; }); }
+function _choMailOpen() {
+  var d = currentItem; if (!d) return;
+  var cfg = _choMailCfg(), ac = _choMailAccts(), v = _choMailVars(d), E = _escHtml;
+  var vendor = v['業者名'];
+  var old = document.getElementById('cho-mail'); if (old) old.remove();
+  var ov = document.createElement('div'); ov.id = 'cho-mail';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px';
+  var lb = 'display:block;font-size:12px;color:#5a2a8a;font-weight:700;margin:10px 0 3px';
+  var ip = 'width:100%;box-sizing:border-box;font-size:13px;padding:6px 8px;border:1px solid #ccd;border-radius:6px;font-family:inherit';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:12px;width:min(640px,100%);max-height:94vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.3);padding:16px 18px">' +
+      '<div style="display:flex;align-items:center;gap:8px"><b style="font-size:16px;color:#5a2a8a">✉️ 校正を送る（Gmail）</b><span style="flex:1"></span>' +
+        '<button data-cm="close" style="border:none;background:none;font-size:18px;cursor:pointer;color:#666">✕</button></div>' +
+      '<label style="' + lb + '">送る Gmail（このパソコンに 登録した アカウント）</label>' +
+      '<div style="display:flex;gap:6px;align-items:center"><select id="cm-acct" style="' + ip + ';flex:1"></select>' +
+        '<button data-cm="addacct" style="font-size:12px;padding:5px 9px;border:1px solid #c5a3e0;background:#f6effc;color:#5a2a8a;border-radius:6px;cursor:pointer;white-space:nowrap;font-family:inherit">＋ 追加</button>' +
+        '<button data-cm="delacct" title="選んでいる アカウントを 一覧から外す" style="font-size:12px;padding:5px 9px;border:1px solid #ddd;background:#fff;color:#a33;border-radius:6px;cursor:pointer;font-family:inherit">外す</button></div>' +
+      '<label style="' + lb + '">宛先（' + E(vendor || '業者') + '）</label>' +
+      '<input id="cm-to" type="email" style="' + ip + '" placeholder="例：info@example.co.jp" value="' + E(cfg.to[vendor] || '') + '">' +
+      '<label style="font-size:11.5px;color:#555;display:flex;align-items:center;gap:4px;margin-top:3px"><input type="checkbox" id="cm-remember" checked>この業者の 宛先として 覚える（全員で共通）</label>' +
+      '<label style="' + lb + '">件名</label><input id="cm-sub" style="' + ip + '" value="' + E(_choMailFill(cfg.subject || _CHO_MAIL_DEF.subject, v)) + '">' +
+      '<label style="' + lb + '">本文</label><textarea id="cm-body" rows="11" style="' + ip + ';resize:vertical;line-height:1.5">' + E(_choMailFill(cfg.body || _CHO_MAIL_DEF.body, v)) + '</textarea>' +
+      '<details style="margin-top:4px;font-size:12px;color:#555"><summary style="cursor:pointer;color:#5a2a8a">ひな形を 直す（全員で共通）</summary>' +
+        '<div style="padding:6px 0">差し込み：{業者名} {家名} {寺名} {案件}（家名と寺名） {彫刻内容} {差出人} {日付}' +
+        '<input id="cm-tsub" style="' + ip + ';margin-top:5px" value="' + E(cfg.subject || _CHO_MAIL_DEF.subject) + '">' +
+        '<textarea id="cm-tbody" rows="8" style="' + ip + ';margin-top:5px;resize:vertical">' + E(cfg.body || _CHO_MAIL_DEF.body) + '</textarea>' +
+        '<div style="display:flex;gap:6px;margin-top:5px"><button data-cm="tsave" style="font-size:12px;padding:4px 10px;border:1px solid #5a2a8a;background:#5a2a8a;color:#fff;border-radius:6px;cursor:pointer;font-family:inherit">ひな形を 保存して 上に 入れ直す</button>' +
+        '<button data-cm="treset" style="font-size:12px;padding:4px 10px;border:1px solid #ccd;background:#fff;border-radius:6px;cursor:pointer;font-family:inherit">はじめの ひな形に 戻す</button></div></div></details>' +
+      '<label style="' + lb + '">添付する 確認資料（このパソコンに ダウンロードします）</label>' +
+      '<div id="cm-files" style="border:1px solid #e3d6ef;border-radius:8px;padding:6px;max-height:220px;overflow:auto;font-size:12.5px;color:#888">読み込んでいます…</div>' +
+      '<label style="font-size:12px;color:#333;display:flex;align-items:center;gap:4px;margin-top:10px"><input type="checkbox" id="cm-s3" checked>③ 校正し連絡 に 今日の日付を 入れる</label>' +
+      '<div style="font-size:11px;color:#777;margin-top:8px;line-height:1.6">［Gmail を開く］で、新しいタブに Gmail の 新規作成が 開きます。ダウンロードした JPEG を その画面へ ドラッグして 付けてから 送信してください。</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+        '<button data-cm="close" style="font-size:13px;padding:8px 16px;border:1px solid #ccd;background:#fff;border-radius:8px;cursor:pointer;font-family:inherit">やめる</button>' +
+        '<button data-cm="go" style="font-size:13px;padding:8px 18px;border:none;background:#5a2a8a;color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-family:inherit">✉️ Gmail を開く</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  var sel = document.getElementById('cm-acct');
+  var drawAcct = function () {
+    var a = _choMailAccts();
+    sel.innerHTML = a.list.map(function (m) { return '<option value="' + E(m) + '"' + (m === a.last ? ' selected' : '') + '>' + E(m) + '</option>'; }).join('') +
+      '<option value=""' + (!a.last || a.list.indexOf(a.last) < 0 ? ' selected' : '') + '>（指定しない：ブラウザの いつもの アカウント）</option>';
+  };
+  drawAcct();
+  ov.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-cm]'); if (!b) { if (e.target === ov) ov.remove(); return; }
+    var k = b.getAttribute('data-cm');
+    if (k === 'close') ov.remove();
+    else if (k === 'addacct') {
+      var m = (prompt('このパソコンで 使う Gmail の アドレス（そのブラウザで Google に ログインしている アカウント）') || '').trim();
+      if (!m) return;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m)) { alert('アドレスの形が 正しくありません。'); return; }
+      var a = _choMailAccts(); if (a.list.indexOf(m) < 0) a.list.push(m); a.last = m; _choMailAcctsSave(a); drawAcct();
+    } else if (k === 'delacct') {
+      var cur = sel.value; if (!cur) return;
+      if (!confirm('「' + cur + '」を 一覧から 外しますか（Gmail は そのままです）。')) return;
+      var a2 = _choMailAccts(); a2.list = a2.list.filter(function (x) { return x !== cur; }); if (a2.last === cur) a2.last = ''; _choMailAcctsSave(a2); drawAcct();
+    } else if (k === 'tsave' || k === 'treset') {
+      var c2 = _choMailCfg();
+      if (k === 'treset') { if (!confirm('はじめの ひな形に 戻しますか（全員で共通）。')) return; delete c2.subject; delete c2.body; }
+      else { c2.subject = document.getElementById('cm-tsub').value; c2.body = document.getElementById('cm-tbody').value; }
+      _choMailCfgSave(c2);
+      document.getElementById('cm-tsub').value = c2.subject || _CHO_MAIL_DEF.subject; document.getElementById('cm-tbody').value = c2.body || _CHO_MAIL_DEF.body;
+      document.getElementById('cm-sub').value = _choMailFill(c2.subject || _CHO_MAIL_DEF.subject, v);
+      document.getElementById('cm-body').value = _choMailFill(c2.body || _CHO_MAIL_DEF.body, v);
+      showSaveToast(true, 'メールの ひな形を 保存しました');
+    } else if (k === 'go') _choMailGo(d, ov);
+  });
+  _choMailFiles(d);
+}
+/* 案件フォルダーの 画像（JPEG・PNG）。名前に「確認資料」が入るものを 先に・新しい順。いちばん新しい 確認資料に チェック */
+function _choMailFiles(d) {
+  var box = document.getElementById('cm-files'); if (!box) return;
+  var fp = d['FolderPass'] || '';
+  if (!fp) { box.innerHTML = '<span style="color:#a33">案件の フォルダーが ありません。添付なしで 送るか、先に フォルダーを作って 確認資料を 保存してください。</span>'; return; }
+  getToken().then(function (resp) {
+    var enc = fp.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/children?$top=999&$select=name,file,size,lastModifiedDateTime&$expand=thumbnails', { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function (r) { if (!r.ok) throw new Error('フォルダーを 読めません (' + r.status + ')'); return r.json(); }).then(function (j) {
+    var fs = (j.value || []).filter(function (f) { return f.file && /\.(jpe?g|png)$/i.test(f.name); });
+    fs.sort(function (a, b) {
+      var ka = /確認資料/.test(a.name) ? 0 : 1, kb = /確認資料/.test(b.name) ? 0 : 1;
+      if (ka !== kb) return ka - kb;
+      return String(b.lastModifiedDateTime).localeCompare(String(a.lastModifiedDateTime));
+    });
+    if (!fs.length) { box.innerHTML = '<span>画像が ありません。彫刻原稿の［確認資料］→［JPEGで保存］→ 共有フォルダー で 保存してください。</span>'; return; }
+    var first = /確認資料/.test(fs[0].name) ? fs[0].name : '';
+    box.innerHTML = fs.map(function (f) {
+      var th = f.thumbnails && f.thumbnails[0] && (f.thumbnails[0].small || f.thumbnails[0].medium);
+      var t = new Date(f.lastModifiedDateTime), z = function (n) { return (n < 10 ? '0' : '') + n; };   // この パソコンの 時刻で
+      var dt = isNaN(t) ? '' : t.getFullYear() + '-' + z(t.getMonth() + 1) + '-' + z(t.getDate()) + ' ' + z(t.getHours()) + ':' + z(t.getMinutes());
+      return '<label style="display:flex;align-items:center;gap:8px;padding:4px;border-bottom:1px solid #f2ecf7;cursor:pointer;color:#333">' +
+        '<input type="checkbox" class="cm-f" value="' + _escHtml(f.name) + '"' + (f.name === first ? ' checked' : '') + '>' +
+        (th ? '<img src="' + _escHtml(th.url) + '" style="width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid #eee">' : '<span style="width:44px;text-align:center">🖼</span>') +
+        '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _escHtml(f.name) + '</span>' +
+        '<span style="font-size:11px;color:#999;white-space:nowrap">' + _escHtml(dt) + '</span></label>';
+    }).join('');
+  }).catch(function (e) { box.innerHTML = '<span style="color:#a33">' + _escHtml((e && e.message) || String(e)) + '</span>'; });
+}
+function _choMailGo(d, ov) {
+  var acct = document.getElementById('cm-acct').value;
+  var to = document.getElementById('cm-to').value.trim();
+  var sub = document.getElementById('cm-sub').value, body = document.getElementById('cm-body').value;
+  if (to && !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(to)) { alert('宛先の アドレスの形が 正しくありません。'); return; }
+  var files = Array.prototype.map.call(ov.querySelectorAll('.cm-f:checked'), function (c) { return c.value; });
+  /* 先に Gmail を開く（押した すぐあとでないと 新しいタブが 止められる） */
+  var url = 'https://mail.google.com/mail/?' + (acct ? 'authuser=' + encodeURIComponent(acct) + '&' : '') +
+    'view=cm&fs=1&to=' + encodeURIComponent(to) + '&su=' + encodeURIComponent(sub) + '&body=' + encodeURIComponent(body);
+  var w = window.open(url, '_blank');
+  if (!w) { alert('新しいタブを 開けませんでした（ポップアップが 止められています）。アドレス欄の右の マークから 許可してください。'); return; }
+  var vendor = d['_x9867__x5ba2__x540d_'] || '';
+  if (document.getElementById('cm-remember').checked && vendor && to) { var c = _choMailCfg(); if (c.to[vendor] !== to) { c.to[vendor] = to; _choMailCfgSave(c); } }
+  var a = _choMailAccts(); a.last = acct; _choMailAcctsSave(a);
+  var s3 = document.getElementById('cm-s3').checked;
+  ov.remove();
+  /* ③ 校正し連絡：今日の行が まだ無ければ 足す */
+  if (s3 && currentItem === d) {
+    var arr = Array.isArray(_choSteps(d).s3) ? _choSteps(d).s3 : [], today = _choToday();
+    if (!arr.some(function (r) { return r && r.date === today; })) _choDate('s3', arr.length, today);
+  }
+  /* 選んだ JPEG を このパソコンへ */
+  var fp = d['FolderPass'] || '';
+  if (!files.length || !fp) return;
+  showSaveToast(null, '確認資料を ダウンロードしています…');
+  files.reduce(function (pr, nm) {
+    return pr.then(function () { return _spFetchBytes(fp + '/' + nm); }).then(function (buf) {
+      var u = URL.createObjectURL(new Blob([buf], { type: /\.png$/i.test(nm) ? 'image/png' : 'image/jpeg' }));
+      var el = document.createElement('a'); el.href = u; el.download = nm; document.body.appendChild(el); el.click(); el.remove();
+      setTimeout(function () { URL.revokeObjectURL(u); }, 60000);
+    });
+  }, Promise.resolve()).then(function () {
+    showSaveToast(true, '確認資料 ' + files.length + ' 件を ダウンロードしました。Gmail の画面へ ドラッグして 付けてください');
+  }).catch(function (e) { showSaveToast(false, 'ダウンロードできませんでした: ' + ((e && e.message) || e)); });
 }
 /* 日付を入れる／消す。③ は idx 番目（新しい行なら 足す） */
 function _choDate(k, idx, v) {

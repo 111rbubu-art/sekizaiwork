@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-10-09　**chokoku-genko.html = v47.7**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
+最終更新: 2026-10-09　**chokoku-genko.html = v47.8**／**index_b.html = v1.9.463**／**tekkyo.html = v3.5**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）
@@ -7286,3 +7286,12 @@ rubPanel のはじめで rubBar を呼ぶ。確かめ：取り込み→保存→
 - 本人「パス編集で 拓本を動かすが、大まかに合わせるボタンを押すと 無効化される。微調整で使うので、無効化しないで」。
 - `peFitTest` の あとの `PE.rubLock = true`（v20.58：合わせたあとに動かすと 合わせた意味がなくなる）を やめ、
   道具ボタンの同期も `disabled = !PE.rub` だけに（拓本が無いときだけ 押せない）。
+
+### v47.8 文字の大きさの欄：「文字サイズ」＋［横・縦を別々に］・［縦を横と同じに］を なくす
+- 本人「縦と横を同じには不要（感覚的にどちらに合うか分からず、間違うと手動で直す）」「デザイン的にもやりやすく。文字サイズ［欄］＋チェック、チェックで 横・縦」→ 案 A を選んだ。
+- `sizeBoxHtml(ids, w, wPh, h, hPh, extra)`／`sizeBoxBind(ids, get, set)` を 3 か所で共通に：グループの欄（pSz/pSep/pWH/pW/pH）、
+  グループのメニュー（gmSz/gmSep/gmWH/gmW/gmH）、1 字のメニュー（mScSz/mScSep/mScWH/mScW/mScH）。
+  - 文字サイズ＝縦の寸法。打つと 横も 打ち始めの縦横比で 変わる（`set(h, w)`）。縦の欄を 直すと 文字サイズの欄も 合わせる。
+  - ［横・縦を別々に］＝ `!S.linkWH`。入れると 横・縦の欄（`.wh2`）が出て、これまでの 連動 切 と同じく 別々に 直せる。
+    `.wh2` は display:flex なので `.wh2[hidden]{display:none}` が要る。
+- ［縦を横と同じに］（pSquare・gmSquare）と 連動スイッチ（pLink・gmLink・mScLink）は 画面から なくした（ハンドラは 要素が無ければ 何もしない）。

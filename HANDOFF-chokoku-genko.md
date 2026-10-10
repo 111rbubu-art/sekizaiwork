@@ -1,6 +1,6 @@
 # 引継ぎメモ — 彫刻原稿（chokoku-genko.html）
 
-最終更新: 2026-10-09　**chokoku-genko.html = v48.3**／**index_b.html = v1.9.463**／**tekkyo.html = v3.6**
+最終更新: 2026-10-09　**chokoku-genko.html = v48.3**／**index_b.html = v1.9.463**／**tekkyo.html = v3.7**
 
 新しいセッションを始めたら、まずこのファイルを読んでください。
 （アプリ全体の古い資料は `HANDOFF.md`。バージョン記述が v1.9.073 のまま古いので注意）

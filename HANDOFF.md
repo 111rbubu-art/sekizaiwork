@@ -885,3 +885,17 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
   計算は 2×カロート御影のダンプ単価 で、8寸だと 表示 12,000／見積 15,000）。表示を 計算と同じ `sekiShobunCalc()` に
 - 読み込みで、保存に無い表が `DEFAULT_MASTER` と同じものを指していた（書き換えると 既定値まで変わる）ので、既定値の写しを土台にした
 - 単価マスタは これまでどおり PC ごと（localStorage）。［💾 単価マスタを保存］で残る
+
+### tekkyo.html v3.7 撤去 見積：単価マスタを SharePoint で 全員・全パソコン共有に
+- 本人「単価マスタを SharePoint に置いて、全員・全PCで共有するにして」（前は PC ごとの localStorage `tekkyo_master` だけ）
+- 置き場所 **`/業務アプリ/tekkyo_master.json`**（`app_ui_settings.json` と同じフォルダ）。中身 `{v:1, savedAt, master}`
+- 読み書きは 開いた 工事関連の画面（index.html）の 既存の受け渡し `downloadJsonFromFolderPassFromTekkyo`／`uploadJsonToFolderPassFromTekkyo`
+  （フォルダに `/業務アプリ` を渡す）。index.html／index_b.html は 変えていない
+- 開いたとき `masterSyncFromSP()`：共有があれば それで MASTER を差し替え（localStorage の控えも上書き）→ 描き直し・計算し直し。
+  無い（itemNotFound）ときは 勝手に上げず、「［💾 単価マスタを保存］で このパソコンの単価を 共有に登録」と出す
+- ［💾 単価マスタを保存］`saveMaster()`：共有に書く。開いたあとに ほかのパソコンが保存していたら（`savedAt` が 読んだ版と ちがう）上書きしてよいか聞く
+- 工事関連の画面から開いていない（`window.opener` に 受け渡しが無い）ときは これまでどおり このパソコンだけ（そう出す）
+- 単価マスタタブの頭に 状態の帯 `#master_status`（共有を使用中／まだ無い／読めない／このパソコンだけ／変更して未保存）。
+  単価マスタの未保存も 閉じるときに 聞く（`MASTER_DIRTY`）
+- 保存した単価マスタの 古い名前の直し・足りない表の補いは `normalizeMaster()` に まとめた（共有・控え どちらも通す）
+- 見積のデータ（SP保存・PC保存）には 今も単価は入っていない（開くと そのときの単価で計算し直す）

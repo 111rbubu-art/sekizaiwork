@@ -86,6 +86,15 @@ table.items .subtot{background:#cfe5d4;font-weight:700}
 table.items .gtot{background:#fff4b8;font-weight:700;font-size:13px}
 table.items .ref{background:#f5f5f5;color:#666;font-style:italic;text-align:right}
 
+/* 単価マスタの 共有の状態（v3.7） */
+.master-status{font-size:12px;padding:7px 12px;border-radius:5px;margin-bottom:12px;border:1px solid #d4d9e0;background:#f5f7fa;color:#333}
+.master-status:empty{display:none}
+.master-status.ok{background:#ecfdf3;border-color:#a7dcb9;color:#166534}
+.master-status.busy{background:#f0f6ff;border-color:#b7d0f0;color:#1a4a8a}
+.master-status.warn{background:#fff7e6;border-color:#f0d39a;color:#8a5200}
+.master-status.err{background:#fdecec;border-color:#f0b4b4;color:#9a2a2a}
+.master-status.local{background:#f5f5f5;border-color:#d0d0d0;color:#555}
+.master-status.dirty{background:#fff4d6;border-color:#e8c46a;color:#7a4a00;font-weight:600}
 /* 撤去種類の横の 小さな注記（v3.6） */
 .type-note{font-size:11px;color:#9a5a00;background:#fff7e6;border:1px solid #f0d39a;border-radius:3px;padding:2px 6px;align-self:flex-end;margin-bottom:7px}
 .type-note[hidden]{display:none}
@@ -264,7 +273,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 
 <div class="topbar">
   <h1>撤去工事 見積システム</h1>
-  <span class="ver">v3.6</span>
+  <span class="ver">v3.7</span>
   <div class="topbar-btns">
     <div class="row">
       <span class="mode-toggle" id="mode_toggle" title="保存先：PC=ブラウザ内 / SP=SharePoint">
@@ -454,6 +463,9 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 <!-- =================== 単価マスタタブ =================== -->
 <div class="wrap" id="tab-master" style="display:none">
 
+  <!-- 単価マスタは SharePoint で 全員・全パソコン共有（v3.7）。いま どれを使っているかを ここに出す -->
+  <div class="master-status" id="master_status"></div>
+
   <div class="master-3col">
     <div class="panel">
       <h2>■ 基本単価・マスタ設定</h2>
@@ -585,7 +597,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
   </div>
 
   <div style="text-align:right;padding:10px 0">
-    <button class="btn ok" onclick="saveMaster()" style="background:#2d7a3d;color:#fff;padding:8px 18px">💾 単価マスタを保存</button>
+    <button class="btn ok" id="master_save_btn" onclick="saveMaster()" style="background:#2d7a3d;color:#fff;padding:8px 18px">💾 単価マスタを保存</button>
     <button class="btn warn" onclick="resetMaster()" style="background:#9a3a3a;color:#fff;padding:8px 18px">🔄 初期値に戻す</button>
   </div>
 
@@ -976,6 +988,7 @@ function updateMasterField(el){
   // 文字列フィールド（unpan.N.name）はそのまま、数値はparseFloat
   const isText = el.type === 'text';
   obj[path[path.length-1]] = isText ? el.value : (parseFloat(el.value)||0);
+  masterTouched();
   recalc();
 
   // 石塔：係数・才数変更時に処分単価/m3換算/運搬費セルを即時更新（2 つの表とも）
@@ -1058,24 +1071,168 @@ function refreshUnpanCells(){
 function addUnpanRow(){
   if(!MASTER.unpan) MASTER.unpan = [];
   MASTER.unpan.push({name:'', toll:0, dist:0, maint:5000, hours:0});
+  masterTouched();
   renderMasterUI();
 }
 function delUnpanRow(i){
   if(!confirm('この行を削除しますか？')) return;
   MASTER.unpan.splice(i,1);
+  masterTouched();
   renderMasterUI();
   recalc();
 }
-function saveMaster(){
-  localStorage.setItem('tekkyo_master', JSON.stringify(MASTER));
-  alert('単価マスタを保存しました');
+/* ============ 単価マスタの共有（SharePoint。v3.7） ============
+   本人「単価マスタを SharePoint に置いて、全員・全PCで共有するにして」。
+   置き場所は /業務アプリ/tekkyo_master.json（UI設定 app_ui_settings.json と同じフォルダ）。中身は {v, savedAt, master}。
+   読み書きは 開いた 工事関連の画面（index.html）の 受け渡し関数を使う（サインインは あちらのもの）。
+     ・開いたとき … 共有があれば それを使う（このパソコンの控え localStorage も それで上書き）
+     ・［💾 単価マスタを保存］… 共有へ書く。開いたあとに ほかのパソコンが保存していたら 上書きしてよいか聞く
+     ・工事関連の画面から開いていない／つながらない … これまでどおり このパソコンだけ（そう出す）
+   共有がまだ無いときは 勝手に上げない。どのパソコンの単価を 全員のものにするかは 人が［保存］で決める。 */
+/* 保存してあった単価マスタ（このパソコンの控え・共有のどちらも）を 今の形にそろえる。
+   古い名前の直し・足りない表の補い。既定値は 写しを土台にする
+   （保存に無い表が DEFAULT_MASTER と同じものを指して、書き換えると既定値まで変わらないように） */
+function normalizeMaster(sv){
+  sv = (sv && typeof sv === 'object') ? JSON.parse(JSON.stringify(sv)) : {};
+  /* 「石塔のみ」の表（v3.6）が まだ無い保存は、いま使っている 石塔の表を写して始める */
+  if(!sv.sekitou_only && Array.isArray(sv.sekitou)) sv.sekitou_only = JSON.parse(JSON.stringify(sv.sekitou));
+  const M = Object.assign(JSON.parse(JSON.stringify(DEFAULT_MASTER)), sv);
+  // 旧キーのマイグレーション
+  if(M.basic){
+    if('撤去人件費（円/人・日）' in M.basic) delete M.basic['撤去人件費（円/人・日）'];
+    if('運搬費（円/m3）' in M.basic) delete M.basic['運搬費（円/m3）'];
+    if('残土処分費（合計）' in M.basic) delete M.basic['残土処分費（合計）'];
+    if('燃料代（円/日）' in M.basic){
+      if(!('燃料代（発電機・円/日）' in M.basic)){
+        M.basic['燃料代（発電機・円/日）'] = M.basic['燃料代（円/日）'];
+      }
+      delete M.basic['燃料代（円/日）'];
+    }
+    if('処分費 利益乗数' in M.basic){
+      if(!('処分費 利益乗数（外柵、土、コンクリ）' in M.basic)){
+        M.basic['処分費 利益乗数（外柵、土、コンクリ）'] = M.basic['処分費 利益乗数'];
+      }
+      delete M.basic['処分費 利益乗数'];
+    }
+  }
+  // caroto 名称マイグレーション（コンクリート→コンクリ）
+  if(M.caroto){
+    const rename = {'コンクリート 2段':'コンクリ 2段','コンクリート 1段':'コンクリ 1段','コンクリート枡 2段':'コンクリ枡 2段','コンクリート枡 1段':'コンクリ枡 1段'};
+    M.caroto.forEach(r=>{ if(rename[r.name]) r.name = rename[r.name]; });
+  }
+  // 体積参考表 初期化（旧データに無い場合）
+  if(!M.gaitetsu_ref) M.gaitetsu_ref = JSON.parse(JSON.stringify(DEFAULT_MASTER.gaitetsu_ref));
+  if(!M.kiso_ref)     M.kiso_ref     = JSON.parse(JSON.stringify(DEFAULT_MASTER.kiso_ref));
+  return M;
+}
+const MASTER_SP_DIR  = '/業務アプリ';
+const MASTER_SP_FILE = 'tekkyo_master.json';
+let MASTER_SP_AT = '';       // 使っている 共有の版の 保存日時（無ければ ''）
+let MASTER_DIRTY = false;    // 単価マスタを 変えて まだ保存していない
+function masterSpOk(){
+  try {
+    const w = window.opener;
+    return !!(w && !w.closed && w.uploadJsonToFolderPassFromTekkyo && w.downloadJsonFromFolderPassFromTekkyo);
+  } catch(e){ return false; }
+}
+function masterErrText(e){ return String((e && e.message) || e || '').slice(0, 120); }
+/* 共有を読む。まだ無ければ null。ほかの失敗は 投げる */
+async function masterSpRead(){
+  let t;
+  try { t = await window.opener.downloadJsonFromFolderPassFromTekkyo(MASTER_SP_DIR, MASTER_SP_FILE); }
+  catch(e){
+    if(/itemNotFound|could not be found|not found|404/i.test(masterErrText(e))) return null;
+    throw e;
+  }
+  const d = JSON.parse(t);
+  return (d && d.master && typeof d.master === 'object') ? d : null;
+}
+function fmtAt(iso){
+  const d = new Date(iso);
+  if(!iso || isNaN(d)) return '';
+  return `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function masterStatus(text, kind){
+  const el = $('master_status'); if(!el) return;
+  el.textContent = text || '';
+  el.className = 'master-status' + (kind ? ' ' + kind : '');
+}
+function masterStatusShared(){
+  masterStatus('☁ SharePoint の 共有の単価マスタ（' + fmtAt(MASTER_SP_AT) + ' 保存）を使っています。全員・全パソコンで 同じ単価です', 'ok');
+}
+function masterStatusLocal(){
+  masterStatus('💻 この単価マスタは このパソコンだけのものです。工事関連の画面の［撤去 見積請求書］から開くと、SharePoint の 共有の単価マスタを使います', 'local');
+}
+function masterTouched(){
+  MASTER_DIRTY = true;
+  masterStatus('✏ 単価マスタを変更しました（まだ保存していません）。［💾 単価マスタを保存］を押すと ' +
+    (masterSpOk() ? 'SharePoint に保存され、全員・全パソコンに反映されます' : 'このパソコンに保存されます'), 'dirty');
+}
+/* 開いたとき：共有を読んで 使う */
+async function masterSyncFromSP(){
+  if(!masterSpOk()){ masterStatusLocal(); return; }
+  masterStatus('☁ SharePoint の 共有の単価マスタを 読み込んでいます…', 'busy');
+  let d;
+  try { d = await masterSpRead(); }
+  catch(e){
+    masterStatus('⚠ SharePoint から 単価マスタを読み込めませんでした（' + masterErrText(e) + '）。このパソコンの単価マスタで 計算しています', 'err');
+    return;
+  }
+  if(!d){
+    masterStatus('⚠ 共有の単価マスタは まだありません。いま このパソコンの単価で 計算しています。［💾 単価マスタを保存］を押すと、この単価を 全員・全パソコンの共有として登録します', 'warn');
+    return;
+  }
+  if(MASTER_DIRTY){       /* 読み込みを待つ間に 人が単価を変えていたら 上書きしない */
+    MASTER_SP_AT = d.savedAt || '';
+    masterStatus('⚠ 共有の単価マスタ（' + fmtAt(d.savedAt) + ' 保存）がありますが、この画面で 変更中のため 読み込んでいません', 'warn');
+    return;
+  }
+  MASTER = normalizeMaster(d.master);
+  MASTER_SP_AT = d.savedAt || '';
+  try { localStorage.setItem('tekkyo_master', JSON.stringify(MASTER)); } catch(e){}
+  renderMasterUI();
+  recalc();
+  masterStatusShared();
+}
+async function saveMaster(){
+  try { localStorage.setItem('tekkyo_master', JSON.stringify(MASTER)); } catch(e){}
+  if(!masterSpOk()){
+    MASTER_DIRTY = false;
+    masterStatusLocal();
+    alert('単価マスタを このパソコンに保存しました。\nSharePoint（全員の共有）には 保存していません。\n共有するには、工事関連の画面の［撤去 見積請求書］から開いて 保存してください。');
+    return;
+  }
+  const btn = $('master_save_btn'); if(btn) btn.disabled = true;
+  try {
+    /* 開いたあとに ほかのパソコンで 保存されていないか */
+    const cur = await masterSpRead();
+    if(cur && (cur.savedAt || '') !== MASTER_SP_AT){
+      const ok = confirm('この画面を開いたあとに、ほかのパソコンで 単価マスタが保存されています（' + fmtAt(cur.savedAt) + '）。\n\n' +
+        '［OK］… この画面の単価で 上書きする\n［キャンセル］… 保存をやめる（最新を使うには、この画面を 開き直してください）');
+      if(!ok){ masterStatus('⚠ 保存をやめました。共有の単価マスタは ほかのパソコンで ' + fmtAt(cur.savedAt) + ' に保存されたものです', 'warn'); return; }
+    }
+    const at = new Date().toISOString();
+    await window.opener.uploadJsonToFolderPassFromTekkyo(
+      JSON.stringify({ v:1, savedAt:at, master:MASTER }, null, 1), MASTER_SP_FILE, MASTER_SP_DIR);
+    MASTER_SP_AT = at;
+    MASTER_DIRTY = false;
+    masterStatusShared();
+    alert('単価マスタを保存しました。\nSharePoint に共有したので、全員・全パソコンで この単価になります。');
+  } catch(e){
+    masterStatus('⚠ SharePoint に保存できませんでした（' + masterErrText(e) + '）。このパソコンには 保存しました', 'err');
+    alert('SharePoint に保存できませんでした。\n' + masterErrText(e) + '\n\nこのパソコンには 保存しました。');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
 }
 function resetMaster(){
-  if(!confirm('単価マスタを初期値に戻します。よろしいですか？')) return;
+  if(!confirm('単価マスタを 初期値に戻します。よろしいですか？\n（' +
+    (masterSpOk() ? '全員の共有も 初期値にするには、このあと［💾 単価マスタを保存］を押してください' : 'このパソコンの単価マスタが 初期値になります') + '）')) return;
   MASTER = JSON.parse(JSON.stringify(DEFAULT_MASTER));
   localStorage.removeItem('tekkyo_master');
   renderMasterUI();
   recalc();
+  if(masterSpOk()) masterTouched(); else masterStatusLocal();
 }
 
 /* ============ 単価ヘルパ ============ */
@@ -2118,7 +2275,7 @@ function setupDirtyTracking(){
   });
   // 離脱警告
   window.addEventListener('beforeunload', e=>{
-    if(IS_DIRTY){ e.preventDefault(); e.returnValue=''; return ''; }
+    if(IS_DIRTY || MASTER_DIRTY){ e.preventDefault(); e.returnValue=''; return ''; }   // 単価マスタの未保存も（v3.7）
   });
 }
 
@@ -2278,43 +2435,11 @@ function newDraft(){
 
 /* ============ 初期化 ============ */
 window.addEventListener('DOMContentLoaded', ()=>{
-  // 単価マスタ復元
+  // 単価マスタ復元（このパソコンの控え。共有［SharePoint］は あとで masterSyncFromSP が読んで 差し替える）
   const saved = localStorage.getItem('tekkyo_master');
   if(saved){
-    try {
-      const sv = JSON.parse(saved);
-      /* 「石塔のみ」の表（v3.6）が まだ無い保存は、いま使っている 石塔の表を写して始める */
-      if(sv && !sv.sekitou_only && Array.isArray(sv.sekitou)) sv.sekitou_only = JSON.parse(JSON.stringify(sv.sekitou));
-      /* 既定値は 写しを土台にする（保存に無い表が DEFAULT_MASTER と同じものを指して、書き換わらないように） */
-      MASTER = Object.assign(JSON.parse(JSON.stringify(DEFAULT_MASTER)), sv);
-    } catch(e){}
+    try { MASTER = normalizeMaster(JSON.parse(saved)); } catch(e){}
   }
-  // 旧キーのマイグレーション
-  if(MASTER.basic){
-    if('撤去人件費（円/人・日）' in MASTER.basic) delete MASTER.basic['撤去人件費（円/人・日）'];
-    if('運搬費（円/m3）' in MASTER.basic) delete MASTER.basic['運搬費（円/m3）'];
-    if('残土処分費（合計）' in MASTER.basic) delete MASTER.basic['残土処分費（合計）'];
-    if('燃料代（円/日）' in MASTER.basic){
-      if(!('燃料代（発電機・円/日）' in MASTER.basic)){
-        MASTER.basic['燃料代（発電機・円/日）'] = MASTER.basic['燃料代（円/日）'];
-      }
-      delete MASTER.basic['燃料代（円/日）'];
-    }
-    if('処分費 利益乗数' in MASTER.basic){
-      if(!('処分費 利益乗数（外柵、土、コンクリ）' in MASTER.basic)){
-        MASTER.basic['処分費 利益乗数（外柵、土、コンクリ）'] = MASTER.basic['処分費 利益乗数'];
-      }
-      delete MASTER.basic['処分費 利益乗数'];
-    }
-  }
-  // caroto 名称マイグレーション（コンクリート→コンクリ）
-  if(MASTER.caroto){
-    const rename = {'コンクリート 2段':'コンクリ 2段','コンクリート 1段':'コンクリ 1段','コンクリート枡 2段':'コンクリ枡 2段','コンクリート枡 1段':'コンクリ枡 1段'};
-    MASTER.caroto.forEach(r=>{ if(rename[r.name]) r.name = rename[r.name]; });
-  }
-  // 体積参考表 初期化（localStorage 旧データに無い場合）
-  if(!MASTER.gaitetsu_ref) MASTER.gaitetsu_ref = JSON.parse(JSON.stringify(DEFAULT_MASTER.gaitetsu_ref));
-  if(!MASTER.kiso_ref)     MASTER.kiso_ref     = JSON.parse(JSON.stringify(DEFAULT_MASTER.kiso_ref));
 
   $('b_estdate').value = todayISO();
   syncNos();
@@ -2337,6 +2462,8 @@ window.addEventListener('DOMContentLoaded', ()=>{
   initFromKouji();
   // 保存モード初期化（SP優先、不可ならPC固定）
   initSaveMode();
+  // 単価マスタは SharePoint の共有を使う（v3.7。読み込めたら 差し替えて 計算し直す）
+  masterSyncFromSP();
   // 未保存トラッキング開始
   setupDirtyTracking();
 });

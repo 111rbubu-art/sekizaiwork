@@ -1868,7 +1868,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
           <h3 class="sec">拓本に自動で合わせる</h3>
           <!-- 取り消しは 右に 小さく（v48.0。本人「ボタンが大きすぎ。大まかに合わせるの右に 小さめなリセットボタンで」）。合わせたあとだけ出る -->
           <div class="pefitrow">
-            <button class="mini" id="peFitTest" title="フォントの字を、拓本の 彫ってある字に いちばん重なるよう 自動で動かして、大きさ・傾きを合わせます">アルゴリズム実行</button>
+            <button class="mini" id="peFitTest" title="フォントの字を、拓本の 彫ってある字に いちばん重なるよう 自動で動かして、大きさ・傾きを合わせます。合わせる相手は AI 拓本解析の墨（まだ無ければ ここで AI に通します。数秒かかります）">アルゴリズム実行</button>
             <button class="mini" id="peFitUndo" hidden title="［アルゴリズム実行］を押す前の 形に戻します">↶リセット</button>
           </div>
 
@@ -2649,7 +2649,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v48.2";
+var APP_VER = "v48.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -27571,7 +27571,13 @@ function fitAiInk(P, raw){
      幅・高さ・ます目の大きさが変わる。AI の墨（`ink0`）は前の枠の並びなので、
      そのまま新しい幅で読むと **1 行ずつずれて横しま** になっていた。
      枠は `keyNG` に入っていない（輪郭は入っていない）ので、ここで長さを見て気づく。 */
-  if (A.ink0 && A.ink0.length !== G.w * G.h){
+  /* **長さが同じでも、枠が動いていれば置き直す**（v48.3）。ます目の数は 字の縦横比だけで決まる
+     （よこは いつも 256 ます）ので、［アルゴリズム実行］で字を 平行に動かしたり、点を動かしたりすると、
+     長さは同じまま 枠の位置（x0・y1）や ますの大きさだけ変わる。長さだけ見ていたので、
+     AI の墨が 動かした分だけ ずれて読まれていた。 */
+  var grA = A.gr;
+  if (A.ink0 && (A.ink0.length !== G.w * G.h ||
+      (grA && (grA.x0 !== G.x0 || grA.y1 !== G.y1 || grA.cell !== G.cell)))){
     var rg = fitInkRegrid(A.ink0, A.gr, G);
     if (!rg){ PE.aiInk = null; PE.aiDrop = true; return P; }
     if (A.gr && A.gr.cell) A.gwC0 = Math.round(num(A.gwC0, 0) * A.gr.cell / G.cell);
@@ -28630,7 +28636,8 @@ function fitEdgeURL(col){
     (PE && PE.aiDrop
       ? "【墨の拾い方が変わったので、［AI 書体補正］を切にしました。" +
         "もう一度押すと、いまの墨で通し直します】　" : "") +
-    (PE && PE.aiInk ? "【② 整える を通した墨です】　" : "") +
+    (PE && PE.aiInk ? (PE.aiInk.from === "trace" ? "【AI 拓本解析の墨です】　"     /* v48.3 */
+                                                 : "【② 整える を通した墨です】　") : "") +
     "拾った墨：" + (n * G.mmCell * G.mmCell).toFixed(0) + " mm²　" +
     "しきい値 " + FIT_DIAG.T + "（地 " + FIT_DIAG.lo + "／墨 " + FIT_DIAG.hi + "）　" +
     (FIT_DIAG.dark ? "白地に黒の字" : "黒地に白の字") + "として読みました（拓本の［反転］の設定どおり）　" +
@@ -29129,6 +29136,7 @@ function peFitTest(){
         "mm " + (best.wt > 0 ? "太い" : "細い") + "です（太さはまだ変えていません）"
       : "");
   msg("拓本に合わせました。一致 " + Math.round(nearB*100) + "% → " + Math.round(nearA*100) + "%。", false);
+  return { b: nearB, a: nearA };
 }
 
 /* --- 編集画面 --- */
@@ -30587,6 +30595,17 @@ $("peUndo").onclick = function(){ peUndoGo(); };
 function peUndoGo(){
   if (!PE || !PE.undo.length) return;
   var u = PE.undo.pop();
+  if (u && typeof u === "object" && u.ai !== undefined && u.c !== undefined){
+    /* ［アルゴリズム実行］（AI の墨で合わせる）を まとめて 1 手で戻す（v48.3） */
+    var aiBack = PE.aiInk !== u.ai;
+    PE.aiInk = u.ai; PE.aiDrop = false; PE_INFO_HOLD = false;
+    PE.contours = JSON.parse(u.c);
+    if (PE.fitBefore === u.c) PE.fitBefore = null;   /* 押す前に戻ったので［↶リセット］は 引っこめる */
+    PE.rubLock = false;
+    PE.sel = []; PE.selC = []; peRender(); peEdgeRedraw();
+    msg("［アルゴリズム実行］の前に戻しました" + (aiBack ? "（AI の墨も 押す前のものに戻しました）" : "") + "。");
+    return;
+  }
   if (u && typeof u === "object" && u.ai !== undefined){
     /* AI 書体補正（と［AI オート］）を 1 手ぶん戻す */
     PE.aiInk = u.ai; PE.aiDrop = false;
@@ -30732,7 +30751,73 @@ $("peRedC").onclick = function(){
              : "選んだ輪郭を 赤（ペンで書く）にしました。出力の赤に入ります。");
 };
 $("peRub").onchange = function(){ peRender(); };
-$("peFitTest").onclick = function(){ peFitTest(); };
+$("peFitTest").onclick = function(){ peFitGo(); };
+/* ［アルゴリズム実行］は **AI 拓本解析の墨に 合わせる**（v48.3。本人「このアルゴリズム実行は、
+   AIで拓本解析で出した墨を利用した方が 精度よくできませんか？」）。
+   前は しきい値で拾った墨（＝赤の縁取り。紙のむら・石の地・となりの字まで拾う）に合わせていたので、
+   一致を上げようとして 字が ごみの方へ 引っぱられることがあった。
+     ・AI の墨が もうあれば（作成の側で AI を通した字）、それに そのまま合わせる（前から fitPrep が差し替えていた）
+     ・無ければ ① しきい値の墨で 大まかに合わせる → ② その位置で［AI 拓本解析］→ ③ AI の墨に 合わせ直す
+       ①を先にするのは、AI に渡すのが **字のまわり 1.2 倍の正方形だけ**（takuShot）なので、
+       字が ずれたままだと 彫ってある字が はみ出るため
+     ・AI が使えない（サーバーに つながらない等）ときは ①のまま、そう知らせる
+   ［↶ 1つ戻す］は まとめて 1 手（形と AI の墨を いっしょに戻す）。［↶リセット］は 形だけ 押す前へ。
+   学習用には 保存しない（保存は 作成の側の［AI 書体補正］と［現トレースから字を作る］だけ）。 */
+var PE_FITGO = false;
+function peFitWait(){ return new Promise(function(r){ setTimeout(r, 30); }); }   /* ボタンの字を 描かせる */
+async function peFitGo(){
+  if (!PE || PE_FITGO || PE_AUTO) return;
+  if (!PE.rub || !RUB.data){ msg("この字には拓本が敷けません。", true); return; }
+  var pe = PE, b = $("peFitTest"), was = (b && b.textContent) || "アルゴリズム実行";
+  var n0 = PE.undo.length, c0 = JSON.stringify(PE.contours), ai0 = PE.aiInk || null;
+  var r1 = null, r2 = null, aiOk = false, aiNew = false;
+  PE_FITGO = true;
+  if (b) b.disabled = true;
+  try {
+    var P0 = fitPrep();                       /* 拾い方が変わっていれば、ここで 古い AI の墨は 捨てられる */
+    aiOk = !!(P0 && PE.aiInk);
+    if (!aiOk){
+      if (b) b.textContent = "① 大まかに…";
+      await peFitWait(); if (PE !== pe) return;
+      r1 = peFitTest();
+      if (b) b.textContent = "② AI 拓本解析…";
+      await peFitWait(); if (PE !== pe) return;
+      AI_TRACE_FAIL = "";
+      aiOk = await peAiTraceGo(true);
+      if (PE !== pe) return;                  /* 待っている間に 字が変わった（知らせは peAiStale が出す） */
+      aiNew = aiOk;
+    }
+    if (aiOk){
+      if (b) b.textContent = "③ AI の墨に合わせる…";
+      await peFitWait(); if (PE !== pe) return;
+      r2 = peFitTest();
+    }
+  } finally {
+    PE_FITGO = false;
+    if (b){ b.textContent = was; b.disabled = !(PE && PE.rub); }
+  }
+  if (PE !== pe) return;
+  /* 控えを まとめて 1 手に */
+  if (PE.undo.length > n0){
+    PE.undo.splice(n0);
+    PE.undo.push({ c: c0, ai: ai0 });
+    var ub = $("peUndo"); if (ub) ub.disabled = false;
+  }
+  var info = $("peFitInfo"), it = info ? info.textContent : "";
+  if (aiOk && r2){
+    msg((aiNew ? "AI 拓本解析で 墨を拾い直して、" : "AI の墨に ") + "合わせました。一致 " +
+        Math.round(r2.a*100) + "%。［↶ 1つ戻す］で まとめて戻せます。", false);
+    if (info) info.textContent = "【AI 拓本解析の墨に 合わせました】" + it;
+  } else if (aiOk){
+    /* AI の墨でも 動かす所が無かった。知らせは peFitTest が出したまま（①で合わせていれば それが答え） */
+    if (r1 && info) info.textContent = "【しきい値の墨で 大まかに合わせたあと、AI の墨でも確かめました。これ以上は 動きませんでした】" + it;
+  } else {
+    msg("［AI 拓本解析］が使えなかったので、" +
+        (r1 ? "拓本から そのまま拾った墨（しきい値）で 合わせました。一致 " + Math.round(r1.a*100) + "%。"
+            : "動かしていません。") +
+        (AI_TRACE_FAIL ? "（" + AI_TRACE_FAIL + "）" : ""), !r1);
+  }
+}
 $("peFitEdge").onchange = function(){ peRender(); };
 $("peShapeEdge").onchange = function(){ peRender(); };
 $("peShowPt").onchange = function(){ peRender(); };
@@ -30952,7 +31037,7 @@ $("peAiAuto").onclick = function(){ peAiAutoGo(); };
 async function peAiAutoGo(){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return; }
   if (!PE.rub || !RUB.data){ msg("先に拓本を敷いて、この字に重ねてください。", true); return; }
-  if (PE_AUTO) return;
+  if (PE_AUTO || PE_FITGO) return;
   peAutoAskHide();
   var b = $("peAiAuto"), gEl = $("peGrow");
   var snap = { ai: PE.aiInk || null, grow: gEl ? gEl.value : 0, auto: true };
@@ -31173,6 +31258,7 @@ function peAiStale(pe){
   return true;
 }
 $("peAiTrace").onclick = function(){ peAiTraceGo(); };
+var AI_TRACE_FAIL = "";      /* ［AI 拓本解析］が かからなかった わけ（［アルゴリズム実行］が 知らせに使う。v48.3） */
 /* `quiet` … ［AI オート］から続けて呼ぶとき。知らせを出さず、通ったかどうかを返す。 */
 async function peAiTraceGo(quiet){
   if (!PE){ msg("作字の画面を開いてから押してください。", true); return false; }
@@ -31188,7 +31274,8 @@ async function peAiTraceGo(quiet){
   finally { if (b){ b.disabled = false; peAiTraceShow(); } }
   if (peAiStale(pe)) return false;              /* 待っている間に 字が変わった（v46.7） */
   if (!got || !got.ink){
-    msg("［AI 拓本解析］は かかりませんでした。" + ((got && got.note) || ""), true);
+    AI_TRACE_FAIL = (got && got.note) || "";
+    msg("［AI 拓本解析］は かかりませんでした。" + AI_TRACE_FAIL, true);
     return false;
   }
   peSnapAi();                       /* ［↶ 1つ戻す］で、この一手ぶんを戻せるように */

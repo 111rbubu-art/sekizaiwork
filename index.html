@@ -7924,7 +7924,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.522';
+var APP_VERSION = 'v1.9.523';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -13320,7 +13320,7 @@ function renderHakaSpecTab(d) {
     '<div style="background:#fbf5ea;border:2px solid #d8bf95;border-radius:12px;padding:4px 10px 10px">' +
       headerHtml.replace('background:#fff;display:flex', 'background:#fbf5ea;display:flex') + renderHakaSpecBasicForm(spec, d) +
     '</div>';
-  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); }, 30);
+  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); _koujiSubLoad(); }, 30);
   if (typeof loadChoukokuTemplates === 'function') {
     loadChoukokuTemplates().then(function(){
       var area = document.getElementById('kouji-docs-tpl-area');
@@ -13345,8 +13345,8 @@ function renderKoujiDocsTab(d) {
 
   // カード一覧（landing）
   b.innerHTML = _renderKoujiDocsCardGrid(d);
-  // 保存済資料一覧を非同期読込
-  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); }, 30);
+  // 保存済資料一覧を非同期読込（提出資料も。v1.9.523）
+  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); _koujiSubLoad(); }, 30);
   // テンプレ一覧未取得なら非同期取得して再描画
   if (typeof loadChoukokuTemplates === 'function') {
     loadChoukokuTemplates().then(function(){
@@ -13410,12 +13410,85 @@ function _renderKoujiDocsCardGrid(d) {
         '<button onclick="_choukokuLoadSaved()" style="margin-left:auto;padding:4px 10px;background:#fff;color:#5a3a00;border:1px solid #d8c8a8;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit">🔄 更新</button>' +
       '</div>' +
       '<div id="haka-choukoku-saved-list" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:60px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
-    '</div>';
+    '</div>' +
+    _koujiSubPanelHtml();
 
   return '<div style="padding:6px 2px">' +
     savedPanel +
     '<div id="kouji-docs-tpl-area">' + _renderKoujiDocsTplListInner() + '</div>' +
   '</div>';
+}
+
+/* **提出資料**（v1.9.523。本人「工事関係で、SPの提出資料の中身を、仕様・資料タブの資料のグループにも表示させて」）。
+   SharePoint の 案件フォルダー/提出資料 の中身（領収書・資料制作の PDF など）を 新しい順に。中のフォルダーは 上に。
+   押すと データタブと同じ：1 回で 見本、2 回で 開く（PDF は ビューワー）。名前の変更・削除などは［📂 フォルダーを開く］（ファイル整理）から */
+function _koujiSubPanelHtml() {
+  var bs = 'padding:4px 10px;background:#fff;color:#185fa5;border:1px solid #b8d4f0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit';
+  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px;margin-bottom:14px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+      '<span style="font-size:13px;font-weight:700;color:#185fa5">📤 提出資料（SharePoint）</span>' +
+      '<button onclick="openSubmissionFolder(currentItem,\'kouji\')" style="margin-left:auto;' + bs + '">📂 フォルダーを開く</button>' +
+      '<button onclick="_koujiSubLoad()" style="' + bs + '">🔄 更新</button>' +
+    '</div>' +
+    '<div id="kouji-sub-list" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:2px 8px;min-height:40px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
+  '</div>';
+}
+function _koujiSubLoad() {
+  var el = document.getElementById('kouji-sub-list'); if (!el) return;
+  var root = _getItemFolderPath(currentItem);
+  if (!root) { el.innerHTML = '<div style="color:#888;padding:8px">案件の フォルダーが まだありません</div>'; return; }
+  var folder = root.replace(/\/+$/, '') + '/提出資料';
+  var enc = folder.split('/').map(encodeURIComponent).join('/');
+  var item0 = currentItem;
+  el.innerHTML = '<div style="color:#888;padding:8px">読み込み中...</div>';
+  getToken().then(function(resp) {
+    return _fetchRetry('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc +
+      ':/children?$select=name,file,folder,size,lastModifiedDateTime&$expand=thumbnails&$top=999', {
+      headers: { Authorization: 'Bearer ' + resp.accessToken }
+    }, 3);
+  }).then(function(r) {
+    if (r.status === 404) return { value: [] };
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(function(data) {
+    var box = document.getElementById('kouji-sub-list');
+    if (!box || currentItem !== item0) return;          // 待つ間に 別の案件・別のタブへ
+    var vs = (data.value || []).filter(function(f) { return f.file || f.folder; });
+    vs.sort(function(a, b) {
+      var fa = a.folder ? 0 : 1, fb = b.folder ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      return String(b.lastModifiedDateTime || '').localeCompare(String(a.lastModifiedDateTime || ''));
+    });
+    if (!vs.length) { box.innerHTML = '<div style="color:#888;padding:8px">提出資料の フォルダーに ファイルは まだありません</div>'; return; }
+    var z = function(n) { return (n < 10 ? '0' : '') + n; };
+    box.innerHTML = vs.map(function(f, i) {
+      var t = new Date(f.lastModifiedDateTime);
+      var dt = isNaN(t) ? '' : t.getFullYear() + '-' + z(t.getMonth() + 1) + '-' + z(t.getDate()) + ' ' + z(t.getHours()) + ':' + z(t.getMinutes());
+      var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name), isPdf = /\.pdf$/i.test(f.name);
+      var th = f.thumbnails && f.thumbnails[0] && (f.thumbnails[0].small || f.thumbnails[0].medium);
+      if (f.file) _spRegThumb(folder + '/' + f.name, f.thumbnails);   // 1 回押しの 見本は サムネで
+      var ic = f.folder ? '<span style="width:36px;text-align:center;font-size:18px">📁</span>'
+             : th ? '<img src="' + _hakaSpecEsc(th.url) + '" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #eee;flex-shrink:0">'
+             : '<span style="width:36px;text-align:center;font-size:18px">' + (isImg ? '🖼' : isPdf ? '📄' : '📎') + '</span>';
+      return '<div data-sub="' + i + '" title="' + (f.folder ? 'ファイル整理で 開きます' : '1 回で 見本／2 回で 開く') + '" ' +
+        'style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #eef3f9;cursor:pointer" ' +
+        'onmouseover="this.style.background=\'#f3f8fe\'" onmouseout="this.style.background=\'\'">' + ic +
+        '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1565c0">' + _hakaSpecEsc(f.name) +
+          (f.folder ? ' <span style="color:#888;font-size:11px">（' + ((f.folder && f.folder.childCount) || 0) + ' 件）</span>' : '') + '</span>' +
+        '<span style="font-size:11px;color:#999;white-space:nowrap">' + _hakaSpecEsc(dt) + '</span></div>';
+    }).join('');
+    box.querySelectorAll('[data-sub]').forEach(function(row) {
+      var f = vs[+row.getAttribute('data-sub')]; if (!f) return;
+      var fpath = folder + '/' + f.name;
+      if (f.folder) { row.addEventListener('click', function() { openSubmissionFolder(currentItem, 'kouji'); }); return; }
+      var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name);
+      row.addEventListener('click', function() { spFileClick(fpath, isImg); });
+      row.addEventListener('dblclick', function() { spFileDbl(fpath); });
+    });
+  }).catch(function(e) {
+    var box = document.getElementById('kouji-sub-list');
+    if (box) box.innerHTML = '<div style="color:#c00;padding:8px">読み込めませんでした: ' + _hakaSpecEsc((e && e.message) || String(e)) + '</div>';
+  });
 }
 
 // 並び順は SharePoint のテンプレフォルダ直下 _order.json に保存（端末横断で共有）

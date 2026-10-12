@@ -7924,7 +7924,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.524';
+var APP_VERSION = 'v1.9.525';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -28190,6 +28190,101 @@ function saveEditsToSP(d, edits, listName, callback) {
 }
 
 // 保存結果トースト通知
+/* ───── **アップロードの 進み具合**（v1.9.525。本人「データタブなどで、ファイルをドロップして追加する場合、複数のファイルを追加したときに、
+   コメントが何も出ないので フリーズしたと思いました。何か動作しているというコメントを出してほしい」）─────
+   どの画面の アップロードも 同じ所を通るので、fetch を 1 か所で 見張る：SharePoint へ ファイル（Blob／File）を 送る PUT・POST（…:/content、AttachmentFiles/add）。
+   設定の保存（文字の JSON）や PDF の書き込みの保存（Uint8Array。ビューワーが 自分で知らせる）は 数えない。
+   画面の下に 濃い帯：「⬆️ アップロード中… 済み 2 / 5 件　いま：IMG_0012.jpg」＋ 進みの棒。続けて送る分は 1 回に まとめ、
+   終わったら「✅ 5 件 アップロードしました」。失敗が あれば 赤で 件数。
+   何件 落とした（選んだ）かは drop／ファイル選択を 見て 覚え、8 秒以内に 始まった 送りに 使う（新規作成の 拓本のように すぐ送らないものは 時間切れで 使わない）。 */
+(function () {
+  var of = window.fetch; if (!of || of._upHooked) return;
+  var B = null, hint = null;
+  document.addEventListener('drop', function (e) {
+    var n = (e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files.length : 0;
+    if (n) hint = { n: n, t: Date.now() };
+  }, true);
+  document.addEventListener('change', function (e) {
+    var t = e.target; if (t && t.type === 'file' && t.files && t.files.length) hint = { n: t.files.length, t: Date.now() };
+  }, true);
+  function isUp(u, o) {
+    if (!o || !o.body || (o.method !== 'PUT' && o.method !== 'POST')) return false;
+    if (typeof Blob === 'undefined' || !(o.body instanceof Blob)) return false;
+    return /:\/content(\?|$)|AttachmentFiles\/add/.test(String(u));
+  }
+  function nameOf(u, o) {
+    if (o.body && o.body.name) return o.body.name;
+    var s = String(u), m = s.match(/\/([^\/]+):\/content/) || s.match(/FileName='([^']+)'/);
+    try { return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return m ? m[1] : ''; }
+  }
+  function el() {
+    var d = document.getElementById('up-prog');
+    if (!d) {
+      d = document.createElement('div'); d.id = 'up-prog';
+      d.style.cssText = 'position:fixed;left:50%;bottom:118px;transform:translateX(-50%);z-index:10060;pointer-events:none;' +
+        'min-width:280px;max-width:calc(100vw - 24px);padding:10px 16px 12px;border-radius:12px;font-size:13px;font-family:inherit;color:#fff;' +
+        'background:#1a2535;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:opacity .3s';
+      d.innerHTML = '<div class="upt" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>' +
+        '<div style="margin-top:7px;height:6px;border-radius:3px;background:rgba(255,255,255,.18);overflow:hidden">' +
+        '<div class="upb" style="height:100%;width:0;background:#5ad1ff;border-radius:3px;transition:width .3s"></div></div>';
+      var st = document.createElement('style');
+      st.textContent = '@keyframes upMove{0%{margin-left:-35%}100%{margin-left:100%}}#up-prog .upb.ind{width:35%!important;animation:upMove 1.2s linear infinite}';
+      d.appendChild(st);
+      document.body.appendChild(d);
+    }
+    return d;
+  }
+  function show() {
+    if (!B) return;
+    var d = el(), t = d.querySelector('.upt'), bar = d.querySelector('.upb');
+    var fin = B.done + B.fail, tot = (B.total && B.started <= B.total) ? B.total : 0;
+    d.style.opacity = '1'; d.style.display = '';
+    if (B.active > 0 || B.wait) {
+      d.style.background = '#1a2535';
+      t.textContent = '⬆️ アップロード中… 済み ' + fin + (tot ? ' / ' + tot : '') + ' 件' + (B.cur ? '　いま：' + B.cur : '') + '　（しばらく お待ちください）';
+      if (tot) { bar.classList.remove('ind'); bar.style.width = Math.round(fin / tot * 100) + '%'; bar.style.background = '#5ad1ff'; }
+      else { bar.classList.add('ind'); bar.style.background = '#5ad1ff'; }
+    } else {
+      bar.classList.remove('ind'); bar.style.width = '100%';
+      if (B.fail) { d.style.background = '#8b1a1a'; bar.style.background = '#ffb3b3'; t.textContent = '⚠ ' + B.done + ' 件 アップロードしました。' + B.fail + ' 件は 失敗しました'; }
+      else { d.style.background = '#1f6b3a'; bar.style.background = '#b8f0c8'; t.textContent = '✅ ' + B.done + ' 件 アップロードしました'; }
+    }
+  }
+  function start(name) {
+    if (B && B.endT) { clearTimeout(B.endT); B.endT = null; }
+    if (B && B.hideT) { clearTimeout(B.hideT); B.hideT = null; }
+    if (!B || B.over) {
+      B = { done: 0, fail: 0, active: 0, started: 0, total: 0, cur: '' };
+      if (hint && Date.now() - hint.t < 8000) B.total = hint.n;
+      hint = null;
+    }
+    B.active++; B.started++; B.cur = name || B.cur; show();
+  }
+  function end(ok) {
+    if (!B) return;
+    B.active = Math.max(0, B.active - 1); if (ok) B.done++; else B.fail++;
+    show();
+    if (B.active === 0) {
+      var b = B; b.wait = true; show();   // 続けて 送る分を 少し 待つ
+      b.endT = setTimeout(function () {
+        if (B !== b || b.active) return;
+        b.wait = false; b.over = true; show();
+        b.hideT = setTimeout(function () { var d = document.getElementById('up-prog'); if (d && B === b) { d.style.opacity = '0'; setTimeout(function () { if (B === b && d.style.opacity === '0') d.style.display = 'none'; }, 350); } }, b.fail ? 6000 : 3500);
+      }, 1500);
+    }
+  }
+  var wrapped = function (u, o) {
+    var up = false; try { up = isUp(u, o); } catch (e) {}
+    if (!up) return of.apply(this, arguments);
+    start(nameOf(u, o));
+    var pr = of.apply(this, arguments);
+    pr.then(function (r) { end(!!(r && r.ok)); }, function () { end(false); });
+    return pr;
+  };
+  wrapped._upHooked = true;
+  window.fetch = wrapped;
+  window._upProgState = function () { return B; };   // 確かめ用
+})();
 function showSaveToast(ok, msg) {
   var el = document.getElementById('save-toast');
   if (!el) {

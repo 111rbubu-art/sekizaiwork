@@ -2744,7 +2744,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v49.4";
+var APP_VER = "v49.5";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8170,7 +8170,7 @@ function lockNo(){
   var t = Date.now();
   if (t - LOCK_TOAST < 1200) return;      /* 続けて触っても、知らせは出しすぎない */
   LOCK_TOAST = t;
-  msg("この校正はロックされています。変えるときは 左の［ファイル］を右クリック →［ロックを解除］（または 上の［✎ 修正（新Verへ）］）。", true);
+  msg("この校正はロックされています。誤ってロックしたときは 左の［ファイル］（または 履歴の版）を右クリック →［ロックを解除］。直して新しい版にするときは 上の［✎ 修正（新Verへ）］。", true);
 }
 /* ステータスの選択肢（v13.8） */
 var STATUS_LIST = ["お客様校正提出", "（中止）お客様校正提出", "誤操作", "その他"];
@@ -8330,20 +8330,47 @@ function lockNext(){
       "［保存］すると、新しい版として足されます。");
 }
 function lockOff(){ lockNext(); }      /* 旧い呼び名 */
-/* ───── **左のメニュー［ファイル］を 右クリック → ロックを解除**（v49.4。本人「ロックですが、ファイルのメニューで右クリックでロックを解除できるようにして」）─────
-   解除は これまでどおり「修正（新Verへ）」（lockNext）。ロックした版は 履歴に残り、［保存］で 新しい版になる。
-   小さなメニューは 行追加と同じ #addMenu を使う（外を押すと閉じる）。 */
-function fileCtxOpen(e){
+/* ───── **右クリックで ロックを解除（その版のまま）**（v49.4 → v49.5。本人「（ファイルの履歴の版の札）ココで右クリックして、ロックを解除、
+   ニューバージョンにはしなくていいです。誤ってロックした場合に解除したいだけです」）─────
+   v49.4 は［ファイル］の右クリックで「修正（新Verへ）」（lockNext）にしていた。v49.5 からは **その版の記録から ロックを外すだけ**（verUnlock）。
+   版は増えない。ロックのときに 自動で入った ステータス（お客様校正提出 など）も 外して「作業中」に戻す（メモは残す）。
+   右クリックできる所：左のメニュー［ファイル］（いま表示中の版）と、ファイルの 履歴の 版の札（その版）。
+   工事フォルダに つながっていれば すぐ 案件ファイルにも書く（中身＝state は さわらない。verEditStatus と同じ やり方）。 */
+async function verUnlock(id){
+  var v = (typeof CASEDOC !== "undefined" && CASEDOC && id != null) ? verOf(CASEDOC, id) : null;
+  var isNow = (id == null) || (+id === num(S.verId, -1));
+  if (v){
+    v.lock = null; v.status = "";
+    if (v.state){ v.state.lock = null; }
+  }
+  if (isNow && S.lock){ S.lock = null; applyLock(); persist(); }
+  if (typeof filePanel === "function" && subTab === "file") filePanel();
+  if (typeof spPanel === "function") spPanel();
+  renderMenuCounts(); barVerFill();
+  var nm = v ? "版 " + v.id + " の" : "";
+  if (v && spReady()){
+    try { msg(nm + "ロックを 解除しています…", false, true); await casePut(CASEDOC);
+          msg(nm + "ロックを 解除しました（新しい版は 作っていません）。" + (isNow ? "このまま 直して［保存］すると、版 " + v.id + " に 上書きします。" : "")); }
+    catch(e){ msg("ロックの解除を 工事フォルダに 書けませんでした：" + spErrText(e) + "（画面では 解除しています。［保存］で 書き直せます）", true); }
+  } else {
+    msg(nm + "ロックを 解除しました（新しい版は 作っていません）。［保存］すると 案件ファイルにも 入ります。");
+  }
+}
+/* 右クリックの 小さなメニュー（行追加と同じ #addMenu。外を押すと閉じる）。id が null なら いま表示中の版 */
+function lockCtxOpen(e, id){
   var m = $("addMenu"); if (!m) return;
   e.preventDefault(); e.stopPropagation();
-  var h = '<h4>校正のロック</h4>';
-  if (locked()){
-    h += '<div class="none" style="margin-bottom:8px;">🔒 ロック中　版 ' + (num(S.verId, 0) || "-") + '<br>' +
-      esc(S.lock.status || "ロック済み") + '　' + esc(lockDate(S.lock.at)) + '</div>' +
-      '<button class="mini primary" data-a="unlock">🔓 ロックを解除（修正して新Verへ）</button>' +
-      '<div class="none" style="margin-top:6px;">ロックした版は 履歴に そのまま残ります。［保存］すると 新しい版として 足されます。</div>';
+  var cur = (id == null) || (+id === num(S.verId, -1));
+  var v = (typeof CASEDOC !== "undefined" && CASEDOC) ? verOf(CASEDOC, id == null ? S.verId : id) : null;
+  var lk = cur ? (locked() ? S.lock : (v && v.lock)) : (v && v.lock);
+  var vid = v ? v.id : (num(S.verId, 0) || null);
+  var h = '<h4>' + (vid ? '版 ' + vid + ' の ' : '') + 'ロック</h4>';
+  if (lk){
+    h += '<div class="none" style="margin-bottom:8px;">🔒 ' + esc(lk.status || (v && v.status) || "ロック済み") + '　' + esc(lockDate(lk.at)) + '</div>' +
+      '<button class="mini primary" data-a="unlock">🔓 ロックを解除（この版のまま）</button>' +
+      '<div class="none" style="margin-top:6px;">誤ってロックしたときの 取り消しです。新しい版は 作りません。</div>';
   } else {
-    h += '<div class="none">この校正は ロックしていません。</div>';
+    h += '<div class="none">' + (vid ? 'この版は' : 'この校正は') + ' ロックしていません。</div>';
   }
   m.innerHTML = h;
   m.hidden = false;
@@ -8351,11 +8378,19 @@ function fileCtxOpen(e){
   m.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, e.clientX + 4)) + "px";
   m.style.top  = Math.max(6, Math.min(window.innerHeight - hh - 6, e.clientY - 6)) + "px";
   var ub = m.querySelector('[data-a="unlock"]');
-  if (ub) ub.onclick = function(){ closeAddMenu(); lockNext(); };
+  if (ub) ub.onclick = function(){ closeAddMenu(); verUnlock(v ? v.id : null); };
 }
+function fileCtxOpen(e){ lockCtxOpen(e, null); }
 (function(){
   var fb = document.querySelector('#mainmenu .mm[data-m="file"]');
   if (fb) fb.addEventListener("contextmenu", fileCtxOpen);
+  /* ファイルの 履歴の 版の札（#panFile .vrow）。中身は 描き直されるので 外の箱で受ける */
+  var pf = $("panFile");
+  if (pf) pf.addEventListener("contextmenu", function(e){
+    var row = e.target.closest && e.target.closest(".vrow[data-id]");
+    if (!row || (e.target.closest && e.target.closest("input,select,textarea"))) return;
+    lockCtxOpen(e, +row.dataset.id);
+  });
 })();
 /* 設定メニューに出す欄 */
 function lockHTML(){
@@ -34557,7 +34592,7 @@ function filePanel(){
   h += '<h3 class="sec">インポート</h3>' +
     '<button class="mini" id="fmLcOpen" style="width:100%;">ファイル（.json）を読み込む</button>';
 
-  h += '<p class="hint">ロックと［✎ 修正（新Verへ）］は、上のバーか［設定］メニューから。</p>';
+  h += '<p class="hint">ロックと［✎ 修正（新Verへ）］は、上のバーか［設定］メニューから。誤ってロックしたときは、履歴の版（または 左の［ファイル］）を 右クリック →［ロックを解除］（版は増えません）。</p>';
 
   box.innerHTML = h;
   if (SP.browse && SP.browse.host === "file") spBrowseBind(box);

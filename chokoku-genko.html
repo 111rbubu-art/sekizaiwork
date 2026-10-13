@@ -1534,10 +1534,8 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
             <button class="mini" id="bRubHome"
               title="校正の画面でつかんで動かしたガイドラインと拓本の置き場所を、自動の置き方に戻します（並び順は変わりません）"
               >置き場所を自動に戻す</button>
-            <!-- 拓本に合わせる（v43.4。本人「校正で新たに内容を入力したら、同じ文字があるかチェックして文字の大きさを合わせる。校正のガイドラインで拓本に合わせるボタンを」） -->
-            <button class="mini" id="bRubFit"
-              title="拓本から作った行の字を見て、拓本と同じ字（日・戒名の院居士信姉尼大・命日と年齢の同じ字）の大きさを 拓本の字に合わせます。尼は位置も。行の大きさも 拓本の字から出し直します"
-              >📐 拓本に合わせる</button>
+            <!-- ［📐 拓本に合わせる］（v43.4）は 外した（v49.4。本人「ココの拓本に合わせる は不要です」）。
+                 文字グループごとの［拓本の墨の大きさに合わせ直す］［🪨 拓本解析から取得］は 設定ウインドウに残る -->
           </span>
           <span class="bgrp"><b>資料</b>
             <button class="mini" id="bDocs" title="お客様からの資料を別の窓で見ます">📄 資料</button>
@@ -2746,7 +2744,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v49.3";
+var APP_VER = "v49.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5263,6 +5261,13 @@ function openAddMenu(anchor){
   keys.forEach(function(k){
     h += '<button class="mini" data-a="copy" data-k="' + k + '">ガイドライン ' + (k+1) + ' をコピー</button>';
   });
+  /* 拓本から（v49.4。本人「行追加に、拓本からのガイドライン追加 を追加して」）。
+     拓本補正の［📐 解析結果からガイドラインを作る］（rubToGuidesOpen）と同じ。拓本AI解析が まだなら 押せず、わけを出す */
+  var rs = rubSizeState();
+  h += '<h4>拓本から追加</h4>' +
+    '<button class="mini" data-a="rub"' + (rs.ok ? '' : ' disabled') +
+      ' title="拓本の解析結果から、ガイドライン（センターラインと 戒名・俗名・命日 などの文字グループ）を いまの行の左に 足します。拓本補正の［📐 解析結果からガイドラインを作る］と同じです">🪨 拓本からガイドライン追加</button>' +
+    (rs.ok ? '' : '<div class="none">' + esc(rs.why) + '</div>');
   /* テンプレートから足す。中身は「テンプレート管理」で作ったもの。 */
   var tl = tplList();
   h += '<h4>テンプレートから追加</h4>';
@@ -5279,6 +5284,7 @@ function openAddMenu(anchor){
       var a = bt.dataset.a;
       if (a === "new") addGuideline();
       else if (a === "copy") copyGuideline(+bt.dataset.k);
+      else if (a === "rub"){ if (locked()){ lockNo(); return; } rubToGuidesOpen(); }
       else if (a === "tpl"){
         var t = tplList()[+bt.dataset.i];
         if (t) tplAdd(t);
@@ -7289,7 +7295,6 @@ $("bDim").onchange = function(){
    ガイドラインの並びと、拓本の場所の両方。 */
 $("bPen").onclick = function(){ penSetMode(!penMode); };
 $("bPenDel").onclick = penDelSel;
-$("bRubFit").onclick = function(){ rubFitAllGroups(); };
 $("bRubHome").onclick = function(){
   S.bothOff = {};
   S.rubX = null; S.rubDx = 0;
@@ -8165,7 +8170,7 @@ function lockNo(){
   var t = Date.now();
   if (t - LOCK_TOAST < 1200) return;      /* 続けて触っても、知らせは出しすぎない */
   LOCK_TOAST = t;
-  msg("この校正はロックされています。変えるときは［設定］メニューで解除してください。", true);
+  msg("この校正はロックされています。変えるときは 左の［ファイル］を右クリック →［ロックを解除］（または 上の［✎ 修正（新Verへ）］）。", true);
 }
 /* ステータスの選択肢（v13.8） */
 var STATUS_LIST = ["お客様校正提出", "（中止）お客様校正提出", "誤操作", "その他"];
@@ -8325,6 +8330,33 @@ function lockNext(){
       "［保存］すると、新しい版として足されます。");
 }
 function lockOff(){ lockNext(); }      /* 旧い呼び名 */
+/* ───── **左のメニュー［ファイル］を 右クリック → ロックを解除**（v49.4。本人「ロックですが、ファイルのメニューで右クリックでロックを解除できるようにして」）─────
+   解除は これまでどおり「修正（新Verへ）」（lockNext）。ロックした版は 履歴に残り、［保存］で 新しい版になる。
+   小さなメニューは 行追加と同じ #addMenu を使う（外を押すと閉じる）。 */
+function fileCtxOpen(e){
+  var m = $("addMenu"); if (!m) return;
+  e.preventDefault(); e.stopPropagation();
+  var h = '<h4>校正のロック</h4>';
+  if (locked()){
+    h += '<div class="none" style="margin-bottom:8px;">🔒 ロック中　版 ' + (num(S.verId, 0) || "-") + '<br>' +
+      esc(S.lock.status || "ロック済み") + '　' + esc(lockDate(S.lock.at)) + '</div>' +
+      '<button class="mini primary" data-a="unlock">🔓 ロックを解除（修正して新Verへ）</button>' +
+      '<div class="none" style="margin-top:6px;">ロックした版は 履歴に そのまま残ります。［保存］すると 新しい版として 足されます。</div>';
+  } else {
+    h += '<div class="none">この校正は ロックしていません。</div>';
+  }
+  m.innerHTML = h;
+  m.hidden = false;
+  var w = m.offsetWidth || 230, hh = m.offsetHeight || 120;
+  m.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, e.clientX + 4)) + "px";
+  m.style.top  = Math.max(6, Math.min(window.innerHeight - hh - 6, e.clientY - 6)) + "px";
+  var ub = m.querySelector('[data-a="unlock"]');
+  if (ub) ub.onclick = function(){ closeAddMenu(); lockNext(); };
+}
+(function(){
+  var fb = document.querySelector('#mainmenu .mm[data-m="file"]');
+  if (fb) fb.addEventListener("contextmenu", fileCtxOpen);
+})();
 /* 設定メニューに出す欄 */
 function lockHTML(){
   var h = '<h3 class="sec">校正のロック</h3>';
@@ -9137,7 +9169,7 @@ function grpNichiFit(g, F){
    左右：拓本の 尼 の真ん中が その行のセンターライン（centersPx）から どれだけ離れているか（mm）。
    上下：いまの並びで 尼 の墨の上端がどこに来るか（layout）と、拓本の 尼 の上端（mmOf）の差。
    オプションを切る・拓本に 尼 が無いときは 入れた分だけ外す。 */
-/* 校正の［📐 拓本に合わせる］（v43.4）。拓本から作った行（inkSize あり）を ぜんぶ 合わせ直す。
+/* 校正の［📐 拓本に合わせる］（v43.4。ボタンは v49.4 で外した。関数は 残す）。拓本から作った行（inkSize あり）を ぜんぶ 合わせ直す。
    行の字が 仮の字から 本当の内容に変わっていても、拓本と同じ字があれば その字を合わせる。 */
 function rubFitAllGroups(){
   var gs = (S.groups || []).filter(function(g){ return g && g.inkSize; });

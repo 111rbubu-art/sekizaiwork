@@ -734,6 +734,7 @@
   .dpick{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:7px;
     padding:5px 7px;margin-bottom:4px;background:var(--surface);cursor:pointer;}
   .dpick.on{border-color:var(--ok);background:var(--ok-soft);}
+  .dpick.dir{background:#F7F9FC;}
   .dpick .n{flex:1;min-width:0;font-size:11.5px;color:var(--ink);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .dpick .s{font-size:10.5px;color:var(--muted);white-space:nowrap;}
@@ -2655,7 +2656,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v48.6";
+var APP_VER = "v48.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -32371,11 +32372,24 @@ async function spSaveProject(){
 var ST = { mode: null, pick: null, rowTpl: "", busy: null };
 /* はじめの画面の中に出す「工事フォルダの画像」の一覧（v19.1）。
    kind は "docs"（資料の登録）か "rub"（拓本の取り込み）。 */
-function stPickOpen(kind, path){
+function stPickOpen(kind, path, deep){
   if (ST.busy) return;                            /* 読み込み中は動かさない */
-  if (!path && ST.pick && ST.pick.kind === kind){ ST.pick = null; startRender(); return; }
+  if (!path && !deep && ST.pick && ST.pick.kind === kind){ ST.pick = null; startRender(); return; }
   /* path … いま見ているフォルダーまでの道（[{id,name},…]。空なら 工事フォルダ）。v42.5 */
   path = path || [];
+  if (deep){   /* 下のフォルダーも まとめて（v48.7） */
+    ST.pick = { kind: kind, items: [], loading: true, path: [], deep: true };
+    startRender();
+    spImageDeep().then(function(dd){
+      if (!ST.pick || ST.pick.kind !== kind) return;
+      ST.pick = { kind: kind, items: dd.items, loading: false, path: [], deep: true, cut: dd.cut };
+      startRender();
+    }).catch(function(e){
+      ST.pick = { kind: kind, items: [], loading: false, err: spErrText(e), path: [], deep: true };
+      startRender();
+    });
+    return;
+  }
   var dir = path.length ? path[path.length - 1].id : null;
   ST.pick = { kind: kind, items: [], loading: true, path: path };
   startRender();
@@ -32394,10 +32408,13 @@ function stPickHtml(kind){
   var h = '<div class="stpick">';
   var pth = q.path || [];
   /* いまの場所（v42.5）。フォルダーに入ったら［↑ 上へ］で戻る */
-  h += '<div class="stpath" style="display:flex;gap:6px;align-items:center;margin:0 0 6px;font-size:12px;">' +
-    (pth.length ? '<button class="mini" data-sa="' + kind + '-up-dir">↑ 上へ</button>' : '') +
-    '<span>📁 工事フォルダ' + pth.map(function(p){ return ' ＞ ' + esc(p.name); }).join("") + '</span></div>';
-  if (q.loading) h += '<span class="none">工事フォルダを見ています…</span>';
+  h += '<div class="stpath" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px;font-size:12px;">' +
+    ((pth.length || q.deep) ? '<button class="mini" data-sa="' + kind + '-up-dir">' + (q.deep ? '← フォルダーごとに見る' : '↑ 上へ') + '</button>' : '') +
+    (q.deep ? '<span>📁 すべてのフォルダー</span>' : '<span>📁 工事フォルダ' + pth.map(function(p){ return ' ＞ ' + esc(p.name); }).join("") + '</span>') +
+    (!q.deep && !q.loading ? '<button class="mini" data-sa="' + kind + '-deep" style="margin-left:auto;" title="下のフォルダーも ぜんぶ見て、1 つの一覧に出します">🔍 下のフォルダーも まとめて探す</button>' : '') +
+    '</div>';
+  if (q.cut) h += '<span class="none">フォルダーが多いので、途中までです。見つからないときは ［← フォルダーごとに見る］で フォルダーに入ってください。</span>';
+  if (q.loading) h += '<span class="none">' + (q.deep ? '下のフォルダーも 見ています…（少し時間がかかります）' : '工事フォルダを見ています…') + '</span>';
   else if (q.err) h += '<span class="none" style="color:var(--shu);">' + esc(q.err) + '</span>';
   else if (!q.items.length) h += '<span class="none">画像もフォルダーもありません。</span>';
   else {
@@ -32428,6 +32445,7 @@ function stPickHtml(kind){
           (on ? '<span class="stok">✓</span>' : "") +
           (busy ? '<span class="stbz"><i></i>読み込み中</span>' : "") + '</div>' +
         '<div class="sthn">' + esc(it.name) + '</div>' +
+        (q.deep ? '<div class="sths" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📁 ' + esc(it._where || '工事フォルダ') + '</div>' : '') +
         '<div class="sths">' + (busy ? "読み込んでいます…" : sizeText(num(it.size, 0))) +
         '</div></button>';
     });
@@ -32775,9 +32793,10 @@ function stDo(a, si){
   }
   else if (a === "docs-up-dir" || a === "rub-up-dir"){
     var ku = a.split("-")[0];
-    stPickOpen(ku, (ST.pick && ST.pick.path || []).slice(0, -1));
+    stPickOpen(ku, (ST.pick && !ST.pick.deep) ? (ST.pick.path || []).slice(0, -1) : []);
     return;
   }
+  else if (a === "docs-deep" || a === "rub-deep"){ stPickOpen(a.split("-")[0], [], true); return; }
   else if (a === "docs-pick"){ stPickOpen("docs"); return; }
   else if (a === "docs-see"){ docWinOpen(0); return; }
   else if (a === "docs-take"){
@@ -32954,14 +32973,31 @@ function docsPanel(){
     '<button class="mini" id="dcPick">＋ 工事フォルダから選ぶ</button></div>';
   h += docAddHtml("dc");
   if (DOCP){
-    h += '<h3 class="sec">工事フォルダの画像　' + DOCP.items.length + ' 件</h3>';
-    if (DOCP.loading) h += '<p class="hint" style="margin-top:0;">読んでいます…</p>';
+    /* フォルダーに入れる・下のフォルダーも まとめて探せる（v48.7） */
+    var dpth = DOCP.path || [];
+    var nFile = DOCP.items.filter(function(x){ return !x.folder; }).length;
+    h += '<h3 class="sec">' + (DOCP.deep ? 'すべてのフォルダーの資料　' : '工事フォルダの資料　') + nFile + ' 件</h3>';
+    h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px;font-size:11.5px;">' +
+      ((dpth.length || DOCP.deep) ? '<button class="mini" id="dcPickUp" style="width:auto;">' + (DOCP.deep ? '← フォルダーごとに見る' : '↑ 上へ') + '</button>' : '') +
+      (DOCP.deep ? '' : '<span style="word-break:break-all;">📁 工事フォルダ' + dpth.map(function(q){ return ' ＞ ' + esc(q.name); }).join("") + '</span>') +
+      '</div>';
+    if (!DOCP.deep && !DOCP.loading)
+      h += '<button class="mini" id="dcPickDeep" style="width:100%;margin:0 0 6px;" title="工事フォルダの 下のフォルダーも ぜんぶ見て、画像・文字の資料を 1 つの一覧に出します">🔍 下のフォルダーも まとめて探す</button>';
+    if (DOCP.loading) h += '<p class="hint" style="margin-top:0;">' + (DOCP.deep ? '下のフォルダーも 見ています…（少し時間がかかります）' : '読んでいます…') + '</p>';
     else if (!DOCP.items.length)
-      h += '<p class="hint" style="margin-top:0;">画像がありません。［＋ パソコンから入れる］で置けます。</p>';
+      h += '<p class="hint" style="margin-top:0;">' + (DOCP.deep ? 'どのフォルダーにも 画像がありません。' : '画像もフォルダーもありません。') + '［＋ パソコンから入れる］で置けます。</p>';
+    if (DOCP.cut) h += '<p class="hint" style="margin-top:0;">フォルダーが多いので、途中までです。見つからないときは ［← フォルダーごとに見る］で フォルダーに入ってください。</p>';
     DOCP.items.forEach(function(it, i){
+      if (it.folder){
+        h += '<div class="dpick dir" data-p="' + i + '" title="押すと このフォルダーの中を見ます">' +
+          '<span class="n">📁 ' + esc(it.name) + '</span>' +
+          '<span class="s">' + (it.folder.childCount != null ? it.folder.childCount + ' 件' : '') + ' ›</span></div>';
+        return;
+      }
       var on = !!docFind(it.id);
       h += '<div class="dpick' + (on ? " on" : "") + '" data-p="' + i + '">' +
-        '<span class="n">' + esc(it.name) + '</span>' +
+        '<span class="n">' + esc(it.name) +
+          (DOCP.deep ? '<span style="display:block;font-size:10px;color:var(--muted);">📁 ' + esc(it._where || '工事フォルダ') + '</span>' : '') + '</span>' +
         '<span class="s">' + (on ? "入っています" : sizeText(num(it.size, 0))) + '</span></div>';
     });
     h += '<button class="mini" id="dcPickX" style="width:100%;margin:4px 0 10px;">閉じる</button>';
@@ -33016,12 +33052,15 @@ function docsPanel(){
 
   docAddBind(box, "dc");
   var ab = $("dcAdd"); if (ab) ab.onclick = function(){ $("fDoc").click(); };
-  var pb = $("dcPick"); if (pb) pb.onclick = docsPickLoad;
+  var pb = $("dcPick"); if (pb) pb.onclick = function(){ docsPickLoad([]); };
   var px = $("dcPickX"); if (px) px.onclick = function(){ DOCP = null; docsPanel(); };
+  var pu = $("dcPickUp"); if (pu) pu.onclick = function(){ docsPickLoad(DOCP && !DOCP.deep ? (DOCP.path || []).slice(0, -1) : []); };
+  var pd = $("dcPickDeep"); if (pd) pd.onclick = function(){ docsPickLoad([], true); };
   var ob = $("dcOpen"); if (ob) ob.onclick = function(){ docWinOpen(0); };
   Array.prototype.forEach.call(box.querySelectorAll(".dpick"), function(e){
     e.onclick = function(){
       var it = DOCP.items[+e.dataset.p]; if (!it) return;
+      if (it.folder){ docsPickLoad((DOCP.path || []).concat([{ id: it.id, name: it.name }])); return; }   /* フォルダーに入る（v48.7） */
       if (!Array.isArray(S.docs)) S.docs = [];
       if (docFind(it.id)){ docsRemoveId(it.id); msg("「" + it.name + "」を外しました。"); }
       else {
@@ -33138,6 +33177,25 @@ async function spImageList(dirId, withDirs){
   }
   return out;
 }
+/* **下のフォルダーも まとめて探す**（v48.7。本人「資料メニューで 工事フォルダから選ぶで、別フォルダー内に資料がある場合も 探せるようにして」）。
+   工事フォルダから 下へ 4 段・120 フォルダーまで たどって、画像・文字の資料を ぜんぶ集める。
+   どのフォルダーにあったかは _where（「写真 ＞ 2026-10」の形。工事フォルダの いちばん上は 空）に入れる。
+   たどりきれなかったら cut を立てる（フォルダーに入って 探してもらう） */
+async function spImageDeep(){
+  var out = [], q = [{ id: SP.cfg.folderId, path: [] }], n = 0, seen = {};
+  while (q.length && n < 120){
+    var cur = q.shift(); n++;
+    var r = await spChildren(cur.id);
+    (r.value || []).forEach(function(x){
+      if (x.folder){ if (cur.path.length < 4) q.push({ id: x.id, path: cur.path.concat([x.name]) }); }
+      else if (isDocName(x.name) && !seen[x.id]){ seen[x.id] = 1; out.push(Object.assign({}, x, { _where: cur.path.join(" ＞ ") })); }
+    });
+  }
+  out.sort(function(a, b){
+    return String(a._where).localeCompare(String(b._where), "ja") || String(a.name).localeCompare(String(b.name), "ja");
+  });
+  return { items: out, cut: q.length > 0 };
+}
 /* 共有フォルダーの画像を、拓本や資料に使えるデータ URL にする（v19.1） */
 async function spImageDataUrl(it){
   var b = await spGetBlob(it.id, it.name, num(it.size, 0));
@@ -33148,12 +33206,17 @@ async function spImageDataUrl(it){
     fr.readAsDataURL(b);
   });
 }
-async function docsPickLoad(){
-  DOCP = { items: [], loading: true };
+/* path … いま見ているフォルダーまでの道（[{id,name},…]。空なら 工事フォルダ）。deep … 下のフォルダーも まとめて（v48.7） */
+async function docsPickLoad(path, deep){
+  path = Array.isArray(path) ? path : [];
+  DOCP = { items: [], loading: true, path: path, deep: !!deep };
   docsPanel();
-  try { DOCP = { items: await spImageList(), loading: false }; }
+  try {
+    if (deep){ var dd = await spImageDeep(); DOCP = { items: dd.items, loading: false, path: [], deep: true, cut: dd.cut }; }
+    else DOCP = { items: await spImageList(path.length ? path[path.length - 1].id : null, true), loading: false, path: path, deep: false };
+  }
   catch(e){
-    DOCP = { items: [], loading: false };
+    DOCP = { items: [], loading: false, path: path, deep: !!deep };
     msg("工事フォルダを見られませんでした：" + spErrText(e), true);
   }
   docsPanel();

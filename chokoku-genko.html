@@ -192,6 +192,14 @@
   .pcpick .pcbt button{flex:1;padding:5px 8px;}
   .pcpick .pcbt #pcOff{flex:none;}
   .pcpick button.primary{background:var(--gc);border-color:var(--gc);}
+  /* 拓本解析から取得（v49.1）。押せないときは マウスを乗せると すぐ わけを出す（title は 出るまで遅い） */
+  .rbget{display:block;position:relative;margin:2px 0 4px;}
+  .rbget button{width:100%;}
+  .rbget.off{cursor:not-allowed;}
+  .rbget.off button{pointer-events:none;opacity:.5;}
+  .rbget.off:hover::after{content:"⚠ " attr(data-why);position:absolute;left:0;right:0;top:calc(100% + 3px);z-index:30;
+    background:#14181B;color:#fff;font-size:11.5px;font-weight:600;line-height:1.45;padding:5px 8px;border-radius:6px;
+    box-shadow:0 3px 10px rgba(0,0,0,.25);}
   .pchr .crow.on{border-color:var(--gc);box-shadow:0 0 0 1px var(--gc);}
   .pcsub{font-size:11px;font-weight:700;color:var(--muted);margin:8px 0 5px;padding-left:7px;border-left:2px solid var(--line);}
   #sub .pan.on{display:block;}
@@ -2687,7 +2695,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v49.0";
+var APP_VER = "v49.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -5522,6 +5530,11 @@ function renderProps(){
   h += '<h3 class="sec">文字の大きさ</h3>';
   h += sizeBoxHtml({ sz:"pSz", sep:"pSep", wh:"pWH", w:"pW", h:"pH" },
                    g.wMm, r.w.toFixed(1), g.hMm, r.h.toFixed(1));   /* v47.8：［縦を横と同じに］は なくした */
+  /* 拓本解析から取得（v49.1）。解析ができていなければ 押せず、マウスを乗せると わけを出す */
+  var rss = rubSizeState();
+  h += '<span class="rbget' + (rss.ok ? '' : ' off') + '"' + (rss.ok ? '' : ' data-why="' + esc(rss.why) + '"') + '>' +
+    '<button class="mini" id="pRubSize"' + (rss.ok ? ' title="拓本の解析結果から 戒名・俗名・命日 などの行を選んで、その字の大きさに合わせます"' : ' disabled') + '>' +
+    '🪨 拓本解析から取得</button></span>';
 
 
   /* 可変軸 */
@@ -5753,6 +5766,7 @@ function bindProps(){
   });
 
   on("cReset","click",function(){ g.adj = []; renderAll(); });
+  on("pRubSize","click",function(){ rubSizePickOpen(sel); });
   /* 右で選んでいる 1 字（v49.0） */
   on("pcEdit","click",function(e){ openCharMenuAt(sel, charSel, e.currentTarget); });
   on("pcOff","click",function(){
@@ -9262,6 +9276,150 @@ function rubToGuidesApply(P, opt){
       (FONTS.length ? "フォントの余白の分を足して 拓本の墨の大きさに合わせています。"
                     : "フォントを読み込むと、余白の分を足して 拓本の墨の大きさに合わせ直します。"));
 }
+/* ───── **拓本解析から 文字の大きさを取得**（v49.1。本人「グループ全体の文字大きさに、拓本解析から取得 ボタンを設置し、
+   クリックすると、拓本のどの列の戒名、俗名、命日が選択できるようにして、文字の大きさの設定は、既存の設定でいいです。
+   拓本解析から取得 ボタンは拓本AI解析が出来ていない場合は無効化して、マウスを持っていくと、拓本AI解析ができていませんとメッセージを出して」）─────
+   拓本補正の［📐 解析結果からガイドラインを作る］と 同じ 決め方（rubToGuidesPlan の 1 行 → inkSize → grpInkFit。
+   拓本の墨の大きさに フォントの余白の分を足す。拓本と同じ字の 縦横・尼 の位置も 同じ）で、
+   選んだ 1 行（線 × まとまり）の字から、この文字グループの 大きさ（hMm・wMm）を決める。位置（上端・下端）は さわらない。 */
+function rubSizeState(){
+  var has = ((S.rub && S.rub.lines) || []).some(function(L){
+    return L && L.items && L.items.some(function(it){ return it && it.px; }); });
+  if (!has) return { ok: false, why: "拓本AI解析ができていません" };
+  if (!mmPerPx()) return { ok: false, why: "拓本の［実測した文字全長］が入っていません（大きさが決まりません）" };
+  return { ok: true };
+}
+function rubSizeInk(r){
+  return { h: +r.hMm.toFixed(2), w: +r.wMm.toFixed(2), chars: r.inkChars, src: r.text,
+           baseN: r.n, nRows: 1, pick: Date.now(),
+           link: { li: r.li, g: r.g, pt: +r.pt.toFixed(1), pb: +r.pb.toFixed(1) } };
+}
+/* 入れたら どの大きさになるか（下見）。文字グループの写しで 測る */
+function rubSizeTry(g, r){
+  try {
+    var c = JSON.parse(JSON.stringify(g));
+    c.inkSize = rubSizeInk(r); if (!c.role) c.role = r.g;
+    return grpInkFit(c) ? { h: num(c.hMm, 0), w: num(c.wMm, 0) } : null;
+  } catch(e){ return null; }
+}
+function rubSizePickOpen(gi){
+  var g = S.groups[gi]; if (!g) return;
+  var st = rubSizeState(); if (!st.ok){ msg(st.why + "。", true); return; }
+  var P = rubToGuidesPlan(); if (P.err){ msg(P.err, true); return; }
+  var rows = [];
+  P.lines.forEach(function(ln, li){ ln.rows.forEach(function(r){
+    if (r.n && Array.isArray(r.inkChars) && r.inkChars.length) rows.push({ r: r, li: li, k: rows.length }); }); });
+  if (!rows.length){ msg("拓本の解析結果に 字がありません。", true); return; }
+  var roles = R2G_ORDER.slice();
+  rows.forEach(function(x){ if (roles.indexOf(x.r.g) < 0) roles.push(x.r.g); });
+  /* はじめに選んでおく行：前に取った行 → 同じまとまりで 同じ字がいちばん多い行
+     （まとまりが無い文字グループは、同じ字がいちばん多い行。令和… なら 命日 の行）→ いちばん上 */
+  var K0 = g.inkSize, pick = -1;
+  if (K0 && K0.link) rows.forEach(function(x){
+    if (pick < 0 && x.r.li === K0.link.li && x.r.g === K0.link.g && x.r.text === K0.src) pick = x.k; });
+  if (pick < 0){
+    var tx = Array.from(String(g.text || "")), best = 0;
+    rows.forEach(function(x){
+      if (g.role && x.r.g !== g.role) return;
+      var hit = Array.from(x.r.text).filter(function(c){ return tx.indexOf(c) >= 0; }).length + (g.role ? 1 : 0);
+      if (hit > best){ best = hit; pick = x.k; }
+    });
+  }
+  if (pick < 0) roles.some(function(rl){
+    var x = rows.filter(function(x9){ return x9.r.g === rl; })[0];
+    if (x){ pick = x.k; return true; } return false;
+  });
+  var old = $("rszOv"); if (old) old.remove();
+  var ov = document.createElement("div"); ov.id = "rszOv";
+  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.45);display:flex;align-items:center;justify-content:center;padding:18px;";
+  var rl = layout()[gi] || {};
+  var nowH = num(g.hMm, 0) || num(rl.h, 0), nowW = num(g.wMm, 0) || num(rl.w, 0);
+  var h = '<div style="background:#fff;border-radius:10px;max-width:700px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
+    '<b>拓本解析から 文字の大きさを取得</b>' +
+    '<div style="margin:6px 0 4px;font-size:14px;"><b>' + esc(gName(gi, 16)) + '</b>' +
+      '<span style="color:var(--muted);font-size:12px;">　いま 縦 ' + nowH.toFixed(1) + ' × 横 ' + nowW.toFixed(1) + ' mm</span></div>' +
+    '<p class="hint" style="margin:0 0 8px;">拓本の どの行の 戒名・俗名・命日 などに合わせるかを 選んでください。' +
+      '大きさの決め方は［📐 解析結果からガイドラインを作る］と同じです（拓本の墨の大きさに、フォントの余白の分を足します）。' +
+      '<b>位置（上端・下端）は 変えません。</b></p>' +
+    '<table class="rsz" style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr><th></th><th>行</th><th>字</th><th>字数</th><th>拓本の 1 字<br>高さ × 幅 mm</th><th>取得すると<br>縦 × 横 mm</th></tr></thead><tbody>';
+  roles.forEach(function(rlk){
+    var rs = rows.filter(function(x){ return x.r.g === rlk; });
+    if (!rs.length) return;
+    var go = rubGrpOf(rlk) || { nm: rlk, c: "#666" };
+    h += '<tr style="background:#f6f7f9;"><td colspan="6" style="padding:5px;">' +
+      '<span style="color:' + go.c + ';border:1px solid ' + go.c + ';border-radius:8px;padding:0 6px;font-size:12px;">' + go.nm + '</span>' +
+      (g.role === rlk ? '<span style="color:var(--muted);font-size:11px;">　この文字グループと 同じまとまり</span>' : '') + '</td></tr>';
+    rs.forEach(function(x){
+      var r = x.r, tr = rubSizeTry(g, r);
+      h += '<tr data-rk="' + x.k + '" style="cursor:pointer;">' +
+        '<td><input type="radio" name="rszPick" value="' + x.k + '" style="width:auto;"' + (x.k === pick ? ' checked' : '') + '></td>' +
+        '<td style="white-space:nowrap;">' + (x.li + 1) + ' 行目</td>' +
+        '<td style="font-size:15px;">' + esc(r.text) + (r.unk ? ' <span style="color:#B00020;font-size:11px;">□ ' + r.unk + '</span>' : '') + '</td>' +
+        '<td class="n">' + r.n + '</td>' +
+        '<td class="n">' + r.hMm.toFixed(1) + ' × ' + r.wMm.toFixed(1) + '</td>' +
+        '<td class="n" style="font-weight:700;">' + (tr ? tr.h.toFixed(1) + ' × ' + tr.w.toFixed(1)
+          : (FONTS.length ? '<span style="color:#B00020;font-weight:400;">決められません</span>' : '<span style="color:var(--muted);font-weight:400;">フォントを読むと決まります</span>')) + '</td></tr>';
+    });
+  });
+  h += '</tbody></table>' +
+    '<div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-top:10px;">' +
+      '<label class="chk" style="margin-right:auto;" title="入れると、日（俗名は除く）・戒名の 院居士信姉尼大（尼は位置も）・命日と年齢の 拓本と同じ字 だけ、墨の縦・横が 拓本の同じ字と同じになる大きさにします。ほかの字は そのままです">' +
+      '<input type="checkbox" id="rszNichi" style="width:auto;"' + (rubFitOn() ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる</label>' +
+      '<button class="mini" id="rszNo">やめる</button><button class="mini primary" id="rszGo">取得する</button></div></div>';
+  ov.innerHTML = h;
+  document.body.appendChild(ov);
+  ov.querySelectorAll(".rsz th").forEach(function(th){ th.style.cssText += ";border-bottom:1px solid #ddd;padding:3px 5px;text-align:left;"; });
+  ov.querySelectorAll(".rsz td").forEach(function(td){ td.style.borderBottom = "1px solid #eee"; td.style.padding = td.style.padding || "3px 5px"; });
+  function mark(){
+    ov.querySelectorAll("tr[data-rk]").forEach(function(tr){
+      tr.style.background = +tr.dataset.rk === pick ? "#EEF4FC" : ""; });
+  }
+  function go(){
+    var x = rows[pick]; if (!x){ msg("拓本の行を 選んでください。", true); return; }
+    ov.remove(); rubSizeApply(gi, x.r, x.li);
+  }
+  ov.querySelectorAll("tr[data-rk]").forEach(function(tr){
+    tr.onclick = function(){ pick = +tr.dataset.rk; var rb = tr.querySelector("input"); if (rb) rb.checked = true; mark(); };
+    tr.ondblclick = function(){ pick = +tr.dataset.rk; go(); };
+  });
+  mark();
+  $("rszNichi").onchange = function(e){ S.rub.fitNichi = !!e.target.checked; persist(); };
+  $("rszNo").onclick = function(){ ov.remove(); };
+  $("rszGo").onclick = go;
+  ov.addEventListener("keydown", function(e){ if (e.key === "Escape") ov.remove(); });
+  ov.onclick = function(e){ if (e.target === ov) ov.remove(); };
+  var sel9 = ov.querySelector('tr[data-rk="' + pick + '"]'); if (sel9) sel9.scrollIntoView({ block: "nearest" });
+}
+function rubSizeApply(gi, r, li){
+  var g = S.groups[gi]; if (!g) return;
+  var rl = layout()[gi] || {};
+  var wasH = num(g.hMm, 0) || num(rl.h, 0), wasW = num(g.wMm, 0) || num(rl.w, 0);
+  var back = { inkSize: g.inkSize, role: g.role, hMm: g.hMm, wMm: g.wMm, adj: JSON.stringify(g.adj || []) };
+  g.inkSize = rubSizeInk(r);
+  if (!g.role) g.role = r.g;
+  var go = rubGrpOf(r.g) || { nm: "行" };
+  var what = (li + 1) + " 行目の" + go.nm + "「" + esc(r.text) + "」";
+  if (!FONTS.length){
+    renderAll(); persist();
+    msg(what + "を 控えました。フォントを読み込むと、その大きさに合わせます。");
+    return;
+  }
+  if (!grpInkFit(g)){
+    g.inkSize = back.inkSize; g.role = back.role; g.hMm = back.hMm; g.wMm = back.wMm;
+    try { g.adj = JSON.parse(back.adj); } catch(e){}
+    msg(what + "からは 大きさを決められませんでした（読めていない字 □ ばかり など）。ほかの行を選んでください。", true);
+    return;
+  }
+  grpAmaPos(g);
+  renderAll(); persist();
+  try { if (view !== "sheet") rubRender(); } catch(e){}
+  var nc = g.inkSize.nichi || { n: 0, list: [] };
+  msg(esc(gName(gi, 12)) + " の文字の大きさを、拓本の " + what + "から 縦 " + num(g.hMm, 0).toFixed(1) + " × 横 " +
+      num(g.wMm, 0).toFixed(1) + " mm にしました（前は " + wasH.toFixed(1) + " × " + wasW.toFixed(1) + " mm）。" +
+      (nc.n ? "<br>拓本と同じ字（" + nc.list.map(function(x){ return esc(x.c); }).join("・") + "）は 縦横も 拓本に合わせました。" : ""),
+      false, !!nc.n);
+}
 function rubReadFixOpen(ev, hit){
   var el = $("rubMenu"), L = (S.rub.lines || [])[hit.ci], it = L && L.items && L.items[hit.i];
   if (!el || !it) return;
@@ -10694,6 +10852,7 @@ function setSub(t){
   if (t === "file") filePanel();
   if (t === "tpl"){ renderTpl(); tplLoadSP(); frtLoadSP(); }
   if (t === "rub") rubPanel();
+  if (t === "group"){ try { renderProps(); } catch(e){} }   /* ［拓本解析から取得］の 押せる／押せない を いまの拓本で（v49.1） */
   if (t === "frame") renderFrames();
   if (t === "font") fontPanel();
   if (t === "info") noteFill();

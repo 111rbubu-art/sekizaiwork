@@ -2656,7 +2656,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v48.7";
+var APP_VER = "v48.8";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8408,14 +8408,14 @@ function docPutCurrent(doc){
   return { ver: now, added: added };
 }
 /* 版をひらく */
-function applyVersion(doc, ver, name){
+function applyVersion(doc, ver, name, keepNewDocs){
   var st = JSON.parse(JSON.stringify(ver.state));
   st.verId = ver.id;
   /* ロックかどうかは版の記録を正とする（中の写しとずれても大丈夫なように） */
   st.lock = ver.lock ? JSON.parse(JSON.stringify(ver.lock)) : null;
   if (doc.rubSrc){ st.rub = st.rub || {}; st.rub.src = doc.rubSrc; }
   st.fonts = doc.fonts || [];
-  applyProject(st, name + "（版 " + ver.id + "）");
+  applyProject(st, name + "（版 " + ver.id + "）", keepNewDocs);
 }
 
 /* --- 版を選ぶ窓 --- */
@@ -31814,10 +31814,20 @@ $("btnLock").onclick = function(){
   lockOn("お客様校正提出", "");
 };
 /* 読み込んだ案件を画面に反映する */
-function applyProject(o, name){
+function applyProject(o, name, keepNewDocs){
   if (!o || !o.groups) throw new Error("形式が違います");
+  /* 開いた直後の 自動の読み込み（keepNewDocs）では、読み込む前に この窓で 入れた資料を 残す（v48.8） */
+  var carry = keepNewDocs ? docList().filter(function(d){
+    return d && DOCS_NEW[d.id] && !(o.docs || []).some(function(x){ return x && x.id === d.id; });
+  }) : [];
   docsForget();                       /* 前の案件の資料は覚えておかない（v18.0） */
   S = o; sel = 0; migrate();
+  if (carry.length){
+    if (!Array.isArray(S.docs)) S.docs = [];
+    carry.forEach(function(d){ S.docs.push(d); });
+    setTimeout(function(){ msg("読み込む前に入れた資料 " + carry.length + " 件を、そのまま残しました（保存すると 案件にも入ります）。"); }, 600);
+  }
+  if (!keepNewDocs) DOCS_NEW = {};
   sheetFill();
   setSheetOff(num(S.sheet.ox,0), num(S.sheet.oy,0));
   infoFill();
@@ -31833,6 +31843,7 @@ function applyProject(o, name){
     setTimeout(function(){ rubReload(true); }, 400);
   });
   renderAll();
+  if (typeof docsPanel === "function") docsPanel();   /* 資料の一覧も 読み込んだ案件の中身で 描き直す（v48.8） */
   var cur = FONTS.map(function(F){ return F.name; }).join(",");
   if (o.fonts && o.fonts.join(",") !== cur)
     msg("注意：この案件は「" + o.fonts.join(" / ") + "」で組まれています。現在と異なります。", true);
@@ -32808,6 +32819,7 @@ function stDo(a, si){
       else {
         S.docs.push({ id: it.id, name: it.name, drive: SP.cfg.driveId,
                       at: new Date().toISOString() });
+        DOCS_NEW[it.id] = 1;
         msg("「" + it.name + "」を入れました。");
       }
       persist(); renderMenuCounts();
@@ -32899,6 +32911,10 @@ function docStamp(){
          z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
 }
 function docList(){ return (S.docs || []); }
+/* **この窓を開いてから 入れた資料**（v48.8）。案件の続きの 読み込み（開いた直後に 工事フォルダの 案件ファイルを読む）が
+   終わる前に 資料を入れると、読み込んだ案件で 中身ごと 置きかわって 消えていた（本人の報告「資料が入っているのに、資料がありませんとでます」。
+   左の一覧は 描き直していなかったので 入っているように見えていた）。ここに覚えておき、読み込んだ案件に 足し直す */
+var DOCS_NEW = {};
 function docFind(id){
   var out = null;
   docList().forEach(function(d){ if (!out && d.id === id) out = d; });
@@ -33066,6 +33082,7 @@ function docsPanel(){
       else {
         S.docs.push({ id: it.id, name: it.name, drive: SP.cfg.driveId,
                       at: new Date().toISOString() });
+        DOCS_NEW[it.id] = 1;
         msg("「" + it.name + "」を入れました。");
       }
       persist(); renderMenuCounts(); docsPanel();
@@ -33116,6 +33133,7 @@ function docsForget(){
   var w = $("docWin"); if (w) w.hidden = true;
 }
 function docsRemoveId(id){
+  delete DOCS_NEW[id];
   S.docs = docList().filter(function(d){ return d.id !== id; });
   if (S.docOv && S.docOv.id === id) S.docOv = null;   /* 重ねていたものも外す（v19.4） */
 }
@@ -33334,6 +33352,7 @@ async function docPutOne(body, name, type, have){
   var it = await spPutIn(dir, nm, body, type || "application/octet-stream");
   docsRemoveId(it.id);
   S.docs.push({ id: it.id, name: it.name, drive: SP.cfg.driveId, at: new Date().toISOString() });
+  DOCS_NEW[it.id] = 1;
   delete DOCC[it.id]; delete DOCIMG[it.id]; delete DOCSZ[it.id];
   persist(); renderMenuCounts(); DOCP = null; docsPanel();
   if (typeof startRender === "function") startRender();
@@ -33869,7 +33888,7 @@ async function spOpenProject(item, auto){
       var vs = verSorted(o);
       spBrowseClose();
       if (auto || vs.length === 1){
-        applyVersion(o, vs[0], item.name);
+        applyVersion(o, vs[0], item.name, !!auto);
         hoFillBlanks();
       } else {
         openVerWin(o, item.name);   /* どの版を開くか選んでもらう */
@@ -33878,7 +33897,7 @@ async function spOpenProject(item, auto){
     }
     CASEF = { id:"", name:"" };     /* 古い形。保存は新しいファイルへ */
     CASEDOC = null;
-    applyProject(o, item.name);
+    applyProject(o, item.name, !!auto);
     hoFillBlanks();          /* 抜けている確認情報は本体アプリの値で埋める */
     spBrowseClose();
   } catch(e){ msg("開けませんでした：" + spErrText(e), true); }

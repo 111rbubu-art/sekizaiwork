@@ -1829,6 +1829,7 @@ body.locked #rbRot{opacity:.45;pointer-events:none;}
     <b>学習データ登録</b><!-- v50.2：「字枠の登録の確かめ」→ ボタンの名前（学習データ登録）に そろえた -->
     <button class="mini" id="aiRegTabNow">いまの拓本</button>
     <button class="mini" id="aiRegTabSrv">サーバーに貯まった分</button>
+    <button class="mini" id="aiRegTabFix" title="サーバーに 貯まった 列の 枠を、その列の 墨に 合わせて 締め直します（調べてから 書き戻す）">枠を締め直す</button>
     <label style="font-size:12px;"><input type="checkbox" id="aiRegInk" checked> AI の墨を重ねる</label>
     <label style="font-size:12px;"><input type="checkbox" id="aiRegBox" checked> 枠と読みを出す</label>
     <span style="flex:1"></span>
@@ -2779,7 +2780,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v53.1";
+var APP_VER = "v53.2";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -28140,15 +28141,18 @@ async function rubBoxAiAll(opt){
 var TIDY_ISLAND_KEY = "chokoku.tidyIsland";
 function rubTidyIsland(){ try { return localStorage.getItem(TIDY_ISLAND_KEY) === "1"; } catch(e){ return false; } }
 function rubTidyIslandSet(v){ try { if (v) localStorage.setItem(TIDY_ISLAND_KEY, "1"); else localStorage.removeItem(TIDY_ISLAND_KEY); } catch(e){} }
-async function rubBoxTidy(boxes, q, q0){
+async function rubBoxTidy(boxes, q, q0, ext){
+  /* ext.M … 墨の ます（{m,w,h,x1,y1,sc}）を じかに 渡す（v53.2。拓本AI に 登録した 列の 締め直し。その列の 絵の 画素で）。
+     ext.noCal … 頭・脚（S.rub.calTop/calBot）を 見ない（いま 開いている 拓本と ちがう 絵のとき） */
+  ext = ext || {};
   var bs = (boxes || []).map(function(b){
     return { x: b.x, y: b.y, w: b.w, h: b.h, score: b.score };
   });
   var st = { nTight: 0, nCut: 0, nDup: 0 };
   /* 整える前の AI の枠を 控える（v52.9。飛び地かどうかは この枠で 見る） */
   bs.forEach(function(b){ b.o = { x: b.x, y: b.y, w: b.w, h: b.h }; });
-  var M = null;
-  var url = rubInkUrlAt(q);
+  var M = ext.M || null;
+  var url = M ? "" : rubInkUrlAt(q);
   if (url){
     var x1 = Math.max(0, Math.floor(q.x1)), y1 = Math.max(0, Math.floor(q.y1));
     var x2 = Math.min(RUB.W, Math.ceil(q.x2)), y2 = Math.min(RUB.H, Math.ceil(q.y2));
@@ -28308,7 +28312,7 @@ async function rubBoxTidy(boxes, q, q0){
        AI の枠が 才 の上 4 分の 3 しか なく、下に となりの枠も 無いので、受け持ちが 範囲の下まで のび、
        枠から 字の半分の所にある その墨を「枠に かかっていない 別の画」（信 の イ のような）として 入れていた。
        字は 頭と脚（実測した文字全長）の あいだにあるので、8 割以上が 頭より上か 脚より下の かたまりは 見ない */
-    var cT9 = num(S.rub && S.rub.calTop, NaN), cB9 = num(S.rub && S.rub.calBot, NaN);
+    var cT9 = ext.noCal ? NaN : num(S.rub && S.rub.calTop, NaN), cB9 = ext.noCal ? NaN : num(S.rub && S.rub.calBot, NaN);
     if (isFinite(cT9) && isFinite(cB9) && cB9 - cT9 > 8){
       var tM9 = (cT9 - M.y1) * M.sc, bM9 = (cB9 - M.y1) * M.sc;
       comps.forEach(function(c){
@@ -29611,12 +29615,221 @@ async function rubRegViewSrv(){
   });
   if (!its.length) info.innerHTML = "サーバーには まだ 1 列も貯まっていません。";
 }
+/* ───── **登録した枠を 墨に合わせて 締め直す**（v53.2。本人「お願いします」。登録した「日」51 個の 縦÷横が 1.06（字は 1.26）で、
+   枠の AI は 教えられた 四角い枠を 覚えていた）─────
+   サーバーの 列（/api/takuhon/lines?boxes=1）ごとに 絵（raw）と 墨（ink：登録したときの AI の墨。白＝墨）を 読み、
+   その墨で `rubBoxTidy`（解析と 同じ 締め・広げ）。前の枠と いちばん重なる 新しい枠を 当て、重なり 5 割 未満・面積が 0.4〜2.5 倍の 外は
+   「大きく変わる」として 前のまま。読み（ch）・まとまり（g）は 前の枠から 引きつぐ。
+   ［調べる］では 書きかえない。［書き戻す］で えらんだ 列だけ /api/takuhon/line/{id}/boxes に 送り、前の枠は この PC に 控える（［元に戻す］） */
+var REGFIX = null, REGFIX_BK = "chokoku.regFixBackup";
+function rubRegFixBk(){ try { return JSON.parse(localStorage.getItem(REGFIX_BK) || "null"); } catch(e){ return null; } }
+async function rubRegViewFix(){
+  var body = $("aiRegBody"), info = $("aiRegInfo");
+  body.innerHTML = "";
+  if (!takuApiBase()){ info.innerHTML = esc(takuAiOffNote()) + "。"; return; }
+  var bk = rubRegFixBk();
+  info.innerHTML = '<b>登録した枠を 墨に合わせて 締め直す</b>：サーバーに 貯まった 列の 枠を、その列の 墨（登録したときの AI の墨）に 合わせて 締め・広げます' +
+    '（解析の「枠を整える」と 同じ やり方）。<br>まず［調べる］で 前と後を くらべます（まだ 書きかえません）。' +
+    'よければ 列を えらんで［書き戻す］。書き戻す前の枠は この PC に 控え、［元に戻す］で 戻せます。<br>' +
+    '縦÷横を 見る字：<input id="rfCh" value="' + esc((REGFIX && REGFIX.ch) || "日") + '" style="width:3em;font-size:12px;"> ' +
+    '<button class="mini primary" id="rfScan">🔍 調べる（書きかえない）</button>' +
+    (bk && bk.items ? ' <button class="mini" id="rfUndo" title="書き戻す前の枠に 戻します">↩ 元に戻す（' +
+      esc(String(bk.at || "").replace("T", " ").slice(0, 16)) + ' の控え・' + bk.items.length + ' 列）</button>' : '');
+  $("rfScan").onclick = function(){ rubRegFixScan(); };
+  if ($("rfUndo")) $("rfUndo").onclick = function(){ rubRegFixUndo(); };
+  if (REGFIX && REGFIX.items) rubRegFixShow();
+}
+function _rfIou(a, b){
+  var ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (!(ix > 0 && iy > 0)) return 0;
+  return ix * iy / (a.w * a.h + b.w * b.h - ix * iy);
+}
+/* 1 列ぶん：絵と墨と 前の枠 → 新しい枠（前の枠と 同じ数・同じ順） */
+async function rubRegFixOne(raw, ink, boxes){
+  var W = raw.width, H = raw.height;
+  var t = document.createElement("canvas"); t.width = W; t.height = H;
+  var tg = t.getContext("2d"); tg.drawImage(ink, 0, 0, W, H);
+  var d = tg.getImageData(0, 0, W, H).data, m = new Uint8Array(W * H), nInk = 0;
+  for (var k = 0; k < W * H; k++) if (d[k * 4] > 127){ m[k] = 1; nInk++; }
+  if (nInk < W * H * 0.002) return { skip: "墨が ほとんど無い" };
+  var M = { m: m, w: W, h: H, x1: 0, y1: 0, sc: 1 };
+  var mg = W * 0.12 / 1.24;                        /* 登録の 切り抜きは 枠の外に 12% の のりしろ */
+  var q = { x1: 0, x2: W, y1: 0, y2: H }, q0 = { x1: mg, x2: W - mg, y1: 0, y2: H };
+  var old = boxes.map(function(b){ return { x: num(b.x, 0), y: num(b.y, 0), w: num(b.w, 0), h: num(b.h, 0) }; });
+  var td = await rubBoxTidy(old.map(function(b){ return { x: b.x, y: b.y, w: b.w, h: b.h, score: 0.5 }; }), q, q0, { M: M, noCal: true });
+  var nb = (td && td.boxes) || [];
+  /* 前の枠ごとに いちばん重なる 新しい枠（重なりの 大きい組から 決める・1 つの 新しい枠は 1 回だけ） */
+  var pairs = [];
+  old.forEach(function(o, i){ nb.forEach(function(n, j){ var u = _rfIou(o, n); if (u > 0) pairs.push({ i: i, j: j, u: u }); }); });
+  pairs.sort(function(a, b){ return b.u - a.u; });
+  var useI = {}, useJ = {}, got = {};
+  pairs.forEach(function(pq){ if (useI[pq.i] || useJ[pq.j]) return; useI[pq.i] = 1; useJ[pq.j] = 1; got[pq.i] = pq; });
+  var nChg = 0, nBig = 0;
+  var out = boxes.map(function(b, i){
+    var o = old[i], pq = got[i], n = pq ? nb[pq.j] : null, keep = true, big = false;
+    if (n){
+      var ar = (n.w * n.h) / Math.max(1, o.w * o.h);
+      if (pq.u >= 0.5 && ar >= 0.4 && ar <= 2.5) keep = false; else big = true;
+    } else big = true;
+    var r = { x: +(keep ? o.x : n.x).toFixed(1), y: +(keep ? o.y : n.y).toFixed(1), w: +(keep ? o.w : n.w).toFixed(1), h: +(keep ? o.h : n.h).toFixed(1) };
+    if (b.ch) r.ch = b.ch; if (b.g) r.g = b.g;
+    var chg = !keep && (Math.abs(r.x - o.x) > 0.6 || Math.abs(r.y - o.y) > 0.6 || Math.abs(r.w - o.w) > 0.6 || Math.abs(r.h - o.h) > 0.6);
+    if (chg) nChg++; if (big) nBig++;
+    r._chg = chg; r._big = big;
+    return r;
+  });
+  return { boxes: out, nChg: nChg, nBig: nBig };
+}
+async function rubRegFixScan(){
+  var base = takuApiBase(), body = $("aiRegBody"); if (!base) return;
+  var ch = (($("rfCh") && $("rfCh").value) || "").trim();
+  body.innerHTML = '<p class="hint" id="rfProg" style="color:#cfe3ff;">サーバーから 読んでいます…</p>';
+  var all = [];
+  try {
+    for (var off = 0, k = 0; k < 40; k++){
+      var r = await fetch(base + "/api/takuhon/lines?boxes=1&limit=300&offset=" + off);
+      if (!r.ok) throw await takuErr(r, "登録した列（/api/takuhon/lines）");
+      var j = await r.json(), its = j.items || [];
+      all = all.concat(its); off += its.length;
+      if (its.length < 300 || off >= num(j.shown, 0)) break;
+    }
+  } catch(e){ body.innerHTML = '<p class="hint" style="color:#ffb3b3;">サーバーから 読めませんでした（' + esc((e && e.message) || "") + '）。</p>'; return; }
+  var items = [];
+  for (var i = 0; i < all.length; i++){
+    var L = all[i], pr = $("rfProg");
+    if (pr) pr.textContent = "締め直しを 調べています… " + (i + 1) + " / " + all.length + " 列";
+    var rec = { id: L.id, at: L.at || "", off: !!L.off, note: L.note || "", old: (L.boxes || []).map(function(b){ return Object.assign({}, b); }), skip: "" };
+    if (!rec.old.length){ rec.skip = "枠が無い"; items.push(rec); continue; }
+    var raw = await _regImg(base + "/api/takuhon/lineimg/" + encodeURIComponent(L.id) + "/raw.png");
+    if (!raw){ rec.skip = "絵が 読めない"; items.push(rec); continue; }
+    var ink = L.ink ? await _regImg(base + "/api/takuhon/lineimg/" + encodeURIComponent(L.id) + "/ink.png") : null;
+    if (!ink){ rec.skip = "墨なし"; items.push(rec); continue; }
+    var f = null;
+    try { f = await rubRegFixOne(raw, ink, rec.old); } catch(eF){ f = { skip: "締め直せない（" + ((eF && eF.message) || "") + "）" }; }
+    if (f.skip){ rec.skip = f.skip; items.push(rec); continue; }
+    rec.nb = f.boxes; rec.nChg = f.nChg; rec.nBig = f.nBig; rec.sel = !rec.off && f.nChg > 0;
+    /* 見せる絵は 小さく して 持つ（絵と墨は 持たない。列が 多いと 重くなる） */
+    if (f.nChg){
+      var full = rubRegDraw(raw, ink, f.boxes, rec.old), kz = Math.min(1, 240 / full.width);
+      var pv = document.createElement("canvas"); pv.width = Math.max(1, Math.round(full.width * kz)); pv.height = Math.max(1, Math.round(full.height * kz));
+      pv.getContext("2d").drawImage(full, 0, 0, pv.width, pv.height);
+      rec.pv = pv;
+    }
+    items.push(rec);
+  }
+  REGFIX = { items: items, ch: ch, at: Date.now() };
+  rubRegFixShow();
+}
+function rubRegFixShow(){
+  var body = $("aiRegBody"), R = REGFIX; if (!R) return;
+  body.innerHTML = "";
+  var f2 = function(v){ return (Math.round(v * 100) / 100).toFixed(2); };
+  var med = function(a){ return a.length ? _med(a) : 0; };
+  var ok = R.items.filter(function(x){ return x.nb; }), skip = R.items.filter(function(x){ return !x.nb; });
+  var bAll = [], aAll = [], bCh = [], aCh = [], byCh = {}, nBox = 0, nChg = 0, nBig = 0;
+  ok.forEach(function(x){
+    x.old.forEach(function(o, i){
+      var n = x.nb[i]; if (!(o.w > 0 && o.h > 0 && n.w > 0 && n.h > 0)) return;
+      nBox++; if (n._chg) nChg++; if (n._big) nBig++;
+      if (x.off) return;
+      var a0 = o.h / o.w, a1 = n.h / n.w;
+      bAll.push(a0); aAll.push(a1);
+      if (o.ch){ (byCh[o.ch] = byCh[o.ch] || { b: [], a: [] }); byCh[o.ch].b.push(a0); byCh[o.ch].a.push(a1); }
+      if (R.ch && o.ch === R.ch){ bCh.push(a0); aCh.push(a1); }
+    });
+  });
+  var tall = function(a){ return a.length ? Math.round(a.filter(function(v){ return v >= 1.15; }).length / a.length * 100) : 0; };
+  var chs = Object.keys(byCh).filter(function(c){ return byCh[c].b.length >= 5; })
+    .map(function(c){ return { c: c, n: byCh[c].b.length, b: med(byCh[c].b), a: med(byCh[c].a) }; })
+    .sort(function(p, q){ return Math.abs(q.a - q.b) - Math.abs(p.a - p.b); }).slice(0, 10);
+  var nSel = ok.filter(function(x){ return x.sel; }).length;
+  var sk = {}; skip.forEach(function(x){ sk[x.skip] = (sk[x.skip] || 0) + 1; });
+  var head = document.createElement("div");
+  head.style.cssText = "flex:1 1 100%;font-size:12px;line-height:1.7;background:#1a212a;border-radius:8px;padding:8px 10px;";
+  head.innerHTML = '<b>調べた結果（まだ 書きかえていません）</b>：列 ' + R.items.length + ' 本のうち 締め直せた ' + ok.length + ' 本' +
+    (skip.length ? '（とばした ' + skip.length + ' 本：' + Object.keys(sk).map(function(k){ return esc(k) + ' ' + sk[k]; }).join('・') + '）' : '') +
+    '<br>枠 ' + nBox + ' 個のうち 変わる ' + nChg + ' 個' + (nBig ? '（大きく変わるので 前のまま ' + nBig + ' 個）' : '') +
+    (R.ch ? '<br>「' + esc(R.ch) + '」' + bCh.length + ' 個：縦÷横 <b>' + f2(med(bCh)) + ' → ' + f2(med(aCh)) + '</b>（中央値）' : '') +
+    '<br>枠 ぜんぶ（学習に使う）：縦÷横 ' + f2(med(bAll)) + ' → ' + f2(med(aAll)) + '・縦長（1.15 以上）' + tall(bAll) + '% → ' + tall(aAll) + '%' +
+    (chs.length ? '<br>字ごと（5 個 以上・変わりの大きい順）：' + chs.map(function(c){ return esc(c.c) + ' ' + f2(c.b) + '→' + f2(c.a) + '（' + c.n + '）'; }).join('・') : '') +
+    '<br><span style="color:#9fb0c3;">白い点線＝いま 登録してある枠／色の実線＝締め直した枠。変える列に チェック（学習から 外した列は はじめ 外してあります）。</span><br>' +
+    '<button class="mini primary" id="rfWrite"' + (nSel ? '' : ' disabled') + '>⬆ 書き戻す（えらんだ ' + nSel + ' 列）</button> ' +
+    '<button class="mini" id="rfAll">ぜんぶ えらぶ</button> <button class="mini" id="rfNone">ぜんぶ 外す</button>';
+  body.appendChild(head);
+  ok.forEach(function(x, xi){
+    if (!x.nChg) return;
+    var cv = x.pv; if (!cv) return;
+    var cB = [], cA = [];
+    x.old.forEach(function(o, i){ if (R.ch && o.ch === R.ch && o.w > 0 && x.nb[i].w > 0){ cB.push(o.h / o.w); cA.push(x.nb[i].h / x.nb[i].w); } });
+    var sub = esc(String(x.at).replace("T", " ").slice(0, 16)) + (x.note ? '／' + esc(x.note) : '') +
+      '<br>変わる ' + x.nChg + ' / ' + x.old.length + ' 枠' + (x.nBig ? '・大きく変わるので 前のまま ' + x.nBig : '') +
+      (cB.length ? '<br>「' + esc(R.ch) + '」縦÷横 ' + cB.map(f2).join(' ') + ' → ' + cA.map(f2).join(' ') : '');
+    var card = rubRegCard(cv, "", sub, "");
+    var t = card.firstChild;
+    t.innerHTML = '<label style="cursor:pointer;"><input type="checkbox" class="rfSel" data-i="' + R.items.indexOf(x) + '"' + (x.sel ? ' checked' : '') + '> ' +
+      esc(x.id) + (x.off ? '（学習に 使っていない）' : '') + '</label>';
+    body.appendChild(card);
+  });
+  Array.prototype.forEach.call(body.querySelectorAll(".rfSel"), function(c){
+    c.onchange = function(){ var x = R.items[+c.dataset.i]; if (x) x.sel = c.checked; rubRegFixCount(); };
+  });
+  $("rfAll").onclick = function(){ R.items.forEach(function(x){ if (x.nb && x.nChg) x.sel = true; }); rubRegFixShow(); };
+  $("rfNone").onclick = function(){ R.items.forEach(function(x){ x.sel = false; }); rubRegFixShow(); };
+  $("rfWrite").onclick = function(){ rubRegFixWrite(); };
+}
+function rubRegFixCount(){
+  var b = $("rfWrite"); if (!b || !REGFIX) return;
+  var n = REGFIX.items.filter(function(x){ return x.sel && x.nb; }).length;
+  b.textContent = "⬆ 書き戻す（えらんだ " + n + " 列）"; b.disabled = !n;
+}
+async function rubRegFixPost(id, boxes){
+  var fd = new FormData();
+  fd.append("boxes", JSON.stringify(boxes.map(function(b){
+    var r = { x: b.x, y: b.y, w: b.w, h: b.h }; if (b.ch) r.ch = b.ch; if (b.g) r.g = b.g; return r; })));
+  var r = await fetch(takuApiBase() + "/api/takuhon/line/" + encodeURIComponent(id) + "/boxes", { method: "POST", body: fd });
+  if (!r.ok) throw await takuErr(r, "枠の入れかえ（/api/takuhon/line/…/boxes）");
+  return r.json();
+}
+async function rubRegFixWrite(){
+  var R = REGFIX; if (!R) return;
+  var sel = R.items.filter(function(x){ return x.sel && x.nb; });
+  if (!sel.length) return;
+  if (!confirm("拓本AI の 学習データ（" + sel.length + " 列の 枠）を 締め直した枠に 書きかえます。\n" +
+               "書きかえる前の枠は この PC に 控え、［元に戻す］で 戻せます。\nよろしいですか。")) return;
+  var bk = { at: new Date().toISOString(), items: sel.map(function(x){ return { id: x.id, boxes: x.old }; }) };
+  try { localStorage.setItem(REGFIX_BK, JSON.stringify(bk)); }
+  catch(e){ alert("控えを この PC に 保存できなかったので、書きかえを やめました（" + ((e && e.message) || "") + "）。"); return; }
+  var okN = 0, ng = [];
+  for (var i = 0; i < sel.length; i++){
+    var b = $("rfWrite"); if (b){ b.disabled = true; b.textContent = "書き戻しています… " + (i + 1) + " / " + sel.length; }
+    try { await rubRegFixPost(sel[i].id, sel[i].nb); okN++; sel[i].done = 1; }
+    catch(e){ ng.push(sel[i].id + "（" + ((e && e.message) || "") + "）"); }
+  }
+  msg("登録した枠を " + okN + " 列 書き戻しました" + (ng.length ? "（できなかった " + ng.length + " 列）" : "") +
+      "。夜 2:30 の 学習（か 拓本AI の 画面からの 学習）で 枠の AI が 覚え直します。", !!ng.length, true);
+  if (ng.length) alert("書き戻せなかった列：\n" + ng.join("\n"));
+  REGFIX = null;
+  rubRegViewFix();
+}
+async function rubRegFixUndo(){
+  var bk = rubRegFixBk(); if (!bk || !bk.items) return;
+  if (!confirm(String(bk.at || "").replace("T", " ").slice(0, 16) + " に 書きかえる前の枠（" + bk.items.length + " 列）に 戻します。よろしいですか。")) return;
+  var okN = 0, ng = [];
+  for (var i = 0; i < bk.items.length; i++){
+    try { await rubRegFixPost(bk.items[i].id, bk.items[i].boxes); okN++; } catch(e){ ng.push(bk.items[i].id); }
+  }
+  if (!ng.length){ try { localStorage.removeItem(REGFIX_BK); } catch(e){} }
+  msg("前の枠に " + okN + " 列 戻しました" + (ng.length ? "（戻せなかった " + ng.length + " 列。控えは 残しています）" : "") + "。", !!ng.length, true);
+  REGFIX = null;
+  rubRegViewFix();
+}
 function rubRegBind(){
   if (rubRegBind.done) return; rubRegBind.done = 1;
   var n = $("aiRegTabNow"), sv = $("aiRegTabSrv"), rl = $("aiRegReload"),
       ik = $("aiRegInk"), bx = $("aiRegBox");
   if (n)  n.onclick  = function(){ rubRegView("now"); };
   if (sv) sv.onclick = function(){ rubRegView("srv"); };
+  var fx9 = $("aiRegTabFix"); if (fx9) fx9.onclick = function(){ rubRegView("fix"); };
   if (rl) rl.onclick = function(){ rubRegView(); };
   if (ik) ik.onchange = function(){ REGV.ink = ik.checked; rubRegView(); };
   if (bx) bx.onchange = function(){ REGV.box = bx.checked; rubRegView(); };
@@ -29629,7 +29842,8 @@ function rubRegView(tab){
   var bn = $("aiRegTabNow"), bs = $("aiRegTabSrv");
   if (bn) bn.className = "mini" + (REGV.tab === "now" ? " primary" : "");
   if (bs) bs.className = "mini" + (REGV.tab === "srv" ? " primary" : "");
-  if (REGV.tab === "srv") rubRegViewSrv(); else rubRegViewNow();
+  var bf9 = $("aiRegTabFix"); if (bf9) bf9.className = "mini" + (REGV.tab === "fix" ? " primary" : "");
+  if (REGV.tab === "srv") rubRegViewSrv(); else if (REGV.tab === "fix") rubRegViewFix(); else rubRegViewNow();
 }
 /* --- 拓本AI のサーバーへ直接送る（v20.87） ---------------------------
    共有フォルダー（SharePoint）への保存は**今までどおり**。控えは二重に持つ。

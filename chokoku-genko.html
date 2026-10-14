@@ -2769,7 +2769,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v50.2";
+var APP_VER = "v50.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -9088,12 +9088,12 @@ function rubToGuidesPlan(){
   var out = [];
   lines.forEach(function(ln, li){
     var rows = [];
-    ln.cols.forEach(function(c){
+    ln.cols.forEach(function(c, cj){
       var run = null;
       var li9 = (S.rub.lines || []).indexOf(c.L);
       c.its.forEach(function(it){
         var g = it.g || "hoka";
-        if (!run || run.g !== g){ run = { g: g, its: [], li: li9 }; rows.push(run); }
+        if (!run || run.g !== g){ run = { g: g, its: [], li: li9, ccx: c.cx, cj: cj }; rows.push(run); }
         run.its.push(it);
       });
     });
@@ -9111,12 +9111,48 @@ function rubToGuidesPlan(){
                /* [字面の高さ mm, 幅 mm, 拓本の上の 字の真ん中 x 画素, 上端 y 画素]（後ろ 2 つは 尼 の位置合わせ用。v43.3） */
                inkChars: hs.map(function(h9, k9){ var b9 = r.its[k9].px;
                  return [+h9.toFixed(2), +ws[k9].toFixed(2), +(b9.x + b9.w / 2).toFixed(1), +b9.y.toFixed(1)]; }),
-               li: r.li, pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
+               li: r.li, ccx: r.ccx, cj: r.cj, pt: a.px.y, pb: z.px.y + z.px.h, top: mmOf(a.px.y), bot: mmOf(z.px.y + z.px.h),
                hMm: avg(hsA), wMm: avg(wsA) };
     });
     var wMax = Math.max.apply(null, rows.map(function(r){ return r.wMm; }).concat([0]));
     out.push({ cx: ln.cx, rows: rows, w: +(wMax * 1.1 || 30.3).toFixed(1),
                lis: ln.cols.map(function(c){ return (S.rub.lines || []).indexOf(c.L); }) });
+  });
+  /* **行の名前は 拓本の上の列の番号と同じに**（v50.3。本人「拓本の上の番号と、解析結果のウインドウの行数がずれています。同じようにして」）。
+     前は 右から 1・2・3…（線の並び）で、拓本の上は 左から 1・2・3…（rubColMenu の むらさきの帯）だった。
+     ・その上の列（ups）に入る いちばん上の線 … 「2」（下で分かれる列があるときは「上2」）
+     ・同じ上の列の 下の線（下で 2 列に分かれた所） … 下の列の番号があれば「下1」、無ければ「2（下・左）」「2（下・右）」
+     ・線の中の 行（まとまり）で、下の列から来たもの … 「上2・下1」／「2（下・右）」
+     ord は 並べる順（左から）。番号が出せないときは 左から数えた順 */
+  var nL = out.length, mnL = rubColMenu();
+  function upAt(x){ for (var i = 0; i < mnL.ups.length; i++) if (x >= mnL.ups[i].a - 2 && x <= mnL.ups[i].b + 2) return i; return -1; }
+  function lowAt(x){ for (var i = 0; i < mnL.lows.length; i++) if (x >= mnL.lows[i].a - 2 && x <= mnL.lows[i].b + 2) return i; return -1; }
+  function upNm(k){ return (mnL.lows.length ? "上" : "") + (k + 1); }
+  function subNm(k, x){
+    var j = lowAt(x); if (j >= 0) return "下" + (j + 1);
+    var u = mnL.ups[k], cu = (u.a + u.b) / 2;
+    return upNm(k) + "（下・" + (x < cu ? "左" : "右") + "）";
+  }
+  out.forEach(function(ln, li){
+    ln.ord = nL - li;                                  /* 左から数えた順 */
+    ln.top9 = Math.min.apply(null, ln.rows.map(function(r){ return r.pt; }).concat([1e9]));
+    ln.k9 = upAt(ln.cx);
+  });
+  out.forEach(function(ln){
+    if (ln.k9 < 0){ ln.nm = String(ln.ord); return; }
+    var mates = out.filter(function(o){ return o.k9 === ln.k9; });
+    var topMost = mates.reduce(function(a, o){ return o.top9 < a.top9 ? o : a; }, mates[0]);
+    ln.nm = (mates.length > 1 && ln !== topMost) ? subNm(ln.k9, ln.cx) : upNm(ln.k9);
+    ln.ord = ln.k9 + 1 + (ln === topMost ? 0 : (ln.cx / 1e6) + 0.5);   /* 同じ列の 下の線は そのすぐ後ろ（左→右） */
+  });
+  out.forEach(function(ln){
+    ln.rows.forEach(function(r){
+      r.ord = ln.ord; r.nm = ln.nm;
+      if (r.cj > 0 && ln.k9 >= 0){
+        var sn = subNm(ln.k9, r.ccx);
+        r.nm = /^下/.test(sn) ? ln.nm + "・" + sn : sn;
+      } else if (r.cj > 0) r.nm = ln.nm + "（下）";
+    });
   });
   return { lines: out, mpx: mpx };
 }
@@ -9440,6 +9476,28 @@ function grpInkFitPending(){
    ・字の大きさは まとまりごとに、チェックした行の字 ぜんぶから（フォントの墨の比で 字ごとに足し合わせる）。
    ・まとまりの見出しに チェックした行の平均。平均から 10% 以上ずれた行は 赤。 */
 var R2G_ORDER = ["kai", "mei", "zok", "kyo", "nen", "hoka"];
+/* 下見の窓（.ovwin）を 見出し（.ovhd）で つかんで動かす（v50.3。本人「解析結果からガイドラインを作るウインドウは移動できるようにして」）。
+   はじめて動かしたときに 窓を 位置固定（fixed）にして、そこから ずらす */
+function ovDrag(ov){
+  var win = ov && ov.querySelector(".ovwin"), hd = ov && ov.querySelector(".ovhd");
+  if (!win || !hd) return;
+  hd.addEventListener("pointerdown", function(e){
+    if (e.button !== 0 || (e.target.closest && e.target.closest("button,select,input,label"))) return;
+    e.preventDefault();
+    var b = win.getBoundingClientRect();
+    if (win.style.position !== "fixed"){
+      win.style.position = "fixed"; win.style.margin = "0";
+      win.style.left = b.left + "px"; win.style.top = b.top + "px"; win.style.width = b.width + "px";
+    }
+    var dx = e.clientX - b.left, dy = e.clientY - b.top;
+    function mv(q){
+      win.style.left = Math.max(-b.width + 80, Math.min(window.innerWidth - 80, q.clientX - dx)) + "px";
+      win.style.top  = Math.max(0, Math.min(window.innerHeight - 40, q.clientY - dy)) + "px";
+    }
+    function up(){ window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); ov._dragAt = Date.now(); }
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+  });
+}
 function rubToGuidesOpen(){
   var P = rubToGuidesPlan();
   if (P.err){ msg(P.err, true); return; }
@@ -9450,16 +9508,20 @@ function rubToGuidesOpen(){
   var use = {};
   P.lines.forEach(function(ln, li){ ln.rows.forEach(function(r, ri){ if (r.top != null) use[li + ":" + ri] = true; }); });
   var ov = document.createElement("div"); ov.id = "r2gOv";
-  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.45);display:flex;align-items:center;justify-content:center;padding:18px;";
+  /* 後ろの拓本が 見えるよう 薄めに（v50.3）。窓は 見出しを つかんで動かせる（ovDrag） */
+  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.18);display:flex;align-items:center;justify-content:center;padding:18px;";
   var had = (S.centers || []).length;
   var lineNm = function(ln){ var r = ln.rows.filter(function(x){ return x.g === "kai"; })[0] || ln.rows[0]; return r ? r.text : ""; };
-  ov.innerHTML = '<div style="background:#fff;border-radius:10px;max-width:780px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
-    '<b>解析結果から ガイドラインを作る（下見）</b>' +
+  /* 行の並びは 拓本の上の番号と同じ 左から（v50.3） */
+  var lineIdx = P.lines.map(function(_, li){ return li; }).sort(function(a, b){ return P.lines[a].ord - P.lines[b].ord; });
+  ov.innerHTML = '<div class="ovwin" style="background:#fff;border-radius:10px;max-width:780px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
+    '<div class="ovhd" title="つかんで動かせます" style="cursor:move;user-select:none;margin:-14px -16px 0;padding:10px 16px 2px;"><b>解析結果から ガイドラインを作る（下見）</b>' +
+      '<span style="float:right;font-size:11px;color:var(--muted);">✥ つかんで動かせます</span></div>' +
     '<p class="hint" style="margin:4px 0 8px;">センターライン 1 本を ' + (had ? '<b>いまのガイドラインの左に 足します</b>' : '作ります') +
       '。字と上下の位置は［ガイドラインにする行］から、字の大きさは まとまりごとに <b>チェックした行</b>の 1 字あたりの平均から決めます。' +
       '「平均との差」は その行の字の大きさが まとまりの平均より どれだけ大きい（＋）か 小さい（−）か。1 割以上 ずれたら <span style="color:#B00020;">赤</span>。おかしい行は チェックを外してください。</p>' +
     '<div style="margin:0 0 6px;font-size:13px;">ガイドラインにする行 <select id="r2gBase" style="width:auto;">' +
-      P.lines.map(function(ln, li){ return '<option value="' + li + '"' + (li === base ? ' selected' : '') + '>' + (li + 1) + ' 行目　' + esc(lineNm(ln)) + '</option>'; }).join("") +
+      lineIdx.map(function(li){ var ln = P.lines[li]; return '<option value="' + li + '"' + (li === base ? ' selected' : '') + '>' + esc(ln.nm) + ' 行目　' + esc(lineNm(ln)) + '</option>'; }).join("") +
     '</select></div>' +
     '<table class="r2g" style="width:100%;border-collapse:collapse;font-size:12px;">' +
       '<thead><tr><th></th><th>行</th><th>字</th><th>字数</th><th>1 字の大きさ（平均）<br>高さ × 幅 mm</th><th>平均との差<br>高さ</th><th>平均との差<br>幅</th></tr></thead><tbody id="r2gBody"></tbody></table>' +
@@ -9468,6 +9530,7 @@ function rubToGuidesOpen(){
       '<input type="checkbox" id="r2gNichi" style="width:auto;"' + (rubFitOn() ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる</label>' +
       '<button class="mini" id="r2gNo">やめる</button><button class="mini primary" id="r2gGo">作る</button></div></div>';
   document.body.appendChild(ov);
+  ovDrag(ov);
   var roles = R2G_ORDER.slice();
   P.lines.forEach(function(ln){ ln.rows.forEach(function(r){ if (roles.indexOf(r.g) < 0) roles.push(r.g); }); });
   function draw(){
@@ -9476,6 +9539,7 @@ function rubToGuidesOpen(){
       var rs = [];
       P.lines.forEach(function(ln, li){ ln.rows.forEach(function(r, ri){ if (r.g === g && r.top != null) rs.push({ r: r, li: li, ri: ri, k: li + ":" + ri }); }); });
       if (!rs.length) return;
+      rs.sort(function(a, b){ return (a.r.ord - b.r.ord) || (a.r.cj - b.r.cj) || (a.ri - b.ri); });   /* 左の行から（v50.3） */
       var on = rs.filter(function(x){ return use[x.k]; });
       var wsum = 0, aH = 0, aW = 0;
       on.forEach(function(x){ wsum += x.r.n; aH += x.r.hMm * x.r.n; aW += x.r.wMm * x.r.n; });
@@ -9497,7 +9561,7 @@ function rubToGuidesOpen(){
             (mm >= 0 ? "+" : "−") + Math.abs(mm).toFixed(1) + ' mm <span style="font-size:11px;">(' + (v >= 0 ? "+" : "−") + Math.abs(Math.round(v * 100)) + '%)</span></td>'; };
         h += '<tr style="' + (isB ? 'background:#FFF8E1;' : '') + (ck ? '' : 'color:#aaa;') + '">' +
           '<td><input type="checkbox" data-r2g="' + x.k + '" style="width:auto;"' + (ck ? ' checked' : '') + '></td>' +
-          '<td style="white-space:nowrap;">' + (x.li + 1) + ' 行目' + (isB ? ' <b style="color:#B26A00;">★</b>' : '') + '</td>' +
+          '<td style="white-space:nowrap;">' + esc(r.nm || String(x.li + 1)) + ' 行目' + (isB ? ' <b style="color:#B26A00;">★</b>' : '') + '</td>' +
           '<td style="font-size:15px;">' + esc(r.text) + (r.unk ? ' <span style="color:#B00020;font-size:11px;">□ ' + r.unk + '</span>' : '') + '</td>' +
           '<td class="n">' + r.n + '</td>' +
           '<td class="n">' + r.hMm.toFixed(1) + ' × ' + r.wMm.toFixed(1) + '</td>' +
@@ -9623,6 +9687,9 @@ function rubSizePickOpen(gi){
   var rows = [];
   P.lines.forEach(function(ln, li){ ln.rows.forEach(function(r){
     if (r.n && Array.isArray(r.inkChars) && r.inkChars.length) rows.push({ r: r, li: li, k: rows.length }); }); });
+  /* 並びは 拓本の上の番号と同じ 左から（v50.3）。k は 並べ直したあとの番号 */
+  rows.sort(function(a, b){ return (a.r.ord - b.r.ord) || (a.r.cj - b.r.cj); });
+  rows.forEach(function(x, i){ x.k = i; });
   if (!rows.length){ msg("拓本の解析結果に 字がありません。", true); return; }
   var roles = R2G_ORDER.slice();
   rows.forEach(function(x){ if (roles.indexOf(x.r.g) < 0) roles.push(x.r.g); });
@@ -9645,11 +9712,12 @@ function rubSizePickOpen(gi){
   });
   var old = $("rszOv"); if (old) old.remove();
   var ov = document.createElement("div"); ov.id = "rszOv";
-  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.45);display:flex;align-items:center;justify-content:center;padding:18px;";
+  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.18);display:flex;align-items:center;justify-content:center;padding:18px;";
   var rl = layout()[gi] || {};
   var nowH = num(g.hMm, 0) || num(rl.h, 0), nowW = num(g.wMm, 0) || num(rl.w, 0);
-  var h = '<div style="background:#fff;border-radius:10px;max-width:700px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
-    '<b>拓本解析から 文字の大きさを取得</b>' +
+  var h = '<div class="ovwin" style="background:#fff;border-radius:10px;max-width:700px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
+    '<div class="ovhd" title="つかんで動かせます" style="cursor:move;user-select:none;margin:-14px -16px 0;padding:10px 16px 2px;"><b>拓本解析から 文字の大きさを取得</b>' +
+      '<span style="float:right;font-size:11px;color:var(--muted);">✥ つかんで動かせます</span></div>' +
     '<div style="margin:6px 0 4px;font-size:14px;"><b>' + esc(gName(gi, 16)) + '</b>' +
       '<span style="color:var(--muted);font-size:12px;">　いま 縦 ' + nowH.toFixed(1) + ' × 横 ' + nowW.toFixed(1) + ' mm</span></div>' +
     '<p class="hint" style="margin:0 0 8px;">拓本の どの行の 戒名・俗名・命日 などに合わせるかを 選んでください。' +
@@ -9668,7 +9736,7 @@ function rubSizePickOpen(gi){
       var r = x.r, tr = rubSizeTry(g, r);
       h += '<tr data-rk="' + x.k + '" style="cursor:pointer;">' +
         '<td><input type="radio" name="rszPick" value="' + x.k + '" style="width:auto;"' + (x.k === pick ? ' checked' : '') + '></td>' +
-        '<td style="white-space:nowrap;">' + (x.li + 1) + ' 行目</td>' +
+        '<td style="white-space:nowrap;">' + esc(r.nm || String(x.li + 1)) + ' 行目</td>' +
         '<td style="font-size:15px;">' + esc(r.text) + (r.unk ? ' <span style="color:#B00020;font-size:11px;">□ ' + r.unk + '</span>' : '') + '</td>' +
         '<td class="n">' + r.n + '</td>' +
         '<td class="n">' + r.hMm.toFixed(1) + ' × ' + r.wMm.toFixed(1) + '</td>' +
@@ -9683,6 +9751,7 @@ function rubSizePickOpen(gi){
       '<button class="mini" id="rszNo">やめる</button><button class="mini primary" id="rszGo">取得する</button></div></div>';
   ov.innerHTML = h;
   document.body.appendChild(ov);
+  ovDrag(ov);
   ov.querySelectorAll(".rsz th").forEach(function(th){ th.style.cssText += ";border-bottom:1px solid #ddd;padding:3px 5px;text-align:left;"; });
   ov.querySelectorAll(".rsz td").forEach(function(td){ td.style.borderBottom = "1px solid #eee"; td.style.padding = td.style.padding || "3px 5px"; });
   function mark(){
@@ -9702,7 +9771,7 @@ function rubSizePickOpen(gi){
   $("rszNo").onclick = function(){ ov.remove(); };
   $("rszGo").onclick = go;
   ov.addEventListener("keydown", function(e){ if (e.key === "Escape") ov.remove(); });
-  ov.onclick = function(e){ if (e.target === ov) ov.remove(); };
+  ov.onclick = function(e){ if (e.target === ov && !(ov._dragAt && Date.now() - ov._dragAt < 400)) ov.remove(); };   /* 動かし終わりで 閉じない（v50.3） */
   var sel9 = ov.querySelector('tr[data-rk="' + pick + '"]'); if (sel9) sel9.scrollIntoView({ block: "nearest" });
 }
 function rubSizeApply(gi, r, li){
@@ -9713,7 +9782,7 @@ function rubSizeApply(gi, r, li){
   g.inkSize = rubSizeInk(r);
   if (!g.role) g.role = r.g;
   var go = rubGrpOf(r.g) || { nm: "行" };
-  var what = (li + 1) + " 行目の" + go.nm + "「" + esc(r.text) + "」";
+  var what = esc(r.nm || String(li + 1)) + " 行目の" + go.nm + "「" + esc(r.text) + "」";
   if (!FONTS.length){
     renderAll(); persist();
     msg(what + "を 控えました。フォントを読み込むと、その大きさに合わせます。");
@@ -13771,6 +13840,20 @@ async function rubAiBand(noAsk, trusted){
    代わりに下のボタンへ紛れこんでいた。
    直し：**上＝調べた上の列ぜんぶ**（`topCols`。無ければ組み立て直す）、
    **下＝分かれた子の列だけ**。 */
+/* 拓本の上に出している 列の番号（`rubRender` の むらさきの帯と同じ。左から 1・2・3…、下で分かれていれば「上n」「下n」）。
+   x … 拓本の画素。low … 下の列から先に探す。見つからなければ ""（v50.3） */
+function rubColLabelAt(x, low){
+  var mn = rubColMenu();
+  if (!mn.ups.length && !mn.lows.length) return "";
+  var hasLow = mn.lows.length > 0;
+  function find(list){
+    for (var i = 0; i < list.length; i++) if (x >= list[i].a - 2 && x <= list[i].b + 2) return i;
+    return -1;
+  }
+  if (low && hasLow){ var j = find(mn.lows); if (j >= 0) return "下" + (j + 1); }
+  var k = find(mn.ups);
+  return k >= 0 ? (hasLow ? "上" : "") + (k + 1) : "";
+}
 function rubColMenu(){
   var ct = S.rub.colsTop;
   if (!ct || !ct.cols || !ct.cols.length || ct.geo !== rubGeoKey()) return { ups: [], lows: [] };
@@ -17221,6 +17304,21 @@ function rubGrpApply(L, hit, ch, isNum, chs){
     var cz = j < nIt9 ? (chs[j] || "").charAt(0) : "";
     return "月日".indexOf(cz) < 0 || !cz;
   }
+  /* ───── **行年・享年 の 年 は 命日の まん中（年・月）ではない**（v50.3。「俗名 平三 行年八十一才」で、行年の 年 を
+     命日の まん中に見て「平三」まで 命日にしていた）───── */
+  if (hit.mm >= 0){
+    var mmOk9 = function(i){
+      var c = (chs[i] || "").charAt(0);
+      if (!c || RUBANCH.mMid.indexOf(c) < 0) return false;
+      return !(c === "年" && RUBANCH.nHead.indexOf((chs[i - 1] || "-").charAt(0)) >= 0);
+    };
+    if (!mmOk9(hit.mm)){
+      var nm9 = -1;
+      for (var q9 = 0; q9 < nIt9; q9++) if (mmOk9(q9)){ nm9 = q9; break; }
+      hit.mm = nm9;
+      if (nm9 >= 0) ch.mm = (chs[nm9] || "").charAt(0); else delete ch.mm;
+    }
+  }
   /* ───── **戒名のおわりが読めないときの助け**（v36.2。本人の決め
      「一番下の文字が 士/姉/女 が当たった、もし読めなければ、下から2番目が 信、大」）─────
      信女・信士・大姉 の 上の字が読めていれば、いちばん下の字は
@@ -17310,10 +17408,19 @@ function rubGrpApply(L, hit, ch, isNum, chs){
       var n1e = (chs[e9 + 1] || "").charAt(0);
       if (isNum[e9 + 1] || (isNum[e9 + 2] && (!n1e || n1e === ERA2[ce]))){ sc9 += 2; why9.push("数字"); }
       for (var f9 = e9 + 1; f9 <= e9 + 6 && f9 < nIt9; f9++)
-        if ((chs[f9] || "").charAt(0) === "年"){ sc9 += 2; why9.push("年"); break; }
+        if ((chs[f9] || "").charAt(0) === "年"){
+          /* 行年・享年 の 年 は 年号のあとの 年 ではない（v50.3。「俗名 平三 行年八十一才」の 平 が 年号にされていた） */
+          if (RUBANCH.nHead.indexOf((chs[f9 - 1] || "-").charAt(0)) >= 0) break;
+          sc9 += 2; why9.push("年"); break;
+        }
       if (small9(L.items[e9])){ sc9 += 1; why9.push("小さい字"); }
-      cands.push((e9 + 1) + " 字目の " + ce + "＝" + sc9 + " 点" + (why9.length ? "（" + why9.join("・") + "）" : ""));
-      if (sc9 >= bestS){ bestS = sc9; bestE = e9; }
+      /* **すぐ下が 数字なだけでは 年号とみない**（v50.3。本人の画面「下側が 2 行に分かれている場合は、うまく認識できていない」で、
+         俗名の「平三」が 平（年号）＋三（数字）で 命日にされていた。昭三・大三郎 のような名前も同じ）。
+         年号の 2 字目（成・和・正・治）か 6 字以内の「年」があるときだけ 年号にする */
+      var strong9 = why9.indexOf(ce + ERA2[ce]) >= 0 || why9.indexOf("年") >= 0;
+      cands.push((e9 + 1) + " 字目の " + ce + "＝" + sc9 + " 点" + (why9.length ? "（" + why9.join("・") + "）" : "") +
+                 (strong9 ? "" : "（2 字目も 年 も無いので 年号とみない）"));
+      if (strong9 && sc9 >= bestS){ bestS = sc9; bestE = e9; }
       if (e9 === bestE) bestHasNen9 = why9.indexOf("年") >= 0 && why9.indexOf(ce + ERA2[ce]) >= 0;
     }
     if (cands.length){

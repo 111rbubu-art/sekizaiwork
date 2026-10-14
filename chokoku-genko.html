@@ -2769,7 +2769,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v50.3";
+var APP_VER = "v50.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -25662,34 +25662,92 @@ async function rubColsAi(quiet){
   if (!side) throw new Error("字の大きさが分かりません");
   var ar = rubArea();
   var W = Math.max(1, ar.x2 - ar.x1);
-  var sw = Math.round(side * 1.3), step = Math.max(12, Math.round(side * 0.5));
-  var xs = [];
-  for (var x = ar.x1; x < ar.x2 - side * 0.35; x += step) xs.push(Math.min(x, ar.x2 - sw));
-  if (!xs.length) xs = [ar.x1];
-  if (xs.length > 40) {                      /* 多すぎるときは間引く（時間がかかりすぎる） */
-    var k = Math.ceil(xs.length / 40), xs2 = [];
-    for (var i2 = 0; i2 < xs.length; i2 += k) xs2.push(xs[i2]);
-    xs = xs2;
-  }
+  /* ───── **窓は 字 2 個ぶん、窓の端で切れた枠は 使わない**（v50.4。本人の報告「3行ですが、4行と認識されています」）─────
+     前は 窓が 字 1.3 個ぶんで、戒名くらいの字は どの窓にも まるごと入らないことがあった。窓の端に かかった字は
+     AI が「窓に写った所（左だけ・右だけ）」を 1 字として返し、それが残ると 左だけの枠どうし・右だけの枠どうしが
+     縦に並んで 1 列が 2 本に分かれた（天徳院泰山藏 が 3 と 4 に。境目が 字の上を通り 彳・阝 が切れた）。
+     ・窓を 字 2 個ぶんに：半字ずつ ずらせば 字 1.5 個ぶん までの字は どこかの窓に まるごと入る
+       （学習の絵も 字の幅は 切り抜きの 0.2〜0.8 ほど。boxdata.py の zoom。字 2 個ぶんの窓で 0.5）
+     ・窓の左右の端に くっついた枠は「字の途中で切れた枠」として 使わない（拓本の範囲の端に 当たる窓の その側は 使う）
+     ・まるごとの枠が 1 つも無い所だけ、端の枠で 穴うめ（字が 1.5 個ぶんより大きい・AI が取りこぼした とき用）
+     数は RUB.colEdge と colsTop.edge に控える（窓の幅・ずらし・端で外した数・穴うめの数） */
   var url = (RUB.aiBand && RUB.aiBand.geo === rubGeoKey() && RUB.aiBand.url) || "";
-  var all = [];
-  for (var i = 0; i < xs.length; i++){
-    if (!quiet) msg("AI で列を調べています… " + (i+1) + " / " + xs.length, false, true);
-    var q = { x1: xs[i], x2: Math.min(ar.x2, xs[i] + sw), y1: ar.y1, y2: ar.y2 };
-    var got;
-    try { got = await rubBoxAiAsk(q, { noInk: true }); } catch(e){ continue; }
-    (got.boxes || []).forEach(function(b){
-      /* **大きさの歯止め**（v35.4）。まだ育っていないモデルは、
-         点のような枠を何百も出すことがある（実測：12px の枠を 502 個）。
-         字の見込み（較正・戒名の字幅）から外れたものは、はじめから採らない。 */
-      if (b.score < 0.4) return;
-      /* **下限を下げた**（v36.9）。命日・年齢は 戒名の半分ほどの大きさなので、
-         0.45 では 下の 2 列の字を ふるい落としていた */
-      if (b.w < side * 0.30 || b.w > side * 2.2) return;
-      if (b.h < side * 0.25 || b.h > side * 2.6) return;
-      all.push(b);
-    });
+  /* sd … 窓の大きさの目安（字 1 個ぶん）。sdLo … 小さすぎる枠を捨てる目安（作り直しても 元の目安のまま。下の小さい字を 捨てないため） */
+  async function scanCols(sd, sdLo){
+    sdLo = sdLo || sd;
+    var sw = Math.round(sd * 2.0), step = Math.max(12, Math.round(sd * 0.5));
+    if (sw > W) sw = Math.round(W);
+    var xs = [];
+    for (var x = ar.x1; x < ar.x2 - sd * 0.35; x += step){
+      var xw = Math.max(ar.x1, Math.min(x, ar.x2 - sw));
+      if (!xs.length || xs[xs.length - 1] !== xw) xs.push(xw);
+    }
+    if (!xs.length) xs = [ar.x1];
+    if (xs.length > 40) {                      /* 多すぎるときは間引く（時間がかかりすぎる） */
+      var k = Math.ceil(xs.length / 40), xs2 = [];
+      for (var i2 = 0; i2 < xs.length; i2 += k) xs2.push(xs[i2]);
+      xs = xs2;
+    }
+    var all = [], edge = [], nEdge = 0;
+    var tolE = Math.max(3, Math.round(sd * 0.04));      /* 端に くっついている とみる すき間（px） */
+    for (var i = 0; i < xs.length; i++){
+      if (!quiet) msg("AI で列を調べています… " + (i+1) + " / " + xs.length, false, true);
+      var q = { x1: xs[i], x2: Math.min(ar.x2, xs[i] + sw), y1: ar.y1, y2: ar.y2 };
+      var got;
+      try { got = await rubBoxAiAsk(q, { noInk: true }); } catch(e){ continue; }
+      /* 窓（切り抜き）の 左右の端。拓本の範囲の端に 当たる側は 端とみない */
+      var cE = got.cut || { x1: q.x1, w0: q.x2 - q.x1 };
+      var eL = cE.x1, eR = cE.x1 + cE.w0;
+      var atL = eL <= ar.x1 + 2 || eL <= 1, atR = eR >= ar.x2 - 2 || eR >= RUB.W - 1;
+      (got.boxes || []).forEach(function(b){
+        /* **大きさの歯止め**（v35.4）。まだ育っていないモデルは、
+           点のような枠を何百も出すことがある（実測：12px の枠を 502 個）。
+           字の見込み（較正・戒名の字幅）から外れたものは、はじめから採らない。 */
+        if (b.score < 0.4) return;
+        /* **下限を下げた**（v36.9）。命日・年齢は 戒名の半分ほどの大きさなので、
+           0.45 では 下の 2 列の字を ふるい落としていた */
+        if (b.w < sdLo * 0.30 || b.w > sd * 2.2) return;
+        if (b.h < sdLo * 0.25 || b.h > sd * 2.6) return;
+        /* 窓の端で 切れた枠は 使わない（v50.4）。穴うめ用に 取っておく */
+        if ((!atL && b.x <= eL + tolE) || (!atR && b.x + b.w >= eR - tolE)){ nEdge++; edge.push(b); return; }
+        all.push(b);
+      });
+    }
+    /* 穴うめ（v50.4）：まるごとの枠が 1 つも重ならない所だけ、端で切れた枠を使う */
+    var nFill = 0;
+    if (edge.length){
+      edge.sort(function(a, b){ return b.score - a.score; });
+      var hitAny = function(b, list){
+        for (var j = 0; j < list.length; j++){
+          var k2 = list[j];
+          var ix = Math.min(b.x + b.w, k2.x + k2.w) - Math.max(b.x, k2.x);
+          var iy = Math.min(b.y + b.h, k2.y + k2.h) - Math.max(b.y, k2.y);
+          if (ix > 0 && iy > 0 && ix * iy > 0.3 * Math.min(b.w * b.h, k2.w * k2.h)) return true;
+        }
+        return false;
+      };
+      var fill = [];
+      edge.forEach(function(b){ if (!hitAny(b, all) && !hitAny(b, fill)) fill.push(b); });
+      nFill = fill.length;
+      all = all.concat(fill);
+    }
+    return { all: all, edge: edge, nEdge: nEdge, nFill: nFill, sw: sw, step: step };
   }
+  var scn = await scanCols(side);
+  /* ───── **実物の字が 目安（戒名の字幅）より ずっと大きいときは、1 回だけ 作り直す**（v50.4）─────
+     字が 窓（字 2 個ぶん）に まるごと入らないほど大きいと、端で切れた枠ばかりになり また列が割れる（テストで 字 1.8 個ぶんの字で 4 列）。
+     枠の **高さ** は 窓の左右で切れないので、高い方から 4 分の 1 の所の高さを 実物の字の大きさとみて、目安の 1.35 倍を超えたら その大きさで 調べ直す */
+  var hs9 = scn.all.concat(scn.edge).map(function(b){ return b.h; }).sort(function(a, b){ return a - b; });
+  var q75 = hs9.length ? hs9[Math.floor(hs9.length * 0.75)] : 0;
+  var sideAsk = side, sideWin = side;
+  if (q75 > side * 1.35){
+    sideWin = Math.round(q75);
+    if (!quiet) msg("字が 目安より大きいので、窓を広げて 調べ直しています…", false, true);
+    scn = await scanCols(sideWin, side);
+  }
+  var all = scn.all;
+  /* 列の まとめ方（すき間・下で 2 列に分かれる所）は これまでどおり 元の目安（side）で */
+  RUB.colEdge = { win: scn.sw, step: scn.step, edge: scn.nEdge, fill: scn.nFill, sideWin: sideWin, side: sideAsk };
   if (all.length < 2) throw new Error("字を見つけられませんでした（" + all.length + " 個）");
   /* 同じ字を何度も拾っているので、重なりで間引く（確からしさの高い方を残す） */
   all.sort(function(a, b){ return b.score - a.score; });
@@ -25706,7 +25764,9 @@ async function rubColsAi(quiet){
     }
     keep.push(b);
   });
-  return rubColsBuild(keep, side, quiet, "scan");
+  var ctE = rubColsBuild(keep, side, quiet, "scan");
+  if (ctE){ ctE.edge = RUB.colEdge; persist(); }
+  return ctE;
 }
 /* ───── **字の枠の並びから 列の構成を組む**（v38.3 で rubColsAi から分けた）─────
    src … "scan"（列さがしの細い窓で拾った字）／"box"（できあがった紫の枠。本人の指摘

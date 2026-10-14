@@ -2769,7 +2769,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v50.5";
+var APP_VER = "v50.6";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -18331,7 +18331,7 @@ async function rubInkWhole(side, opt){
   opt = opt || {};
   var base = takuApiBase();
   if (!base) throw new Error(takuAiOffNote());
-  var ar = rubArea(), mpp = mmPerPx();
+  var ar = opt.ar || rubArea(), mpp = mmPerPx();
   /* 窓は 字 1 個ぶんの 1.15 倍（墨の AI が 学んだ切り抜き）。12〜60mm に収める（rubAiPlan と同じ歯止め） */
   var win = Math.round(side * 1.15);
   if (mpp) win = Math.max(Math.round(12 / mpp), Math.min(Math.round(60 / mpp), win));
@@ -18477,12 +18477,18 @@ function rubBuCols(keep, side){
     }
     var real = tr.filter(function(a){ return a.length >= 2; });
     if (real.length < 2) return null;
+    /* 分かれた列は「分かれた所の字」で できている。まん中にあって 横並びの無い字が 半分を超える列が あれば、
+       それは 上の字（戒名など）を 列と取りちがえたもの（v50.6） */
+    if (real.some(function(a){ return a.filter(function(b){ return !b.sub; }).length * 2 > a.length; })) return null;
+    /* となりの列と 高さが 重なるか、離れていても 字 1 個ぶんまで（ずれて並ぶ列。v50.6 で ゆるめた。本人の拓本の左の列＝
+       右の列（俗名）が上から・左の列（年齢）が 下の方から 始まり、高さの重なりは 2 割ほどで 前の 3 割に届かなかった） */
+    var hSub = md(reg.map(function(b){ return b.h; }));
     var side9 = false;
     for (t = 0; t + 1 < real.length; t++){
       var p1 = real[t], p2 = real[t + 1];
       var a1 = mn(p1.map(function(b){ return b.y; })), b1 = mx(p1.map(function(b){ return b.y + b.h; }));
       var a2 = mn(p2.map(function(b){ return b.y; })), b2 = mx(p2.map(function(b){ return b.y + b.h; }));
-      if (Math.min(b1, b2) - Math.max(a1, a2) >= 0.3 * Math.min(b1 - a1, b2 - a2)) side9 = true;
+      if (Math.max(a1, a2) - Math.min(b1, b2) <= hSub) side9 = true;
     }
     if (!side9) return null;
     var cen = real.map(function(a){ return md(a.map(cx)); });
@@ -18529,6 +18535,7 @@ function rubBuCols(keep, side){
       }
       return 0;
     });
+    bs.forEach(function(b, t){ b.sub = sub[t]; });
     var A = [0], B = []; B[m] = 0;
     for (var t = 0; t < m; t++) A.push(A[t] + sub[t]);
     for (t = m - 1; t >= 0; t--) B[t] = B[t + 1] + (sub[t] ? 0 : 1);
@@ -18563,8 +18570,8 @@ function rubBuCols(keep, side){
 }
 /* ③ の続き：列の構成（colsTop）と 列ごとの枠（S.rub.lines）を 書く。
    枠は 列ごとに 墨で整える（rubBoxTidy。［AI に枠を描かせる］と同じ）。返り … { nLine, nFix, nHand } */
-async function rubBuApply(plan, inkA, model){
-  var ar = rubArea(), mpp = mmPerPx(), gk = rubGeoKey();
+async function rubBuApply(plan, inkA, model, arP){
+  var ar = arP || rubArea(), mpp = mmPerPx(), gk = rubGeoKey();
   var allB = [];
   plan.cols.forEach(function(c){ allB = allB.concat(c.boxes); });
   var sideUsed = Math.round(_med(allB.map(function(b){ return b.w; }))) || _rubCharSide();
@@ -18690,6 +18697,17 @@ async function rubBuApply(plan, inkA, model){
   rubSelCol = 0; rubSelItem = -1; rubSelSet = [];
   return { nLine: lines.length, nFix: nFix, nHand: nHand };
 }
+/* ───── **調べる範囲は 字の半分ほど 外まで広げる**（v50.6。本人の報告「解析範囲の青の破線が 右側が 文字より内側に入ってしまっていて
+   欠けた文字になっています」）─────
+   範囲（`rubArea`。範囲を描いていなければ 拓本の枠の見当）の ふちに かかった字は、墨・枠の窓が 範囲で切れて 欠けていた。
+   墨と枠は 横に 字 0.6 個ぶん・たてに 0.25 個ぶん 広げた所で作り、**まん中が もとの範囲の中にある字だけ**使う
+   （範囲の外の字は これまでどおり 入れない）。返り … 広げた範囲（core＝もとの範囲） */
+function rubBuArea(side){
+  var ar = rubArea();
+  var px = Math.round(side * 0.6), py = Math.round(side * 0.25);
+  return { x1: Math.max(0, ar.x1 - px), x2: Math.min(RUB.W, ar.x2 + px),
+           y1: Math.max(0, ar.y1 - py), y2: Math.min(RUB.H, ar.y2 + py), all: ar.all, core: ar };
+}
 async function rubAnalyzeBU(){
   if (AIBAND_BUSY) return;
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
@@ -18707,6 +18725,7 @@ async function rubAnalyzeBU(){
     msg("枠の AI が まだ入っていないので、新しい順の解析は使えません。［拓本AI解析］を使ってください。", true); return;
   }
   var step = [], plan = null, t0 = Date.now();
+  var arP = rubBuArea(side), core = arP.core;
   function sec(t){ return Math.round((Date.now() - t) / 100) / 10; }
   AIBAND_BUSY = true;
   aiProgOn();
@@ -18715,7 +18734,7 @@ async function rubAnalyzeBU(){
     var t1 = Date.now();
     aiProg("① 墨", "範囲ぜんたいを 墨の AI に通しています", "");
     await uiTick();
-    var ik = await rubInkWhole(side, {
+    var ik = await rubInkWhole(side, { ar: arP,
       prog: function(i, n){ aiProg(null, null, i + " / " + n + " 枚"); },
       stop: function(){ return AIPROG_STOP; } });
     if (AIPROG_STOP) throw new Error("中止しました");
@@ -18733,21 +18752,29 @@ async function rubAnalyzeBU(){
     aiProg("② 枠", "範囲ぜんたいを 枠の AI に通しています（①の墨つき）", "");
     await uiTick();
     var sc = await rubBoxScanAll(side, {
-      inkUrl: ik.A.url, quiet: true,
+      inkUrl: ik.A.url, quiet: true, ar: arP,
       prog: function(i, n){ aiProg(null, null, i + " / " + n + " 窓"); },
       stop: function(){ return AIPROG_STOP; } });
     if (AIPROG_STOP) throw new Error("中止しました");
     RUB.colEdge = sc.edge;
+    /* まん中が もとの範囲の外の字は 使わない（広げたのは ふちの字を 欠けさせないため） */
+    var nOut = sc.keep.length;
+    sc.keep = sc.keep.filter(function(b){
+      var cx9 = b.x + b.w / 2, cy9 = b.y + b.h / 2;
+      return cx9 >= core.x1 && cx9 <= core.x2 && cy9 >= core.y1 && cy9 <= core.y2;
+    });
+    nOut -= sc.keep.length;
     if (sc.keep.length < 2) throw new Error("字を見つけられませんでした（" + sc.keep.length + " 個）");
     step.push("枠：字 " + sc.keep.length + " 個（窓 " + mmT(sc.edge.win) + "・ずらし " + mmT(sc.edge.step) +
-              "・窓の端で切れた枠 " + sc.edge.edge + " 個は使わず、そのうち " + sc.edge.fill + " 個で穴うめ・" + sec(t2) + " 秒）");
+              "・窓の端で切れた枠 " + sc.edge.edge + " 個は使わず、そのうち " + sc.edge.fill + " 個で穴うめ" +
+              (nOut ? "・まん中が範囲の外の " + nOut + " 個は使わず" : "") + "・" + sec(t2) + " 秒）");
     /* ③ 列 */
     aiProg("③ 列", "枠の並びから 列を組んでいます", "");
     await uiTick();
     plan = rubBuCols(sc.keep, side);
     RUB.colDbg = { geo: gk, at: Date.now(), boxes: plan.dbg, par: plan.dbg.map(function(){ return -1; }),
                    note: "", cuts: [], bu: plan.dbgCols };
-    var ap = await rubBuApply(plan, ik.A, bm9);
+    var ap = await rubBuApply(plan, ik.A, bm9, arP);
     var mnB = rubColMenu(), sp9 = (S.rub.colsTop && S.rub.colsTop.split) || [];
     step.push("列：上 " + mnB.ups.length + " 列" + (mnB.lows.length ? "／下 " + mnB.lows.length + " 列" : "") +
               (sp9.length ? "（" + sp9.map(function(z){
@@ -22815,6 +22842,154 @@ function rubOutlineSvg(W, sc){
   return o + '<path d="' + dd + '" fill="none" stroke="' + col + '" stroke-width="' + (1.6 * k).toFixed(3) +
     '" stroke-dasharray="' + (5 * k).toFixed(3) + ' ' + (3 * k).toFixed(3) + '" stroke-linejoin="round"/>';
 }
+/* ───── **スキャンのずれ（スキャナーの読みが 止まりかけた・すべった所）を見つける**（v50.6。本人「拓本データのエラーを解析できませんか、
+   添付した場所がスキャナーでずれてしまっている部分です。縦の同じデータが連続してあります」）─────
+   スキャナーの読み取りが その所で 止まりかけると、同じ所を 何行も 読むので、その帯は 縦の すじになる
+   （上下に となりあう画素が ほとんど同じ・左右は ふつうに ちがう）。拓本の地の ざらつきは 上下も左右も 同じくらい ちがう。
+   そこで 行ごとに「上下の ちがい ÷ 左右の ちがい」を 横はばを 8 つに分けて測り（上下 5 行ぶんで ならす）、
+   その絵の ふつうの値（まん中の値）の 半分より 小さい所が 横はばの 6 割以上で 0.4mm（分からなければ 6 画素）以上 続く帯を「ずれ」とみる。
+   のっぺりした所（紙のふち・字の中の白い所）は 測らない。字の画や 石のふちは 横はばの 一部なので かからない。
+   スキャナーの向きで測るため、回す前の 読みこんだままの絵（RUB.img）を使い、行と列の 両方を見る（横向きに読んだときのため）。
+   本人の画面の切り抜きで：ふつうの所 0.6〜1.0、すじの所 0.16〜0.45。
+   見せるだけで 直しはしない。返り … { img, W, H, rows:[{a,b}], cols:[{a,b}], baseR, baseC, ms } */
+var RUB_SCANERR_BUSY = false;
+function rubScanErrFind(){
+  var im = RUB.img; if (!im) return null;
+  var W = im.naturalWidth, H = im.naturalHeight;
+  if (!(W > 16 && H > 16)) return null;
+  var t0 = Date.now(), S8 = 8, ST = 256;
+  var rA = new Float64Array(S8 * H), rB = new Float64Array(S8 * H);     /* 行：上下のちがい・左右のちがい（横はばの 8 つごと） */
+  var cA = new Float64Array(S8 * W), cB = new Float64Array(S8 * W);     /* 列：左右のちがい・上下のちがい（たての 8 つごと） */
+  var segW = W / S8, segH = H / S8;
+  var cv = document.createElement("canvas"); cv.width = W; cv.height = ST + 1;
+  var g = cv.getContext("2d", { willReadFrequently: true });
+  var sxOf = new Int32Array(W);
+  for (var x0 = 0; x0 < W; x0++) sxOf[x0] = Math.min(S8 - 1, Math.floor(x0 / segW));
+  for (var y0 = 0; y0 < H - 1; y0 += ST){
+    var hh = Math.min(ST + 1, H - y0);
+    g.fillStyle = "#fff"; g.fillRect(0, 0, W, ST + 1);
+    g.drawImage(im, 0, -y0);
+    var d = g.getImageData(0, 0, W, hh).data;
+    for (var yy = 0; yy + 1 < hh; yy++){
+      var y = y0 + yy, o = yy * W * 4, o2 = o + W * 4;
+      var sy = Math.min(S8 - 1, Math.floor(y / segH)), cy = sy * W;
+      for (var x = 0; x + 1 < W; x++){
+        var p = o + x * 4 + 1, v = d[p];
+        var ddx = Math.abs(d[p + 4] - v), ddy = Math.abs(d[o2 + x * 4 + 1] - v);
+        var ri = sxOf[x] * H + y;
+        rA[ri] += ddy; rB[ri] += ddx;
+        cA[cy + x] += ddx; cB[cy + x] += ddy;
+      }
+    }
+  }
+  var mpp = mmPerPx();
+  var minRun = mpp ? Math.max(4, Math.round(0.4 / mpp)) : 6;
+  /* A … 読む向きに そった ちがい（すじなら 小さい）、B … 横切る ちがい。n … 行（列）の数。cnt … 1 つの値に入っている画素の数 */
+  function bandsOf(A, B, n, cnt){
+    var K = 2, rat = new Float32Array(S8 * n), ok = new Uint8Array(S8 * n), smp = [];
+    for (var s = 0; s < S8; s++){
+      var a = 0, b = 0, m = 0, i, lo = 0;
+      for (i = 0; i < n - 1; i++){
+        /* 上下 K 行ぶんで ならす（すべらせながら 足し引き） */
+        var hi2 = Math.min(n - 2, i + K), lo2 = Math.max(0, i - K);
+        if (i === 0){ for (var j = 0; j <= hi2; j++){ a += A[s * n + j]; b += B[s * n + j]; m++; } lo = 0; }
+        else {
+          if (i + K <= n - 2){ a += A[s * n + i + K]; b += B[s * n + i + K]; m++; }
+          while (lo < lo2){ a -= A[s * n + lo]; b -= B[s * n + lo]; m--; lo++; }
+        }
+        if (!(m > 0) || b / (m * cnt) < 1.5) continue;       /* のっぺり */
+        rat[s * n + i] = a / b; ok[s * n + i] = 1;
+        if ((i & 3) === 0) smp.push(a / b);
+      }
+    }
+    if (smp.length < 50) return { base: 0, bands: [] };
+    smp.sort(function(p, q){ return p - q; });
+    var base = smp[smp.length >> 1];
+    /* 2 段の目安：ふつうの 半分より小さい（はっきり すじ）・7 割より小さい（すじ ぎみ）。
+       すじ ぎみ の所は、はっきり すじ の所に つながっているときだけ 帯に入れる（帯のはしまで 取るため。本人の切り抜きで
+       はっきり すじ は 8 行・すじ ぎみ まで入れると 20 行ほど） */
+    function lowAt(thr){
+      var low = new Uint8Array(n);
+      for (var i2 = 0; i2 < n - 1; i2++){
+        var nv = 0, nl = 0;
+        for (var s2 = 0; s2 < S8; s2++) if (ok[s2 * n + i2]){ nv++; if (rat[s2 * n + i2] < thr) nl++; }
+        if (nv >= 3 && nl >= Math.max(3, Math.ceil(nv * 0.6))) low[i2] = 1;
+      }
+      var runs = [], k = 0;
+      while (k < n){ if (!low[k]){ k++; continue; } var a0 = k; while (k < n && low[k]) k++; runs.push({ a: a0, b: k }); }
+      var mg = [];
+      runs.forEach(function(r){ var pv = mg[mg.length - 1]; if (pv && r.a - pv.b <= minRun) pv.b = r.b; else mg.push({ a: r.a, b: r.b }); });
+      return mg;
+    }
+    var strong = lowAt(base * 0.5).filter(function(r){ return r.b - r.a >= minRun; });
+    var weak = lowAt(base * 0.7);
+    var bands = weak.filter(function(w){
+      return strong.some(function(r){ return r.a < w.b && r.b > w.a; });
+    }).map(function(w){
+      /* すじ ぎみ の帯が はっきり すじ を はみ出す ぶんは 字 1 個ぶん ほど（minRun の 3 倍）まで */
+      var ss = strong.filter(function(r){ return r.a < w.b && r.b > w.a; });
+      var a1 = Math.min.apply(null, ss.map(function(r){ return r.a; })), b1 = Math.max.apply(null, ss.map(function(r){ return r.b; }));
+      return { a: Math.max(w.a, a1 - minRun * 3), b: Math.min(w.b, b1 + minRun * 3) };
+    });
+    return { base: base, bands: bands };
+  }
+  var R = bandsOf(rA, rB, H, segW), C = bandsOf(cA, cB, W, segH);
+  return { img: im, W: W, H: H, rows: R.bands, cols: C.bands,
+           baseR: Math.round(R.base * 100) / 100, baseC: Math.round(C.base * 100) / 100, ms: Date.now() - t0 };
+}
+/* 読みこんだままの絵の点 → 回したあとの絵の点（rebuildRub と同じ 回し方） */
+function rubRawToView(x, y){
+  var W = RUB.img.naturalWidth, H = RUB.img.naturalHeight;
+  var a = rubRotDeg() * Math.PI / 180, off = rotOff();
+  var c = Math.cos(a), s = Math.sin(a), dx = x - W / 2, dy = y - H / 2;
+  return { x: off.x + W / 2 + c * dx - s * dy, y: off.y + H / 2 + s * dx + c * dy };
+}
+/* いまの拓本の 見つけた結果（まだなら 少しあとで調べて 描き直す） */
+function rubScanErr(){
+  if (!RUB.img) return null;
+  if (RUB.scanErr && RUB.scanErr.img === RUB.img) return RUB.scanErr;
+  if (!RUB_SCANERR_BUSY){
+    RUB_SCANERR_BUSY = true;
+    setTimeout(function(){
+      try { RUB.scanErr = rubScanErrFind(); }
+      catch(e){ RUB.scanErr = { img: RUB.img, rows: [], cols: [], err: String((e && e.message) || e) }; }
+      RUB_SCANERR_BUSY = false;
+      try { rubPanel(); rubRender(); } catch(e2){}
+    }, 300);
+  }
+  return null;
+}
+/* ② 補正結果 の 1 行ぶん */
+function rubScanErrTx(){
+  var se = rubScanErr();
+  if (!se) return RUB.img ? "調べています…" : "–";
+  if (se.err) return "調べられませんでした";
+  var n = se.rows.length + se.cols.length;
+  if (!n) return "なし";
+  var mpp = mmPerPx();
+  function mmS(v){ return mpp ? (v * mpp).toFixed(0) + "mm" : v + "px"; }
+  var tl = se.rows.map(function(r){ return "絵の上から " + mmS(r.a) + "〜" + mmS(r.b) + "（はば " + mmS(r.b - r.a) + "）"; })
+    .concat(se.cols.map(function(r){ return "絵の左から " + mmS(r.a) + "〜" + mmS(r.b) + "（はば " + mmS(r.b - r.a) + "）"; }));
+  return '<span style="color:#B00020;" title="スキャナーの読みが 止まりかけた所（縦の すじ）。拓本の上の 赤い帯の所です。&#10;' +
+    esc(tl.join("\n")) + '">⚠ ' + n + ' か所</span>';
+}
+/* 拓本の上に 赤い帯で出す（rubRender から） */
+function rubScanErrSvg(Wv){
+  var se = rubScanErr();
+  if (!se || se.err || !(se.rows.length + se.cols.length)) return "";
+  var W0 = se.W, H0 = se.H, out = "", sw = Wv * 0.003;
+  function poly(pts, lab){
+    var vs = pts.map(function(p){ var q = rubRawToView(p[0], p[1]); return q.x.toFixed(1) + "," + q.y.toFixed(1); });
+    out += '<polygon points="' + vs.join(" ") + '" fill="rgba(224,48,30,.22)" stroke="#E0301E" stroke-width="' + sw +
+      '" stroke-dasharray="' + (sw * 4) + ' ' + (sw * 3) + '" pointer-events="none"/>';
+    var q0 = rubRawToView(lab[0], lab[1]);
+    out += '<text x="' + q0.x.toFixed(1) + '" y="' + q0.y.toFixed(1) + '" fill="#E0301E" font-size="' + (Wv * 0.022) +
+      '" font-weight="700" stroke="#fff" stroke-width="' + (Wv * 0.006) + '" paint-order="stroke" pointer-events="none">スキャンのずれ</text>';
+  }
+  se.rows.forEach(function(r){ poly([[0, r.a], [W0, r.a], [W0, r.b], [0, r.b]], [W0 * 0.02, r.a - 4]); });
+  se.cols.forEach(function(r){ poly([[r.a, 0], [r.b, 0], [r.b, H0], [r.a, H0]], [r.b + 4, H0 * 0.04]); });
+  return out;
+}
 function rubRender(){
   /* 範囲を変えたら、明るさ・コントラストを当てる所も変わるので 絵を作り直す（v40.2） */
   if (RUB.img && RUB.bcKey !== undefined && RUB.bcKey !== rubBCKey() && rubBC()){ rebuildRub(); }
@@ -23351,6 +23526,10 @@ function rubRender(){
   /* **墨が出ていないときは、水色の枠も出さない**（v29.8 → v29.9 で「ほとんど無い」も。本人の指摘
      「AI縁取りを実行すると、結果が出ず。青の枠が表示される、
        これはAIの結果が出ないと表示してはいけないのでは」）。 */
+  /* スキャンのずれ（v50.6） */
+  var seSvg = "";
+  try { seSvg = rubScanErrSvg(W); } catch(eS){ seSvg = ""; }
+  if (seSvg) o.push(seSvg);
   if (RUB.aiBand && RUB.aiBand.box && RUB.aiBand.ink >= 50 && RUB.aiBand.geo === rubGeoKey()){
     var abx = RUB.aiBand.box;
     o.push('<rect x="' + abx.L + '" y="' + abx.T + '" width="' + (abx.R - abx.L) +
@@ -24021,6 +24200,7 @@ function rubPanel(){
       (dpi ? (r.lenAuto ? "（解像度どおり）" : "（手で入力）") : ""));
     h += '<div class="fixrow" id="rLenDevRow"><span>歪みの補正</span><b id="rLenDev"></b></div>';
     h += '<div class="fixrow"><span>縮尺</span><b id="rLenScale"></b></div>';
+    h += row("スキャンのずれ", rubScanErrTx());
     /* ---- 行の見立て（v20.83） ---- */
     /* もとは「行の見立て」（墨の塊を拾って字送り・傾きを出す作り）だった。
        **文字の認識がまるでできていない**ので、AI に置き換えることにした
@@ -26244,7 +26424,7 @@ async function rubBoxScan(ar, sd, sdLo, opt){
    返り … { keep（間引いた枠）, n（間引く前の数）, edge（RUB.colEdge と同じ形） } */
 async function rubBoxScanAll(side, opt){
   opt = opt || {};
-  var ar = rubArea();
+  var ar = opt.ar || rubArea();
   var scn = await rubBoxScan(ar, side, side, opt);
   /* ───── **実物の字が 目安（戒名の字幅）より ずっと大きいときは、1 回だけ 作り直す**（v50.4）─────
      字が 窓（字 2 個ぶん）に まるごと入らないほど大きいと、端で切れた枠ばかりになり また列が割れる（テストで 字 1.8 個ぶんの字で 4 列）。

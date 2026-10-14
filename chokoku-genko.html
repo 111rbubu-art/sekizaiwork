@@ -2779,7 +2779,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v51.8";
+var APP_VER = "v51.9";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -18996,6 +18996,7 @@ function rubAnaHistHtml(){
   /* 見出しは 短く（左の欄は せまい）。くわしくは title に */
   var H = [["時刻", "いつ（時:分）"], ["工夫", "速くする工夫 あり／なし（なし＝v51.3 と同じ通し方）"],
            ["墨の通し方", "まとめ＝サーバーに範囲を 1 回で頼んだ／1枚＝窓を 1 枚ずつ送った。½・¼＝窓の重なり（v51.7 から）"],
+           ["案", "a＝字の大きさを測る窓を 4 分の 1 に／b＝小さい字のやり直しを 小さい字の所だけに（v51.9 から）"],
            ["測", "⓪ 字の大きさを測る"], ["墨", "① 墨"],
            ["枠", "② 枠"], ["小", "②' 小さい字"], ["列", "③ 列を組む・枠を整える"], ["読", "④ 読み・まとまり"], ["計", "合計"], ["墨枚", "墨の AI に送った枚数（＋紙なので 送らなかった枚数）"],
            ["墨1", "AI の返事を待った時間：墨 1 枚の平均（秒。v51.6 から）。同じ「工夫」どうしで くらべて、回を追って のびていれば サーバー側が 遅くなっている。" +
@@ -19012,6 +19013,7 @@ function rubAnaHistHtml(){
         String(d.getHours()).padStart(2, "0") + ':' + String(d.getMinutes()).padStart(2, "0") + '</td>' +
         '<td style="' + td + '">' + (h.slow ? "なし" : "あり") + '</td>' +
         '<td style="' + td + '">' + esc(h.ia || "–") + '</td>' +
+        '<td style="' + td + '">' + esc(h.ab || "–") + '</td>' +
         '<td style="' + td + '">' + f(t.probe) + '</td><td style="' + td + '">' + f(t.ink) + '</td><td style="' + td + '">' + f(t.box) + '</td>' +
         '<td style="' + td + '">' + f(t.small) + '</td><td style="' + td + '">' + f(t.col) + '</td><td style="' + td + '">' + f(t.read) + '</td>' +
         '<td style="' + td + 'font-weight:700;">' + f(t.total) + '</td>' +
@@ -19036,7 +19038,8 @@ async function rubAnalyzeBU(){
   if (!RUB.data){ msg("先に拓本を読み込んでください。", true); return; }
   var mpp = mmPerPx();
   if (!mpp){ msg("先に較正してください（実測した文字全長）。", true); return; }
-  if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
+  /* 拓本AI が つながっていなければ 前のやり方（計算の列・枠に 戻せる）で通す（v51.9） */
+  if (!takuApiBase()){ msg(takuAiOffNote() + "。前のやり方（計算）で 解析します。", false, true); return await rubAllAnalyze({ pass2: true }); }
   var side = _rubCharSide();
   if (!side){ msg("字の大きさが分かりません（［戒名の字幅］か 較正を確かめてください）。", true); return; }
   var bm9 = null, cm9 = null, srvArea9 = false;
@@ -19046,7 +19049,9 @@ async function rubAnalyzeBU(){
                 srvArea9 = !!j9.ink_area; }
   } catch(e9){}
   if (!(bm9 && bm9.loaded)){
-    msg("枠の AI が まだ入っていないので、新しい順の解析は使えません。［拓本AI解析］を使ってください。", true); return;
+    /* 新しい順は 枠の AI が要る。入っていなければ 前のやり方（計算の枠に 戻せる）で通す（v51.9） */
+    msg("枠の AI が まだ入っていないので、前のやり方（列を先に決める）で 解析します。", false, true);
+    return await rubAllAnalyze({ pass2: true });
   }
   var step = [], plan = null, t0 = Date.now();
   var arP = rubBuArea(side), core = arP.core;
@@ -19054,6 +19059,7 @@ async function rubAnalyzeBU(){
   /* ───── **かかった時間を 段ごとに控える**（v51.4。本人「変更前と時間を比較できるようにして」）─────
      ［速くする工夫なしで通す（比べる用）］（S.rub.buSlow）のときは v51.3 と同じ通し方。S.rub.anaHist に 8 回ぶん残し、［📋 解析結果］に 並べて出す */
   var slow9 = rubBuSlow(), tm = { probe: 0, ink: 0, box: 0, small: 0, col: 0, read: 0, total: 0 }, inkN = 0, inkSkip = 0, inkHow9 = "";
+  var optA9 = false, optB9 = false;
   /* AI の返事を 待った時間（1 回の平均・秒）。段ごとに 前後の 数の差で 出す（v51.6） */
   RUB_AIW = {};
   var aw = {};
@@ -19083,8 +19089,10 @@ async function rubAnalyzeBU(){
     var t0b = Date.now(), side0 = side, pr0 = null, msz = 0, aw0 = awSnap("box"), am0 = awSnap("boxM");
     aiProg("⓪ 字の大きさ", "枠の AI で 字の大きさを 測っています", "");
     await uiTick();
+    optA9 = !slow9 && !!(S.rub && S.rub.buProbeQ); optB9 = !slow9 && !!(S.rub && S.rub.buSmallNar);
     try {
-      pr0 = await rubBoxScanAll(side, { ar: arP, quiet: true, onWin: liveWin,
+      /* 案 a（v51.9）：大きさを知るためだけなので 窓を 重ねない（ずらし＝窓の幅＝字 2 個ぶん） */
+      pr0 = await rubBoxScanAll(side, { ar: arP, quiet: true, onWin: liveWin, stepK: optA9 ? 2.0 : 0.5,
         prog: function(i, n){ aiProg(null, null, i + " / " + n + " 窓" + rubRemTx(t0b, i - 1, n)); },
         stop: function(){ return AIPROG_STOP; } });
     } catch(e0){ pr0 = null; }
@@ -19096,7 +19104,7 @@ async function rubAnalyzeBU(){
         side = Math.round(Math.max(10 / mpp, Math.min(80 / mpp, msz)));
     }
     if (side !== side0){ arP = rubBuArea(side); core = arP.core; }
-    step.push("字の大きさ：" + (side !== side0
+    step.push("字の大きさ" + (optA9 ? "（案 a：窓を重ねずに）" : "") + "：" + (side !== side0
       ? "拓本から測った 大きい字 " + mmT(msz) + "（［戒名の字幅］" + rubKmWmm() + "mm と ちがうので、こちらで 窓を作りました）"
       : "［戒名の字幅］" + rubKmWmm() + "mm のまま" + (msz ? "（拓本から測った 大きい字 " + mmT(msz) + "）" : "（測れませんでした）")) +
       "・" + sec(t0b) + " 秒" + awTx(aw.probe = awAvg("box", aw0), "窓", awAvg("boxM", am0)));
@@ -19176,8 +19184,19 @@ async function rubAnalyzeBU(){
       aiProg("②' 小さい字", "小さい字の大きさの窓で もう一度 枠の AI に通しています", "");
       await uiTick();
       var smS = null;
+      /* 案 b（v51.9）：② で見つかった 小さい字の ある所（横は 小さい字 2 個ぶん・たては 大きい字 1.5 個ぶん 広げた）だけを 通す */
+      var arS9 = arP;
+      if (optB9){
+        var smB9 = sc.keep.filter(function(b){ return b.h < side * 0.75; });
+        if (smB9.length){
+          var mnx = Math.min.apply(null, smB9.map(function(b){ return b.x; })), mxx = Math.max.apply(null, smB9.map(function(b){ return b.x + b.w; }));
+          var mny = Math.min.apply(null, smB9.map(function(b){ return b.y; })), mxy = Math.max.apply(null, smB9.map(function(b){ return b.y + b.h; }));
+          arS9 = { x1: Math.max(arP.x1, Math.round(mnx - 2 * sSm)), x2: Math.min(arP.x2, Math.round(mxx + 2 * sSm)),
+                   y1: Math.max(arP.y1, Math.round(mny - 1.5 * side)), y2: Math.min(arP.y2, Math.round(mxy + 1.5 * side)) };
+        }
+      }
       try {
-        smS = await rubBoxScan(arP, Math.round(sSm), Math.round(sSm), { inkUrl: ik.A.url, quiet: true, onWin: liveWin,
+        smS = await rubBoxScan(arS9, Math.round(sSm), Math.round(sSm), { inkUrl: ik.A.url, quiet: true, onWin: liveWin, edgeAr: arP,
           prog: function(i, n){ aiProg(null, null, i + " / " + n + " 窓" + rubRemTx(t2b, i - 1, n)); },
           stop: function(){ return AIPROG_STOP; } });
       } catch(eS){ smS = null; }
@@ -19227,7 +19246,8 @@ async function rubAnalyzeBU(){
         nSm = add9.length;
         sc.keep = sc.keep.concat(add9);
       }
-      step.push("小さい字：窓 " + mmT(Math.round(sSm * 2)) + " で もう一度 通し、枠の無かった所に " + nSm + " 個 足しました" +
+      step.push("小さい字" + (arS9 !== arP ? "（案 b：小さい字の所だけ " + mmRange(arS9.x1, arS9.x2) + "・たて " + mmRange(arS9.y1, arS9.y2) + "）" : "") +
+                "：窓 " + mmT(Math.round(sSm * 2)) + " で もう一度 通し、枠の無かった所に " + nSm + " 個 足しました" +
                 (nTall ? "・2 字を 1 つにした 縦長の枠 " + nTall + " 個を 割りました" : "") + "（" + sec(t2b) + " 秒" + awTx(aw.small = awAvg("box", aw3), "窓", awAvg("boxM", am3)) + "）");
       tm.small = sec(t2b);
     }
@@ -19307,7 +19327,8 @@ async function rubAnalyzeBU(){
   tm.read = sec(t4); tm.total = sec(t0);
   step.push("かかった時間 " + tm.total + " 秒（" + (slow9 ? "速くする工夫なし＝v51.3 と同じ通し方" : "速くする工夫あり") + "）");
   if (!Array.isArray(S.rub.anaHist)) S.rub.anaHist = [];
-  S.rub.anaHist.unshift({ ts: Date.now(), ver: APP_VER, slow: slow9, t: tm, ink: inkN, skip: inkSkip, w: aw, ia: inkHow9 });
+  S.rub.anaHist.unshift({ ts: Date.now(), ver: APP_VER, slow: slow9, t: tm, ink: inkN, skip: inkSkip, w: aw, ia: inkHow9,
+                          ab: (optA9 ? "a" : "") + (optB9 ? "b" : "") });
   RUB_AIW = null;
   if (S.rub.anaHist.length > 8) S.rub.anaHist.length = 8;
   S.rub.anaLast = { tx: "［新しい順］" + step.join("／") +
@@ -19317,7 +19338,7 @@ async function rubAnalyzeBU(){
       (ps.length ? "・字送り " + _med(ps).toFixed(1) + "mm" : "") : "",
     grp: gTx };
   persist(); rubPanel(); rubRender();
-  msg("新しい順の 拓本AI解析が終わりました。結果は 3 ─ 解析 の［📋 解析結果］を押すと見られます。" +
+  msg("拓本AI解析が終わりました。結果は 3 ─ 解析 の［📋 解析結果］を押すと見られます。" +
       "拓本の上の 細い枠の色：青＝上の字・だいだい／みどり＝下で分かれた列・灰＝使わなかった枠" +
       "（デバッグの「AI のつながりを絵に出す」で 出し入れ）。", false);
 }
@@ -24870,31 +24891,34 @@ function rubPanel(){
     /* ───────────── 3 ─ 解析 ───────────── */
     h += '<p class="hint" style="margin:12px 0 2px;"><b>3 ─ 解析</b></p>';
     /* ［拓本を解析］は外し、［拓本を解析2（テスト）］を［拓本AI解析］にした（v40.6。本人の指示） */
+    /* ───── **［拓本AI解析］は 新しい順（墨 → 枠 → 列 → 読み）**（v51.9。本人「AI解析ボタンに、こちらの仕様で登録してください」）─────
+       v50.5 から ためしていた［🧪 拓本AI解析（新しい順・ためし）］を こちらへ。前のやり方（列を先に決める）は デバッグの［前のやり方で解析］。
+       比べる・ためす 切りかえは［比べる・ためす］（開け閉めは id で覚える） */
     h += '<button class="mini primary" id="btnAnalyze2" ' +
       'style="font-size:15px;padding:8px 18px;" ' +
-      'title="① 列 → ② 列の墨 → 枠の AI → ②\' 1 字ずつ 枠の真ん中で墨を出し直す → ' +
-      '②\'\' その墨で もう一度 枠の AI → ③ 読みの AI で 戒名・命日・俗名・年齢に分ける、までを ひと押しで通します。' +
-      '1 字ずつ AI に通すので、字の数だけ時間がかかります">拓本AI解析</button>' +
+      'title="① 範囲ぜんたいの墨 → ② 範囲ぜんたいの枠（墨つき。小さい字は 小さい窓で もう一度）→ ' +
+      '③ できた枠の並びから 列を組む（下で分かれる所は 列のまん中からの ずれ）→ ④ 読みの AI で 戒名・命日・俗名・年齢に分ける、' +
+      'までを ひと押しで通します。とちゅうは 拓本の上に 出ます">拓本AI解析</button>' +
       ' <button class="mini" id="btnAnalyzeClr" ' +
       'title="この拓本の見立て（枠・列の構成・AI の墨）を消して、はじめからやり直します。' +
       '手本帳・覚えた大きさ・較正・範囲は残ります">やり直す（消す）</button>' +
-      /* 下から組み立てる 解析（v50.5。本人「墨をつけて、枠をつけてることで文字が認識できるので、列は最後にわかるもの」）。
-         ためし用。比べて よければ［拓本AI解析］を こちらに切りかえる */
-      '<div style="margin-top:6px;"><button class="mini" id="btnAnalyzeBU" ' +
-      'title="新しい順（ためし）：① 範囲ぜんたいの墨 → ② 範囲ぜんたいの枠（墨つき）→ ③ できた枠の並びから 列を組む' +
-      '（下で分かれる所は 列のまん中からの ずれで見る）→ ④ 読み・まとまり。いまの［拓本AI解析］と 比べてください">' +
-      '🧪 拓本AI解析（新しい順・ためし）</button>' +
+      '<details id="anaOpt" style="margin-top:4px;"><summary class="hint" style="cursor:pointer;font-size:11px;">比べる・ためす</summary>' +
+      '<div class="hint" style="font-size:11px;margin:2px 0 0 4px;display:flex;flex-direction:column;gap:2px;">' +
       /* 前と時間を比べる用（v51.4。本人「変更前と時間を比較できるようにして」） */
-      '<label class="hint" style="display:inline-flex;align-items:center;gap:3px;margin-left:8px;font-size:11px;" ' +
-      'title="入れると v51.3 と同じ通し方（紙の白い所も送る・同時に 3 枚・墨の絵を 毎回 読む・読みは 1 字ずつ）。［📋 解析結果］の 時間の比べ で くらべられます">' +
+      '<label title="入れると v51.3 と同じ通し方（紙の白い所も送る・同時に 3 枚・墨の絵を 毎回 読む・読みは 1 字ずつ・重なり 2 分の 1）。' +
+      '［📋 解析結果］の 時間の比べ で くらべられます" style="display:inline-flex;align-items:center;gap:3px;">' +
       '<input type="checkbox" id="rBuSlow"' + (S.rub.buSlow ? " checked" : "") + ' style="width:auto;"> 速くする工夫なしで通す（比べる用）</label>' +
-      /* 墨の通し方の ためし（v51.7。本人「追加で2をテストできるようにしてください」） */
-      '<div class="hint" style="font-size:11px;margin:2px 0 0;display:flex;flex-wrap:wrap;gap:2px 10px;">' +
+      /* 墨の通し方（v51.7・v51.8） */
       '<label title="墨の窓の ずらしを 窓の 4 分の 3 にして、重なりを 4 分の 1 に（送る枚数が 半分以下）。v51.8 から 既定。外すと 前の 2 分の 1（比べる用）" ' +
       'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuInkQ"' + (S.rub.buInkQ !== false ? " checked" : "") + ' style="width:auto;"> 墨の窓の重なり 4 分の 1（外すと 2 分の 1）</label>' +
       '<label title="サーバーが まとめて頼める版（update.sh 済み）でも、前のように 窓を 1 枚ずつ送ります（比べる用）" ' +
       'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuInkOne"' + (S.rub.buInkOne ? " checked" : "") + ' style="width:auto;"> 墨を 1 枚ずつ送る（比べる用）</label>' +
-      '</div></div>';
+      /* 枠の AI の 改善案（v51.9。本人「もう一つの改善案も実行できるようにしておいて」） */
+      '<label title="案 a：⓪ 字の大きさを測る は 大きさを知るためだけなので、枠の AI の窓を 重ねずに（4 分の 1 の数で）通します" ' +
+      'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuProbeQ"' + (S.rub.buProbeQ ? " checked" : "") + ' style="width:auto;"> 案 a：字の大きさを測る窓を 4 分の 1 に（ためし）</label>' +
+      '<label title="案 b：②\' 小さい字の やり直しを、② で見つかった 小さい字の ある所（と そのまわり）だけで 通します。前は 範囲ぜんたい" ' +
+      'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuSmallNar"' + (S.rub.buSmallNar ? " checked" : "") + ' style="width:auto;"> 案 b：小さい字のやり直しを 小さい字の所だけに（ためし）</label>' +
+      '</div></details>';
     var an9 = S.rub.anaLast;
     /* 解析結果は ラベルを押したときだけ見せる（v42.6。本人の指示）。開け閉めは id で覚える（RUB_OPEN） */
     if (an9 && an9.tx){
@@ -25104,6 +25128,7 @@ function rubPanel(){
       '<p class="hint" style="margin:6px 0 2px;">確かめ用</p>' +
       '<div class="chips">' +
       '<button class="mini" id="btnAiPrev" title="墨の AI に渡す切り抜きを、送る前に そのまま並べて見せます">AI に送る絵</button>' +
+      '<button class="mini" id="btnAnalyzeOld" title="v51.8 までの［拓本AI解析］：① 列を先に決める → ② 列ごとに 墨・枠 → ③ 読み">前のやり方で解析（列を先に決める）</button>' +
 
       '</div>' +
       ((RUB.colDbg && RUB.colDbg.geo === rubGeoKey())
@@ -25166,19 +25191,22 @@ function rubPanel(){
   if (bsl) bsl.onchange = function(){ S.rub.buSlow = bsl.checked; persist(); };
   var bq9 = $("rBuInkQ"); if (bq9) bq9.onchange = function(){ S.rub.buInkQ = bq9.checked; persist(); };
   var bo9 = $("rBuInkOne"); if (bo9) bo9.onchange = function(){ S.rub.buInkOne = bo9.checked; persist(); };
-  var bzB = $("btnAnalyzeBU");
-  if (bzB) bzB.onclick = async function(){
-    bzB.disabled = true; bzB.textContent = "解析しています…";
-    try { await rubAnalyzeBU(); } catch(e){ AIBAND_BUSY = false; RUB_INK_ALL = null;
-      msg("新しい順の解析で つまずきました（" + ((e && e.message) || "") + "）。", true); }
-    bzB.disabled = false; bzB.textContent = "🧪 拓本AI解析（新しい順・ためし）";
-  };
+  var bpa = $("rBuProbeQ"); if (bpa) bpa.onchange = function(){ S.rub.buProbeQ = bpa.checked; persist(); };
+  var bsb = $("rBuSmallNar"); if (bsb) bsb.onchange = function(){ S.rub.buSmallNar = bsb.checked; persist(); };
+
   var bz2 = $("btnAnalyze2");
   if (bz2) bz2.onclick = async function(){
     bz2.disabled = true; bz2.textContent = "解析しています…";
-    try { await rubAllAnalyze({ pass2: true }); } catch(e){ msg("解析2 でつまずきました（" +
-      ((e && e.message) || "") + "）。", true); }
+    try { await rubAnalyzeBU(); } catch(e){ AIBAND_BUSY = false; RUB_INK_ALL = null;
+      msg("解析でつまずきました（" + ((e && e.message) || "") + "）。", true); }
     bz2.disabled = false; bz2.textContent = "拓本AI解析";
+  };
+  /* 前のやり方（列を先に決める。v51.8 までの［拓本AI解析］）。デバッグから（v51.9） */
+  var bzo = $("btnAnalyzeOld");
+  if (bzo) bzo.onclick = async function(){
+    bzo.disabled = true; bzo.textContent = "解析しています…";
+    try { await rubAllAnalyze({ pass2: true }); } catch(e){ msg("解析でつまずきました（" + ((e && e.message) || "") + "）。", true); }
+    bzo.disabled = false; bzo.textContent = "前のやり方で解析（列を先に決める）";
   };
   var bta = $("btnLineTakeAi");
   if (bta) bta.onclick = function(){
@@ -27006,7 +27034,9 @@ async function rubBoxScan(ar, sd, sdLo, opt){
   opt = opt || {};
   var W = Math.max(1, ar.x2 - ar.x1);
   sdLo = sdLo || sd;
-  var sw = Math.round(sd * 2.0), step = Math.max(12, Math.round(sd * 0.5));
+  /* opt.stepK … ずらしの 字の何個ぶんか（既定 0.5。案 a の 測る は 2.0＝重ねない）。
+     opt.edgeAr … 窓の端の見分けに使う「ほんとうの範囲」（案 b で 小さい字の所だけ 通すとき、その所の ふちは 字の途中なので 端とみる） */
+  var sw = Math.round(sd * 2.0), step = Math.max(12, Math.round(sd * (opt.stepK || 0.5)));
   if (sw > W) sw = Math.round(W);
   var xs = [];
   for (var x = ar.x1; x < ar.x2 - sd * 0.35; x += step){
@@ -27033,7 +27063,8 @@ async function rubBoxScan(ar, sd, sdLo, opt){
     /* 窓（切り抜き）の 左右の端。拓本の範囲の端に 当たる側は 端とみない */
     var cE = got.cut || { x1: q.x1, w0: q.x2 - q.x1 };
     var eL = cE.x1, eR = cE.x1 + cE.w0;
-    var atL = eL <= ar.x1 + 2 || eL <= 1, atR = eR >= ar.x2 - 2 || eR >= RUB.W - 1;
+    var eA = opt.edgeAr || ar;
+    var atL = eL <= eA.x1 + 2 || eL <= 1, atR = eR >= eA.x2 - 2 || eR >= RUB.W - 1;
     (got.boxes || []).forEach(function(b){
       /* **大きさの歯止め**（v35.4）。まだ育っていないモデルは、
          点のような枠を何百も出すことがある（実測：12px の枠を 502 個）。

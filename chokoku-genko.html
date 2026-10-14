@@ -2780,7 +2780,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v53.3";
+var APP_VER = "v53.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -29714,7 +29714,7 @@ async function rubRegFixScan(){
       if (its.length < 300 || off >= num(j.shown, 0)) break;
     }
   } catch(e){ body.innerHTML = '<p class="hint" style="color:#ffb3b3;">サーバーから 読めませんでした（' + esc((e && e.message) || "") + '）。</p>'; return; }
-  var items = [];
+  var items = [], R0tiles = null;
   for (var i = 0; i < all.length; i++){
     var L = all[i], pr = $("rfProg");
     if (pr) pr.textContent = "締め直しを 調べています… " + (i + 1) + " / " + all.length + " 列";
@@ -29728,6 +29728,24 @@ async function rubRegFixScan(){
     try { f = await rubRegFixOne(raw, ink, rec.old); } catch(eF){ f = { skip: "締め直せない（" + ((eF && eF.message) || "") + "）" }; }
     if (f.skip){ rec.skip = f.skip; items.push(rec); continue; }
     rec.nb = f.boxes; rec.nChg = f.nChg; rec.nBig = f.nBig; rec.sel = !rec.off && f.nChg > 0;
+    /* ───── **見る字を 並べる 小さな絵**（v53.4。本人の 調べ：日 51 個が 締め直しても 1.06 → 1.10 にしか ならない）─────
+       登録した 字の まわり（枠の 1.5 倍）を 拓本＋墨で 切り出し、白い点線＝いまの 登録・だいだい＝締め直した枠 を 描く */
+    if (ch && rec.old.some(function(b){ return b.ch === ch; })){
+      var comp = rubRegDraw(raw, ink, [], []);
+      rec.old.forEach(function(o, bi){
+        if (o.ch !== ch) return;
+        var n = f.boxes[bi], sd = Math.max(o.w, o.h, n.w, n.h) * 1.5, cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        var T = 110, k2 = T / sd, x0 = cx - sd / 2, y0 = cy - sd / 2;
+        var tc = document.createElement("canvas"); tc.width = T; tc.height = T;
+        var tg = tc.getContext("2d"); tg.fillStyle = "#777"; tg.fillRect(0, 0, T, T);
+        tg.drawImage(comp, x0, y0, sd, sd, 0, 0, T, T);
+        tg.lineWidth = 2; tg.setLineDash([4, 3]); tg.strokeStyle = "#ffffff";
+        tg.strokeRect((o.x - x0) * k2, (o.y - y0) * k2, o.w * k2, o.h * k2);
+        tg.setLineDash([]); tg.strokeStyle = "#FF8A00";
+        tg.strokeRect((n.x - x0) * k2, (n.y - y0) * k2, n.w * k2, n.h * k2);
+        (R0tiles = R0tiles || []).push({ cv: tc, id: L.id, a0: o.h / o.w, a1: n.h / n.w, off: rec.off });
+      });
+    }
     /* 見せる絵は 小さく して 持つ（絵と墨は 持たない。列が 多いと 重くなる） */
     if (f.nChg){
       var full = rubRegDraw(raw, ink, f.boxes, rec.old), kz = Math.min(1, 240 / full.width);
@@ -29737,7 +29755,7 @@ async function rubRegFixScan(){
     }
     items.push(rec);
   }
-  REGFIX = { items: items, ch: ch, at: Date.now() };
+  REGFIX = { items: items, ch: ch, at: Date.now(), tiles: R0tiles || [] };
   rubRegFixShow();
 }
 function rubRegFixShow(){
@@ -29746,12 +29764,15 @@ function rubRegFixShow(){
   var f2 = function(v){ return (Math.round(v * 100) / 100).toFixed(2); };
   var med = function(a){ return a.length ? _med(a) : 0; };
   var ok = R.items.filter(function(x){ return x.nb; }), skip = R.items.filter(function(x){ return !x.nb; });
-  var bAll = [], aAll = [], bCh = [], aCh = [], byCh = {}, nBox = 0, nChg = 0, nBig = 0;
+  var bAll = [], aAll = [], bCh = [], aCh = [], byCh = {}, nBox = 0, nChg = 0, nBig = 0, hR = [], wR = [], nShr = 0, nGro = 0;
   ok.forEach(function(x){
     x.old.forEach(function(o, i){
       var n = x.nb[i]; if (!(o.w > 0 && o.h > 0 && n.w > 0 && n.h > 0)) return;
       nBox++; if (n._chg) nChg++; if (n._big) nBig++;
       if (x.off) return;
+      /* 大きさの 変わり（v53.4。締め直しで 枠が 小さくなりすぎると、枠の AI は もっと 小さい 枠を 覚える） */
+      hR.push(n.h / o.h); wR.push(n.w / o.w);
+      var ar9 = (n.w * n.h) / (o.w * o.h); if (ar9 < 0.9) nShr++; else if (ar9 > 1.1) nGro++;
       var a0 = o.h / o.w, a1 = n.h / n.w;
       bAll.push(a0); aAll.push(a1);
       if (o.ch){ (byCh[o.ch] = byCh[o.ch] || { b: [], a: [] }); byCh[o.ch].b.push(a0); byCh[o.ch].a.push(a1); }
@@ -29771,11 +29792,32 @@ function rubRegFixShow(){
     '<br>枠 ' + nBox + ' 個のうち 変わる ' + nChg + ' 個' + (nBig ? '（大きく変わるので 前のまま ' + nBig + ' 個）' : '') +
     (R.ch ? '<br>「' + esc(R.ch) + '」' + bCh.length + ' 個：縦÷横 <b>' + f2(med(bCh)) + ' → ' + f2(med(aCh)) + '</b>（中央値）' : '') +
     '<br>枠 ぜんぶ（学習に使う）：縦÷横 ' + f2(med(bAll)) + ' → ' + f2(med(aAll)) + '・縦長（1.15 以上）' + tall(bAll) + '% → ' + tall(aAll) + '%' +
+    '<br>大きさ：高さ ' + f2(med(hR)) + ' 倍・幅 ' + f2(med(wR)) + ' 倍（中央値）・面積が 1 割 以上 小さくなる 枠 ' + nShr + ' 個・大きくなる ' + nGro + ' 個' +
     (chs.length ? '<br>字ごと（5 個 以上・変わりの大きい順）：' + chs.map(function(c){ return esc(c.c) + ' ' + f2(c.b) + '→' + f2(c.a) + '（' + c.n + '）'; }).join('・') : '') +
     '<br><span style="color:#9fb0c3;">白い点線＝いま 登録してある枠／色の実線＝締め直した枠。変える列に チェック（学習から 外した列は はじめ 外してあります）。</span><br>' +
     '<button class="mini primary" id="rfWrite"' + (nSel ? '' : ' disabled') + '>⬆ 書き戻す（えらんだ ' + nSel + ' 列）</button> ' +
     '<button class="mini" id="rfAll">ぜんぶ えらぶ</button> <button class="mini" id="rfNone">ぜんぶ 外す</button>';
   body.appendChild(head);
+  /* 見る字を 並べる（v53.4） */
+  if (R.ch && R.tiles && R.tiles.length){
+    var gal = document.createElement("div");
+    gal.style.cssText = "flex:1 1 100%;background:#1a212a;border-radius:8px;padding:8px 10px;";
+    gal.innerHTML = '<div style="font-size:12px;margin-bottom:6px;"><b>登録した「' + esc(R.ch) + '」を 並べる（' + R.tiles.length + ' 個）</b>' +
+      '<span style="color:#9fb0c3;">　白い点線＝いまの 登録・だいだい＝締め直した枠・水色＝登録したときの 墨。下の数は 縦÷横（前 → 後）。' +
+      '墨が 字より 太い・欠ける・ちがう字 なら、その 列は 書き戻さない か 学習から 外す</span></div>';
+    var grid = document.createElement("div"); grid.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
+    R.tiles.forEach(function(t){
+      var cell = document.createElement("div");
+      cell.style.cssText = "width:110px;font-size:10px;color:#cfd8e3;text-align:center;";
+      t.cv.style.cssText = "display:block;width:110px;height:110px;border-radius:4px;" + (t.off ? "opacity:.5;" : "");
+      cell.appendChild(t.cv);
+      var cap = document.createElement("div");
+      cap.innerHTML = f2(t.a0) + ' → <b>' + f2(t.a1) + '</b><br><span style="color:#8a97a6;">' + esc(String(t.id).slice(-14)) + '</span>';
+      cap.title = t.id;
+      cell.appendChild(cap); grid.appendChild(cell);
+    });
+    gal.appendChild(grid); body.appendChild(gal);
+  }
   ok.forEach(function(x, xi){
     if (!x.nChg) return;
     var cv = x.pv; if (!cv) return;

@@ -2779,7 +2779,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v51.6";
+var APP_VER = "v51.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -18497,7 +18497,8 @@ async function rubInkWhole(side, opt){
   var win = Math.round(side * 1.15);
   if (mpp) win = Math.max(Math.round(12 / mpp), Math.min(Math.round(60 / mpp), win));
   win = Math.max(24, win);
-  var st = Math.max(8, Math.round(win * 0.5));
+  /* 窓の ずらしは 窓の半分（重なり 2 分の 1）。opt.quarter のときは 4 分の 3（重なり 4 分の 1。v51.7 の ためし。枚数が 半分以下に） */
+  var st = Math.max(8, Math.round(win * (opt.quarter ? 0.75 : 0.5)));
   function pos(a, b){
     var out = [];
     if (b - a <= win){ out.push(Math.round((a + b) / 2 - win / 2)); return out; }
@@ -18542,7 +18543,59 @@ async function rubInkWhole(side, opt){
       }, "image/png");
     }
   }
-  var t0 = Date.now(), at = 0, done = 0, ok = 0, ng = 0, why = "", stop = false, nSkip = 0;
+  var t0 = Date.now(), at = 0, done = 0, ok = 0, ng = 0, why = "", stop = false, nSkip = 0, viaArea = null;
+  /* ───── **サーバーに まとめて頼む**（v51.7。案 1。サーバーに /api/takuhon/ink_area があるとき＝ opt.area）─────
+     範囲の絵（グレー。rubCropPng と同じ 明るさの出し方）を 1 回 送り、同じ窓（xs・ys・win）で サーバーが まとめて AI に通して
+     濃い方を採った 1 枚（SC 倍の大きさ）を返す。それを acc に 重ねれば、あとは 1 枚ずつのときと同じ。
+     うまくいかなければ（古いサーバー・とちゅうで切れた）1 枚ずつに 戻る */
+  if (opt.area && RUB.data){
+    var rx = Math.max(0, Math.floor(ar.x1)), ry = Math.max(0, Math.floor(ar.y1));
+    var rw = Math.min(RUB.W, Math.ceil(ar.x2)) - rx, rh = Math.min(RUB.H, Math.ceil(ar.y2)) - ry;
+    try {
+      if (opt.prog) opt.prog(0, jobs.length, "area");
+      var gcv = document.createElement("canvas"); gcv.width = rw; gcv.height = rh;
+      var gg = gcv.getContext("2d"), gim = gg.createImageData(rw, rh), go = gim.data, dd9 = RUB.data.data;
+      for (var yy9 = 0; yy9 < rh; yy9++){
+        var so9 = ((ry + yy9) * RUB.W + rx) * 4, do9 = yy9 * rw * 4;
+        for (var xx9 = 0; xx9 < rw; xx9++, so9 += 4, do9 += 4){
+          var v9 = Math.round(dd9[so9] * 0.299 + dd9[so9 + 1] * 0.587 + dd9[so9 + 2] * 0.114);
+          go[do9] = go[do9 + 1] = go[do9 + 2] = v9; go[do9 + 3] = 255;
+        }
+      }
+      gg.putImageData(gim, 0, 0);
+      var gblob = await new Promise(function(res){ gcv.toBlob(res, "image/png"); });
+      var fdA = new FormData();
+      fdA.append("file", gblob, "area.png");
+      fdA.append("xs", xs.map(function(v){ return v - rx; }).join(","));
+      fdA.append("ys", ys.map(function(v){ return v - ry; }).join(","));
+      fdA.append("win", String(win));
+      fdA.append("scale", String(SC));
+      fdA.append("fill", String((S.rub && S.rub.invert) ? 0 : 255));
+      fdA.append("skip_flat", opt.slow ? "false" : "true");
+      var ctl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      var tmA = setInterval(function(){
+        if (opt.prog) opt.prog(0, jobs.length, "area");
+        if (opt.stop && opt.stop() && ctl) ctl.abort();
+      }, 500);
+      var tqA = Date.now(), rA;
+      try { rA = await fetch(base + "/api/takuhon/ink_area", { method: "POST", body: fdA, signal: ctl ? ctl.signal : undefined }); }
+      finally { clearInterval(tmA); }
+      if (opt.stop && opt.stop()) throw new Error("中止しました");
+      if (!rA.ok) throw new Error("HTTP " + rA.status);
+      var uA = URL.createObjectURL(await rA.blob());
+      try {
+        var imA = await new Promise(function(res, rej){ var im = new Image(); im.onload = function(){ res(im); }; im.onerror = rej; im.src = uA; });
+        ag.drawImage(imA, rx * SC, ry * SC, rw * SC, rh * SC);
+      } finally { URL.revokeObjectURL(uA); }
+      ok = num(rA.headers.get("X-Tiles"), jobs.length); nSkip = num(rA.headers.get("X-Skip"), 0); done = jobs.length;
+      viaArea = { ms: Date.now() - tqA, infer: num(rA.headers.get("X-Infer-Ms"), 0), all: num(rA.headers.get("X-All-Ms"), 0),
+                  batch: num(rA.headers.get("X-Batch"), 0), mb: Math.round(gblob.size / 1e5) / 10 };
+    } catch(eA){
+      if (opt.stop && opt.stop()){ ag.restore(); throw new Error("中止しました"); }
+      viaArea = { err: (eA && eA.message) || "?" };          /* 1 枚ずつに 戻る */
+      ok = 0; nSkip = 0; done = 0;
+    }
+  }
   /* ───── **紙の白い所の窓は 送らない**（v51.4。案 A）─────
      窓の中を 24×24 点 見て、明るさの ばらつき（標準偏差）が 10 未満なら のっぺりした所（紙・拓本の外）。墨は 出ないので 送らない。
      拓本の地は ざらつきで ばらつきが大きい。［速くする工夫なしで通す］のときは 前と同じく ぜんぶ送る */
@@ -18597,8 +18650,10 @@ async function rubInkWhole(side, opt){
   }
   /* 同時に送る数：6（v51.4。案 A。前は 3。［速くする工夫なしで通す］のときは 3） */
   var nW = fast ? 6 : 3, wk = [];
-  for (var wi = 0; wi < nW; wi++) wk.push(worker());
-  await Promise.all(wk);
+  if (!(viaArea && !viaArea.err)){                        /* まとめて頼めたときは とばす（v51.7） */
+    for (var wi = 0; wi < nW; wi++) wk.push(worker());
+    await Promise.all(wk);
+  }
   liveDone = true;
   ag.restore();
   if (!ok) throw new Error("墨の AI に通せませんでした（" + (why || "?") + "）");
@@ -18619,7 +18674,8 @@ async function rubInkWhole(side, opt){
             inkMm2: mpp ? n1 * (mpp / SC) * (mpp / SC) : null, ms: Date.now() - t0, cut: stop,
             box: { L: Math.round(ar.x1), R: Math.round(ar.x2), T: Math.round(ar.y1), B: Math.round(ar.y2) },
             ink: n1, shots: [], plan: { side: win, whole: 1, nx: xs.length, ny: ys.length } };
-  return { A: A, win: win, n: jobs.length, ok: ok, ng: ng, why: why, stop: stop, ms: Date.now() - t0, skip: nSkip, par: nW };
+  return { A: A, win: win, n: jobs.length, ok: ok, ng: ng, why: why, stop: stop, ms: Date.now() - t0, skip: nSkip, par: nW,
+           area: viaArea, step: st };
 }
 /* ───── ③ **字の枠だけで 列を組む**（v50.5）─────
    ① 横に 4 割以上 重なる枠どうしを つなぐ。つながった かたまり＝上の列（字の大きさ・字数は 決めつけない）。
@@ -18938,7 +18994,9 @@ function rubAnaHistHtml(){
   var th = "padding:1px 4px;border-bottom:1px solid #ddd;text-align:right;font-weight:600;white-space:nowrap;";
   var td = "padding:1px 4px;text-align:right;white-space:nowrap;";
   /* 見出しは 短く（左の欄は せまい）。くわしくは title に */
-  var H = [["時刻", "いつ（時:分）"], ["工夫", "速くする工夫 あり／なし（なし＝v51.3 と同じ通し方）"], ["測", "⓪ 字の大きさを測る"], ["墨", "① 墨"],
+  var H = [["時刻", "いつ（時:分）"], ["工夫", "速くする工夫 あり／なし（なし＝v51.3 と同じ通し方）"],
+           ["墨の通し方", "まとめ＝サーバーに範囲を 1 回で頼んだ／1枚＝窓を 1 枚ずつ送った。½・¼＝窓の重なり（v51.7 から）"],
+           ["測", "⓪ 字の大きさを測る"], ["墨", "① 墨"],
            ["枠", "② 枠"], ["小", "②' 小さい字"], ["列", "③ 列を組む・枠を整える"], ["読", "④ 読み・まとまり"], ["計", "合計"], ["墨枚", "墨の AI に送った枚数（＋紙なので 送らなかった枚数）"],
            ["墨1", "AI の返事を待った時間：墨 1 枚の平均（秒。v51.6 から）。同じ「工夫」どうしで くらべて、回を追って のびていれば サーバー側が 遅くなっている。" +
                    "工夫ありは 同時に 6 枚 送るので 1 枚の待ちは のびる（全体は 早くなる）"], ["枠1", "AI の返事を待った時間：枠 1 窓の平均（秒）"],
@@ -18952,6 +19010,7 @@ function rubAnaHistHtml(){
       return '<tr><td title="' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + esc(h.ver || "") + '" style="' + td + 'text-align:left;">' +
         String(d.getHours()).padStart(2, "0") + ':' + String(d.getMinutes()).padStart(2, "0") + '</td>' +
         '<td style="' + td + '">' + (h.slow ? "なし" : "あり") + '</td>' +
+        '<td style="' + td + '">' + esc(h.ia || "–") + '</td>' +
         '<td style="' + td + '">' + f(t.probe) + '</td><td style="' + td + '">' + f(t.ink) + '</td><td style="' + td + '">' + f(t.box) + '</td>' +
         '<td style="' + td + '">' + f(t.small) + '</td><td style="' + td + '">' + f(t.col) + '</td><td style="' + td + '">' + f(t.read) + '</td>' +
         '<td style="' + td + 'font-weight:700;">' + f(t.total) + '</td>' +
@@ -18979,10 +19038,11 @@ async function rubAnalyzeBU(){
   if (!takuApiBase()){ msg(takuAiOffNote() + "。", true); return; }
   var side = _rubCharSide();
   if (!side){ msg("字の大きさが分かりません（［戒名の字幅］か 較正を確かめてください）。", true); return; }
-  var bm9 = null, cm9 = null;
+  var bm9 = null, cm9 = null, srvArea9 = false;
   try {
     var r9 = await fetch(takuApiBase() + "/api/takuhon/status");
-    if (r9.ok){ var j9 = await r9.json(); bm9 = ((j9.box || {}).model) || null; cm9 = ((j9.char || {}).model) || null; }
+    if (r9.ok){ var j9 = await r9.json(); bm9 = ((j9.box || {}).model) || null; cm9 = ((j9.char || {}).model) || null;
+                srvArea9 = !!j9.ink_area; }
   } catch(e9){}
   if (!(bm9 && bm9.loaded)){
     msg("枠の AI が まだ入っていないので、新しい順の解析は使えません。［拓本AI解析］を使ってください。", true); return;
@@ -18992,7 +19052,7 @@ async function rubAnalyzeBU(){
   function sec(t){ return Math.round((Date.now() - t) / 100) / 10; }
   /* ───── **かかった時間を 段ごとに控える**（v51.4。本人「変更前と時間を比較できるようにして」）─────
      ［速くする工夫なしで通す（比べる用）］（S.rub.buSlow）のときは v51.3 と同じ通し方。S.rub.anaHist に 8 回ぶん残し、［📋 解析結果］に 並べて出す */
-  var slow9 = rubBuSlow(), tm = { probe: 0, ink: 0, box: 0, small: 0, col: 0, read: 0, total: 0 }, inkN = 0, inkSkip = 0;
+  var slow9 = rubBuSlow(), tm = { probe: 0, ink: 0, box: 0, small: 0, col: 0, read: 0, total: 0 }, inkN = 0, inkSkip = 0, inkHow9 = "";
   /* AI の返事を 待った時間（1 回の平均・秒）。段ごとに 前後の 数の差で 出す（v51.6） */
   RUB_AIW = {};
   var aw = {};
@@ -19046,8 +19106,12 @@ async function rubAnalyzeBU(){
     if (RUB_LIVE){ RUB_LIVE.boxes = []; RUB_LIVE.cur = []; }      /* ⓪ の枠は 大きさを測るためだけ。墨の あいだは 墨だけ 見せる */
     rubLiveRender(true);
     await uiTick();
-    var ik = await rubInkWhole(side, { ar: arP, slow: slow9, live: true,
-      prog: function(i, n){ aiProg(null, null, i + " / " + n + " 枚" + rubRemTx(t1, i, n)); },
+    /* 墨の通し方（v51.7）：まとめて頼む（サーバーに口があれば）・窓の重なり 4 分の 1（ためし）。工夫なしのときは どちらも 使わない */
+    var useArea9 = srvArea9 && !slow9 && !(S.rub && S.rub.buInkOne), useQ9 = !slow9 && !!(S.rub && S.rub.buInkQ);
+    var ik = await rubInkWhole(side, { ar: arP, slow: slow9, live: true, area: useArea9, quarter: useQ9,
+      prog: function(i, n, how){
+        if (how === "area") aiProg(null, "サーバーに 範囲を 1 回で送り、まとめて 墨の AI に通しています（" + n + " 枚ぶん）", "");
+        else aiProg(null, "範囲ぜんたいを 墨の AI に通しています", i + " / " + n + " 枚" + rubRemTx(t1, i, n)); },
       stop: function(){ return AIPROG_STOP; } });
     if (AIPROG_STOP) throw new Error("中止しました");
     RUB.aiBand = ik.A;
@@ -19057,9 +19121,17 @@ async function rubAnalyzeBU(){
     RUB_INK_ALL = { url: ik.A.url, geo: gk };
     if (RUB_LIVE && RUB_LIVE.url){ var oldL = RUB_LIVE.url; RUB_LIVE.url = ""; setTimeout(function(){ URL.revokeObjectURL(oldL); }, 2000); }   /* できあがりの墨に 入れかえ */
     tm.ink = sec(t1); inkN = ik.ok; inkSkip = ik.skip || 0;
-    step.push("墨：範囲ぜんたい（窓 " + mmT(ik.win) + "・送った " + ik.ok + " / " + ik.n + " 枚" +
-              (ik.skip ? "（紙の白い所の " + ik.skip + " 枚は送らず）" : "") + "・同時に " + ik.par + " 枚・" + sec(t1) + " 秒" +
-              awTx(aw.ink = awAvg("ink", aw1), "枚") + "）" +
+    var viaA9 = ik.area && !ik.area.err;
+    inkHow9 = (viaA9 ? "まとめ" : "1枚") + (useQ9 ? "¼" : "½");
+    if (viaA9) aw.ink = Math.round(ik.area.ms / Math.max(1, ik.ok) / 10) / 100;    /* 1 枚あたりに ならした値（ほかの回と 比べるため） */
+    step.push("墨：範囲ぜんたい（窓 " + mmT(ik.win) + "・重なり " + (useQ9 ? "4 分の 1" : "2 分の 1") + "・" +
+              (viaA9 ? "サーバーに まとめて頼んだ（" + ik.ok + " / " + ik.n + " 枚" + (ik.skip ? "・紙の " + ik.skip + " 枚は とばした" : "") +
+                       "・送った絵 " + ik.area.mb + "MB・AI の計算 " + (Math.round(ik.area.infer / 100) / 10) + " 秒・サーバー " +
+                       (Math.round(ik.area.all / 100) / 10) + " 秒）・" + sec(t1) + " 秒"
+                     : (ik.area && ik.area.err ? "まとめて頼めず 1 枚ずつ（" + esc(ik.area.err) + "）・" : "") +
+                       "送った " + ik.ok + " / " + ik.n + " 枚" +
+                       (ik.skip ? "（紙の白い所の " + ik.skip + " 枚は送らず）" : "") + "・同時に " + ik.par + " 枚・" + sec(t1) + " 秒" +
+                       awTx(aw.ink = awAvg("ink", aw1), "枚")) + "）" +
               (ik.stop ? "／とちゅうで止まりました（" + esc(ik.why) + "）"
                        : ik.ng ? "／" + ik.ng + " 枚は 通せませんでした（" + esc(ik.why) + "）" : ""));
     rubRender();
@@ -19233,7 +19305,7 @@ async function rubAnalyzeBU(){
   tm.read = sec(t4); tm.total = sec(t0);
   step.push("かかった時間 " + tm.total + " 秒（" + (slow9 ? "速くする工夫なし＝v51.3 と同じ通し方" : "速くする工夫あり") + "）");
   if (!Array.isArray(S.rub.anaHist)) S.rub.anaHist = [];
-  S.rub.anaHist.unshift({ ts: Date.now(), ver: APP_VER, slow: slow9, t: tm, ink: inkN, skip: inkSkip, w: aw });
+  S.rub.anaHist.unshift({ ts: Date.now(), ver: APP_VER, slow: slow9, t: tm, ink: inkN, skip: inkSkip, w: aw, ia: inkHow9 });
   RUB_AIW = null;
   if (S.rub.anaHist.length > 8) S.rub.anaHist.length = 8;
   S.rub.anaLast = { tx: "［新しい順］" + step.join("／") +
@@ -24813,7 +24885,14 @@ function rubPanel(){
       /* 前と時間を比べる用（v51.4。本人「変更前と時間を比較できるようにして」） */
       '<label class="hint" style="display:inline-flex;align-items:center;gap:3px;margin-left:8px;font-size:11px;" ' +
       'title="入れると v51.3 と同じ通し方（紙の白い所も送る・同時に 3 枚・墨の絵を 毎回 読む・読みは 1 字ずつ）。［📋 解析結果］の 時間の比べ で くらべられます">' +
-      '<input type="checkbox" id="rBuSlow"' + (S.rub.buSlow ? " checked" : "") + ' style="width:auto;"> 速くする工夫なしで通す（比べる用）</label></div>';
+      '<input type="checkbox" id="rBuSlow"' + (S.rub.buSlow ? " checked" : "") + ' style="width:auto;"> 速くする工夫なしで通す（比べる用）</label>' +
+      /* 墨の通し方の ためし（v51.7。本人「追加で2をテストできるようにしてください」） */
+      '<div class="hint" style="font-size:11px;margin:2px 0 0;display:flex;flex-wrap:wrap;gap:2px 10px;">' +
+      '<label title="墨の窓の ずらしを 窓の 4 分の 3 にして、重なりを 4 分の 1 に（前は 2 分の 1）。送る枚数が 半分以下に なる。つなぎ目で 墨が 荒れないか 見てください" ' +
+      'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuInkQ"' + (S.rub.buInkQ ? " checked" : "") + ' style="width:auto;"> 墨の窓の重なりを 4 分の 1 に（ためし）</label>' +
+      '<label title="サーバーが まとめて頼める版（update.sh 済み）でも、前のように 窓を 1 枚ずつ送ります（比べる用）" ' +
+      'style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="rBuInkOne"' + (S.rub.buInkOne ? " checked" : "") + ' style="width:auto;"> 墨を 1 枚ずつ送る（比べる用）</label>' +
+      '</div></div>';
     var an9 = S.rub.anaLast;
     /* 解析結果は ラベルを押したときだけ見せる（v42.6。本人の指示）。開け閉めは id で覚える（RUB_OPEN） */
     if (an9 && an9.tx){
@@ -25083,6 +25162,8 @@ function rubPanel(){
   };
   var bsl = $("rBuSlow");
   if (bsl) bsl.onchange = function(){ S.rub.buSlow = bsl.checked; persist(); };
+  var bq9 = $("rBuInkQ"); if (bq9) bq9.onchange = function(){ S.rub.buInkQ = bq9.checked; persist(); };
+  var bo9 = $("rBuInkOne"); if (bo9) bo9.onchange = function(){ S.rub.buInkOne = bo9.checked; persist(); };
   var bzB = $("btnAnalyzeBU");
   if (bzB) bzB.onclick = async function(){
     bzB.disabled = true; bzB.textContent = "解析しています…";

@@ -197,7 +197,7 @@ app = FastAPI(title="拓本クリーン化")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     expose_headers=["X-Model-Step", "X-Model-At", "X-Model-Loaded",
-                    "X-Stage", "X-Soft", "X-Infer-Ms"],
+                    "X-Stage", "X-Soft", "X-Infer-Ms", "X-Tiles", "X-Skip", "X-Batch", "X-All-Ms"],
 )
 
 
@@ -350,6 +350,7 @@ def status():
         "val": len(D.list_pairs(VALDIR)),
         "lines": len(_line_ids()),
         "box": {"model": INFOB, "lines": len(_line_ids())},
+        "ink_area": True,                 # /api/takuhon/ink_area がある（2026-10-14。アプリは これを見て まとめて頼む）
         "char": {"model": INFOC, "chars": _chars_count()},
         "shape": {"pairs": len(D.list_pairs(SHAPE)), "val": len(D.list_pairs(SHAPE_VAL)),
                   "rub": len(D.list_pairs(SHAPE_RUB)),
@@ -479,6 +480,66 @@ async def boxes(
             "ink": ink_src, "inkPct": round(float(ink_a.mean()) * 100, 1),
             "model": {"step": INFOB.get("step"), "at": INFOB.get("at"),
                       "f1": INFOB.get("f1"), "lines": INFOB.get("lines")}}
+
+
+# ───── **範囲ぜんたいの墨を 1 回で**（2026-10-14。本人「さすがに時間がかかりますね」→ 案 1）─────
+# アプリの［拓本AI解析（新しい順）］が 範囲の絵を 1 回 送ってくる。アプリと同じ窓（xs・ys・win）で 切って
+# まとめて（batch 枚ずつ）墨の AI に通し、濃い方を採って scale 倍の大きさの 1 枚（濃さ 0〜255 の PNG）にして返す。
+# 前は 窓 1 枚ごとに /api/takuhon/clean を呼び、1 枚ずつ PNG を 読み書き（しかも optimize つき）していた。
+# 重い処理なので async にしない（FastAPI が別の糸で回す）。GPU が足りなければ batch を半分にして やり直す。
+@app.post("/api/takuhon/ink_area")
+def ink_area(
+    file: UploadFile = File(...),
+    xs: str = Form(...),
+    ys: str = Form(...),
+    win: int = Form(...),
+    scale: float = Form(1.0),
+    fill: int = Form(255),
+    skip_flat: bool = Form(True),
+    batch: int = Form(8),
+):
+    _reload_if_new()
+    if not INFO["loaded"]:
+        return JSONResponse({"error": "no_model", "detail": "①「墨出し」のモデルがありません"}, status_code=503)
+    import io as _io
+    import inktiles as IT
+    arr = np.asarray(Image.open(_io.BytesIO(file.file.read())).convert("L"), dtype=np.uint8)
+    XS = [int(round(float(v))) for v in xs.split(",") if v.strip()]
+    YS = [int(round(float(v))) for v in ys.split(",") if v.strip()]
+    if not XS or not YS or win < 8:
+        return JSONResponse({"error": "bad_tiles"}, status_code=400)
+    t_inf = [0.0]
+
+    def infer(tiles):
+        x = np.stack([D.to_input(t, None, None) for t in tiles]).astype(np.float32)
+        t0 = time.time()
+        with torch.no_grad():
+            y = torch.sigmoid(NET(torch.from_numpy(x).to(DEVICE)))[:, 0].cpu().numpy()
+        t_inf[0] += time.time() - t0
+        return list(y)
+
+    t0 = time.time()
+    b = max(1, int(batch))
+    while True:
+        try:
+            acc, n, n_skip = IT.ink_tiles(arr, XS, YS, int(win), float(scale), infer,
+                                          fill=int(fill), skip_flat=bool(skip_flat), batch=b)
+            break
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and b > 1:
+                b = max(1, b // 2)
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                continue
+            raise
+    buf = _io.BytesIO()
+    Image.fromarray(acc, mode="L").save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png", headers={
+        "X-Tiles": str(n), "X-Skip": str(n_skip), "X-Batch": str(b),
+        "X-Infer-Ms": str(int(t_inf[0] * 1000)), "X-All-Ms": str(int((time.time() - t0) * 1000)),
+    })
 
 
 def _ink_of(raw):

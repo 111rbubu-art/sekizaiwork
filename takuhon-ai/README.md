@@ -638,6 +638,27 @@ POST /api/takuhon/chars             手本帳の 1 字を貯める
 GET  /api/takuhon/chars             字ごとの枚数
 ```
 
+### 2026-10-14 に足した口：範囲ぜんたいの墨を 1 回で（`/api/takuhon/ink_area`）
+
+アプリの［🧪 拓本AI解析（新しい順）］は、範囲を 字 1 個ぶんの窓で 縦横にずらして 墨の AI に通す
+（実物の拓本で 520 枚）。`/api/takuhon/clean` を 1 枚ずつ呼ぶと、サーバーが 1 枚ずつしか片付けないので 約 2 分かかっていた。
+この口は 範囲の絵を 1 回 受け取り、同じ窓で 切って まとめて（`batch` 枚ずつ）AI に通し、濃い方を採った 1 枚を返す。
+
+```
+POST /api/takuhon/ink_area
+  file      範囲の拓本（グレー PNG）
+  xs, ys    窓の左上（範囲の中の画素。カンマ区切り）
+  win       窓の一辺（画素）
+  scale     返す絵の縮尺（アプリの SC）
+  fill      絵の外の明るさ（255）／ skip_flat  のっぺりした窓（紙）を とばす ／ batch  まとめる枚数（既定 8）
+返り  濃さ 0〜255 の PNG（scale 倍の大きさ）。ヘッダー X-Tiles・X-Skip・X-Batch・X-Infer-Ms・X-All-Ms
+```
+
+- 切り方・重ね方は アプリと同じ（`inktiles.py`。torch なしで試せる）
+- GPU が足りなければ `batch` を半分にして やり直す（同じ GPU で Ollama・音声認識も動くため）
+- `/api/takuhon/status` に `"ink_area": true` が出る。アプリは これを見て まとめて頼む（無い古いサーバーなら 1 枚ずつ）
+- 入れかえは いつもの `bash /opt/takuhon-ai/update.sh`
+
 ### 2026-09-22 に足した口（「覚えたもの」の画面が使う）
 
 ```

@@ -2779,7 +2779,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v53.0";
+var APP_VER = "v53.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -9001,13 +9001,102 @@ async function rubBoxAiOne(hit, ev){
     h += '<button class="mini" data-a="tidy" title="AI の枠を、つながった墨まで 広げ・締めてから 使います（その列の ほかの枠は そのまま）">AI の枠を 墨に合わせて 使う</button>';
   }
   h += '<button class="mini" data-a="no">やめる（いまの枠のまま）</button>';
+  var ch1 = it.pick || (it.anch && it.anch.ch) || "";
+  if (ch1) h += '<button class="mini" data-a="regchk">📊 登録した「' + esc(ch1) + '」の枠を 調べる</button>';
   var el = $("rubMenu"); if (!el) return;
   el.innerHTML = h; el.hidden = false;
   var w = el.offsetWidth, hh = el.offsetHeight, ex = (ev && ev.clientX) || 200, ey = (ev && ev.clientY) || 200;
   el.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, ex + 6)) + "px";
   el.style.top  = Math.max(6, Math.min(window.innerHeight - hh - 6, ey - 8)) + "px";
-  Array.prototype.forEach.call(el.querySelectorAll("button"), function(bt){ bt.onclick = function(){ rubBox1Pick(bt.dataset.a); }; });
+  Array.prototype.forEach.call(el.querySelectorAll("button"), function(bt){
+    bt.onclick = function(){
+      if (bt.dataset.a === "regchk"){ var ai1 = best ? { w: best.w, h: best.h, score: best.score } : null; rubMenuClose(); rubBoxRegCheck(ch1, ev, it.px, ai1); return; }
+      rubBox1Pick(bt.dataset.a);
+    };
+  });
   msg(best ? "枠の AI の答えを だいだいの破線で 出しました。選んでください。" : "枠の AI は この字に 枠を 出しませんでした。", !best);
+}
+/* ───── **登録した この字の枠を 調べる**（v53.1）─────
+   拓本AI に ためた 列（/api/takuhon/lines?boxes=1）から 読みが その字の 枠を 集め、形と いつ送ったかを 数える。
+   あわせて 枠の AI の いまのモデル（/api/takuhon/status の box.model：いつ・何列で 学んだか）と
+   ゆうべの学習（/api/takuhon/progress?which=box：入れかわったか）を 出す。
+   train_box.py は「検証の F1（IoU 0.5 以上で 当たり）が 前のモデルを 越えたときだけ 入れかえる」ので、
+   枠の大きさが 良くなっても F1 が 上がらなければ、モデルは 古いまま になる。それを 確かめる */
+async function rubBoxRegCheck(ch, ev, nowPx, aiBox){
+  var base = takuApiBase();
+  if (!base){ msg(takuAiOffNote() + "。", true); return; }
+  if (!ch){ msg("この字の 読みが 無いので 調べられません。", true); return; }
+  msg("拓本AI に 登録した「" + ch + "」の枠を 集めています…", false, true);
+  var st = null, pg = null, all = [], nAll = 0, nOn = 0;
+  try {
+    var r1 = await fetch(base + "/api/takuhon/status"); if (r1.ok) st = await r1.json();
+    var r2 = await fetch(base + "/api/takuhon/progress?which=box"); if (r2.ok) pg = await r2.json();
+    for (var off = 0, k = 0; k < 40; k++){
+      var r3 = await fetch(base + "/api/takuhon/lines?boxes=1&limit=300&offset=" + off);
+      if (!r3.ok) throw await takuErr(r3, "登録した列（/api/takuhon/lines）");
+      var j3 = await r3.json(), its = j3.items || [];
+      nAll = num(j3.all, 0); nOn = num(j3.on, 0);
+      all = all.concat(its); off += its.length;
+      if (its.length < 300 || off >= num(j3.shown, 0)) break;
+    }
+  } catch(e){ msg("拓本AI から 読めませんでした（" + ((e && e.message) || "") + "）。", true); return; }
+  var bm = (st && st.box && st.box.model) || {};
+  var tM = Date.parse(bm.at || "") || 0;
+  var mine = [], allAsp = [], nAfterL = 0;
+  all.forEach(function(L){
+    var tL = Date.parse(L.at || "") || 0, after = tM && tL > tM;
+    if (after && !L.off) nAfterL++;
+    var mpp = num(L.mmPerPx, 0), cw = (L.crop && L.crop.w && L.crop.sc) ? L.crop.w * L.crop.sc : 0;
+    (L.boxes || []).forEach(function(b){
+      var w = num(b.w, 0), h = num(b.h, 0); if (!(w > 0 && h > 0)) return;
+      if (!L.off) allAsp.push(h / w);
+      if (String(b.ch || "") !== ch) return;
+      mine.push({ asp: h / w, wmm: mpp ? w * mpp : 0, hmm: mpp ? h * mpp : 0, fr: cw ? w / cw : 0, off: !!L.off, after: after, id: L.id });
+    });
+  });
+  var on9 = mine.filter(function(m){ return !m.off; });
+  var f2 = function(v){ return (Math.round(v * 100) / 100).toFixed(2); };
+  var medOf = function(a){ return a.length ? _med(a) : 0; };
+  var lines = [];
+  lines.push("■ 枠の AI の いまのモデル：" + (bm.loaded ? (bm.at ? String(bm.at).replace("T", " ").slice(0, 16) : "日時なし") + " に 学習" +
+             "・その時の 列 " + (bm.lines != null ? bm.lines : "?") + " 本" + (bm.chars ? "（字 " + bm.chars + "）" : "") +
+             "・F1 " + (bm.f1 != null ? bm.f1 : "?") + "・step " + (bm.step != null ? bm.step : "?") : "入っていません"));
+  lines.push("■ いま 登録してある 列：" + nAll + " 本（学習に使う " + nOn + "・外した " + (nAll - nOn) + "）" +
+             (tM ? "。モデルより あとに 送った・上書きした 列（学習に使う分）" + nAfterL + " 本" : ""));
+  if (pg) lines.push("■ いちばん新しい 枠の学習：" + (pg.state === "done" ? "終わり" : pg.state === "few" ? "列が 足りず やめた" :
+             pg.state === "running" ? "学習中" : pg.state === "failed" ? "とちゅうで 止まった" : (pg.state || "?")) +
+             (pg.at ? "（" + pg.at + "）" : "") + (pg.lines != null ? "・列 " + pg.lines + " 本" : "") +
+             (pg.swapped != null ? "・入れかえ " + pg.swapped + " 回" : "") +
+             (pg.base != null ? "・前のモデル F1 " + pg.base : "") + (pg.best != null ? " → いちばん良い F1 " + pg.best : ""));
+  lines.push("■「" + ch + "」の 枠：" + mine.length + " 個（学習に使う 列 " + on9.length + "・外した 列 " + (mine.length - on9.length) + "）" +
+             (tM ? "。そのうち モデルより あとに 送った 分 " + on9.filter(function(m){ return m.after; }).length + " 個" : ""));
+  if (on9.length){
+    var asps = on9.map(function(m){ return m.asp; });
+    lines.push("　縦÷横：中央値 " + f2(medOf(asps)) + "（" + f2(Math.min.apply(null, asps)) + "〜" + f2(Math.max.apply(null, asps)) + "）" +
+               (on9[0].hmm ? "・高さ " + medOf(on9.map(function(m){ return m.hmm; })).toFixed(1) + "mm・幅 " + medOf(on9.map(function(m){ return m.wmm; })).toFixed(1) + "mm（中央値）" : ""));
+    var frs = on9.map(function(m){ return m.fr; }).filter(function(v){ return v > 0; });
+    if (frs.length) lines.push("　切り抜きの 幅に 対する 字の幅：中央値 " + f2(medOf(frs)));
+  }
+  if (allAsp.length) lines.push("■ 登録した 枠 ぜんぶ（学習に使う）" + allAsp.length + " 個：縦÷横の 中央値 " + f2(medOf(allAsp)) +
+             "・縦長（1.15 以上）" + Math.round(allAsp.filter(function(v){ return v >= 1.15; }).length / allAsp.length * 100) + "%");
+  if (nowPx && nowPx.w > 0) lines.push("■ くらべ：いまの枠 縦÷横 " + f2(nowPx.h / nowPx.w) +
+             (aiBox && aiBox.w > 0 ? "・この字だけ 通した AI の答え " + f2(aiBox.h / aiBox.w) + "（確からしさ " + f2(aiBox.score) + "）" : ""));
+  var tx = lines.join("\n");
+  var el = $("rubMenu"); if (!el) return;
+  el.innerHTML = '<div class="nhd">登録した「' + esc(ch) + '」の枠（拓本AI）</div>' +
+    '<textarea readonly style="width:360px;max-width:80vw;height:190px;font-size:11px;line-height:1.5;">' + esc(tx) + '</textarea>' +
+    '<div style="margin-top:4px;"><button class="mini primary" data-a="copy">写す（コピー）</button><button class="mini" data-a="close">閉じる</button></div>';
+  el.hidden = false;
+  var w = el.offsetWidth, hh = el.offsetHeight, ex = (ev && ev.clientX) || 200, ey = (ev && ev.clientY) || 200;
+  el.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, ex + 6)) + "px";
+  el.style.top  = Math.max(6, Math.min(window.innerHeight - hh - 6, ey - 8)) + "px";
+  el.querySelector('[data-a="copy"]').onclick = function(){
+    var ta = el.querySelector("textarea"); ta.select();
+    try { (navigator.clipboard && navigator.clipboard.writeText) ? navigator.clipboard.writeText(tx) : document.execCommand("copy"); } catch(e){ try { document.execCommand("copy"); } catch(e2){} }
+    msg("写しました。チャットに 貼ってください。");
+  };
+  el.querySelector('[data-a="close"]').onclick = function(){ rubMenuClose(); };
+  msg("登録した「" + ch + "」の枠を 調べました。");
 }
 async function rubBox1Pick(a){
   var R = RUB_BOX1; rubMenuClose(); RUB_BOX1 = null;
@@ -10034,6 +10123,10 @@ function rubMenuOpen(ev, pt, hit){
        その字を まん中に、字が 窓の幅の 半分ほどに 写る 窓（学習した 切り抜きと 同じくらい）で 枠の AI に 通し、答えを だいだいの破線で 見せてから 選ぶ */
     h += '<button class="mini" data-a="box1" title="この字を まん中にした 小さい窓（字が 窓の幅の 半分ほどに 写る）で、枠の AI に もう一度 通します。' +
       '答えを だいだいの破線で 出してから［AI の枠にする］［墨に合わせて使う］［やめる］を 選べます">🔲 この字だけ 枠の AI に通す（ためし）</button>';
+    /* 登録した この字の枠を 調べる（v53.1。本人「AIサーバ見れますか？ 日という文字は … ２０個以上登録しているので、このような間違いはおかしいのです」） */
+    var chH = itH && (itH.pick || (itH.anch && itH.anch.ch));
+    if (chH) h += '<button class="mini" data-a="regchk" title="拓本AI に 登録した 列の 枠から「' + esc(chH) + '」の枠を 集めて、形（縦÷横）・数・いつ 送ったかと、' +
+      '枠の AI の モデルが いつ 学習したか・ゆうべの学習で 入れかわったか を 出します">📊 登録した「' + esc(chH) + '」の枠を 調べる</button>';
     /* ───── **墨だし用調整**（v52.6。本人「出来た枠を右クリックして、墨だし用調整のボタンをつけて、修正画面に移動してAI学習登録ができるようにして」）─────
        修正画面の［墨を直す］→ 字 →［✎ 修正］と 同じ所（学習に登録する画面）を、この字で すぐ ひらく。
        墨を 塗る・消すで 直して［① 墨出し］に登録。閉じると 修正画面の［墨を直す］（この列）に 移る */
@@ -10075,6 +10168,7 @@ function rubMenuOpen(ev, pt, hit){
       else if (a === "ai1"){ rubAiOne(hit); }
       else if (a === "inkfix"){ pickHit(); RG_BACK = { ci: hit.ci, i: hit.i }; rgOpenAt(hit); }   /* v52.6 */
       else if (a === "box1"){ pickHit(); rubBoxAiOne(hit, ev); }                                   /* v53.0 */
+      else if (a === "regchk"){ pickHit(); rubBoxRegCheck((itH && (itH.pick || (itH.anch && itH.anch.ch))) || "", ev, itH && itH.px); }   /* v53.1 */
       else if (a === "del1"){ pickHit(); rubPanel(); rubItemDel(); }
       else if (a === "bx-up"){    pickHit(); rubBoxAdd(-1); }
       else if (a === "bx-dn"){    pickHit(); rubBoxAdd(1); }

@@ -2769,7 +2769,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v50.0";
+var APP_VER = "v50.1";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -8914,7 +8914,9 @@ function rubMenuClose(){ var e = $("rubMenu"); if (e){ e.hidden = true; e.innerH
 /* **その字の枠だけ AI に通す**（v24.7。本人の指示）。
    1 字ぶんだけ ①「墨出し」に通して、いまの青い墨に**重ねる**。
    通し直すと時間がかかる所を、気になった 1 字だけ やり直せる。 */
-async function rubAiOne(hit){
+/* opt.noRead … 墨だけ（教材の画面の［🤖 墨AI に通す］）。右クリックからは 墨のあと 読みの AI にも通す（v50.1） */
+async function rubAiOne(hit, opt){
+  opt = opt || {};
   if (!hit || AIBAND_BUSY) return;
   var base = takuApiBase();
   if (!base){ msg("［設定］に拓本AIの住所を入れてください。", true); return; }
@@ -8997,9 +8999,42 @@ async function rubAiOne(hit){
     /* その列の控えも入れかえる（画面はこれを重ねて出している） */
     if (L){ L.aiUrl = A.url; L.aiSc = A.sc; L.aiId = A.id; L.geo = rubGeoKey(); }
     rubInkPut((L && L.band) || { L: S.rub.bandL, R: S.rub.bandR, T: -1, B: -1 }, A);
+    /* ───── **つづけて 読みの AI にも通す**（v50.1。本人「枠を手動で修正した後に、再度AIで判定してほしいので、読みも出来るようにして」）─────
+       読みは ［④ 読み］（rubReadAiGo）と同じ やり方・同じ しきい：いまの枠の切り抜き＋いま出した墨で 読みの AI（/api/takuhon/guess）に聞き、
+       確かなら 読みに入れる（○ の字）。迷ったら 候補だけ残し、前の AI の読み（直す前の枠で読んだもの）は 外す。
+       人が決めた読み（anch.hand）は さわらない。読みが変わったら その列の まとまりも 付け直す（手で付けたまとまりは そのまま） */
+    var rdTx = "";
+    if (!opt.noRead){
+      if (it.anch && it.anch.hand){
+        rdTx = "読みは 手で決めた「" + esc(it.anch.ch) + "」のまま";
+      } else {
+        aiProg("この字だけ", "読みの AI に聞いています");
+        try {
+          var gR = await rubGuessAi(it, L);
+          it.ai = gR.cands;
+          var top = gR.cands[0], sec = gR.cands[1];
+          var sure = top && (top.p >= 0.35 || (top.p >= 0.2 && (!sec || top.p >= sec.p * 2)));
+          var was = (it.anch && it.anch.ch) || "";
+          if (sure){
+            it.anch = { ch: top.ch, by: "ai", p: top.p };
+            rdTx = "読み「" + esc(top.ch) + "」（" + Math.round(top.p * 100) + "%）" +
+                   (was && was !== top.ch ? "。前は「" + esc(was) + "」" : "");
+          } else {
+            if (it.anch && it.anch.by === "ai") delete it.anch;
+            rdTx = "読みは 迷っています（候補 " + (gR.cands || []).slice(0, 3).map(function(c){
+              return esc(c.ch) + " " + Math.round(c.p * 100) + "%"; }).join("・") + "）";
+          }
+          var keepC = rubSelCol; rubSelCol = hit.ci;
+          try { rubGrpFromRead(false, true); } catch(eG){}
+          rubSelCol = keepC;
+        } catch(eR){
+          rdTx = "読みの AI には 通せませんでした（" + esc((eR && eR.message) || "") + "）";
+        }
+      }
+    }
     persist(); rubPanel(); rubRender();
     msg((hit.ci + 1) + " 列目の " + (hit.i + 1) + " 字目だけ AI に通しました（この枠の中の墨 " +
-        n1 + " ます）。青が変わらないときは、AI がその字を読めていません。", false, true);
+        n1 + " ます" + (rdTx ? "／" + rdTx : "") + "）。青が変わらないときは、AI がその字の墨を取れていません。", false, true);
   } catch(e){
     msg("通せませんでした（" + ((e && e.message) || "") + "）。", true);
   } finally {
@@ -9795,7 +9830,7 @@ function rubMenuOpen(ev, pt, hit){
     }).join("") +
       '<button class="mini" data-a="g:" style="color:var(--muted);">なし</button>';
     h += '<div class="nhd" style="margin-top:6px;">この字</div>';
-    h += '<button class="mini primary" data-a="ai1">⬛ この字だけ AI に通す</button>';
+    h += '<button class="mini primary" data-a="ai1" title="この枠の字だけ、墨の AI と 読みの AI に 通し直します（枠を手で直したあとに）。手で決めた読みは そのまま">⬛ この字だけ AI に通す（墨＋読み）</button>';
     h += '<div class="nhd" style="margin-top:6px;">拓本の補正</div>';
   } else {
     h += '<div class="nhd">拓本の補正</div>';
@@ -26866,7 +26901,7 @@ async function rceInkDraw(){
       el.appendChild(m);
       m.querySelector('[data-a="ai"]').onclick = async function(){
         m.innerHTML = '<span class="hint">AI に通しています…</span>';
-        await rubAiOne({ ci: RCE.ci, i: i });
+        await rubAiOne({ ci: RCE.ci, i: i }, { noRead: true });   /* ここは 墨だけ（v50.1） */
         if (!$("rceEd").hidden && RCE.tab === "ink") rceInkDraw();
       };
       m.querySelector('[data-a="fix"]').onclick = function(){

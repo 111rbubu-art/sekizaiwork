@@ -2769,7 +2769,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v50.6";
+var APP_VER = "v50.7";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -18467,7 +18467,7 @@ function rubBuCols(keep, side){
     var wSub = md(reg.map(function(b){ return b.w; }));
     var big = [], rest = [];
     reg.forEach(function(b){ (b.w >= 1.5 * wSub ? big : rest).push(b); });
-    if (rest.length < 4) return null;
+    if (rest.length < 4) return { why: "下の字が 4 個より少ない" };
     rest.sort(function(p, q){ return cx(p) - cx(q); });
     var g = Math.max(4, 0.4 * md(rest.map(function(b){ return b.w; })));
     var tr = [[rest[0]]];
@@ -18476,10 +18476,11 @@ function rubBuCols(keep, side){
       tr[tr.length - 1].push(rest[t]);
     }
     var real = tr.filter(function(a){ return a.length >= 2; });
-    if (real.length < 2) return null;
+    if (real.length < 2) return { why: "下の字が 横に 2 本に 分かれていない（2 字以上の列が " + real.length + " 本）" };
     /* 分かれた列は「分かれた所の字」で できている。まん中にあって 横並びの無い字が 半分を超える列が あれば、
        それは 上の字（戒名など）を 列と取りちがえたもの（v50.6） */
-    if (real.some(function(a){ return a.filter(function(b){ return !b.sub; }).length * 2 > a.length; })) return null;
+    if (real.some(function(a){ return a.filter(function(b){ return !b.sub; }).length * 2 > a.length; }))
+      return { why: "まん中の字の並びを 分かれた列と 見そうになった" };
     /* となりの列と 高さが 重なるか、離れていても 字 1 個ぶんまで（ずれて並ぶ列。v50.6 で ゆるめた。本人の拓本の左の列＝
        右の列（俗名）が上から・左の列（年齢）が 下の方から 始まり、高さの重なりは 2 割ほどで 前の 3 割に届かなかった） */
     var hSub = md(reg.map(function(b){ return b.h; }));
@@ -18490,7 +18491,7 @@ function rubBuCols(keep, side){
       var a2 = mn(p2.map(function(b){ return b.y; })), b2 = mx(p2.map(function(b){ return b.y + b.h; }));
       if (Math.max(a1, a2) - Math.min(b1, b2) <= hSub) side9 = true;
     }
-    if (!side9) return null;
+    if (!side9) return { why: "2 本の 高さが 字 1 個ぶんより 離れている" };
     var cen = real.map(function(a){ return md(a.map(cx)); });
     function near(b){
       var bi = 0, bd = Infinity;
@@ -18526,27 +18527,50 @@ function rubBuCols(keep, side){
     var top = bs.slice(0, Math.max(2, Math.min(4, Math.floor(m / 4))));
     var c0 = md(top.map(cx)), w0 = md(top.map(function(b){ return b.w; }));
     var thr = 0.25 * w0;
+    /* ───── **列のまん中は 上から たどる**（v50.7。本人「2列として認識できていません」）─────
+       前は いちばん上の 2〜4 字の まん中に 固定していたので、傾いた列・少しずつ ずれる長い列では
+       下の方の ふつうの字まで「ずれた字」になり、外れが多すぎて 分けられなかった。
+       ずれていない字が出るたびに、すぐ上の 3 字の まん中（と 字の幅）に 付けかえる。分かれた所では どの字も ずれるので 止まる */
+    var ref = c0, wRef = w0, recC = [], recW = [];
     var sub = bs.map(function(b, t){
-      if (Math.abs(cx(b) - c0) >= thr) return 1;
+      var pr = false;
       for (var u = 0; u < m; u++){
         if (u === t) continue;
         var o = bs[u];
-        if (vov(b, o) >= 0.3 * Math.min(b.h, o.h) && hov(b, o) < 0.3 * Math.min(b.w, o.w)) return 1;
+        if (vov(b, o) >= 0.3 * Math.min(b.h, o.h) && hov(b, o) < 0.3 * Math.min(b.w, o.w)){ pr = true; break; }
       }
-      return 0;
+      var sb = (pr || Math.abs(cx(b) - ref) >= 0.25 * wRef) ? 1 : 0;
+      if (!sb){
+        recC.push(cx(b)); recW.push(b.w);
+        if (recC.length > 3){ recC.shift(); recW.shift(); }
+        if (recC.length >= 2){ ref = md(recC); wRef = md(recW); }
+      }
+      return sb;
     });
     bs.forEach(function(b, t){ b.sub = sub[t]; });
     var A = [0], B = []; B[m] = 0;
     for (var t = 0; t < m; t++) A.push(A[t] + sub[t]);
     for (t = m - 1; t >= 0; t--) B[t] = B[t + 1] + (sub[t] ? 0 : 1);
+    /* 外れの許し：上の ずれた字は 上の字数の 2 割まで、下の まん中の字は 下の字数の 4 分の 1 まで（v50.7 で 別々に。
+       前は 合わせて 下の字数の 4 分の 1 までで、上の長い列に 少し ずれた字（「月、」の 、など）が 2 つあると 分けられなかった） */
     var cand = [];
-    for (var k = 1; k <= m - 4; k++) cand.push({ k: k, c: A[k] + B[k] });
-    cand.sort(function(p, q){ return (p.c - q.c) || (p.k - q.k); });
-    var sp = null;
-    for (var ci = 0; ci < cand.length && !sp; ci++){
-      if (cand[ci].c > Math.max(1, Math.floor((m - cand[ci].k) * 0.25))) break;
-      sp = tracksOf(bs.slice(0, cand[ci].k), bs.slice(cand[ci].k));
+    for (var k = 1; k <= m - 4; k++){
+      if (A[k] > Math.max(1, Math.floor(k * 0.2)) || B[k] > Math.max(1, Math.floor((m - k) * 0.25))) continue;
+      cand.push({ k: k, c: A[k] + B[k], lo: B[k] });
     }
+    /* 外れの数が同じなら、下に まん中の字が 少ない方（上の「月、」のような ずれた 1 字を 上に残し、その下の ふつうの字を 下の列に入れない）、
+       それも同じなら 上の方 */
+    cand.sort(function(p, q){ return (p.c - q.c) || (p.lo - q.lo) || (p.k - q.k); });
+    var sp = null, why = "";
+    for (var ci = 0; ci < cand.length && !sp; ci++){
+      var tk9 = tracksOf(bs.slice(0, cand[ci].k), bs.slice(cand[ci].k));
+      if (tk9 && tk9.tracks) sp = tk9;
+      else if (!why && tk9) why = tk9.why;
+    }
+    var nSub = sub.reduce(function(a, v){ return a + v; }, 0);
+    if (!sp && !why)
+      why = (nSub < 4) ? "まん中から ずれた字が " + nSub + " 個しかない"
+                       : "まん中から ずれた字（" + nSub + " 個）が 下に まとまって 並んでいない";
     var all = bs;
     if (sp){
       nMerge += sp.nMerge;
@@ -18556,9 +18580,9 @@ function rubBuCols(keep, side){
     } else bs.forEach(function(b){ b.r = "u"; });
     dbgCols.push({ c0: Math.round(c0), thr: Math.round(thr), y0: Math.round(bs[0].y),
                    y1: Math.round(bs[m - 1].y + bs[m - 1].h), yCut: sp ? Math.round(sp.yCut) : 0,
-                   nSub: sub.reduce(function(a, v){ return a + v; }, 0), n: m });
+                   nSub: nSub, n: m, why: sp ? "" : why });
     return { a: mn(all.map(function(b){ return b.x; })), b: mx(all.map(function(b){ return b.x + b.w; })),
-             boxes: all, c0: c0, w0: w0, thr: thr, split: sp };
+             boxes: all, c0: c0, w0: w0, thr: thr, split: sp, n: m, nSub: nSub, why: sp ? "" : why };
   });
   /* 絵に出す用（AI のつながりの代わり。u＝上の字・t0/t1…＝分かれた列・x＝使わなかった枠） */
   var dbg = [];
@@ -18730,6 +18754,32 @@ async function rubAnalyzeBU(){
   AIBAND_BUSY = true;
   aiProgOn();
   try {
+    /* ⓪ **字の大きさを 拓本から測る**（v50.7。本人の拓本で 日・七 に枠が付かず、行平 が 1 つの枠になった）。
+       窓（墨は 字 1 個ぶん・枠は 2 個ぶん）も 小さすぎる枠を捨てる目安も［戒名の字幅］（既定 30mm）で決めていた。
+       実物の字が それより ずっと小さいと、字が 窓の中で 小さく写り（学習の 大きさの外）、細い字・小さい字は 捨てられていた
+       （本人の拓本は 枠の幅の まん中が 14mm ほど）。
+       墨なしで 1 度 枠の AI に通し、枠の高さの 上から 4 分の 1 の所を 大きい字（戒名）の大きさとみて、
+       ［戒名の字幅］の 0.8 倍より小さいか 1.25 倍より大きければ、そちらで 窓を作る（10〜80mm）。［戒名の字幅］は 書きかえない */
+    var t0b = Date.now(), side0 = side, pr0 = null, msz = 0;
+    aiProg("⓪ 字の大きさ", "枠の AI で 字の大きさを 測っています", "");
+    await uiTick();
+    try {
+      pr0 = await rubBoxScanAll(side, { ar: arP, quiet: true,
+        prog: function(i, n){ aiProg(null, null, i + " / " + n + " 窓"); },
+        stop: function(){ return AIPROG_STOP; } });
+    } catch(e0){ pr0 = null; }
+    if (AIPROG_STOP) throw new Error("中止しました");
+    if (pr0 && pr0.keep.length >= 6){
+      var hs0 = pr0.keep.map(function(b){ return b.h; }).sort(function(a, b){ return a - b; });
+      msz = hs0[Math.floor(hs0.length * 0.75)] || 0;
+      if (msz > 0 && (msz < side * 0.8 || msz > side * 1.25))
+        side = Math.round(Math.max(10 / mpp, Math.min(80 / mpp, msz)));
+    }
+    if (side !== side0){ arP = rubBuArea(side); core = arP.core; }
+    step.push("字の大きさ：" + (side !== side0
+      ? "拓本から測った 大きい字 " + mmT(msz) + "（［戒名の字幅］" + rubKmWmm() + "mm と ちがうので、こちらで 窓を作りました）"
+      : "［戒名の字幅］" + rubKmWmm() + "mm のまま" + (msz ? "（拓本から測った 大きい字 " + mmT(msz) + "）" : "（測れませんでした）")) +
+      "・" + sec(t0b) + " 秒");
     /* ① 墨 */
     var t1 = Date.now();
     aiProg("① 墨", "範囲ぜんたいを 墨の AI に通しています", "");
@@ -18782,6 +18832,14 @@ async function rubAnalyzeBU(){
                }).join("・") + "）" : "（下で分かれる列は ありませんでした）") +
               (plan.nMerge ? "／2 列の字を 1 つにまとめた枠 " + plan.nMerge + " 個を 割りました" : "") +
               (plan.nDrop ? "／列にならなかった枠 " + plan.nDrop + " 個は 使いませんでした" : ""));
+    /* 列ごとに 分けた・分けなかった わけ（v50.7。分かれるはずの列が 分かれないとき、どこで止まったかを見る） */
+    plan.cols.forEach(function(c){
+      var lb = rubColLabelAt(c.c0, false) || "?";
+      step.push("　列 " + lb + "：字 " + c.n + " 個・まん中から ずれた字 " + c.nSub + " 個 → " +
+        (c.split ? "上から " + mmT(c.split.yCut) + " で " + c.split.tracks.length + " 本に（" +
+                   c.split.tracks.map(function(t){ return t.boxes.length; }).join("・") + " 字）"
+                 : "分けない（" + c.why + "）"));
+    });
     var ls0 = (S.rub.lines || []).filter(function(L){ return L && L.items && L.items.length; });
     step.push("枠を 列に入れました：" + ls0.length + " 列・" +
               ls0.reduce(function(a, L){ return a + L.items.length; }, 0) + " 字" +
@@ -22902,7 +22960,7 @@ function rubScanErrFind(){
         if ((i & 3) === 0) smp.push(a / b);
       }
     }
-    if (smp.length < 50) return { base: 0, bands: [] };
+    if (smp.length < 50) return { base: 0, bands: [], prof: null };
     smp.sort(function(p, q){ return p - q; });
     var base = smp[smp.length >> 1];
     /* 2 段の目安：ふつうの 半分より小さい（はっきり すじ）・7 割より小さい（すじ ぎみ）。
@@ -22921,6 +22979,13 @@ function rubScanErrFind(){
       runs.forEach(function(r){ var pv = mg[mg.length - 1]; if (pv && r.a - pv.b <= minRun) pv.b = r.b; else mg.push({ a: r.a, b: r.b }); });
       return mg;
     }
+    /* 行ごとの値（8 つの まん中の値 ÷ ふつうの値）。［🔍 調べる］の グラフ用（v50.7） */
+    var prof = new Float32Array(n), vs = [];
+    for (var i3 = 0; i3 < n; i3++){
+      vs.length = 0;
+      for (var s3 = 0; s3 < S8; s3++) if (ok[s3 * n + i3]) vs.push(rat[s3 * n + i3] / base);
+      if (vs.length >= 3){ vs.sort(function(p, q){ return p - q; }); prof[i3] = vs[vs.length >> 1]; } else prof[i3] = NaN;
+    }
     var strong = lowAt(base * 0.5).filter(function(r){ return r.b - r.a >= minRun; });
     var weak = lowAt(base * 0.7);
     var bands = weak.filter(function(w){
@@ -22931,11 +22996,77 @@ function rubScanErrFind(){
       var a1 = Math.min.apply(null, ss.map(function(r){ return r.a; })), b1 = Math.max.apply(null, ss.map(function(r){ return r.b; }));
       return { a: Math.max(w.a, a1 - minRun * 3), b: Math.min(w.b, b1 + minRun * 3) };
     });
-    return { base: base, bands: bands };
+    return { base: base, bands: bands, prof: prof };
   }
   var R = bandsOf(rA, rB, H, segW), C = bandsOf(cA, cB, W, segH);
-  return { img: im, W: W, H: H, rows: R.bands, cols: C.bands,
+  return { img: im, W: W, H: H, rows: R.bands, cols: C.bands, profR: R.prof, profC: C.prof, minRun: minRun,
            baseR: Math.round(R.base * 100) / 100, baseC: Math.round(C.base * 100) / 100, ms: Date.now() - t0 };
+}
+/* ───── **［🔍 調べる］：いま読みこんである拓本を 調べ直して、中身を見せる**（v50.7。本人「テストとして、すでに読み込まれているデータでも
+   検査できるようにして」）─────
+   行ごとの「上下の ちがい ÷ 左右の ちがい」（ふつう＝1）を グラフにして、見つけた帯を 赤で出す。
+   見つからないときも、どこが いちばん低かったかが 分かるように */
+function rubScanErrOpen(){
+  if (!RUB.img){ msg("先に拓本を読み込んでください。", true); return; }
+  var se;
+  try { se = rubScanErrFind(); } catch(e){ msg("調べられませんでした（" + esc((e && e.message) || "") + "）。", true); return; }
+  if (!se){ msg("調べられませんでした（絵が小さすぎます）。", true); return; }
+  RUB.scanErr = se;
+  try { rubPanel(); rubRender(); } catch(e2){}
+  var mpp = mmPerPx();
+  function mmS(v){ return mpp ? (v * mpp).toFixed(0) + "mm" : Math.round(v) + "px"; }
+  function lowest(pf){
+    var bi = -1, bv = Infinity;
+    if (pf) for (var i = 0; i < pf.length; i++) if (pf[i] < bv){ bv = pf[i]; bi = i; }
+    return bi >= 0 ? { at: bi, v: bv } : null;
+  }
+  var nB = se.rows.length + se.cols.length, lr = lowest(se.profR), lc = lowest(se.profC);
+  var old = $("serOv"); if (old) old.remove();
+  var ov = document.createElement("div"); ov.id = "serOv";
+  ov.style.cssText = "position:fixed;inset:0;z-index:5000;background:rgba(20,24,28,.18);display:flex;align-items:center;justify-content:center;padding:18px;";
+  var li = se.rows.map(function(r){ return "<li>絵の上から " + mmS(r.a) + "〜" + mmS(r.b) + "（はば " + mmS(r.b - r.a) + "）</li>"; })
+    .concat(se.cols.map(function(r){ return "<li>絵の左から " + mmS(r.a) + "〜" + mmS(r.b) + "（はば " + mmS(r.b - r.a) + "）・横向き</li>"; }));
+  ov.innerHTML = '<div class="ovwin" style="background:#fff;border-radius:10px;max-width:720px;width:100%;max-height:90vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">' +
+    '<div class="ovhd" title="つかんで動かせます" style="cursor:move;user-select:none;margin:-14px -16px 0;padding:10px 16px 2px;"><b>スキャンのずれの検査</b>' +
+      '<span style="float:right;font-size:11px;color:var(--muted);">✥ つかんで動かせます</span></div>' +
+    '<p style="margin:8px 0 4px;">' + (nB ? '<b style="color:#B00020;">' + nB + ' か所 見つかりました</b>' : '<b>見つかりませんでした</b>') +
+      '<span style="color:var(--muted);font-size:12px;">（読みこんだままの絵 ' + se.W + '×' + se.H + ' 画素・' + se.ms + ' ミリ秒）</span></p>' +
+    (li.length ? '<ul style="margin:2px 0 6px 18px;padding:0;font-size:13px;">' + li.join("") + '</ul>' : '') +
+    '<div style="font-size:12px;margin-top:6px;">行ごとの「上下の ちがい ÷ 左右の ちがい」（ふつう＝1。<span style="color:#E0301E;">赤い線 0.5</span> より下が 横はばの 6 割以上で ' +
+      mmS(se.minRun) + ' 以上 続くと ずれ）。いちばん低い所：' +
+      (lr ? '絵の上から <b>' + mmS(lr.at) + '</b> で <b>' + lr.v.toFixed(2) + '</b>' : 'なし') + '</div>' +
+    '<canvas id="serCvR" width="680" height="170" style="width:100%;max-width:680px;border:1px solid #ddd;border-radius:4px;"></canvas>' +
+    '<div style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between;max-width:680px;"><span>← 絵の上</span><span>絵の下 →</span></div>' +
+    (se.profC ? '<div style="font-size:12px;margin-top:8px;">横向きに読んだときの 列ごとの値（同じ見方。いちばん低い所：' +
+      (lc ? '絵の左から ' + mmS(lc.at) + ' で ' + lc.v.toFixed(2) : 'なし') + '）</div>' +
+      '<canvas id="serCvC" width="680" height="90" style="width:100%;max-width:680px;border:1px solid #ddd;border-radius:4px;"></canvas>' +
+      '<div style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between;max-width:680px;"><span>← 絵の左</span><span>絵の右 →</span></div>' : '') +
+    '<div style="text-align:right;margin-top:10px;"><button class="mini" id="serClose">閉じる</button></div></div>';
+  document.body.appendChild(ov);
+  ovDrag(ov);
+  ov.onclick = function(e){ if (e.target === ov && !(ov._dragAt && Date.now() - ov._dragAt < 400)) ov.remove(); };
+  $("serClose").onclick = function(){ ov.remove(); };
+  function chart(id, pf, bands){
+    var cv = $(id); if (!cv || !pf) return;
+    var g = cv.getContext("2d"), W = cv.width, H = cv.height, n = pf.length, top = 1.5;
+    g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+    function yOf(v){ return H - 4 - (Math.min(top, v) / top) * (H - 10); }
+    var inB = new Uint8Array(n);
+    bands.forEach(function(r){ for (var i = r.a; i < r.b && i < n; i++) inB[i] = 1; });
+    for (var x = 0; x < W; x++){
+      var a = Math.floor(x * n / W), b = Math.max(a + 1, Math.floor((x + 1) * n / W)), mv = Infinity, hit = 0;
+      for (var i = a; i < b; i++){ if (pf[i] < mv) mv = pf[i]; if (inB[i]) hit = 1; }
+      if (!isFinite(mv)) continue;
+      g.fillStyle = hit ? "#E0301E" : "#4A7FD0";
+      g.fillRect(x, yOf(mv), 1, H - 4 - yOf(mv));
+    }
+    [[1, "#888"], [0.7, "#F28C28"], [0.5, "#E0301E"]].forEach(function(L){
+      g.strokeStyle = L[1]; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(0, yOf(L[0]) + 0.5); g.lineTo(W, yOf(L[0]) + 0.5); g.stroke();
+      g.setLineDash([]); g.fillStyle = L[1]; g.font = "11px sans-serif"; g.fillText(String(L[0]), 3, yOf(L[0]) - 2);
+    });
+  }
+  chart("serCvR", se.profR, se.rows);
+  chart("serCvC", se.profC, se.cols);
 }
 /* 読みこんだままの絵の点 → 回したあとの絵の点（rebuildRub と同じ 回し方） */
 function rubRawToView(x, y){
@@ -24200,7 +24331,9 @@ function rubPanel(){
       (dpi ? (r.lenAuto ? "（解像度どおり）" : "（手で入力）") : ""));
     h += '<div class="fixrow" id="rLenDevRow"><span>歪みの補正</span><b id="rLenDev"></b></div>';
     h += '<div class="fixrow"><span>縮尺</span><b id="rLenScale"></b></div>';
-    h += row("スキャンのずれ", rubScanErrTx());
+    h += row("スキャンのずれ", rubScanErrTx() +
+      (RUB.img ? ' <button class="mini" style="padding:0 6px;font-size:11px;" onclick="rubScanErrOpen()" ' +
+                 'title="いま読みこんである拓本を 調べ直して、中身（グラフ）を見せます">🔍 調べる</button>' : ''));
     /* ---- 行の見立て（v20.83） ---- */
     /* もとは「行の見立て」（墨の塊を拾って字送り・傾きを出す作り）だった。
        **文字の認識がまるでできていない**ので、AI に置き換えることにした

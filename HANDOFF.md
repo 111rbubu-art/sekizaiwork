@@ -1047,3 +1047,5 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 ### 彫刻原稿 v51.6 拓本の絵の描き直しを軽く（とちゅう表示で重くなっていた）・同じ墨は 1 回だけ保存・AI の返事待ちを時間の比べに（詳しくは HANDOFF-chokoku-genko.md）
 
 ### 彫刻原稿 v51.7 墨をサーバーにまとめて頼む口（takuhon-ai の /api/takuhon/ink_area。update.sh が要る）・墨の窓の重なり 4 分の 1 をためせる（詳しくは HANDOFF-chokoku-genko.md）
+
+### 彫刻原稿 v51.8 墨の窓の重なり 4 分の 1 を既定に・枠の AI の計算時間を時間の比べに（詳しくは HANDOFF-chokoku-genko.md）

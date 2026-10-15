@@ -86,6 +86,7 @@ class BoxNet2(nn.Module):
         self.ctr = nn.Conv2d(c[0], 1, 1)
         self.ltrb = nn.Conv2d(c[0], 4, 1)
         nn.init.constant_(self.ctr.bias, -2.19)        # はじめは「字は 少ない」（sigmoid で 0.1）
+        nn.init.constant_(self.ltrb.bias, -1.05)       # はじめの はしまでの 長さ ＝ 入力の幅の 3 割（softplus で 0.3。ふつうの 字の 半分）
 
     def forward(self, x):
         d1 = self.d1(x)

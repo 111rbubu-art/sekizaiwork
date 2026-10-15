@@ -25,6 +25,7 @@
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from unet import block
 
@@ -54,24 +55,80 @@ class BoxNet(nn.Module):
         return self.ctr(y), self.siz(y)
 
 
+class BoxNet2(nn.Module):
+    """**作り 2：字の はしを 当てる**（2026-10-15。本人「学習のと登録数が多い文字の枠の精度が悪いのを改善しないといけません」）。
+
+    作り 1（`BoxNet`）は **字の中心の 1 点** で 幅・高さ を当てていた。
+      ・その 1 点から 見える 範囲（受け持ち）は 横 128 ますの 切り抜きで 100 ます ほど。じっさいに よく見えるのは もっと せまく、
+        字の 上下の はしまで 見えないので「ふつうの 字の 大きさ」で 答えがちだった（日 が 平たく・墨の 内側に 枠）。
+    作り 2 は
+      ① 下へ 1 段 ふかくして（4 段）字の ぜんたいが 見えるように
+      ② 大きさは **字の 中の 点 それぞれから 上下左右の はしまでの 長さ**（l・t・r・b。入力の幅で 割る）で 当てる。
+         字の 中ほど（枠の 7 割）の 点 すべてで 学ぶので、1 点に たよらない。使うときは 頂の まわりの 点の 答えを 平均する
+      ③ 損失は 重なり（GIoU）。はしの ずれが そのまま 点に なる
+    出力 … center（1ch・ロジット）／ltrb（4ch・0 以上）
+    """
+    arch = 2
+
+    def __init__(self, in_ch=2, base=16):
+        super().__init__()
+        c = [base, base * 2, base * 4, base * 8, base * 16]
+        self.d1, self.d2 = block(in_ch, c[0]), block(c[0], c[1])
+        self.d3, self.d4 = block(c[1], c[2]), block(c[2], c[3])
+        self.mid = block(c[3], c[4])
+        self.pool = nn.MaxPool2d(2)
+        self.u4 = nn.ConvTranspose2d(c[4], c[3], 2, 2)
+        self.u3 = nn.ConvTranspose2d(c[3], c[2], 2, 2)
+        self.u2 = nn.ConvTranspose2d(c[2], c[1], 2, 2)
+        self.u1 = nn.ConvTranspose2d(c[1], c[0], 2, 2)
+        self.c4, self.c3 = block(c[4], c[3]), block(c[3], c[2])
+        self.c2, self.c1 = block(c[2], c[1]), block(c[1], c[0])
+        self.ctr = nn.Conv2d(c[0], 1, 1)
+        self.ltrb = nn.Conv2d(c[0], 4, 1)
+        nn.init.constant_(self.ctr.bias, -2.19)        # はじめは「字は 少ない」（sigmoid で 0.1）
+
+    def forward(self, x):
+        d1 = self.d1(x)
+        d2 = self.d2(self.pool(d1))
+        d3 = self.d3(self.pool(d2))
+        d4 = self.d4(self.pool(d3))
+        m = self.mid(self.pool(d4))
+        y = self.c4(torch.cat([self.u4(m), d4], 1))
+        y = self.c3(torch.cat([self.u3(y), d3], 1))
+        y = self.c2(torch.cat([self.u2(y), d2], 1))
+        y = self.c1(torch.cat([self.u1(y), d1], 1))
+        return self.ctr(y), F.softplus(self.ltrb(y))
+
+
+BoxNet.arch = 1
+ARCHS = {1: BoxNet, 2: BoxNet2}
+
+
+def make_boxnet(arch=1, in_ch=2, base=16):
+    return ARCHS.get(int(arch or 1), BoxNet)(in_ch=in_ch, base=base)
+
+
 def load_boxnet(path, device, in_ch=2, base=16):
     """学習済みがあれば読む。無ければ まっさらな重みを返す（`unet.load_model` と同じ作り）。"""
     info = {"loaded": False, "path": str(path), "step": 0, "f1": None, "lines": None,
-            "at": None, "base": base, "why": None}
-    ck = None
+            "at": None, "base": base, "arch": 1, "why": None}
+    ck, arch = None, 1
     try:
         ck = torch.load(path, map_location=device)
         base = int(ck.get("base", base))
+        arch = int(ck.get("arch", 1) or 1)
     except FileNotFoundError:
         info["why"] = "まだ学習していません"
     except Exception as e:                                   # noqa: BLE001
         info["why"] = f"読めませんでした（{type(e).__name__}: {e}）"
-    net = BoxNet(in_ch=in_ch, base=base).to(device)
-    info["base"] = base
+    net = make_boxnet(arch, in_ch=in_ch, base=base).to(device)
+    info["base"], info["arch"] = base, arch
     if ck is not None:
         try:
             net.load_state_dict(ck["model"])
+            # きっちりの 当たり（f1t・重なり 0.75）・重なりの 平均（miou）・はしの ずれ（edge・字の 大きさに 対する 割合）は 2026-10-15 から
             info.update(loaded=True, step=ck.get("step", 0), f1=ck.get("f1"),
+                        f1t=ck.get("f1t"), miou=ck.get("miou"), edge=ck.get("edge"),
                         lines=ck.get("lines"), at=ck.get("at"), why=None)
         except Exception as e:                               # noqa: BLE001
             info["why"] = f"かたちが合いません（{type(e).__name__}: {str(e)[:120]}）"
@@ -93,15 +150,43 @@ def find_boxes(net, x, thr=0.3, nms=None, cap=200, iou_nms=0.3):
     """
     ctr, siz = net(x)
     p = torch.sigmoid(ctr)
-    W = p.shape[-1]
+    H, W = p.shape[-2], p.shape[-1]
     if nms is None:
         nms = max(9, int(W * 0.5) | 1)          # 必ず奇数に
     mx = nn.functional.max_pool2d(p, nms, stride=1, padding=nms // 2)
     peak = (p >= mx) & (p >= thr)
     idx = peak[0, 0].nonzero()
     out = []
+    two = getattr(net, "arch", 1) == 2
+    if two:
+        # 作り 2：頂の まわり（入力の幅の 8%）で、頂の 半分 以上 明るい 点の 答え（はしの 位置）を 明るさで 重みづけ 平均する
+        rr = max(2, int(round(W * 0.08)))
+        P = p[0, 0]
+        # 画素の まん中（+0.5）から はしまで（boxdata.targets2 と 同じ 決め）
+        ys = torch.arange(H, device=p.device, dtype=torch.float32).view(H, 1) + 0.5
+        xs = torch.arange(W, device=p.device, dtype=torch.float32).view(1, W) + 0.5
+        X1 = xs - siz[0, 0] * W
+        Y1 = ys - siz[0, 1] * W
+        X2 = xs + siz[0, 2] * W
+        Y2 = ys + siz[0, 3] * W
     for yx in idx[:cap * 8]:
         y, xx = int(yx[0]), int(yx[1])
+        if two:
+            y0, y1, x0, x1 = max(0, y - rr), min(H, y + rr + 1), max(0, xx - rr), min(W, xx + rr + 1)
+            pp = P[y0:y1, x0:x1]
+            wt = pp * (pp >= 0.5 * P[y, xx]).float()
+            sw = float(wt.sum())
+            if sw <= 0:
+                continue
+            bx1 = float((X1[y0:y1, x0:x1] * wt).sum()) / sw
+            by1 = float((Y1[y0:y1, x0:x1] * wt).sum()) / sw
+            bx2 = float((X2[y0:y1, x0:x1] * wt).sum()) / sw
+            by2 = float((Y2[y0:y1, x0:x1] * wt).sum()) / sw
+            w, h = bx2 - bx1, by2 - by1
+            if w < 4 or h < 4:
+                continue
+            out.append({"cx": (bx1 + bx2) / 2, "cy": (by1 + by2) / 2, "w": w, "h": h, "score": float(P[y, xx])})
+            continue
         w = float(siz[0, 0, y, xx]) * W
         h = float(siz[0, 1, y, xx]) * W
         if w < 4 or h < 4:

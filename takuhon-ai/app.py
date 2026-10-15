@@ -24,6 +24,7 @@
   POST /api/takuhon/train      学習を始める（画面から。1 つずつしか走らせない）
   POST /api/takuhon/train/stop 学習を止める
   GET  /api/takuhon/trainlog   学習の画面ログ（うしろの方だけ）
+  GET  /api/takuhon/box_chars   枠の AI の 字ごとの 合い方（2026-10-15）
   POST /api/stt                声（WAV を base64）を文字にする（業務アプリの［🎤］。stt.py）
   GET  /api/stt/status         声のモデルを読んだか
   GET  /health                 生きているか
@@ -479,7 +480,8 @@ async def boxes(
     return {"boxes": out, "n": len(out), "w": w0, "h": h0, "ms": ms,
             "ink": ink_src, "inkPct": round(float(ink_a.mean()) * 100, 1),
             "model": {"step": INFOB.get("step"), "at": INFOB.get("at"),
-                      "f1": INFOB.get("f1"), "lines": INFOB.get("lines")}}
+                      "f1": INFOB.get("f1"), "lines": INFOB.get("lines"),
+                      "arch": INFOB.get("arch"), "miou": INFOB.get("miou")}}
 
 
 # ───── **範囲ぜんたいの墨を 1 回で**（2026-10-14。本人「さすがに時間がかかりますね」→ 案 1）─────
@@ -1148,6 +1150,13 @@ def curves(which: str = "ink", limit: int = 12):
     return {"items": out}
 
 
+@app.get("/api/takuhon/box_chars")
+def box_chars():
+    """枠の AI の **字ごとの 合い方**（2026-10-15。train_box.py が 学習の 終わりに 書く runs/box_chars.json）。
+    current … いまの モデル／this … 最後に 学んだ モデル。items … [{ch, n, miou, hr, wr}]（hr・wr は AI ÷ 人 の 高さ・幅）"""
+    return _read_json(os.path.join(RUNS, "box_chars.json"), {}) or {}
+
+
 @app.get("/api/takuhon/history")
 def history(which: str = "ink"):
     nm = _nm(which)
@@ -1570,7 +1579,7 @@ def move_val(n: int = Form(...), which: str = Form("ink")):
 def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
                 test: bool = Form(False), which: str = Form("ink"), size: int = Form(0),
                 mix: str = Form("both"), val: str = Form("auto"),
-                noswap: bool = Form(False)):
+                noswap: bool = Form(False), arch: int = Form(0), challenge: bool = Form(False)):
     """学習を始める。**同時に 2 つは走らせない**（モデルが取り合いになる）。
 
     which="ink"   … ①墨出し（dataset/pairs → current.pth）
@@ -1610,6 +1619,11 @@ def train_start(epochs: int = Form(60), bs: int = Form(4), base: int = Form(32),
             cmd += ["--bs", str(bs)]
             if test:
                 cmd += ["--min", "2", "--val", "0.2"]
+            # 作り（2026-10-15）。2＝字の はしを 当てる 新しい 作り。challenge＝いまの モデルを 越えたときだけ 差し替える ためし
+            if int(arch or 0) in (1, 2):
+                cmd += ["--arch", str(int(arch))]
+            if challenge:
+                cmd += ["--challenge"]
         elif test:
             cmd += ["--min-per-char", "1"]
         if noswap:

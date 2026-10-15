@@ -160,6 +160,11 @@ def model_check(items):
     f1, pr, rc = val_f1(pair, items, dev)
     print("いま貯まっている ぜんぶの列での当たり具合: F1 %.3f（当たりの正しさ %.3f／取りこぼしの無さ %.3f）"
           % (f1 or 0, pr or 0, rc or 0))
+    from train_box import val_score
+    sc = val_score(pair, items, dev)
+    if sc:
+        print("きっちり（重なり 0.75 以上）の F1 %.3f／重なりの 平均 %.3f／はしの ずれ %s（2026-10-15 から）"
+              % (sc["f1t"], sc["miou"], "―" if sc["edge"] is None else "%.1f%%" % (sc["edge"] * 100)))
     print("※ 学習に使った列も混ざっているので、ふつうは検証の数字より良く出ます。"
           "それでも低いなら、教材かモデルに問題があります。")
 

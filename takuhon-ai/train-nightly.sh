@@ -17,6 +17,7 @@ echo "--- ① 墨 ---";   "$PY" train.py       --epochs "${EP_INK:-60}"  || echo
 echo "--- ② 枠 ---";   "$PY" train_box.py   --epochs "${EP_BOX:-80}"  || echo "（枠：やめました）"
 # ②' 枠の 新しい作り（字の はしを 当てる。2026-10-15）のためし。いまの モデルを 重なりの 平均で 越えたときだけ 差し替わる。
 #     前回の ためしの 続きから 学ぶ。いまの モデルが もう 新しい作りなら すぐ 終わる
-echo "--- ②' 枠（新しい作りのためし）---"; "$PY" train_box.py --arch 2 --challenge --epochs "${EP_BOX2:-120}" || echo "（枠のためし：やめました）"
+#     （2026-10-16：GPU で 1 回 0.3 秒・120 回では 重なり平均 0.59 で いまの 0.71 に 届かず → 毎晩 600 回＝3 分ほど）
+echo "--- ②' 枠（新しい作りのためし）---"; "$PY" train_box.py --arch 2 --challenge --epochs "${EP_BOX2:-600}" || echo "（枠のためし：やめました）"
 echo "--- ③ 読み ---"; "$PY" train_char.py  --epochs "${EP_CHAR:-60}" || echo "（読み：やめました）"
 echo "===== $(date '+%F %T') おわり ====="

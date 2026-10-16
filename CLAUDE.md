@@ -6,6 +6,7 @@
 - `HANDOFF.md` … ぜんたいの 引継ぎ（業務アプリ index / index_b / map など）
 - `HANDOFF-chokoku-genko.md` … 彫刻原稿（`chokoku-genko.html`）と 拓本AI の 引継ぎ。**末尾が いちばん新しい**。3 行目に いまの版
 - `takuhon-ai/README.md` … 拓本AI サーバー（学習・API・update.sh）
+- `gaichu-portal/SYSTEM.md` … 外注ポータル（さくらの PHP と 業務アプリの［🌐 外注公開］）の しくみ・API・移植の 手引き
 
 ## 守ること（いつも）
 - **このリポジトリは 公開**。新しく書くもの（コード・コメント・コミット・HANDOFF）に アカウントのアドレス・パスワード・トークン・**個人名**を 入れない

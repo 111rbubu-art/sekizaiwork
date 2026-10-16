@@ -641,7 +641,7 @@ body.force-sp #panel-resizer { display: none !important; }
         <div class="menu-search-sticky">
           <div style="display:flex;gap:8px;align-items:center">
             <div style="flex:1;position:relative">
-              <input id="menu-search" type="text" placeholder="🔍 顧客名・フリガナ・〇〇家墓・電話番号で検索..."
+              <input id="menu-search" type="text" placeholder="🔍 顧客名・フリガナ・〇〇家墓・電話番号・地図位置で検索..."
                 oninput="menuSearchInput(this);document.getElementById('menu-search-clear').style.display=this.value?'flex':'none'"
                 style="width:100%;padding:12px 36px 12px 16px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;"
                 onfocus="this.style.borderColor='rgba(255,255,255,0.5)'"
@@ -1003,6 +1003,53 @@ function _msHakaChip(d, kind, ql, dark) {
     + hlText(_msHakaLabel(d, kind), ql) + '</span>';
 }
 
+/* ───── **地図位置での 検索**（v1.9.528。本人「トップページと顧客ページの検索に、地図位置も入れてください」）─────
+   地図位置＝顧客リストの _x006d_ap1（墓地マップの 区画名。「岡田1」「北島2」など。地図の窓の ハイライトにも 使う）。
+   全角・半角・空白・ハイフンの ちがいを そろえて 比べる。数字と - だけの 入力（電話番号と 同じ形）は 区画名 まるごと 同じ ときだけ当てる
+   （「1」で 区画名に 1 が入る 顧客が ぜんぶ 出ないように）。
+   納骨・工事は 結んだ 顧客（Cus_ID＝顧客リストの ID）の 地図位置で 見る（顧客リストの 取り置きから 引く） */
+function _msMapNorm(s) {
+  s = String(s == null ? '' : s);
+  try { s = s.normalize('NFKC'); } catch (e) {}
+  return s.replace(/\s/g, '').replace(/[\u2010-\u2015\u2212\uff0d]/g, '-').toLowerCase();
+}
+var _msCusIdx = null, _msCusIdxSrc = null;
+function _msCusById(id) {
+  var cc = _menuSearchCache && _menuSearchCache['customer'];
+  if (!cc || !id) return null;
+  if (_msCusIdxSrc !== cc) {
+    _msCusIdx = {}; _msCusIdxSrc = cc;
+    Object.keys(cc).forEach(function(g) {
+      (cc[g] || []).forEach(function(c) { var k = String(c['ID'] || c['id'] || ''); if (k) _msCusIdx[k] = c; });
+    });
+  }
+  return _msCusIdx[String(id)] || null;
+}
+function _msMapPos(d, kind) {
+  if (!d) return '';
+  if (kind === 'customer') return String(d['_x006d_ap1'] || '');
+  var c = d['Cus_ID'] ? _msCusById(d['Cus_ID']) : null;
+  return c ? String(c['_x006d_ap1'] || '') : '';
+}
+function _msMapHit(d, kind, ql) {
+  if (!ql) return false;
+  var v = _msMapNorm(_msMapPos(d, kind));
+  if (!v) return false;
+  var q = _msMapNorm(ql);
+  if (!q) return false;
+  if (/^[0-9\-]+$/.test(q)) return v === q;
+  return v.indexOf(q) >= 0;
+}
+// 地図位置で 当たったら、名前の横に 区画名を 出す（墓名の 札と 同じ 考え。青＝地図）
+function _msMapChip(d, kind, ql, dark) {
+  if (!ql || !_msMapHit(d, kind, ql)) return '';
+  var col = dark
+    ? 'background:rgba(120,180,255,0.20);color:#cfe3ff;border:1px solid rgba(120,180,255,0.45)'
+    : 'background:#e6f1fb;color:#185fa5;border:1px solid #b5d4f4';
+  return '<span style="font-size:12.5px;font-weight:700;border-radius:8px;padding:1px 8px;white-space:nowrap;' + col + '">🗺 '
+    + hlText(_msMapPos(d, kind), ql) + '</span>';
+}
+
 function menuSearchId(val) {
   // ID検索欄：入力と同時に名前検索欄をクリア
   var q = (val || '').trim();
@@ -1267,14 +1314,14 @@ function _menuSearchRenderInCard(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msMapHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   }).filter(_topTempleOkNok);
   // 工事フィルター
   var koujiResults = cacheKouji.filter(function(d) {
     var name  = (d['Customers'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || _msHakaHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msMapHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   }).filter(_topTempleOkKouji);
 
   // 納骨カード内に表示
@@ -1298,7 +1345,7 @@ function _menuSearchRenderInCard(q, ql) {
           '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin-bottom:' + (nauchi?'3px':'0') + '">' +
             '<div style="display:flex;align-items:baseline;gap:6px">' +
               '<span style="font-size:13px;font-weight:600;color:#1a2535">' + hlText(name, isIdSearch ? '' : ql) + '</span>' +
-              _msHakaChip(d, 'noukotsu', ql, false) +
+              _msHakaChip(d, 'noukotsu', ql, false) + _msMapChip(d, 'noukotsu', ql, false) +
               '<span style="font-size:10px;color:#888">' + hlText(sub, ql) + '</span>' +
             '</div>' +
             '<div style="display:flex;gap:4px;align-items:center">' +
@@ -1338,7 +1385,7 @@ function _menuSearchRenderInCard(q, ql) {
           '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin-bottom:' + (nauchi?'3px':'0') + '">' +
             '<div style="display:flex;align-items:baseline;gap:6px">' +
               '<span style="font-size:13px;font-weight:600;color:#1a2535">' + hlText(name, ql) + '</span>' +
-              _msHakaChip(d, 'kouji', ql, false) +
+              _msHakaChip(d, 'kouji', ql, false) + _msMapChip(d, 'kouji', ql, false) +
               '<span style="font-size:10px;color:#888">' + hlText(sub, ql) + '</span>' +
             '</div>' +
             '<div style="display:flex;gap:4px;align-items:center">' +
@@ -1367,7 +1414,7 @@ function _menuSearchRenderInCard(q, ql) {
       var name  = (d['CusName']||'').replace(/\s/g,'');
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : '';
-      return name.includes(ql) || _msHakaHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msMapHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
     });
     if (items.length > 0) { cusResultsByGroup[g] = items; cusTotal += items.length; }
   });
@@ -1406,7 +1453,7 @@ function _menuSearchRenderInCard(q, ql) {
              'style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:#fff;border-radius:10px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,0.12)" ' +
              'onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'#fff\'">' +
              '<div style="min-width:0;flex:1">' +
-               '<div style="font-size:14px;font-weight:600;color:#1a2535;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'customer', ql, false) + templeChip + '</div>' +
+               '<div style="font-size:14px;font-weight:600;color:#1a2535;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'customer', ql, false) + _msMapChip(d, 'customer', ql, false) + templeChip + '</div>' +
                (sub ? '<div style="font-size:11px;color:#888">' + hlText(sub, ql) + '</div>' : '') +
              '</div>' +
              '<span style="color:#bbb;font-size:18px;flex-shrink:0">›</span>' +
@@ -1464,7 +1511,7 @@ function _topTempleRender() {
   }).join('');
   sel.value = _topTemple;
   var msi = document.getElementById('menu-search');      // 検索も そのお寺の中だけ と分かるように
-  if (msi) msi.placeholder = _topTemple ? '🔍 ' + _topTemple + ' の中を 顧客名・フリガナ・〇〇家墓・電話番号で検索...' : '🔍 顧客名・フリガナ・〇〇家墓・電話番号で検索...';
+  if (msi) msi.placeholder = _topTemple ? '🔍 ' + _topTemple + ' の中を 顧客名・フリガナ・〇〇家墓・電話番号・地図位置で検索...' : '🔍 顧客名・フリガナ・〇〇家墓・電話番号・地図位置で検索...';
   sel.style.background = _topTemple ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.1)';
   sel.style.color = _topTemple ? '#1a2535' : '#fff';
   sel.style.fontWeight = _topTemple ? '700' : '';
@@ -1903,14 +1950,14 @@ function _menuSearchRender(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (_topTempleOkNok(d) && (name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msFuriHit(d,'noukotsu',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)))  results.noukotsu.push(d);
+    if (_topTempleOkNok(d) && (name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msMapHit(d,'noukotsu',ql) || _msFuriHit(d,'noukotsu',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)))  results.noukotsu.push(d);
   });
   // 工事関連
   (_menuSearchCache['kouji'] || []).forEach(function(d) {
     var name  = (d['Customers'] || d['Title'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    if (_topTempleOkKouji(d) && (name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msFuriHit(d,'kouji',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)))  results.kouji.push(d);
+    if (_topTempleOkKouji(d) && (name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msMapHit(d,'kouji',ql) || _msFuriHit(d,'kouji',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql)))  results.kouji.push(d);
   });
 
   // 顧客リスト検索（グループごと10件）
@@ -1922,7 +1969,7 @@ function _menuSearchRender(q, ql) {
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : (d['id'] ? String(d['id']) : ''); // SPのID番号
       var isIdMatch = isIdSearch && spId === ql;
-      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msFuriHit(d,'customer',ql,_ys) || (isTelSearch && tel.includes(ql)) || isIdMatch;
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msMapHit(d,'customer',ql) || _msFuriHit(d,'customer',ql,_ys) || (isTelSearch && tel.includes(ql)) || isIdMatch;
     });
     // IDヒットを先頭に移動
     if (isIdSearch) {
@@ -1961,7 +2008,7 @@ function _menuSearchRender(q, ql) {
       var sub    = isTelSearch && tel ? tel : temple;
       var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
       html += '<div onclick="menuSearchSelect(\'noukotsu\',' + dJson + ')" style="padding:9px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06)" onmouseover="this.style.background=\'rgba(255,255,255,0.07)\'" onmouseout="this.style.background=\'\'">' +
-        '<div><div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'noukotsu', ql, true) + '</div>' +
+        '<div><div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'noukotsu', ql, true) + _msMapChip(d, 'noukotsu', ql, true) + '</div>' +
         '<div style="font-size:11px;color:rgba(255,255,255,0.45)">' + hlText(sub, ql) + '</div></div>' +
         _nokBadge(d) +
         '</div>';
@@ -1980,7 +2027,7 @@ function _menuSearchRender(q, ql) {
       var sub    = isTelSearch && tel ? tel : temple;
       var dJson  = JSON.stringify(d).replace(/"/g,'&quot;');
       html += '<div onclick="menuSearchSelect(\'kouji\',' + dJson + ')" style="padding:9px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06)" onmouseover="this.style.background=\'rgba(255,255,255,0.07)\'" onmouseout="this.style.background=\'\'">' +
-        '<div><div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'kouji', ql, true) + '</div>' +
+        '<div><div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'kouji', ql, true) + _msMapChip(d, 'kouji', ql, true) + '</div>' +
         '<div style="font-size:11px;color:rgba(255,255,255,0.45)">' + hlText(sub, ql) + '</div></div>' +
         '<span style="font-size:10px;white-space:nowrap;margin-left:8px;color:' + statusColor + '">' + statusLabel + '</span>' +
         '</div>';
@@ -2031,7 +2078,7 @@ function _menuSearchRender(q, ql) {
           : '';
         var dJson = JSON.stringify(d).replace(/"/g,'&quot;');
         html += '<div onclick="menuSearchSelectCustomer(' + dJson + ')" style="padding:9px 14px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06)" onmouseover="this.style.background=\'rgba(255,255,255,0.07)\'" onmouseout="this.style.background=\'\'">' +
-          '<div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'customer', ql, true) + templeChip + '</div>' +
+          '<div style="font-size:13px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span>' + hlText(name, isIdSearch ? '' : ql) + '</span>' + _msHakaChip(d, 'customer', ql, true) + _msMapChip(d, 'customer', ql, true) + templeChip + '</div>' +
           (sub ? '<div style="font-size:11px;color:rgba(255,255,255,0.45)">' + sub + '</div>' : '') +
           '</div>';
       });
@@ -7924,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.527';
+var APP_VERSION = 'v1.9.528';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -12499,6 +12546,7 @@ function _koujiCardHtml(d, _kidx, _koujiCatSeps) {
 }
 
 function renderKoujiList(filter) {
+  if (document.getElementById('srch')) document.getElementById('srch').placeholder = '顧客名で検索...';   // v1.9.528
   var q  = (document.getElementById('srch') && document.getElementById('srch').value) || '';
   var qt = (document.getElementById('srch-temple') && document.getElementById('srch-temple').value) || '';
   // 未完了：endinfo空 / フォロー：checkあり / 入金待ち：請求済・未入金
@@ -25564,16 +25612,20 @@ function renderCustomerList() {
   }
   var q = (document.getElementById('srch') && document.getElementById('srch').value) || '';
   var qt = (document.getElementById('srch-temple') && document.getElementById('srch-temple').value) || '';
+  var _srEl = document.getElementById('srch');
+  if (_srEl) _srEl.placeholder = '顧客名・フリガナ・地図位置で検索...';   // v1.9.528
   var items = allItems.filter(function(d) {
     if (_cusTempleFilter && d['Temple'] !== _cusTempleFilter) return false;
     if (qt && d['Temple'] !== qt) return false;
     if (q) {
       var name = d['CusName'] || '';
       var furi = d['furigana'] || '';
-      if (!name.includes(q) && !furi.includes(q)) return false;
+      /* 地図位置（区画名）でも 探す（v1.9.528） */
+      if (!name.includes(q) && !furi.includes(q) && !_msMapHit(d, 'customer', q.replace(/\s/g, ''))) return false;
     }
     return true;
   });
+  var _qMap = q.replace(/\s/g, '');
   var html = '<div class="cards">' + items.map(function(d, idx) {
     var name = d['CusName'] || d['Title'] || '';
     var furi = d['furigana'] || '';
@@ -25601,6 +25653,7 @@ function renderCustomerList() {
       '<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">' +
       (cusHakaName ? '<span style="font-size:20px;font-weight:700;color:#1a2535;line-height:1.2">' + cusHakaName + '</span>' : '') +
       '<span style="font-size:15px;color:#333;font-weight:400">' + name + '</span>' +
+      _msMapChip(d, 'customer', _qMap, false) +
       '</div>' +
       '<div class="card-ctemple">' + furi + (num ? '　No.' + num : '') + '</div>' +
       (addr1 ? '<div class="card-naibu" style="max-width:none;white-space:normal">' + addr1 + (addr2 ? ' ' + addr2 : '') + '</div>' : '') +
@@ -27494,6 +27547,7 @@ function refreshListCardFor(d, changedKeys) {
 }
 
 function renderList() {
+  document.getElementById('srch').placeholder = '顧客名で検索...';   // 顧客の画面で 地図位置 入りに 変えたのを 戻す（v1.9.528）
   var q = document.getElementById('srch').value || '';
   var qt = (document.getElementById('srch-temple') && document.getElementById('srch-temple').value) || '';
   var items = allItems.filter(function(d) {

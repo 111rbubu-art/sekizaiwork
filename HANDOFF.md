@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-10-17
-**index_b.html = v1.9.532**／**index.html = v1.9.532**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.533**／**index.html = v1.9.533**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -1044,6 +1044,12 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
 - テスト（仮の 工事：①甲 図面完成・②乙 発注・引取済）：見る 欄に ①②・① 発注 10/5 → 編集中の 値は MakerJson と OrderingMaterials だけ。
   ③丙を 足して ②乙を 消す → ②の 列が 丙に（Creator2・MaterialDelivery2・OrderingMaterials2＝null・PickUp2＝false）。保存の PATCH も その とおり・保存後 ①甲 ②丙。
   列が 無い（_kjMakerColState＝false）ときは 前の ①② の 欄
+
+### v1.9.533 手配先に「発注内容」・日付の 欄に［今日］
+- 本人「発注内容を追加して、日付の入力に今日ボタンを追加して」
+- 1 社分に 発注内容（JSON の `item`。これまでの 列には 無いので JSON だけ）。編集の 行に 欄（石塔・外柵 など）、見るときは 手配先の 横に 青い 札
+- 図面完成・発注・納品予定の 横に［今日］（`_kjMkToday`）。押すと 今日の 日付が 入り、編集中の 値にも 入る
+- テスト：① 発注内容「石塔一式」・② 納品予定［今日］→ MakerJson に item と 今日の 日付、② の 列（MaterialDelivery2）にも 今日
 
 ### 彫刻原稿 v49.0 ガイドラインのメニューの並びと 設定の対象（詳しくは HANDOFF-chokoku-genko.md）
 - まとめて入力を いちばん上へ。文字グループの設定を「グループ全体（ガイドラインの色）」と「1 字だけ（青）」の 囲みに分けた

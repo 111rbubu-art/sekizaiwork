@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.529';
+var APP_VERSION = 'v1.9.530';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -20304,7 +20304,7 @@ function _gaichuTypeLabel(t){ return t==='kouji'?'工事':t==='nok'?'納骨':t==
 function _gaichuTypeColor(t){ return t==='nok'?'#3d7a54':t==='chokoku'?'#6a3ea5':t==='tsuikou'?'#c2691c':'#33507e'; }
 // 彫刻の現時点の状況（お客様確認待ち・彫刻待ち等）— 一覧の判定を外注向けに簡略化
 function _gaichuChokokuStatus(d){
-  var cancel=(d['Resubmission']||'')==='彫刻キャンセル';
+  var cancel=/キャンセル/.test(d['Resubmission']||'');   // SP の 選択肢の 書き方に よらず（v1.9.530）
   var comp=d['CompletionDate']||''; var sendV=d['SendDocuVendor']||'';
   var ret=d['ReturnDocumentsCus']||''; var sendC=d['SendDocumentsCustomer']||'';
   var kosei=d['DateFinalProofreading']||''; var genko=d['GotManuscript']||'';
@@ -27354,7 +27354,7 @@ function _nokCardHtml(d, idx, _separators) {
     // 彫刻進捗タグ（PowerAppsの式を再現）
     var bunrui2 = G(d,'分類') || '';
     if (bunrui2 === '納骨戒切' || bunrui2 === '戒切' || bunrui2 === '彫刻校正') {
-      var chkCancel = (d['Resubmission'] || '') === '彫刻キャンセル';
+      var chkCancel = /キャンセル/.test(d['Resubmission'] || '');   // SP の 選択肢の 書き方に よらず（v1.9.530）
       var chkNyukin = d['PaymentDate'] || '';
       var chkComp   = d['CompletionDate'] || '';
       var chkSeikyu = d['DateInvoice'] || '';
@@ -28417,10 +28417,22 @@ function loadEditsFromStorage() {
 // 選択肢定義
 // SPから動的取得（起動時にloadSPFieldChoices()で設定される）
 // 選択肢は全てSPから動的取得（起動時にloadSPFieldChoicesで読み込む）
-var FIELD_CHOICES = {
-  // SPから取得できない場合のフォールバック
+var FIELD_CHOICES = {};
+/* SP から 取れなかった ときだけ 使う 選択肢（v1.9.530）。
+   前は これを FIELD_CHOICES に 最初から 入れていたので、loadSPFieldChoices が「まだ無い ときだけ 入れる」決まりで
+   SP の 選択肢を 入れず、資料結果（Resubmission）は いつも この 固定の 4 つ だった（本人「納骨関連の資料結果という項目ですが、
+   spリストで確認したところ選択肢が違っています」） */
+var FIELD_CHOICES_FALLBACK = {
   'Resubmission': ['問題なし','再提出①','再提出②','彫刻キャンセル']
 };
+/* リストごとの 選択肢（v1.9.530）。資料結果（納骨・戒切）と 返却結果（工事関連）は 同じ 内部名 Resubmission なので、
+   1 つに まとめると 片方の 選択肢しか 出せない。いま 開いている リストの 方を 使う */
+var FIELD_CHOICES_BY_LIST = { noukotsu: {}, kouji: {} };
+function _fieldChoices(field){
+  var lm = (typeof currentListMode !== 'undefined' && currentListMode === 'kouji') ? 'kouji' : 'noukotsu';
+  var byL = FIELD_CHOICES_BY_LIST[lm] || {};
+  return byL[field] || FIELD_CHOICES[field] || FIELD_CHOICES_FALLBACK[field] || null;
+}
 
 // select ではなく datalist（コンボボックス）で表示するフィールド
 // 'Temples'=工事のお寺 / 'お寺'=納骨のお寺（選択肢＋直接入力可）
@@ -28455,11 +28467,13 @@ function loadSPFieldChoices() {
     return Promise.all([p1, p2]);
   })
   .then(function(results) {
-    // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）
-    results.forEach(function(data) {
+    // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）。リストごとにも 持つ（v1.9.530）
+    results.forEach(function(data, li) {
+      var byL = FIELD_CHOICES_BY_LIST[li === 0 ? 'noukotsu' : 'kouji'];
       (data.value || []).forEach(function(col) {
         if (!col.choice || !col.choice.choices || col.choice.choices.length === 0) return;
         var key = _SP_FIELD_KEY_MAP[col.name] || col.name;
+        byL[key] = col.choice.choices;
         if (!FIELD_CHOICES[key]) {
           FIELD_CHOICES[key] = col.choice.choices;
         }
@@ -28744,15 +28758,19 @@ function efld(label, itemId, field, val, wide, multiline, span, labelToday) {
         '<input class="date-input" type="date" data-id="' + itemId + '" data-field="' + field + '" value="' + isoVal + '">' +
         (labelToday || noToday ? '' : '<button class="date-today-btn" data-id="' + itemId + '" data-field="' + field + '" onclick="setTodayDate(this)">今日</button>') +
         '</div>';
-    } else if (FIELD_CHOICES[field] && FIELD_COMBOBOX.has(field)) {
+    } else if (_fieldChoices(field) && FIELD_COMBOBOX.has(field)) {
       var dlId = 'combo-dl-' + field;
       inputHtml = '<datalist id="' + dlId + '">' +
-        FIELD_CHOICES[field].map(function(v){return '<option value="'+v+'">';}).join('') +
+        _fieldChoices(field).map(function(v){return '<option value="'+v+'">';}).join('') +
         '</datalist>' +
         '<input class="edit-field" type="text" list="' + dlId + '" data-id="' + itemId + '" data-field="' + field + '" value="' + (currentVal||'').replace(/"/g,'&quot;') + '" placeholder="入力または選択...">';
-    } else if (FIELD_CHOICES[field]) {
+    } else if (_fieldChoices(field)) {
       var opts = '<option value="">-- 選択 --</option>';
-      FIELD_CHOICES[field].forEach(function(v) {
+      var chs9 = _fieldChoices(field);
+      /* いまの 値が 選択肢に 無いときも 出して 選んだ ままに する（v1.9.530。消えて「-- 選択 --」に 見え、保存で 空に なるのを 防ぐ） */
+      if (currentVal && chs9.indexOf(currentVal) < 0)
+        opts += '<option value="' + String(currentVal).replace(/"/g,'&quot;') + '" selected>' + _esc(currentVal) + '（いまの値）</option>';
+      chs9.forEach(function(v) {
         opts += '<option value="' + v + '"' + (currentVal === v ? ' selected' : '') + '>' + v + '</option>';
       });
       inputHtml = '<select class="edit-field" data-id="' + itemId + '" data-field="' + field + '">' + opts + '</select>';

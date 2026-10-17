@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.531';
+var APP_VERSION = 'v1.9.532';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -12564,6 +12564,10 @@ function kjMakersFromCols(d){
 function kjMakersFromJson(d){
   var raw = d && d[KJ_MAKER_COL];
   if (!raw) return null;
+  /* 列が リッチテキストだと <div>…</div> で 包まれて 返ることが ある。タグを 外して 読む */
+  if (typeof raw === 'string' && /^\s*</.test(raw)){
+    var tx9 = document.createElement('textarea'); tx9.innerHTML = raw.replace(/<[^>]+>/g, ''); raw = tx9.value;
+  }
   var a = null;
   try { a = (typeof raw === 'string') ? JSON.parse(raw) : raw; } catch(e){ console.warn('[手配先] JSON を 読めません', e && e.message); return null; }
   if (!Array.isArray(a) || !a.length) return null;
@@ -12584,6 +12588,116 @@ function kjMakerSlot(d, n){
   return null;
 }
 function kjNoMark(n){ var c = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'; return (n >= 1 && n <= 20) ? c.charAt(n - 1) : '(' + n + ')'; }
+// 手配先 1 社の 進み具合（一覧の 札と 同じ 決め方。下から順に 評価して いちばん 進んだ 段階）
+function kjMakerStatus(m){
+  if (m.pickup) return { t: '済', st: 'background:#1e8449;border:1.5px solid #1e8449;color:#fff' };
+  if (m.deliv)  return { t: m.deliv.substring(5).replace('-', '/') + ' 納入予定', st: 'background:transparent;border:1.5px solid #1e8449;color:#1e8449' };
+  if (m.order)  return { t: '納入未定', st: 'background:transparent;border:1.5px solid #b7950b;color:#b7950b' };
+  if (m.draw)   return { t: '未発注', st: 'background:transparent;border:1.5px solid #c0392b;color:#c0392b' };
+  return { t: '図面製作中', st: 'background:transparent;border:1.5px solid #e67e22;color:#e67e22' };
+}
+
+/* ───── **段階 2：手配先を 何社でも 入れる 欄**（v1.9.532。本人「SP の 工事関連リストに、列を 追加済／1 社分の項目を
+   手配先・図面完成・発注・納品予定・引取済でいいです」）─────
+   手配彫刻タブの「石材制作業者①②」を「石材制作業者」1 つに まとめ、①②③… と 並べる。［＋ 手配先を追加］・🗑。
+   保存は JSON の 列（MakerJson）に 並びを、**はじめの 2 社は これまでの 列（手配先①②…引取済①②）にも 写す**（もどせるように・ほかの 画面の ため）。
+   SP に MakerJson の 列が あると 確かめられた ときだけ 出す（起動時の 列の 読み込み。確かめられない ときは これまでの ①② の 欄） */
+var _kjMakerColState = null;          // null＝まだ 分からない／true＝ある／false＝無い
+function kjMakerEditorOn(){ return _kjMakerColState === true; }
+var _kjMk = { id: null, rows: null };
+var KJ_MK_COLS = [['Creator','DrawingCompleted','OrderingMaterials','MaterialDelivery','PickUp1'],
+                  ['Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2','PickUp2']];
+function _kjMkEsc(v){ return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _kjMkMD(v){ return v ? (parseInt(v.substring(5,7),10) + '/' + parseInt(v.substring(8,10),10)) : ''; }
+function kjMakersBodyHtml(d, itemId){
+  var html = '';
+  if (!editMode){
+    _kjMk = { id: null, rows: null };
+    var ms = kjMakers(d);
+    if (!ms.length) return '<div style="padding:8px 4px;font-size:12px;color:#999">手配先は まだ ありません（✏️ 編集 で 足せます）</div>';
+    ms.forEach(function(m){
+      var st = kjMakerStatus(m);
+      var dt = [m.draw ? '図面完成 ' + _kjMkMD(m.draw) : '', m.order ? '発注 ' + _kjMkMD(m.order) : '', m.deliv ? '納品予定 ' + _kjMkMD(m.deliv) : '']
+                 .filter(Boolean).join('　');
+      html += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 10px;margin:6px 0;border:1px solid #e3e6ea;border-radius:8px;background:#fff">' +
+        '<b style="font-size:14px;color:#1a2535">' + kjNoMark(m.no) + ' ' + (_kjMkEsc(m.name) || '<span style="color:#aaa;font-weight:400">（手配先 未入力）</span>') + '</b>' +
+        (m.name ? '<span class="tag-pill" style="font-size:11px;' + st.st + '">' + _kjMkEsc(st.t) + '</span>' : '') +
+        '<span style="font-size:12px;color:#555">' + _kjMkEsc(dt) + '</span>' +
+        '<span style="font-size:12px;margin-left:auto;color:' + (m.pickup ? '#1e8449' : '#999') + '">' + (m.pickup ? '✅ 引取済' : '引取 未') + '</span>' +
+      '</div>';
+    });
+    return html;
+  }
+  if (_kjMk.id !== String(itemId) || !_kjMk.rows){
+    var _hy = function(v){ return String(v || '').replace(/\//g, '-'); };   // 日付の 欄は YYYY-MM-DD（保存の あとは YYYY/MM/DD の ことが ある）
+    _kjMk = { id: String(itemId), rows: kjMakers(d).map(function(m){ return { name: m.name, draw: _hy(m.draw), order: _hy(m.order), deliv: _hy(m.deliv), pickup: !!m.pickup }; }) };
+    if (!_kjMk.rows.length) _kjMk.rows.push({ name: '', draw: '', order: '', deliv: '', pickup: false });
+  }
+  var inp = 'padding:5px 7px;border:1px solid #ccd2dc;border-radius:6px;font-size:13px;font-family:inherit';
+  _kjMk.rows.forEach(function(r, i){
+    var dIn = function(k, lb){ return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+      '<input type="date" value="' + _kjMkEsc(r[k] || '') + '" onchange="_kjMkSet(' + i + ',\'' + k + '\',this.value)" style="' + inp + '"></label>'; };
+    html += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 10px;margin:6px 0;border:1px solid #d5dce6;border-radius:8px;background:#f8fafc">' +
+      '<b style="font-size:14px">' + kjNoMark(i + 1) + '</b>' +
+      '<input type="text" value="' + _kjMkEsc(r.name || '') + '" placeholder="手配先（業者名）" oninput="_kjMkSet(' + i + ',\'name\',this.value)" style="' + inp + ';min-width:150px;flex:1 1 150px">' +
+      dIn('draw', '図面完成') + dIn('order', '発注') + dIn('deliv', '納品予定') +
+      '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox"' + (r.pickup ? ' checked' : '') +
+        ' onchange="_kjMkSet(' + i + ',\'pickup\',this.checked)" style="width:17px;height:17px"> 引取済</label>' +
+      '<button type="button" onclick="_kjMkDel(' + i + ')" title="この 手配先を 消す" style="margin-left:auto;background:#fff;border:1px solid #c0392b;color:#c0392b;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:12px">🗑</button>' +
+    '</div>';
+  });
+  html += '<button type="button" onclick="_kjMkAdd()" style="margin:4px 0 2px;padding:7px 14px;border-radius:8px;border:1px dashed #33507e;background:#fff;color:#33507e;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit">＋ 手配先を追加</button>' +
+          '<div style="font-size:11px;color:#888;margin-top:2px">保存すると、はじめの 2 社は これまでの 手配先①②の 列にも 入ります</div>';
+  return html;
+}
+function _kjMkRedraw(){
+  var b = document.querySelector('[data-kjsec="kj_makers"] .nk-sec-body');
+  if (b && currentItem) b.innerHTML = kjMakersBodyHtml(currentItem, currentItem['id']);
+}
+function _kjMkSet(i, k, v){
+  if (!_kjMk.rows || !_kjMk.rows[i]) return;
+  _kjMk.rows[i][k] = (k === 'pickup') ? !!v : String(v == null ? '' : v);
+  _kjMkPush();
+}
+function _kjMkAdd(){
+  if (!_kjMk.rows) return;
+  _kjMk.rows.push({ name: '', draw: '', order: '', deliv: '', pickup: false });
+  _kjMkRedraw();
+}
+function _kjMkDel(i){
+  if (!_kjMk.rows || !_kjMk.rows[i]) return;
+  var r = _kjMk.rows[i];
+  if ((r.name || r.draw || r.order || r.deliv || r.pickup) && !confirm(kjNoMark(i + 1) + ' ' + (r.name || '') + ' を 消します。よろしいですか？（保存するまで SP は 変わりません）')) return;
+  _kjMk.rows.splice(i, 1);
+  _kjMkRedraw(); _kjMkPush();
+}
+// 並びを 編集中の 値（localEdits）に 入れる。変わった 列だけ（変えない 列は 送らない）
+function _kjMkPush(){
+  var d = currentItem, id = _kjMk.id;
+  if (!d || !id || String(d['id']) !== id) return;
+  var rows = _kjMk.rows.map(function(r){
+    var o = { name: String(r.name || '').trim(), draw: r.draw || '', order: r.order || '', deliv: r.deliv || '', pickup: !!r.pickup };
+    return o;
+  }).filter(function(o){ return o.name || o.draw || o.order || o.deliv || o.pickup; });
+  var put = function(f, v){ setEdit(id, f, v); };
+  var json = rows.length ? JSON.stringify(rows) : '';
+  if (json !== String(d[KJ_MAKER_COL] || '')) put(KJ_MAKER_COL, json || null);
+  else if (localEdits[id]) delete localEdits[id][KJ_MAKER_COL];
+  KJ_MK_COLS.forEach(function(k, i){
+    var r = rows[i] || { name: '', draw: '', order: '', deliv: '', pickup: false };
+    var vals = [r.name, r.draw, r.order, r.deliv];
+    for (var j = 0; j < 4; j++){
+      var cur = (j === 0) ? String(d[k[j]] || '').trim() : _kjD10(d[k[j]]).replace(/\//g, '-');
+      var nv = vals[j] || '';
+      if (nv === cur){ if (localEdits[id]) delete localEdits[id][k[j]]; continue; }
+      put(k[j], nv ? (j === 0 ? nv : formatDateForSave(k[j], nv)) : null);
+    }
+    var curP = (d[k[4]] === true || d[k[4]] === 'true');
+    if (curP === !!r.pickup){ if (localEdits[id]) delete localEdits[id][k[4]]; }
+    else put(k[4], r.pickup ? 'true' : 'false');
+  });
+  try { saveEditsToStorage(); } catch(e){}
+}
 
 function renderKoujiList(filter) {
   if (document.getElementById('srch')) document.getElementById('srch').placeholder = '顧客名で検索...';   // v1.9.528
@@ -13028,19 +13142,24 @@ function showKoujiTab(i, d) {
     renderHakaSpecTab(d);
 
   } else if (i === 3) {
+    var _mkNew = kjMakerEditorOn();   // 段階 2（v1.9.532）：SP に MakerJson が あれば 何社でも 入る 欄
     b.innerHTML = editBtnHtml +
-      _kjSec('kj_maker1', d, 'bg3', '', '石材制作業者①',
-        nkgBar('kj2a') + nkgCanvas('kj2a', KOUJI_T2A_CARDS, d, itemId)) +
-      _kjSec('kj_maker2', d, 'bg2', '', '石材制作業者②',
-        nkgBar('kj2b') + nkgCanvas('kj2b', KOUJI_T2B_CARDS, d, itemId)) +
+      (_mkNew
+        ? _kjSec('kj_makers', d, 'bg3', '', '石材制作業者', kjMakersBodyHtml(d, itemId))
+        : _kjSec('kj_maker1', d, 'bg3', '', '石材制作業者①',
+            nkgBar('kj2a') + nkgCanvas('kj2a', KOUJI_T2A_CARDS, d, itemId)) +
+          _kjSec('kj_maker2', d, 'bg2', '', '石材制作業者②',
+            nkgBar('kj2b') + nkgCanvas('kj2b', KOUJI_T2B_CARDS, d, itemId))) +
       _kjSec('kj_chokoku', d, 'bg5', '', '彫刻',
         nkgBar('kj2c') + nkgCanvas('kj2c', KOUJI_T2C_CARDS, d, itemId)) +
       '<div class="sec"><span class="sec-hdr bg4">その他の資料</span>' +
       nkgBar('kj2d') + nkgCanvas('kj2d', KOUJI_T2D_CARDS, d, itemId) +
       '</div>';
     if (editMode) bindEditInputs(itemId);
-    nkgInit('kj2a', KOUJI_T2A_CARDS);
-    nkgInit('kj2b', KOUJI_T2B_CARDS);
+    if (!_mkNew){
+      nkgInit('kj2a', KOUJI_T2A_CARDS);
+      nkgInit('kj2b', KOUJI_T2B_CARDS);
+    }
     nkgInit('kj2c', KOUJI_T2C_CARDS);
     nkgInit('kj2d', KOUJI_T2D_CARDS);
   } else if (i === 4) {
@@ -22102,6 +22221,7 @@ function toggleKoujiEdit(d, tabIdx) {
 
 function cancelKoujiEdit(tabIdx) {
   editMode = false;
+  _kjMk = { id: null, rows: null };   // 手配先の 編集中の 並びも 捨てる（v1.9.532）
   var itemId = currentItem ? currentItem['id'] : null;
   if (itemId) localEdits[itemId] = {};
   showKoujiTab(tabIdx || 0, currentItem);
@@ -28490,6 +28610,8 @@ function loadSPFieldChoices() {
     return Promise.all([p1, p2]);
   })
   .then(function(results) {
+    // 工事関連に 手配先の JSON の 列（MakerJson）が あるか（v1.9.532。段階 2 の 欄を 出すか）
+    try { _kjMakerColState = ((results[1] && results[1].value) || []).some(function(c){ return c && c.name === KJ_MAKER_COL; }); } catch(e){}
     // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）。リストごとにも 持つ（v1.9.530）
     results.forEach(function(data, li) {
       var byL = FIELD_CHOICES_BY_LIST[li === 0 ? 'noukotsu' : 'kouji'];
@@ -30752,11 +30874,13 @@ function _nkSec(key, d, hdrClass, hdrStyle, hdrInner, bodyHtml) {
 
 // ===== 工事関連セクションの分類別折りたたみルール =====
 var _KJ_SEC_RULES = {
+  'kj_makers':  ['墓新規','修繕','移設','花立交換'],   // 段階 2 の まとめた 欄（v1.9.532）
   'kj_maker1':  ['墓新規','修繕','移設','花立交換'],
   'kj_maker2':  ['墓新規'],
   'kj_chokoku': ['墓新規','彫刻変更']
 };
 var _KJ_SEC_FIELDS = {
+  'kj_makers':  ['MakerJson','Creator','DrawingCompleted','OrderingMaterials','MaterialDelivery','Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2'],
   'kj_maker1':  ['Creator','DrawingCompleted','OrderingMaterials','MaterialDelivery'],
   'kj_maker2':  ['Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2'],
   'kj_chokoku': ['SendingSculptureMaterials','ReturnSculptureMaterials','ManuscriptSubmission1','ManuscriptSubmission2','ReturnManuscripts1','ReturnManuscripts2','Resubmission','DecideSculpture','Engraver','HandingEngraver','DeliveredByEngraver']

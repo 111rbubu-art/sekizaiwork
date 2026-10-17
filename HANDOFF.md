@@ -1,7 +1,7 @@
 # 引継ぎ資料 — sekizaiwork（石材業務管理アプリ）
 
 最終更新: 2026-10-17
-**index_b.html = v1.9.531**／**index.html = v1.9.531**／**chokoku-genko.html = v23.2**
+**index_b.html = v1.9.532**／**index.html = v1.9.532**／**chokoku-genko.html = v23.2**
 
 > 彫刻原稿（chokoku-genko.html）の最近の作業は `HANDOFF-chokoku-genko.md` にまとめています。
 > そちらを先に読んでください。
@@ -1028,6 +1028,22 @@ e4b に音声を渡す方式は お寺の名前が安定しなかった（慈宏
   4. 落ち着いたら これまでの 列へ 写すのを やめ、SP で 列を 隠す
 - テスト（仮の データ 8 件：段階ごと・②だけ・両方・引取済・完了済み・なし）：一覧の HTML が v1.9.530 と まったく 同じ。
   JSON に 3 社（品名つき）→ 札「石材①②③」・3 社目の 納品予定 10/25・AI の 手配先「甲石材・乙石材・丙石材」。壊れた JSON は これまでの 列で 読む
+
+### v1.9.532 工事関連の 手配先：段階 2（何社でも 入れる 欄・はじめの 2 社は これまでの 列にも 写す）
+- 本人「SP の 工事関連リストに、列を 追加済／1 社分の項目を 手配先・図面完成・発注・納品予定・引取済でいいです」（品名・メモは 足さない）
+- 手配彫刻タブ：「石材制作業者①」「②」の 2 つの 欄を「石材制作業者」1 つ（`_kjSec('kj_makers')`・`kjMakersBodyHtml`）に。
+  見るとき：①②③… ごとに 手配先・進み具合の 札（一覧と 同じ `kjMakerStatus`）・図面完成／発注／納品予定・引取済。
+  編集：1 社 1 行（手配先・図面完成・発注・納品予定・引取済・🗑）＋［＋ 手配先を追加］。並びは `_kjMk`（`_kjMkSet／Add／Del`）
+- 保存（`_kjMkPush` → localEdits → これまでの `toggleKoujiEdit` の PATCH）：`MakerJson` に 並びの JSON
+  `[{name, draw, order, deliv, pickup}]`（日付は YYYY-MM-DD）、**はじめの 2 社は これまでの 列**（Creator…PickUp1／Creator2…PickUp2）にも。
+  変わった 列だけ 送る（消した 日付は null・引取済は true/false）。社を 消すと 次の 社が 繰り上がり、②の 列も それに 合わせる
+- **SP に `MakerJson` が あると 確かめた ときだけ**（起動時の `loadSPFieldChoices` の 工事関連の 列の 名前。`_kjMakerColState`）新しい 欄。
+  確かめられない ときは これまでの ①② の 欄（KOUJI_T2A/T2B_CARDS）。列が リッチテキストで <div> に 包まれても タグを 外して 読む
+- これまでの 列だけの 案件は、手配先を 1 か所でも 直して 保存した ときに JSON が できる（段階 3 の 移しかえは まだ）。
+  JSON が ある 案件は JSON が 正（SP で これまでの 列を 直接 直しても アプリには 出ない）
+- テスト（仮の 工事：①甲 図面完成・②乙 発注・引取済）：見る 欄に ①②・① 発注 10/5 → 編集中の 値は MakerJson と OrderingMaterials だけ。
+  ③丙を 足して ②乙を 消す → ②の 列が 丙に（Creator2・MaterialDelivery2・OrderingMaterials2＝null・PickUp2＝false）。保存の PATCH も その とおり・保存後 ①甲 ②丙。
+  列が 無い（_kjMakerColState＝false）ときは 前の ①② の 欄
 
 ### 彫刻原稿 v49.0 ガイドラインのメニューの並びと 設定の対象（詳しくは HANDOFF-chokoku-genko.md）
 - まとめて入力を いちばん上へ。文字グループの設定を「グループ全体（ガイドラインの色）」と「1 字だけ（青）」の 囲みに分けた

@@ -10,8 +10,32 @@
 4. 回答：承諾（チェック・指の サイン）／修正（写真に 印・文字・紙の 写真・電話）
 
 ## 段階
-- 段階 2（いま）：画面の 試作。見本の データで 動き、回答は どこにも 送らない
-- 段階 3：さくらの PHP（`api.php`）。お客様ごとの 推測できない URL、回答・閲覧の 記録、回答後は 締め切り
+- 段階 2：画面の 試作（`?t=` なしで 開くと 今も 見本で 動く。回答は 送らない）
+- 段階 3（いま）：さくらの PHP。お客様ごとの 推測できない URL（`?t=<32 文字>`）、本人確認、閲覧・回答の 記録、回答後は 締め切り
 - 段階 4：業務アプリから 確認ページを 作る・回答を SharePoint の フォルダーへ 取り込み、サーバーから 消す
+
+## ファイル
+| ファイル | 中身 |
+|---|---|
+| `index.html` | お客様の 画面。`?t=` が あれば `api.php` と やりとり |
+| `api.php` | お客様側の 受け口（hint・verify・img・seen・answer）。同じ オリジンなので 合言葉 なし。鍵は 本人確認の 後に 出す |
+| `upload.php` | 店側の 受け口（create・status・list・getfile・delete）。合言葉（`.htsecret`）＋ CORS |
+| `lib.php` | 共通（直接は 開かせない） |
+| `data/` | お客様ごとの フォルダー（`.htaccess` で 外から 読めない）。リポジトリには 入れない |
+
+## 記録（証拠）
+- `log.json`：作成・開いた・本人確認（合う／合わない と 入れた 4 桁）・最後まで 見た・回答。どれも 日時・IP・端末
+- `answer.json`：回答（ok／ng／grave_ng）・お名前・続柄・承諾と その 文・場所の 指示・文字の 指示・電話希望・原稿の 版（rev）と ハッシュ（sha256）・最後まで 見た 日時・IP・端末・ファイル（mark.jpg＝原稿に 印、photo_N.jpg）
+- 電話番号は 保存しない（伏せ字と 下 4 桁だけ）。下 4 桁を 10 回 まちがえると 止まる（店に 電話）
+- 期限（既定 30 日、create の `days`）を 過ぎると 開けない
+
+## さくらへの 置き方
+1. `www/kakunin/` を 作り、`index.html`・`api.php`・`upload.php`・`lib.php` を 置く
+2. `data/` フォルダーを 作り、`data/.htaccess` を 置く（無くても upload.php が 作る）
+3. `htaccess-sample.txt` を `.htaccess`、`user.ini-sample.txt` を `.user.ini` の 名前で 置く
+4. `.htsecret` を 作る（長い ランダムな 文字列 1 行。外注ポータルとは 別の ものに する）
+5. `robots.txt` に `Disallow: /kakunin/`
+6. ブラウザで `https://<ドメイン>/kakunin/upload.php` を 開き、`{"ok":true,"service":"kakunin-upload"…}` が 出れば 設置 完了
+7. `https://<ドメイン>/kakunin/data/` を 開いて 403 に なる ことを 確かめる
 
 しくみは `gaichu-portal/`（合言葉＋CORS の 受け口、SharePoint への 保存）を まねる。Power Automate は 使わない。

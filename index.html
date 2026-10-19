@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.538';
+var APP_VERSION = 'v1.9.539';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -20742,8 +20742,14 @@ function _setDetLinkbar(show) {
     '<span style="width:1px;height:22px;background:#ccd2dc;margin:0 3px;flex-shrink:0"></span>' +
     '<span style="font-size:11px;font-weight:700;color:#8a5a2b">外注公開</span>' +
     '<button id="gaichu-pub-btn" onclick="openGaichuPublish()" title="この案件を外注先ポータルに公開／更新" style="' + st + ';background:#8a5a2b">🌐 外注公開</button>' +
-    '<button onclick="_gaichuOpenSummary()" title="公開中の全案件をまとめて確認" style="' + st + ';background:#7a4d23">📋 まとめ</button>';
+    '<button onclick="_gaichuOpenSummary()" title="公開中の全案件をまとめて確認" style="' + st + ';background:#7a4d23">📋 まとめ</button>' +
+    // 納骨・戒切だけ：戒名彫刻の お客様確認（Web）（v1.9.539）
+    (currentListMode === 'kouji' ? '' :
+      '<span style="width:1px;height:22px;background:#ccd2dc;margin:0 3px;flex-shrink:0"></span>' +
+      '<span style="font-size:11px;font-weight:700;color:#2f6f8f">お客様</span>' +
+      '<button id="kk-btn" onclick="openKakunin()" title="戒名・法名彫刻の確認ページを作る／回答を取り込む" style="' + st + ';background:#2f6f8f">📨 お客様確認</button>');
   _gaichuUpdateBtn(); // 公開状態をボタンに反映（設定済みなら）
+  if (currentListMode !== 'kouji') _kkUpdateBtn();
 }
 // リンクバーの外注公開ボタンに、公開中/未公開を反映
 function _gaichuUpdateBtn(){
@@ -21260,6 +21266,577 @@ function _gaichuFetchBlob(file, gTok, sTok){
   var binUrl="https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('"+rel+"')/$value";
   return fetch(binUrl,{headers:{Authorization:'Bearer '+sTok}})
     .then(function(r){ if(!r.ok) throw new Error('添付DL失敗 '+r.status); return r.blob(); });
+}
+
+/* ───── **お客様確認（Web）**（v1.9.539。本人「戒名彫刻の確認資料の郵送が往復で時間がかかる。手紙や LINE で URL を送って
+   アクセスしてもらって返事とする」「回答の最終保存場所は SP 上、アプリで管理しているフォルダー」「さくらにお客様用のページを作り、回答後に取り込む」
+   「ボタンを付けるのは 業務アプリの 納骨・戒切」）─────
+   さくらの kakunin/upload.php（kakunin-portal/）へ お墓の写真・彫刻する場所の写真・確認資料（拓本＋原稿の JPEG）を 送って
+   お客様用の ページを 作る。URL と QR コードを 手紙・LINE で 送る。お客様は 電話番号の 下4桁で 本人確認 → 写真と 原稿を 見て 回答。
+   回答（answer.json・印をつけた原稿・撮った写真）と 記録（開いた・本人確認・最後まで見た・回答 の 日時・IP・端末）を
+   案件フォルダーの「お客様確認」へ 取り込んで、さくらからは 消す。
+   設定（upload.php の URL・合言葉・店の電話・受付時間）は 外注公開と 同じく localStorage と SP の 設定ファイル（コードには 書かない） */
+var KK_DEF_TEL = '0120-333-845', KK_DEF_HOURS = '午前8時〜午後5時';
+var KK_SUB = 'お客様確認';
+function _kkCfg(){ try { return JSON.parse(localStorage.getItem('kakuninCfg') || '{}') || {}; } catch(e){ return {}; } }
+function _kkSaveCfg(c){ try { localStorage.setItem('kakuninCfg', JSON.stringify(c)); } catch(e){} try { if(typeof saveSettingsToSP==='function') saveSettingsToSP(); } catch(e){} }
+function _kkShop(){ var c=_kkCfg(); return { tel: c.shopTel || KK_DEF_TEL, hours: c.shopHours || KK_DEF_HOURS }; }
+function _kkEnsureCfg(){
+  var c = _kkCfg();
+  if (!c.url){ var u = prompt('お客様確認の upload.php のURLを入力してください\n例: https://xxxx.sakura.ne.jp/kakunin/upload.php'); if(!u) return null; c.url = u.trim(); }
+  if (!c.secret){ var s = prompt('合言葉（さくらの kakunin/.htsecret と同じ文字列）を入力してください'); if(!s) return null; c.secret = s.trim(); }
+  _kkSaveCfg(c); return c;
+}
+function _kkResetCfg(){
+  var c=_kkCfg();
+  var u=prompt('お客様確認の upload.php のURL\n例: https://xxxx.sakura.ne.jp/kakunin/upload.php\n（URLと合言葉を両方 空欄にすると 設定を削除）', c.url||''); if(u===null) return; u=u.trim();
+  var s=prompt('合言葉（さくらの kakunin/.htsecret と同じ文字列）', c.secret||''); if(s===null) return; s=s.trim();
+  if(!u && !s){ _kkSaveCfg({}); showSaveToast(true,'お客様確認の設定を消去しました'); return; }
+  if(!u || !s){ showSaveToast(false,'URLと合言葉の両方を入力してください'); return; }
+  var t=prompt('お客様の画面に出す 店の電話番号', c.shopTel||KK_DEF_TEL); if(t===null) return;
+  var h=prompt('お客様の画面に出す 受付時間', c.shopHours||KK_DEF_HOURS); if(h===null) return;
+  _kkSaveCfg({url:u, secret:s, shopTel:t.trim()||KK_DEF_TEL, shopHours:h.trim()||KK_DEF_HOURS});
+  showSaveToast(true,'お客様確認の設定を保存しました');
+  if(document.getElementById('kk-modal') && currentItem) _kkOpen();
+  _kkUpdateBtn();
+}
+function _kkRef(d){ return 'n-'+(d['id']||d['ID']||''); }
+function _kkPost(fd){ var c=_kkCfg(); fd.append('secret', c.secret||''); return _gaichuPost(c.url, fd); }
+function _kkAct(action, extra){ var fd=new FormData(); fd.append('action',action); Object.keys(extra||{}).forEach(function(k){ fd.append(k, extra[k]); }); return _kkPost(fd); }
+/* この案件の 確認ページ（新しい順）。状態の 細かいこと（開いた・本人確認）は status の 記録から */
+function _kkLoadRows(d){
+  var ref=_kkRef(d);
+  return _kkAct('list').then(function(r){
+    if(!r || !r.ok) throw new Error((r && r.error) || '一覧を読めません');
+    var rows=(r.items||[]).filter(function(x){ return x.ref===ref; });
+    rows.sort(function(a,b){ return String(b.created).localeCompare(String(a.created)); });
+    return Promise.all(rows.map(function(x){
+      return _kkAct('status',{token:x.token}).then(function(s){ if(s && s.ok){ x.log=s.log||[]; x.answer=s.answer||null; x.case=s.case||{}; } return x; }).catch(function(){ return x; });
+    }));
+  });
+}
+function _kkLogFirst(row, ev){ var l=(row.log||[]).filter(function(e){ return e.ev===ev; }); return l.length ? l[0].at : ''; }
+function _kkStateOf(row){
+  if(row.status==='answered'){
+    var res=row.result || (row.answer && row.answer.result) || '';
+    if(res==='ok') return {t:'✅ この内容で承諾', c:'#1a7a3a', bg:'#e8f6ec'};
+    if(res==='grave_ng') return {t:'⚠ お墓が違う', c:'#b3261e', bg:'#fdecea'};
+    return {t:'✏️ 訂正あり', c:'#b45309', bg:'#fff4e0'};
+  }
+  if(row.status==='expired') return {t:'期限切れ', c:'#6b7280', bg:'#f2f3f5'};
+  if(row.status==='locked') return {t:'🔒 番号の間違いが多く停止', c:'#b3261e', bg:'#fdecea'};
+  if(row.seenAt) return {t:'👀 原稿を最後まで見た（回答待ち）', c:'#1a5a9a', bg:'#eaf2fb'};
+  if(_kkLogFirst(row,'verify_ok')) return {t:'本人確認まで済（回答待ち）', c:'#1a5a9a', bg:'#eaf2fb'};
+  if(_kkLogFirst(row,'open')) return {t:'ページを開いた（回答待ち）', c:'#1a5a9a', bg:'#eaf2fb'};
+  return {t:'まだ開いていません', c:'#6b7280', bg:'#f2f3f5'};
+}
+function _kkMDHM(s){ var m=String(s||'').match(/\d{4}-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/); return m ? (parseInt(m[1],10)+'/'+parseInt(m[2],10)+' '+m[3]+':'+m[4]) : ''; }
+/* リンクバーの ボタンに 回答の 有無を 出す */
+function _kkUpdateBtn(){
+  var d=currentItem; if(!d) return;
+  var cfg=_kkCfg(); if(!cfg.url || !cfg.secret) return;
+  var ref=_kkRef(d);
+  _kkAct('list').then(function(r){
+    if(!r || !r.ok || !currentItem || _kkRef(currentItem)!==ref) return;
+    var rows=(r.items||[]).filter(function(x){ return x.ref===ref; });
+    var b=document.getElementById('kk-btn'); if(!b) return;
+    var ans=rows.filter(function(x){ return x.status==='answered'; }).length;
+    var open=rows.filter(function(x){ return x.status==='open'; }).length;
+    if(ans){ b.style.background='#b45309'; b.innerHTML='📨 お客様確認 <span style="background:#e53935;color:#fff;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700">🆕回答'+(ans>1?' '+ans:'')+'</span>'; }
+    else if(open){ b.style.background='#1a5a9a'; b.innerHTML='📨 お客様確認中'; }
+    else { b.style.background='#2f6f8f'; b.innerHTML='📨 お客様確認'; }
+  }).catch(function(){});
+}
+
+function _kkBuildModal(){
+  var m=document.getElementById('kk-modal'); if(m) return m;
+  m=document.createElement('div'); m.id='kk-modal';
+  m.style.cssText='display:none;position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:16px';
+  m.innerHTML=
+    '<div style="background:#f4f5f7;border-radius:16px;max-width:620px;width:100%;height:90vh;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 48px rgba(20,22,28,.34)">'+
+      '<div style="flex:0 0 auto;padding:15px 18px;background:linear-gradient(180deg,#2f6f8f,#245a75);color:#fff;display:flex;align-items:center;gap:10px">'+
+        '<span style="width:30px;height:30px;border-radius:9px;background:rgba(255,255,255,.16);display:grid;place-items:center;font-size:15px">📨</span>'+
+        '<div style="display:flex;flex-direction:column;line-height:1.25"><span style="font-size:15px;font-weight:700">お客様確認（Web）</span><span style="font-size:10.5px;opacity:.8">戒名・法名彫刻の 確認ページを作る／回答を 取り込む</span></div>'+
+        '<button onclick="_kkClose()" style="margin-left:auto;background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:17px;font-family:inherit">✕</button>'+
+      '</div>'+
+      '<div id="kk-scroll" style="flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px 18px;display:flex;flex-direction:column;gap:12px">'+
+        '<div id="kk-share"></div>'+
+        '<div id="kk-rows"></div>'+
+        '<div id="kk-new"></div>'+
+      '</div>'+
+      '<div style="flex:0 0 auto;padding:12px 18px;border-top:1px solid #e6e8ec;display:flex;gap:8px;align-items:center;background:#fff">'+
+        '<button onclick="_kkResetCfg()" title="URL・合言葉・店の電話・受付時間" style="font-size:11px;padding:9px 12px;background:#f2f3f5;color:#8a94a6;border:none;border-radius:9px;cursor:pointer;font-family:inherit">⚙ 接続設定</button>'+
+        '<button onclick="_kkClose()" style="margin-left:auto;font-size:13px;font-weight:600;padding:11px 22px;background:#1c1f26;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">閉じる</button>'+
+      '</div>'+
+    '</div>';
+  m.addEventListener('click', function(e){ if(e.target===m) _kkClose(); });
+  document.body.appendChild(m);
+  return m;
+}
+function _kkClose(){
+  var m=document.getElementById('kk-modal'); if(!m) return;
+  m.style.display='none';
+  (_kkState.urls||[]).forEach(function(u){ try{ URL.revokeObjectURL(u); }catch(e){} });
+  _kkState.urls=[];
+  _kkUpdateBtn();
+}
+var _kkState = { rows:[], imgs:[], pick:{}, urls:[] };
+var _KK_CARD = 'background:#fff;border:1px solid #e3e6ea;border-radius:12px;padding:12px 14px';
+var _KK_BTN = 'font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer;font-family:inherit;border:1px solid ';
+function openKakunin(){
+  if(!currentItem){ showSaveToast(false,'レコードが選択されていません'); return; }
+  if(!_kkEnsureCfg()) return;
+  _kkOpen();
+}
+function _kkOpen(){
+  var d=currentItem;
+  _kkBuildModal().style.display='flex';
+  _kkState.pick={}; _kkState.imgs=[];
+  document.getElementById('kk-share').innerHTML='';
+  _kkRenderRows(null);
+  _kkRenderNew(d);
+  _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); _kkFillRev(d); })
+    .catch(function(e){ document.getElementById('kk-rows').innerHTML='<div style="'+_KK_CARD+';color:#b3261e;font-size:12.5px">さくらの お客様確認に つながりません：'+_gaichuEsc(e.message||e)+'<br><span style="color:#6b7280">［⚙ 接続設定］の URL と 合言葉を 確かめてください。</span></div>'; });
+  _kkListImages(d).then(function(list){ if(currentItem!==d) return; _kkState.imgs=list; _kkGuess(); _kkRenderPicks(); });
+}
+function _kkRenderRows(rows){
+  var el=document.getElementById('kk-rows'); if(!el) return;
+  if(rows===null){ el.innerHTML='<div style="'+_KK_CARD+';color:#6b7280;font-size:12.5px">作った 確認ページを 読んでいます…</div>'; return; }
+  if(!rows.length){ el.innerHTML='<div style="'+_KK_CARD+';color:#6b7280;font-size:12.5px">この案件の 確認ページは まだ ありません（取り込んだ 回答は 案件フォルダーの「'+KK_SUB+'」に あります）。</div>'; return; }
+  el.innerHTML='<div style="font-size:12px;font-weight:700;color:#245a75;margin:0 2px 6px">作った 確認ページ</div>'+rows.map(function(x){
+    var s=_kkStateOf(x), t=_gaichuEsc(x.token);
+    var opened=_kkLogFirst(x,'open');
+    var sub=['作成 '+_kkMDHM(x.created), (x.rev?'修正'+x.rev:'初回'), (opened?'開いた '+_kkMDHM(opened):''), (x.answeredAt?'回答 '+_kkMDHM(x.answeredAt):'期限 '+_kkMDHM(x.expires))].filter(Boolean).join('　');
+    var btns='';
+    if(x.status==='open') btns+='<button onclick="_kkShowShare(\''+t+'\')" style="'+_KK_BTN+'#9cc3ea;background:#f2f8fe;color:#1a5a9a">🔗 URL・QR</button>';
+    btns+='<button onclick="_kkDetail(\''+t+'\')" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#334">'+(x.status==='answered'?'📄 回答を見る':'🕘 記録を見る')+'</button>';
+    if(x.status==='answered') btns+='<button onclick="_kkImport(\''+t+'\',this)" style="'+_KK_BTN+'#1a7a3a;background:#1a7a3a;color:#fff;font-weight:700">⬇ フォルダーへ取り込む</button>';
+    btns+='<button onclick="_kkDelete(\''+t+'\')" title="さくらから消す" style="'+_KK_BTN+'#e0b4ad;background:#fff;color:#c0392b">🗑</button>';
+    return '<div style="'+_KK_CARD+';margin-bottom:8px">'+
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12.5px;font-weight:700;color:'+s.c+';background:'+s.bg+';border-radius:8px;padding:3px 9px">'+s.t+'</span>'+
+      '<span style="font-size:11px;color:#6b7280">'+_gaichuEsc(sub)+'</span></div>'+
+      '<div id="kk-det-'+t+'"></div>'+
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+btns+'</div></div>';
+  }).join('');
+}
+function _kkRow(token){ return (_kkState.rows||[]).filter(function(x){ return x.token===token; })[0]; }
+
+/* ── 新しく作る ── */
+function _kkPhones(d){
+  var raw=String(d['_x96fb__x8a71__x756a__x53f7_']||'');
+  var out=raw.split(/[、,\/・\s\n]+/).map(function(t){ return t.trim(); }).filter(function(t){ return t.replace(/\D/g,'').length>=4; });
+  return out.map(function(n){ var dg=n.replace(/\D/g,''); return { label: /^0[789]0/.test(dg) ? '携帯' : '自宅', number: _kkHyphen(n) }; });
+}
+/* 伏せ字の ヒントは ハイフンの 区切りで 作る（さくら側）。携帯の 11 けたは 3-4-4 に */
+function _kkHyphen(n){ var s=String(n||'').trim(); if(/-/.test(s)) return s; var dg=s.replace(/\D/g,''); return /^0[789]0\d{8}$/.test(dg) ? dg.slice(0,3)+'-'+dg.slice(3,7)+'-'+dg.slice(7) : s; }
+function _kkRevFromSP(d){ var r=String(d['Resubmission']||''); return /再提出②/.test(r) ? 2 : /再提出①/.test(r) ? 1 : 0; }
+function _kkFillRev(d){
+  var sel=document.getElementById('kk-rev'); if(!sel || sel.getAttribute('data-touched')) return;
+  var rev=_kkRevFromSP(d);
+  (_kkState.rows||[]).forEach(function(x){ var n=(x.rev||0)+((x.status==='answered' && x.result && x.result!=='ok')?1:0); if(n>rev) rev=n; });
+  sel.value=String(Math.min(rev,9));
+}
+function _kkRenderNew(d){
+  var el=document.getElementById('kk-new'); if(!el) return;
+  var haka=d['_x304a__x5893__x306e__x540d__x7f']||'';
+  var inp='font-size:13px;padding:6px 8px;border:1px solid #ccd2dc;border-radius:7px;font-family:inherit;box-sizing:border-box';
+  var lb='display:block;font-size:11.5px;font-weight:700;color:#4a5160;margin:8px 0 3px';
+  var phones=_kkPhones(d); if(!phones.length) phones=[{label:'自宅',number:''}];
+  var revOpts=''; for(var i=0;i<=9;i++) revOpts+='<option value="'+i+'">'+(i?'修正'+i+'（お客様の画面に「修正'+i+'の原稿です」）':'初回')+'</option>';
+  el.innerHTML='<div style="'+_KK_CARD+'">'+
+    '<div style="font-size:13.5px;font-weight:700;color:#245a75">＋ 新しく 確認ページを作る</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 10px">'+
+      '<div><label style="'+lb+'">お寺（墓地）</label><input id="kk-cem" value="'+_gaichuEsc(d['_x304a__x5bfa_']||'')+'" style="width:100%;'+inp+'"></div>'+
+      '<div><label style="'+lb+'">お墓の名前</label><input id="kk-grave" value="'+_gaichuEsc(haka?haka+'家':'')+'" placeholder="○○家" style="width:100%;'+inp+'"></div>'+
+      '<div><label style="'+lb+'">施主</label><input id="kk-sesyu" value="'+_gaichuEsc(d['_x5f6b__x523b__x8005__x540d_']||'')+'" style="width:100%;'+inp+'"></div>'+
+      '<div><label style="'+lb+'">原稿の 版</label><select id="kk-rev" onchange="this.setAttribute(\'data-touched\',1)" style="width:100%;'+inp+'">'+revOpts+'</select></div>'+
+    '</div>'+
+    '<label style="'+lb+'">本人確認の 電話番号（お客様は どれかの 下4桁を 入れます。番号そのものは さくらに 残しません）</label>'+
+    '<div id="kk-phones">'+phones.map(_kkPhoneRow).join('')+'</div>'+
+    '<button onclick="document.getElementById(\'kk-phones\').insertAdjacentHTML(\'beforeend\',_kkPhoneRow({label:\'携帯\',number:\'\'}))" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;margin-top:4px">＋ 電話番号を足す</button>'+
+    '<label style="'+lb+'">写真と 確認資料（案件フォルダー・添付から 選ぶか、パソコンから）</label>'+
+    '<div id="kk-picks" style="display:flex;flex-direction:column;gap:8px"><div style="font-size:12px;color:#6b7280">フォルダーの 画像を 読んでいます…</div></div>'+
+    '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">'+
+      '<label style="font-size:12px;color:#4a5160">回答の 期限 <select id="kk-days" style="'+inp+';padding:4px 6px"><option value="14">14日</option><option value="30" selected>30日</option><option value="60">60日</option></select></label>'+
+      '<span style="font-size:11px;color:#6b7280">店の電話：'+_gaichuEsc(_kkShop().tel)+'（'+_gaichuEsc(_kkShop().hours)+'）</span>'+
+    '</div>'+
+    '<button id="kk-create" onclick="_kkCreate(this)" style="width:100%;margin-top:12px;font-size:14px;font-weight:700;padding:12px;background:#2f6f8f;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">確認ページを作る</button>'+
+    '<div id="kk-msg" style="font-size:12px;margin-top:6px;color:#6b7280"></div>'+
+  '</div>';
+}
+function _kkPhoneRow(p){
+  var inp='font-size:13px;padding:6px 8px;border:1px solid #ccd2dc;border-radius:7px;font-family:inherit';
+  var opts=['自宅','携帯','勤務先','その他'].map(function(l){ return '<option'+(l===p.label?' selected':'')+'>'+l+'</option>'; }).join('');
+  return '<div class="kk-ph" style="display:flex;gap:6px;align-items:center;margin-bottom:4px"><select class="kk-ph-l" style="'+inp+'">'+opts+'</select>'+
+    '<input class="kk-ph-n" value="'+_gaichuEsc(p.number)+'" placeholder="090-1234-5678" inputmode="tel" style="flex:1;min-width:0;'+inp+'">'+
+    '<button onclick="this.parentNode.remove()" title="この番号を外す" style="'+_KK_BTN+'#e0b4ad;background:#fff;color:#c0392b">✕</button></div>';
+}
+var KK_SLOTS = [
+  { k:'grave', t:'① お墓の写真', note:'お客様の画面「お墓」に出ます' },
+  { k:'place', t:'② 彫刻する場所の写真', note:'拓本だけでは 彫る面が わからないので' },
+  { k:'proof', t:'③ 確認資料（拓本＋原稿の JPEG）', note:'必須。彫刻原稿の［確認資料］で 保存したもの', req:true }
+];
+/* 案件フォルダー（1 階層下まで）と SP 添付の 画像。取り込んだ「お客様確認」フォルダーは 除く */
+function _kkListImages(d){
+  var out=[], jobs=[], isImg=function(n){ return /\.(jpe?g|png|webp)$/i.test(n); };
+  var fp=d['FolderPass']||'';
+  var kids=function(path, tok){
+    var enc=path.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/children?$top=999&$select=name,id,file,folder,lastModifiedDateTime&$expand=thumbnails',{headers:{Authorization:'Bearer '+tok}})
+      .then(function(r){ return r.ok ? r.json() : {value:[]}; }).then(function(j){ return j.value||[]; });
+  };
+  var th=function(f){ var t=f.thumbnails && f.thumbnails[0]; return t ? ((t.medium||t.small||{}).url||'') : ''; };
+  if(fp) jobs.push(getToken().then(function(resp){
+    var tok=resp.accessToken;
+    return kids(fp, tok).then(function(list){
+      var subs=[];
+      list.forEach(function(f){
+        if(f.file && isImg(f.name)) out.push({source:'drive', driveId:f.id, name:f.name, sub:'', t:f.lastModifiedDateTime||'', th:th(f)});
+        else if(f.folder && f.name!==KK_SUB) subs.push(kids(fp+'/'+f.name, tok).then(function(l2){
+          l2.forEach(function(g){ if(g.file && isImg(g.name)) out.push({source:'drive', driveId:g.id, name:g.name, sub:f.name, t:g.lastModifiedDateTime||'', th:th(g)}); });
+        }).catch(function(){}));
+      });
+      return Promise.all(subs);
+    });
+  }).catch(function(){}));
+  if(d['id']) jobs.push(msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()})
+    .then(function(resp){
+      return fetch("https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists/getbytitle('納骨・戒切')/items("+d['id']+")/AttachmentFiles?$select=FileName,ServerRelativeUrl",{headers:{Authorization:'Bearer '+resp.accessToken, Accept:'application/json;odata=verbose'}});
+    }).then(function(r){ return r.json(); }).then(function(j){
+      ((j && j.d && j.d.results) || []).forEach(function(f){ if(isImg(f.FileName||'')) out.push({source:'sp', name:f.FileName, relUrl:f.ServerRelativeUrl, sub:'添付', t:'', th:''}); });
+    }).catch(function(){}));
+  return Promise.all(jobs).then(function(){
+    out.sort(function(a,b){ return String(b.t).localeCompare(String(a.t)); });
+    out.forEach(function(f,i){ f.i=i; });
+    return out;
+  });
+}
+/* はじめの 選び方：確認資料は 名前に「確認資料」の いちばん新しいもの。お墓・場所は 名前から（無ければ 空） */
+function _kkGuess(){
+  var L=_kkState.imgs, P=_kkState.pick;
+  var find=function(re, not){ for(var i=0;i<L.length;i++){ var n=L[i].sub+'/'+L[i].name; if(re.test(n) && !(not && not.test(n))) return L[i]; } return null; };
+  if(!P.proof) P.proof=find(/確認資料/) || find(/原稿|校正/);
+  if(!P.place) P.place=find(/彫刻(場所|位置|面)|場所|位置/, /確認資料/);
+  if(!P.grave) P.grave=find(/お墓|墓石|全景|正面/, /確認資料|彫刻(場所|位置|面)/);
+}
+function _kkRenderPicks(){
+  var el=document.getElementById('kk-picks'); if(!el) return;
+  var L=_kkState.imgs;
+  el.innerHTML=KK_SLOTS.map(function(s){
+    var cur=_kkState.pick[s.k];
+    var curHtml = cur
+      ? (cur.source==='local'
+          ? '<img src="'+cur.url+'" style="width:64px;height:64px;object-fit:cover;border-radius:6px;border:2px solid #2f6f8f">'
+          : (cur.th ? '<img src="'+_gaichuEsc(cur.th)+'" style="width:64px;height:64px;object-fit:cover;border-radius:6px;border:2px solid #2f6f8f">' : '<span style="width:64px;height:64px;display:grid;place-items:center;border:2px solid #2f6f8f;border-radius:6px">🖼</span>'))+
+        '<span style="flex:1;min-width:0;font-size:12px;color:#334;word-break:break-all">'+_gaichuEsc((cur.sub?cur.sub+'／':'')+cur.name)+'</span>'+
+        '<button onclick="_kkUnpick(\''+s.k+'\')" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#6b7280">外す</button>'
+      : '<span style="flex:1;font-size:12px;color:'+(s.req?'#b3261e':'#6b7280')+'">'+(s.req?'選んでください（必須）':'なし（出さない）')+'</span>';
+    var strip = L.length ? '<div style="display:flex;gap:5px;overflow-x:auto;padding:4px 0 2px">'+L.map(function(f){
+        var on=cur && cur.source!=='local' && cur.i===f.i;
+        return '<button onclick="_kkPick(\''+s.k+'\','+f.i+')" title="'+_gaichuEsc((f.sub?f.sub+'／':'')+f.name)+'" style="flex:0 0 auto;width:52px;height:52px;padding:0;border-radius:6px;cursor:pointer;border:2px solid '+(on?'#2f6f8f':'#e3e6ea')+';background:#f2f3f5 '+(f.th?'url(\''+_gaichuEsc(f.th)+'\') center/cover':'')+';font-size:16px">'+(f.th?'':'🖼')+'</button>';
+      }).join('')+'</div>' : '';
+    return '<div style="border:1px solid #e3e6ea;border-radius:10px;padding:8px 10px;background:#fafbfc">'+
+      '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:12.5px;font-weight:700;color:#334">'+s.t+'</span><span style="font-size:10.5px;color:#8a94a6">'+s.note+'</span></div>'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-top:5px">'+curHtml+
+        '<input type="file" accept="image/jpeg,image/png,image/webp" id="kk-file-'+s.k+'" style="display:none" onchange="_kkPickLocal(\''+s.k+'\',this)">'+
+        '<button onclick="document.getElementById(\'kk-file-'+s.k+'\').click()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;white-space:nowrap">💻 パソコンから</button></div>'+
+      strip+'</div>';
+  }).join('') + (L.length ? '' : '<div style="font-size:11.5px;color:#6b7280">案件フォルダー・添付に 画像が ありません'+(currentItem && !currentItem['FolderPass']?'（フォルダーが まだ ありません）':'')+'。［💻 パソコンから］で 選んでください。</div>');
+}
+function _kkPick(k, i){ _kkState.pick[k]=_kkState.imgs[i]; _kkRenderPicks(); }
+function _kkUnpick(k){ delete _kkState.pick[k]; _kkRenderPicks(); }
+function _kkPickLocal(k, inp){
+  var f=inp.files && inp.files[0]; inp.value=''; if(!f) return;
+  var u=URL.createObjectURL(f); _kkState.urls.push(u);
+  _kkState.pick[k]={source:'local', file:f, name:f.name, sub:'パソコン', url:u};
+  _kkRenderPicks();
+}
+/* 画像を 送れる 大きさに。写真は 長い辺 2000px。確認資料は 縦に 長いので 縮めず、上限を 超えるときだけ 画質→大きさの 順に 落とす */
+function _kkFit(blob, maxBytes, longSide){
+  return new Promise(function(resolve, reject){
+    var url=URL.createObjectURL(blob), img=new Image();
+    img.onload=function(){
+      var w=img.naturalWidth, h=img.naturalHeight;
+      var r=longSide ? Math.min(1, longSide/Math.max(w,h)) : 1;
+      var isJ=/jpe?g/i.test(blob.type||'');
+      if(r===1 && blob.size<=maxBytes && (isJ || /png/i.test(blob.type||''))){ URL.revokeObjectURL(url); resolve(blob); return; }
+      var qs=[.9,.85,.8,.72], qi=0, tries=0;
+      (function step(){
+        var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
+        var c=document.createElement('canvas'); c.width=cw; c.height=ch;
+        var ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); ctx.drawImage(img,0,0,cw,ch);
+        c.toBlob(function(nb){
+          if(nb && nb.size<=maxBytes){ URL.revokeObjectURL(url); resolve(nb); return; }
+          if(++tries>14){ URL.revokeObjectURL(url); reject(new Error('画像を 小さく できません')); return; }
+          if(qi<qs.length-1) qi++; else r*=0.85;
+          step();
+        }, 'image/jpeg', qs[qi]);
+      })();
+    };
+    img.onerror=function(){ URL.revokeObjectURL(url); reject(new Error('画像を 読めません')); };
+    img.src=url;
+  });
+}
+/* さくらの 受信の 上限（upload.php の GET）。1 回の 送信で 3 枚まで 送るので 合計にも 気をつける */
+function _kkLimits(){
+  var toB=function(s){ var m=String(s||'').match(/^(\d+)\s*([KMG]?)/i); if(!m) return 0; var n=parseInt(m[1],10), u=m[2].toUpperCase(); return n*(u==='G'?1073741824:u==='M'?1048576:u==='K'?1024:1); };
+  return fetch(_kkCfg().url,{method:'GET'}).then(function(r){ return r.json(); }).then(function(j){
+    var up=toB(j.limits && j.limits.upload_max_filesize)||2097152, post=toB(j.limits && j.limits.post_max_size)||8388608;
+    return { one: Math.floor(up*0.95), total: Math.floor(post*0.9) };
+  }).catch(function(){ return { one: 1900000, total: 7500000 }; });
+}
+function _kkBlobOf(f){
+  if(f.source==='local') return Promise.resolve(f.file);
+  return Promise.all([
+    getToken().then(function(r){ return r.accessToken; }),
+    f.source==='sp' ? msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).then(function(r){ return r.accessToken; }) : Promise.resolve('')
+  ]).then(function(t){ return _gaichuFetchBlob(f, t[0], t[1]); });
+}
+function _kkCreate(btn){
+  var d=currentItem; if(!d) return;
+  var msg=document.getElementById('kk-msg');
+  var say=function(t, err){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; };
+  var phones=Array.prototype.map.call(document.querySelectorAll('#kk-phones .kk-ph'), function(r){
+    return { label:r.querySelector('.kk-ph-l').value, number:_kkHyphen(r.querySelector('.kk-ph-n').value) };
+  }).filter(function(p){ return p.number.replace(/\D/g,'').length>=4; });
+  if(!phones.length){ say('本人確認に使う 電話番号を 1 つ以上 入れてください。', true); return; }
+  if(!_kkState.pick.proof){ say('③ 確認資料（拓本＋原稿の JPEG）を 選んでください。', true); return; }
+  var shop=_kkShop();
+  var cs={ ref:_kkRef(d), cemetery:document.getElementById('kk-cem').value.trim(), graveName:document.getElementById('kk-grave').value.trim(),
+    sesyu:document.getElementById('kk-sesyu').value.trim(), phones:phones, rev:parseInt(document.getElementById('kk-rev').value,10)||0,
+    shopTel:shop.tel, shopHours:shop.hours, days:parseInt(document.getElementById('kk-days').value,10)||30 };
+  btn.disabled=true; btn.style.opacity='.7';
+  var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
+  say('さくらの 受信の 上限を 確かめています…');
+  _kkLimits().then(function(lim){
+    var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
+    var each=Math.min(lim.one, Math.floor(lim.total/keys.length));
+    var files={};
+    return keys.reduce(function(pr, k){
+      return pr.then(function(){
+        say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
+        return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; });
+      });
+    }, Promise.resolve()).then(function(){
+      say('さくらへ 送っています…');
+      var fd=new FormData(); fd.append('action','create'); fd.append('case', JSON.stringify(cs));
+      keys.forEach(function(k){ fd.append(k, files[k], k+(/png/.test(files[k].type)?'.png':'.jpg')); });
+      return _kkPost(fd);
+    });
+  }).then(function(r){
+    done();
+    if(!r || !r.ok){ say('作れませんでした：'+((r && r.error)||'不明'), true); return; }
+    say('');
+    showSaveToast(true,'確認ページを作りました');
+    _kkState.rows.unshift({ token:r.token, ref:cs.ref, rev:cs.rev, status:'open', created:'', expires:r.expires, log:[] });
+    _kkShowShare(r.token, r.url, r.expires);
+    _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); });
+    _kkUpdateBtn();
+  }).catch(function(e){ done(); say('作れませんでした：'+(e.message||e), true); });
+}
+
+/* ── URL・QR ── */
+function _kkPageUrl(token){ return String(_kkCfg().url||'').replace(/upload\.php.*$/,'')+'?t='+token; }
+function _kkShowShare(token, url, expires){
+  var row=_kkRow(token)||{};
+  url=url||_kkPageUrl(token); expires=expires||row.expires||'';
+  var shop=_kkShop();
+  var m=String(expires).match(/\d{4}-(\d{2})-(\d{2})/), lim=m?(parseInt(m[1],10)+'月'+parseInt(m[2],10)+'日'):'';
+  var text='戒名・法名彫刻の 原稿が できました。\n下の アドレスを 開いて、お墓と 彫刻する文字を ご確認ください。\n'+url+'\n\nはじめに ご本人確認として、お電話番号の 下4桁を お聞きします。'+(lim?'\nご回答の 期限：'+lim:'')+'\nわからないことは '+shop.tel+'（'+shop.hours+'）まで お電話ください。';
+  _kkState.shareText=text; _kkState.shareUrl=url;
+  var el=document.getElementById('kk-share');
+  el.innerHTML='<div style="'+_KK_CARD+';border-color:#9cc3ea;background:#f7fbff">'+
+    '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:13.5px;font-weight:700;color:#1a5a9a">🔗 お客様に 送る URL と QR コード</span>'+
+      '<button onclick="document.getElementById(\'kk-share\').innerHTML=\'\'" style="margin-left:auto;'+_KK_BTN+'#ccd2dc;background:#fff;color:#6b7280">閉じる</button></div>'+
+    '<div style="display:flex;gap:6px;margin-top:8px"><input id="kk-url" readonly value="'+_gaichuEsc(url)+'" onclick="this.select()" style="flex:1;min-width:0;font-size:12px;padding:7px 8px;border:1px solid #ccd2dc;border-radius:7px;font-family:monospace;background:#fff">'+
+      '<button onclick="_kkCopy(_kkState.shareUrl,\'URL\')" style="'+_KK_BTN+'#1a5a9a;background:#1a5a9a;color:#fff;font-weight:700">コピー</button></div>'+
+    '<div style="display:flex;gap:14px;margin-top:10px;align-items:flex-start;flex-wrap:wrap">'+
+      '<div id="kk-qr" style="width:168px;height:168px;background:#fff;border:1px solid #e3e6ea;border-radius:8px;display:grid;place-items:center;font-size:11px;color:#8a94a6;padding:6px;box-sizing:content-box">QR を 作っています…</div>'+
+      '<div style="flex:1;min-width:200px;display:flex;flex-direction:column;gap:6px">'+
+        '<button onclick="_kkQrSave()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#334;text-align:left">🖨 QR を 画像で保存（お手紙に 貼る）</button>'+
+        '<button onclick="_kkCopy(_kkState.shareText,\'LINE 用の 文\')" style="'+_KK_BTN+'#06c755;background:#06c755;color:#fff;font-weight:700;text-align:left">💬 LINE 用の 文を コピー</button>'+
+        '<button onclick="window.open(\'https://line.me/R/msg/text/?\'+encodeURIComponent(_kkState.shareText),\'_blank\')" style="'+_KK_BTN+'#bfe8cf;background:#f1fbf5;color:#1a7a3a;text-align:left">LINE を 開いて 送る（スマホ・LINE の 入った パソコン）</button>'+
+        '<div style="font-size:11px;color:#6b7280;line-height:1.5">'+(lim?'期限 '+lim+'。':'')+'お客様は お電話番号の 下4桁で 本人確認を してから 見ます。回答が 来たら この画面の 一覧に 出ます。</div>'+
+      '</div>'+
+    '</div></div>';
+  document.getElementById('kk-scroll').scrollTop=0;
+  _kkLoadQr().then(function(){
+    var box=document.getElementById('kk-qr'); if(!box) return;
+    box.innerHTML='';
+    new QRCode(box, { text:url, width:168, height:168, correctLevel:QRCode.CorrectLevel.M });
+  }).catch(function(){ var box=document.getElementById('kk-qr'); if(box) box.textContent='QR コードを 作れませんでした（ネットに つながっているか 確かめてください）。URL は 使えます。'; });
+}
+var _kkQrP=null;
+function _kkLoadQr(){
+  if(window.QRCode) return Promise.resolve();
+  if(_kkQrP) return _kkQrP;
+  _kkQrP=new Promise(function(res, rej){
+    var s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+    s.onload=function(){ window.QRCode ? res() : rej(new Error('QRCode')); }; s.onerror=function(){ _kkQrP=null; rej(new Error('QR の 部品を 読めません')); };
+    document.head.appendChild(s);
+  });
+  return _kkQrP;
+}
+/* 余白つきの PNG（印刷で 読み取りやすいように 大きめ） */
+function _kkQrSave(){
+  _kkLoadQr().then(function(){
+    var tmp=document.createElement('div'); tmp.style.cssText='position:fixed;left:-9999px;top:0';
+    document.body.appendChild(tmp);
+    new QRCode(tmp, { text:_kkState.shareUrl, width:600, height:600, correctLevel:QRCode.CorrectLevel.M });
+    var src=tmp.querySelector('canvas');
+    var c=document.createElement('canvas'); c.width=680; c.height=680;
+    var x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,680,680); x.drawImage(src,40,40,600,600);
+    tmp.remove();
+    var d=currentItem||{}, nm=(d['_x304a__x5893__x306e__x540d__x7f']||'')+(d['_x304a__x5893__x306e__x540d__x7f']?'家_':'');
+    c.toBlob(function(b){
+      var u=URL.createObjectURL(b), a=document.createElement('a'); a.href=u; a.download='お客様確認QR_'+nm+_kkYmd()+'.png';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){ URL.revokeObjectURL(u); }, 60000);
+    }, 'image/png');
+  }).catch(function(){ showSaveToast(false,'QR コードを 作れませんでした'); });
+}
+function _kkCopy(t, what){
+  var ok=function(){ showSaveToast(true, what+'を コピーしました'); };
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, function(){ _kkCopyOld(t); ok(); });
+  else { _kkCopyOld(t); ok(); }
+}
+function _kkCopyOld(t){ var ta=document.createElement('textarea'); ta.value=t; ta.style.cssText='position:fixed;left:-9999px'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); }catch(e){} ta.remove(); }
+function _kkYmd(){ var t=new Date(); return t.getFullYear()+('0'+(t.getMonth()+1)).slice(-2)+('0'+t.getDate()).slice(-2); }
+
+/* ── 回答・記録を 見る ── */
+var KK_EV = { create:'確認ページを作成', open:'ページを開いた', verify_ok:'本人確認 OK', verify_ng:'電話番号の 下4桁が 違う', seen:'原稿を 最後まで 見た', answer:'回答した' };
+var KK_RES = { ok:'この内容で 承諾', ng:'訂正あり', grave_ng:'お墓が 違う' };
+function _kkUaShort(ua){
+  ua=String(ua||''); var os=/iPhone/.test(ua)?'iPhone':/iPad/.test(ua)?'iPad':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/Mac OS/.test(ua)?'Mac':'';
+  var br=/Line\//.test(ua)?'LINE':/CriOS|Chrome\//.test(ua)?'Chrome':/Safari\//.test(ua)?'Safari':/Firefox\//.test(ua)?'Firefox':'';
+  return [os,br].filter(Boolean).join('・')||ua.substring(0,40);
+}
+function _kkEvText(e){
+  var t=KK_EV[e.ev]||e.ev;
+  if(e.ev==='verify_ok' && (e.who||e.rel)) t+='（'+[e.who,e.rel].filter(Boolean).join('・')+'）';
+  if(e.ev==='verify_ng' && e.tail) t+='（入力 '+e.tail+'）';
+  if(e.ev==='answer' && e.result) t+='：'+(KK_RES[e.result]||e.result);
+  return t;
+}
+function _kkDetail(token){
+  var box=document.getElementById('kk-det-'+token); if(!box) return;
+  if(box.innerHTML){ box.innerHTML=''; return; }
+  box.innerHTML='<div style="font-size:12px;color:#6b7280;margin-top:8px">読んでいます…</div>';
+  _kkAct('status',{token:token}).then(function(s){
+    if(!s || !s.ok) throw new Error((s && s.error)||'読めません');
+    var a=s.answer, h='';
+    var tr=function(k,v){ return v ? '<tr><th style="width:1%;text-align:left;font-weight:600;color:#6b7280;padding:3px 12px 3px 0;white-space:nowrap;vertical-align:top">'+k+'</th><td style="padding:3px 0;white-space:pre-wrap;word-break:break-all">'+_gaichuEsc(v)+'</td></tr>' : ''; };
+    if(a){
+      h+='<table style="font-size:12.5px;border-collapse:collapse;margin-top:8px;width:100%">'+
+        tr('回答', (KK_RES[a.result]||a.result)+'　'+_kkMDHM(a.at))+
+        tr('お名前', [a.who, a.rel].filter(Boolean).join('（')+(a.rel?'）':''))+
+        tr('承諾', a.consent ? '✅ '+(a.consentText||'') : '')+
+        tr('場所の 訂正', a.placeFix)+tr('文字の 訂正', a.fix)+
+        tr('電話', a.callMe ? '📞 当店から 電話してほしい' : '')+
+        tr('原稿', (a.rev?'修正'+a.rev:'初回')+(a.seenAt?'　最後まで 見た '+_kkMDHM(a.seenAt):''))+
+        '</table>';
+      var imgs=(a.files||[]).map(function(f){ return f.replace(/\.\w+$/,''); });
+      if(imgs.length) h+='<div class="kk-imgs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+imgs.map(function(f){ return '<div data-f="'+_gaichuEsc(f)+'" style="width:84px;text-align:center;font-size:10px;color:#6b7280"><div class="kk-im" style="width:84px;height:84px;border:1px solid #e3e6ea;border-radius:6px;background:#f2f3f5 center/cover;cursor:zoom-in"></div>'+(f==='mark'?'原稿に 印':'写真 '+f.replace('photo_',''))+'</div>'; }).join('')+'</div>';
+    }
+    h+='<details style="margin-top:8px"'+(a?'':' open')+'><summary style="font-size:12px;color:#245a75;cursor:pointer">🕘 記録（日時・IP・端末）'+(s.log||[]).length+' 件</summary>'+
+      '<table style="font-size:11.5px;border-collapse:collapse;margin-top:4px;width:100%">'+(s.log||[]).map(function(e){
+        return '<tr style="border-top:1px solid #f0f1f3"><td style="padding:3px 8px 3px 0;white-space:nowrap;color:#4a5160">'+_kkMDHM(e.at)+'</td><td style="padding:3px 8px 3px 0">'+_gaichuEsc(_kkEvText(e))+'</td><td style="padding:3px 0;color:#8a94a6;white-space:nowrap">'+_gaichuEsc(e.ev==='create'?'':(e.ip||'')+' '+_kkUaShort(e.ua))+'</td></tr>';
+      }).join('')+'</table></details>';
+    box.innerHTML=h;
+    box.querySelectorAll('[data-f]').forEach(function(div){
+      var f=div.getAttribute('data-f');
+      _kkGetFile(token, f).then(function(b){
+        var u=URL.createObjectURL(b); _kkState.urls.push(u);
+        var im=div.querySelector('.kk-im'); im.style.backgroundImage='url("'+u+'")';
+        im.onclick=function(){ window.open(u,'_blank'); };
+      }).catch(function(){});
+    });
+  }).catch(function(e){ box.innerHTML='<div style="font-size:12px;color:#b3261e;margin-top:8px">'+_gaichuEsc(e.message||e)+'</div>'; });
+}
+function _kkGetFile(token, f){
+  var fd=new FormData(); fd.append('action','getfile'); fd.append('token',token); fd.append('f',f); fd.append('secret',_kkCfg().secret||'');
+  return fetch(_kkCfg().url,{method:'POST',body:fd}).then(function(r){
+    if(!r.ok || /json/.test(r.headers.get('Content-Type')||'')) throw new Error(f+' を 読めません ('+r.status+')');
+    return r.blob();
+  });
+}
+
+/* ── 案件フォルダーへ 取り込む → さくらから 消す ── */
+function _kkSummaryText(d, s){
+  var a=s.answer||{}, c=s.case||{};
+  var L=['戒名・法名彫刻のご確認（Web）回答', '',
+    '案件：'+[d['_x9867__x5ba2__x540d_']||'', c.cemetery||'', c.graveName||''].filter(Boolean).join('／'),
+    '施主：'+(c.sesyu||''), '原稿：'+(a.rev?'修正'+a.rev:'初回'), '',
+    '回答：'+(KK_RES[a.result]||a.result||'')+'　'+(a.at||''),
+    'お名前：'+(a.who||'')+(a.rel?'（'+a.rel+'）':''),
+    '承諾：'+(a.consent?'あり　「'+(a.consentText||'')+'」':'なし')];
+  if(a.placeFix) L.push('', '■ 彫刻する場所の 訂正', a.placeFix);
+  if(a.fix) L.push('', '■ 文字の 訂正', a.fix);
+  if(a.callMe) L.push('', '■ 当店から 電話してほしい');
+  if((a.files||[]).length) L.push('', '添付：'+(a.files||[]).join('、'));
+  L.push('', '原稿を 最後まで 見た：'+(a.seenAt||''), '原稿（お客様に 見せた 画像）の SHA-256：'+(a.proofSha256||''), '回答の IP：'+(a.ip||''), '回答の 端末：'+(a.ua||''));
+  L.push('', '■ 記録');
+  (s.log||[]).forEach(function(e){ L.push((e.at||'')+'　'+_kkEvText(e)+(e.ev==='create'?'':'　'+(e.ip||'')+'　'+(e.ua||''))); });
+  L.push('', '確認ページ作成 '+(c.created||'')+'　期限 '+(c.expires||'')+'　電話のヒント '+(c.phones||[]).map(function(p){ return p.label+' '+p.masked; }).join('、'));
+  return '﻿'+L.join('\r\n');
+}
+function _kkPutSP(path, blob){
+  return getToken().then(function(resp){
+    var enc=path.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content',{method:'PUT',headers:{Authorization:'Bearer '+resp.accessToken,'Content-Type':blob.type||'application/octet-stream'},body:blob});
+  }).then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error(path.split('/').pop()+'：'+t.substring(0,100)); }); });
+}
+function _kkImport(token, btn){
+  var d=currentItem; if(!d) return;
+  var go=function(){
+    var base=String(d['FolderPass']).replace(/\/+$/,'')+'/'+KK_SUB;
+    btn.disabled=true; var lbl=btn.textContent; var set=function(t){ btn.textContent=t; };
+    set('回答を 読んでいます…');
+    _kkAct('status',{token:token}).then(function(s){
+      if(!s || !s.ok || !s.answer) throw new Error((s && s.error) || '回答が ありません');
+      var a=s.answer, ymd=String(a.at||'').replace(/\D/g,'').substring(0,8)||_kkYmd();
+      var pre=ymd+'_'+(a.rev?'修正'+a.rev:'初回')+'_';
+      var res=a.result==='ok'?'承諾':a.result==='grave_ng'?'お墓が違う':'訂正あり';
+      var jobs=[
+        { name:pre+'回答_'+res+'.txt', get:function(){ return Promise.resolve(new Blob([_kkSummaryText(d,s)],{type:'text/plain;charset=utf-8'})); } },
+        { name:pre+'回答記録.json', get:function(){ return Promise.resolve(new Blob([JSON.stringify({case:s.case, answer:a, log:s.log}, null, 2)],{type:'application/json'})); } },
+        { name:pre+'お客様に見せた原稿', f:'proof' }
+      ];
+      (a.files||[]).forEach(function(fn){
+        var b=fn.replace(/\.\w+$/,'');
+        jobs.push({ name:pre+(b==='mark'?'原稿に印':'お客様の写真'+b.replace('photo_','')), f:b });
+      });
+      var i=0;
+      return jobs.reduce(function(pr, j){
+        return pr.then(function(){
+          set('取り込み中 '+(++i)+'/'+jobs.length+' …');
+          var p=j.get ? j.get() : _kkGetFile(token, j.f);
+          return p.then(function(blob){
+            var name=j.name; if(j.f) name+=/png/.test(blob.type)?'.png':/webp/.test(blob.type)?'.webp':/heic/.test(blob.type)?'.heic':'.jpg';
+            return _kkPutSP(base+'/'+name, blob);
+          });
+        });
+      }, Promise.resolve()).then(function(){ return { s:s, n:jobs.length }; });
+    }).then(function(r){
+      showSaveToast(true, '回答を「'+KK_SUB+'」フォルダーへ '+r.n+' 件 取り込みました');
+      if(confirm('案件フォルダーの「'+KK_SUB+'」へ 取り込みました（'+r.n+' 件）。\nさくらの 確認ページと 回答を 消しますか？\n（お客様が もう一度 開くと「見つかりません」に なります）')){
+        return _kkAct('delete',{token:token}).then(function(x){ if(!x || !x.ok) throw new Error('さくらから 消せませんでした：'+((x && x.error)||'')); });
+      }
+    }).then(function(){ _kkOpen(); _kkUpdateBtn(); })
+      .catch(function(e){ btn.disabled=false; btn.textContent=lbl; showSaveToast(false, '取り込めませんでした：'+(e.message||e)); });
+  };
+  if(d['FolderPass']){ go(); return; }
+  if(!confirm('この案件の フォルダーが まだ ありません。作ってから 取り込みますか。\n\n'+buildNokFolderPath(d))) return;
+  Promise.resolve(createNokFolder(d, { silent:true })).then(function(){ if(!d['FolderPass']) throw new Error('フォルダーが できませんでした'); go(); })
+    .catch(function(e){ showSaveToast(false, '取り込めませんでした：'+((e && e.message) || e)); });
+}
+function _kkDelete(token){
+  var row=_kkRow(token)||{};
+  var warn = row.status==='answered' ? '\n\n⚠ 回答は まだ 取り込んで いないかも しれません。先に［⬇ フォルダーへ取り込む］を してください。' : '\n\nお客様が 開くと「見つかりません」に なります。';
+  if(!confirm('さくらの この 確認ページを 消しますか？'+warn)) return;
+  _kkAct('delete',{token:token}).then(function(r){
+    if(r && r.ok){ showSaveToast(true,'消しました'); _kkOpen(); _kkUpdateBtn(); }
+    else showSaveToast(false,'消せませんでした：'+((r && r.error)||''));
+  });
 }
 
 function _gaichuBuildModal(){
@@ -27970,6 +28547,11 @@ function loadSettingsFromSP(){
         localStorage.setItem('gaichuCfg', JSON.stringify({url:gc.url, secret:gc.secret}));
       }
     }
+    // お客様確認（Web）の設定（v1.9.539）
+    if(data['kakunin_cfg_shared_v1']){
+      var kc = data['kakunin_cfg_shared_v1'] || {};
+      if(kc.url && kc.secret) localStorage.setItem('kakuninCfg', JSON.stringify({url:kc.url, secret:kc.secret, shopTel:kc.shopTel||'', shopHours:kc.shopHours||''}));
+    }
     console.log('[SP] UI設定読込完了');
   }).catch(function(e){ console.warn('[SP] UI設定読込エラー:',e); });
 }
@@ -28002,6 +28584,13 @@ function saveSettingsToSP(){
       if(gcRaw){
         var gcCfg = JSON.parse(gcRaw) || {};
         if(gcCfg.url || gcCfg.secret) data['gaichu_cfg_shared_v1'] = {url:gcCfg.url||'', secret:gcCfg.secret||''};
+      }
+    } catch(e){}
+    try {
+      var kcRaw = localStorage.getItem('kakuninCfg');
+      if(kcRaw){
+        var kcCfg = JSON.parse(kcRaw) || {};
+        if(kcCfg.url || kcCfg.secret) data['kakunin_cfg_shared_v1'] = {url:kcCfg.url||'', secret:kcCfg.secret||'', shopTel:kcCfg.shopTel||'', shopHours:kcCfg.shopHours||''};
       }
     } catch(e){}
     getToken().then(function(res){

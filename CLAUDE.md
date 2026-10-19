@@ -39,6 +39,9 @@
 - 画面：リポジトリの 根で `(setsid python3 -m http.server 8899 >/dev/null 2>&1 &)`、止めるのは
   `for p in $(pgrep -f "^python3 -m http.server 8899"); do kill $p; done`（`pkill -f` は 使わない）
 - Playwright は `/opt/node22/lib/node_modules/playwright`（Chromium は 入っている）。拓本AI は `fetch` を 置きかえた 仮の サーバーで 試す
+- 業務アプリを 開くときは `addInitScript` で `window.msal` の 仮を 置く（無いと とちゅうで 止まり、あとの 変数が できない）。外への 通信は `page.route` で 止める
+- AI（Ollama）を 使う しくみは `fetch` を 置きかえて `/api/tags`・`/api/chat` に 仮の 答えを 返して 試す。本物の AI の 出来は 本人に 試して もらう
+- pdf.js（cdnjs）は ここから 届かない。試すときは scratchpad で `npm pack pdfjs-dist@3.11.174` して `page.route` で 返す
 - 拓本AI の 学習を 試すときは scratchpad に venv を 作り `pip install torch`（PyPI。download.pytorch.org は 届かない）。
   仮の 列（raw.png・ink.png・meta.json）を 作って `train_box.py` を 回す
 

@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.536';
+var APP_VERSION = 'v1.9.537';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8823,11 +8823,15 @@ function closeNewItemModal() {
      年の 無い 日付は メールの 日付（無ければ 今日）から 決め、曜日が 書いてあれば それに 合う 年に する
    ・お寺は AI に 選ばせない（v1.9.449 の 教訓）。書いてある 字を 一覧と 照らす
    ・貼った メールは 注意事項メモに 追記（本人「注意事項の欄に追記して」）
-   ・入っている 欄は チェックしない かぎり 上書きしない。入れた 欄は 黄色（さわると 戻る） */
+   ・入っている 欄は チェックしない かぎり 上書きしない。入れた 欄は 黄色（さわると 戻る）
+   ・お寺から 回して もらう メールも（v1.9.537。本人「お客様ではなく、お寺から情報を回して頂く場合も想定してほしい」）。
+     顧客は メールを 書いた人では なく 施主・喪主など。差出人を［おまかせ／お客様／お寺／業者］で 選べる。
+     お寺・業者からの ときは、署名（お寺の 電話・住所）にしか 無い 番号は 顧客の ものに しない（⚠・チェック なし） */
 var _niAiRows = null, _niAiCus = [], _niAiSeq = 0;
 function niAiReset() {
   _niAiSeq++; _niAiRows = null; _niAiCus = [];
   var s = document.getElementById('ni-ai-src'); if (s) s.value = '';
+  var f = document.getElementById('ni-ai-from'); if (f) f.value = '';
   var r = document.getElementById('ni-ai-res'); if (r) r.innerHTML = '';
   var m = document.getElementById('ni-ai-msg'); if (m) { m.textContent = ''; m.style.color = '#888'; }
   var b = document.getElementById('ni-ai-btn'); if (b) { b.disabled = false; b.textContent = '🤖 読み取る'; }
@@ -8956,6 +8960,34 @@ function niAiTemple(raw) {
   if (!hit && typeof _aiTempleName === 'function') { var y = _aiTempleName(t); if (y && y !== t) hit = y; }
   return hit ? { v: hit, known: true } : { v: t, known: false };
 }
+/* メールの 終わりの 署名（お寺・業者の 電話・住所）が 何行目から かを さがす。
+   ① 終わりの 15 行に 区切りの 線（――― など）が あれば そこから
+   ② 無ければ 終わりの 8 行で、お寺・会社の 名前「だけ」の 短い 行（宗教法人 〇〇寺・〇〇寺 寺務所 など）から
+   見つからなければ 行の 数（＝署名 なし） */
+function niAiSigStart(src, names) {
+  var L = String(src || '').split(/\n/), n = L.length, i;
+  for (i = n - 1; i >= Math.max(0, n - 15); i--) if (/^[\s　]*[-ー―─━＿_=＝~〜＊*・]{3,}/.test(L[i])) return i;
+  for (i = Math.max(0, n - 8); i < n; i++) {
+    var ln = L[i].replace(/[\s　]/g, ''), hit = false;
+    (names || []).forEach(function (nm) {
+      nm = String(nm || '').replace(/[\s　]/g, '');
+      if (nm.length >= 2 && ln.indexOf(nm) >= 0 && ln.replace(nm, '').replace(/宗教法人|寺務所|事務所|副住職|住職|庫裡|社務所|株式会社|有限会社|[()（）]/g, '').length <= 4) hit = true;
+    });
+    if (hit || /^(宗教法人|寺務所)/.test(ln)) return i;
+  }
+  return n;
+}
+/* 値が 署名の 行に しか 出てこないか（数字は 数字だけで 比べる） */
+function niAiOnlySig(src, sig, v, digits) {
+  var L = String(src || '').split(/\n/), key = digits ? String(v).replace(/\D/g, '') : String(v).replace(/[\s　]/g, '').slice(0, 8);
+  if (key.length < (digits ? 6 : 4) || sig >= L.length) return false;
+  var hit = [];
+  L.forEach(function (ln, i) {
+    var t = digits ? niAiZ2h(ln).replace(/\D/g, '') : niAiZ2h(ln).replace(/[\s　]/g, '');
+    if (t.indexOf(key) >= 0) hit.push(i);
+  });
+  return hit.length > 0 && hit.every(function (i) { return i >= sig; });
+}
 /* 顧客リストに 同じ 人が いるか（電話が 同じ・名前が 同じ） */
 function niAiCusMatch(name, tel) {
   var list = (typeof _aiCustomerList === 'function') ? _aiCustomerList() : [];
@@ -8969,9 +9001,13 @@ function niAiCusMatch(name, tel) {
   out.sort(function (a, b) { return (a.why === '電話が 同じ' ? 0 : 1) - (b.why === '電話が 同じ' ? 0 : 1); });
   return out.slice(0, 5);
 }
-function niAiPrompt(src, today) {
+function niAiPrompt(src, today, from) {
   var sys = 'あなたは石材店（お墓の工事・納骨・墓誌への戒名の彫刻）の事務員です。' +
-    'お客様などから届いたメールを読み、納骨・戒切の依頼を登録するための情報を抜き出します。\n' +
+    'お客様・お寺・業者から届いたメールを読み、納骨・戒切の依頼を登録するための情報を抜き出します。\n' +
+    '大事：「顧客」は、納骨・彫刻を頼む家の方（施主・喪主・ご遺族の代表）です。' +
+    'お寺や業者から届いたメールでは、メールを書いた人（住職・寺務所・業者）は顧客ではありません。' +
+    '本文に書いてある施主・喪主・ご遺族の名前・電話・住所を顧客として書き、お寺や業者の署名にある電話・住所は書きません。' +
+    '引用（> で始まる行）にある石材店（こちら）の署名の電話・住所も書きません。\n' +
     '決まり：\n' +
     '・メールに書いてあることだけを書く。書いていないことは空文字 ""（推測で埋めない）\n' +
     '・名前・住所・お寺の名前は、書いてある字のとおりに写す（読みかえ・言いかえをしない）\n' +
@@ -8979,19 +9015,20 @@ function niAiPrompt(src, today) {
     '・JSON だけを出力する（説明は書かない）';
   var schema = '{\n' +
     ' "bunrui": "納骨 | 戒切 | 納骨戒切 | 骨出し | \\"\\"",\n' +
-    ' "name": "依頼してきた人（メールを書いた人）の氏名。署名や「〇〇です」から。亡くなった方ではない",\n' +
-    ' "furigana": "その人のフリガナ（メールに書いてあるときだけ）",\n' +
+    ' "sender": "メールを書いた人：お客 | お寺 | 業者 | その他",\n' +
+    ' "sender_name": "メールを書いたお寺・会社・人の名前（署名などから。例：〇〇寺）",\n' +
+    ' "name": "顧客（施主・喪主・ご遺族の代表）の氏名。お客様からのメールなら書いた人。お寺・業者からのメールなら本文の施主・喪主など。亡くなった方ではない",\n' +
+    ' "furigana": "顧客のフリガナ（メールに書いてあるときだけ）",\n' +
     ' "kamei": "お墓の家名（例：山田家）",\n' +
     ' "sesyu": "施主の名前（書いてあれば）",\n' +
-    ' "temple": "お寺・霊園の名前（さん・様は付けない）",\n' +
-    ' "tel": "依頼者の電話番号",\n' +
-    ' "zip": "資料の送り先の郵便番号",\n' +
-    ' "address": "資料の送り先の住所（都道府県から番地・建物名まで）",\n' +
-    ' "addressee": "資料の送り先の宛名（依頼者と違うときだけ）",\n' +
+    ' "temple": "お寺・霊園の名前（さん・様は付けない）。お寺からのメールなら、そのお寺",\n' +
+    ' "tel": "顧客の電話番号（お寺・業者・石材店の電話は書かない）",\n' +
+    ' "zip": "資料の送り先（顧客）の郵便番号（お寺・業者のものは書かない）",\n' +
+    ' "address": "資料の送り先（顧客）の住所（都道府県から番地・建物名まで。お寺・業者のものは書かない）",\n' +
+    ' "addressee": "資料の送り先の宛名（顧客と違うときだけ）",\n' +
     ' "nok_date": "納骨の日付（書いてあるとおり。例：11月23日（日））",\n' +
     ' "nok_time": "納骨の時刻（書いてあるとおり。例：午前10時）",\n' +
     ' "nok_place": "お経を始める場所：本堂 | 墓前 | 墓前で集合（お経なし） | 自宅など | \\"\\"",\n' +
-    ' "sender": "メールを書いた人：お客 | お寺 | 業者 | その他",\n' +
     ' "mail_date": "メールを送った日（書いてあれば、書いてあるとおり）",\n' +
     ' "engrave": [{"kaimyo": "戒名", "zokumyo": "俗名", "meinichi": "命日（書いてあるとおり）", "age": "享年・行年"}],\n' +
     ' "notes": "そのほかのご要望・注意すること（短く。なければ \\"\\"）"\n' +
@@ -8999,6 +9036,9 @@ function niAiPrompt(src, today) {
   var user = '次の形の JSON で答えてください。\n' + schema + '\n\n' +
     'bunrui の決め方：納骨だけ → "納骨"、戒名などの彫刻（墓誌・石塔への追加彫刻）だけ → "戒切"、納骨と彫刻の両方 → "納骨戒切"、お骨を取り出す → "骨出し"、わからなければ ""。\n' +
     'engrave は彫刻する（亡くなった）方ごとに 1 つ。彫刻の話がなければ []。\n' +
+    (from === 'お客' ? 'このメールは顧客（お客様）本人から届いたものです。\n'
+      : from === 'お寺' ? 'このメールはお寺から届いたものです。メールを書いたお寺の人は顧客ではありません。temple はそのお寺です。\n'
+      : from === '業者' ? 'このメールは業者から届いたものです。メールを書いた業者の人は顧客ではありません。\n' : '') +
     '今日の日付：' + today + '\n\n' +
     '--- メールここから ---\n' + String(src).slice(0, 6000) + '\n--- メールここまで ---';
   return { system: sys, user: user };
@@ -9038,7 +9078,7 @@ function niAiJson(t) {
   try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { return null; }
 }
 /* 読み取った 値 → 見くらべの 行 */
-function niAiRows(ai, src, mailDate) {
+function niAiRows(ai, src, mailDate, from) {
   ai = (ai && typeof ai === 'object') ? ai : {};
   function S(x) { return (x == null || typeof x === 'object') ? '' : String(x).replace(/^[\s　]+|[\s　]+$/g, ''); }
   var rows = [], ref = mailDate || niAiToday();
@@ -9056,23 +9096,46 @@ function niAiRows(ai, src, mailDate) {
   }
   var B = { '納骨': 1, '戒切': 1, '納骨戒切': 1, '骨出し': 1 };
   add('bunrui', 'ni-bunrui', '分類', B[S(ai.bunrui)] ? S(ai.bunrui) : '');
-  var name = S(ai.name).replace(/[ 　]*(様|さま)$/, '');
+  /* 差出人：選んだ もの ＞ AI の 判断。お寺・業者からなら 署名の 電話・住所に 気を つける */
+  var snd = from || S(ai.sender), third = (snd === 'お寺' || snd === '業者');
+  var sndName = S(ai.sender_name);
+  var name = S(ai.name).replace(/^(施主|喪主|ご遺族|ご家族|檀家)(様|さま)?[ 　]*[:：]?[ 　]*/, '').replace(/[ 　]*(様|さま|殿)$/, '');
   add('name', 'ni-name', '顧客名', name);
   add('furi', 'ni-furi', 'フリガナ', S(ai.furigana).replace(/[ぁ-ゖ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0x60); }));
-  var tp = niAiTemple(ai.temple);
+  var tp = niAiTemple(S(ai.temple) || (snd === 'お寺' ? sndName : ''));
   add('temple', 'ni-temple', 'お寺', tp.v, { note: tp.known ? '✓ 一覧に あり' : '⚠ 一覧に ない 名前' });
-  var tel = niAiTel(S(ai.tel)) || niAiTel(src);
-  add('tel', 'ni-tel', '電話番号', tel);
+  var sig = third ? niAiSigStart(src, [sndName, tp.v, S(ai.temple)]) : String(src).split(/\n/).length;
+  var SIGNOTE = '⚠ ' + (snd === 'お寺' ? 'お寺' : '業者') + 'の 署名の ものかも';
+  /* お寺・業者の メールでは、文から 拾い直すのは 署名より 前（本文）だけ。
+     AI が 署名の 番号を 出したら 本文の 番号に かえる。本文から 拾った ものは チェック なしで 出す */
+  var body = third ? String(src).split(/\n/).slice(0, sig).join('\n') : String(src);
+  var telAi = niAiTel(S(ai.tel)), tel = telAi, telOpt = null, telSig = false;
+  if (third && tel && niAiOnlySig(src, sig, tel, true)) {
+    var telB = niAiTel(body);
+    if (telB) { tel = telB; telOpt = { note: 'AI の 答え ' + telAi + ' は ' + SIGNOTE.replace('⚠ ', '').replace('かも', '') + 'なので 本文から' }; }
+    else { telSig = true; telOpt = { on: false, note: SIGNOTE }; }
+  } else if (!tel) {
+    tel = niAiTel(body);
+    if (tel && third) telOpt = { on: false, note: '本文から 拾った（AI は 空）。顧客の 番号か 確かめて' };
+  }
+  add('tel', 'ni-tel', '電話番号', tel, telOpt);
   if (mailDate) add('reqdate', 'ni-req-date', '依頼日', mailDate, { auto: todayStr(), note: 'メールの 日付' });
-  var snd = S(ai.sender);
   var inf = snd === 'お客' || snd === 'お寺' ? snd : snd === '業者' ? (/マキノ/.test(src) ? '業者マキノ' : 'その他') : snd === 'その他' ? 'その他' : '';
   add('informer', 'ni-informer', '依頼情報提供者', inf);
-  var zip = niAiZip('〒' + niAiZ2h(S(ai.zip))) || niAiZip(src);
-  add('zip', 'ni-zip', '郵便番号', zip);
+  var zip = niAiZip('〒' + niAiZ2h(S(ai.zip))) || (third ? '' : niAiZip(src));
   var ad = niAiZ2h(S(ai.address)).replace(/^[ 　]*〒?[ 　]*\d{3}-?\d{4}[ 　]*/, '').replace(/^[\s　]+|[\s　]+$/g, '');
+  var adSig = third && ((zip && niAiOnlySig(src, sig, zip, true)) || (ad && niAiOnlySig(src, sig, ad, false)));
+  var adOpt = adSig ? { on: false, note: SIGNOTE } : null;
+  var zipOpt = adOpt;
+  if (adSig) {   // 本文に 別の 〒 が あれば それ（住所は 手で）
+    var zipB = niAiZip(body);
+    if (zipB && zipB !== zip) { zip = zipB; ad = ''; zipOpt = { note: 'AI の 答えは 署名の もの なので 本文の 〒 から。住所は 手で' }; }
+  }
+  if (!zip && third) { zip = niAiZip(body); if (zip) zipOpt = { on: false, note: '本文から 拾った（AI は 空）。顧客の 〒 か 確かめて' }; }
+  add('zip', 'ni-zip', '郵便番号', zip, zipOpt);
   var cut = ad.search(/\d/), a1 = cut > 0 ? ad.slice(0, cut) : ad, a2 = cut > 0 ? ad.slice(cut) : '';
-  add('addr1', 'ni-addr1', '住所1', a1);
-  add('addr2', 'ni-addr2', '住所2', a2);
+  add('addr1', 'ni-addr1', '住所1', a1, adOpt);
+  add('addr2', 'ni-addr2', '住所2', a2, adOpt);
   var sameChk = document.getElementById('ni-addr-same');
   if (!(sameChk && sameChk.checked)) add('addressee', 'ni-addressee', '宛名', S(ai.addressee) || ((zip || ad) ? name : ''));
   var ndi = {}, nd = niAiDate(S(ai.nok_date), ref, ndi);
@@ -9096,18 +9159,20 @@ function niAiRows(ai, src, mailDate) {
   /* 彫刻の 内容が メールに あれば、原稿受取（日付・提供者）の 候補も 出す。決めつけないよう 最初は チェック なし */
   if (eng.length) {
     add('gotms', 'ni-got-ms', '原稿受取日', ref, { on: false, note: '彫刻の 内容が メールに ある' });
-    add('mscontrib', 'ni-ms-contrib', '原稿提供者', inf === 'お寺' ? 'お寺' : inf === 'お客' ? 'お客様' : '', { on: false });
+    add('mscontrib', 'ni-ms-contrib', '原稿提供者', inf === 'お寺' ? 'お寺' : inf === 'お客' ? 'お客様' : inf === '業者マキノ' ? 'マキノ' : '', { on: false });
   }
   /* 注意事項メモ：彫刻・ご要望の まとめ ＋ 貼った メール（追記） */
   var md = new Date(), notes = S(ai.notes), memo = [];
   if (eng.length) memo.push('【メールより：彫刻】\n' + eng.join('\n'));
   if (notes) memo.push('【メールより：ご要望】\n' + notes);
-  memo.push('【お客様からのメール（' + (md.getMonth() + 1) + '/' + md.getDate() + ' 貼り付け）】\n' + String(src).replace(/^\s+|\s+$/g, ''));
+  memo.push('【' + (snd === 'お寺' ? 'お寺' + (tp.v ? '（' + tp.v + '）' : '') : snd === '業者' ? '業者' + (sndName ? '（' + sndName + '）' : '') : 'お客様') + 'からのメール（' + (md.getMonth() + 1) + '/' + md.getDate() + ' 貼り付け）】\n' + String(src).replace(/^\s+|\s+$/g, ''));
   var memoEl = document.getElementById('ni-memo'), had = memoEl && memoEl.value.indexOf(String(src).replace(/^\s+|\s+$/g, '')) >= 0;
   add('memo', 'ni-memo', '注意事項メモ（追記）', memo.join('\n'), {
     kind: 'append', same: had, on: !had,
     show: (eng.length ? eng.join('\n') + '\n' : '') + (notes ? 'ご要望：' + notes + '\n' : '') + '＋ メールの 文（' + String(src).replace(/\s/g, '').length + ' 字）'
   });
+  rows.sender = snd ? (snd === 'お客' ? 'お客様' : snd) + (sndName && snd !== 'お客' ? '（' + sndName + '）' : '') + (from ? '（選んだ もの）' : '（AI の 判断）') : '';
+  rows.telOk = tel && !telSig && !(telOpt && telOpt.on === false) ? tel : '';
   return rows;
 }
 function niAiRender(rows, cus, msg) {
@@ -9116,6 +9181,8 @@ function niAiRender(rows, cus, msg) {
   var h = '<div style="margin-top:8px;border:1px solid #d8c8e8;border-radius:6px;overflow:hidden;background:#fff">' +
     '<div style="background:#f5f0fa;color:#5a2a7a;font-size:11px;font-weight:700;padding:5px 8px">読み取った 結果（チェックした 項目だけ 入れます）</div>';
   if (msg) h += '<div style="font-size:11px;color:#b45309;padding:5px 8px;white-space:pre-wrap">' + E(msg) + '</div>';
+  if (rows.sender) h += '<div style="font-size:11px;color:#555;padding:4px 8px;border-top:1px solid #f0eaf5">差出人：<b>' + E(rows.sender) + '</b>' +
+    (/お寺|業者/.test(rows.sender) ? '　顧客は 本文の 施主・喪主など' : '') + '</div>';
   h += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
   rows.forEach(function (r, i) {
     var val = E(r.show).replace(/\n/g, '<br>');
@@ -9161,7 +9228,8 @@ function niAiRead() {
     if (seq !== _niAiSeq) { clearInterval(tick); return; }
     if (msg) msg.textContent = '読み取り中… ' + Math.round((Date.now() - t0) / 1000) + ' 秒';
   }, 1000);
-  var p = niAiPrompt(src, mailDate || niAiToday());
+  var from = (document.getElementById('ni-ai-from') || {}).value || '';
+  var p = niAiPrompt(src, mailDate || niAiToday(), from);
   niAiAsk(p.system, p.user).then(function (txt) {
     var ai = niAiJson(txt);
     if (!ai) throw new Error('AI の 答えが JSON に なっていません：' + String(_stripThinkTags(txt)).slice(0, 120));
@@ -9172,14 +9240,15 @@ function niAiRead() {
     if (btn) { btn.disabled = false; btn.textContent = '🤖 読み取る'; }
     var ai = res.ai || {};
     if (!mailDate) mailDate = niAiDate(ai.mail_date == null ? '' : String(ai.mail_date), niAiToday());
-    var rows = niAiRows(ai, src, mailDate);
+    var rows = niAiRows(ai, src, mailDate, from);
     _niAiRows = rows;
-    _niAiCus = niAiCusMatch(ai.name == null ? '' : String(ai.name), (rows.filter(function (r) { return r.k === 'tel'; })[0] || {}).v || niAiTel(src));
+    var nmRow = rows.filter(function (r) { return r.k === 'name'; })[0];
+    _niAiCus = niAiCusMatch(nmRow ? nmRow.v : '', rows.telOk);
     var sec = Math.round((Date.now() - t0) / 1000);
     var warn = '';
     if (res.err) {
       warn = 'AI で 読み取れませんでした：' + ((res.err && res.err.message) || res.err) + (typeof aiNetHint === 'function' ? aiNetHint(res.err) : '') +
-        '\n文から 拾えた 電話・郵便番号 と、メールの 追記だけ 出しています。';
+        (from === 'お寺' || from === '業者' ? '\nメールの 追記だけ 出しています（お寺・業者の メールでは 文から 電話を 拾いません）。' : '\n文から 拾えた 電話・郵便番号 と、メールの 追記だけ 出しています。');
       if (msg) { msg.style.color = '#c00'; msg.textContent = '⚠ AI に 届きませんでした（' + sec + ' 秒）'; }
     } else if (msg) { msg.style.color = '#1a7a3a'; msg.textContent = '✅ 読み取りました（' + sec + ' 秒）。下で 見くらべてください'; }
     niAiRender(rows, _niAiCus, warn);
@@ -32507,10 +32576,13 @@ function openImageViewer(imgs, startIdx) {
       <!-- お客様の メールから 入力（AI。v1.9.536）：貼る →［読み取る］→ 見くらべて 入れる。登録は いつもどおり -->
       <div class="ni-sec" id="ni-ai-sec">
         <button type="button" onclick="niAiToggle()" style="width:100%;text-align:left;padding:6px 10px;background:#6a3a8a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:700">
-          📧 お客様の メールから 入力（AI） <span id="ni-ai-arrow">▸</span></button>
+          📧 メールから 入力（AI。お客様・お寺から） <span id="ni-ai-arrow">▸</span></button>
         <div id="ni-ai-body" style="display:none;margin-top:8px">
-          <textarea id="ni-ai-src" rows="7" class="ni-inp" placeholder="お客様からの メールの 文を そのまま 貼り付けてください（件名・送った日も いっしょだと 年が 分かります）" style="resize:vertical;font-size:12px;line-height:1.5"></textarea>
+          <textarea id="ni-ai-src" rows="7" class="ni-inp" placeholder="お客様・お寺からの メールの 文を そのまま 貼り付けてください（件名・送った日も いっしょだと 年が 分かります）" style="resize:vertical;font-size:12px;line-height:1.5"></textarea>
           <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <select id="ni-ai-from" class="ni-inp" title="メールを 書いた人。お寺・業者からなら、顧客は 本文の 施主・喪主など" style="width:auto;padding:6px 6px;font-size:12px">
+              <option value="">差出人：おまかせ</option><option value="お客">お客様から</option><option value="お寺">お寺から</option><option value="業者">業者から</option>
+            </select>
             <button type="button" id="ni-ai-btn" onclick="niAiRead()" style="padding:7px 14px;background:#6a3a8a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600">🤖 読み取る</button>
             <span id="ni-ai-msg" style="font-size:11px;color:#888;flex:1;min-width:150px"></span>
           </div>

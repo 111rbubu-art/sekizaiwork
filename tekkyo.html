@@ -184,8 +184,8 @@ table.master .lbl{text-align:left;background:#fafbfc}
   font-family:'MS Mincho','Hiragino Mincho Pro','Yu Mincho',serif;
   font-size:10pt;color:#000;position:relative;
   /* 判子サイズ調整用 CSS 変数（数値を編集して大きさを変更） */
-  --stamp-size: 18mm;     /* 係印（合計金額の右） */
-  --shaban-size: 20mm;    /* 社判（会社情報の右） */
+  --stamp-size: 10mm;     /* 係印（合計金額の右）。v4.1 本人「係印 10mm」 */
+  --shaban-size: 24mm;    /* 社判（会社情報の右）。v4.1 本人「社判 24mm」 */
 }
 /* タイトル行：御見積書（中央）＋ 見積No/日付（右） */
 /* 題（御見積書）は **用紙のまん中**。右の見積№・日付に押されてずれないよう、
@@ -289,7 +289,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 
 <div class="topbar">
   <h1>撤去工事 見積システム</h1>
-  <span class="ver">v4.0</span>
+  <span class="ver">v4.1</span>
   <div class="topbar-btns">
     <div class="row">
       <span class="mode-toggle" id="mode_toggle" title="保存先：PC=ブラウザ内 / SP=SharePoint">
@@ -391,7 +391,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
       <div class="sumrow total"><span>合計（税込）</span><span id="sum_grand">¥0</span></div>
       <div class="sumrow discount" style="border-bottom:none">
         <span>調整値引き後合計</span>
-        <input type="number" id="adj_total" oninput="recalc()" placeholder="0">
+        <input type="number" id="adj_total" oninput="recalc()" onfocus="_adjPrevVal=this.value" onchange="checkAdjPlus(true)" placeholder="0">
       </div>
       <div style="font-size:10px;color:#9fb0c4">税込で直接入れると、差額が値引きになります（0 で無効）</div>
 
@@ -767,8 +767,8 @@ let EST_OVERRIDES = {};
    大きさは 変えられない（v4.0。本人「マウスのセンターで大きさを変更出来てしまします。違和感があるので調整不可にして」）。
    前に ホイールで 変えて 保存された 大きさも、読むときに 元の 大きさへ 戻す */
 const DEFAULT_STAMPS = {
-  stamp:  {x:0, y:0, size:18},   // 係印（合計金額の右）
-  shaban: {x:0, y:0, size:20},   // 社判（会社情報の右）
+  stamp:  {x:0, y:0, size:10},   // 係印（合計金額の右）。大きさは 固定（v4.1：10mm）
+  shaban: {x:0, y:0, size:24},   // 社判（会社情報の右）。大きさは 固定（v4.1：24mm）
 };
 let STAMPS = (() => {
   let s = null;
@@ -1900,6 +1900,7 @@ function renderEstimate(){
       }
       refreshEstTotals();
       markDirty();
+      checkAdjPlus(false);
     });
   });
   /* 見えている 明細の 金額（1 円未満を 四捨五入した 数）から 調整・小計・消費税を 出す（v4.0）。
@@ -1931,9 +1932,43 @@ function applyEstTotal(el){
   const cur  = parseFloat($('adj_total').value) || 0;
   const next = n > 0 ? String(n) : '';
   if(next === (cur > 0 ? String(cur) : '')){ renderEstimate(); return; }  // 変わっていなければ表示だけ整える
+  _adjPrevVal = $('adj_total').value;
   $('adj_total').value = next;
   markDirty();
   recalc();
+  checkAdjPlus(true);
+}
+
+/* ───── 調整は 値引き（マイナス）だけ（v4.1。本人「調整は プラスの場合は無いので、その場合はアラートを出して」）─────
+   合計（税込）を 明細の 合計（税込・見えている 明細の 金額から）より 高く 入れたら 知らせる。
+   ・入れた ばかり（入力シートの 欄・プレビューの 合計）なら、知らせて 入れる 前の 値に 戻す
+   ・プレビューを 開いた・明細を 直した・印刷・PDF の ときは、知らせる だけ（同じ 状態では 1 回） */
+let _adjPrevVal = '', _adjWarnKey = '';
+function adjPlusInfo(){
+  const tbl = $('est_body') && $('est_body').querySelector('table.est-items');
+  const num = s => parseFloat(String(s).replace(/[¥￥,、\s]/g,''))||0;
+  let sub = 0;
+  if(tbl) tbl.querySelectorAll('tbody tr[data-rk] td.amount').forEach(td=>{ sub += num(td.textContent); });
+  else sub = Math.round((CALC && CALC.subtotal) || 0);
+  const auto = Math.round(sub * 1.1), adj = parseFloat($('adj_total').value) || 0;
+  return { plus: adj > 0 && adj > auto, adj, auto };
+}
+function checkAdjPlus(revert){
+  const i = adjPlusInfo();
+  if(!i.plus){ _adjWarnKey = ''; return false; }
+  const key = i.adj + '/' + i.auto;
+  if(!revert && key === _adjWarnKey) return true;
+  _adjWarnKey = key;
+  alert('合計（税込）¥' + i.adj.toLocaleString('ja-JP') + ' が、明細の合計（税込）¥' + i.auto.toLocaleString('ja-JP') + ' より 高くなっています。\n' +
+        '調整は 値引き（マイナス）だけです。' +
+        (revert ? '\n入れた 合計は 取り消しました。' : '\n合計を ¥' + i.auto.toLocaleString('ja-JP') + ' 以下に するか、明細を 直してください。'));
+  if(revert){
+    let back = _adjPrevVal;
+    $('adj_total').value = back; recalc();
+    if(adjPlusInfo().plus){ $('adj_total').value = ''; recalc(); }   // 前の 値も 高すぎる ときは 自動の 合計に
+    markDirty();
+  }
+  return true;
 }
 
 function refreshEstTotals(){
@@ -1946,7 +1981,8 @@ function refreshEstTotals(){
   tbl.querySelectorAll('tbody tr[data-rk] td.amount').forEach(td=>{ sub += num(td.textContent); });
 
   // 調整値引き後合計（税込）が入力されていれば、そこから逆算（recalc と同じ算式）
-  const adjTotal = parseFloat($('adj_total').value)||0;
+  let adjTotal = parseFloat($('adj_total').value)||0;
+  if(adjTotal === Math.round(sub * 1.1)) adjTotal = 0;   // 明細の 合計（税込）と 同じなら 調整なし（v4.1）
   const total = adjTotal > 0 ? adjTotal : Math.round(sub * 1.1);
   const tax   = adjTotal > 0 ? Math.floor(adjTotal - adjTotal/1.1) : Math.round(sub * 0.1);
   const afterDisc = total - tax;
@@ -1959,7 +1995,7 @@ function refreshEstTotals(){
   set('est_tf_total', yen(total));   // ここと「合計金額」枠だけ￥を付ける
   set('est_tf_disc_lbl', discLabel(discount));
   const dr = document.getElementById('est_tf_disc_row');
-  if(dr) dr.style.display = discount !== 0 ? '' : 'none';
+  if(dr){ dr.style.display = discount !== 0 ? '' : 'none'; dr.style.background = discount > 0 ? '#ffd6d6' : ''; }
   const tv = document.getElementById('est_total_val');
   if(tv) tv.textContent = total.toLocaleString('ja-JP');
 }
@@ -2157,10 +2193,11 @@ function switchTab(name){
   $('tab-master').style.display  = name==='master' ? '' : 'none';
   $('tab-preview').style.display = name==='preview' ? '' : 'none';
   $('est_wrap').classList.toggle('show', name==='preview');
-  if(name==='preview'){ recalc(); }
+  if(name==='preview'){ recalc(); setTimeout(()=>checkAdjPlus(false), 50); }
 }
 function showPreview(){ switchTab('preview'); }
 function printDoc(){
+  _adjWarnKey = ''; checkAdjPlus(false);
   if(!$('est_wrap').classList.contains('show')){
     switchTab('preview');
     setTimeout(()=>window.print(), 200);
@@ -2202,7 +2239,9 @@ async function downloadPdf(){
     alert('PDFライブラリが読み込まれていません');
     return;
   }
+  _adjWarnKey = '';   // 前に 知らせて いても、出す ときは もう 一度
   await ensurePreview();
+  checkAdjPlus(false);
   const filename = pdfFilename();
   html2pdf().set(pdfOptions(filename)).from($('est_body')).save();
 }
@@ -2217,7 +2256,9 @@ async function savePdfToSP(){
   if(!window.opener || !window.opener.uploadPdfToFolderPassFromTekkyo){
     alert('親ウィンドウ（工事関連画面）が閉じられたため保存できません'); return;
   }
+  _adjWarnKey = '';   // 前に 知らせて いても、出す ときは もう 一度
   await ensurePreview();
+  checkAdjPlus(false);
   const filename = pdfFilename();
   const blob = await html2pdf().set(pdfOptions(filename)).from($('est_body')).output('blob');
   try {

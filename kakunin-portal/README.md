@@ -30,12 +30,11 @@
 - 期限（既定 30 日、create の `days`）を 過ぎると 開けない
 
 ## さくらへの 置き方
-1. `www/kakunin/` を 作り、`index.html`・`api.php`・`upload.php`・`lib.php` を 置く
-2. `data/` フォルダーを 作り、`data/.htaccess` を 置く（無くても upload.php が 作る）
-3. `htaccess-sample.txt` を `.htaccess`、`user.ini-sample.txt` を `.user.ini` の 名前で 置く
-4. `.htsecret` を 作る（長い ランダムな 文字列 1 行。外注ポータルとは 別の ものに する）
-5. `robots.txt` に `Disallow: /kakunin/`
-6. ブラウザで `https://<ドメイン>/kakunin/upload.php` を 開き、`{"ok":true,"service":"kakunin-upload"…}` が 出れば 設置 完了
-7. `https://<ドメイン>/kakunin/data/` を 開いて 403 に なる ことを 確かめる
+`kakunin-portal/` の 中身を そのまま `www/kakunin/` に 置く（`.htaccess`・`.user.ini`・`data/.htaccess` も。名前が「.」で 始まる ファイルは FTP ソフトで 隠れて 見えない ことが あるので、「隠しファイルを 表示」に して 確かめる）。
+`README.md`・`.gitignore` は 置かなくて よい。
 
-しくみは `gaichu-portal/`（合言葉＋CORS の 受け口、SharePoint への 保存）を まねる。Power Automate は 使わない。
+1. `www/kakunin/` に `index.html`・`api.php`・`upload.php`・`lib.php`・`.htaccess`・`.user.ini`、`data/` フォルダーと `data/.htaccess` を 置く
+2. `.htsecret` を 作る（長い ランダムな 文字列 1 行。外注ポータルとは 別の ものに する）
+3. `robots.txt` に `Disallow: /kakunin/`
+4. ブラウザで `https://<ドメイン>/kakunin/upload.php` を 開き、`{"ok":true,"service":"kakunin-upload"…}` が 出れば 設置 完了
+5. `https://<ドメイン>/kakunin/data/` を 開いて 403 に なる ことを 確かめる

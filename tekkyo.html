@@ -289,7 +289,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
 
 <div class="topbar">
   <h1>撤去工事 見積システム</h1>
-  <span class="ver">v3.9</span>
+  <span class="ver">v4.0</span>
   <div class="topbar-btns">
     <div class="row">
       <span class="mode-toggle" id="mode_toggle" title="保存先：PC=ブラウザ内 / SP=SharePoint">
@@ -635,7 +635,7 @@ table.est-items tfoot tr.gtot td{background:#fff4b8;font-size:12pt}
     </select>
     <span style="color:#666;font-size:12px">※ 印刷時は自動的にこの書類が出力されます</span>
     <button class="btn warn" onclick="resetEstOverrides()" style="margin-left:auto;background:#9a3a3a;color:#fff;padding:6px 12px" title="明細の手動編集を全て破棄し、システム計算値に戻します">🔄 手動編集をリセット</button>
-    <span style="font-size:12px;color:#1a5a9a;font-weight:600">📌 印鑑：ドラッグで移動／ホイールで拡大縮小</span>
+    <span style="font-size:12px;color:#1a5a9a;font-weight:600">📌 印鑑：ドラッグで移動（大きさは固定）</span>
     <button class="btn warn" onclick="resetStamps()" style="background:#9a3a3a;color:#fff;padding:6px 12px">🔄 印鑑をリセット</button>
   </div>
 </div>
@@ -763,14 +763,20 @@ let CALC = {};
 let CUSTOM_AISATSU = {見積書:null, 請求書:null, 領収書:null};
 /* プレビュー明細の手動オーバーライド {rowKey: {cat,desc,qty,price}} */
 let EST_OVERRIDES = {};
-/* 印鑑（係印・社判）の位置とサイズ。ドラッグ＆ホイールで操作、localStorage に保存 */
+/* 印鑑（係印・社判）の位置。ドラッグで動かし、localStorage に保存。
+   大きさは 変えられない（v4.0。本人「マウスのセンターで大きさを変更出来てしまします。違和感があるので調整不可にして」）。
+   前に ホイールで 変えて 保存された 大きさも、読むときに 元の 大きさへ 戻す */
 const DEFAULT_STAMPS = {
   stamp:  {x:0, y:0, size:18},   // 係印（合計金額の右）
   shaban: {x:0, y:0, size:20},   // 社判（会社情報の右）
 };
 let STAMPS = (() => {
-  try { return JSON.parse(localStorage.getItem('tekkyo_stamps')) || JSON.parse(JSON.stringify(DEFAULT_STAMPS)); }
-  catch(e) { return JSON.parse(JSON.stringify(DEFAULT_STAMPS)); }
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('tekkyo_stamps')); } catch(e) {}
+  s = (s && typeof s === 'object') ? s : {};
+  const o = {};
+  Object.keys(DEFAULT_STAMPS).forEach(k => { o[k] = Object.assign({}, DEFAULT_STAMPS[k], s[k] || {}, { size: DEFAULT_STAMPS[k].size }); });
+  return o;
 })();
 
 /* ============ 印鑑（係印・社判）操作 ============ */
@@ -788,7 +794,7 @@ function saveStamps(){
   localStorage.setItem('tekkyo_stamps', JSON.stringify(STAMPS));
 }
 function resetStamps(){
-  if(!confirm('印鑑の位置とサイズを初期値に戻します。よろしいですか？')) return;
+  if(!confirm('印鑑の位置を初期値に戻します。よろしいですか？')) return;
   STAMPS = JSON.parse(JSON.stringify(DEFAULT_STAMPS));
   applyStampStyles();
   saveStamps();
@@ -830,17 +836,6 @@ function setupStampInteraction(){
   document.addEventListener('pointerup', () => {
     if(_dragStamp){ _dragStamp = null; saveStamps(); }
   });
-  document.addEventListener('wheel', e => {
-    const stampImg = e.target.closest('.est-total .stamp img');
-    const shaban   = e.target.closest('.est-shaban');
-    if(!stampImg && !shaban) return;
-    e.preventDefault();
-    const key = shaban ? 'shaban' : 'stamp';
-    const delta = e.deltaY > 0 ? -1 : 1;
-    STAMPS[key].size = Math.max(8, Math.min(50, STAMPS[key].size + delta));
-    applyStampStyles();
-    saveStamps();
-  }, {passive:false});
 }
 
 /* ============ ユーティリティ ============ */
@@ -1907,8 +1902,10 @@ function renderEstimate(){
       markDirty();
     });
   });
-  // 手動編集がある場合は、表示中の明細金額から合計を再計算
-  if(hasEstAmountOverride()) refreshEstTotals();
+  /* 見えている 明細の 金額（1 円未満を 四捨五入した 数）から 調整・小計・消費税を 出す（v4.0）。
+     前は 手で 直したときだけ だったので、四捨五入の 前の 数で 調整を 出し、明細を 足した 数と 1 円 ずれる ことが あった
+     （例：明細の 合計 274,307 ＋ 調整 5,694 ＝ 280,001 なのに 小計 280,000） */
+  refreshEstTotals();
 }
 
 /* 金額に影響する手動編集があるか */
@@ -1920,10 +1917,10 @@ function hasEstAmountOverride(){
 }
 
 /* プレビューの明細金額を合算して 値引き・小計・消費税・合計 を更新（DOM を直接書き換え） */
-/* 差額の見出し。値引きなら「値引き」、増額なら「調　整」。
-   合計金額を直接書き換えられるようにしたので、明細より高い額を入れることがある。
+/* 差額の見出し。値引きなら「調整値引き」（金額は −5,000 のように マイナス。v4.0 本人「調整値引きに変更して、金額をマイナス表示にして」）、
+   増額なら「調　整」。合計金額を直接書き換えられるようにしたので、明細より高い額を入れることがある。
    そのとき「値引き ¥5,000」と印字されるとお客様に誤解を与えるため、言葉を変える。 */
-function discLabel(d){ return d > 0 ? '調　整' : '値引き'; }
+function discLabel(d){ return d > 0 ? '調　整' : '調整値引き'; }
 
 /* プレビューの「合計金額」を書き換えたときの処理。
    入力シートの「調整値引き後合計（税込・直接入力 / 0で無効）」へ入れ、

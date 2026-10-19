@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.535';
+var APP_VERSION = 'v1.9.536';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8718,6 +8718,7 @@ function openEnvelopePrint(d) {
 
 // ===== 新規作成（納骨・戒切）=====
 function openNewItemModal() {
+  niAiReset();   // メールから入力（v1.9.536）
   // フォームリセット
   ['ni-name','ni-furi','ni-tel','ni-cusno','ni-cusid','ni-informer','ni-memo','ni-zip','ni-addressee','ni-addr1','ni-addr2','ni-sculptor','ni-ms-contrib',
    'ni-haka','ni-sesyu','ni-sekitou-seki','ni-bosi-seki','ni-futa','ni-meji','ni-noukotumemo'].forEach(function(id){
@@ -8812,6 +8813,408 @@ function niVal(id) {
 
 function closeNewItemModal() {
   document.getElementById('new-modal').style.display = 'none';
+}
+
+/* ───── お客様の メールから 入力（AI。v1.9.536）─────
+   本人「納骨リストへの新規登録でお客様からの資料（最初はテキストのみ、メール分）を貼り付けて、LLMで解析して、入力してほしい」。
+   流れ：貼る →［🤖 読み取る］→ 読み取った 値を いまの 値と 見くらべ（チェックした 項目だけ 入れる）→ いつもどおり 確かめて［登録］。
+   ・AI は 設定 → AI の 相手。社内の Ollama なら JSON で 返させる（だめなら いつもの callAI）
+   ・日付・時刻・お寺・電話・郵便番号は AI の 答えを そのまま 使わず ここで 読み直す。
+     年の 無い 日付は メールの 日付（無ければ 今日）から 決め、曜日が 書いてあれば それに 合う 年に する
+   ・お寺は AI に 選ばせない（v1.9.449 の 教訓）。書いてある 字を 一覧と 照らす
+   ・貼った メールは 注意事項メモに 追記（本人「注意事項の欄に追記して」）
+   ・入っている 欄は チェックしない かぎり 上書きしない。入れた 欄は 黄色（さわると 戻る） */
+var _niAiRows = null, _niAiCus = [], _niAiSeq = 0;
+function niAiReset() {
+  _niAiSeq++; _niAiRows = null; _niAiCus = [];
+  var s = document.getElementById('ni-ai-src'); if (s) s.value = '';
+  var r = document.getElementById('ni-ai-res'); if (r) r.innerHTML = '';
+  var m = document.getElementById('ni-ai-msg'); if (m) { m.textContent = ''; m.style.color = '#888'; }
+  var b = document.getElementById('ni-ai-btn'); if (b) { b.disabled = false; b.textContent = '🤖 読み取る'; }
+  document.querySelectorAll('#new-modal .ni-ai-on').forEach(function (el) { el.classList.remove('ni-ai-on'); });
+  var open = false; try { open = localStorage.getItem('ni_ai_open') === '1'; } catch (e) {}
+  niAiToggle(open);
+}
+function niAiToggle(open) {
+  var body = document.getElementById('ni-ai-body'), ar = document.getElementById('ni-ai-arrow');
+  if (!body) return;
+  if (open == null) open = body.style.display === 'none';
+  body.style.display = open ? '' : 'none';
+  if (ar) ar.textContent = open ? '▾' : '▸';
+  try { localStorage.setItem('ni_ai_open', open ? '1' : '0'); } catch (e) {}
+}
+/* AI が 入れた 欄（黄色）は、人が さわったら 戻す */
+['input', 'change'].forEach(function (ev) {
+  document.addEventListener(ev, function (e) {
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('ni-ai-on')) t.classList.remove('ni-ai-on');
+  }, true);
+});
+function niAiPad(n) { return ('0' + n).slice(-2); }
+function niAiToday() { var t = new Date(); return t.getFullYear() + '-' + niAiPad(t.getMonth() + 1) + '-' + niAiPad(t.getDate()); }
+/* 全角の 数字・英字を 半角に。数字の あいだの 横棒（ー・－ など）は「-」に */
+function niAiZ2h(s) {
+  return String(s == null ? '' : s)
+    .replace(/[０-９Ａ-Ｚａ-ｚ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/：/g, ':').replace(/／/g, '/').replace(/．/g, '.')
+    .replace(/(\d)[ 　]*[－−‐‑–—―ーｰ\-][ 　]*(?=\d)/g, '$1-');
+}
+/* 電話番号（0 で 始まり 10〜11 けた）。電話・携帯の 行を 先に、FAX の 行は あとに */
+function niAiTel(s) {
+  var best = '', bestSc = -9;
+  niAiZ2h(s).replace(/[（(](\d{2,5})[)）]/g, '$1-').split(/\n/).forEach(function (line) {
+    var re = /(^|[^\d-])(0\d{1,4}-?\d{1,4}-?\d{3,4})(?![\d-])/g, m;
+    while ((m = re.exec(line))) {
+      var dg = m[2].replace(/-/g, '');
+      if (dg.length < 10 || dg.length > 11) continue;
+      var sc = (/電話|TEL|Tel|tel|携帯|☎|📞/.test(line) ? 2 : 0) - (/FAX|Fax|fax|ファックス|ファクス/.test(line) ? 3 : 0);
+      if (sc > bestSc) { best = m[2]; bestSc = sc; }
+    }
+  });
+  return best;
+}
+/* 郵便番号（〒 が あれば それ。無ければ「123-4567」の 形だけ。電話番号の 一部は 拾わない） */
+function niAiZip(s) {
+  var t = niAiZ2h(s);
+  var m = /〒[ 　]*(\d{3})-?(\d{4})(?!\d)/.exec(t) || /(?:^|[^\d-])(\d{3})-(\d{4})(?![\d-])/.exec(t);
+  return m ? m[1] + '-' + m[2] : '';
+}
+function niAiYmd(y, mo, d) {
+  var dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return '';
+  return y + '-' + niAiPad(mo) + '-' + niAiPad(d);
+}
+/* 日付を YYYY-MM-DD に。令和・平成・西暦・月日だけ（年は ref から）に 対応。
+   info を 渡すと 年の 決め方の 注意（曜日が 合わない など）を info.note に 入れる */
+function niAiDate(text, ref, info) {
+  var t = niAiZ2h(text), m, y = 0, mo, d;
+  if (!t) return '';
+  if ((m = /(令和|R)[ 　]*(\d{1,2}|元)[ 　]*[年.\/-][ 　]*(\d{1,2})[ 　]*[月.\/-][ 　]*(\d{1,2})/.exec(t))) {
+    y = 2018 + (m[2] === '元' ? 1 : +m[2]); mo = +m[3]; d = +m[4];
+  } else if ((m = /(平成|H)[ 　]*(\d{1,2}|元)[ 　]*[年.\/-][ 　]*(\d{1,2})[ 　]*[月.\/-][ 　]*(\d{1,2})/.exec(t))) {
+    y = 1988 + (m[2] === '元' ? 1 : +m[2]); mo = +m[3]; d = +m[4];
+  } else if ((m = /(\d{4})[ 　]*[年.\/-][ 　]*(\d{1,2})[ 　]*[月.\/-][ 　]*(\d{1,2})/.exec(t))) {
+    y = +m[1]; mo = +m[2]; d = +m[3];
+  } else if ((m = /(\d{1,2})[ 　]*[月\/][ 　]*(\d{1,2})[ 　]*日?/.exec(t))) {
+    mo = +m[1]; d = +m[2];
+  } else {
+    var p = Date.parse(t);   // 英語の メールの 日付（Wed, 15 Oct 2026 …）
+    if (!isNaN(p) && /[A-Za-z]{3}/.test(t)) { var pd = new Date(p); return niAiYmd(pd.getFullYear(), pd.getMonth() + 1, pd.getDate()); }
+    return '';
+  }
+  var WD = '日月火水木金土';
+  var after = t.substr(m.index + m[0].length, 8);
+  var wm = /^[ 　]*[（(][ 　]*([日月火水木金土])/.exec(after) || /^[ 　]*([日月火水木金土])曜/.exec(after);
+  var wd = wm ? WD.indexOf(wm[1]) : -1;
+  function day(s) { return new Date(s + 'T00:00:00'); }
+  function chk(s) {   // 書いてある 曜日と 合わなければ 知らせる
+    if (s && wd >= 0 && info && day(s).getDay() !== wd) info.note = '⚠ 曜日が 合いません（' + s + ' は ' + WD.charAt(day(s).getDay()) + '曜。書いてあるのは ' + wm[1] + '曜）';
+    return s;
+  }
+  if (y) return chk(niAiYmd(y, mo, d));
+  /* 年が 無い：メールの 日付（ref）の 1 か月前 より あとで、いちばん 早い 日（ふつう これからの 予定）。
+     曜日が 書いてあって 合わなければ、1 年 先までで 曜日の 合う 年を さがす（無ければ そのまま 知らせる） */
+  var r = day(ref || niAiToday()), ry = r.getFullYear(), lim = r.getTime() - 31 * 86400000;
+  var cands = [ry - 1, ry, ry + 1, ry + 2].map(function (yy) { return niAiYmd(yy, mo, d); })
+    .filter(function (s) { return s && day(s).getTime() >= lim; });
+  if (!cands.length) return '';
+  if (wd >= 0 && day(cands[0]).getDay() !== wd) {
+    var ok = cands.filter(function (s) { return day(s).getDay() === wd && day(s).getTime() - r.getTime() <= 400 * 86400000; });
+    if (ok.length) { if (info) info.note = '曜日（' + wm[1] + '）に 合わせて ' + ok[0].slice(0, 4) + ' 年'; return ok[0]; }
+  }
+  return chk(cands[0]);
+}
+/* 時刻を HH:MM に。午前・午後・半。「午後」の 書いてない 1〜5 時は 午後（納骨は 夜中に しない） */
+function niAiTime(text) {
+  var t = niAiZ2h(text);
+  var m = /(午前|午後|AM|PM|am|pm|朝|夕方)?[ 　]*(\d{1,2})[ 　]*(?::|時)[ 　]*(\d{1,2}|半)?[ 　]*分?[ 　]*(AM|PM|am|pm)?/.exec(t);
+  if (!m) return '';
+  var h = +m[2], mi = m[3] === '半' ? 30 : (m[3] ? +m[3] : 0), ap = (m[1] || m[4] || '').toLowerCase();
+  if ((ap === '午後' || ap === 'pm' || ap === '夕方') && h < 12) h += 12;
+  else if (!ap && h >= 1 && h <= 5) h += 12;
+  if (h > 23 || mi > 59) return '';
+  return niAiPad(h) + ':' + niAiPad(mi);
+}
+/* メールの 送った 日（見出しの 行から） */
+function niAiMailDate(src) {
+  var m = /^[ 　>]*(?:送信日時|送信日|日時|日付|Date|Sent)[ 　]*[:：][ 　]*(.+)$/im.exec(String(src || ''));
+  return m ? niAiDate(m[1], niAiToday()) : '';
+}
+/* お寺：書いてある 字を 一覧（新規作成の 候補・声の 言葉帳）と 照らす */
+function niAiTemple(raw) {
+  var t = String(raw == null ? '' : raw).replace(/[\s　]/g, '').replace(/(さん|様|さま|殿|御中)$/, '');
+  if (!t) return { v: '', known: false };
+  var names = [];
+  document.querySelectorAll('#ni-temple-list option').forEach(function (o) { names.push(String(o.value || o.textContent || '').trim()); });
+  if (typeof AI_TEMPLE_READ === 'object') Object.keys(AI_TEMPLE_READ).forEach(function (k) { if (names.indexOf(k) < 0) names.push(k); });
+  var nt = _aiNorm(t), hit = '';
+  names.forEach(function (n) {
+    if (hit || !n || n === '他寺院等') return;
+    var nn = _aiNorm(n);
+    if (nt === nn || nt.indexOf(nn) >= 0 || (nt.length >= 2 && nn.indexOf(nt) >= 0)) hit = n;
+  });
+  if (!hit && typeof _aiTempleName === 'function') { var y = _aiTempleName(t); if (y && y !== t) hit = y; }
+  return hit ? { v: hit, known: true } : { v: t, known: false };
+}
+/* 顧客リストに 同じ 人が いるか（電話が 同じ・名前が 同じ） */
+function niAiCusMatch(name, tel) {
+  var list = (typeof _aiCustomerList === 'function') ? _aiCustomerList() : [];
+  var dg = String(tel || '').replace(/\D/g, ''), nn = _aiNorm(name), out = [];
+  list.forEach(function (c) {
+    var cd = String(c.telephonenumber || '').replace(/\D/g, ''), why = '';
+    if (dg.length >= 10 && cd === dg) why = '電話が 同じ';
+    else if (nn.length >= 3 && _aiNorm(c.CusName) === nn) why = '名前が 同じ';
+    if (why) out.push({ c: c, why: why });
+  });
+  out.sort(function (a, b) { return (a.why === '電話が 同じ' ? 0 : 1) - (b.why === '電話が 同じ' ? 0 : 1); });
+  return out.slice(0, 5);
+}
+function niAiPrompt(src, today) {
+  var sys = 'あなたは石材店（お墓の工事・納骨・墓誌への戒名の彫刻）の事務員です。' +
+    'お客様などから届いたメールを読み、納骨・戒切の依頼を登録するための情報を抜き出します。\n' +
+    '決まり：\n' +
+    '・メールに書いてあることだけを書く。書いていないことは空文字 ""（推測で埋めない）\n' +
+    '・名前・住所・お寺の名前は、書いてある字のとおりに写す（読みかえ・言いかえをしない）\n' +
+    '・日付と時刻は、書いてあるとおりに写す（年を足したり計算したりしない）\n' +
+    '・JSON だけを出力する（説明は書かない）';
+  var schema = '{\n' +
+    ' "bunrui": "納骨 | 戒切 | 納骨戒切 | 骨出し | \\"\\"",\n' +
+    ' "name": "依頼してきた人（メールを書いた人）の氏名。署名や「〇〇です」から。亡くなった方ではない",\n' +
+    ' "furigana": "その人のフリガナ（メールに書いてあるときだけ）",\n' +
+    ' "kamei": "お墓の家名（例：山田家）",\n' +
+    ' "sesyu": "施主の名前（書いてあれば）",\n' +
+    ' "temple": "お寺・霊園の名前（さん・様は付けない）",\n' +
+    ' "tel": "依頼者の電話番号",\n' +
+    ' "zip": "資料の送り先の郵便番号",\n' +
+    ' "address": "資料の送り先の住所（都道府県から番地・建物名まで）",\n' +
+    ' "addressee": "資料の送り先の宛名（依頼者と違うときだけ）",\n' +
+    ' "nok_date": "納骨の日付（書いてあるとおり。例：11月23日（日））",\n' +
+    ' "nok_time": "納骨の時刻（書いてあるとおり。例：午前10時）",\n' +
+    ' "nok_place": "お経を始める場所：本堂 | 墓前 | 墓前で集合（お経なし） | 自宅など | \\"\\"",\n' +
+    ' "sender": "メールを書いた人：お客 | お寺 | 業者 | その他",\n' +
+    ' "mail_date": "メールを送った日（書いてあれば、書いてあるとおり）",\n' +
+    ' "engrave": [{"kaimyo": "戒名", "zokumyo": "俗名", "meinichi": "命日（書いてあるとおり）", "age": "享年・行年"}],\n' +
+    ' "notes": "そのほかのご要望・注意すること（短く。なければ \\"\\"）"\n' +
+    '}';
+  var user = '次の形の JSON で答えてください。\n' + schema + '\n\n' +
+    'bunrui の決め方：納骨だけ → "納骨"、戒名などの彫刻（墓誌・石塔への追加彫刻）だけ → "戒切"、納骨と彫刻の両方 → "納骨戒切"、お骨を取り出す → "骨出し"、わからなければ ""。\n' +
+    'engrave は彫刻する（亡くなった）方ごとに 1 つ。彫刻の話がなければ []。\n' +
+    '今日の日付：' + today + '\n\n' +
+    '--- メールここから ---\n' + String(src).slice(0, 6000) + '\n--- メールここまで ---';
+  return { system: sys, user: user };
+}
+/* AI に 聞く。社内の Ollama なら JSON で（format:"json"・思考なし・ゆらぎ 0）。だめなら いつもの callAI */
+function niAiAsk(sys, user) {
+  var cfg = getAICfg();
+  if (cfg.provider === 'claude' && !cfg.apiKey) return Promise.reject(new Error('AI の 設定が ありません（設定 → AI）'));
+  function viaCallAI() {
+    return new Promise(function (res, rej) {
+      var out = '';
+      callAI(sys, user, function (ch) { out += ch; }, function (err) { if (err) rej(err); else res(out); });
+    });
+  }
+  if (cfg.provider !== 'openai') return viaCallAI();
+  var base = cfg.endpoint || 'http://localhost:11434';
+  return _ollamaModel(cfg).then(function (model) {
+    return fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model, stream: false, think: false, format: 'json', options: { temperature: 0 },
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] })
+    });
+  }).then(function (r) {
+    if (!r.ok) throw new Error('native ' + r.status);
+    return r.json();
+  }).then(function (j) {
+    return (j && j.message && j.message.content) || '';
+  }).catch(function (e) {
+    if (/Failed to fetch|NetworkError|Load failed/i.test(String((e && e.message) || e))) throw e;   // 届かないなら 呼び方を 変えても 同じ
+    return viaCallAI();
+  });
+}
+function niAiJson(t) {
+  t = _stripThinkTags(t).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  var a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { return null; }
+}
+/* 読み取った 値 → 見くらべの 行 */
+function niAiRows(ai, src, mailDate) {
+  ai = (ai && typeof ai === 'object') ? ai : {};
+  function S(x) { return (x == null || typeof x === 'object') ? '' : String(x).replace(/^[\s　]+|[\s　]+$/g, ''); }
+  var rows = [], ref = mailDate || niAiToday();
+  function add(k, id, lbl, v, o) {
+    o = o || {}; v = S(v);
+    var el = document.getElementById(id);
+    if (!v || !el) return;
+    if (el.tagName === 'SELECT' && !Array.prototype.some.call(el.options, function (op) { return op.value === v; })) return;
+    var c = String(el.value || '').trim(), auto = o.auto && c === o.auto;
+    var r = { k: k, id: id, lbl: lbl, v: v, cur: c, note: o.note || '', kind: o.kind || 'set', show: o.show || v };
+    r.same = o.same != null ? o.same : (c === v);
+    r.on = !r.same && (o.on != null ? o.on : (!c || auto));
+    if (c && !r.same && !auto && r.kind !== 'append') r.note = (r.note ? r.note + '・' : '') + 'いまの値を 上書き';
+    rows.push(r);
+  }
+  var B = { '納骨': 1, '戒切': 1, '納骨戒切': 1, '骨出し': 1 };
+  add('bunrui', 'ni-bunrui', '分類', B[S(ai.bunrui)] ? S(ai.bunrui) : '');
+  var name = S(ai.name).replace(/[ 　]*(様|さま)$/, '');
+  add('name', 'ni-name', '顧客名', name);
+  add('furi', 'ni-furi', 'フリガナ', S(ai.furigana).replace(/[ぁ-ゖ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0x60); }));
+  var tp = niAiTemple(ai.temple);
+  add('temple', 'ni-temple', 'お寺', tp.v, { note: tp.known ? '✓ 一覧に あり' : '⚠ 一覧に ない 名前' });
+  var tel = niAiTel(S(ai.tel)) || niAiTel(src);
+  add('tel', 'ni-tel', '電話番号', tel);
+  if (mailDate) add('reqdate', 'ni-req-date', '依頼日', mailDate, { auto: todayStr(), note: 'メールの 日付' });
+  var snd = S(ai.sender);
+  var inf = snd === 'お客' || snd === 'お寺' ? snd : snd === '業者' ? (/マキノ/.test(src) ? '業者マキノ' : 'その他') : snd === 'その他' ? 'その他' : '';
+  add('informer', 'ni-informer', '依頼情報提供者', inf);
+  var zip = niAiZip('〒' + niAiZ2h(S(ai.zip))) || niAiZip(src);
+  add('zip', 'ni-zip', '郵便番号', zip);
+  var ad = niAiZ2h(S(ai.address)).replace(/^[ 　]*〒?[ 　]*\d{3}-?\d{4}[ 　]*/, '').replace(/^[\s　]+|[\s　]+$/g, '');
+  var cut = ad.search(/\d/), a1 = cut > 0 ? ad.slice(0, cut) : ad, a2 = cut > 0 ? ad.slice(cut) : '';
+  add('addr1', 'ni-addr1', '住所1', a1);
+  add('addr2', 'ni-addr2', '住所2', a2);
+  var sameChk = document.getElementById('ni-addr-same');
+  if (!(sameChk && sameChk.checked)) add('addressee', 'ni-addressee', '宛名', S(ai.addressee) || ((zip || ad) ? name : ''));
+  var ndi = {}, nd = niAiDate(S(ai.nok_date), ref, ndi);
+  if (!nd && /^\d{4}-\d{2}-\d{2}$/.test(S(ai.nok_date))) nd = S(ai.nok_date);
+  add('nokdate', 'ni-date', '納骨日', nd, { note: (S(ai.nok_date) && S(ai.nok_date) !== nd ? '「' + S(ai.nok_date) + '」' : '') + (ndi.note ? ' ' + ndi.note : '') });
+  add('noktime', 'ni-time', '納骨時間', niAiTime(S(ai.nok_time)), { note: S(ai.nok_time) ? '「' + S(ai.nok_time) + '」' : '' });
+  var PL = { '本堂': '本堂でお経開始', '墓前': '墓前でお経開始', '墓前で集合（お経なし）': '墓前で集合（お経無）', '自宅など': '自宅等の他場所でお経開始' };
+  add('nokstate', 'ni-nok-state', '納骨時間状態', PL[S(ai.nok_place)] || '');
+  var kamei = S(ai.kamei).replace(/(家)?(之)?(墓|墓所)$/, '').replace(/家$/, '');
+  add('haka', 'ni-haka', '墓名（○○家）', kamei ? kamei + '家' : '');
+  add('sesyu', 'ni-sesyu', '施主名', S(ai.sesyu).replace(/[ 　]*(様|さま)$/, ''));
+  var eng = (Array.isArray(ai.engrave) ? ai.engrave : []).map(function (e) {
+    if (!e || typeof e !== 'object') return '';
+    var p = [];
+    if (S(e.kaimyo)) p.push('戒名：' + S(e.kaimyo));
+    if (S(e.zokumyo)) p.push('俗名：' + S(e.zokumyo));
+    if (S(e.meinichi)) p.push('命日：' + S(e.meinichi));
+    if (S(e.age)) p.push('享年：' + S(e.age));
+    return p.join('　');
+  }).filter(Boolean);
+  /* 彫刻の 内容が メールに あれば、原稿受取（日付・提供者）の 候補も 出す。決めつけないよう 最初は チェック なし */
+  if (eng.length) {
+    add('gotms', 'ni-got-ms', '原稿受取日', ref, { on: false, note: '彫刻の 内容が メールに ある' });
+    add('mscontrib', 'ni-ms-contrib', '原稿提供者', inf === 'お寺' ? 'お寺' : inf === 'お客' ? 'お客様' : '', { on: false });
+  }
+  /* 注意事項メモ：彫刻・ご要望の まとめ ＋ 貼った メール（追記） */
+  var md = new Date(), notes = S(ai.notes), memo = [];
+  if (eng.length) memo.push('【メールより：彫刻】\n' + eng.join('\n'));
+  if (notes) memo.push('【メールより：ご要望】\n' + notes);
+  memo.push('【お客様からのメール（' + (md.getMonth() + 1) + '/' + md.getDate() + ' 貼り付け）】\n' + String(src).replace(/^\s+|\s+$/g, ''));
+  var memoEl = document.getElementById('ni-memo'), had = memoEl && memoEl.value.indexOf(String(src).replace(/^\s+|\s+$/g, '')) >= 0;
+  add('memo', 'ni-memo', '注意事項メモ（追記）', memo.join('\n'), {
+    kind: 'append', same: had, on: !had,
+    show: (eng.length ? eng.join('\n') + '\n' : '') + (notes ? 'ご要望：' + notes + '\n' : '') + '＋ メールの 文（' + String(src).replace(/\s/g, '').length + ' 字）'
+  });
+  return rows;
+}
+function niAiRender(rows, cus, msg) {
+  var box = document.getElementById('ni-ai-res'); if (!box) return;
+  var E = _escHtml;
+  var h = '<div style="margin-top:8px;border:1px solid #d8c8e8;border-radius:6px;overflow:hidden;background:#fff">' +
+    '<div style="background:#f5f0fa;color:#5a2a7a;font-size:11px;font-weight:700;padding:5px 8px">読み取った 結果（チェックした 項目だけ 入れます）</div>';
+  if (msg) h += '<div style="font-size:11px;color:#b45309;padding:5px 8px;white-space:pre-wrap">' + E(msg) + '</div>';
+  h += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  rows.forEach(function (r, i) {
+    var val = E(r.show).replace(/\n/g, '<br>');
+    h += '<tr style="border-top:1px solid #f0eaf5;' + (/上書き/.test(r.note) ? 'background:#fff7e6' : '') + '">' +
+      '<td style="width:22px;padding:5px 4px;text-align:center;vertical-align:top">' +
+        (r.same ? '' : '<input type="checkbox" data-i="' + i + '"' + (r.on ? ' checked' : '') + ' style="cursor:pointer">') + '</td>' +
+      '<td style="width:96px;padding:5px 4px;color:#185fa5;font-size:11px;vertical-align:top">' + E(r.lbl) + '</td>' +
+      '<td style="padding:5px 4px;vertical-align:top">' +
+        (r.same ? '<span style="color:#999">' + val + '（同じ）</span>' : '<span style="color:#14532d;font-weight:600">' + val + '</span>') +
+        (r.note ? ' <span style="font-size:10.5px;color:' + (/⚠|上書き/.test(r.note) ? '#b45309' : /✓/.test(r.note) ? '#16a34a' : '#888') + '">' + E(r.note) + '</span>' : '') +
+        (r.cur && !r.same && r.kind !== 'append' ? '<div style="font-size:10.5px;color:#999">いま：' + E(r.cur) + '</div>' : '') +
+      '</td></tr>';
+  });
+  h += '</table>';
+  if (cus.length) {
+    h += '<div style="border-top:1px solid #f0eaf5;padding:6px 8px;font-size:12px;background:#fffbea">' +
+      '<div style="font-size:11px;color:#185fa5;margin-bottom:3px">顧客リストに 同じ 人が います。つなぎますか？（顧客No・顧客リストID を 入れる）</div>' +
+      '<label style="display:block;cursor:pointer"><input type="radio" name="ni-ai-cus" value="" checked> つながない</label>';
+    cus.forEach(function (x, i) {
+      var c = x.c;
+      h += '<label style="display:block;cursor:pointer"><input type="radio" name="ni-ai-cus" value="' + i + '"> ' +
+        E(c.CusName || '') + (c.Temple ? '（' + E(c.Temple) + '）' : '') + (c.telephonenumber ? ' ' + E(c.telephonenumber) : '') +
+        ' <span style="font-size:10.5px;color:#888">' + E(x.why) + (c.CusNumber ? '・No ' + E(c.CusNumber) : '') + '</span></label>';
+    });
+    h += '</div>';
+  }
+  h += '<div style="display:flex;gap:8px;padding:8px;border-top:1px solid #f0eaf5">' +
+    '<button type="button" onclick="niAiApply()" style="flex:2;padding:8px;background:#6a3a8a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600">✅ チェックした 項目を 入れる</button>' +
+    '<button type="button" onclick="document.getElementById(\'ni-ai-res\').innerHTML=\'\'" style="flex:1;padding:8px;background:#eee;color:#555;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px">やめる</button>' +
+    '</div></div>';
+  box.innerHTML = h;
+}
+function niAiRead() {
+  var src = String((document.getElementById('ni-ai-src') || {}).value || '');
+  var msg = document.getElementById('ni-ai-msg'), btn = document.getElementById('ni-ai-btn');
+  if (!src.replace(/\s/g, '')) { if (msg) { msg.style.color = '#c00'; msg.textContent = 'メールの 文を 貼り付けてください'; } return; }
+  var seq = ++_niAiSeq, t0 = Date.now();
+  var mailDate = niAiMailDate(src);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 読み取り中…'; }
+  if (msg) { msg.style.color = '#888'; msg.textContent = '社内の AI で 読み取っています（10〜30 秒）'; }
+  document.getElementById('ni-ai-res').innerHTML = '';
+  var tick = setInterval(function () {
+    if (seq !== _niAiSeq) { clearInterval(tick); return; }
+    if (msg) msg.textContent = '読み取り中… ' + Math.round((Date.now() - t0) / 1000) + ' 秒';
+  }, 1000);
+  var p = niAiPrompt(src, mailDate || niAiToday());
+  niAiAsk(p.system, p.user).then(function (txt) {
+    var ai = niAiJson(txt);
+    if (!ai) throw new Error('AI の 答えが JSON に なっていません：' + String(_stripThinkTags(txt)).slice(0, 120));
+    return { ai: ai };
+  }, function (e) { return { err: e }; }).catch(function (e) { return { err: e }; }).then(function (res) {
+    clearInterval(tick);
+    if (seq !== _niAiSeq) return;   // 途中で 閉じた・やり直した
+    if (btn) { btn.disabled = false; btn.textContent = '🤖 読み取る'; }
+    var ai = res.ai || {};
+    if (!mailDate) mailDate = niAiDate(ai.mail_date == null ? '' : String(ai.mail_date), niAiToday());
+    var rows = niAiRows(ai, src, mailDate);
+    _niAiRows = rows;
+    _niAiCus = niAiCusMatch(ai.name == null ? '' : String(ai.name), (rows.filter(function (r) { return r.k === 'tel'; })[0] || {}).v || niAiTel(src));
+    var sec = Math.round((Date.now() - t0) / 1000);
+    var warn = '';
+    if (res.err) {
+      warn = 'AI で 読み取れませんでした：' + ((res.err && res.err.message) || res.err) + (typeof aiNetHint === 'function' ? aiNetHint(res.err) : '') +
+        '\n文から 拾えた 電話・郵便番号 と、メールの 追記だけ 出しています。';
+      if (msg) { msg.style.color = '#c00'; msg.textContent = '⚠ AI に 届きませんでした（' + sec + ' 秒）'; }
+    } else if (msg) { msg.style.color = '#1a7a3a'; msg.textContent = '✅ 読み取りました（' + sec + ' 秒）。下で 見くらべてください'; }
+    niAiRender(rows, _niAiCus, warn);
+  });
+}
+function niAiApply() {
+  var rows = _niAiRows || [], box = document.getElementById('ni-ai-res');
+  if (!box) return;
+  var on = {};
+  box.querySelectorAll('input[type=checkbox][data-i]').forEach(function (c) { if (c.checked) on[c.getAttribute('data-i')] = 1; });
+  var idx = rows.map(function (r, i) { return i; });
+  idx.sort(function (a, b) { return (rows[a].k === 'bunrui' ? 0 : 1) - (rows[b].k === 'bunrui' ? 0 : 1); });   // 分類が 先（分類で 欄が 隠れて 空に なるため）
+  var n = 0;
+  idx.forEach(function (i) {
+    var r = rows[i], el = document.getElementById(r.id);
+    if (!on[i] || r.same || !el) return;
+    if (r.kind === 'append') el.value = (el.value.replace(/\s+$/, '') ? el.value.replace(/\s+$/, '') + '\n\n' : '') + r.v;
+    else el.value = r.v;
+    el.classList.add('ni-ai-on'); n++;
+    if (r.k === 'bunrui') niApplyBunrui();
+    if (r.k === 'name') niSyncAddressee();
+    if (r.k === 'haka' || r.k === 'sesyu') { var hs = document.getElementById('ni-haka-sec'); if (hs) hs.style.display = ''; }
+  });
+  var cs = box.querySelector('input[name=ni-ai-cus]:checked');
+  if (cs && cs.value !== '' && _niAiCus[+cs.value]) {
+    var c = _niAiCus[+cs.value].c;
+    [['ni-cusno', c.CusNumber], ['ni-cusid', c.id]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (el && p[1] != null && p[1] !== '') { el.value = String(p[1]); el.classList.add('ni-ai-on'); }
+    });
+    n++;
+  }
+  box.innerHTML = '';
+  var msg = document.getElementById('ni-ai-msg');
+  if (msg) { msg.style.color = '#1a7a3a'; msg.textContent = '✅ ' + n + ' 項目を 入れました。黄色の 欄を 確かめてから［登録］してください'; }
 }
 
 // 宛名と顧客名の同期
@@ -32097,8 +32500,24 @@ function openImageViewer(imgs, startIdx) {
 .ni-date-wrap .ni-inp{flex:1}
 .ni-today{font-size:11px;padding:5px 8px;background:#1a2535;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;font-family:inherit}
 .ni-today:hover{background:#2a3545}
+.ni-inp.ni-ai-on{background:#fefce8;border-color:#eab308}
 </style>    <div style="padding:14px;max-height:calc(100vh - 160px);overflow-y:auto;-webkit-overflow-scrolling:touch">
       <div style="font-size:11px;color:#888;margin-bottom:12px">※ 必須項目（<span style="color:#c00">*</span>）を入力してSharePointに新規登録します</div>
+
+      <!-- お客様の メールから 入力（AI。v1.9.536）：貼る →［読み取る］→ 見くらべて 入れる。登録は いつもどおり -->
+      <div class="ni-sec" id="ni-ai-sec">
+        <button type="button" onclick="niAiToggle()" style="width:100%;text-align:left;padding:6px 10px;background:#6a3a8a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:700">
+          📧 お客様の メールから 入力（AI） <span id="ni-ai-arrow">▸</span></button>
+        <div id="ni-ai-body" style="display:none;margin-top:8px">
+          <textarea id="ni-ai-src" rows="7" class="ni-inp" placeholder="お客様からの メールの 文を そのまま 貼り付けてください（件名・送った日も いっしょだと 年が 分かります）" style="resize:vertical;font-size:12px;line-height:1.5"></textarea>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <button type="button" id="ni-ai-btn" onclick="niAiRead()" style="padding:7px 14px;background:#6a3a8a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600">🤖 読み取る</button>
+            <span id="ni-ai-msg" style="font-size:11px;color:#888;flex:1;min-width:150px"></span>
+          </div>
+          <div style="font-size:10.5px;color:#888;margin-top:4px">設定 → AI の 相手で 読みます（社内の Ollama なら 社外に 出ません）。まだ 登録は しません。貼った メールは 注意事項メモに 追記します</div>
+          <div id="ni-ai-res"></div>
+        </div>
+      </div>
 
       <!-- 基本情報 -->
       <div class="ni-sec">

@@ -7971,7 +7971,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.539';
+var APP_VERSION = 'v1.9.540';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21302,7 +21302,10 @@ function _kkResetCfg(){
 }
 function _kkRef(d){ return 'n-'+(d['id']||d['ID']||''); }
 function _kkPost(fd){ var c=_kkCfg(); fd.append('secret', c.secret||''); return _gaichuPost(c.url, fd); }
-function _kkAct(action, extra){ var fd=new FormData(); fd.append('action',action); Object.keys(extra||{}).forEach(function(k){ fd.append(k, extra[k]); }); return _kkPost(fd); }
+function _kkAct(action, extra){
+  var mk=function(){ var fd=new FormData(); fd.append('action',action); Object.keys(extra||{}).forEach(function(k){ fd.append(k, extra[k]); }); return fd; };
+  return _kkPost(mk()).catch(function(e){ if(!(e instanceof TypeError)) throw e; return new Promise(function(ok){ setTimeout(ok, 1200); }).then(function(){ return _kkPost(mk()); }); });   // 回線の 一時的な 切れは 1 回 やり直す
+}
 /* この案件の 確認ページ（新しい順）。状態の 細かいこと（開いた・本人確認）は status の 記録から */
 function _kkLoadRows(d){
   var ref=_kkRef(d);
@@ -21608,20 +21611,41 @@ function _kkCreate(btn){
   btn.disabled=true; btn.style.opacity='.7';
   var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
   say('さくらの 受信の 上限を 確かめています…');
-  _kkLimits().then(function(lim){
-    var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
-    var each=Math.min(lim.one, Math.floor(lim.total/keys.length));
-    var files={};
+  /* 送れなかった（Failed to fetch）ときは さくらに つながるかを 確かめ、つながるなら 画像を 小さくして 1 回だけ やり直す（v1.9.540。
+     本人の 報告「作れませんでした：Failed to fetch」「ERR_QUIC_PROTOCOL_ERROR.QUIC_HANDSHAKE_TIMEOUT」） */
+  var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
+  var MB=function(n){ return (Math.round(n/104857.6)/10)+'MB'; };
+  var sendAt=function(each){
+    var files={}, total=0;
     return keys.reduce(function(pr, k){
       return pr.then(function(){
         say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
-        return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; });
+        return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; total+=b.size; });
       });
     }, Promise.resolve()).then(function(){
-      say('さくらへ 送っています…');
+      say('さくらへ 送っています（'+MB(total)+'）…');
       var fd=new FormData(); fd.append('action','create'); fd.append('case', JSON.stringify(cs));
       keys.forEach(function(k){ fd.append(k, files[k], k+(/png/.test(files[k].type)?'.png':'.jpg')); });
-      return _kkPost(fd);
+      return _kkPost(fd).catch(function(e){ e.kkTotal=total; throw e; });
+    });
+  };
+  _kkLimits().then(function(lim){
+    var each=Math.min(lim.one, Math.floor(lim.total/keys.length));
+    return sendAt(each).catch(function(e){
+      if(!(e instanceof TypeError)) throw e;   // ネットの エラー（Failed to fetch）だけ やり直す
+      say('送れませんでした。さくらに つながるか 確かめています…');
+      return fetch(_kkCfg().url,{method:'GET',cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
+        if(!j || j.service!=='kakunin-upload') throw new Error('x');
+      }).then(function(){
+        var small=Math.min(each, 900000);
+        say('つながりました。画像を 小さくして もう一度 送ります…');
+        return sendAt(small).catch(function(e2){
+          if(e2 instanceof TypeError) throw new Error('さくらには つながりますが、送る途中で 切れました（'+MB(e2.kkTotal||0)+'）。少し 待って もう一度、それでも だめなら 別の 回線（スマホの テザリング など）で 試してください');
+          throw e2;
+        });
+      }, function(){
+        throw new Error('さくらの upload.php に つながりません。［⚙ 接続設定］の URL（'+_kkCfg().url+'）を ブラウザで 開いて {"ok":true,"service":"kakunin-upload"…} が 出るか 確かめてください');
+      });
     });
   }).then(function(r){
     done();

@@ -2728,7 +2728,7 @@ function renderPriceList(items) {
     var bg = i % 2 === 0 ? '#fff' : '#f9f9f9';
     var price = (it.cost !== '' && it.cost != null) ? Number(it.cost).toLocaleString('ja-JP') + '円' : '';
     html += '<tr style="background:' + bg + ';border-bottom:0.5px solid #f0f0f0;cursor:pointer" onclick="_openPriceById(\'' + _esc(String(it.id)) + '\')">';
-    html += '<td style="padding:9px 12px">' + _esc(it.Title) + '</td>';
+    html += '<td style="padding:9px 12px">' + _esc(it.Title) + (it.Attachments ? ' <span title="写真・資料あり" style="font-size:12px">📎</span>' : '') + '</td>';
     html += '<td style="padding:9px 12px;color:#555;font-size:12px">' + _esc(it.choice) + '</td>';
     html += '<td style="padding:9px 12px;text-align:right;color:#1a5a1a;font-weight:500;white-space:nowrap">' + price + '</td>';
     html += '</tr>';
@@ -2764,6 +2764,20 @@ function openPriceItemEdit(item) {
     { key: 'note0',         label: '備考（仕入外注用）', type: 'textarea' }
   ];
   var html = '';
+  // 写真・資料（SharePoint の 添付。保存ずみの 品だけ）。いちばん上に 出す
+  html += '<div style="border-bottom:1px solid #eee;padding-bottom:12px;margin-bottom:14px">';
+  html += '<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:8px">📎 写真・資料</div>';
+  if (isNew) {
+    html += '<div style="color:#999;font-size:12px">保存すると、写真・資料を追加できます</div>';
+  } else {
+    html += '<div id="price-att-' + _esc(String(item.id)) + '"><div style="color:#bbb;font-size:12px">読み込み中...</div></div>';
+    html += '<label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;padding:7px 16px;background:#2a4a7a;color:#fff;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">';
+    html += '📎 写真・資料を追加';
+    html += '<input type="file" multiple style="display:none" onchange="uploadPriceAttachments(\'' + _esc(String(item.id)) + '\',this)">';
+    html += '</label>';
+    html += '<div style="font-size:11px;color:#999;margin-top:4px">写真・PDF・Excel など。何件でも</div>';
+  }
+  html += '</div>';
   FIELDS.forEach(function(f) {
     var val = item ? (item[f.key] != null ? item[f.key] : '') : '';
     html += '<div style="margin-bottom:12px">';
@@ -2776,6 +2790,7 @@ function openPriceItemEdit(item) {
     html += '</div>';
   });
   document.getElementById('price-edit-fields').innerHTML = html;
+  if (!isNew) setTimeout(function(){ loadPriceAttachments(item.id); }, 50);
   var delBtn = document.getElementById('price-edit-delete');
   if (delBtn) delBtn.style.display = isNew ? 'none' : '';
   document.getElementById('price-edit-dialog').style.display = 'flex';
@@ -2816,10 +2831,16 @@ function savePriceItem() {
   }).then(function(r) {
     if (!r.ok) return r.json().then(function(e) { throw new Error((e.error && e.error.message) || r.status); });
     return r.json();
-  }).then(function() {
+  }).then(function(created) {
     showSaveToast(true, isNew ? '✅ 追加しました' : '✅ 更新しました');
     closePriceDialog();
     if (!document.getElementById('price-list-screen').classList.contains('hidden')) loadPriceList();
+    // 新規は その品を 開きなおし、写真・資料を 続けて 足せるように
+    if (isNew && created && created.id) {
+      var nf = created.fields || {};
+      nf.id = created.id;
+      openPriceItemEdit(nf);
+    }
     _syncPriceToAIQuiet();
   }).catch(function(e) {
     showSaveToast(false, '保存失敗: ' + e.message);
@@ -2848,6 +2869,181 @@ function deletePriceItem() {
   }).catch(function(e) {
     showSaveToast(false, '削除失敗: ' + e.message);
     if (delBtn) { delBtn.disabled = false; delBtn.textContent = '🗑️ 削除'; }
+  });
+}
+
+// ===== 価格表の 写真・資料（SharePoint の 添付ファイル） =====
+// リストは ID で 指す（getbytitle の 名前に たよらない）
+var _PRICE_ATT_IMG_RE = /\.(jpg|jpeg|png|gif|webp|bmp)$/i;
+var _priceAttNames = {}; // {itemId: [ファイル名…]} 同じ名前の 上書きを さける
+
+function _priceAttBase(itemId) {
+  return 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/lists(guid\'' + PRICE_LIST_ID + '\')/items(' + itemId + ')/AttachmentFiles';
+}
+
+function _priceSpToken(write) {
+  return msalApp.acquireTokenSilent({
+    scopes: ['https://shojisekizai.sharepoint.com/AllSites.' + (write ? 'Write' : 'Read')],
+    account: msalApp.getActiveAccount()
+  });
+}
+
+function loadPriceAttachments(itemId) {
+  var area = document.getElementById('price-att-' + itemId);
+  if (!area) return;
+  area.innerHTML = '<div style="color:#999;font-size:12px">読み込み中...</div>';
+  var token;
+  _priceSpToken(false).then(function(resp) {
+    token = resp.accessToken;
+    return fetch(_priceAttBase(itemId), { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' } });
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function(data) {
+    var files = (data.d && data.d.results) ? data.d.results : [];
+    _priceAttNames[String(itemId)] = files.map(function(f){ return f.FileName; });
+    if (!files.length) {
+      area.innerHTML = '<div style="color:#bbb;font-size:12px;padding:6px 0">（まだありません）</div>';
+      return;
+    }
+    var imgs   = files.filter(function(f){ return _PRICE_ATT_IMG_RE.test(f.FileName); });
+    var others = files.filter(function(f){ return !_PRICE_ATT_IMG_RE.test(f.FileName); });
+    var idq = _esc(String(itemId));
+    var html = '';
+    if (imgs.length) {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 8px">';
+      imgs.forEach(function(f) {
+        var fnq = _esc(encodeURIComponent(f.FileName));
+        html += '<div style="position:relative;flex-shrink:0">';
+        html += '<img class="price-att-lazy" data-relpath="' + _esc(encodeURIComponent(f.ServerRelativeUrl)) + '" ' +
+          'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" ' +
+          'style="width:90px;height:90px;object-fit:cover;border-radius:8px;background:#e8e8e8;cursor:pointer;display:block">';
+        html += '<button type="button" title="削除" onclick="deletePriceAttachment(\'' + idq + '\',decodeURIComponent(\'' + fnq + '\'))" ' +
+          'style="position:absolute;top:3px;right:3px;background:rgba(160,0,0,0.82);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:22px;text-align:center;padding:0">✕</button>';
+        html += '<div style="font-size:10px;color:#888;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px;margin-top:2px">' + _esc(f.FileName) + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+    others.forEach(function(f) {
+      var fnq = _esc(encodeURIComponent(f.FileName));
+      var rq = _esc(encodeURIComponent(f.ServerRelativeUrl));
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee">';
+      html += '<span style="font-size:15px">📄</span>';
+      html += '<a href="javascript:void(0)" onclick="openPriceAttachment(decodeURIComponent(\'' + rq + '\'))" style="flex:1;font-size:12px;color:#1a4a8a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(f.FileName) + '</a>';
+      html += '<button type="button" title="削除" onclick="deletePriceAttachment(\'' + idq + '\',decodeURIComponent(\'' + fnq + '\'))" ' +
+        'style="flex-shrink:0;padding:3px 9px;background:none;border:1px solid #e0b0b0;color:#c00;border-radius:4px;font-size:12px;cursor:pointer;font-family:inherit">✕</button>';
+      html += '</div>';
+    });
+    area.innerHTML = html;
+    var jobs = [];
+    area.querySelectorAll('.price-att-lazy').forEach(function(imgEl) {
+      imgEl._attOnBlob = function(u){ imgEl.onclick = function(){ openCustImgPreview(u); }; };
+      jobs.push({ el: imgEl, relUrl: decodeURIComponent(imgEl.getAttribute('data-relpath')) });
+    });
+    if (jobs.length) attachImgLoadAll(jobs, token);
+  }).catch(function(e) {
+    if (area) area.innerHTML = '<div style="color:#c0392b;font-size:12px">読み込みエラー: ' + _esc(e.message) + '</div>';
+  });
+}
+
+// SharePoint で 使えない 字を 外し、同じ名前が あれば _2・_3 … を つける
+function _priceAttName(itemId, name, taken) {
+  var n = String(name || 'file').replace(/[\\\/:*?"<>|#%~&{}]/g, '_').replace(/^[\s.]+|[\s.]+$/g, '') || 'file';
+  var dot = n.lastIndexOf('.');
+  var base = dot > 0 ? n.slice(0, dot) : n;
+  var ext = dot > 0 ? n.slice(dot) : '';
+  var lower = taken.map(function(t){ return String(t).toLowerCase(); });
+  var cand = n, k = 2;
+  while (lower.indexOf(cand.toLowerCase()) !== -1) { cand = base + '_' + k + ext; k++; }
+  taken.push(cand);
+  return cand;
+}
+
+function uploadPriceAttachments(itemId, input) {
+  var files = input.files;
+  if (!files || !files.length) return;
+  var taken = (_priceAttNames[String(itemId)] || []).slice();
+  showSaveToast(null, '⏳ アップロード中... (0/' + files.length + ')');
+  _priceSpToken(true).then(function(resp) {
+    var token = resp.accessToken;
+    var done = 0, errors = 0, lastErr = '';
+    function next(idx) {
+      if (idx >= files.length) {
+        input.value = '';
+        if (errors === 0) showSaveToast(true, done + '件を追加しました');
+        else showSaveToast(false, done + '件成功、' + errors + '件失敗' + (lastErr ? '（' + lastErr + '）' : ''));
+        loadPriceAttachments(itemId);
+        _markPriceHasAtt(itemId);
+        return;
+      }
+      var file = files[idx];
+      var fname = _priceAttName(itemId, file.name, taken);
+      fetch(_priceAttBase(itemId) + '/add(FileName=\'' + encodeURIComponent(fname.replace(/'/g, "''")) + '\')', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, Accept: 'application/json;odata=verbose' },
+        body: file
+      }).then(function(r) {
+        if (r.ok) done++; else { errors++; lastErr = 'HTTP ' + r.status; }
+        showSaveToast(null, '⏳ アップロード中... (' + (done + errors) + '/' + files.length + ')');
+        next(idx + 1);
+      }).catch(function(e) { errors++; lastErr = e.message; next(idx + 1); });
+    }
+    next(0);
+  }).catch(function(e) { showSaveToast(false, 'トークン取得失敗: ' + e.message); });
+}
+
+// 一覧の 📎 を すぐ 出す（つぎの 読み込みまで 待たない）
+function _markPriceHasAtt(itemId) {
+  for (var i = 0; i < _priceItems.length; i++) {
+    if (String(_priceItems[i].id) === String(itemId)) { _priceItems[i].Attachments = true; break; }
+  }
+  if (!document.getElementById('price-list-screen').classList.contains('hidden')) filterPriceList();
+}
+
+function deletePriceAttachment(itemId, fileName) {
+  if (!confirm('「' + fileName + '」を削除しますか？\nこの操作は元に戻せません。')) return;
+  _priceSpToken(true).then(function(resp) {
+    return fetch(_priceAttBase(itemId) + '/getByFileName(\'' + encodeURIComponent(fileName.replace(/'/g, "''")) + '\')', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + resp.accessToken, Accept: 'application/json;odata=verbose', 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' }
+    });
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showSaveToast(true, '「' + fileName + '」を削除しました');
+    loadPriceAttachments(itemId);
+  }).catch(function(e) {
+    showSaveToast(false, '削除エラー: ' + e.message);
+  });
+}
+
+// 写真以外（PDF など）は 中身を 取って 新しいタブで 開く（SharePoint に サインインして いなくても 見られる）
+function openPriceAttachment(relUrl) {
+  var w = window.open('', '_blank');
+  if (w) w.document.write('<p style="font-family:sans-serif;padding:20px">⏳ 読み込み中...</p>');
+  _priceSpToken(false).then(function(resp) {
+    var url = "https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('" +
+      relUrl.replace(/'/g, "''") + "')/$value";
+    return fetch(url, { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.blob();
+  }).then(function(blob) {
+    var name = relUrl.split('/').pop();
+    if (/\.pdf$/i.test(name)) blob = new Blob([blob], { type: 'application/pdf' });
+    var u = URL.createObjectURL(blob);
+    if (/\.pdf$/i.test(name) || /^(image|text)\//.test(blob.type)) {
+      if (w) w.location.href = u; else window.open(u, '_blank');
+    } else {
+      if (w) w.close();
+      var a = document.createElement('a');
+      a.href = u; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(function(){ URL.revokeObjectURL(u); }, 60000);
+  }).catch(function(e) {
+    if (w) w.close();
+    showSaveToast(false, '開けませんでした: ' + e.message);
   });
 }
 
@@ -7971,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.540';
+var APP_VERSION = 'v1.9.541';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

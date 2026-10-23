@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.543';
+var APP_VERSION = 'v1.9.544';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21707,7 +21707,7 @@ function _kkRenderNew(d){
         '<div id="kk-due-note" style="font-size:11.5px;margin-top:4px"></div>'+
         '<div style="font-size:11px;color:#6b7280;margin-top:6px">店の電話：'+_gaichuEsc(_kkShop().tel)+'（'+_gaichuEsc(_kkShop().hours)+'）</div>';
     })()+
-    '<button id="kk-create" onclick="_kkCreate(this)" style="width:100%;margin-top:12px;font-size:14px;font-weight:700;padding:12px;background:#2f6f8f;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">確認ページを作る</button>'+
+    '<button id="kk-create" onclick="_kkPreview(this)" style="width:100%;margin-top:12px;font-size:14px;font-weight:700;padding:12px;background:#2f6f8f;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">👁 プレビューで 確かめる（まだ 作りません）</button>'+
     '<div id="kk-msg" style="font-size:12px;margin-top:6px;color:#6b7280"></div>'+
   '</div>';
   _kkDueNote(); _kkFillRev(d);
@@ -21952,7 +21952,10 @@ function _kkRawBlob(f){
     f.source==='sp' ? msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).then(function(r){ return r.accessToken; }) : Promise.resolve('')
   ]).then(function(t){ return _gaichuFetchBlob(f, t[0], t[1]); });
 }
-function _kkCreate(btn){
+/* 作る 前に プレビュー（v1.9.544。本人「写真を選択し、制作前にプレビューで表示させて、問題なければ製作という形にしてほしい」）
+   送る 画像（縮めた・印を 焼き込んだ もの）を 先に 用意して、さくらの お客様画面（index.html?preview=1）を そのまま 枠の 中に 出す。
+   画像は postMessage で 渡す（さくらには まだ 何も 送らない）。［この内容で 作る］で はじめて さくらへ */
+function _kkPreview(btn){
   var d=currentItem; if(!d) return;
   var msg=document.getElementById('kk-msg');
   var say=function(t, err){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; };
@@ -21964,55 +21967,119 @@ function _kkCreate(btn){
     sesyu:document.getElementById('kk-sesyu').value.trim(), phones:[], rev:parseInt(document.getElementById('kk-rev').value,10)||0,
     shopTel:shop.tel, shopHours:shop.hours, days:30, expiresDate:due,
     noukotsu:(function(){ var x=_kkDay(d['_x7d0d__x671f__xff08__x7d0d__x9a']); return x?_kkIso(x):''; })() };
+  var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
   btn.disabled=true; btn.style.opacity='.7';
   var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
   say('さくらの 受信の 上限を 確かめています…');
-  /* 送れなかった（Failed to fetch）ときは さくらに つながるかを 確かめ、つながるなら 画像を 小さくして 1 回だけ やり直す（v1.9.540。
-     本人の 報告「作れませんでした：Failed to fetch」「ERR_QUIC_PROTOCOL_ERROR.QUIC_HANDSHAKE_TIMEOUT」） */
-  var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
-  var MB=function(n){ return (Math.round(n/104857.6)/10)+'MB'; };
-  var sendAt=function(each){
-    var files={}, total=0;
-    return keys.reduce(function(pr, k){
-      return pr.then(function(){
-        say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
-        return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; total+=b.size; });
-      });
-    }, Promise.resolve()).then(function(){
-      say('さくらへ 送っています（'+MB(total)+'）…');
-      var fd=new FormData(); fd.append('action','create'); fd.append('case', JSON.stringify(cs));
-      keys.forEach(function(k){ fd.append(k, files[k], k+(/png/.test(files[k].type)?'.png':'.jpg')); });
-      return _kkPost(fd).catch(function(e){ e.kkTotal=total; throw e; });
-    });
-  };
   _kkLimits().then(function(lim){
     var each=Math.min(lim.one, Math.floor(lim.total/keys.length));
-    return sendAt(each).catch(function(e){
-      if(!(e instanceof TypeError)) throw e;   // ネットの エラー（Failed to fetch）だけ やり直す
-      say('送れませんでした。さくらに つながるか 確かめています…');
-      return fetch(_kkCfg().url,{method:'GET',cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
-        if(!j || j.service!=='kakunin-upload') throw new Error('x');
-      }).then(function(){
-        var small=Math.min(each, 900000);
-        say('つながりました。画像を 小さくして もう一度 送ります…');
-        return sendAt(small).catch(function(e2){
+    return _kkPrepFiles(keys, each, say).then(function(files){
+      done(); say('');
+      _kkState.prep={ d:d, cs:cs, keys:keys, files:files, each:each };
+      _kkPreviewShow();
+    });
+  }).catch(function(e){ done(); say('プレビューを 出せませんでした：'+(e.message||e), true); });
+}
+function _kkPrepFiles(keys, each, say){
+  var files={};
+  return keys.reduce(function(pr, k){
+    return pr.then(function(){
+      say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
+      return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; });
+    });
+  }, Promise.resolve()).then(function(){ return files; });
+}
+function _kkPreviewShow(){
+  var P=_kkState.prep, cs=P.cs;
+  var base=String(_kkCfg().url||'').replace(/upload\.php.*$/,''), origin='*';
+  try{ origin=new URL(base).origin; }catch(e){}
+  var ov=document.createElement('div'); ov.id='kk-prev';
+  ov.style.cssText='position:fixed;inset:0;z-index:10003;background:rgba(20,22,28,.82);display:flex;align-items:center;justify-content:center;gap:18px;padding:14px;flex-wrap:wrap;overflow:auto';
+  var thumbs=P.keys.map(function(k){
+    var u=URL.createObjectURL(P.files[k]); _kkState.urls.push(u);
+    var t={grave:'お墓',place:'彫刻する場所',proof:'確認資料'}[k];
+    return '<a href="'+u+'" target="_blank" title="押すと 大きく" style="display:flex;flex-direction:column;align-items:center;gap:3px;text-decoration:none;color:#4a5160;font-size:11px"><span style="width:84px;height:84px;border-radius:6px;border:1px solid #e3e6ea;background:#f2f3f5 url(\''+u+'\') center/'+(k==='proof'?'contain':'cover')+' no-repeat"></span>'+t+'</a>';
+  }).join('');
+  var row=function(k,v){ return v?'<div style="display:flex;gap:8px;font-size:12.5px;padding:2px 0"><span style="width:62px;color:#8a94a6;flex-shrink:0">'+k+'</span><span style="color:#1c1f26">'+_gaichuEsc(v)+'</span></div>':''; };
+  var dd=_kkDay(cs.expiresDate), nd=_kkDay(cs.noukotsu);
+  ov.innerHTML=
+    '<div style="flex:0 0 auto;width:390px;max-width:100%;height:min(780px,92vh);background:#fff;border-radius:22px;border:8px solid #1c1f26;overflow:hidden;position:relative">'+
+      '<iframe id="kk-prev-if" src="'+_gaichuEsc(base+'index.html?preview=1')+'" style="width:100%;height:100%;border:0;display:block" title="お客様の画面のプレビュー"></iframe>'+
+      '<div id="kk-prev-wait" style="position:absolute;inset:0;display:grid;place-items:center;background:#fff;color:#6b7280;font-size:13px;padding:20px;text-align:center">お客様の 画面を 読んでいます…</div>'+
+    '</div>'+
+    '<div style="flex:0 1 330px;min-width:260px;background:#fff;border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:10px">'+
+      '<div style="font-size:15px;font-weight:700;color:#245a75">👁 プレビュー（まだ 作っていません）</div>'+
+      '<div style="font-size:12px;color:#4a5160;line-height:1.6">左は お客様の スマホに 出る 画面です。指や ホイールで 動かして、写真と 原稿を 確かめてください。ここでの 操作は どこにも 送られません。</div>'+
+      '<div style="border-top:1px solid #eef1f5;padding-top:8px">'+row('お寺',cs.cemetery)+row('お墓',cs.graveName)+row('施主',cs.sesyu)+row('原稿',cs.rev?'修正'+cs.rev:'初回')+row('期限',dd?_kkMDw(dd):'')+row('納骨日',nd?_kkMDw(nd):'')+'</div>'+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap">'+thumbs+'</div>'+
+      (P.keys.indexOf('grave')<0?'<div style="font-size:11.5px;color:#b45309">① お墓の写真が ありません（お客様の 画面には 出ません）</div>':'')+
+      (P.keys.indexOf('place')<0?'<div style="font-size:11.5px;color:#b45309">② 彫刻する場所の写真が ありません</div>':'')+
+      '<div id="kk-prev-msg" style="font-size:12px;color:#4a5160"></div>'+
+      '<button id="kk-prev-ok" onclick="_kkCreateNow(this)" style="font-size:14px;font-weight:700;padding:12px;background:#1a7a3a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">✅ この内容で 作る</button>'+
+      '<button onclick="_kkPreviewClose()" style="font-size:13px;padding:10px;background:#fff;color:#334;border:1px solid #ccd2dc;border-radius:10px;cursor:pointer;font-family:inherit">← 戻って 選び直す</button>'+
+    '</div>';
+  document.body.appendChild(ov);
+  var sent=false, ifr=document.getElementById('kk-prev-if');
+  var payload={ type:'kk-preview', case:{ cemetery:cs.cemetery, graveName:cs.graveName, sesyu:cs.sesyu, rev:cs.rev, shopTel:cs.shopTel, shopHours:cs.shopHours, expires:cs.expiresDate, noukotsu:cs.noukotsu }, files:P.files };
+  _kkState.prevListener=function(e){
+    if(!ifr || e.source!==ifr.contentWindow || !e.data || e.data.type!=='kk-preview-ready') return;
+    sent=true; ifr.contentWindow.postMessage(payload, origin);
+    var w=document.getElementById('kk-prev-wait'); if(w) w.remove();
+  };
+  window.addEventListener('message', _kkState.prevListener);
+  setTimeout(function(){
+    if(sent) return;
+    var w=document.getElementById('kk-prev-wait');
+    if(w) w.innerHTML='<div>さくらの お客様画面（index.html）が 古いので、ここに 出せません。<br><br>右の 小さな 写真を 押すと 送る 画像を 大きく 見られます。<br><br><span style="font-size:11.5px">さくらの kakunin/index.html を 新しいものに すると、ここに お客様の 画面が 出ます。</span></div>';
+  }, 6000);
+}
+function _kkPreviewClose(){
+  if(_kkState.prevListener) window.removeEventListener('message', _kkState.prevListener);
+  _kkState.prevListener=null;
+  var ov=document.getElementById('kk-prev'); if(ov) ov.remove();
+}
+/* プレビューで 見た 画像を そのまま さくらへ。送れなかった（Failed to fetch）ときは さくらに つながるかを 確かめ、つながるなら
+   画像を 小さくして 1 回だけ やり直す（v1.9.540。本人の 報告「作れませんでした：Failed to fetch」「ERR_QUIC_PROTOCOL_ERROR.QUIC_HANDSHAKE_TIMEOUT」） */
+function _kkCreateNow(btn){
+  var P=_kkState.prep; if(!P) return;
+  var d=P.d, cs=P.cs, keys=P.keys;
+  var msg=document.getElementById('kk-prev-msg');
+  var say=function(t, err){ if(msg){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; } };
+  var MB=function(n){ return (Math.round(n/104857.6)/10)+'MB'; };
+  var send=function(files){
+    var total=0; keys.forEach(function(k){ total+=files[k].size; });
+    say('さくらへ 送っています（'+MB(total)+'）…');
+    var fd=new FormData(); fd.append('action','create'); fd.append('case', JSON.stringify(cs));
+    keys.forEach(function(k){ fd.append(k, files[k], k+(/png/.test(files[k].type)?'.png':'.jpg')); });
+    return _kkPost(fd).catch(function(e){ e.kkTotal=total; throw e; });
+  };
+  btn.disabled=true; btn.style.opacity='.7';
+  send(P.files).catch(function(e){
+    if(!(e instanceof TypeError)) throw e;   // ネットの エラー（Failed to fetch）だけ やり直す
+    say('送れませんでした。さくらに つながるか 確かめています…');
+    return fetch(_kkCfg().url,{method:'GET',cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
+      if(!j || j.service!=='kakunin-upload') throw new Error('x');
+    }).then(function(){
+      say('つながりました。画像を 小さくして もう一度 送ります…');
+      var small={};
+      return keys.reduce(function(pr,k){ return pr.then(function(){ return _kkFit(P.files[k], Math.min(P.each, 900000), k==='proof'?0:2000).then(function(b){ small[k]=b; }); }); }, Promise.resolve())
+        .then(function(){ return send(small); })
+        .catch(function(e2){
           if(e2 instanceof TypeError) throw new Error('さくらには つながりますが、送る途中で 切れました（'+MB(e2.kkTotal||0)+'）。少し 待って もう一度、それでも だめなら 別の 回線（スマホの テザリング など）で 試してください');
           throw e2;
         });
-      }, function(){
-        throw new Error('さくらの upload.php に つながりません。［⚙ 接続設定］の URL（'+_kkCfg().url+'）を ブラウザで 開いて {"ok":true,"service":"kakunin-upload"…} が 出るか 確かめてください');
-      });
+    }, function(){
+      throw new Error('さくらの upload.php に つながりません。［⚙ 接続設定］の URL（'+_kkCfg().url+'）を ブラウザで 開いて {"ok":true,"service":"kakunin-upload"…} が 出るか 確かめてください');
     });
   }).then(function(r){
-    done();
-    if(!r || !r.ok){ say('作れませんでした：'+((r && r.error)||'不明'), true); return; }
-    say('');
+    if(!r || !r.ok){ btn.disabled=false; btn.style.opacity='1'; say('作れませんでした：'+((r && r.error)||'不明'), true); return; }
+    _kkPreviewClose(); _kkState.prep=null;
     showSaveToast(true,'確認ページを作りました');
     _kkState.rows.unshift({ token:r.token, ref:cs.ref, rev:cs.rev, status:'open', created:'', expires:r.expires, log:[] });
     _kkShowShare(r.token, r.url, r.expires);
     _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); });
     _kkUpdateBtn();
-  }).catch(function(e){ done(); say('作れませんでした：'+(e.message||e), true); });
+  }).catch(function(e){ btn.disabled=false; btn.style.opacity='1'; say('作れませんでした：'+(e.message||e), true); });
 }
 
 /* ── URL・QR ── */

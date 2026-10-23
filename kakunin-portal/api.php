@@ -5,6 +5,7 @@
  *
  *   GET  ?a=hint&t=…              状態・電話番号のヒント・店の電話（開いた記録を残す）
  *   POST a=verify t tail who rel   電話番号の下4桁を確かめ、合えば 鍵 k と お墓・画像の URL を返す
+ *                                  （電話番号の無い 確認ページ（v2）は 下4桁なしで 鍵を 返す。お名前は 回答の 時に 書いて もらう）
  *   GET  ?a=img&t=…&k=…&f=grave|place|proof   画像（鍵が要る）
  *   POST a=seen t k                原稿を最後まで見た記録
  *   POST a=answer t k result=ok|ng consent who rel placeFix fix callMe mark(画像) photos[](画像)
@@ -38,7 +39,9 @@ if ($a === 'hint') {
   kk_log($t, 'open');
   $phones = array();
   foreach ((isset($case['phones']) ? $case['phones'] : array()) as $p) $phones[] = array('label' => $p['label'], 'masked' => $p['masked']);
-  kk_out(array_merge(array('ok' => true, 'status' => $status, 'phones' => $phones, 'rev' => intval(isset($case['rev']) ? $case['rev'] : 0)), shop_info($case)));
+  kk_out(array_merge(array('ok' => true, 'status' => $status, 'phones' => $phones, 'needVerify' => count($phones) > 0,
+    'rev' => intval(isset($case['rev']) ? $case['rev'] : 0), 'expires' => isset($case['expires']) ? $case['expires'] : '',
+    'noukotsu' => isset($case['noukotsu']) ? $case['noukotsu'] : ''), shop_info($case)));
 }
 
 if ($a === 'img') {
@@ -55,7 +58,7 @@ if ($status !== 'open') kk_out(array('ok' => false, 'error' => $status));
 
 if ($a === 'verify') {
   $tail = isset($_POST['tail']) ? preg_replace('/\D/', '', $_POST['tail']) : '';
-  $ok = false;
+  $ok = empty($case['phones']);   // 電話番号の 無い 確認ページは 本人確認なし
   foreach ($case['phones'] as $p) if (strlen($tail) === 4 && hash_equals($p['tail'], $tail)) $ok = true;
   if (!$ok) {
     $case['fails'] = intval(isset($case['fails']) ? $case['fails'] : 0) + 1;
@@ -70,7 +73,7 @@ if ($a === 'verify') {
   kk_write($dir . '/sess.json', $s);
   $who = mb_substr(trim(isset($_POST['who']) ? $_POST['who'] : ''), 0, 50);
   $rel = mb_substr(trim(isset($_POST['rel']) ? $_POST['rel'] : ''), 0, 30);
-  kk_log($t, 'verify_ok', array('who' => $who, 'rel' => $rel));
+  kk_log($t, empty($case['phones']) ? 'start' : 'verify_ok', array('who' => $who, 'rel' => $rel));
   $img = array();
   foreach (array('grave', 'place', 'proof') as $f) if (kk_find_file($dir, $f)) $img[$f] = 'api.php?a=img&t=' . $t . '&k=' . $k . '&f=' . $f;
   kk_out(array('ok' => true, 'k' => $k, 'img' => $img,
@@ -89,6 +92,7 @@ if ($a === 'answer') {
   $result = isset($_POST['result']) ? $_POST['result'] : '';
   if (!in_array($result, array('ok', 'ng', 'grave_ng'), true)) kk_fail('bad result');
   if ($result === 'ok' && empty($_POST['consent'])) kk_fail('consent required');
+  if (empty($case['phones']) && $result !== 'grave_ng' && trim(isset($_POST['who']) ? $_POST['who'] : '') === '') kk_fail('name required');
   $ans = array(
     'at' => kk_now(), 'result' => $result,
     'who' => mb_substr(trim(isset($_POST['who']) ? $_POST['who'] : ''), 0, 50),
@@ -118,7 +122,7 @@ if ($a === 'answer') {
   $case['answeredAt'] = $ans['at'];
   kk_write($dir . '/case.json', $case);
   @unlink($dir . '/sess.json');
-  kk_log($t, 'answer', array('result' => $result));
+  kk_log($t, 'answer', array('result' => $result, 'who' => $ans['who'], 'rel' => $ans['rel']));
   kk_out(array('ok' => true, 'at' => $ans['at']));
 }
 

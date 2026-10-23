@@ -12,7 +12,7 @@ mb_internal_encoding('UTF-8');
 date_default_timezone_set('Asia/Tokyo');
 
 define('KK_DATA', __DIR__ . '/data');
-define('KK_VERSION', 1);
+define('KK_VERSION', 2);
 
 function kk_out($arr){ echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit; }
 function kk_fail($msg, $code = 400){ http_response_code($code); kk_out(array('ok' => false, 'error' => $msg)); }

@@ -6,7 +6,9 @@
  *
  * POST multipart/form-data（毎回 secret と action）
  *   create  case(JSON) grave place proof(画像)
- *           case = {ref, cemetery, graveName, sesyu, phones:[{label, number}], rev, shopTel, shopHours, days}
+ *           case = {ref, cemetery, graveName, sesyu, phones:[{label, number}], rev, shopTel, shopHours, days, expiresDate, noukotsu}
+ *           phones が 空なら 本人確認（電話番号の 下4桁）なし。お客様は 最後に お名前を 書く（v2）
+ *           expiresDate（YYYY-MM-DD）が あれば その日の 23:59 まで。無ければ days 日
  *           電話番号は 保存しない（伏せ字と 下4桁だけ 残す）。返り値 {token, url, expires}
  *   status  token        → case・状態・記録（log）・回答（answer）
  *   list                 → 全件の 状態の 一覧
@@ -69,8 +71,13 @@ if ($action === 'create') {
     $h = kk_phone_hint(isset($p['number']) ? $p['number'] : '');
     if ($h) $phones[] = array('label' => mb_substr(isset($p['label']) ? $p['label'] : '電話', 0, 10), 'masked' => $h['masked'], 'tail' => $h['tail']);
   }
-  if (!$phones) kk_fail('電話番号がありません（本人確認に使います）');
   $days = max(1, min(90, intval(isset($in['days']) ? $in['days'] : 30)));
+  $expires = date('Y-m-d H:i:s', time() + $days * 86400);
+  if (!empty($in['expiresDate']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['expiresDate'])) {
+    $ts = strtotime($in['expiresDate'] . ' 23:59:59');
+    if ($ts && $ts > time() && $ts < time() + 120 * 86400) $expires = date('Y-m-d H:i:s', $ts);
+  }
+  $noukotsu = (!empty($in['noukotsu']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['noukotsu'])) ? $in['noukotsu'] : '';
   $t = kk_new_token();
   $dir = kk_dir($t);
   mkdir($dir, 0755, true);
@@ -84,7 +91,8 @@ if ($action === 'create') {
     'shopTel' => mb_substr(isset($in['shopTel']) ? $in['shopTel'] : '', 0, 20),
     'shopHours' => mb_substr(isset($in['shopHours']) ? $in['shopHours'] : '', 0, 80),
     'created' => kk_now(),
-    'expires' => date('Y-m-d H:i:s', time() + $days * 86400),
+    'expires' => $expires,
+    'noukotsu' => $noukotsu,
   );
   foreach (array('grave', 'place', 'proof') as $f) {
     if (empty($_FILES[$f]) || $_FILES[$f]['error'] !== UPLOAD_ERR_OK) continue;

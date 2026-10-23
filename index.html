@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.542';
+var APP_VERSION = 'v1.9.543';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21468,7 +21468,7 @@ function _gaichuFetchBlob(file, gTok, sTok){
    アクセスしてもらって返事とする」「回答の最終保存場所は SP 上、アプリで管理しているフォルダー」「さくらにお客様用のページを作り、回答後に取り込む」
    「ボタンを付けるのは 業務アプリの 納骨・戒切」）─────
    さくらの kakunin/upload.php（kakunin-portal/）へ お墓の写真・彫刻する場所の写真・確認資料（拓本＋原稿の JPEG）を 送って
-   お客様用の ページを 作る。URL と QR コードを 手紙・LINE で 送る。お客様は 電話番号の 下4桁で 本人確認 → 写真と 原稿を 見て 回答。
+   お客様用の ページを 作る。URL と QR コードを 手紙・LINE で 送る。お客様は 写真と 原稿を 見て、最後に お名前を 書いて 回答（v1.9.543 から 本人確認なし。前に 作った ページは 電話番号の 下4桁）。
    回答（answer.json・印をつけた原稿・撮った写真）と 記録（開いた・本人確認・最後まで見た・回答 の 日時・IP・端末）を
    案件フォルダーの「お客様確認」へ 取り込んで、さくらからは 消す。
    設定（upload.php の URL・合言葉・店の電話・受付時間）は 外注公開と 同じく localStorage と SP の 設定ファイル（コードには 書かない） */
@@ -21590,13 +21590,14 @@ function openKakunin(){
 function _kkOpen(){
   var d=currentItem;
   _kkBuildModal().style.display='flex';
-  _kkState.pick={}; _kkState.imgs=[];
+  _kkState.pick={}; _kkState.imgs=[]; _kkState.prev=[];
+  _kkLoadPrev(d).then(function(l){ if(currentItem!==d) return; _kkState.prev=l; _kkFillRev(d); });
   document.getElementById('kk-share').innerHTML='';
   _kkRenderRows(null);
   _kkRenderNew(d);
   _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); _kkFillRev(d); })
     .catch(function(e){ document.getElementById('kk-rows').innerHTML='<div style="'+_KK_CARD+';color:#b3261e;font-size:12.5px">さくらの お客様確認に つながりません：'+_gaichuEsc(e.message||e)+'<br><span style="color:#6b7280">［⚙ 接続設定］の URL と 合言葉を 確かめてください。</span></div>'; });
-  _kkListImages(d).then(function(list){ if(currentItem!==d) return; _kkState.imgs=list; _kkGuess(); _kkRenderPicks(); });
+  _kkListImages(d).then(function(list){ if(currentItem!==d) return; _kkState.imgs=list; _kkGuess(); _kkRenderPicks(); _kkFillRev(d); });
 }
 function _kkRenderRows(rows){
   var el=document.getElementById('kk-rows'); if(!el) return;
@@ -21621,26 +21622,67 @@ function _kkRenderRows(rows){
 function _kkRow(token){ return (_kkState.rows||[]).filter(function(x){ return x.token===token; })[0]; }
 
 /* ── 新しく作る ── */
-function _kkPhones(d){
-  var raw=String(d['_x96fb__x8a71__x756a__x53f7_']||'');
-  var out=raw.split(/[、,\/・\s\n]+/).map(function(t){ return t.trim(); }).filter(function(t){ return t.replace(/\D/g,'').length>=4; });
-  return out.map(function(n){ var dg=n.replace(/\D/g,''); return { label: /^0[789]0/.test(dg) ? '携帯' : '自宅', number: _kkHyphen(n) }; });
-}
-/* 伏せ字の ヒントは ハイフンの 区切りで 作る（さくら側）。携帯の 11 けたは 3-4-4 に */
-function _kkHyphen(n){ var s=String(n||'').trim(); if(/-/.test(s)) return s; var dg=s.replace(/\D/g,''); return /^0[789]0\d{8}$/.test(dg) ? dg.slice(0,3)+'-'+dg.slice(3,7)+'-'+dg.slice(7) : s; }
 function _kkRevFromSP(d){ var r=String(d['Resubmission']||''); return /再提出②/.test(r) ? 2 : /再提出①/.test(r) ? 1 : 0; }
+/* 原稿の 版を 自動で（v1.9.543。本人「原稿の版は、自動で入れる事はできますか？ 手動でも訂正できるように」）
+   いちばん 大きいものを 使う：
+   ・前に 取り込んだ 回答（案件フォルダー「お客様確認」の YYYYMMDD_初回／修正N_回答_承諾・訂正あり.txt）… 訂正なら 次の 版
+   ・さくらに 残っている 確認ページ（回答が 訂正なら 次の 版。回答待ちなら 同じ 版）
+   ・資料結果（再提出① → 修正1、再提出② → 修正2）
+   ・選んだ 確認資料の 名前に「修正N」「第N版」があれば その N */
 function _kkFillRev(d){
-  var sel=document.getElementById('kk-rev'); if(!sel || sel.getAttribute('data-touched')) return;
-  var rev=_kkRevFromSP(d);
-  (_kkState.rows||[]).forEach(function(x){ var n=(x.rev||0)+((x.status==='answered' && x.result && x.result!=='ok')?1:0); if(n>rev) rev=n; });
-  sel.value=String(Math.min(rev,9));
+  var sel=document.getElementById('kk-rev'), why=document.getElementById('kk-rev-why'); if(!sel) return;
+  var best=0, src='はじめての 確認', up=function(n, t){ if(n>best){ best=n; src=t; } };
+  up(_kkRevFromSP(d), '資料結果「'+(d['Resubmission']||'')+'」');
+  (_kkState.prev||[]).forEach(function(x){ up(x.rev+(x.res==='承諾'?0:1), '前の 回答（'+(x.rev?'修正'+x.rev:'初回')+'・'+x.res+'）'); });
+  (_kkState.rows||[]).forEach(function(x){ var ng=x.status==='answered' && x.result && x.result!=='ok'; up((x.rev||0)+(ng?1:0), ng?'さくらの 回答（訂正あり）':'さくらの 確認ページ'); });
+  var pf=_kkState.pick.proof, m=pf && String(pf.name||'').match(/修正\s*(\d+)|第\s*(\d+)\s*版/);
+  if(m){ var n=parseInt(m[1]||m[2],10); if(m[2]) n=Math.max(0,n-1); up(n, '確認資料の 名前「'+pf.name+'」'); }
+  best=Math.min(best,9);
+  if(why) why.textContent = sel.getAttribute('data-touched') ? '手で 選んだ 版です（自動では '+(best?'修正'+best:'初回')+'）' : '自動：'+src;
+  if(!sel.getAttribute('data-touched')) sel.value=String(best);
+}
+/* 前に 取り込んだ 回答（ファイル名から 版と 結果） */
+function _kkLoadPrev(d){
+  var fp=d['FolderPass']||''; if(!fp) return Promise.resolve([]);
+  return getToken().then(function(resp){
+    var enc=(fp.replace(/\/+$/,'')+'/'+KK_SUB).split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/children?$select=name&$top=999',{headers:{Authorization:'Bearer '+resp.accessToken}});
+  }).then(function(r){ return r.ok ? r.json() : {value:[]}; }).then(function(j){
+    var out=[];
+    (j.value||[]).forEach(function(f){ var m=String(f.name).match(/^\d{8}_(初回|修正(\d+))_回答_(.+)\.txt$/); if(m) out.push({ rev: m[2]?parseInt(m[2],10):0, res: m[3] }); });
+    return out;
+  }).catch(function(){ return []; });
+}
+/* 回答の 期限（v1.9.543。本人「回答期限を納骨日から逆算して14日前または、発行から7日間として、納骨日までの日数が分かる様に」）
+   2 つの うち 早い方を 先に 選ぶ（14 日前が もう 過ぎていれば 発行から 7 日）。日付は 手でも 変えられる */
+function _kkDay(s){ var m=String(s||'').match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/); return m ? new Date(+m[1], m[2]-1, +m[3]) : null; }
+function _kkIso(dt){ return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2)+'-'+('0'+dt.getDate()).slice(-2); }
+function _kkMDw(dt){ return (dt.getMonth()+1)+'/'+dt.getDate()+'（'+'日月火水木金土'[dt.getDay()]+'）'; }
+function _kkDueOpts(d){
+  var t=new Date(); t.setHours(0,0,0,0);
+  var add=function(dt,n){ var x=new Date(dt); x.setDate(x.getDate()+n); return x; };
+  var nd=_kkDay(d['_x7d0d__x671f__xff08__x7d0d__x9a']);
+  var o={ today:t, nd:nd, b:add(t,7) };
+  if(nd){ o.a=add(nd,-14); o.left=Math.round((nd-t)/86400000); }
+  o.def = (o.a && o.a>t && o.a<o.b) ? o.a : o.b;
+  return o;
+}
+function _kkDueSet(v){ var el=document.getElementById('kk-due'); if(el){ el.value=v; _kkDueNote(); } }
+function _kkDueNote(){
+  var el=document.getElementById('kk-due'), n=document.getElementById('kk-due-note'); if(!el||!n) return;
+  var o=_kkDueOpts(currentItem||{}), dv=_kkDay(el.value);
+  document.querySelectorAll('.kk-due-b').forEach(function(b){ var on=b.getAttribute('data-v')===el.value; b.style.background=on?'#2f6f8f':'#fff'; b.style.color=on?'#fff':'#245a75'; });
+  if(!dv){ n.textContent='期限の 日付を 選んでください'; n.style.color='#b3261e'; return; }
+  var t=o.today, dl=Math.round((dv-t)/86400000);
+  var msg='期限まで '+dl+' 日';
+  if(o.nd) msg+='／期限から 納骨日まで '+Math.round((o.nd-dv)/86400000)+' 日';
+  n.textContent=msg; n.style.color=(o.nd && (o.nd-dv)/86400000<14) ? '#b45309' : '#4a5160';
 }
 function _kkRenderNew(d){
   var el=document.getElementById('kk-new'); if(!el) return;
   var haka=d['_x304a__x5893__x306e__x540d__x7f']||'';
   var inp='font-size:13px;padding:6px 8px;border:1px solid #ccd2dc;border-radius:7px;font-family:inherit;box-sizing:border-box';
   var lb='display:block;font-size:11.5px;font-weight:700;color:#4a5160;margin:8px 0 3px';
-  var phones=_kkPhones(d); if(!phones.length) phones=[{label:'自宅',number:''}];
   var revOpts=''; for(var i=0;i<=9;i++) revOpts+='<option value="'+i+'">'+(i?'修正'+i+'（お客様の画面に「修正'+i+'の原稿です」）':'初回')+'</option>';
   el.innerHTML='<div style="'+_KK_CARD+'">'+
     '<div style="font-size:13.5px;font-weight:700;color:#245a75">＋ 新しく 確認ページを作る</div>'+
@@ -21648,27 +21690,27 @@ function _kkRenderNew(d){
       '<div><label style="'+lb+'">お寺（墓地）</label><input id="kk-cem" value="'+_gaichuEsc(d['_x304a__x5bfa_']||'')+'" style="width:100%;'+inp+'"></div>'+
       '<div><label style="'+lb+'">お墓の名前</label><input id="kk-grave" value="'+_gaichuEsc(haka?haka+'家':'')+'" placeholder="○○家" style="width:100%;'+inp+'"></div>'+
       '<div><label style="'+lb+'">施主</label><input id="kk-sesyu" value="'+_gaichuEsc(d['_x5f6b__x523b__x8005__x540d_']||'')+'" style="width:100%;'+inp+'"></div>'+
-      '<div><label style="'+lb+'">原稿の 版</label><select id="kk-rev" onchange="this.setAttribute(\'data-touched\',1)" style="width:100%;'+inp+'">'+revOpts+'</select></div>'+
+      '<div><label style="'+lb+'">原稿の 版</label><select id="kk-rev" onchange="this.setAttribute(\'data-touched\',1);_kkFillRev(currentItem)" style="width:100%;'+inp+'">'+revOpts+'</select><div id="kk-rev-why" style="font-size:10.5px;color:#8a94a6;margin-top:2px"></div></div>'+
     '</div>'+
-    '<label style="'+lb+'">本人確認の 電話番号（お客様は どれかの 下4桁を 入れます。番号そのものは さくらに 残しません）</label>'+
-    '<div id="kk-phones">'+phones.map(_kkPhoneRow).join('')+'</div>'+
-    '<button onclick="document.getElementById(\'kk-phones\').insertAdjacentHTML(\'beforeend\',_kkPhoneRow({label:\'携帯\',number:\'\'}))" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;margin-top:4px">＋ 電話番号を足す</button>'+
+    '<div style="font-size:11.5px;color:#4a5160;background:#f2f8fe;border-radius:8px;padding:6px 9px;margin-top:8px">本人確認（電話番号）は しません。お客様は 回答の 最後に お名前（フルネーム）と 故人様との ご関係を 書きます。</div>'+
     '<label style="'+lb+'">写真と 確認資料（案件フォルダー・添付から 選ぶか、パソコンから）</label>'+
     '<div id="kk-picks" style="display:flex;flex-direction:column;gap:8px"><div style="font-size:12px;color:#6b7280">フォルダーの 画像を 読んでいます…</div></div>'+
-    '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">'+
-      '<label style="font-size:12px;color:#4a5160">回答の 期限 <select id="kk-days" style="'+inp+';padding:4px 6px"><option value="14">14日</option><option value="30" selected>30日</option><option value="60">60日</option></select></label>'+
-      '<span style="font-size:11px;color:#6b7280">店の電話：'+_gaichuEsc(_kkShop().tel)+'（'+_gaichuEsc(_kkShop().hours)+'）</span>'+
-    '</div>'+
+    (function(){
+      var o=_kkDueOpts(d), b='font-size:12px;padding:6px 10px;border-radius:8px;cursor:pointer;font-family:inherit;border:1px solid #9cc3ea;background:#fff;color:#245a75';
+      return '<label style="'+lb+'">回答の 期限</label>'+
+        '<div style="font-size:12.5px;margin-bottom:5px;color:'+(o.nd?(o.left<21?'#b3261e':'#334'):'#8a94a6')+'">'+(o.nd ? '納骨日 <b>'+_kkMDw(o.nd)+'</b>　あと <b>'+o.left+'</b> 日' : '納骨日が 入っていません')+'</div>'+
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+
+          (o.a ? '<button class="kk-due-b" data-v="'+_kkIso(o.a)+'" onclick="_kkDueSet(this.getAttribute(\'data-v\'))" '+(o.a<=o.today?'disabled title="もう 過ぎています" ':'')+'style="'+b+(o.a<=o.today?';opacity:.45;cursor:default':'')+'">納骨日の 14 日前　'+_kkMDw(o.a)+'</button>' : '')+
+          '<button class="kk-due-b" data-v="'+_kkIso(o.b)+'" onclick="_kkDueSet(this.getAttribute(\'data-v\'))" style="'+b+'">発行から 7 日　'+_kkMDw(o.b)+'</button>'+
+          '<input type="date" id="kk-due" value="'+_kkIso(o.def)+'" min="'+_kkIso(new Date(o.today.getTime()+86400000))+'" onchange="_kkDueNote()" style="'+inp+';padding:4px 6px">'+
+        '</div>'+
+        '<div id="kk-due-note" style="font-size:11.5px;margin-top:4px"></div>'+
+        '<div style="font-size:11px;color:#6b7280;margin-top:6px">店の電話：'+_gaichuEsc(_kkShop().tel)+'（'+_gaichuEsc(_kkShop().hours)+'）</div>';
+    })()+
     '<button id="kk-create" onclick="_kkCreate(this)" style="width:100%;margin-top:12px;font-size:14px;font-weight:700;padding:12px;background:#2f6f8f;color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">確認ページを作る</button>'+
     '<div id="kk-msg" style="font-size:12px;margin-top:6px;color:#6b7280"></div>'+
   '</div>';
-}
-function _kkPhoneRow(p){
-  var inp='font-size:13px;padding:6px 8px;border:1px solid #ccd2dc;border-radius:7px;font-family:inherit';
-  var opts=['自宅','携帯','勤務先','その他'].map(function(l){ return '<option'+(l===p.label?' selected':'')+'>'+l+'</option>'; }).join('');
-  return '<div class="kk-ph" style="display:flex;gap:6px;align-items:center;margin-bottom:4px"><select class="kk-ph-l" style="'+inp+'">'+opts+'</select>'+
-    '<input class="kk-ph-n" value="'+_gaichuEsc(p.number)+'" placeholder="090-1234-5678" inputmode="tel" style="flex:1;min-width:0;'+inp+'">'+
-    '<button onclick="this.parentNode.remove()" title="この番号を外す" style="'+_KK_BTN+'#e0b4ad;background:#fff;color:#c0392b">✕</button></div>';
+  _kkDueNote(); _kkFillRev(d);
 }
 var KK_SLOTS = [
   { k:'grave', t:'① お墓の写真', note:'お客様の画面「お墓」に出ます' },
@@ -21714,40 +21756,154 @@ function _kkListImages(d){
 function _kkGuess(){
   var L=_kkState.imgs, P=_kkState.pick;
   var find=function(re, not){ for(var i=0;i<L.length;i++){ var n=L[i].sub+'/'+L[i].name; if(re.test(n) && !(not && not.test(n))) return L[i]; } return null; };
-  if(!P.proof) P.proof=find(/確認資料/) || find(/原稿|校正/);
-  if(!P.place) P.place=find(/彫刻(場所|位置|面)|場所|位置/, /確認資料/);
-  if(!P.grave) P.grave=find(/お墓|墓石|全景|正面/, /確認資料|彫刻(場所|位置|面)/);
+  var cp=function(x){ return x ? Object.assign({}, x) : null; };   // 印は 選んだ 側だけに 付ける
+  if(!P.proof) P.proof=cp(find(/確認資料/) || find(/原稿|校正/));
+  if(!P.place) P.place=cp(find(/彫刻(場所|位置|面)|場所|位置/, /確認資料/));
+  if(!P.grave) P.grave=cp(find(/お墓|墓石|全景|正面/, /確認資料|彫刻(場所|位置|面)/));
 }
+/* 写真を 大きく（v1.9.543。本人「写真が小さく過ぎて選べないです。大きくして」）。選んだ 写真は 押すと 画面いっぱいに */
 function _kkRenderPicks(){
   var el=document.getElementById('kk-picks'); if(!el) return;
   var L=_kkState.imgs;
   el.innerHTML=KK_SLOTS.map(function(s){
     var cur=_kkState.pick[s.k];
+    var src=cur ? (cur.preview || (cur.source==='local' ? cur.url : (cur.th||''))) : '';
     var curHtml = cur
-      ? (cur.source==='local'
-          ? '<img src="'+cur.url+'" style="width:64px;height:64px;object-fit:cover;border-radius:6px;border:2px solid #2f6f8f">'
-          : (cur.th ? '<img src="'+_gaichuEsc(cur.th)+'" style="width:64px;height:64px;object-fit:cover;border-radius:6px;border:2px solid #2f6f8f">' : '<span style="width:64px;height:64px;display:grid;place-items:center;border:2px solid #2f6f8f;border-radius:6px">🖼</span>'))+
-        '<span style="flex:1;min-width:0;font-size:12px;color:#334;word-break:break-all">'+_gaichuEsc((cur.sub?cur.sub+'／':'')+cur.name)+'</span>'+
-        '<button onclick="_kkUnpick(\''+s.k+'\')" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#6b7280">外す</button>'
-      : '<span style="flex:1;font-size:12px;color:'+(s.req?'#b3261e':'#6b7280')+'">'+(s.req?'選んでください（必須）':'なし（出さない）')+'</span>';
-    var strip = L.length ? '<div style="display:flex;gap:5px;overflow-x:auto;padding:4px 0 2px">'+L.map(function(f){
+      ? '<button onclick="_kkZoomPick(\''+s.k+'\')" title="押すと 大きく 見る" style="flex:0 0 auto;width:150px;height:150px;padding:0;border-radius:8px;border:3px solid #2f6f8f;background:#f2f3f5 '+(src?'url(\''+_gaichuEsc(src)+'\') center/contain no-repeat':'')+';cursor:zoom-in;font-size:28px">'+(src?'':'🖼')+'</button>'+
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">'+
+          '<span style="font-size:12px;color:#334;word-break:break-all">'+_gaichuEsc((cur.sub?cur.sub+'／':'')+cur.name)+'</span>'+
+          (s.k==='place' ? '<button onclick="_kkMarkOpen()" style="'+_KK_BTN+'#e0102a;background:'+((cur.marks&&cur.marks.length)?'#fff':'#e0102a')+';color:'+((cur.marks&&cur.marks.length)?'#e0102a':'#fff')+';font-weight:700;align-self:flex-start">✏️ 矢印・印を '+((cur.marks&&cur.marks.length)?'直す（'+cur.marks.length+' 個）':'描く')+'</button>' : '')+
+          '<div style="display:flex;gap:6px;flex-wrap:wrap"><button onclick="_kkUnpick(\''+s.k+'\')" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#6b7280">外す</button>'+
+          '<button onclick="document.getElementById(\'kk-file-'+s.k+'\').click()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;white-space:nowrap">💻 パソコンから</button></div>'+
+        '</div>'
+      : '<span style="flex:1;font-size:12.5px;color:'+(s.req?'#b3261e':'#6b7280')+'">'+(s.req?'下から 選んでください（必須）':'なし（出さない）。下から 選べます')+'</span>'+
+        '<button onclick="document.getElementById(\'kk-file-'+s.k+'\').click()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;white-space:nowrap">💻 パソコンから</button>';
+    var grid = L.length ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;max-height:300px;overflow-y:auto;padding:8px 2px 2px;margin-top:6px;border-top:1px dashed #e3e6ea">'+L.map(function(f){
         var on=cur && cur.source!=='local' && cur.i===f.i;
-        return '<button onclick="_kkPick(\''+s.k+'\','+f.i+')" title="'+_gaichuEsc((f.sub?f.sub+'／':'')+f.name)+'" style="flex:0 0 auto;width:52px;height:52px;padding:0;border-radius:6px;cursor:pointer;border:2px solid '+(on?'#2f6f8f':'#e3e6ea')+';background:#f2f3f5 '+(f.th?'url(\''+_gaichuEsc(f.th)+'\') center/cover':'')+';font-size:16px">'+(f.th?'':'🖼')+'</button>';
+        return '<button onclick="_kkPick(\''+s.k+'\','+f.i+')" title="'+_gaichuEsc((f.sub?f.sub+'／':'')+f.name)+'" style="padding:0;border-radius:8px;cursor:pointer;border:3px solid '+(on?'#2f6f8f':'#e3e6ea')+';background:#fff;overflow:hidden;text-align:left;font-family:inherit">'+
+          '<div style="width:100%;aspect-ratio:1;background:#f2f3f5 '+(f.th?'url(\''+_gaichuEsc(f.th)+'\') center/cover':'')+';display:grid;place-items:center;font-size:22px">'+(f.th?'':'🖼')+'</div>'+
+          '<div style="font-size:10px;color:'+(on?'#245a75':'#6b7280')+';padding:2px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(on?'✓ ':'')+_gaichuEsc(f.name)+'</div></button>';
       }).join('')+'</div>' : '';
-    return '<div style="border:1px solid #e3e6ea;border-radius:10px;padding:8px 10px;background:#fafbfc">'+
-      '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:12.5px;font-weight:700;color:#334">'+s.t+'</span><span style="font-size:10.5px;color:#8a94a6">'+s.note+'</span></div>'+
-      '<div style="display:flex;align-items:center;gap:8px;margin-top:5px">'+curHtml+
-        '<input type="file" accept="image/jpeg,image/png,image/webp" id="kk-file-'+s.k+'" style="display:none" onchange="_kkPickLocal(\''+s.k+'\',this)">'+
-        '<button onclick="document.getElementById(\'kk-file-'+s.k+'\').click()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#4a5160;white-space:nowrap">💻 パソコンから</button></div>'+
-      strip+'</div>';
+    return '<div style="border:1px solid #e3e6ea;border-radius:10px;padding:10px 12px;background:#fafbfc">'+
+      '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13px;font-weight:700;color:#334">'+s.t+'</span><span style="font-size:10.5px;color:#8a94a6">'+s.note+'</span></div>'+
+      '<input type="file" accept="image/jpeg,image/png,image/webp" id="kk-file-'+s.k+'" style="display:none" onchange="_kkPickLocal(\''+s.k+'\',this)">'+
+      '<div style="display:flex;align-items:'+(cur?'flex-start':'center')+';gap:10px;margin-top:6px">'+curHtml+'</div>'+
+      grid+'</div>';
   }).join('') + (L.length ? '' : '<div style="font-size:11.5px;color:#6b7280">案件フォルダー・添付に 画像が ありません'+(currentItem && !currentItem['FolderPass']?'（フォルダーが まだ ありません）':'')+'。［💻 パソコンから］で 選んでください。</div>');
 }
-function _kkPick(k, i){ _kkState.pick[k]=_kkState.imgs[i]; _kkRenderPicks(); }
+/* 選んだ 写真を 大きく 見る（フォルダーの 写真は 元の 画像を 読む） */
+function _kkZoomPick(k){
+  var f=_kkState.pick[k]; if(!f) return;
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:10003;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+  ov.innerHTML='<div style="color:#fff;font-size:13px">読んでいます…</div>';
+  ov.onclick=function(){ ov.remove(); };
+  document.body.appendChild(ov);
+  var show=function(u){ ov.innerHTML='<img src="'+u+'" style="max-width:96vw;max-height:94vh;object-fit:contain;border-radius:6px;background:#fff">'; };
+  if(f.preview && f.source==='local'){ show(f.preview); return; }
+  _kkPickBlob(f).then(function(b){ return f.marks && f.marks.length ? _kkMarkedBlob(f) : b; }).then(function(b){ var u=URL.createObjectURL(b); _kkState.urls.push(u); show(u); })
+    .catch(function(e){ ov.innerHTML='<div style="color:#fff">読めませんでした：'+_gaichuEsc(e.message||e)+'</div>'; });
+}
+/* 彫刻する場所の 写真に 矢印・丸・「ここに彫刻」を 描く（v1.9.543。本人「彫刻する場所は、写真で彫刻面は示せるが、
+   ピンポイントで記すには矢印等のマークが必要」）。印は 0〜1 の 位置で 持ち、送る ときに 元の 大きさの 写真へ 描いて 1 枚に する */
+var _kkMk=null;
+function _kkMarkDraw(ctx, w, h, marks, pending){
+  var lw=Math.max(3, Math.max(w,h)*0.009), RED='#e0102a';
+  var both=function(fn){ ctx.save(); ctx.strokeStyle='#fff'; ctx.lineWidth=lw*2.2; ctx.lineCap='round'; ctx.lineJoin='round'; fn(true); ctx.restore();
+    ctx.save(); ctx.strokeStyle=RED; ctx.fillStyle=RED; ctx.lineWidth=lw; ctx.lineCap='round'; ctx.lineJoin='round'; fn(false); ctx.restore(); };
+  (marks||[]).concat(pending?[pending]:[]).forEach(function(m){
+    var x1=m.x1*w, y1=m.y1*h, x2=m.x2*w, y2=m.y2*h;
+    if(m.t==='arrow'){
+      var a=Math.atan2(y2-y1, x2-x1), L=lw*5.5, hx=x2-Math.cos(a)*L*0.6, hy=y2-Math.sin(a)*L*0.6;
+      var head=function(){ ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-L*Math.cos(a-0.45), y2-L*Math.sin(a-0.45)); ctx.lineTo(x2-L*Math.cos(a+0.45), y2-L*Math.sin(a+0.45)); ctx.closePath(); };
+      both(function(white){ ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(hx,hy); ctx.stroke(); head(); if(white) ctx.stroke(); else ctx.fill(); });
+    } else if(m.t==='circle'){
+      var cx=(x1+x2)/2, cy=(y1+y2)/2, rx=Math.max(4,Math.abs(x2-x1)/2), ry=Math.max(4,Math.abs(y2-y1)/2);
+      both(function(){ ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke(); });
+    } else if(m.t==='label'){
+      var fs=Math.max(14, Math.max(w,h)*0.035), txt='ここに彫刻';
+      ctx.save(); ctx.font='bold '+fs+'px sans-serif'; var tw=ctx.measureText(txt).width, pad=fs*0.35;
+      var bx=Math.min(Math.max(x1-tw/2-pad,0), w-tw-pad*2), by=Math.min(Math.max(y1-fs/2-pad,0), h-fs-pad*2);
+      ctx.fillStyle='#fff'; ctx.fillRect(bx-lw*0.6,by-lw*0.6,tw+pad*2+lw*1.2,fs+pad*2+lw*1.2);
+      ctx.fillStyle=RED; ctx.fillRect(bx,by,tw+pad*2,fs+pad*2);
+      ctx.fillStyle='#fff'; ctx.textBaseline='middle'; ctx.fillText(txt,bx+pad,by+pad+fs/2+fs*0.04); ctx.restore();
+    }
+  });
+}
+function _kkLoadImg(blob){ return new Promise(function(res, rej){ var u=URL.createObjectURL(blob), im=new Image(); im.onload=function(){ res({img:im, url:u}); }; im.onerror=function(){ URL.revokeObjectURL(u); rej(new Error('画像を 読めません')); }; im.src=u; }); }
+/* 印を 描いた 写真（長い辺 2000px まで）。お客様の 画面・取り込みに 使う */
+function _kkMarkedBlob(f, maxSide){
+  return _kkPickBlob(f).then(_kkLoadImg).then(function(o){
+    var w=o.img.naturalWidth, h=o.img.naturalHeight, r=Math.min(1, (maxSide||2000)/Math.max(w,h));
+    var c=document.createElement('canvas'); c.width=Math.round(w*r); c.height=Math.round(h*r);
+    var x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height); x.drawImage(o.img,0,0,c.width,c.height);
+    _kkMarkDraw(x, c.width, c.height, f.marks);
+    URL.revokeObjectURL(o.url);
+    return new Promise(function(res){ c.toBlob(res,'image/jpeg',0.9); });
+  });
+}
+function _kkMarkOpen(){
+  var f=_kkState.pick.place; if(!f) return;
+  var ov=document.createElement('div'); ov.id='kk-mark';
+  ov.style.cssText='position:fixed;inset:0;z-index:10003;background:#1c1f26;display:flex;flex-direction:column';
+  var tb='font-size:13px;padding:8px 12px;border-radius:9px;cursor:pointer;font-family:inherit;border:1px solid #4a5160;background:#2a2e37;color:#fff';
+  ov.innerHTML='<div style="flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 12px;background:#14161b">'+
+      '<span style="color:#fff;font-weight:700;font-size:14px;margin-right:6px">彫刻する場所に 印</span>'+
+      '<button class="kk-mt" data-t="arrow" style="'+tb+'">➜ 矢印</button>'+
+      '<button class="kk-mt" data-t="circle" style="'+tb+'">◯ 丸</button>'+
+      '<button class="kk-mt" data-t="label" style="'+tb+'">🏷 ここに彫刻</button>'+
+      '<button id="kk-mu" style="'+tb+'">↶ 1つ戻す</button>'+
+      '<button id="kk-mc" style="'+tb+'">全部 消す</button>'+
+      '<span style="flex:1"></span>'+
+      '<button id="kk-mx" style="'+tb+'">やめる</button>'+
+      '<button id="kk-mok" style="'+tb+';background:#e0102a;border-color:#e0102a;font-weight:700">この印で 決める</button>'+
+    '</div>'+
+    '<div id="kk-mhint" style="flex:0 0 auto;color:#c9ced8;font-size:12px;padding:6px 14px"></div>'+
+    '<div id="kk-mwrap" style="flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;padding:8px"><span style="color:#fff">写真を 読んでいます…</span></div>';
+  document.body.appendChild(ov);
+  var HINT={arrow:'矢印：矢の 根もとから 指したい 所まで、なぞってください（先が 指す 所）', circle:'丸：囲みたい 所を 斜めに なぞってください', label:'ここに彫刻：札を 置きたい 所を 押してください'};
+  _kkMk={ marks:(f.marks||[]).slice(), tool:'arrow' };
+  var setTool=function(t){ _kkMk.tool=t; ov.querySelectorAll('.kk-mt').forEach(function(b){ var on=b.getAttribute('data-t')===t; b.style.background=on?'#2f6f8f':'#2a2e37'; b.style.borderColor=on?'#7fb6d6':'#4a5160'; }); document.getElementById('kk-mhint').textContent=HINT[t]; };
+  ov.querySelectorAll('.kk-mt').forEach(function(b){ b.onclick=function(){ setTool(b.getAttribute('data-t')); }; });
+  setTool('arrow');
+  var close=function(){ if(_kkMk && _kkMk.url) URL.revokeObjectURL(_kkMk.url); _kkMk=null; ov.remove(); };
+  document.getElementById('kk-mx').onclick=close;
+  _kkPickBlob(f).then(_kkLoadImg).then(function(o){
+    if(!_kkMk) return;
+    _kkMk.url=o.url;
+    var wrap=document.getElementById('kk-mwrap'), W=wrap.clientWidth-16, H=wrap.clientHeight-16;
+    var w=o.img.naturalWidth, h=o.img.naturalHeight, r=Math.min(W/w, H/h);
+    var cw=Math.max(50,Math.round(w*r)), ch=Math.max(50,Math.round(h*r)), dpr=window.devicePixelRatio||1;
+    var cv=document.createElement('canvas'); cv.width=Math.round(cw*dpr); cv.height=Math.round(ch*dpr);
+    cv.style.cssText='width:'+cw+'px;height:'+ch+'px;touch-action:none;cursor:crosshair;border-radius:4px;background:#fff';
+    wrap.innerHTML=''; wrap.appendChild(cv);
+    var ctx=cv.getContext('2d'), pend=null;
+    var draw=function(){ ctx.clearRect(0,0,cv.width,cv.height); ctx.drawImage(o.img,0,0,cv.width,cv.height); _kkMarkDraw(ctx, cv.width, cv.height, _kkMk.marks, pend); };
+    var pt=function(e){ var b=cv.getBoundingClientRect(); return { x:Math.min(1,Math.max(0,(e.clientX-b.left)/b.width)), y:Math.min(1,Math.max(0,(e.clientY-b.top)/b.height)) }; };
+    cv.addEventListener('pointerdown', function(e){ var p=pt(e);
+      if(_kkMk.tool==='label'){ _kkMk.marks.push({t:'label',x1:p.x,y1:p.y,x2:p.x,y2:p.y}); draw(); return; }
+      pend={t:_kkMk.tool,x1:p.x,y1:p.y,x2:p.x,y2:p.y}; cv.setPointerCapture(e.pointerId); draw(); });
+    cv.addEventListener('pointermove', function(e){ if(!pend) return; var p=pt(e); pend.x2=p.x; pend.y2=p.y; draw(); });
+    var up=function(){ if(!pend) return; if(Math.abs(pend.x2-pend.x1)+Math.abs(pend.y2-pend.y1)>0.02) _kkMk.marks.push(pend); pend=null; draw(); };
+    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+    document.getElementById('kk-mu').onclick=function(){ _kkMk.marks.pop(); draw(); };
+    document.getElementById('kk-mc').onclick=function(){ _kkMk.marks=[]; draw(); };
+    document.getElementById('kk-mok').onclick=function(){
+      f.marks=_kkMk.marks.slice();
+      var done=function(){ close(); _kkRenderPicks(); };
+      if(!f.marks.length){ delete f.preview; done(); return; }
+      _kkMarkedBlob(f, 400).then(function(b){ var u=URL.createObjectURL(b); _kkState.urls.push(u); f.preview=u; done(); }).catch(done);
+    };
+    draw();
+  }).catch(function(e){ var wrap=document.getElementById('kk-mwrap'); if(wrap) wrap.innerHTML='<span style="color:#fff">写真を 読めませんでした：'+_gaichuEsc(e.message||e)+'</span>'; });
+}
+function _kkPick(k, i){ _kkState.pick[k]=Object.assign({}, _kkState.imgs[i]); _kkRenderPicks(); if(k==='proof') _kkFillRev(currentItem); }
 function _kkUnpick(k){ delete _kkState.pick[k]; _kkRenderPicks(); }
 function _kkPickLocal(k, inp){
   var f=inp.files && inp.files[0]; inp.value=''; if(!f) return;
   var u=URL.createObjectURL(f); _kkState.urls.push(u);
   _kkState.pick[k]={source:'local', file:f, name:f.name, sub:'パソコン', url:u};
+  if(k==='proof') _kkFillRev(currentItem);
   _kkRenderPicks();
 }
 /* 画像を 送れる 大きさに。写真は 長い辺 2000px。確認資料は 縦に 長いので 縮めず、上限を 超えるときだけ 画質→大きさの 順に 落とす */
@@ -21784,7 +21940,12 @@ function _kkLimits(){
     return { one: Math.floor(up*0.95), total: Math.floor(post*0.9) };
   }).catch(function(){ return { one: 1900000, total: 7500000 }; });
 }
-function _kkBlobOf(f){
+function _kkBlobOf(f){ return (f.marks && f.marks.length) ? _kkMarkedBlob(f) : _kkPickBlob(f); }
+function _kkPickBlob(f){
+  if(f.blob) return Promise.resolve(f.blob);
+  return _kkRawBlob(f).then(function(b){ f.blob=b; return b; });
+}
+function _kkRawBlob(f){
   if(f.source==='local') return Promise.resolve(f.file);
   return Promise.all([
     getToken().then(function(r){ return r.accessToken; }),
@@ -21795,15 +21956,14 @@ function _kkCreate(btn){
   var d=currentItem; if(!d) return;
   var msg=document.getElementById('kk-msg');
   var say=function(t, err){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; };
-  var phones=Array.prototype.map.call(document.querySelectorAll('#kk-phones .kk-ph'), function(r){
-    return { label:r.querySelector('.kk-ph-l').value, number:_kkHyphen(r.querySelector('.kk-ph-n').value) };
-  }).filter(function(p){ return p.number.replace(/\D/g,'').length>=4; });
-  if(!phones.length){ say('本人確認に使う 電話番号を 1 つ以上 入れてください。', true); return; }
+  var due=(document.getElementById('kk-due')||{}).value||'';
+  if(!_kkDay(due) || _kkDay(due)<=new Date()){ say('回答の 期限を 明日 以降の 日付に してください。', true); return; }
   if(!_kkState.pick.proof){ say('③ 確認資料（拓本＋原稿の JPEG）を 選んでください。', true); return; }
   var shop=_kkShop();
   var cs={ ref:_kkRef(d), cemetery:document.getElementById('kk-cem').value.trim(), graveName:document.getElementById('kk-grave').value.trim(),
-    sesyu:document.getElementById('kk-sesyu').value.trim(), phones:phones, rev:parseInt(document.getElementById('kk-rev').value,10)||0,
-    shopTel:shop.tel, shopHours:shop.hours, days:parseInt(document.getElementById('kk-days').value,10)||30 };
+    sesyu:document.getElementById('kk-sesyu').value.trim(), phones:[], rev:parseInt(document.getElementById('kk-rev').value,10)||0,
+    shopTel:shop.tel, shopHours:shop.hours, days:30, expiresDate:due,
+    noukotsu:(function(){ var x=_kkDay(d['_x7d0d__x671f__xff08__x7d0d__x9a']); return x?_kkIso(x):''; })() };
   btn.disabled=true; btn.style.opacity='.7';
   var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
   say('さくらの 受信の 上限を 確かめています…');
@@ -21862,7 +22022,7 @@ function _kkShowShare(token, url, expires){
   url=url||_kkPageUrl(token); expires=expires||row.expires||'';
   var shop=_kkShop();
   var m=String(expires).match(/\d{4}-(\d{2})-(\d{2})/), lim=m?(parseInt(m[1],10)+'月'+parseInt(m[2],10)+'日'):'';
-  var text='戒名・法名彫刻の 原稿が できました。\n下の アドレスを 開いて、お墓と 彫刻する文字を ご確認ください。\n'+url+'\n\nはじめに ご本人確認として、お電話番号の 下4桁を お聞きします。'+(lim?'\nご回答の 期限：'+lim:'')+'\nわからないことは '+shop.tel+'（'+shop.hours+'）まで お電話ください。';
+  var text='戒名・法名彫刻の 原稿が できました。\n下の アドレスを 開いて、お墓と 彫刻する文字を ご確認ください。\n'+url+'\n\n最後に お名前を 書いて、ご回答を 送ってください。'+(lim?'\nご回答の 期限：'+lim:'')+'\nわからないことは '+shop.tel+'（'+shop.hours+'）まで お電話ください。';
   _kkState.shareText=text; _kkState.shareUrl=url;
   var el=document.getElementById('kk-share');
   el.innerHTML='<div style="'+_KK_CARD+';border-color:#9cc3ea;background:#f7fbff">'+
@@ -21876,7 +22036,7 @@ function _kkShowShare(token, url, expires){
         '<button onclick="_kkQrSave()" style="'+_KK_BTN+'#ccd2dc;background:#fff;color:#334;text-align:left">🖨 QR を 画像で保存（お手紙に 貼る）</button>'+
         '<button onclick="_kkCopy(_kkState.shareText,\'LINE 用の 文\')" style="'+_KK_BTN+'#06c755;background:#06c755;color:#fff;font-weight:700;text-align:left">💬 LINE 用の 文を コピー</button>'+
         '<button onclick="window.open(\'https://line.me/R/msg/text/?\'+encodeURIComponent(_kkState.shareText),\'_blank\')" style="'+_KK_BTN+'#bfe8cf;background:#f1fbf5;color:#1a7a3a;text-align:left">LINE を 開いて 送る（スマホ・LINE の 入った パソコン）</button>'+
-        '<div style="font-size:11px;color:#6b7280;line-height:1.5">'+(lim?'期限 '+lim+'。':'')+'お客様は お電話番号の 下4桁で 本人確認を してから 見ます。回答が 来たら この画面の 一覧に 出ます。</div>'+
+        '<div style="font-size:11px;color:#6b7280;line-height:1.5">'+(lim?'期限 '+lim+'。':'')+'お客様は 最後に お名前を 書いて 回答します。回答が 来たら この画面の 一覧に 出ます。</div>'+
       '</div>'+
     '</div></div>';
   document.getElementById('kk-scroll').scrollTop=0;
@@ -21923,7 +22083,7 @@ function _kkCopyOld(t){ var ta=document.createElement('textarea'); ta.value=t; t
 function _kkYmd(){ var t=new Date(); return t.getFullYear()+('0'+(t.getMonth()+1)).slice(-2)+('0'+t.getDate()).slice(-2); }
 
 /* ── 回答・記録を 見る ── */
-var KK_EV = { create:'確認ページを作成', open:'ページを開いた', verify_ok:'本人確認 OK', verify_ng:'電話番号の 下4桁が 違う', seen:'原稿を 最後まで 見た', answer:'回答した' };
+var KK_EV = { create:'確認ページを作成', open:'ページを開いた', start:'お墓・原稿を 見はじめた', verify_ok:'本人確認 OK', verify_ng:'電話番号の 下4桁が 違う', seen:'原稿を 最後まで 見た', answer:'回答した' };
 var KK_RES = { ok:'この内容で 承諾', ng:'訂正あり', grave_ng:'お墓が 違う' };
 function _kkUaShort(ua){
   ua=String(ua||''); var os=/iPhone/.test(ua)?'iPhone':/iPad/.test(ua)?'iPad':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/Mac OS/.test(ua)?'Mac':'';
@@ -21934,7 +22094,7 @@ function _kkEvText(e){
   var t=KK_EV[e.ev]||e.ev;
   if(e.ev==='verify_ok' && (e.who||e.rel)) t+='（'+[e.who,e.rel].filter(Boolean).join('・')+'）';
   if(e.ev==='verify_ng' && e.tail) t+='（入力 '+e.tail+'）';
-  if(e.ev==='answer' && e.result) t+='：'+(KK_RES[e.result]||e.result);
+  if(e.ev==='answer' && e.result) t+='：'+(KK_RES[e.result]||e.result)+(e.who?'（記名 '+[e.who,e.rel].filter(Boolean).join('・')+'）':'');
   return t;
 }
 function _kkDetail(token){

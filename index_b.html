@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.546';
+var APP_VERSION = 'v1.9.547';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21982,7 +21982,6 @@ function _kkLimitsGet(){
     return { one: Math.floor(up*0.95), total: Math.floor(post*0.9) };
   }).catch(function(){ return { one: 1900000, total: 7500000, guess: true }; });
 }
-function _kkBlobOf(f){ return (f.marks && f.marks.length) ? _kkMarkedBlob(f) : _kkPickBlob(f); }
 function _kkPickBlob(f){
   if(f.blob) return Promise.resolve(f.blob);
   if(!f.blobP) f.blobP=_kkRawBlob(f).then(function(b){ f.blob=b; return b; }, function(e){ f.blobP=null; throw e; });
@@ -22014,31 +22013,48 @@ function _kkPreview(btn){
   var keys=KK_SLOTS.map(function(s){ return s.k; }).filter(function(k){ return _kkState.pick[k]; });
   btn.disabled=true; btn.style.opacity='.7';
   var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
-  say('さくらの 受信の 上限を 確かめています…');
-  _kkLimits().then(function(lim){
-    var each=Math.min(lim.one, Math.floor(lim.total/keys.length));
-    return _kkPrepFiles(keys, each, say).then(function(files){
-      done(); say('');
-      _kkState.prep={ d:d, cs:cs, keys:keys, files:files, each:each, edit:_kkState.edit };
-      _kkPreviewShow();
-    });
+  /* v1.9.547（本人「まだ、プレビュー作成がおそいです。さくらサーバーに送らなくてもいいのではないですか」）：
+     プレビューでは さくらに 何も 聞かない。上限の 問い合わせと 縮める 作業は［この内容で 作る］の ときに 回し、
+     お客様の 画面も この アプリと 同じ 所（Netlify の kakunin-portal/index.html）から 出す */
+  _kkViewFiles(keys, say).then(function(files){
+    done(); say('');
+    _kkState.prep={ d:d, cs:cs, keys:keys, view:files, files:files, edit:_kkState.edit };
+    _kkPreviewShow();
   }).catch(function(e){ done(); say('プレビューを 出せませんでした：'+(e.message||e), true); });
 }
-function _kkPrepFiles(keys, each, say){
+/* プレビューに 出す 画像（元の 写真。印が あれば 焼き込む）。縮めない */
+function _kkViewFiles(keys, say){
   var files={};
   return keys.reduce(function(pr, k){
     return pr.then(function(){
-      say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
+      var f=_kkState.pick[k];
+      if(!(f.marks && f.marks.length)){
+        if(!f.blob) say('写真を 読んでいます（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
+        return _kkPickBlob(f).then(function(b){ files[k]=b; });
+      }
+      var key=JSON.stringify(f.marks);
+      if(f.view && f.view.key===key){ files[k]=f.view.blob; return; }
+      say('印を 描いています…');
+      return _kkMarkedBlob(f).then(function(b){ files[k]=b; f.view={key:key, blob:b}; });
+    });
+  }, Promise.resolve()).then(function(){ return files; });
+}
+/* さくらへ 送る 画像（上限に 合わせて 縮める）。作る ときに 1 回だけ */
+function _kkPrepFiles(keys, view, each, say){
+  var files={};
+  return keys.reduce(function(pr, k){
+    return pr.then(function(){
       var f=_kkState.pick[k], key=each+'|'+JSON.stringify(f.marks||[]);
-      if(f.fit && f.fit.key===key){ files[k]=f.fit.blob; return; }   // 前に プレビューで 作った ものを 使う
-      return _kkBlobOf(f).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; f.fit={key:key, blob:b}; });
+      if(f.fit && f.fit.key===key){ files[k]=f.fit.blob; return; }
+      say('送る 画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
+      return _kkFit(view[k], each, k==='proof'?0:2000).then(function(b){ files[k]=b; f.fit={key:key, blob:b}; });
     });
   }, Promise.resolve()).then(function(){ return files; });
 }
 function _kkPreviewShow(){
   var P=_kkState.prep, cs=P.cs;
-  var base=String(_kkCfg().url||'').replace(/upload\.php.*$/,''), origin='*';
-  try{ origin=new URL(base).origin; }catch(e){}
+  var prevSrc='kakunin-portal/index.html?preview=1', origin='*';
+  try{ var pu=new URL(prevSrc, location.href); prevSrc=pu.href; origin=pu.origin; }catch(e){}
   var ov=document.createElement('div'); ov.id='kk-prev';
   ov.style.cssText='position:fixed;inset:0;z-index:10003;background:rgba(20,22,28,.82);display:flex;align-items:center;justify-content:center;gap:18px;padding:14px;flex-wrap:wrap;overflow:auto';
   var thumbs=P.keys.map(function(k){
@@ -22050,7 +22066,7 @@ function _kkPreviewShow(){
   var dd=_kkDay(cs.expiresDate), nd=_kkDay(cs.noukotsu);
   ov.innerHTML=
     '<div style="flex:0 0 auto;width:390px;max-width:100%;height:min(780px,92vh);background:#fff;border-radius:22px;border:8px solid #1c1f26;overflow:hidden;position:relative">'+
-      '<iframe id="kk-prev-if" src="'+_gaichuEsc(base+'index.html?preview=1')+'" style="width:100%;height:100%;border:0;display:block" title="お客様の画面のプレビュー"></iframe>'+
+      '<iframe id="kk-prev-if" src="'+_gaichuEsc(prevSrc)+'" style="width:100%;height:100%;border:0;display:block" title="お客様の画面のプレビュー"></iframe>'+
       '<div id="kk-prev-wait" style="position:absolute;inset:0;display:grid;place-items:center;background:#fff;color:#6b7280;font-size:13px;padding:20px;text-align:center">お客様の 画面を 読んでいます…</div>'+
     '</div>'+
     '<div style="flex:0 1 330px;min-width:260px;background:#fff;border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:10px">'+
@@ -22076,7 +22092,7 @@ function _kkPreviewShow(){
   setTimeout(function(){
     if(sent) return;
     var w=document.getElementById('kk-prev-wait');
-    if(w) w.innerHTML='<div>さくらの お客様画面（index.html）が 古いので、ここに 出せません。<br><br>右の 小さな 写真を 押すと 送る 画像を 大きく 見られます。<br><br><span style="font-size:11.5px">さくらの kakunin/index.html を 新しいものに すると、ここに お客様の 画面が 出ます。</span></div>';
+    if(w) w.innerHTML='<div>お客様の 画面を 出せませんでした。<br><br>右の 小さな 写真を 押すと 画像を 大きく 見られます。</div>';
   }, 6000);
 }
 function _kkPreviewClose(){
@@ -22106,7 +22122,11 @@ function _kkCreateNow(btn){
     return _kkPost(fd).catch(function(e){ e.kkTotal=total; throw e; });
   };
   btn.disabled=true; btn.style.opacity='.7';
-  send(P.files).catch(function(e){
+  say('さくらの 受信の 上限を 確かめています…');
+  _kkLimits().then(function(lim){
+    P.each=Math.min(lim.one, Math.floor(lim.total/Math.max(1,sendKeys.length)));
+    return _kkPrepFiles(sendKeys, P.view, P.each, say);
+  }).then(function(files){ P.files=files; return send(files); }).catch(function(e){
     if(!(e instanceof TypeError)) throw e;   // ネットの エラー（Failed to fetch）だけ やり直す
     say('送れませんでした。さくらに つながるか 確かめています…');
     return fetch(_kkCfg().url,{method:'GET',cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
@@ -22114,7 +22134,7 @@ function _kkCreateNow(btn){
     }).then(function(){
       say('つながりました。画像を 小さくして もう一度 送ります…');
       var small={};
-      return keys.reduce(function(pr,k){ return pr.then(function(){ return _kkFit(P.files[k], Math.min(P.each, 900000), k==='proof'?0:2000).then(function(b){ small[k]=b; }); }); }, Promise.resolve())
+      return sendKeys.reduce(function(pr,k){ return pr.then(function(){ return _kkFit(P.files[k], Math.min(P.each, 900000), k==='proof'?0:2000).then(function(b){ small[k]=b; }); }); }, Promise.resolve())
         .then(function(){ return send(small); })
         .catch(function(e2){
           if(e2 instanceof TypeError) throw new Error('さくらには つながりますが、送る途中で 切れました（'+MB(e2.kkTotal||0)+'）。少し 待って もう一度、それでも だめなら 別の 回線（スマホの テザリング など）で 試してください');

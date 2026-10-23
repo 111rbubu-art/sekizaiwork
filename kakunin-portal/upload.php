@@ -10,6 +10,9 @@
  *           phones が 空なら 本人確認（電話番号の 下4桁）なし。お客様は 最後に お名前を 書く（v2）
  *           expiresDate（YYYY-MM-DD）が あれば その日の 23:59 まで。無ければ days 日
  *           電話番号は 保存しない（伏せ字と 下4桁だけ 残す）。返り値 {token, url, expires}
+ *   update  token case(JSON) grave place proof(画像) remove[]  … 回答前の 確認ページを 直す（URL は そのまま。v2.3）
+ *           case の cemetery graveName sesyu rev expiresDate noukotsu を 入れ替え。画像は 送った ものだけ 差しかえ、remove[] の 写真は 消す。
+ *           原稿（proof）を 差しかえたら「最後まで見た」は 取り消す（新しい 原稿を 見て もらう）
  *   status  token        → case・状態・記録（log）・回答（answer）
  *   list                 → 全件の 状態の 一覧
  *   getfile token f      → 画像（grave place proof mark photo_N）
@@ -36,7 +39,7 @@ $action = isset($_POST['action']) ? $_POST['action'] : '';
 if ($action !== 'getfile') header('Content-Type: application/json; charset=UTF-8');
 if ($_SERVER['REQUEST_METHOD'] === 'GET') kk_out(array('ok' => true, 'service' => 'kakunin-upload', 'version' => KK_VERSION,
   'limits' => array('upload_max_filesize' => ini_get('upload_max_filesize'), 'post_max_size' => ini_get('post_max_size')),
-  'actions' => array('create', 'status', 'list', 'getfile', 'delete')));
+  'actions' => array('create', 'update', 'status', 'list', 'getfile', 'delete')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') kk_fail('POST only', 405);
 if (!count($_POST) && isset($_SERVER['CONTENT_LENGTH']) && intval($_SERVER['CONTENT_LENGTH']) > 0)
   kk_fail('ファイルが大きすぎます（サーバーの受信上限 ' . ini_get('post_max_size') . '）', 413);
@@ -101,6 +104,38 @@ if ($action === 'create') {
   kk_write($dir . '/case.json', $case);
   kk_write($dir . '/log.json', array());
   kk_log($t, 'create', array('ref' => $case['ref']));
+  kk_out(array('ok' => true, 'token' => $t, 'url' => base_url() . '?t=' . $t, 'expires' => $case['expires']));
+}
+
+if ($action === 'update') {
+  $t = token_arg(); $dir = kk_dir($t);
+  $case = kk_read($dir . '/case.json');
+  if (!empty($case['answeredAt'])) kk_fail('回答が 来ているので 直せません。新しく 作ってください');
+  $in = json_decode(isset($_POST['case']) ? $_POST['case'] : '', true);
+  if (!is_array($in)) kk_fail('case が JSON ではありません');
+  foreach (array('cemetery', 'graveName', 'sesyu') as $k) if (isset($in[$k])) $case[$k] = mb_substr((string)$in[$k], 0, 50);
+  if (isset($in['rev'])) $case['rev'] = max(0, intval($in['rev']));
+  if (!empty($in['expiresDate']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['expiresDate'])) {
+    $ts = strtotime($in['expiresDate'] . ' 23:59:59');
+    if ($ts && $ts > time() && $ts < time() + 120 * 86400) $case['expires'] = date('Y-m-d H:i:s', $ts);
+  }
+  if (isset($in['noukotsu'])) $case['noukotsu'] = preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['noukotsu']) ? $in['noukotsu'] : '';
+  $changed = array();
+  $rm = isset($_POST['remove']) && is_array($_POST['remove']) ? $_POST['remove'] : array();
+  foreach (array('grave', 'place') as $f) if (in_array($f, $rm, true)) { while ($p = kk_find_file($dir, $f)) unlink($p); $changed[] = $f . '-'; }
+  foreach (array('grave', 'place', 'proof') as $f) {
+    if (empty($_FILES[$f]) || $_FILES[$f]['error'] !== UPLOAD_ERR_OK) continue;
+    $tmp = $dir . '/new_' . $f;
+    $n = kk_save_image($_FILES[$f]['tmp_name'], $tmp);
+    if (!$n) kk_fail($f . ' が画像ではありません');
+    while ($p = kk_find_file($dir, $f)) unlink($p);
+    rename($dir . '/' . $n, $dir . '/' . $f . '.' . pathinfo($n, PATHINFO_EXTENSION));
+    $changed[] = $f;
+  }
+  if (in_array('proof', $changed, true)) unset($case['seenAt']);
+  $case['updated'] = kk_now();
+  kk_write($dir . '/case.json', $case);
+  kk_log($t, 'update', array('files' => implode(',', $changed)));
   kk_out(array('ok' => true, 'token' => $t, 'url' => base_url() . '?t=' . $t, 'expires' => $case['expires']));
 }
 

@@ -8,8 +8,8 @@
  *                                  （電話番号の無い 確認ページ（v2）は 下4桁なしで 鍵を 返す。お名前は 回答の 時に 書いて もらう）
  *   GET  ?a=img&t=…&k=…&f=grave|place|proof   画像（鍵が要る）
  *   POST a=seen t k                原稿を最後まで見た記録
- *   POST a=answer t k result=ok|ng consent who rel placeFix fix callMe mark(画像) photos[](画像)
- *                                  回答を保存して 締め切る
+ *   POST a=answer t k result=ok|ng|grave_ng consent who rel tel placeFix fix callMe mark(画像) photos[](画像)
+ *                                  回答を保存して 締め切る。同じ フォルダーに .htnotify（メールアドレス 1 行）が あれば 回答を メールで 知らせる
  */
 require __DIR__ . '/lib.php';
 header('X-Robots-Tag: noindex');
@@ -28,6 +28,20 @@ $status = kk_status($case);
 
 function shop_info($case){
   return array('shopTel' => isset($case['shopTel']) ? $case['shopTel'] : '', 'shopHours' => isset($case['shopHours']) ? $case['shopHours'] : '');
+}
+// 回答を 店へ メールで 知らせる（.htnotify に アドレス。無ければ 何もしない。お名前・電話は 書かない＝アプリで 見る）
+function notify($case, $ans){
+  $f = __DIR__ . '/.htnotify';
+  if (!is_file($f)) return;
+  $to = trim(file_get_contents($f));
+  if (!filter_var($to, FILTER_VALIDATE_EMAIL)) return;
+  $label = array('ok' => 'この内容で承諾', 'ng' => '訂正あり', 'grave_ng' => 'お墓が違う（彫刻を止めて確認）');
+  $res = isset($label[$ans['result']]) ? $label[$ans['result']] : $ans['result'];
+  $name = trim($case['cemetery'] . ' ' . $case['graveName']);
+  $body = "戒名・法名彫刻のご確認に 回答が ありました。\n\n" . $name . "\n回答：" . $res . "\n日時：" . $ans['at'] .
+    "\n\n業務アプリの 納骨・戒切（案件 " . $case['ref'] . "）の［📨 お客様確認］で 内容を 見て、取り込んでください。\n";
+  mb_language('Japanese');
+  @mb_send_mail($to, '【お客様確認】' . $res . '（' . $name . '）', $body);
 }
 function check_key($dir){
   $k = isset($_REQUEST['k']) ? $_REQUEST['k'] : '';
@@ -92,11 +106,12 @@ if ($a === 'answer') {
   $result = isset($_POST['result']) ? $_POST['result'] : '';
   if (!in_array($result, array('ok', 'ng', 'grave_ng'), true)) kk_fail('bad result');
   if ($result === 'ok' && empty($_POST['consent'])) kk_fail('consent required');
-  if (empty($case['phones']) && $result !== 'grave_ng' && trim(isset($_POST['who']) ? $_POST['who'] : '') === '') kk_fail('name required');
+  if (empty($case['phones']) && trim(isset($_POST['who']) ? $_POST['who'] : '') === '') kk_fail('name required');
   $ans = array(
     'at' => kk_now(), 'result' => $result,
     'who' => mb_substr(trim(isset($_POST['who']) ? $_POST['who'] : ''), 0, 50),
     'rel' => mb_substr(trim(isset($_POST['rel']) ? $_POST['rel'] : ''), 0, 30),
+    'tel' => mb_substr(preg_replace('/[^0-9\-+() ]/', '', isset($_POST['tel']) ? $_POST['tel'] : ''), 0, 20),
     'consent' => !empty($_POST['consent']),
     'consentText' => mb_substr(isset($_POST['consentText']) ? $_POST['consentText'] : '', 0, 300),
     'placeFix' => mb_substr(trim(isset($_POST['placeFix']) ? $_POST['placeFix'] : ''), 0, 2000),
@@ -123,6 +138,7 @@ if ($a === 'answer') {
   kk_write($dir . '/case.json', $case);
   @unlink($dir . '/sess.json');
   kk_log($t, 'answer', array('result' => $result, 'who' => $ans['who'], 'rel' => $ans['rel']));
+  notify($case, $ans);
   kk_out(array('ok' => true, 'at' => $ans['at']));
 }
 

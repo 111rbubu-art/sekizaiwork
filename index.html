@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.544';
+var APP_VERSION = 'v1.9.545';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21519,7 +21519,7 @@ function _kkStateOf(row){
   if(row.status==='answered'){
     var res=row.result || (row.answer && row.answer.result) || '';
     if(res==='ok') return {t:'✅ この内容で承諾', c:'#1a7a3a', bg:'#e8f6ec'};
-    if(res==='grave_ng') return {t:'⚠ お墓が違う', c:'#b3261e', bg:'#fdecea'};
+    if(res==='grave_ng') return {t:'⚠ お墓が違う（調べて 連絡する）', c:'#b3261e', bg:'#fdecea'};
     return {t:'✏️ 訂正あり', c:'#b45309', bg:'#fff4e0'};
   }
   if(row.status==='expired') return {t:'期限切れ', c:'#6b7280', bg:'#f2f3f5'};
@@ -21597,7 +21597,7 @@ function _kkOpen(){
   _kkRenderNew(d);
   _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); _kkFillRev(d); })
     .catch(function(e){ document.getElementById('kk-rows').innerHTML='<div style="'+_KK_CARD+';color:#b3261e;font-size:12.5px">さくらの お客様確認に つながりません：'+_gaichuEsc(e.message||e)+'<br><span style="color:#6b7280">［⚙ 接続設定］の URL と 合言葉を 確かめてください。</span></div>'; });
-  _kkListImages(d).then(function(list){ if(currentItem!==d) return; _kkState.imgs=list; _kkGuess(); _kkRenderPicks(); _kkFillRev(d); });
+  _kkListImages(d).then(function(list){ if(currentItem!==d) return; _kkState.imgs=list; _kkGuess(); _kkRenderPicks(); _kkFillRev(d); _kkPrefetch(); });
 }
 function _kkRenderRows(rows){
   var el=document.getElementById('kk-rows'); if(!el) return;
@@ -21897,7 +21897,12 @@ function _kkMarkOpen(){
     draw();
   }).catch(function(e){ var wrap=document.getElementById('kk-mwrap'); if(wrap) wrap.innerHTML='<span style="color:#fff">写真を 読めませんでした：'+_gaichuEsc(e.message||e)+'</span>'; });
 }
-function _kkPick(k, i){ _kkState.pick[k]=Object.assign({}, _kkState.imgs[i]); _kkRenderPicks(); if(k==='proof') _kkFillRev(currentItem); }
+function _kkPick(k, i){ _kkState.pick[k]=Object.assign({}, _kkState.imgs[i]); _kkRenderPicks(); if(k==='proof') _kkFillRev(currentItem); _kkPrefetch(); }
+/* 選んだ 写真は すぐ 裏で 読んでおく（プレビューを 押してから 待たないように）。上限も 先に 聞いておく */
+function _kkPrefetch(){
+  _kkLimits().catch(function(){});
+  KK_SLOTS.forEach(function(s){ var f=_kkState.pick[s.k]; if(f && !f.blob && !f.loading){ f.loading=true; _kkPickBlob(f).catch(function(){}).then(function(){ f.loading=false; }); } });
+}
 function _kkUnpick(k){ delete _kkState.pick[k]; _kkRenderPicks(); }
 function _kkPickLocal(k, inp){
   var f=inp.files && inp.files[0]; inp.value=''; if(!f) return;
@@ -21908,25 +21913,26 @@ function _kkPickLocal(k, inp){
 }
 /* 画像を 送れる 大きさに。写真は 長い辺 2000px。確認資料は 縦に 長いので 縮めず、上限を 超えるときだけ 画質→大きさの 順に 落とす */
 function _kkFit(blob, maxBytes, longSide){
+  /* 速く（v1.9.545。本人「プレビューを作るのに時間がかかっています」）：前は 画質を 4 段・大きさを 15% ずつ 下げて 毎回 作り直していた
+     （縦に 長い 確認資料だと 1 回ごとに 時間が かかる）。いまは 1 回 作って、上限を 超えた 分から 縮める 割合を 計算して 作り直す */
   return new Promise(function(resolve, reject){
     var url=URL.createObjectURL(blob), img=new Image();
     img.onload=function(){
       var w=img.naturalWidth, h=img.naturalHeight;
       var r=longSide ? Math.min(1, longSide/Math.max(w,h)) : 1;
-      var isJ=/jpe?g/i.test(blob.type||'');
-      if(r===1 && blob.size<=maxBytes && (isJ || /png/i.test(blob.type||''))){ URL.revokeObjectURL(url); resolve(blob); return; }
-      var qs=[.9,.85,.8,.72], qi=0, tries=0;
-      (function step(){
+      if(r===1 && blob.size<=maxBytes && /jpe?g|png/i.test(blob.type||'')){ URL.revokeObjectURL(url); resolve(blob); return; }
+      var tries=0;
+      (function step(q){
         var cw=Math.max(1,Math.round(w*r)), ch=Math.max(1,Math.round(h*r));
         var c=document.createElement('canvas'); c.width=cw; c.height=ch;
         var ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); ctx.drawImage(img,0,0,cw,ch);
         c.toBlob(function(nb){
           if(nb && nb.size<=maxBytes){ URL.revokeObjectURL(url); resolve(nb); return; }
-          if(++tries>14){ URL.revokeObjectURL(url); reject(new Error('画像を 小さく できません')); return; }
-          if(qi<qs.length-1) qi++; else r*=0.85;
-          step();
-        }, 'image/jpeg', qs[qi]);
-      })();
+          if(++tries>5 || !nb){ URL.revokeObjectURL(url); reject(new Error('画像を 小さく できません')); return; }
+          r*=Math.max(0.4, Math.min(0.92, Math.sqrt(maxBytes/nb.size)*0.95));   // 大きさは 面積に ほぼ 比例
+          step(0.85);
+        }, 'image/jpeg', q);
+      })(0.88);
     };
     img.onerror=function(){ URL.revokeObjectURL(url); reject(new Error('画像を 読めません')); };
     img.src=url;
@@ -21934,16 +21940,21 @@ function _kkFit(blob, maxBytes, longSide){
 }
 /* さくらの 受信の 上限（upload.php の GET）。1 回の 送信で 3 枚まで 送るので 合計にも 気をつける */
 function _kkLimits(){
+  if(_kkState.lim) return Promise.resolve(_kkState.lim);
+  return _kkLimitsGet().then(function(l){ if(!l.guess) _kkState.lim=l; return l; });
+}
+function _kkLimitsGet(){
   var toB=function(s){ var m=String(s||'').match(/^(\d+)\s*([KMG]?)/i); if(!m) return 0; var n=parseInt(m[1],10), u=m[2].toUpperCase(); return n*(u==='G'?1073741824:u==='M'?1048576:u==='K'?1024:1); };
   return fetch(_kkCfg().url,{method:'GET'}).then(function(r){ return r.json(); }).then(function(j){
     var up=toB(j.limits && j.limits.upload_max_filesize)||2097152, post=toB(j.limits && j.limits.post_max_size)||8388608;
     return { one: Math.floor(up*0.95), total: Math.floor(post*0.9) };
-  }).catch(function(){ return { one: 1900000, total: 7500000 }; });
+  }).catch(function(){ return { one: 1900000, total: 7500000, guess: true }; });
 }
 function _kkBlobOf(f){ return (f.marks && f.marks.length) ? _kkMarkedBlob(f) : _kkPickBlob(f); }
 function _kkPickBlob(f){
   if(f.blob) return Promise.resolve(f.blob);
-  return _kkRawBlob(f).then(function(b){ f.blob=b; return b; });
+  if(!f.blobP) f.blobP=_kkRawBlob(f).then(function(b){ f.blob=b; return b; }, function(e){ f.blobP=null; throw e; });
+  return f.blobP;
 }
 function _kkRawBlob(f){
   if(f.source==='local') return Promise.resolve(f.file);
@@ -21985,7 +21996,9 @@ function _kkPrepFiles(keys, each, say){
   return keys.reduce(function(pr, k){
     return pr.then(function(){
       say('画像を 用意しています（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
-      return _kkBlobOf(_kkState.pick[k]).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; });
+      var f=_kkState.pick[k], key=each+'|'+JSON.stringify(f.marks||[]);
+      if(f.fit && f.fit.key===key){ files[k]=f.fit.blob; return; }   // 前に プレビューで 作った ものを 使う
+      return _kkBlobOf(f).then(function(b){ return _kkFit(b, each, k==='proof'?0:2000); }).then(function(b){ files[k]=b; f.fit={key:key, blob:b}; });
     });
   }, Promise.resolve()).then(function(){ return files; });
 }
@@ -22176,6 +22189,7 @@ function _kkDetail(token){
       h+='<table style="font-size:12.5px;border-collapse:collapse;margin-top:8px;width:100%">'+
         tr('回答', (KK_RES[a.result]||a.result)+'　'+_kkMDHM(a.at))+
         tr('お名前', [a.who, a.rel].filter(Boolean).join('（')+(a.rel?'）':''))+
+        tr('電話番号', a.tel)+
         tr('承諾', a.consent ? '✅ '+(a.consentText||'') : '')+
         tr('場所の 訂正', a.placeFix)+tr('文字の 訂正', a.fix)+
         tr('電話', a.callMe ? '📞 当店から 電話してほしい' : '')+
@@ -22215,6 +22229,7 @@ function _kkSummaryText(d, s){
     '施主：'+(c.sesyu||''), '原稿：'+(a.rev?'修正'+a.rev:'初回'), '',
     '回答：'+(KK_RES[a.result]||a.result||'')+'　'+(a.at||''),
     'お名前：'+(a.who||'')+(a.rel?'（'+a.rel+'）':''),
+    'ご連絡先：'+(a.tel||''),
     '承諾：'+(a.consent?'あり　「'+(a.consentText||'')+'」':'なし')];
   if(a.placeFix) L.push('', '■ 彫刻する場所の 訂正', a.placeFix);
   if(a.fix) L.push('', '■ 文字の 訂正', a.fix);

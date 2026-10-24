@@ -8,7 +8,7 @@
  *                                  （電話番号の無い 確認ページ（v2）は 下4桁なしで 鍵を 返す。お名前は 回答の 時に 書いて もらう）
  *   GET  ?a=img&t=…&k=…&f=grave|place|proof   画像（鍵が要る）
  *   POST a=seen t k                原稿を最後まで見た記録
- *   POST a=answer t k result=ok|ng|grave_ng consent who rel tel placeFix fix callMe mark(画像) photos[](画像)
+ *   POST a=answer t k result=ok|ng|grave_ng consent who rel tel placeFix fix callMe nok(ok|fix) nokFix mark(画像) photos[](画像)
  *                                  回答を保存して 締め切る。同じ フォルダーに .htnotify（メールアドレス 1 行）が あれば 回答を メールで 知らせる
  */
 require __DIR__ . '/lib.php';
@@ -55,7 +55,8 @@ if ($a === 'hint') {
   foreach ((isset($case['phones']) ? $case['phones'] : array()) as $p) $phones[] = array('label' => $p['label'], 'masked' => $p['masked']);
   kk_out(array_merge(array('ok' => true, 'status' => $status, 'phones' => $phones, 'needVerify' => count($phones) > 0,
     'rev' => intval(isset($case['rev']) ? $case['rev'] : 0), 'expires' => isset($case['expires']) ? $case['expires'] : '',
-    'noukotsu' => isset($case['noukotsu']) ? $case['noukotsu'] : ''), shop_info($case)));
+    'noukotsu' => isset($case['noukotsu']) ? $case['noukotsu'] : '',
+    'noukotsuTime' => isset($case['noukotsuTime']) ? $case['noukotsuTime'] : ''), shop_info($case)));
 }
 
 if ($a === 'img') {
@@ -117,6 +118,8 @@ if ($a === 'answer') {
     'placeFix' => mb_substr(trim(isset($_POST['placeFix']) ? $_POST['placeFix'] : ''), 0, 2000),
     'fix' => mb_substr(trim(isset($_POST['fix']) ? $_POST['fix'] : ''), 0, 2000),
     'callMe' => !empty($_POST['callMe']),
+    'nok' => (isset($_POST['nok']) && in_array($_POST['nok'], array('ok', 'fix'), true)) ? $_POST['nok'] : '',
+    'nokFix' => mb_substr(trim(isset($_POST['nokFix']) ? $_POST['nokFix'] : ''), 0, 1000),
     'rev' => intval(isset($case['rev']) ? $case['rev'] : 0),
     'proofSha256' => ($p = kk_find_file($dir, 'proof')) ? hash_file('sha256', $p) : '',
     'seenAt' => isset($case['seenAt']) ? $case['seenAt'] : '',

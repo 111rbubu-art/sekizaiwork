@@ -6,12 +6,12 @@
  *
  * POST multipart/form-data（毎回 secret と action）
  *   create  case(JSON) grave place proof(画像)
- *           case = {ref, cemetery, graveName, sesyu, phones:[{label, number}], rev, shopTel, shopHours, days, expiresDate, noukotsu}
+ *           case = {ref, cemetery, graveName, sesyu, phones:[{label, number}], rev, shopTel, shopHours, days, expiresDate, noukotsu, noukotsuTime}
  *           phones が 空なら 本人確認（電話番号の 下4桁）なし。お客様は 最後に お名前を 書く（v2）
  *           expiresDate（YYYY-MM-DD）が あれば その日の 23:59 まで。無ければ days 日
  *           電話番号は 保存しない（伏せ字と 下4桁だけ 残す）。返り値 {token, url, expires}
  *   update  token case(JSON) grave place proof(画像) remove[]  … 回答前の 確認ページを 直す（URL は そのまま。v2.3）
- *           case の cemetery graveName sesyu rev expiresDate noukotsu を 入れ替え。画像は 送った ものだけ 差しかえ、remove[] の 写真は 消す。
+ *           case の cemetery graveName sesyu rev expiresDate noukotsu noukotsuTime を 入れ替え。画像は 送った ものだけ 差しかえ、remove[] の 写真は 消す。
  *           原稿（proof）を 差しかえたら「最後まで見た」は 取り消す（新しい 原稿を 見て もらう）
  *   status  token        → case・状態・記録（log）・回答（answer）
  *   list                 → 全件の 状態の 一覧
@@ -96,6 +96,7 @@ if ($action === 'create') {
     'created' => kk_now(),
     'expires' => $expires,
     'noukotsu' => $noukotsu,
+    'noukotsuTime' => mb_substr(trim(isset($in['noukotsuTime']) ? (string)$in['noukotsuTime'] : ''), 0, 60),
   );
   foreach (array('grave', 'place', 'proof') as $f) {
     if (empty($_FILES[$f]) || $_FILES[$f]['error'] !== UPLOAD_ERR_OK) continue;
@@ -120,6 +121,7 @@ if ($action === 'update') {
     if ($ts && $ts > time() && $ts < time() + 120 * 86400) $case['expires'] = date('Y-m-d H:i:s', $ts);
   }
   if (isset($in['noukotsu'])) $case['noukotsu'] = preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['noukotsu']) ? $in['noukotsu'] : '';
+  if (isset($in['noukotsuTime'])) $case['noukotsuTime'] = mb_substr(trim((string)$in['noukotsuTime']), 0, 60);
   $changed = array();
   $rm = isset($_POST['remove']) && is_array($_POST['remove']) ? $_POST['remove'] : array();
   foreach (array('grave', 'place') as $f) if (in_array($f, $rm, true)) { while ($p = kk_find_file($dir, $f)) unlink($p); $changed[] = $f . '-'; }

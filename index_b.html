@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.552';
+var APP_VERSION = 'v1.9.553';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21448,22 +21448,32 @@ function _gaichuLoadFiles(d, mode){
   }
   return Promise.all(jobs).then(function(){ return out; });
 }
-function _gaichuFetchBlob(file, gTok, sTok){
+/* 読み込みの 進み具合を onp(読んだ バイト, 全体) で 知らせながら blob に する（全体が わからない ときは 0）。onp が 無ければ ふつうに blob */
+function _blobWithProgress(r, onp){
+  if(!onp || !r.body || !r.body.getReader) return r.blob();
+  var total=parseInt(r.headers.get('Content-Length')||'0',10)||0, got=0, parts=[], rd=r.body.getReader(), type=r.headers.get('Content-Type')||'';
+  onp(0,total);
+  return (function pump(){ return rd.read().then(function(x){
+    if(x.done) return new Blob(parts,{type:type});
+    parts.push(x.value); got+=x.value.length; onp(got,total); return pump();
+  }); })();
+}
+function _gaichuFetchBlob(file, gTok, sTok, onp){
   if (file.source==='drive'){
     return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/items/'+file.driveId+'/content',{headers:{Authorization:'Bearer '+gTok}})
-      .then(function(r){ if(!r.ok) throw new Error('DL失敗 '+r.status); return r.blob(); });
+      .then(function(r){ if(!r.ok) throw new Error('DL失敗 '+r.status); return _blobWithProgress(r, onp); });
   }
   if (file.source==='drivepath'){
     var enc=String(file.fpath||'').split('/').map(encodeURIComponent).join('/');
     return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content',{headers:{Authorization:'Bearer '+gTok}})
-      .then(function(r){ if(!r.ok) throw new Error('DL失敗 '+r.status); return r.blob(); });
+      .then(function(r){ if(!r.ok) throw new Error('DL失敗 '+r.status); return _blobWithProgress(r, onp); });
   }
   // SP添付：生URL直fetchはCORSで弾かれる。REST の getFileByServerRelativeUrl(...)/$value を使う
   if(!sTok) throw new Error('SPトークン取得失敗');
   var rel=String(file.relUrl||'').replace(/'/g,"''");
   var binUrl="https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/getFileByServerRelativeUrl('"+rel+"')/$value";
   return fetch(binUrl,{headers:{Authorization:'Bearer '+sTok}})
-    .then(function(r){ if(!r.ok) throw new Error('添付DL失敗 '+r.status); return r.blob(); });
+    .then(function(r){ if(!r.ok) throw new Error('添付DL失敗 '+r.status); return _blobWithProgress(r, onp); });
 }
 
 /* ───── **お客様確認（Web）**（v1.9.539。本人「戒名彫刻の確認資料の郵送が往復で時間がかかる。手紙や LINE で URL を送って
@@ -22053,11 +22063,13 @@ function _kkPickBlob(f){
 }
 function _kkRawBlob(f){
   if(f.source==='local') return Promise.resolve(f.file);
-  if(f.source==='server') return _kkGetFile(f.token, f.f);
+  /* 読んだ 量を f.prog に 置き、f.onprog が あれば 知らせる（プレビューの「○○%」。v1.9.553） */
+  var onp=function(got,total){ f.prog={got:got,total:total}; if(f.onprog) f.onprog(); };
+  if(f.source==='server') return _kkGetFile(f.token, f.f, onp);
   return Promise.all([
     getToken().then(function(r){ return r.accessToken; }),
     f.source==='sp' ? msalApp.acquireTokenSilent({scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'],account:msalApp.getActiveAccount()}).then(function(r){ return r.accessToken; }) : Promise.resolve('')
-  ]).then(function(t){ return _gaichuFetchBlob(f, t[0], t[1]); });
+  ]).then(function(t){ return _gaichuFetchBlob(f, t[0], t[1], onp); });
 }
 /* 作る 前に プレビュー（v1.9.544。本人「写真を選択し、制作前にプレビューで表示させて、問題なければ製作という形にしてほしい」）
    送る 画像（縮めた・印を 焼き込んだ もの）を 先に 用意して、さくらの お客様画面（index.html?preview=1）を そのまま 枠の 中に 出す。
@@ -22065,7 +22077,8 @@ function _kkRawBlob(f){
 function _kkPreview(btn){
   var d=currentItem; if(!d) return;
   var msg=document.getElementById('kk-msg');
-  var say=function(t, err){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; };
+  var say=function(t, err, bar){ msg.style.color=err?'#b3261e':'#4a5160';
+    msg.innerHTML=_gaichuEsc(t)+(bar>=0 ? '<div style="height:6px;border-radius:3px;background:#e3e6ea;margin-top:5px;overflow:hidden"><div style="height:100%;width:'+bar+'%;background:#2f6f8f;transition:width .2s"></div></div>' : ''); };
   var due=(document.getElementById('kk-due')||{}).value||'';
   if(!_kkDay(due) || _kkDay(due)<=new Date()){ say('回答の 期限を 明日 以降の 日付に してください。', true); return; }
   if(!_kkState.pick.proof){ say('③ 確認資料（拓本＋原稿の JPEG）を 選んでください。', true); return; }
@@ -22093,15 +22106,25 @@ function _kkViewFiles(keys, say){
     return pr.then(function(){
       var f=_kkState.pick[k];
       if(!(f.marks && f.marks.length)){
-        if(!f.blob) say('写真を 読んでいます（'+(keys.indexOf(k)+1)+'/'+keys.length+'）…');
-        return _kkPickBlob(f).then(function(b){ files[k]=b; });
+        if(!f.blob) _kkProgWatch(f, keys.indexOf(k)+1, keys.length, say);
+        return _kkPickBlob(f).then(function(b){ f.onprog=null; files[k]=b; }, function(e){ f.onprog=null; throw e; });
       }
       var key=JSON.stringify(f.marks);
       if(f.view && f.view.key===key){ files[k]=f.view.blob; return; }
-      say('印を 描いています…');
-      return _kkMarkedBlob(f).then(function(b){ files[k]=b; f.view={key:key, blob:b}; });
+      if(!f.blob) _kkProgWatch(f, keys.indexOf(k)+1, keys.length, say);
+      return _kkPickBlob(f).then(function(){ f.onprog=null; say('印を 描いています…'); return _kkMarkedBlob(f); }).then(function(b){ files[k]=b; f.view={key:key, blob:b}; });
     });
   }, Promise.resolve()).then(function(){ return files; });
+}
+/* 写真を 読む 進み具合を「写真を 読んでいます（2/3）… 45%（1.2MB / 2.7MB）」と 棒で 出す（v1.9.553。本人「○○％とかで動いている感じを出してほしい」） */
+function _kkProgWatch(f, i, n, say){
+  var MB=function(b){ return (b/1048576).toFixed(1)+'MB'; };
+  var draw=function(){
+    var p=f.prog||{got:0,total:0}, pct=p.total ? Math.min(100, Math.floor(p.got*100/p.total)) : 0;
+    var all=Math.floor(((i-1)+(p.total?p.got/p.total:0))/n*100);
+    say('写真を 読んでいます（'+i+'/'+n+'）… '+(p.total ? pct+'%（'+MB(p.got)+' / '+MB(p.total)+'）' : (p.got?MB(p.got):'')), false, p.total ? all : -1);
+  };
+  f.onprog=draw; draw();
 }
 /* さくらへ 送る 画像（上限に 合わせて 縮める）。作る ときに 1 回だけ */
 function _kkPrepFiles(keys, view, each, say){
@@ -22338,11 +22361,11 @@ function _kkDetail(token){
     });
   }).catch(function(e){ box.innerHTML='<div style="font-size:12px;color:#b3261e;margin-top:8px">'+_gaichuEsc(e.message||e)+'</div>'; });
 }
-function _kkGetFile(token, f){
+function _kkGetFile(token, f, onp){
   var fd=new FormData(); fd.append('action','getfile'); fd.append('token',token); fd.append('f',f); fd.append('secret',_kkCfg().secret||'');
   return fetch(_kkCfg().url,{method:'POST',body:fd}).then(function(r){
     if(!r.ok || /json/.test(r.headers.get('Content-Type')||'')) throw new Error(f+' を 読めません ('+r.status+')');
-    return r.blob();
+    return _blobWithProgress(r, onp);
   });
 }
 

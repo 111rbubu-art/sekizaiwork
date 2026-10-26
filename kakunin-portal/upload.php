@@ -16,6 +16,7 @@
  *   status  token        → case・状態・記録（log）・回答（answer）
  *   list                 → 全件の 状態の 一覧
  *   getfile token f      → 画像（grave place proof mark photo_N）
+ *   imported token keepUntil(Y-m-d) → 取り込みずみの 印。お客様は その日まで 見直せる。過ぎたら list で 消える
  *   delete  token        → 消す（SharePoint へ 取り込んだ 後）
  */
 require __DIR__ . '/lib.php';
@@ -39,7 +40,7 @@ $action = isset($_POST['action']) ? $_POST['action'] : '';
 if ($action !== 'getfile') header('Content-Type: application/json; charset=UTF-8');
 if ($_SERVER['REQUEST_METHOD'] === 'GET') kk_out(array('ok' => true, 'service' => 'kakunin-upload', 'version' => KK_VERSION,
   'limits' => array('upload_max_filesize' => ini_get('upload_max_filesize'), 'post_max_size' => ini_get('post_max_size')),
-  'actions' => array('create', 'update', 'status', 'list', 'getfile', 'delete')));
+  'actions' => array('create', 'update', 'status', 'list', 'getfile', 'imported', 'delete')));
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') kk_fail('POST only', 405);
 if (!count($_POST) && isset($_SERVER['CONTENT_LENGTH']) && intval($_SERVER['CONTENT_LENGTH']) > 0)
   kk_fail('ファイルが大きすぎます（サーバーの受信上限 ' . ini_get('post_max_size') . '）', 413);
@@ -155,11 +156,14 @@ if ($action === 'list') {
     if (!kk_valid_token($t)) continue;
     $c = kk_read(kk_dir($t) . '/case.json');
     if (!$c) continue;
+    // 取り込みずみで 見られる 期限（keepUntil）を 過ぎたものは ここで 消す（v2.8）
+    if (!empty($c['imported']) && !empty($c['keepUntil']) && strtotime($c['keepUntil']) < time()) { kk_rmdir(kk_dir($t)); continue; }
     $a = kk_read(kk_dir($t) . '/answer.json');
     $rows[] = array('token' => $t, 'ref' => $c['ref'], 'graveName' => $c['graveName'], 'rev' => $c['rev'],
       'status' => kk_status($c), 'created' => $c['created'], 'expires' => $c['expires'],
       'seenAt' => isset($c['seenAt']) ? $c['seenAt'] : '', 'answeredAt' => isset($c['answeredAt']) ? $c['answeredAt'] : '',
-      'result' => $a ? $a['result'] : '');
+      'result' => $a ? $a['result'] : '',
+      'imported' => isset($c['imported']) ? $c['imported'] : '', 'keepUntil' => isset($c['keepUntil']) ? $c['keepUntil'] : '');
   }
   kk_out(array('ok' => true, 'items' => $rows));
 }
@@ -171,6 +175,20 @@ if ($action === 'getfile') {
   $p = kk_find_file(kk_dir($t), $f);
   if (!$p) { header('Content-Type: application/json; charset=UTF-8'); kk_fail('no file', 404); }
   kk_send_file($p);
+}
+
+// 回答を 案件フォルダーへ 取り込んだ 印。お客様は keepUntil まで 回答と 写真を 見直せる（v2.8。本人「念のため、写真などを閲覧することを可能にしてほしい」）。
+// 過ぎたら list の ときに 消える
+if ($action === 'imported') {
+  $t = token_arg(); $dir = kk_dir($t);
+  $case = kk_read($dir . '/case.json');
+  if (!$case) kk_fail('notfound', 404);
+  $ku = isset($_POST['keepUntil']) ? $_POST['keepUntil'] : '';
+  if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ku)) $ku = date('Y-m-d', time() + 30 * 86400);
+  $case['imported'] = kk_now(); $case['keepUntil'] = $ku . ' 23:59:59';
+  kk_write($dir . '/case.json', $case);
+  kk_log($t, 'imported', array('keepUntil' => $ku));
+  kk_out(array('ok' => true, 'keepUntil' => $case['keepUntil']));
 }
 
 if ($action === 'delete') {

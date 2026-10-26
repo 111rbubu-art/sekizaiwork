@@ -7,6 +7,7 @@
  *   POST a=verify t tail who rel   電話番号の下4桁を確かめ、合えば 鍵 k と お墓・画像の URL を返す
  *                                  （電話番号の無い 確認ページ（v2）は 下4桁なしで 鍵を 返す。お名前は 回答の 時に 書いて もらう）
  *   GET  ?a=img&t=…&k=…&f=grave|place|proof   画像（鍵が要る）
+ *   POST a=review t                回答ずみの ページを 見直す（見るだけ。鍵と 画像の URL と 回答の 中身を 返す）
  *   POST a=seen t k                原稿を最後まで見た記録
  *   POST a=answer t k result=ok|ng|grave_ng consent who rel tel placeFix fix callMe nok(ok|fix) nokFix mark(画像) photos[](画像)
  *                                  回答を保存して 締め切る。同じ フォルダーに .htnotify（メールアドレス 1 行）が あれば 回答を メールで 知らせる
@@ -69,6 +70,25 @@ if ($a === 'img') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') kk_fail('POST only', 405);
+
+// 回答ずみ：見るだけ（v2.8。本人「念のため、写真などを閲覧することを可能にしてほしい」）。電話番号は 返さない
+if ($a === 'review') {
+  if ($status !== 'answered') kk_out(array('ok' => false, 'error' => $status));
+  $ans = kk_read($dir . '/answer.json', array());
+  $k = bin2hex(random_bytes(16));
+  $s = kk_read($dir . '/sess.json', array('keys' => array()));
+  $s['keys'][] = $k;
+  kk_write($dir . '/sess.json', $s);
+  kk_log($t, 'review');
+  $img = array();
+  foreach (array('grave', 'place', 'proof') as $f) if (kk_find_file($dir, $f)) $img[$f] = 'api.php?a=img&t=' . $t . '&k=' . $k . '&f=' . $f;
+  $pick = array();
+  foreach (array('at', 'result', 'who', 'rel', 'placeFix', 'fix', 'callMe', 'nok', 'nokFix') as $x) $pick[$x] = isset($ans[$x]) ? $ans[$x] : '';
+  $pick['files'] = isset($ans['files']) ? $ans['files'] : array();
+  kk_out(array('ok' => true, 'k' => $k, 'img' => $img, 'answer' => $pick,
+    'cemetery' => $case['cemetery'], 'graveName' => $case['graveName'], 'sesyu' => $case['sesyu']));
+}
+
 if ($status !== 'open') kk_out(array('ok' => false, 'error' => $status));
 
 if ($a === 'verify') {

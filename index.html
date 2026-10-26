@@ -8167,7 +8167,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.554';
+var APP_VERSION = 'v1.9.555';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -9486,7 +9486,7 @@ function niAiFileToImages(file) {
       if (!window.pdfjsLib) throw new Error('PDF の 部品を 読み込めませんでした（通信を 確かめてください）');
       return file.arrayBuffer();
     }).then(function (buf) {
-      return window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+      return window.pdfjsLib.getDocument(_pdfViewSrc(new Uint8Array(buf))).promise;
     }).then(function (pdf) {
       var out = [], n = Math.min(pdf.numPages, NI_AI_PDF_PAGES), chain = Promise.resolve();
       for (var i = 1; i <= n; i++) (function (pi) {
@@ -24338,6 +24338,13 @@ function _pdfMergeRun() {
    ［＋ 同じフォルダのPDF］［＋ PCから］で ほかの PDF を足して 結合。
    保存は pdf-lib：［💾 新しいファイルで保存］（同じフォルダ）か、1 つの PDF だけのときは［⬆ 元のファイルに上書き］（前の版は SharePoint に残る）。 */
 var _PO = null;
+/* **PDF.js に 渡す 中身と 設定**（v1.9.555。本人「本家のアクロバットで作った注釈が読めない」）。
+   Acrobat の 注釈（テキストボックス・付箋など）の 日本語は 埋め込まない 字体（小塚明朝 など・UniJIS-UCS2-H）で 書かれていて、
+   PDF.js は 文字の 対応表（cMap）が 無いと その字を 描かずに 飛ばす（枠だけ 出て 中が 空になる）。対応表と 標準の 字体の 置き場を いっしょに 渡す。 */
+function _pdfViewSrc(data) {
+  var base = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/';
+  return { data: data, cMapUrl: base + 'cmaps/', cMapPacked: true, standardFontDataUrl: base + 'standard_fonts/' };
+}
 function _loadPdfJs(cb) {
   if (window.pdfjsLib) { cb(); return; }
   var s = document.createElement('script');
@@ -24610,7 +24617,7 @@ function _pdfViewOpen(filePath) {
     var pv = _PV;
     _spFetchBytes(filePath).then(function (buf) {
       pv.bytes = new Uint8Array(buf);
-      return window.pdfjsLib.getDocument({ data: pv.bytes.slice() }).promise;
+      return window.pdfjsLib.getDocument(_pdfViewSrc(pv.bytes.slice())).promise;
     }).then(function (pdf) {
       if (_PV !== pv) return;
       pv.pdf = pdf;
@@ -25142,7 +25149,7 @@ function _pvaSave() {
     if (_PV !== pv) return;
     pv.bytes = new Uint8Array(nb); pv.ann = {}; pv.undo = []; pv.sel = null; pv.annDirty = false;
     var old = pv.pdf;
-    return window.pdfjsLib.getDocument({ data: pv.bytes.slice() }).promise.then(function (pdf) {
+    return window.pdfjsLib.getDocument(_pdfViewSrc(pv.bytes.slice())).promise.then(function (pdf) {
       pv.pdf = pdf; try { old.destroy(); } catch (e) {}
       var body = document.getElementById('pv-body'), st = body ? body.scrollTop : 0;
       _pdfViewBuild(); if (body) body.scrollTop = st;
@@ -25220,7 +25227,7 @@ function _pvaSaveAs() {
     pv.bytes = new Uint8Array(nb); pv.ann = {}; pv.undo = []; pv.sel = null; pv.annDirty = false;
     var t = document.getElementById('pv-title'); if (t) { t.textContent = '📄 ' + nm; t.title = nm; }
     var old = pv.pdf;
-    return window.pdfjsLib.getDocument({ data: pv.bytes.slice() }).promise.then(function (pdf) {
+    return window.pdfjsLib.getDocument(_pdfViewSrc(pv.bytes.slice())).promise.then(function (pdf) {
       pv.pdf = pdf; try { old.destroy(); } catch (e) {}
       var body = document.getElementById('pv-body'), st = body ? body.scrollTop : 0;
       _pdfViewBuild(); if (body) body.scrollTop = st;
@@ -25275,7 +25282,7 @@ function _pdfViewPrintImg(bytes) {
   var pv = _PV; if (!pv || !pv.pdf) return;
   showSaveToast(true, '🖨 印刷の用意をしています…');
   var imgs = [], doc = null;
-  var chain = (bytes && bytes !== pv.bytes) ? window.pdfjsLib.getDocument({ data: bytes.slice() }).promise.then(function (d) { doc = d; }) : Promise.resolve().then(function () { doc = pv.pdf; });
+  var chain = (bytes && bytes !== pv.bytes) ? window.pdfjsLib.getDocument(_pdfViewSrc(bytes.slice())).promise.then(function (d) { doc = d; }) : Promise.resolve().then(function () { doc = pv.pdf; });
   chain = chain.then(function () {
     var c2 = Promise.resolve();
     for (var i = 1; i <= doc.numPages; i++) (function (pi) {
@@ -25404,8 +25411,82 @@ function _pdfViewRender(d) {
       if (_PV !== pv || pv.zoom !== zoom) return;
       var oc = d.querySelector(':scope > canvas'); if (oc) oc.remove();
       d.insertBefore(cv, d.firstChild);   // 書き込みの SVG は 残す
+      return _pdfViewNotes(d, pg, pi);
     });
   }).catch(function () { d._z = null; });
+}
+/* **Acrobat の コメント（付箋・蛍光ペンなどに 付いた 文）を 読めるように**（v1.9.555。本人「本家のアクロバットで作った注釈が読めない」）。
+   PDF.js は 注釈の 絵（付箋の 印・線・蛍光ペン）は 描くが、コメントの 文は Acrobat の ポップアップの 中なので 出さない。
+   コメントの ある 注釈の 上に 押せる所（付箋は その印・ほかは 右上の 💬）を 置き、押すと 書いた人と 文を 吹き出しで 出す。
+   返信（IRT）は 元の 注釈の 吹き出しに まとめる。テキストボックス（FreeText）は 文が もう ページに 描かれて いるので 出さない。 */
+function _pdfViewNotes(d, pg, pi) {
+  var pv = _PV; if (!pv) return;
+  pv.notes = pv.notes || {};
+  if (!pv.notes[pi]) pv.notes[pi] = pg.getAnnotations({ intent: 'display' }).catch(function () { return []; });
+  return pv.notes[pi].then(function (list) {
+    if (_PV !== pv) return;
+    var old = d.querySelector(':scope > .pv-cm'); if (old) old.remove();
+    var txt = function (a) { return String((a.contentsObj && a.contentsObj.str) || '').replace(/\r\n?/g, '\n').trim(); };
+    var reply = {}, items = [];
+    list.forEach(function (a) {
+      if (a.inReplyTo && txt(a)) (reply[a.inReplyTo] = reply[a.inReplyTo] || []).push(a);
+    });
+    list.forEach(function (a) {
+      if (a.inReplyTo || !a.rect || /^(Popup|Link|Widget|FreeText)$/.test(a.subtype || '')) return;
+      if (!txt(a) && !reply[a.id]) return;
+      items.push(a);
+    });
+    if (!items.length) return;
+    var s = pv.sizes[pi - 1], vp = pg.getViewport({ scale: 1 });
+    var lay = document.createElement('div'); lay.className = 'pv-cm';
+    lay.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none';
+    var pct = function (v, w) { return (v / w * 100) + '%'; };
+    var when = function (a) {
+      try { var dt = a.modificationDate && window.pdfjsLib.PDFDateString.toDateObject(a.modificationDate); return dt ? dt.getFullYear() + '/' + (dt.getMonth() + 1) + '/' + dt.getDate() : ''; } catch (e) { return ''; }
+    };
+    var one = function (a) {
+      var who = String((a.titleObj && a.titleObj.str) || '').trim();
+      return '<div style="margin-bottom:6px"><div style="font-size:11px;color:#6a5a20;margin-bottom:2px">' + _escHtml(who || '（名前なし）') + (when(a) ? '　' + when(a) : '') + '</div>' +
+        '<div style="white-space:pre-wrap;word-break:break-word">' + _escHtml(txt(a)) + '</div></div>';
+    };
+    items.forEach(function (a) {
+      var r = vp.convertToViewportRectangle(a.rect);
+      var x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]), y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
+      var isNote = a.subtype === 'Text';
+      var hs = document.createElement('div'); hs.className = 'pv-cm-hs';
+      if (isNote) {
+        /* 付箋：印の 所を 押せるように（絵が 無い 付箋は ここで 印を 出す） */
+        hs.style.cssText = 'position:absolute;left:' + pct(x0, s.w) + ';top:' + pct(y0, s.h) + ';width:' + pct(Math.max(x1 - x0, 16), s.w) + ';height:' + pct(Math.max(y1 - y0, 16), s.h) + ';cursor:pointer;pointer-events:auto' +
+          (a.hasAppearance ? '' : ';background:#ffd400;border:1px solid #8a7000;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:12px');
+        if (!a.hasAppearance) hs.textContent = '💬';
+      } else {
+        hs.style.cssText = 'position:absolute;left:calc(' + pct(x1, s.w) + ' - 9px);top:calc(' + pct(y0, s.h) + ' - 9px);width:18px;height:18px;border-radius:50%;background:#ffd400;border:1px solid #8a7000;' +
+          'box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1';
+        hs.textContent = '💬';
+      }
+      var body = one(a) + (reply[a.id] || []).map(one).join('');
+      hs.title = (txt(a) || '').slice(0, 200);
+      hs.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var b = lay.querySelector('.pv-cm-b[data-id="' + a.id + '"]');
+        if (b) { b.remove(); return; }
+        b = document.createElement('div'); b.className = 'pv-cm-b'; b.setAttribute('data-id', a.id);
+        var left = x1 / s.w > 0.6 ? 'right:' + pct(s.w - x0, s.w) : 'left:' + pct(x1, s.w);
+        b.style.cssText = 'position:absolute;' + left + ';top:' + pct(y0, s.h) + ';z-index:6;pointer-events:auto;cursor:default;margin:4px;' +
+          'width:240px;max-width:60vw;max-height:50vh;overflow:auto;background:#fff8c8;border:1px solid #c9a800;border-radius:6px;box-shadow:0 3px 10px rgba(0,0,0,.35);' +
+          'padding:6px 26px 2px 9px;font-size:13px;line-height:1.5;color:#222;text-align:left';
+        b.innerHTML = body + '<button style="position:absolute;top:3px;right:3px;border:0;background:none;font-size:14px;cursor:pointer;color:#666;padding:2px 5px" title="閉じる">✕</button>';
+        ['pointerdown', 'mousedown'].forEach(function (k) { b.addEventListener(k, function (ev) { ev.stopPropagation(); }); });
+        b.querySelector('button').addEventListener('click', function (ev) { ev.stopPropagation(); b.remove(); });
+        lay.appendChild(b);
+      });
+      ['pointerdown', 'mousedown'].forEach(function (k) { hs.addEventListener(k, function (ev) { ev.stopPropagation(); }); });
+      lay.appendChild(hs);
+    });
+    /* 書き込みの SVG より 下に（書き込み中は SVG が 上で 押せる。吹き出しは 押せる） */
+    var svg = d.querySelector(':scope > .pv-ann');
+    d.insertBefore(lay, svg || null);
+  });
 }
 /* 拡大縮小（Ctrl＋ホイールのときは マウスの所を 中心に） */
 function _pdfViewZoom(z, ev) {
@@ -25461,7 +25542,7 @@ function _pdfOrgAdd(name, path, buf) {
   _PO.srcs.push(src);
   return PDFLib.PDFDocument.load(bytes.slice(), { ignoreEncryption: true }).then(function (doc) {
     src.lib = doc;
-    return window.pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    return window.pdfjsLib.getDocument(_pdfViewSrc(bytes.slice())).promise;
   }).then(function (pdf) {
     var n = pdf.numPages, chain = Promise.resolve();
     for (var i = 1; i <= n; i++) (function (pi) {
@@ -25606,7 +25687,7 @@ function _pdfOrgTrayThumb(x, card) {
   var got = x._buf ? Promise.resolve(x._buf) : _spFetchBytes(p2);
   got.then(function (buf) {
     x._buf = buf;
-    return window.pdfjsLib.getDocument({ data: new Uint8Array(buf).slice() }).promise;
+    return window.pdfjsLib.getDocument(_pdfViewSrc(new Uint8Array(buf).slice())).promise;
   }).then(function (pdf) { return pdf.getPage(1); }).then(function (pg) {
     var vp0 = pg.getViewport({ scale: 1 }), vp = pg.getViewport({ scale: 600 / vp0.width });
     var cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);

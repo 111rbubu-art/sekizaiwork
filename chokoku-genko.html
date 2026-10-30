@@ -2786,7 +2786,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v54.9";
+var APP_VER = "v55.0";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -14331,7 +14331,8 @@ function rubLineUnits(){
     byY.forEach(function(c){
       var best = null, bd = 1e9;
       byY.forEach(function(p){
-        if (p === c || !p.key || !(p.y0 < c.y0) || c.y0 < p.y1 - p.h * 0.5) return;
+        /* 上の列より 1 字半 以上 下で 始まる 列（v55.0：戒名の 列が 下の 片方まで 続いていても 拾う） */
+        if (p === c || !p.key || c.y0 < p.y0 + Math.max(p.h, c.h) * 1.5) return;
         var sp = (p.xb - p.xa) * 0.35;
         if (c.cx < p.xa - sp || c.cx > p.xb + sp) return;
         var d = Math.abs(c.cx - p.cx);
@@ -29485,7 +29486,7 @@ function rceUnitNm(lis){
   var lb = "";
   try { var its = (L.items || []).filter(function(it){ return it && it.px; });
         if (its.length) lb = rubColLabelAt(its[0].px.x + its[0].px.w / 2, false); } catch(e){}
-  return (lb ? lb + " 列" : (lis[0] + 1) + " 列目") + (lis.length > 1 ? "（上＋下 " + (lis.length - 1) + " 列を まとめて）" : "");
+  return (lb ? lb + " 列" : (lis[0] + 1) + " 列目") + (lis.length > 1 ? "（戒名と 下の列を まとめて）" : "");
 }
 function rceOpen(ci, tab){
   var L = (S.rub.lines || [])[ci]; if (!L) return;
@@ -29589,8 +29590,8 @@ async function rceInkDraw(){
   });
 }
 /* まとまりの 墨（列ごとの AI の墨を 1 枚に重ねる。v54.9） */
-async function rceInkShot(){
-  var lis = RCE.lis || [RCE.ci], sh = RCE.sh;
+async function rceInkShot(lis0, sh0){
+  var lis = lis0 || RCE.lis || [RCE.ci], sh = sh0 || RCE.sh;
   if (lis.length === 1) return rubLineInkShot((S.rub.lines || [])[lis[0]], sh);
   var out = null, seen = [];
   for (var k = 0; k < lis.length; k++){
@@ -29749,7 +29750,7 @@ function rceBxDraw(){
   w.innerHTML = '<div id="rceBxIn" style="width:' + W + 'px;height:' + H + 'px">' +
     '<img src="' + RCE.im.src + '" width="' + W + '" height="' + H + '" alt="拓本">' +
     RCE.boxes.map(function(b, i){
-      var rk9 = (RCE.lis || []).indexOf(b.li);       /* まとまりの 下の列は 色を変える（v54.9。上＝赤・下の右＝青・下の左＝むらさき） */
+      var rk9 = num(b.vc, 0);                         /* まとまりの 下の列は 色を変える（v54.9。上＝赤・下の右＝青・下の左＝むらさき。v55.0 から 見た目の 列で） */
       return '<div class="bb' + (rk9 > 0 ? " r" + Math.min(2, rk9) : "") + (i === RCE.sel ? " on" : "") + '" data-i="' + i + '" style="left:' + (b.x * k) + 'px;top:' + (b.y * k) +
         'px;width:' + (b.w * k) + 'px;height:' + (b.h * k) + 'px"><span class="lb">' + (i + 1) + (b.ch ? " " + esc(b.ch) : "") + '</span>' +
         ["nw","ne","sw","se","n","s","w","e"].map(function(h){ return '<i class="' + h + '" data-h="' + h + '"></i>'; }).join("") + '</div>';
@@ -29759,11 +29760,42 @@ function rceBxDraw(){
 function rceBxPush(){ RCE.undo.push(JSON.stringify(RCE.boxes)); if (RCE.undo.length > 40) RCE.undo.shift(); }
 function rceBxSort(keep){
   var sel = (keep >= 0) ? RCE.boxes[keep] : null;
-  /* まとまりのときは 列の順（上 → 下の右 → 下の左）、列の中は 上から（v54.9） */
-  var lis = RCE.lis || [];
-  var rk = function(b){ var k = lis.indexOf(b.li); return k < 0 ? 0 : k; };
-  RCE.boxes.sort(function(a, b){ return (rk(a) - rk(b)) || ((a.y + a.h / 2) - (b.y + b.h / 2)); });
+  RCE.boxes = unitBoxOrder(RCE.boxes, RCE.lis || []);
   RCE.sel = sel ? RCE.boxes.indexOf(sel) : -1;
+}
+/* ───── **まとまりの 枠の 並び**（v55.0。本人「墨を直すで文字の順番がおかしいです。下2行は、右側の行の次に左側の行を表示して」）─────
+   v54.9 は 拓本の 列（li）の 順で 並べていたが、AI の 列は 戒名の 列が 下の 片方まで 続いている ことがあり、
+   そのときは 下の 左が 右より 先に 出ていた。**見た目の 場所で** 並べる：
+   上（下の列が 始まる 高さより 上）を 上から → 下を 右の 列から（字の まん中の 左右で 列に 分ける）、列の 中は 上から。
+   b.vc に 見た目の 列（0＝上・1＝下の右・2＝下の左…）を 入れる（枠の 色に 使う） */
+function unitBoxOrder(boxes, lis){
+  var cy = function(b){ return b.y + b.h / 2; }, cx = function(b){ return b.x + b.w / 2; };
+  var med = function(a){ a = a.slice().sort(function(p, q){ return p - q; }); return a.length ? a[a.length >> 1] : 0; };
+  if (!lis || lis.length < 2){
+    boxes.forEach(function(b){ b.vc = 0; });
+    return boxes.slice().sort(function(a, b){ return cy(a) - cy(b); });
+  }
+  var oth = boxes.filter(function(b){ return b.li !== lis[0]; });
+  var yL = oth.length ? Math.min.apply(null, oth.map(function(b){ return b.y; })) : 1e18;
+  var mh = med(boxes.map(function(b){ return b.h; }));
+  var top = [], low = [];
+  boxes.forEach(function(b){ (cy(b) >= yL + mh * 0.25 || b.y >= yL - mh * 0.25 ? low : top).push(b); });
+  top.sort(function(a, b){ return cy(a) - cy(b); });
+  top.forEach(function(b){ b.vc = 0; });
+  var mw = med(low.map(function(b){ return b.w; })) || 1;
+  low.sort(function(a, b){ return cx(b) - cx(a); });
+  var cols = [];
+  low.forEach(function(b){
+    var c = cols[cols.length - 1];
+    if (c && c.x - cx(b) <= mw * 0.6){ c.bs.push(b); c.x = cx(b); }
+    else cols.push({ x: cx(b), bs: [b] });
+  });
+  var out = top.slice();
+  cols.forEach(function(c, k){
+    c.bs.sort(function(a, b){ return cy(a) - cy(b); });
+    c.bs.forEach(function(b){ b.vc = k + 1; out.push(b); });
+  });
+  return out;
 }
 /* 枠が どの列のものか（足した枠・動かした枠）。まん中が その列の ほかの枠の 囲みに いちばん近い列（v54.9） */
 function rceBxLiFor(nb){
@@ -30079,18 +30111,37 @@ async function rubRegViewNow(){
     return;
   }
   var nReg = 0, nCh = 0, nAll = 0;
-  for (var i = 0; i < ls.length; i++){
-    var L = ls[i];
-    var sh = rubLineShot(L); if (!sh) continue;
-    var ink = await rubLineInkShot(L, sh);
+  /* **まとまり（戒名の列＋下で分かれた列）ごとに 1 枚**（v55.0。本人「学習登録を開くと、列ごとで別れてしまっています」）。
+     札の ボタンは まとまりの 列 ぜんぶに 効く。サーバーへは 列ごとに 送る（rubLineReg）ので、登録ずみ・登録しない は 列を まとめて 見る */
+  var units = rubLineUnits();
+  for (var i = 0; i < units.length; i++){
+    var lis = units[i];
+    var Ls = lis.map(function(li){ return (S.rub.lines || [])[li]; });
+    var sh = rceShot(lis); if (!sh) continue;
+    sh.boxes = unitBoxOrder(sh.boxes, lis);
+    var ink = await rceInkShot(lis, sh);
     /* **登録してある枠と突き合わせる**（v34.0） */
-    var srv = L.regAt ? await rubRegSrvBoxes(L, sh) : null;
+    var srvB = [], srvN = 0;
+    for (var k9 = 0; k9 < Ls.length; k9++){
+      if (!Ls[k9].regAt) continue;
+      var s9 = await rubRegSrvBoxes(Ls[k9], sh);
+      if (s9){ srvN++; srvB = srvB.concat(s9.boxes); }
+    }
+    var srv = srvN ? { boxes: srvB } : null;
     var cmp = srv ? rubRegMatch(sh.boxes, srv.boxes) : null;
     var cv = rubRegDraw(sh.cv, ink, sh.boxes, srv && srv.boxes);
     var read = sh.boxes.filter(function(b){ return b.ch; }).length;
     nCh += read; nAll += sh.boxes.length;
-    if (L.regAt) nReg++;
-    var ci = (S.rub.lines || []).indexOf(L) + 1;
+    /* まとまりの 見かけ：ぜんぶ 送ってあれば 登録ずみ、ぜんぶ 外していれば 登録しない */
+    var regAll = Ls.every(function(L9){ return L9.regAt; }), regSome = Ls.some(function(L9){ return L9.regAt; });
+    var L = { regAt: regAll ? Ls.map(function(L9){ return String(L9.regAt); }).sort().pop() : null,
+              regSkip: Ls.every(function(L9){ return L9.regSkip; }),
+              regPart: Ls.reduce(function(a, L9){ return a + num(L9.regPart, 0); }, 0),
+              boxFix: Ls.some(function(L9){ return L9.boxFix; }),
+              regSig: Ls.every(function(L9){ return L9.regAt && L9.regSig && L9.regSig === rubRegSig(L9); }) ? "ok" : "" };
+    if (regAll) nReg++;
+    var ci = lis[0] + 1, lisS = lis.join(",");
+    var ttl = lis.length > 1 ? rceUnitNm(lis) : ci + " 列目";
     var sub = sh.boxes.length + ' 字（読めた <b style="color:#7ddc9b;">' + read +
       '</b> 字／読めない ' + (sh.boxes.length - read) + ' 字）<br>読み：' +
       esc(sh.boxes.map(function(b){ return b.ch || "\u25a1"; }).join("")) + '<br>' +
@@ -30099,13 +30150,14 @@ async function rubRegViewNow(){
       sh.cv.width + '×' + sh.cv.height + 'px' +
       (L.regAt ? '<br><b style="color:#7ddc9b;">登録ずみ ' +
         esc(String(L.regAt).slice(0, 16).replace("T", " ")) + '</b>'
+       : regSome ? '<br><span style="color:#ffd166;">一部の列だけ 登録ずみ</span>'
        : L.regSkip ? '<br><b style="color:#9fb0c3;">登録しません（この列は教材にしません）</b>'
               : '<br><span style="color:#ffb3b3;">まだ登録していません</span>') +
       /* **いまの枠を決めているのは何か**（v34.0。本人の問い
          「枠が登録されたものが反映したのかはどう判断できるの」） */
       (num(L.regPart, 0) ? '<br><span style="color:#7ddc9b;">えらんだ分も ' +
         num(L.regPart, 0) + ' 字 登録しました</span>' : '') +
-      '<br>枠のもと：' + esc(rubRegWhy(L)) +
+      '<br>枠のもと：' + esc(Ls.map(function(L9){ return rubRegWhy(L9); }).filter(function(v, k, a){ return a.indexOf(v) === k; }).join("／")) +
       (cmp
         ? '<br>登録した枠とくらべて：<b style="color:' +
           (cmp.moved + cmp.miss + cmp.extra === 0 ? '#7ddc9b' : '#ffd166') + ';">' +
@@ -30120,9 +30172,9 @@ async function rubRegViewNow(){
         : (L.regAt
             ? '<br><span style="color:#9fb0c3;">登録した枠は読めませんでした（サーバーに つながらないか、古い登録です）</span>'
             : ''));
-    body.appendChild(rubRegCard(cv, ci + " 列目", sub,
-      '<button class="mini primary regOne" data-ci="' + (ci - 1) + '">⬆ ' +
-      (L.regAt ? (L.regSig && L.regSig === rubRegSig(L) ? 'AIサーバー送信済（もう一度送る）' : 'AIサーバーへ上書き') : 'AIサーバーへ送る') + '</button>' +
+    body.appendChild(rubRegCard(cv, ttl, sub,
+      '<button class="mini primary regOne" data-ci="' + lisS + '">⬆ ' +
+      (L.regAt ? (L.regSig ? 'AIサーバー送信済（もう一度送る）' : 'AIサーバーへ上書き') : 'AIサーバーへ送る') + '</button>' +
       /* 読み・枠の直しは 拓本AI の画面［✎ 読み・枠］と同じ形の画面で（v43.7。本人「同じUIにすればいいだけ、つながなくていい」） */
       '<button class="mini regRce" data-ci="' + (ci - 1) + '" data-tab="ch" title="この列の読みを 1 字ずつ入れます">✏ 読みを直す</button>' +
       '<button class="mini regRce" data-ci="' + (ci - 1) + '" data-tab="bx" title="この列の枠を 動かす・大きさを変える・割る・つなぐ・足す・消す">✎ 枠を直す</button>' +
@@ -30130,18 +30182,19 @@ async function rubRegViewNow(){
          「登録しない場合は ボタンを押さなければいいのでしょうが 分かりづらいので、
            登録しないボタンをつけて」）。
          印を付けた列は［ぜんぶの列の字枠を登録］でも飛ばす。 */
-      '<button class="mini regSkip" data-ci="' + (ci - 1) + '" data-on="' +
+      '<button class="mini regSkip" data-ci="' + lisS + '" data-on="' +
       (L.regSkip ? '0' : '1') + '" title="' +
       (L.regSkip ? 'やっぱり教材にします' : 'この列は教材にしません（ぜんぶ登録でも飛ばします）') +
       '">' + (L.regSkip ? '↩ やっぱり登録する' : '🚫 登録しない') + '</button>' +
-      (L.regAt ? '<button class="mini regDel" data-key="' + esc(rubLineKey(L)) +
-        '" data-ci="' + (ci - 1) + '" ' +
+      (regSome ? '<button class="mini regDel" data-key="' + esc(Ls.filter(function(L9){ return L9.regAt; }).map(function(L9){ return rubLineKey(L9); }).join("\n")) +
+        '" data-ci="' + lisS + '" ' +
         'title="サーバーからこの列の登録を消します">🗑 登録を消す</button>' : '')));
   }
-  var nSkip = ls.filter(function(L9){ return L9.regSkip; }).length;
-  info.innerHTML = ls.length + ' 列／' + nAll + ' 字（読めた ' + nCh + ' 字）。登録ずみ <b>' +
-    nReg + ' / ' + ls.length + ' 列</b>' +
-    (nSkip ? '（登録しない <b>' + nSkip + ' 列</b>）' : '') + '。<b>この絵が そのまま教材になります</b>' +
+  var nSkip = units.filter(function(u){ return u.every(function(li){ return (S.rub.lines || [])[li].regSkip; }); }).length;
+  info.innerHTML = units.length + ' まとまり（' + ls.length + ' 列）／' + nAll + ' 字（読めた ' + nCh + ' 字）。登録ずみ <b>' +
+    nReg + ' / ' + units.length + '</b>' +
+    (nSkip ? '（登録しない <b>' + nSkip + '</b>）' : '') +
+    '。戒名と 下で分かれた列（命日・俗名）は 1 つに まとめて 出しています（サーバーへは 列ごとに 送ります）' + '。<b>この絵が そのまま教材になります</b>' +
     '（切り抜き・墨・枠・読み）。<br>' +
     '<b style="color:#ffd166;">枠は まだ AI が描いていません</b>' +
     '（いまは「AI の墨 → 覚えた 1 字の大きさ → 手本帳」で切っています）。' +
@@ -30152,12 +30205,14 @@ async function rubRegViewNow(){
     b.onclick = function(){ rubRegEdit(+b.dataset.ci); };
   });
   Array.prototype.forEach.call(body.querySelectorAll(".regRce"), function(b){
-    b.onclick = function(){ rceOpen(+b.dataset.ci, b.dataset.tab); };
+    b.onclick = function(){ rceOpen(+String(b.dataset.ci).split(",")[0], b.dataset.tab); };
   });
   Array.prototype.forEach.call(body.querySelectorAll(".regSkip"), function(b){
     b.onclick = function(){
-      var L9 = (S.rub.lines || [])[+b.dataset.ci]; if (!L9) return;
-      if (b.dataset.on === '1') L9.regSkip = 1; else delete L9.regSkip;
+      String(b.dataset.ci).split(",").forEach(function(c9){
+        var L9 = (S.rub.lines || [])[+c9]; if (!L9) return;
+        if (b.dataset.on === '1') L9.regSkip = 1; else delete L9.regSkip;
+      });
       persist();
       rubRegViewNow();
     };
@@ -30168,9 +30223,13 @@ async function rubRegViewNow(){
                    b.dataset.key)) return;
       b.disabled = true;
       try {
-        await rubRegSrvDel(b.dataset.key);
-        var L9 = (S.rub.lines || [])[+b.dataset.ci];
-        if (L9){ delete L9.regAt; delete L9.regPart; persist(); }
+        var ks9 = String(b.dataset.key).split("\n");
+        for (var q9 = 0; q9 < ks9.length; q9++) if (ks9[q9]) await rubRegSrvDel(ks9[q9]);
+        String(b.dataset.ci).split(",").forEach(function(c9){
+          var L9 = (S.rub.lines || [])[+c9];
+          if (L9){ delete L9.regAt; delete L9.regPart; }
+        });
+        persist();
         msg("登録を消しました。直してから もう一度 登録できます。");
       } catch(e){ msg("消せませんでした（" + ((e && e.message) || "") + "）。", true); }
       rubRegViewNow();
@@ -30178,14 +30237,20 @@ async function rubRegViewNow(){
   });
   Array.prototype.forEach.call(body.querySelectorAll(".regOne"), function(b){
     b.onclick = async function(){
-      var L = (S.rub.lines || [])[+b.dataset.ci];
+      var cs9 = String(b.dataset.ci).split(",").map(Number);
       b.disabled = true; b.textContent = "登録しています…";
+      var n9 = 0, rp9 = false;
       try {
-        var j = await rubLineReg(L);
-        L.regAt = new Date().toISOString(); persist();
-        msg("この列の字枠を拓本AI に登録しました" +
-            (j && j.replaced ? "（前の分に上書き）" : "") + "。", false);
-      } catch(e){ msg("登録できませんでした（" + ((e && e.message) || "") + "）。", true); }
+        for (var q9 = 0; q9 < cs9.length; q9++){
+          var L = (S.rub.lines || [])[cs9[q9]]; if (!L) continue;
+          var j = await rubLineReg(L); n9++;
+          if (j && j.replaced) rp9 = true;
+          L.regAt = new Date().toISOString();
+        }
+        persist();
+        msg((cs9.length > 1 ? "このまとまり（" + n9 + " 列）" : "この列") + "の字枠を拓本AI に登録しました" +
+            (rp9 ? "（前の分に上書き）" : "") + "。", false);
+      } catch(e){ msg("登録できませんでした（" + ((e && e.message) || "") + "）" + (n9 ? "。" + n9 + " 列は 登録できています" : "") + "。", true); }
       rubRegViewNow();
     };
   });

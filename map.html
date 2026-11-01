@@ -1385,7 +1385,13 @@ function _plotMemoLoad(){
   var pm = window._vpPlotMemo;
   if (!pm) return;
   var token = getSPToken(true) || getSPToken(false) || getSPToken();
-  if (!token) { _vpAttachMsg('<span style="color:#c00">（ログイン後に表示されます）</span>'); return; }
+  /* 取っておいた トークンが 無い・［読み直す］のときは MSAL から 取り直す（v1.9.563） */
+  var tp = (token && !window._vpAttachForce) ? Promise.resolve(token) : _vpFreshSPToken();
+  tp.catch(function(){ _vpAttachMsg(_vpLoginNeededHtml()); return null; }).then(function(t){
+    if (t) _plotMemoLoadWith(pm, t);
+  });
+}
+function _plotMemoLoadWith(pm, token){
   _plotMemoFind(pm.templeId, pm.plotName, token).then(function(item){
     if (!window._vpPlotMemo || window._vpPlotMemo.plotName !== pm.plotName) return;   // 別の区画に移っていたら何もしない
     window._vpPlotMemo.item = item;
@@ -1671,31 +1677,18 @@ function loadPlotAttachments(f){
   el.innerHTML = '<span style="color:#888">📎 写真・書類を読み込み中...</span>';
 
   // まずlocalStorageから取得を試み、失敗したらMSAL非同期で取得
-  var tokenSync = getSPToken(true);
+  var tokenSync = window._vpAttachForce ? null : getSPToken(true);   /* ［読み直す］は 取り直す */
   if(tokenSync){
     _doLoadPlotAttachments(spId, tokenSync, el);
     return;
   }
   // 初回ロード等でlocalStorageにまだトークンがない場合はMSAL経由で取得
-  if(typeof msalApp === 'undefined'){ el.innerHTML = '<span style="color:#c00">（ログイン後に表示されます）</span>'; return; }
-  var acct = msalApp.getAllAccounts()[0];
-  if(!acct){ el.innerHTML = '<span style="color:#c00">（ログイン後に表示されます）</span>'; return; }
+  // （この画面に msalApp は無い。地図の MSAL＝initMapMsal を使う。v1.9.563）
   el.innerHTML = '<span style="color:#888">🔑 ログイン情報を確認中...</span>';
-  msalApp.acquireTokenSilent({
-    scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-    account: acct
-  }).then(function(resp){
-    _doLoadPlotAttachments(spId, resp.accessToken, el);
-  }).catch(function(e){
-    // サイレント取得失敗時はポップアップで再認証
-    msalApp.acquireTokenPopup({
-      scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'],
-      account: acct
-    }).then(function(resp){
-      _doLoadPlotAttachments(spId, resp.accessToken, el);
-    }).catch(function(e2){
-      _vpAttachMsg('<span style="color:#c00">ログインに失敗しました：' + e2.message + '</span>' + _vpReloadBtn());
-    });
+  _vpFreshSPToken().then(function(token){
+    _doLoadPlotAttachments(spId, token, el, true);
+  }).catch(function(){
+    _vpAttachMsg(_vpLoginNeededHtml());
   });
 }
 
@@ -1717,17 +1710,56 @@ function vpReloadAttachments(){
 // 期限切れなどでうまくいかなかったとき、トークンを取り直してもう一度だけ試す
 function _vpRetryAttachmentsWithFreshToken(spId){
   _vpAttachMsg('<span style="color:#888">🔑 ログイン情報を取り直しています...</span>');
-  if (typeof msalApp === 'undefined') { _vpAttachMsg('<span style="color:#c00">ログインし直してください</span>' + _vpReloadBtn()); return; }
-  var acct = msalApp.getAllAccounts()[0];
-  if (!acct) { _vpAttachMsg('<span style="color:#c00">ログインし直してください</span>' + _vpReloadBtn()); return; }
-  var scopes = { scopes: ['https://shojisekizai.sharepoint.com/AllSites.Read'], account: acct };
-  msalApp.acquireTokenSilent(scopes)
-    .then(function(resp){ _doLoadPlotAttachments(spId, resp.accessToken, null, true); })
-    .catch(function(){
-      msalApp.acquireTokenPopup(scopes)
-        .then(function(resp){ _doLoadPlotAttachments(spId, resp.accessToken, null, true); })
-        .catch(function(e){ _vpAttachMsg('<span style="color:#c00">ログインに失敗しました：' + e.message + '</span>' + _vpReloadBtn()); });
-    });
+  _vpFreshSPToken().then(function(token){
+    _doLoadPlotAttachments(spId, token, null, true);
+  }).catch(function(){
+    _vpAttachMsg(_vpLoginNeededHtml());
+  });
+}
+/* SharePoint 用の トークンを MSAL から 取り直す（画面は 出さない）。
+   v1.9.562 までは ここで この画面に 無い msalApp を 見ていたため、
+   トークンが 切れると いつも「ログインし直してください」になり［読み直す］でも 直らなかった。 */
+var _VP_SP_SCOPES = ['https://shojisekizai.sharepoint.com/AllSites.Read'];
+function _vpFreshSPToken(){
+  return initMapMsal().then(function(app){
+    var acct = app.getActiveAccount() || app.getAllAccounts()[0];
+    if (!acct) throw new Error('未ログイン');
+    return app.acquireTokenSilent({ scopes: _VP_SP_SCOPES, account: acct, forceRefresh: true });
+  }).then(function(r){ return r.accessToken; });
+}
+/* 画面を 出さずに 取れなかったときの 表示。［🔑 ログインする］は 押した その場で ログインの 窓を 開く */
+function _vpLoginNeededHtml(){
+  return '<span style="color:#c00">ログインし直してください</span>' +
+    '<button onclick="vpLoginAndReload()" style="margin-left:8px;font-size:11px;font-weight:600;padding:2px 10px;' +
+    'background:#2a4a7a;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">🔑 ログインする</button>' +
+    _vpReloadBtn();
+}
+function vpLoginAndReload(){
+  function after(){
+    window._vpCachedItems = null; window._vpCachedGroupId = null;
+    var btn = document.getElementById('relogin-btn'); if (btn) btn.style.display = 'none';
+    vpReloadAttachments();
+  }
+  function fail(e){
+    _vpAttachMsg('<span style="color:#c00">ログインに失敗しました：' + ((e && e.message) || e) + '</span>' + _vpReloadBtn());
+  }
+  function go(app){
+    var acct = app.getActiveAccount() || app.getAllAccounts()[0];
+    var req = { scopes: _MAP_SCOPES };
+    if (acct) req.account = acct;
+    /* ポップアップが 止められたら、この ページごと ログインへ 行って 戻る */
+    var p = acct ? app.acquireTokenPopup(req) : app.loginPopup(req);
+    return p.then(function(r){ if (r && r.account) app.setActiveAccount(r.account); after(); })
+      .catch(function(e){
+        var code = (e && (e.errorCode || e.message)) || '';
+        if (/popup|block|window/i.test(code)) return acct ? app.acquireTokenRedirect(req) : app.loginRedirect(req);
+        fail(e);
+      });
+  }
+  _vpAttachMsg('<span style="color:#888">🔑 ログインの 画面を 開いています...</span>');
+  /* 初期化 済みなら 待たずに 開く（押した 直後で ないと ポップアップが 止められる） */
+  if (_mapMsalApp && _mapMsalReady) { go(_mapMsalApp); return; }
+  initMapMsal().then(go).catch(fail);
 }
 
 
@@ -3539,6 +3571,7 @@ function getMapGraphToken() {
 
 // ===== map.html内MSAL（トークン更新用）=====
 var _mapMsalApp = null;
+var _mapMsalReady = false;
 var _MAP_CLIENT_ID = 'f6d7ca4a-f786-4a91-bdb0-6d8e576e6aea';
 var _MAP_TENANT_ID = 'c78b3598-1933-4363-91f1-744a380bd9c9';
 var _MAP_SCOPES    = ['User.Read','Sites.Read.All','Files.ReadWrite.All',
@@ -3560,7 +3593,9 @@ function initMapMsal() {
     // リダイレクト認証後の結果処理（必須）
     return _mapMsalApp.handleRedirectPromise();
   }).then(function(response){
+    _mapMsalReady = true;
     if (response) {
+      if (response.account) _mapMsalApp.setActiveAccount(response.account);
       // リダイレクトから戻った場合：キャッシュクリアして再取得
       window._vpCachedItems = null;
       window._vpCachedGroupId = null;

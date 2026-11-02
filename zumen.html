@@ -121,6 +121,9 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
       <div class="row"><label>mm の 小数</label><select id="sMmDec"><option value="0">なし（1mm）</option><option value="1">1 けた（0.1mm）</option></select></div>
       <div class="row"><label>尺寸の 細かさ</label><select id="sShaku"><option value="bu">分まで</option><option value="rin">厘まで</option></select></div>
       <div class="row"><label>文字の 高さ</label><input type="text" id="sTh" class="w" placeholder="自動"> <span class="muted">mm（図面の 上の 大きさ）</span></div>
+      <div class="row"><label>矢印の 長さ</label><input type="text" id="sArrow" class="w" placeholder="自動"> <span class="muted">mm（空＝文字の 高さ と 同じ）</span></div>
+      <div class="row"><label>矢印の 形</label><select id="sArrowType"><option value="open">開いた 矢印（∨）</option><option value="fill">塗った 矢印（▲）</option></select></div>
+      <div class="row"><button class="b2" id="bDimReset" title="1 本ずつ 変えた 文字・矢印の 大きさを 消して、ここの 大きさに そろえる">寸法を 全部 この 大きさに そろえる</button></div>
       <div class="muted">1尺＝303.03mm（10/33m）。入力は「450」「1尺4寸8分」「1.5尺」「4寸」などで 打てます。</div>
     </div></div>
     <div class="pn"><h3>図面の 情報 <small>印刷の 表題欄に 出ます</small></h3><div class="bd">
@@ -181,16 +184,18 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
   <div class="row" style="justify-content:flex-end"><span class="muted" id="bTotal" style="flex:1"></span><button class="b2" id="bBuhinCancel">閉じる</button><button class="b2" id="bBuhinPng">PNG で 保存</button><button class="b2 pr" id="bBuhinPrint">印刷・PDF</button></div>
 </div></div>
 
+<div id="ctx" style="position:fixed;display:none;z-index:60;background:#fff;border:1px solid #9fb2c8;border-radius:5px;box-shadow:0 4px 18px rgba(0,0,0,.25);padding:4px 0;min-width:190px;font-size:13px"></div>
+
 <div id="printArea"></div>
 
 <script>
-var APP_VER = "v0.3.2";
+var APP_VER = "v0.3.3";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
 
 // ───────── 設定 ─────────
-var S = { fmt:'both', mmDec:0, shakuPrec:'bu', th:0, ortho:false, snap:true, dimMode:'auto',
+var S = { fmt:'both', mmDec:0, shakuPrec:'bu', th:0, arrow:0, arrowType:'open', ortho:false, snap:true, dimMode:'auto',
           gapMax:10, gapStd:'', gapTouch:false, stoneAx:'c', stoneAy:'b', stoneMove:true };
 try { var _s = JSON.parse(localStorage.getItem('zumen.settings') || 'null'); if (_s) for (var k in _s) if (k in S) S[k] = _s[k]; } catch (e) {}
 function saveSettings(){ try { localStorage.setItem('zumen.settings', JSON.stringify(S)); } catch (e) {} }
@@ -850,14 +855,14 @@ function autoTh(){
 var THC = { v:-1, th:10 };
 function textH(){ if (THC.v !== VER) { THC.v = VER; THC.th = autoTh(); } return THC.th; }
 function dimGeom(d){
-  var th = textH(), a = d.a, b = d.b, o = d.off, u;
+  var th = d.th > 0 ? d.th : textH(), a = d.a, b = d.b, o = d.off, u;
   if (d.mode === 'h') u = P(1, 0); else if (d.mode === 'v') u = P(0, 1);
   else { var L = dist(a, b); u = L > 1e-9 ? P((b.x - a.x) / L, (b.y - a.y) / L) : P(1, 0); }
   var n = P(-u.y, u.x);
   var da = dot(sub(o, a), n), db = dot(sub(o, b), n);
   var A2 = addp(a, mulp(n, da)), B2 = addp(b, mulp(n, db));
   var val = Math.abs(dot(sub(b, a), u));
-  var gap = th * 0.4, over = th * 0.6, al = th * 0.9;
+  var gap = th * 0.4, over = th * 0.6, al = d.al > 0 ? d.al : S.arrow > 0 ? S.arrow : th;
   var lines = [], arrows = [];
   var sa = da >= 0 ? 1 : -1, sb = db >= 0 ? 1 : -1;
   if (Math.abs(da) > gap) lines.push([addp(a, mulp(n, sa * gap)), addp(A2, mulp(n, sa * over))]);
@@ -915,10 +920,14 @@ function drawDim(c, v, d, color, lw){
   var g = dimGeom(d);
   c.strokeStyle = color; c.fillStyle = color; c.lineWidth = lw;
   c.beginPath(); g.lines.forEach(function(l){ var a = W2S(v, l[0]), b = W2S(v, l[1]); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }); c.stroke();
-  g.arrows.forEach(function(ar){ arrowTri(ar, g.al).forEach(function(p, i){ var q = W2S(v, p); if (!i) { c.beginPath(); c.moveTo(q[0], q[1]); } else c.lineTo(q[0], q[1]); }); c.closePath(); c.fill(); });
+  g.arrows.forEach(function(ar){
+    var t = arrowTri(ar, g.al).map(function(p){ return W2S(v, p); });
+    if (S.arrowType === 'fill') { c.beginPath(); c.moveTo(t[0][0], t[0][1]); c.lineTo(t[1][0], t[1][1]); c.lineTo(t[2][0], t[2][1]); c.closePath(); c.fill(); }
+    else { c.beginPath(); c.moveTo(t[1][0], t[1][1]); c.lineTo(t[0][0], t[0][1]); c.lineTo(t[2][0], t[2][1]); c.stroke(); } // 開いた 矢印（∨）
+  });
   drawText(c, v, g.text, color);
 }
-function arrowTri(ar, al){ var n = P(-ar.d.y, ar.d.x), base = addp(ar.p, mulp(ar.d, -al)); return [ar.p, addp(base, mulp(n, al * 0.2)), addp(base, mulp(n, -al * 0.2))]; }
+function arrowTri(ar, al){ var n = P(-ar.d.y, ar.d.x), base = addp(ar.p, mulp(ar.d, -al)), w = S.arrowType === 'fill' ? 0.2 : 0.25; return [ar.p, addp(base, mulp(n, al * w)), addp(base, mulp(n, -al * w))]; }
 function drawAll(c, v, o){
   o = o || {};
   var lw = o.lw || 1;
@@ -1407,12 +1416,18 @@ function panel(){
       h += '<div class="row"><label>表記</label><select id="dFmt"><option value="">全体と 同じ</option><option value="mm">mm</option><option value="shaku">尺・寸・分</option><option value="sun">寸（小数）</option><option value="both">mm（尺寸）</option></select></div>';
       h += '<div class="row"><label>文字</label><input type="text" id="dTxt" class="ww" placeholder="空＝測った 値（&lt;&gt; で 値を 入れる）" value="' + esc(d.text || '') + '"></div>';
       h += '<div class="row"><button class="b2" id="dApply">文字を 決める</button><button class="b2 dg" id="dDel">寸法を 消す</button></div>';
+      h += '<div class="row"><label>文字の 高さ</label><input type="text" id="dTh" class="w" placeholder="全体（' + esc(fmtMm(textH())) + '）" value="' + (d.th > 0 ? esc(fmtMm(d.th)) : '') + '"> mm</div>';
+      h += '<div class="row"><label>矢印の 長さ</label><input type="text" id="dAl" class="w" placeholder="全体（' + esc(fmtMm(S.arrow > 0 ? S.arrow : (d.th > 0 ? d.th : textH()))) + '）" value="' + (d.al > 0 ? esc(fmtMm(d.al)) : '') + '"> mm</div>';
+      h += '<div class="muted">空に すると 全体の 大きさ（下の「寸法の 表記」）に 戻ります</div>';
       h += '<div class="muted">青い □（つまみ）を ドラッグ、または クリック → 行き先を クリックで 点を 動かせます（端点・中点に 吸い付く）。両端の □＝測る 点、まん中の □＝寸法線の 位置。Esc で やめる</div>';
       B.innerHTML = h;
       var sel = document.getElementById('dFmt'); sel.value = d.fmt || '';
       sel.onchange = function(){ pushUndo(); d.fmt = sel.value || null; changed(); };
       document.getElementById('dApply').onclick = function(){ pushUndo(); d.text = document.getElementById('dTxt').value || null; changed(); };
       document.getElementById('dDel').onclick = deleteSel;
+      ['dTh', 'dAl'].forEach(function(id){ var el = document.getElementById(id); el.onchange = function(){
+        var v = el.value.trim() ? parseLen(el.value) : 0; if (v == null || v < 0) { alert('大きさが 読めません'); return; }
+        pushUndo(); d[id === 'dTh' ? 'th' : 'al'] = v || 0; changed(); }; });
       return;
     }
     if (ST.sel.size) {
@@ -1556,10 +1571,11 @@ cv.addEventListener('wheel', function(ev){ ev.preventDefault(); var q = evPos(ev
 cv.addEventListener('pointerdown', function(ev){
   var q = evPos(ev); cv.setPointerCapture(ev.pointerId); ptrs.set(ev.pointerId, q);
   if (ptrs.size === 2) { var a = Array.from(ptrs.values()); drag = { type:'pinch', d:Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]), m:[(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2] }; return; }
+  hideCtx();
   var pan = ev.button === 1 || ev.button === 2 || ST.tool === 'pan';
   var gk = !pan && ST.tool === 'select' ? hitGrip(q[0], q[1]) : null;
   if (gk) { drag = { type:'grip', k:gk, sx:q[0], sy:q[1], moved:false, w:S2W(q[0], q[1]) }; return; }
-  drag = { type:pan ? 'pan' : 'maybe', sx:q[0], sy:q[1], lx:q[0], ly:q[1], moved:false, touch:ev.pointerType !== 'mouse', w:S2W(q[0], q[1]) };
+  drag = { type:pan ? 'pan' : 'maybe', right:ev.button === 2, sx:q[0], sy:q[1], lx:q[0], ly:q[1], moved:false, touch:ev.pointerType !== 'mouse', w:S2W(q[0], q[1]) };
   if (pan) cv.style.cursor = 'grabbing';
 });
 cv.addEventListener('pointermove', function(ev){
@@ -1605,6 +1621,7 @@ function endPtr(ev){
   var dg = drag; drag = null;
   cv.style.cursor = ST.tool === 'pan' ? 'grab' : 'crosshair';
   if (ev.type === 'pointercancel') { ST.win = null; redraw(); return; }
+  if (dg.right && !dg.moved) { showCtx(ev.clientX, ev.clientY); return; } // 右クリック（動かさない）＝メニュー
   if (dg.type === 'grip') {
     if (dg.moved) { ST.snap = null; changed(); }
     else { ST.hotGrip = ST.hotGrip === dg.k ? null : dg.k; setMsg(ST.hotGrip ? '行き先を クリック（Esc で やめる）' : ''); redraw(); }
@@ -1631,6 +1648,29 @@ function endPtr(ev){
     ST.win = null; panel(); redraw();
   } else if (dg.type === 'dimmove') { changed(); }
 }
+// ── 右クリックの メニュー ──
+function cancelOp(){ ST.pts = []; ST.meas = null; ST.win = null; ST.hotGrip = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; setMsg(''); panel(); redraw(); }
+function hideCtx(){ var m = document.getElementById('ctx'); if (m) m.style.display = 'none'; }
+function showCtx(x, y){
+  var busy = ST.pts.length || ST.hotGrip || (ST.sw && ST.sw.phase !== 'win1');
+  var it = [];
+  if (busy) it.push(['✕ やめる（Esc）', cancelOp], '-');
+  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['stone', '▭ 石の 寸法'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ setTool(t[0]); }, false, ST.tool === t[0]]); });
+  it.push('-', ['⤢ 全体を 見る', fit], ['↶ 元に 戻す', undo, !UNDO.length], ['↷ やり直す', redo, !REDO.length]);
+  if (ST.selDim || ST.sel.size) it.push('-', ['🗑 消す（Delete）', deleteSel]);
+  if (selDimObj()) it.push(['寸法の 大きさ・文字…', function(){ document.body.classList.add('sideon'); var el = document.getElementById('dTh'); if (el) { el.focus(); el.select(); } }]);
+  it.push('-', [(S.snap ? '☑' : '☐') + ' スナップ（F3）', function(){ S.snap = !S.snap; saveSettings(); updToggles(); }], [(S.ortho ? '☑' : '☐') + ' 直交（F8）', function(){ S.ortho = !S.ortho; saveSettings(); updToggles(); }]);
+  var m = document.getElementById('ctx');
+  m.innerHTML = it.map(function(o, i){ if (o === '-') return '<div style="border-top:1px solid #e3e8ef;margin:3px 0"></div>';
+    return '<div data-i="' + i + '" style="padding:5px 14px;cursor:' + (o[2] ? 'default;color:#aaa' : 'pointer') + (o[3] ? ';font-weight:bold;background:#eef4ff' : '') + '">' + esc(o[0]) + '</div>'; }).join('');
+  m.querySelectorAll('[data-i]').forEach(function(el){ var o = it[+el.dataset.i];
+    if (!o[2]) { el.onmouseenter = function(){ el.style.background = '#e2ecfa'; }; el.onmouseleave = function(){ el.style.background = o[3] ? '#eef4ff' : ''; };
+      el.onclick = function(){ hideCtx(); o[1](); }; } });
+  m.style.display = 'block';
+  var r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - r.width - 4) + 'px'; m.style.top = Math.min(y, window.innerHeight - r.height - 4) + 'px';
+}
+document.addEventListener('pointerdown', function(e){ var m = document.getElementById('ctx'); if (m && m.style.display === 'block' && !m.contains(e.target)) hideCtx(); }, true);
 function segBox(a, b, bx){
   var c = [P(bx.x0, bx.y0), P(bx.x1, bx.y0), P(bx.x1, bx.y1), P(bx.x0, bx.y1)];
   for (var i = 0; i < 4; i++) if (segXloose(a, b, c[i], c[(i + 1) % 4])) return true;
@@ -1641,6 +1681,7 @@ cv.addEventListener('pointerup', endPtr);
 cv.addEventListener('pointercancel', endPtr);
 document.addEventListener('keydown', function(ev){
   var tg = ev.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT') return;
+  if (ev.key === 'Escape' && document.getElementById('ctx').style.display === 'block') { hideCtx(); return; }
   if (ev.key === 'Escape' && ST.hotGrip) { ST.hotGrip = null; setMsg(''); redraw(); return; }
   if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; ST.sel.clear(); ST.selDim = null; panel(); redraw(); }
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }
@@ -1724,7 +1765,9 @@ function exportDxf(){
   D.dims.forEach(function(d){
     var gm = dimGeom(d), de = { aci:256 };
     gm.lines.forEach(function(l){ g(0, 'LINE'); com(de, '寸法'); g(10, l[0].x); g(20, l[0].y); g(30, 0); g(11, l[1].x); g(21, l[1].y); g(31, 0); });
-    gm.arrows.forEach(function(ar){ var t = arrowTri(ar, gm.al); g(0, 'SOLID'); com(de, '寸法'); g(10, t[0].x); g(20, t[0].y); g(30, 0); g(11, t[1].x); g(21, t[1].y); g(31, 0); g(12, t[2].x); g(22, t[2].y); g(32, 0); g(13, t[2].x); g(23, t[2].y); g(33, 0); });
+    gm.arrows.forEach(function(ar){ var t = arrowTri(ar, gm.al);
+      if (S.arrowType !== 'fill') { [1, 2].forEach(function(i){ g(0, 'LINE'); com(de, '寸法'); g(10, t[i].x); g(20, t[i].y); g(30, 0); g(11, t[0].x); g(21, t[0].y); g(31, 0); }); return; }
+      g(0, 'SOLID'); com(de, '寸法'); g(10, t[0].x); g(20, t[0].y); g(30, 0); g(11, t[1].x); g(21, t[1].y); g(31, 0); g(12, t[2].x); g(22, t[2].y); g(32, 0); g(13, t[2].x); g(23, t[2].y); g(33, 0); });
     var te = gm.text; te.aci = 256; text(te, '寸法');
   });
   g(0, 'ENDSEC'); g(0, 'EOF');
@@ -2264,10 +2307,15 @@ document.getElementById('bReunit').onclick = function(){
   importRaw(+document.getElementById('sUnit').value, true);
 };
 function bindSetting(id, key, num){
-  var el = document.getElementById(id); el.value = key === 'th' ? (S.th || '') : String(S[key]);
-  el.onchange = function(){ var v = el.value; if (key === 'th') { var n = parseLen(v); S.th = n > 0 ? n : 0; el.value = S.th || ''; } else S[key] = num ? +v : v; saveSettings(); VER++; redraw(); panel(); };
+  var el = document.getElementById(id); el.value = key === 'th' || key === 'arrow' ? (S[key] || '') : String(S[key]);
+  el.onchange = function(){ var v = el.value; if (key === 'th' || key === 'arrow') { var n = parseLen(v); S[key] = n > 0 ? n : 0; el.value = S[key] || ''; } else S[key] = num ? +v : v; saveSettings(); VER++; redraw(); panel(); };
 }
-bindSetting('sFmt', 'fmt'); bindSetting('sMmDec', 'mmDec', true); bindSetting('sShaku', 'shakuPrec'); bindSetting('sTh', 'th');
+bindSetting('sFmt', 'fmt'); bindSetting('sMmDec', 'mmDec', true); bindSetting('sShaku', 'shakuPrec'); bindSetting('sTh', 'th'); bindSetting('sArrow', 'arrow'); bindSetting('sArrowType', 'arrowType');
+document.getElementById('bDimReset').onclick = function(){
+  var n = D.dims.filter(function(d){ return d.th > 0 || d.al > 0; }).length;
+  if (!n) { setMsg('1 本ずつ 変えた 寸法は ありません'); return; }
+  pushUndo(); D.dims.forEach(function(d){ d.th = 0; d.al = 0; }); changed(); setMsg(n + ' 本の 寸法を 全体の 大きさに そろえました');
+};
 document.getElementById('sMmDec').value = String(S.mmDec);
 ['name', 'to', 'stone', 'note'].forEach(function(k){
   var el = document.getElementById('i' + k[0].toUpperCase() + k.slice(1));

@@ -136,6 +136,7 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
     <div class="pn"><h3>読んだ ファイル</h3><div class="bd">
       <div class="row"><label>図面の 1 ＝</label><select id="sUnit"><option value="1">1 mm</option><option value="10">1 cm</option><option value="1000">1 m</option><option value="25.4">1 inch</option></select>
         <button class="b2" id="bReunit">読み直す</button></div>
+      <div class="row"><label><input type="checkbox" id="sDimAsDim"> 元の 寸法線を 寸法として 読む（つまみで 直せる・尺寸に できる）</label></div>
       <div class="muted" id="fileInfo">まだ 開いて いません</div>
     </div></div>
   </div>
@@ -189,13 +190,13 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 <div id="printArea"></div>
 
 <script>
-var APP_VER = "v0.3.3";
+var APP_VER = "v0.3.4";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
 
 // ───────── 設定 ─────────
-var S = { fmt:'both', mmDec:0, shakuPrec:'bu', th:0, arrow:0, arrowType:'open', ortho:false, snap:true, dimMode:'auto',
+var S = { fmt:'both', mmDec:0, shakuPrec:'bu', th:0, arrow:0, arrowType:'open', dimAsDim:true, ortho:false, snap:true, dimMode:'auto',
           gapMax:10, gapStd:'', gapTouch:false, stoneAx:'c', stoneAy:'b', stoneMove:true };
 try { var _s = JSON.parse(localStorage.getItem('zumen.settings') || 'null'); if (_s) for (var k in _s) if (k in S) S[k] = _s[k]; } catch (e) {}
 function saveSettings(){ try { localStorage.setItem('zumen.settings', JSON.stringify(S)); } catch (e) {} }
@@ -581,7 +582,7 @@ function emit(re, F, ctx, out, lev){
     var ip = gp(r, 10), sx = gn(r, 41, 1), sy = gn(r, 42, 1), sz = gn(r, 43, 1), ro = gn(r, 50, 0) * PI / 180;
     var nc = Math.max(1, gn(r, 70, 1)), nr = Math.max(1, gn(r, 71, 1)), csp = gn(r, 44, 0), rsp = gn(r, 45, 0);
     var Lr = layerOf(lay);
-    var ctx2 = { layer:lay, css:col.css || Lr.css, aci:col.aci === 256 ? Lr.aci : col.aci, inBlock:true, fromDim:ctx.fromDim, faces:ctx.faces };
+    var ctx2 = { layer:lay, css:col.css || Lr.css, aci:col.aci === 256 ? Lr.aci : col.aci, inBlock:true, fromDim:ctx.fromDim, faces:ctx.faces, dims:ctx.dims };
     var base = mT(-blk.base[0], -blk.base[1], -blk.base[2]), O = mmul(F, mOCS(n));
     for (var ri = 0; ri < nr; ri++) for (var ci = 0; ci < nc; ci++) {
       var M2 = mmul(O, mmul(mT(ip[0], ip[1], ip[2]), mmul(mRz(ro), mmul(mT(ci * csp, ri * rsp, 0), mmul(mS(sx, sy, sz), base)))));
@@ -590,6 +591,7 @@ function emit(re, F, ctx, out, lev){
     (re.attribs || []).forEach(function(a){ emit({ rec:a }, F, ctx, out, lev); });
     break; }
   case 'DIMENSION': {
+    if (ctx.dims && dimFromRec(r, F, lay, ctx)) break; // 直線の 寸法は この アプリの 寸法に
     var db = RAW.blocks[gv(r, 2, '')]; if (!db || lev > 12) break;
     var Ld = layerOf(lay);
     var ctx3 = { layer:lay, css:col.css || Ld.css, aci:col.aci === 256 ? Ld.aci : col.aci, inBlock:true, fromDim:true, faces:ctx.faces };
@@ -611,6 +613,40 @@ function emit(re, F, ctx, out, lev){
   case 'POINT': case 'ATTDEF': case 'SEQEND': case 'VIEWPORT': case 'VERTEX': break;
   default: BUILD.skip[t] = (BUILD.skip[t] || 0) + 1;
   }
+}
+// 元の 寸法（水平・垂直・回転・平行）→ この アプリの 寸法 {a, b, off, mode, ang, text, th, k, layer}
+// 13＝1 つ目の 点、14＝2 つ目の 点、10＝寸法線の 通る 点、50＝回転（度）、70&7＝0 回転／1 平行、1＝文字（<> が 値）、42＝測った 値
+function dimFromRec(r, F, lay, ctx){
+  var ty = gn(r, 70, 0) & 7;
+  if ((ty !== 0 && ty !== 1) || gv(r, 13) === undefined || gv(r, 14) === undefined) return false;
+  var si = simInfo(F); if (!si.ok) return false;
+  var a = p2(F, gp(r, 13)), b = p2(F, gp(r, 14)), o = p2(F, gp(r, 10));
+  if (dist(a, b) < 1e-9) return false;
+  var d = { a:a, b:b, off:o, mode:'a', fmt:null, text:null, layer:lay };
+  if (ty === 0) {
+    // 向き：2 つ目の 点 → 寸法線の 点 は 寸法の 向きと 直角（DWG の 部品は 回転を 0 で 返す ことが ある ので 形から 決める）
+    var ang = gn(r, 50, 0) * PI / 180, uv = mlin(F, [Math.cos(ang), Math.sin(ang), 0]), A = Math.atan2(uv[1], uv[0]), pv = sub(o, b);
+    if (Math.hypot(pv.x, pv.y) > 1e-6) A = Math.atan2(pv.x, -pv.y);
+    var m = ((A % PI) + PI) % PI; // 0〜π
+    if (m < 1e-6 || PI - m < 1e-6) d.mode = 'h'; else if (Math.abs(m - PI / 2) < 1e-6) d.mode = 'v'; else { d.mode = 'r'; d.ang = A; }
+  }
+  var tx = gv(r, 1, ''); tx = tx ? cleanMText(tx) : '';
+  if (tx && tx !== '<>') d.text = tx;
+  // 文字の 高さ：寸法ブロックの 中の 文字から
+  var blk = RAW.blocks[gv(r, 2, '')], th = 0;
+  if (blk) blk.ents.some(function(be){ var br = be.rec;
+    if (br.t === 'TEXT') { th = gn(br, 40, 0); return th > 0; }
+    if (br.t === 'MTEXT') { th = gn(br, 40, 0); var raw = gall(br, 3).join('') + gv(br, 1, ''), hm = /\\H([\d.]+)(x?);/.exec(raw); if (hm) { var hv = parseFloat(hm[1]); th = hm[2] ? th * hv : hv; } return th > 0; }
+    return false; });
+  if (th > 0) d.th = th * si.k;
+  // 元の 図で 出ていた 小数の けた（67.5 → 1）を 覚える
+  if (blk) blk.ents.some(function(be){ var br = be.rec; if (br.t !== 'TEXT' && br.t !== 'MTEXT') return false;
+    var st = cleanMText(gall(br, 3).join('') + gv(br, 1, '')), mm = /(\d+)[.．](\d+)/.exec(st); if (mm) { d.dec = Math.min(3, mm[2].length); return true; } return false; });
+  // 測った 値が 長さと ちがう（尺度つきの 図など）→ 値の 倍率
+  var meas = gn(r, 42, NaN), len = dimGeom(Object.assign({}, d, { th:d.th || 10 })).val, U = BUILD.unit || 1;
+  if (isFinite(meas) && meas > 0 && len > 0 && Math.abs(meas * U - len) > Math.max(0.05, len * 1e-4)) d.k = meas * U / len;
+  ctx.dims.push(d);
+  return true;
 }
 function textOut(Fo, tp, rot, h, wf, s, ha, va, add){
   var q = p2(Fo, tp), dv = mlin(Fo, [Math.cos(rot), Math.sin(rot), 0]), uv = mlin(Fo, [-Math.sin(rot), Math.cos(rot), 0]);
@@ -669,12 +705,12 @@ function facesToLines(faces, out){
   });
 }
 function buildView(viewKey, unit){
-  BUILD = { dmin:Infinity, dmax:-Infinity, skip:{} };
-  var out = [], ctx = { layer:'0', css:null, aci:7, inBlock:false, fromDim:false, faces:[] };
+  BUILD = { dmin:Infinity, dmax:-Infinity, skip:{}, unit:unit };
+  var out = [], ctx = { layer:'0', css:null, aci:7, inBlock:false, fromDim:false, faces:[], dims:viewKey === 'top' && S.dimAsDim ? [] : null };
   var F = mmul(VIEWS[viewKey].m, mS(unit, unit, unit));
   RAW.ents.forEach(function(re){ emit(re, F, ctx, out, 0); });
   facesToLines(ctx.faces, out);
-  return { ents:out, depth:BUILD.dmax - BUILD.dmin, skip:BUILD.skip, faces:ctx.faces.length };
+  return { ents:out, dims:ctx.dims || [], depth:BUILD.dmax - BUILD.dmin, skip:BUILD.skip, faces:ctx.faces.length };
 }
 function setupLayers(){
   D.layers = {};
@@ -709,12 +745,12 @@ function importRaw(unit, ask){
       document.getElementById('m3d').classList.remove('on');
       var keys = ['front', 'right', 'top', 'left', 'back'].filter(function(k){ return document.getElementById('v_' + k).checked; });
       if (!keys.length) keys = ['front'];
-      if (keys.length === 1 && keys[0] === 'top') { finishImport(top.ents, unit, top); return; }
+      if (keys.length === 1 && keys[0] === 'top') { finishImport(top.ents, unit, top, top.dims); return; }
       finishImport(layoutViews(keys, unit), unit, top);
     };
     return;
   }
-  finishImport(top.ents, unit, top);
+  finishImport(top.ents, unit, top, top.dims);
 }
 function bboxOf(list){
   var b = { x0:Infinity, y0:Infinity, x1:-Infinity, y1:-Infinity };
@@ -739,15 +775,15 @@ function layoutViews(keys, unit){
   });
   return all;
 }
-function finishImport(ents, unit, top){
+function finishImport(ents, unit, top, dims){
   ents.forEach(function(e){ e.id = SEQ++; layerOf(e.layer); });
   pushUndo();
-  D.ents = ents; D.dims = [];
+  D.ents = ents; D.dims = (dims || []).map(function(d){ d.id = SEQ++; if (d.layer) layerOf(d.layer); return d; });
   ST.sel.clear(); ST.selDim = null; ST.gaps = null; ST.stone = null; ST.sw = null; ST.meas = null;
   changed(); fit();
   var sk = Object.keys(top.skip).map(function(k){ return k + ' ' + top.skip[k]; }).join('・');
   var cnt = {}; ents.forEach(function(e){ cnt[e.t] = (cnt[e.t] || 0) + 1; });
-  var msg = FILE_NAME + '：線など ' + ents.length + ' 個（' + Object.keys(cnt).map(function(k){ return k + ' ' + cnt[k]; }).join('・') + '）';
+  var msg = FILE_NAME + '：線など ' + ents.length + ' 個' + (D.dims.length ? '・寸法 ' + D.dims.length + ' 本（直せる）' : '') + '（' + Object.keys(cnt).map(function(k){ return k + ' ' + cnt[k]; }).join('・') + '）';
   if (top.faces) msg += '・面 ' + top.faces;
   if (sk) msg += '。読まなかった もの：' + sk + (top.skip['3DSOLID'] ? '（3DSOLID は 読めません。mics で 面（メッシュ）か 2D 図面で 書き出して ください）' : '');
   document.getElementById('fileInfo').textContent = msg;
@@ -856,7 +892,7 @@ var THC = { v:-1, th:10 };
 function textH(){ if (THC.v !== VER) { THC.v = VER; THC.th = autoTh(); } return THC.th; }
 function dimGeom(d){
   var th = d.th > 0 ? d.th : textH(), a = d.a, b = d.b, o = d.off, u;
-  if (d.mode === 'h') u = P(1, 0); else if (d.mode === 'v') u = P(0, 1);
+  if (d.mode === 'h') u = P(1, 0); else if (d.mode === 'v') u = P(0, 1); else if (d.mode === 'r') u = P(Math.cos(d.ang || 0), Math.sin(d.ang || 0));
   else { var L = dist(a, b); u = L > 1e-9 ? P((b.x - a.x) / L, (b.y - a.y) / L) : P(1, 0); }
   var n = P(-u.y, u.x);
   var da = dot(sub(o, a), n), db = dot(sub(o, b), n);
@@ -879,7 +915,7 @@ function dimGeom(d){
   var s = dimText(d, val);
   return { lines:lines, arrows:arrows, al:al, val:val, text:{ t:'text', p:addp(mid, mulp(up, th * 0.35)), h:th, rot:rot, s:s, ha:1, va:0, wf:1 }, n:n };
 }
-function dimText(d, val){ var v = fmtLen(val, d.fmt); if (d.text) return d.text.indexOf('<>') >= 0 ? d.text.replace('<>', v) : d.text; return v; }
+function dimText(d, val){ var keep = S.mmDec; if (d.dec > keep) S.mmDec = d.dec; var v = fmtLen(val * (d.k || 1), d.fmt); S.mmDec = keep; if (d.text) return d.text.indexOf('<>') >= 0 ? d.text.replace('<>', v) : d.text; return v; }
 
 // ═════════ 描く ═════════
 var cv = document.getElementById('cv'), cx = cv.getContext('2d'), DPR = 1;
@@ -944,6 +980,7 @@ function drawAll(c, v, o){
     if (dash) c.setLineDash([]);
   });
   D.dims.forEach(function(d){
+    if (d.layer && !layerOf(d.layer).on) return;
     var sel = !o.print && ST.selDim === d.id;
     drawDim(c, v, d, sel ? '#ff5a1f' : (o.mono ? '#000' : '#1a5ad0'), o.lw ? o.lw * 0.8 : 1);
   });
@@ -1763,6 +1800,7 @@ function exportDxf(){
     else if (e.t === 'text') text(e);
   });
   D.dims.forEach(function(d){
+    if (d.layer && !layerOf(d.layer).on) return;
     var gm = dimGeom(d), de = { aci:256 };
     gm.lines.forEach(function(l){ g(0, 'LINE'); com(de, '寸法'); g(10, l[0].x); g(20, l[0].y); g(30, 0); g(11, l[1].x); g(21, l[1].y); g(31, 0); });
     gm.arrows.forEach(function(ar){ var t = arrowTri(ar, gm.al);
@@ -2217,7 +2255,9 @@ function dwgToRaw(db){
     case 'INSERT': r = rec('INSERT'); com(r, e); g(r, 2, e.name); pt(r, 10, e.insertionPoint); g(r, 41, e.xScale || 1); g(r, 42, e.yScale || 1); g(r, 43, e.zScale || 1);
       g(r, 50, (e.rotation || 0) * DEG); g(r, 70, e.columnCount || 1); g(r, 71, e.rowCount || 1); g(r, 44, e.columnSpacing || 0); g(r, 45, e.rowSpacing || 0); ext(r, e.extrusionDirection);
       return { rec:r, attribs:(e.attribs || []).map(conv).filter(Boolean).map(function(o){ return o.rec; }) };
-    case 'DIMENSION': r = rec('DIMENSION'); com(r, e); g(r, 2, e.name); break;
+    case 'DIMENSION': r = rec('DIMENSION'); com(r, e); g(r, 2, e.name); g(r, 70, e.dimensionType || 0); pt(r, 10, e.definitionPoint);
+      if (e.subDefinitionPoint1 && e.subDefinitionPoint2 && !e.centerPoint) { pt(r, 13, e.subDefinitionPoint1); pt(r, 14, e.subDefinitionPoint2); g(r, 50, (e.rotationAngle || 0) * DEG); }
+      if (e.text) g(r, 1, e.text); if (e.measurement != null) g(r, 42, e.measurement); ext(r, e.extrusionDirection); break;
     case 'ELLIPSE': r = rec('ELLIPSE'); com(r, e); pt(r, 10, e.center); pt(r, 11, e.majorAxisEndPoint); g(r, 40, e.axisRatio); g(r, 41, e.startAngle); g(r, 42, e.endAngle); ext(r, e.extrusionDirection); break;
     case 'SPLINE': r = rec('SPLINE'); com(r, e); g(r, 70, e.flag || 0); g(r, 71, e.degree || 3);
       (e.knots || []).forEach(function(k){ g(r, 40, k); }); (e.weights || []).forEach(function(w){ g(r, 41, w); });
@@ -2310,6 +2350,7 @@ function bindSetting(id, key, num){
   var el = document.getElementById(id); el.value = key === 'th' || key === 'arrow' ? (S[key] || '') : String(S[key]);
   el.onchange = function(){ var v = el.value; if (key === 'th' || key === 'arrow') { var n = parseLen(v); S[key] = n > 0 ? n : 0; el.value = S[key] || ''; } else S[key] = num ? +v : v; saveSettings(); VER++; redraw(); panel(); };
 }
+(function(){ var cb = document.getElementById('sDimAsDim'); cb.checked = !!S.dimAsDim; cb.onchange = function(){ S.dimAsDim = cb.checked; saveSettings(); setMsg('次に 開く とき（か［読み直す］）から 効きます'); }; })();
 bindSetting('sFmt', 'fmt'); bindSetting('sMmDec', 'mmDec', true); bindSetting('sShaku', 'shakuPrec'); bindSetting('sTh', 'th'); bindSetting('sArrow', 'arrow'); bindSetting('sArrowType', 'arrowType');
 document.getElementById('bDimReset').onclick = function(){
   var n = D.dims.filter(function(d){ return d.th > 0 || d.al > 0; }).length;

@@ -115,6 +115,8 @@ input,select,button{font-family:inherit;font-size:inherit;color:inherit}
               display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1mm}
 .rc-stamp-cap{font-size:6.5pt;color:#9c8546}
 .rc-stamp-amt{font-size:8.5pt;font-weight:bold;color:#6d5c30}
+/* 銀行振り込みの領収書は 収入印紙が要らないので、欄ごと出さない（場所は空けたまま。差出人の位置は動かさない） v2.8 */
+.rc.is-bank .rc-stamp-box{visibility:hidden}
 .rc-ft-sp{flex:1}
 .rc-issuer{font-size:8.5pt;line-height:1.5;position:relative;padding-right:26mm}
 .rc-company{font-size:11pt;font-weight:bold;letter-spacing:.05em}
@@ -165,12 +167,17 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
 <body>
 
 <div class="tb">
-  <h1>🧾 領収書</h1><span class="ver">v2.7</span>
+  <h1>🧾 領収書</h1><span class="ver">v2.8</span>
   <span id="segWrap" class="seg" style="display:none"></span>
   <span class="lbl">敬称</span>
   <span class="seg">
     <button id="honSama" onclick="setHonorific('様')">様</button>
     <button id="honOnchu" onclick="setHonorific('御中')">御中</button>
+  </span>
+  <span class="lbl">支払</span>
+  <span class="seg" title="銀行振り込みにすると、但し書きの後ろに（銀行振り込み）が付き、収入印紙の欄が消えます">
+    <button id="payCash" onclick="setPay('cash')">現金</button>
+    <button id="payBank" onclick="setPay('bank')">銀行振り込み</button>
   </span>
   <button id="reissueBtn" onclick="toggleReissue()">再発行</button>
   <span class="sp"></span>
@@ -189,7 +196,7 @@ body.pdf-mode .rc-hon:hover{background:transparent!important}
   <button class="pr" onclick="printReceipt()" title="用紙ぜんたいを 1 枚の絵（約300dpi）にしてから 印刷します">🖨️ 印刷</button>
   <button onclick="window.print()" title="絵にせずに そのまま ブラウザで印刷します（以前の印刷）" style="font-size:11px;padding:6px 10px">そのまま印刷</button>
 </div>
-<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。No.は「日付＋枝番」で自動採番（例 20260922-01）、収入印紙の額は金額から自動で出します。再発行のときは上の「再発行」を押してください。切り取り線より上のあいさつ文も直せます。</div>
+<div class="hint">黄色くなる場所（宛名・金額・日付・但し書き）はクリックして直せます。金額を直すと内消費税も計算し直します。敬称は上のボタン、または用紙の「様」を押しても切り替わります。No.は「日付＋枝番」で自動採番（例 20260922-01）、収入印紙の額は金額から自動で出します（支払を「銀行振り込み」にすると、但し書きの後ろに（銀行振り込み）が付き、収入印紙の欄は出ません）。再発行のときは上の「再発行」を押してください。切り取り線より上のあいさつ文も直せます。</div>
 
 <div class="sheet">
   <div class="msg" data-mst="msg" contenteditable="true">
@@ -397,9 +404,10 @@ function render(){
   $('rcName').textContent = DATA.name || '';
   $('rcAmt').textContent  = comma(v.amount);
   if ($('rcTax')) $('rcTax').textContent = comma(innerTax(v.amount));
-  $('rcNote').textContent = v.note || '';
+  $('rcNote').textContent = noteText(v);
   $('rcDate').textContent = jpDate(v.date);
   renderStamp(v.amount);
+  renderPay();
   renderHonorific();
   renderReissue();
   fitContent();
@@ -413,6 +421,39 @@ function render(){
   } else {
     wrap.style.display = 'none';
   }
+}
+
+/* ── 支払方法（現金／銀行振り込み） v2.8 ─────────────────
+   本人の指示「支払いが現金か銀行振り込みか選択する項目を追加し、銀行振り込みの場合は、
+   但し書きの後ろに（銀行振り込み）と記載し収入印紙は不要として」。
+   ・種別（納骨＋彫刻／追加分 など）ごとに覚える。渡されていなければ 現金（これまでどおり）。
+   ・但し書きは もとの文（v.note）を 持ったまま、出すときだけ 後ろに（銀行振り込み）を付ける。
+     手で直したときは 後ろの（銀行振り込み）を 外してから 覚える（二重に付かないように）。
+   ・銀行振り込みでは 収入印紙の欄を 出さない（振込の領収書は 印紙が要らない）。 */
+var BANK_SUFFIX = '（銀行振り込み）';
+function isBank(v){ return (v || cur()).pay === 'bank'; }
+function noteText(v){
+  var n = v.note || '';
+  return isBank(v) ? n + BANK_SUFFIX : n;
+}
+function noteBase(t){
+  t = String(t || '').trim();
+  /* どこに付いていても 外す（後ろに字を足されたときも 二重にしない） */
+  return t.replace(/[（(]\s*銀行振り?込み?\s*[）)]/g, '').trim();
+}
+function renderPay(){
+  var bank = isBank();
+  document.querySelector('.rc').classList.toggle('is-bank', bank);
+  $('payCash').className = bank ? '' : 'on';
+  $('payBank').className = bank ? 'on' : '';
+}
+function setPay(p){
+  saveEdits();
+  var v = cur();
+  v.pay = p === 'bank' ? 'bank' : 'cash';
+  $('rcNote').textContent = noteText(v);
+  renderPay();
+  fitContent();
 }
 
 /* 宛名と但し書きは1行に収める。長すぎるときだけ、収まるまで字を少し小さくする。
@@ -456,7 +497,7 @@ function saveEdits(){
   var v = cur();
   DATA.name = $('rcName').textContent.trim();
   v.amount  = num($('rcAmt').textContent);
-  v.note    = $('rcNote').textContent.trim();
+  v.note    = noteBase($('rcNote').textContent);
   var no9 = $('rcNo').textContent.trim();
   if (no9 !== v.no){ v.no = no9; v.noAuto = 0; }   /* 手で直したら、以後さわらない */
   var t = $('rcDate').textContent.trim();
@@ -799,7 +840,11 @@ function mstSealSet(inp){
 }
 
 ['rcName', 'rcNote', 'rcNo'].forEach(function (id) {
-  $(id).addEventListener('blur', function () { saveEdits(); fitContent(); });
+  $(id).addEventListener('blur', function () {
+    saveEdits();
+    if (id === 'rcNote') $('rcNote').textContent = noteText(cur());   /* 消されても（銀行振り込み）を付け直す */
+    fitContent();
+  });
   $(id).addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
   });

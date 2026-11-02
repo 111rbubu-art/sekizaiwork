@@ -82,7 +82,7 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 <body>
 <div class="topbar">
   <h1>石の 図面<span class="ver" id="ver"></span></h1>
-  <label class="btn pr">📂 開く（DXF・mics）<input type="file" id="fOpen" accept=".dxf,.json,.mgx" hidden></label>
+  <label class="btn pr">📂 開く（DXF・DWG・mics）<input type="file" id="fOpen" accept=".dxf,.dwg,.json,.mgx" hidden></label>
   <button class="btn" id="bUndo" title="元に戻す（Ctrl+Z）">↶ 戻す</button>
   <button class="btn" id="bRedo" title="やり直す（Ctrl+Y）">↷</button>
   <span class="sp"></span>
@@ -144,6 +144,7 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 <div class="modal" id="m3d"><div class="box">
   <h2>立体（3D）の データです</h2>
   <div class="muted" style="margin-bottom:8px">どの 向きから 見た 図を 作りますか（第三角法で 並べます：平面図は 正面図の 上、右側面図は 右）</div>
+  <div class="muted" id="m3dFlat" style="margin-bottom:8px;color:#a05a00;display:none">ほとんどが 平らな 図です（立体の 面は 少し だけ）。ふつうは「平面図」だけで そのまま 開きます。</div>
   <div class="row"><label><input type="checkbox" id="v_front" checked> 正面図</label></div>
   <div class="row"><label><input type="checkbox" id="v_right" checked> 右側面図</label></div>
   <div class="row"><label><input type="checkbox" id="v_top" checked> 平面図（上から）</label></div>
@@ -185,7 +186,7 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 <div id="printArea"></div>
 
 <script>
-var APP_VER = "v0.2";
+var APP_VER = "v0.3";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -309,6 +310,7 @@ function decodeBytes(buf){
 }
 function parseDxf(text){
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  if (/^AC10\d\d/.test(text)) throw new Error('これは DWG です。拡張子を .dwg に して 開いて ください');
   if (/^AutoCAD Binary DXF/.test(text)) throw new Error('バイナリ形式の DXF は 読めません（mics で ASCII／テキスト形式で 書き出して ください）');
   var L = text.split(/\r\n|\r|\n/), recs = [], cur = null, i = 0;
   while (i + 1 < L.length) {
@@ -692,11 +694,16 @@ function importRaw(unit, ask){
   var info = [];
   if (top.depth > 1 && top.faces + top.ents.length > 0 && ask) {
     // 立体の データ → どの 向きの 図を 作るか 聞く
+    // 面（3DFACE・メッシュ）が 少なければ ほとんど 平らな 図 → 平面図 だけを 既定に
+    var flat = top.faces < Math.max(5, top.ents.length * 0.2);
+    ['front', 'right', 'top', 'left', 'back'].forEach(function(k){ document.getElementById('v_' + k).checked = flat ? k === 'top' : (k === 'front' || k === 'right' || k === 'top'); });
+    document.getElementById('m3dFlat').style.display = flat ? '' : 'none';
     document.getElementById('m3d').classList.add('on');
     document.getElementById('b3dOk').onclick = function(){
       document.getElementById('m3d').classList.remove('on');
       var keys = ['front', 'right', 'top', 'left', 'back'].filter(function(k){ return document.getElementById('v_' + k).checked; });
       if (!keys.length) keys = ['front'];
+      if (keys.length === 1 && keys[0] === 'top') { finishImport(top.ents, unit, top); return; }
       finishImport(layoutViews(keys, unit), unit, top);
     };
     return;
@@ -1012,8 +1019,22 @@ function extents(noDims){
   if (!noDims) D.dims.forEach(function(d){ var g = dimGeom(d); g.lines.forEach(function(l){ ad(l[0]); ad(l[1]); }); entPts(g.text, true).forEach(ad); });
   return b;
 }
+// 遠くに はなれた 少しの 図形（読み違い・ごみ）で 全体が 豆つぶに ならない ように、図形の 中心の 5〜95% で 見る 範囲を 決める
+function robustExtents(){
+  var b = extents(), cs = [];
+  D.ents.forEach(function(e){ if (!visible(e)) return; var bb = bboxOf([e]); if (isFinite(bb.x0)) cs.push(P((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2)); });
+  if (cs.length < 10 || !isFinite(b.x0)) return { b:b, out:0 };
+  var xs = cs.map(function(p){ return p.x; }).sort(function(a, c){ return a - c; }), ys = cs.map(function(p){ return p.y; }).sort(function(a, c){ return a - c; });
+  var q = function(a, f){ return a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * f)))]; };
+  var cx0 = q(xs, 0.05), cx1 = q(xs, 0.95), cy0 = q(ys, 0.05), cy1 = q(ys, 0.95), core = Math.max(cx1 - cx0, cy1 - cy0, 1);
+  if (Math.max(b.x1 - b.x0, b.y1 - b.y0) < core * 20) return { b:b, out:0 };
+  var m = core * 0.6, rb = { x0:cx0 - m, y0:cy0 - m, x1:cx1 + m, y1:cy1 + m };
+  var out = cs.filter(function(p){ return !inBox(p, rb, 0); }).length;
+  return { b:rb, out:out };
+}
 function fit(){
-  var b = extents(), w = cv.width / DPR, h = cv.height / DPR;
+  var rx = robustExtents(), b = rx.b, w = cv.width / DPR, h = cv.height / DPR;
+  if (rx.out) setMsg('遠くに はなれた 図形が ' + rx.out + ' 個 あります（読み違いか ごみ。全体の 表示から 外しました）');
   if (!isFinite(b.x0)) { V.s = 1; V.ox = w / 2; V.oy = h / 2; redraw(); return; }
   var bw = Math.max(b.x1 - b.x0, 1e-6), bh = Math.max(b.y1 - b.y0, 1e-6);
   V.s = Math.min((w - 40) / bw, (h - 40) / bh);
@@ -2067,6 +2088,103 @@ document.getElementById('bBuhinCancel').onclick = function(){ document.getElemen
 document.getElementById('bBuhinPrint').onclick = function(){ printBuhin(false); };
 document.getElementById('bBuhinPng').onclick = function(){ printBuhin(true); };
 
+// ═════════ DWG（LibreDWG を ブラウザで。GPL-3.0）═════════
+// 部品（約 11MB）は DWG を 開いた ときだけ CDN から 読む。読んだ 中身は DXF と 同じ 形（RAW）に 直して、あとは DXF と 同じ 道を 通す
+var DWG_VER = '0.8.3';
+var DWG_BASES = ['https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@' + DWG_VER, 'https://unpkg.com/@mlightcad/libredwg-web@' + DWG_VER];
+var DWG_LIB = null;
+async function loadDwgLib(){
+  if (DWG_LIB) return DWG_LIB;
+  var last = null;
+  for (var i = 0; i < DWG_BASES.length; i++) {
+    try {
+      var m = await import(DWG_BASES[i] + '/dist/libredwg-web.js');
+      var lib = await m.LibreDwg.create(DWG_BASES[i] + '/wasm');
+      DWG_LIB = { m:m, lib:lib }; return DWG_LIB;
+    } catch (e) { last = e; }
+  }
+  throw new Error('DWG を 読む 部品を 読み込めませんでした（インターネットに つながって いるか 確かめて ください）' + (last ? '：' + last.message : ''));
+}
+function dwgToRaw(db){
+  var DEG = 180 / PI;
+  function rec(t){ return { t:t, c:[] }; }
+  function g(r, c, v){ if (v === undefined || v === null || (typeof v === 'number' && !isFinite(v))) return; r.c.push([c, String(v)]); }
+  function pt(r, c, p){ if (!p) return; g(r, c, p.x || 0); g(r, c + 10, p.y || 0); g(r, c + 20, p.z || 0); }
+  function ext(r, n){ if (!n || (Math.abs(n.x || 0) + Math.abs(n.y || 0) + Math.abs(n.z || 0)) < 1e-12) return; g(r, 210, n.x || 0); g(r, 220, n.y || 0); g(r, 230, n.z || 0); }
+  function com(r, e){ g(r, 8, e.layer || '0');
+    if (e.colorIndex !== undefined && e.colorIndex !== null) g(r, 62, e.colorIndex);
+    else if (typeof e.color === 'number' && e.color >= 0) g(r, 420, e.color & 0xFFFFFF); }
+  function textBase(r, tb, isAttrib, align){
+    g(r, 1, tb.text); pt(r, 10, tb.startPoint); g(r, 40, tb.textHeight); g(r, 50, (tb.rotation || 0) * DEG); g(r, 41, tb.xScale || 1);
+    g(r, 72, tb.halign || 0); g(r, isAttrib ? 74 : 73, tb.valign || 0);
+    var a = align || tb.endPoint; if ((tb.halign || tb.valign) && a) pt(r, 11, a);
+    ext(r, tb.extrusionDirection);
+  }
+  function conv(e){
+    if (!e || e.isInPaperSpace) return null;
+    var r, out;
+    switch (e.type) {
+    case 'LINE': r = rec('LINE'); com(r, e); pt(r, 10, e.startPoint); pt(r, 11, e.endPoint); break;
+    case 'CIRCLE': r = rec('CIRCLE'); com(r, e); pt(r, 10, e.center); g(r, 40, e.radius); ext(r, e.extrusionDirection); break;
+    case 'ARC': r = rec('ARC'); com(r, e); pt(r, 10, e.center); g(r, 40, e.radius); g(r, 50, e.startAngle * DEG); g(r, 51, e.endAngle * DEG); ext(r, e.extrusionDirection); break;
+    case 'LWPOLYLINE': r = rec('LWPOLYLINE'); com(r, e); g(r, 70, e.flag || 0); g(r, 38, e.elevation || 0);
+      (e.vertices || []).forEach(function(v){ g(r, 10, v.x); g(r, 20, v.y); if (v.bulge) g(r, 42, v.bulge); }); ext(r, e.extrusionDirection); break;
+    case 'POLYLINE2D': case 'POLYLINE3D':
+      r = rec('POLYLINE'); com(r, e); g(r, 70, (e.flag || 0) | (e.type === 'POLYLINE3D' ? 8 : 0)); g(r, 30, e.elevation || 0); ext(r, e.extrusionDirection);
+      out = { rec:r, verts:(e.vertices || []).map(function(v){ var vr = rec('VERTEX'); g(vr, 8, e.layer || '0'); g(vr, 10, v.x); g(vr, 20, v.y); g(vr, 30, v.z || 0); if (v.bulge) g(vr, 42, v.bulge); g(vr, 70, v.flag || 0); return vr; }) };
+      return out;
+    case 'TEXT': r = rec('TEXT'); com(r, e); textBase(r, e, false); break;
+    case 'ATTRIB': if (!e.text) return null; r = rec('ATTRIB'); com(r, e); textBase(r, e.text, true, e.alignmentPoint); g(r, 70, e.flags || 0); break;
+    case 'MTEXT': r = rec('MTEXT'); com(r, e); pt(r, 10, e.insertionPoint); g(r, 40, e.textHeight); g(r, 71, e.attachmentPoint || 1); g(r, 1, e.text);
+      if (e.direction && (Math.abs(e.direction.x) + Math.abs(e.direction.y)) > 1e-9) pt(r, 11, e.direction); else g(r, 50, e.rotation || 0);
+      ext(r, e.extrusionDirection); break;
+    case 'INSERT': r = rec('INSERT'); com(r, e); g(r, 2, e.name); pt(r, 10, e.insertionPoint); g(r, 41, e.xScale || 1); g(r, 42, e.yScale || 1); g(r, 43, e.zScale || 1);
+      g(r, 50, (e.rotation || 0) * DEG); g(r, 70, e.columnCount || 1); g(r, 71, e.rowCount || 1); g(r, 44, e.columnSpacing || 0); g(r, 45, e.rowSpacing || 0); ext(r, e.extrusionDirection);
+      return { rec:r, attribs:(e.attribs || []).map(conv).filter(Boolean).map(function(o){ return o.rec; }) };
+    case 'DIMENSION': r = rec('DIMENSION'); com(r, e); g(r, 2, e.name); break;
+    case 'ELLIPSE': r = rec('ELLIPSE'); com(r, e); pt(r, 10, e.center); pt(r, 11, e.majorAxisEndPoint); g(r, 40, e.axisRatio); g(r, 41, e.startAngle); g(r, 42, e.endAngle); ext(r, e.extrusionDirection); break;
+    case 'SPLINE': r = rec('SPLINE'); com(r, e); g(r, 70, e.flag || 0); g(r, 71, e.degree || 3);
+      (e.knots || []).forEach(function(k){ g(r, 40, k); }); (e.weights || []).forEach(function(w){ g(r, 41, w); });
+      (e.controlPoints || []).forEach(function(p){ pt(r, 10, p); }); (e.fitPoints || []).forEach(function(p){ pt(r, 11, p); }); break;
+    case '3DFACE': r = rec('3DFACE'); com(r, e); pt(r, 10, e.corner1); pt(r, 11, e.corner2); pt(r, 12, e.corner3); pt(r, 13, e.corner4 || e.corner3); g(r, 70, e.flag || 0); break;
+    case 'SOLID': case 'TRACE': r = rec(e.type); com(r, e); pt(r, 10, e.corner1); pt(r, 11, e.corner2); pt(r, 12, e.corner3); pt(r, 13, e.corner4 || e.corner3); ext(r, e.extrusionDirection); break;
+    case 'LEADER': r = rec('LEADER'); com(r, e); (e.vertices || []).forEach(function(p){ pt(r, 10, p); }); break;
+    case 'POINT': case 'ATTDEF': case 'VIEWPORT': return null;
+    default: r = rec(e.type); com(r, e); // 読まない もの（emit で 数える）
+    }
+    return { rec:r };
+  }
+  var R = { hdr:{}, layers:{}, blocks:{}, ents:[] };
+  if (db.header) { if (db.header.INSUNITS != null) R.hdr.$INSUNITS = String(db.header.INSUNITS); }
+  ((db.tables && db.tables.LAYER && db.tables.LAYER.entries) || []).forEach(function(l){
+    R.layers[l.name] = { aci:Math.abs(l.colorIndex) || 7, on:!l.off && !l.frozen && !(l.colorIndex < 0), tc:undefined };
+  });
+  ((db.tables && db.tables.BLOCK_RECORD && db.tables.BLOCK_RECORD.entries) || []).forEach(function(b){
+    if (/^\*(model|paper)_space/i.test(b.name)) return;
+    var bp = b.basePoint || { x:0, y:0, z:0 };
+    R.blocks[b.name] = { base:[bp.x || 0, bp.y || 0, bp.z || 0], ents:(b.entities || []).map(conv).filter(Boolean) };
+  });
+  R.ents = (db.entities || []).map(conv).filter(Boolean);
+  return R;
+}
+async function openDwg(buf, name){
+  setMsg('DWG を 読んで います…（はじめての ときは 部品 約 11MB の 読み込みで 少し かかります）');
+  var hint = document.getElementById('hint'), keep = hint.textContent; hint.textContent = 'DWG を 読んで います…';
+  try {
+    var L = await loadDwgLib();
+    var ptr = L.lib.dwg_read_data(buf, L.m.Dwg_File_Type.DWG);
+    if (ptr === undefined || ptr === null) throw new Error('この DWG は 読めませんでした（壊れているか、まだ 読めない 版です）');
+    var db = L.lib.convert(ptr);
+    try { L.lib.dwg_free(ptr); } catch (e) {}
+    RAW = dwgToRaw(db);
+  } catch (e) { hint.textContent = keep; setMsg(''); alert(e.message || String(e)); return; }
+  hint.textContent = keep;
+  FILE_NAME = name || '';
+  var iu = parseInt(RAW.hdr.$INSUNITS || '0', 10), unit = UNITS[iu] || 1;
+  document.getElementById('sUnit').value = String(unit);
+  importRaw(unit, true);
+}
+
 // ═════════ ボタン ═════════
 function updToggles(){
   document.querySelector('[data-tg=ortho]').classList.toggle('on', !!S.ortho);
@@ -2083,6 +2201,7 @@ document.getElementById('fOpen').onchange = function(ev){
   var rd = new FileReader();
   rd.onload = function(){
     if (/\.json$/i.test(f.name)) { openProject(new TextDecoder('utf-8').decode(new Uint8Array(rd.result))); return; }
+    if (/\.dwg$/i.test(f.name)) { openDwg(rd.result, f.name); return; }
     if (/\.mgx$/i.test(f.name)) { openMgx(new TextDecoder('utf-8').decode(new Uint8Array(rd.result)), f.name); return; }
     openDxfText(decodeBytes(rd.result), f.name);
   };

@@ -1303,6 +1303,13 @@ function _menuSearchExec(q) {
 
 // ===== I-6: メニュー画面 社内連絡リスト表示 =====
 function _menuSearchRenderInCard(q, ql) {
+  /* v1.9.566：フリガナでも 当てる（本人「フリガナ検索が出来ないようです」）。v1.9.461 で 足した フリガナの 当たりは
+     古い 下に 出る 一覧（_menuSearchRender）だけに 入っていて、いまの カードの中の 検索には 入っていなかった */
+  var _ys = null;
+  if (!/^[0-9\-]+$/.test(ql) && !_msIsKana(ql) && /[\u4e00-\u9fff々]/.test(_msWord(ql))) {
+    var _yl = _msLearned(_msWord(ql)), _yd = _msYomiFor(ql);
+    _ys = { readings: _yl.concat(_yd && _yd[0] && _yl.indexOf(_yd[0]) < 0 ? [_yd[0]] : []) };
+  }
   var isIdSearch  = false;
   var isTelSearch = /^[0-9\-]+$/.test(ql);
   // 全件キャッシュがあれば使用、なければ未完了のみ
@@ -1314,14 +1321,14 @@ function _menuSearchRenderInCard(q, ql) {
     var name  = (d['_x9867__x5ba2__x540d_'] || '').replace(/\s/g,'');
     var tel   = d['_x96fb__x8a71__x756a__x53f7_'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msMapHit(d,'noukotsu',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'noukotsu',ql) || _msMapHit(d,'noukotsu',ql) || _msFuriHit(d,'noukotsu',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   }).filter(_topTempleOkNok);
   // 工事フィルター
   var koujiResults = cacheKouji.filter(function(d) {
     var name  = (d['Customers'] || '').replace(/\s/g,'');
     var tel   = d['telephonenumber'] || '';
     var cusId = d['Cus_ID'] ? String(d['Cus_ID']) : '';
-    return name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msMapHit(d,'kouji',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
+    return name.includes(ql) || _msHakaHit(d,'kouji',ql) || _msMapHit(d,'kouji',ql) || _msFuriHit(d,'kouji',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && cusId === ql);
   }).filter(_topTempleOkKouji);
 
   // 納骨カード内に表示
@@ -1414,7 +1421,7 @@ function _menuSearchRenderInCard(q, ql) {
       var name  = (d['CusName']||'').replace(/\s/g,'');
       var tel   = d['telephonenumber'] || '';
       var spId  = d['ID'] ? String(d['ID']) : '';
-      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msMapHit(d,'customer',ql) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
+      return name.includes(ql) || _msHakaHit(d,'customer',ql) || _msMapHit(d,'customer',ql) || _msFuriHit(d,'customer',ql,_ys) || (isTelSearch && tel.includes(ql)) || (isIdSearch && spId === ql);
     });
     if (items.length > 0) { cusResultsByGroup[g] = items; cusTotal += items.length; }
   });
@@ -1443,7 +1450,8 @@ function _menuSearchRenderInCard(q, ql) {
            var cusno = d['CusNumber'] ? ' No.' + d['CusNumber'] : '';
            var tel   = d['telephonenumber'] || '';
            var spId  = d['ID'] ? String(d['ID']) : '';
-           var sub   = isIdSearch ? 'ID: ' + spId : (isTelSearch && tel ? tel : cusno);
+           var furi  = d['furigana'] || '';                                   // v1.9.566：フリガナで 当たったら フリガナも 出す
+           var sub   = isIdSearch ? 'ID: ' + spId : (isTelSearch && tel ? tel : (furi && _msFuriHit(d, 'customer', ql, _ys) ? furi + cusno : cusno));
            // 霊園＆共同墓地(8)・他寺院等(10)はお寺名も表示
            var templeChip = ((g === 8 || g === 10) && d['Temple'])
              ? '<span style="font-size:10px;background:#e8eaf6;color:#3949ab;border-radius:8px;padding:1px 7px;font-weight:600;flex-shrink:0">⛩ ' + d['Temple'] + '</span>'
@@ -1890,8 +1898,10 @@ function _fetchCustomerWithCache(siteId, listIdC, token) {
      ほかの読みで合うものは 名前に 打った漢字が 1 字でも入っているときだけ（下山 → 霜山 は「山」が同じ）。
      読みは 1 回だけ取りに行き（語ごとに覚える）、届いたら 検索欄が同じままなら 結果を描き直す。拓本AI に届かなければ 漢字だけ。 */
 var _msYomiCache = {};
-function _msKana(s) { return _aiHira(String(s || '')).replace(/[\s　・･]/g, ''); }
-function _msIsKana(q) { return /^[\u3041-\u3096\u30a1-\u30f6ー\s　]+$/.test(q); }
+/* v1.9.566：半角カナ（ｺﾊﾞﾘ）も 全角に そろえてから ひらがなへ */
+function _msNfkc(s) { s = String(s == null ? '' : s); try { return s.normalize('NFKC'); } catch (e) { return s; } }
+function _msKana(s) { return _aiHira(_msNfkc(s)).replace(/[\s　・･]/g, ''); }
+function _msIsKana(q) { return /^[\u3041-\u3096\u30a1-\u30f6ー\s　]+$/.test(_msNfkc(q)); }
 function _msWord(ql) { return String(ql || '').replace(/(家墓|家|さん|様|氏)$/, ''); }
 function _msYomiFor(ql) {
   var w = _msWord(ql);
@@ -1903,7 +1913,7 @@ function _msYomiFor(ql) {
   _vcNameYomis(w).then(function (ys) {
     _msYomiCache[w] = ys || [];
     var inp = document.getElementById('menu-search');
-    if (ys && ys.length && inp && inp.value.replace(/\s/g, '') === ql) _menuSearchRender(inp.value.trim(), ql);
+    if (ys && ys.length && inp && inp.value.replace(/\s/g, '') === ql) _menuSearchRenderInCard(inp.value.trim(), ql);   // v1.9.566：いまの トップ画面（カードの中）で 描き直す
   }, function () { _msYomiCache[w] = []; });
   return null;
 }
@@ -8167,7 +8177,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.565';
+var APP_VERSION = 'v1.9.566';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため

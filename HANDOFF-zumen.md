@@ -1,6 +1,6 @@
 # 石の 図面（zumen.html）引継ぎ ― 社内アプリ開発へ 移す ための まとめ
 
-zumen.html = v0.4（2026-11-03）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
+zumen.html = v0.5（2026-11-03）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
 
 ---
 
@@ -61,12 +61,16 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
   - 面取り・穴：`bmFeatures`（HLR は 同じ 線を 2 本 出す ので 1 本に。穴＝短い 線の 輪で 半径が そろう・すき間 60° 未満、面取り＝外形の 角の 短い 斜めの 線の つながり）
 - 書き出し：`exportDxf`（R12・Shift_JIS・寸法は 線と 文字に 分解・開いた 矢印は LINE 2 本）、`makeSheet`（印刷の 紙）、`bmPrintAll`（部材図の 全ページ）
 
-## 4. 業務アプリとの つながり
-- 業務アプリ（index / index_b）v1.9.568 から：工事関連の 帳票類に［📐 図面］→ `window.open('zumen.html','zumen')`（窓は 1 つを 使い回す）。**案件の データは まだ 渡して いない**（ファイルは 図面の 画面で 開く）
-- 統合で 考える こと（案）
-  - 案件の フォルダ（SharePoint の Folder_Pass）の DWG／DXF／`.mgx` を 図面アプリで 直接 開く・作業 ファイルと PDF を 案件の フォルダへ 保存（業務アプリの MSAL の トークンを 使う 形。撤去見積 tekkyo.html の［PDF保存］と 同じ 作り）
-  - 件名・石種・送り先を 案件から 渡す（`D.info`）
-  - 外注ポータル（`gaichu-portal/SYSTEM.md`）で 製作会社へ 部材図の PDF を 送る
+## 4. 業務アプリとの つながり（v0.5・業務アプリ v1.9.569。本人「案件の フォルダから 図面を 開く・保存する、件名を取り込む」「メールで送る。PDFにしてくれればいい」「とりあえず今の場所で」）
+- 業務アプリ（index / index_b）の 帳票類［📐 図面］→ `openZumen(currentItem)`：`sessionStorage['zumenFrom'] = { title（件名＝○○家　お寺）, cust, place, folderPass }` を 置いて `window.open('zumen.html', 'zm_' + 案件の ID)`（窓は 案件ごと）
+- SharePoint の 読み書きは **親（業務アプリ）の 関数**（見積書・撤去見積と 同じ `*FromTekkyo`）：
+  - 前から ある：`fileExistsInFolderPassFromTekkyo`・`uploadPdfToFolderPassFromTekkyo`・`uploadJsonToFolderPassFromTekkyo`
+  - v1.9.569 で 足した：`listItemsInFolderPassFromTekkyo`（ファイルと 下の フォルダー）・`downloadBinaryFromFolderPassFromTekkyo`（ArrayBuffer）・`uploadBlobToFolderPassFromTekkyo`（DXF など）
+- 図面アプリ：上に［📁 件名］の 札と［☁️ 案件の ファイル］（案件の フォルダーを 下の フォルダーへ たどり、DXF・DWG・`.mgx`・`.zumen.json` を 開く）。件名は 空なら 案件から 入れる（`ensureTitle`）
+- 保存先は 毎回 聞く（`chooseDest`）：作業 ファイル・DXF＝案件の フォルダー直下、**PDF＝案件の `提出資料`**（見積書と 同じ）／このパソコン
+- **PDF**：jsPDF（cdnjs 2.5.1、使う ときだけ 読む）で 本物の PDF ファイル。図面＝［🖨 印刷・PDF］の 窓の［📄 PDF で 保存］（紙・縮尺・白黒を 選ぶ）、部材図＝上の［📄 PDF］（全ページ A4）。ファイル名＝件名_図面／部材図_年月日.pdf。メールに 付けて 製作会社へ（本人）
+- 自動保存は 案件ごと（違う 案件の 前の 作業は 出さない）
+- これから（案）：石種・送り先を 案件から、外注ポータルで 送る
 
 ## 5. mics の ファイル（見本の 物件で 見た 結果）
 | ファイル | 中身 |
@@ -89,6 +93,8 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - `prompt()`（穴の 直径・引出線の 文字・文字）は `page.on('dialog', d => d.accept('…'))`
 - 試しの DXF は Python で 作る（2D：Shift_JIS の 文字・ブロック・押し出し 反転・円弧・MTEXT、3D：多面メッシュ・三角形の 3DFACE）。本物の 図面・mics の データは リポジトリに 入れない（個人名・物件名が 入る）
 - 部材図：`.mgx` を 開く →［🧱 部材図］→［✏ 図面に して 直す］。`BM.pages`・`bmGroup`・`bmViews`・`bmFeatures` を `page.evaluate` で 見る
+- **案件と つなぐ**：`ctx.route` で 同じ オリジンの 仮の 親ページ（`/__parent.html`）を 返し、親に `*FromTekkyo` を メモリの ファイル置き場で 作り、`sessionStorage.zumenFrom` を 置いて `window.open('zumen.html')`。jsPDF は scratchpad で `npm pack jspdf@2.5.1` して cdnjs を route
+- Playwright の ダウンロードは **日本語の ファイル名が「download」に なる**（試しの ブラウザだけ。本物の Chrome は 名前どおり）
 
 ## 7. 配信
 1. `var APP_VER = "v○";` を 上げる
@@ -102,7 +108,7 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 下線（MTEXT の `\L`）を 描かない
 - mics の 図での 隙間チェックは 線が 多く 重なりが 出すぎる → 3D で 調べる 形に
 - DWG で 開けない もの：ハッチング・3D ソリッド・表・マルチ引出線・立体の メッシュ（「読まなかった もの」に 出る）
-- 案件と つなぐ（上の 4.）
+- 案件と つなぐ：本物の 業務アプリ・SharePoint で まだ 試して いない（本人に 試して もらう）
 
 ---
 
@@ -112,3 +118,4 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - v0.3：DWG（LibreDWG・開いた ときだけ 読む）／v0.3.1：MTEXT の `\H`・DWG の 閉じた ポリライン／v0.3.2：動かす・測るを 外す・寸法の つまみ／v0.3.3：寸法の 文字・矢印の 大きさ（全体・1 本ずつ）・開いた 矢印・右クリックの メニュー／v0.3.4：元の 寸法線を 寸法に／v0.3.5：元の 矢印の 大きさ・形
 - v0.4：部材図を 直す（案 A）・部材ごとの 図の 選択（斜め・正面・右側面・左側面・平面、名前で 覚える）・面取りと 穴の 寸法・線／穴／引出線／▲磨きの 道具
 - 2026-11-03：社内アプリ開発へ 移す ため この まとめを 作った（コードは v0.4 の まま）
+- v0.5（業務アプリ v1.9.569）：案件と つなぐ（案件の フォルダーから 開く・保存、件名の 取り込み、PDF ファイル（図面・部材図）を 提出資料 か パソコンへ）

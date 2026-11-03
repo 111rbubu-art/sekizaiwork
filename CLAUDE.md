@@ -6,6 +6,7 @@
 - `HANDOFF.md` … ぜんたいの 引継ぎ（業務アプリ index / index_b / map など）
 - `HANDOFF-chokoku-genko.md` … 彫刻原稿（`chokoku-genko.html`）と 拓本AI の 引継ぎ。**末尾が いちばん新しい**。3 行目に いまの版
 - `takuhon-ai/README.md` … 拓本AI サーバー（学習・API・update.sh）
+- `HANDOFF-zumen.md` … 石の 図面（`zumen.html`：DXF・DWG・mics の 立体 → 寸法・目地・部材図）の しくみ・本人が 決めた こと・テスト・まだの こと。**3 行目に いまの版**
 - `gaichu-portal/SYSTEM.md` … 外注ポータル（さくらの PHP と 業務アプリの［🌐 外注公開］）の しくみ・API・移植の 手引き
 
 ## 守ること（いつも）
@@ -30,6 +31,11 @@
 6. 日本語で コミット → **作業ブランチと main の 両方に push**（main が Netlify に 出る）
    `git push -u origin <作業ブランチ> && git push origin <作業ブランチ>:main`（失敗したら 2・4・8・16 秒 あけて やり直す）
 
+## 石の 図面（zumen.html）を 直したときの 配信
+- `var APP_VER` を 上げる → `HANDOFF-zumen.md` の 3 行目の 版と 末尾の 記録・`HANDOFF.md` の 末尾に 1 行 → `node --check` → `.deploy-trigger` → 作業ブランチと main に push（彫刻原稿と 同じ）
+- DWG の 部品（`@mlightcad/libredwg-web@0.8.3`）は GPL-3.0（本人 了承）。DWG を 開いた ときだけ CDN から 読む
+- 本物の 図面・mics の データ（物件名が 入る）は リポジトリに 入れない
+
 ## 拓本AI サーバー（takuhon-ai/）
 - 更新は **本人が** GPU 機で `bash /opt/takuhon-ai/update.sh`（**main から** 取る）。クラウドの セッションからは 届かない（社内・Tailscale）
 - 夜 02:30 に 学習（`train-nightly.sh`：墨・枠・枠の ためし・読み）。モデルは よくなったときだけ 差し替わる
@@ -41,12 +47,14 @@
 - Playwright は `/opt/node22/lib/node_modules/playwright`（Chromium は 入っている）。拓本AI は `fetch` を 置きかえた 仮の サーバーで 試す
 - 業務アプリを 開くときは `addInitScript` で `window.msal` の 仮を 置く（無いと とちゅうで 止まり、あとの 変数が できない）。外への 通信は `page.route` で 止める
 - AI（Ollama）を 使う しくみは `fetch` を 置きかえて `/api/tags`・`/api/chat` に 仮の 答えを 返して 試す。本物の AI の 出来は 本人に 試して もらう
+- 石の 図面の DWG：jsdelivr は ここから 届かない。scratchpad で `npm pack @mlightcad/libredwg-web@0.8.3` して `page.route` で 返す。日本語の ファイル名は `setInputFiles` で 渡らない（英字に 写す）
 - pdf.js（cdnjs）は ここから 届かない。試すときは scratchpad で `npm pack pdfjs-dist@3.11.174` して `page.route` で 返す
 - 拓本AI の 学習を 試すときは scratchpad に venv を 作り `pip install torch`（PyPI。download.pytorch.org は 届かない）。
   仮の 列（raw.png・ink.png・meta.json）を 作って `train_box.py` を 回す
 
 ## いまの 状態（2026-10-19。チャットから プロジェクトへ 移る ときの まとめ）
 - 版：彫刻原稿 **v54.6**・業務アプリ（index_b / index）**v1.9.538**・撤去見積（tekkyo.html）**v4.1**。どれも main に 出ている
+- 石の 図面（zumen.html）**v0.4**（2026-11-03・main）。業務アプリ v1.9.568 の 帳票類［📐 図面］から 開く（案件の データは まだ 渡さない）。社内アプリ開発へ 移す 準備で `HANDOFF-zumen.md` を 作った。本人の 返事 待ち：部材図を 本物で 試した 結果（磨きの 案・自動の 寸法の 位置・部品名称）、案件と つなぐ 範囲
 - 彫刻原稿：解析の 既定は 案 c・d・f（案 a・b・e なし）。v54.4〜54.6 は ゴムシート（ダブルクリックで 編集しない・青の 破線を 出さない・入力は ロックの 対象外）、履歴の ステータスに「お客様再提出」「小修正後ゴム切」
 - 拓本AI の 枠（作り 2）：本人の 手での 1000 回で いまの モデルを 越えた（重なり平均 0.831 ＞ 0.711）。**差し替わったかを 本人に 確かめて もらう 途中**（`/api/takuhon/status`・`/api/takuhon/box_chars`）。
   夜は 600 回ずつ 続きから。くわしくは `HANDOFF-chokoku-genko.md` の 末尾

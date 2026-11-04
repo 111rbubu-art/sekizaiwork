@@ -7,6 +7,7 @@
 - `HANDOFF-chokoku-genko.md` … 彫刻原稿（`chokoku-genko.html`）と 拓本AI の 引継ぎ。**末尾が いちばん新しい**。3 行目に いまの版
 - `takuhon-ai/README.md` … 拓本AI サーバー（学習・API・update.sh）
 - `HANDOFF-zumen.md` … 石の 図面（`zumen.html`：DXF・DWG・mics の 立体 → 寸法・目地・部材図）の しくみ・本人が 決めた こと・テスト・まだの こと。**3 行目に いまの版**
+  - 10 章＝組み立て（`kumitate.html`・墓所に 部材を 並べる 3D・干渉・見積。あとで zumen.html に 入れる）
 - `gaichu-portal/SYSTEM.md` … 外注ポータル（さくらの PHP と 業務アプリの［🌐 外注公開］）の しくみ・API・移植の 手引き
 
 ## 守ること（いつも）

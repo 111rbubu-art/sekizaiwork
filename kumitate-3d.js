@@ -1,6 +1,7 @@
 // 組み立て（kumitate.html）の 3D 表示（Three.js r160・同梱）。位置と 大きさは kumitate-engine.js の 答え（boxes）を 使う
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js';
+import { partGroup } from './zumen-3d.js';
 
 export function create(box, onPick){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
@@ -26,7 +27,7 @@ export function create(box, onPick){
   function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); }
   new ResizeObserver(size).observe(box); size();
 
-  function clear(){ while (group.children.length) { var c = group.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material && c.material !== lineMat && c.material !== darkLine && c.material !== selMat && c.material !== hitMat) c.material.dispose(); } meshes = []; }
+  function clear(){ var keep = [lineMat, darkLine, selMat, hitMat]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; }
 
   // r = KM.compute の 答え、col(key) → '#rrggbb'、sel＝選んだ 部材の 鍵、site＝{W,D}
   function update(r, col, sel, site, refit){
@@ -36,12 +37,19 @@ export function create(box, onPick){
     Object.keys(r.boxes).forEach(function(k){
       var b = r.boxes[k], w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
       if (!(w > 0 && h > 0 && d > 0)) return;
-      var g = new THREE.BoxGeometry(w, h, d);
-      var m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color:new THREE.Color(col(k)), roughness:0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1 }));
+      var g = new THREE.BoxGeometry(w, h, d), dark = new THREE.Color(col(k)).getHSL({}).l < 0.25;
+      var sm = new THREE.MeshStandardMaterial({ color:new THREE.Color(col(k)), roughness:0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
+      var lm = k === sel ? selMat : hit[k] ? hitMat : dark ? darkLine : lineMat;
+      var m = new THREE.Mesh(g, sm);
       m.position.set(b.x0 + w / 2, b.y0 + h / 2, b.z0 + d / 2); m.userData.key = k;
-      group.add(m); meshes.push(m);
-      var dark = new THREE.Color(col(k)).getHSL({}).l < 0.25;
-      var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), k === sel ? selMat : hit[k] ? hitMat : dark ? darkLine : lineMat); e.position.copy(m.position); group.add(e);
+      var shp = r.parts[k].shape, pg = null;
+      if (shp && window.BZ) { try { pg = partGroup(window.BZ.model(shp, window.BZ.solve(shp)), true, sm, lm); } catch (err) { pg = null; } }
+      if (pg) { // 形の ある 部材：底面の 中心に 置く。押せる ように 中の 面に 鍵を つける
+        g.dispose(); pg.position.set(b.x0 + w / 2, b.y0, b.z0 + d / 2); pg.traverse(function(o){ if (o.isMesh) { o.userData.key = k; meshes.push(o); } }); group.add(pg);
+      } else {
+        group.add(m); meshes.push(m);
+        var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lm); e.position.copy(m.position); group.add(e);
+      }
       if (k === sel) { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
     if (site && site.W > 20 && site.D > 20) {

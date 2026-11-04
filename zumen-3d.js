@@ -21,6 +21,30 @@ export function create(box){
   var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a });
   var group = null, fitted = false, alive = true, timer = 0, last = null;
 
+  function build(m, fine){
+    last = m;
+    if (group) { group.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); scene.remove(group); }
+    group = partGroup(m, fine, mat, lineMat); scene.add(group);
+    controls.target.set(0, m.H / 2, 0);
+    if (!fitted) { // 外接球が 画面に 収まる 距離（縦長の 枠でも はみ出さない）
+      var rs = 0.5 * Math.sqrt(m.W * m.W + m.H * m.H + m.D * m.D), fv = cam.fov * Math.PI / 180, fh = 2 * Math.atan(Math.tan(fv / 2) * cam.aspect);
+      var dist = rs / Math.sin(Math.min(fv, fh) / 2) * 1.05, dir = new THREE.Vector3(0.95, 0.75, 1.55).normalize();
+      cam.position.set(dir.x * dist, m.H / 2 + dir.y * dist, dir.z * dist); fitted = true; }
+  }
+  // 操作中は 粗く、0.3 秒 止まったら 細かく 作り直す（スマホでも 軽く）
+  function update(m){ build(m, false); clearTimeout(timer); timer = setTimeout(function(){ if (alive) build(m, true); }, 300); }
+  function resize(){ var w = box.clientWidth, h = box.clientHeight; if (!w || !h) return; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+  function loop(){ if (!alive) return; requestAnimationFrame(loop); controls.update(); renderer.render(scene, cam); }
+  function refit(){ fitted = false; if (last) build(last, true); }
+  function dispose(){ alive = false; clearTimeout(timer); if (group) group.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); renderer.dispose(); if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement); }
+  window.addEventListener('resize', resize);
+  resize(); loop();
+  return { build:build, update:update, resize:resize, refit:refit, dispose:dispose };
+}
+
+// 部材の 形（BZ.model の 答え m）→ Three の Group。原点＝底面の 中心、+z＝前。組み立て（kumitate-3d.js）からも 使う
+export function partGroup(m, fine, mat, lineMat){
+  var group = new THREE.Group();
   function shp(pts){ var s = new THREE.Shape(); s.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]); s.closePath(); return s; }
   function pth(pts){ var s = new THREE.Path(); s.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]); s.closePath(); return s; }
   function add(geo, edges){ geo.computeVertexNormals(); group.add(new THREE.Mesh(geo, mat)); if (edges) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 28), lineMat)); }
@@ -60,34 +84,16 @@ export function create(box){
     if (hole) line(hole.map(function(p){ return [p[0], p[1] + y0, zw]; }), true);
   }
 
-  function build(m, fine){
-    last = m;
-    if (group) { group.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); scene.remove(group); }
-    group = new THREE.Group(); scene.add(group);
-    var BZ = m.BZ, D = m.D;
-    m.comps.forEach(function(c){
-      var zf = D / 2 - (c.at.front || 0), s = c.s;
-      if (c.type === 'box') add(new THREE.BoxGeometry(s.w, s.h, s.d).translate(0, c.at.y + s.h / 2, zf - s.d / 2), true);
-      else if (c.type === 'barrel') barrel(c, BZ, zf, fine);
-      else if (c.type === 'profile') {
-        (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){
-          add(new THREE.ExtrudeGeometry(shp(BZ.profilePts(c.profile, s, m.W, sg)), { depth:s.len, bevelEnabled:false }).translate(0, c.at.y, zf - s.len), true);
-        });
-      }
-    });
-    controls.target.set(0, m.H / 2, 0);
-    if (!fitted) { // 外接球が 画面に 収まる 距離（縦長の 枠でも はみ出さない）
-      var rs = 0.5 * Math.sqrt(m.W * m.W + m.H * m.H + m.D * m.D), fv = cam.fov * Math.PI / 180, fh = 2 * Math.atan(Math.tan(fv / 2) * cam.aspect);
-      var dist = rs / Math.sin(Math.min(fv, fh) / 2) * 1.05, dir = new THREE.Vector3(0.95, 0.75, 1.55).normalize();
-      cam.position.set(dir.x * dist, m.H / 2 + dir.y * dist, dir.z * dist); fitted = true; }
-  }
-  // 操作中は 粗く、0.3 秒 止まったら 細かく 作り直す（スマホでも 軽く）
-  function update(m){ build(m, false); clearTimeout(timer); timer = setTimeout(function(){ if (alive) build(m, true); }, 300); }
-  function resize(){ var w = box.clientWidth, h = box.clientHeight; if (!w || !h) return; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); }
-  function loop(){ if (!alive) return; requestAnimationFrame(loop); controls.update(); renderer.render(scene, cam); }
-  function refit(){ fitted = false; if (last) build(last, true); }
-  function dispose(){ alive = false; clearTimeout(timer); if (group) group.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); renderer.dispose(); if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement); }
-  window.addEventListener('resize', resize);
-  resize(); loop();
-  return { build:build, update:update, resize:resize, refit:refit, dispose:dispose };
+  var BZ = m.BZ, D = m.D;
+  m.comps.forEach(function(c){
+    var zf = D / 2 - (c.at.front || 0), s = c.s;
+    if (c.type === 'box') add(new THREE.BoxGeometry(s.w, s.h, s.d).translate(0, c.at.y + s.h / 2, zf - s.d / 2), true);
+    else if (c.type === 'barrel') barrel(c, BZ, zf, fine);
+    else if (c.type === 'profile') {
+      (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){
+        add(new THREE.ExtrudeGeometry(shp(BZ.profilePts(c.profile, s, m.W, sg)), { depth:s.len, bevelEnabled:false }).translate(0, c.at.y, zf - s.len), true);
+      });
+    }
+  });
+  return group;
 }

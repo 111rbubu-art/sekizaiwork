@@ -100,11 +100,13 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
   </div>
 </div>
 <input type="file" id="fOpen" accept=".json,application/json" hidden>
+<input type="file" id="fPart" accept=".json,application/json" hidden>
 <input type="file" id="fTanka" accept=".json,application/json" hidden>
+<script src="buzai-engine.js?v=0.6.1"></script>
 <script src="kumitate-data.js"></script>
 <script src="kumitate-engine.js"></script>
 <script>
-var APP_VER = 'v0.1';
+var APP_VER = 'v0.2';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -112,6 +114,7 @@ var DATA = lsGet('kumitate.data') || window.KUMITATE_DATA;
 var TANKA = lsGet('kumitate.tanka');   // { stones:[], estimate:{} }（公開の 場所に 置かない ため ファイルから 読む）
 var ST = lsGet('kumitate.state');
 if (!ST || ST.schema !== 'kumitate/1') ST = KM.newState(DATA);
+ST.shapes = ST.shapes || {};
 var SEL = null, RES = null, V3 = null;
 var KLABEL = { tower:'石塔', fence:'外柵', boshi:'墓誌', toba:'塔婆立', crypt:'納骨室' };
 var GRAY = { tower:'#4a4d52', fence:'#9aa0a6', boshi:'#5a5d62', crypt:'#b8b2a6' };
@@ -136,10 +139,45 @@ function renderLeft(){
     });
     h += '</div>';
   });
-  h += '<div class="muted hint" style="margin-top:10px">「箱」＝旧シミュレーターの 寸法を 箱で 取り込んだ もの。部材設計で 形を 作った 部材は あとで ここに 入る</div>';
+  h += '<div><h4>形の ある 部材</h4>';
+  partChoices().forEach(function(c, i){
+    var on = Object.keys(ST.shapes).some(function(k){ return RES && RES.boxes[k] && ST.shapes[k].id === c.def.id && ST.shapes[k].__from === c.from; });
+    h += '<button class="it' + (on ? ' on' : '') + '" data-part="' + i + '">🏺 ' + esc(c.def.name || c.def.id) + '<span class="tag" style="background:#dff3e4;color:#1d7a3a">' + esc(c.tag) + '</span></button>';
+  });
+  h += '<button class="it" id="bPartFile">📂 部材を 読む（.json）</button></div>';
+  h += '<div class="muted hint" style="margin-top:10px">「箱」＝旧シミュレーターの 寸法を 箱で 取り込んだ もの。「形の ある 部材」を 押すと、同じ 名前の 石（香炉 なら 香炉）が その 形に なる。石を 選んで から 押すと その 石に 入る</div>';
   $('left').innerHTML = h;
 }
+// 形の ある 部材の 候補：見本（香炉 1 号）／図面アプリで いま 作って いる 部材（同じ サイトの localStorage）／読んだ ファイル
+var LOADED = lsGet('kumitate.parts') || [];
+function partChoices(){
+  var out = [{ def:BZ_KORO, from:'mihon', tag:'見本' }], z = lsGet('zumen.part');
+  if (z && z.schema === 'buzai/1') out.unshift({ def:z, from:'zumen', tag:'図面アプリ' });
+  LOADED.forEach(function(d){ out.push({ def:d, from:'file', tag:'読んだ' }); });
+  return out;
+}
+function targetFor(def){
+  if (SEL) return SEL;
+  var cat = def.category || '', ks = Object.keys(RES.boxes).filter(function(k){ var n = RES.parts[k].name || ''; return cat && n.indexOf(cat) >= 0; });
+  return ks[0] || null;
+}
+function placePart(c){
+  var k = targetFor(c.def);
+  if (!k) { alert('「' + (c.def.category || c.def.name) + '」の 石が ありません。3D で 入れたい 石を 押して から もう一度 押して ください'); return; }
+  var d = JSON.parse(JSON.stringify(c.def)); d.__from = c.from;
+  ST.shapes[k] = d; delete ST.over[k]; SEL = k; renderLeft(); run();
+}
+$('fPart').onchange = function(){
+  var f = this.files[0]; this.value = ''; if (!f) return;
+  readJson(f, function(j){
+    if (j.schema !== 'buzai/1') { alert('部材の ファイル（buzai/1）では ありません'); return; }
+    LOADED = LOADED.filter(function(d){ return d.id !== j.id; }); LOADED.push(j); lsSet('kumitate.parts', LOADED);
+    placePart({ def:j, from:'file' });
+  });
+};
 $('left').addEventListener('click', function(e){
+  if (e.target.closest('#bPartFile')) { $('fPart').click(); return; }
+  var pb = e.target.closest('[data-part]'); if (pb) { placePart(partChoices()[+pb.dataset.part]); return; }
   var b = e.target.closest('.it'); if (!b) return;
   ST.sel[b.dataset.k] = b.dataset.v; SEL = null; renderLeft(); run(true);
 });
@@ -178,9 +216,20 @@ function renderSel(){
     h += '<h3>選んだ 部材：' + esc(p.name) + '</h3>';
     h += '<div class="row"><span class="k">幅 × 奥行 × 高さ</span><span>' +
       ['w', 'd', 'h'].map(function(f){ return '<input class="chip' + (ov[f] ? '' : ' l') + '" style="width:56px" data-f="' + f + '" type="number" inputmode="numeric" value="' + p[f] + '">'; }).join(' ') + '</span></div>';
-    h += '<div class="row"><span class="k">才数</span><span>' + f2(KM.sai(p.w, p.d, p.h)) + ' 才</span></div>';
+    h += '<div class="row"><span class="k">才数</span><span id="selSai">' + f2(KM.sai(p.w, p.d, p.h)) + ' 才</span></div>';
     h += '<div class="row"><span class="k">石種（' + ({ tower:'石塔', fence:'外柵', boshi:'墓誌', crypt:'納骨室' })[g] + '）</span><span>' + (g === 'crypt' ? '<span class="muted">見積に 入れない</span>' : stoneSelect(g)) + '</span></div>';
     if (Object.keys(ov).length) h += '<div class="row"><span class="muted">濃い 枠＝手で 変えた 寸法</span><button class="lk" id="bReset">元に 戻す</button></div>';
+    var sh = ST.shapes[SEL];
+    if (sh) {
+      var pr = (sh.estimate && sh.estimate.processes || []).map(function(x){ return esc(x.name) + (x.qty > 1 ? '×' + x.qty : ''); }).join('・');
+      var pt = (sh.estimate && sh.estimate.parts || []).map(function(x){ return esc(x.name); }).join('・');
+      h += '<div class="row"><span class="k">形</span><span>🏺 ' + esc(sh.name) + '</span></div>';
+      if (pr || pt) h += '<div class="row"><span class="k">加工・既製品</span><span style="text-align:right">' + pr + (pt ? '<br>' + pt : '') + '</span></div>';
+      h += '<div class="row"><button class="lk" id="bZumen">🧊 図面アプリで 形を 直す</button><button class="lk" id="bUnshape">箱に 戻す</button></div>';
+      h += '<div class="muted">幅・奥行・高さを 変えると、部材の 中の 寸法（筆返し・穴 など）は 部材の 式で ついてくる</div>';
+    } else if (partChoices().some(function(c){ return c.def.category && (p.name || '').indexOf(c.def.category) >= 0; })) {
+      h += '<div class="muted" style="margin-top:4px">左の「形の ある 部材」を 押すと、この 石を その 形に できます</div>';
+    }
     h += '<div class="muted" style="margin-top:6px">数字を 変えると、上に のる 石・つながる 石も ついてくる。手で 変えた 寸法は ノウハウ式より 優先</div>';
   } else {
     h += '<h3>石種</h3>';
@@ -196,10 +245,21 @@ $('selBox').addEventListener('change', function(e){
 $('selBox').addEventListener('input', function(e){
   var t = e.target; if (!t.dataset.f || !SEL) return;
   var v = parseFloat(t.value); if (!(v > 0)) return;
-  ST.over[SEL] = ST.over[SEL] || {}; ST.over[SEL][t.dataset.f] = v;
-  RES = KM.compute(DATA, ST); if (V3) V3.update(RES, colorOf, SEL, ST.site); renderEst(); renderList(); lsSet('kumitate.state', ST);
+  var sh = ST.shapes[SEL];
+  if (sh) { var id = { w:'W', d:'D', h:'H' }[t.dataset.f]; if (sh.params[id]) sh.params[id].value = v; }
+  else { ST.over[SEL] = ST.over[SEL] || {}; ST.over[SEL][t.dataset.f] = v; }
+  RES = KM.compute(DATA, ST); if (V3) V3.update(RES, colorOf, SEL, ST.site); renderEst();
+  var q = RES.parts[SEL]; if (q && $('selSai')) $('selSai').textContent = f2(KM.sai(q.w, q.d, q.h)) + ' 才'; renderList(); lsSet('kumitate.state', ST);
 });
-$('selBox').addEventListener('click', function(e){ if (e.target.id === 'bReset') { delete ST.over[SEL]; run(); } });
+$('selBox').addEventListener('click', function(e){
+  if (e.target.id === 'bReset') { delete ST.over[SEL]; run(); }
+  if (e.target.id === 'bUnshape') { delete ST.shapes[SEL]; renderLeft(); run(); }
+  if (e.target.id === 'bZumen') { // 図面アプリの 部材設計は いまの 部材（zumen.part）を 開く
+    var d = JSON.parse(JSON.stringify(ST.shapes[SEL])); delete d.__from; lsSet('zumen.part', d);
+    alert('図面アプリを 開きます。上の［🧊 部材設計］を 押すと この 形が 出ます。直したら 組み立てを 開き直し、左の「図面アプリ」の 部材を 押して ください');
+    window.open('zumen.html', 'zumen');
+  }
+});
 
 function renderEst(){
   var E = KM.estimate(RES, ST, TANKA), s = E.sai, h = '<div style="font-weight:700;margin-bottom:4px">才数と 見積（その場で 変わる）</div>';
@@ -260,7 +320,7 @@ $('bOpen').onclick = function(){ $('fOpen').click(); };
 $('fOpen').onchange = function(){
   var f = this.files[0]; this.value = ''; if (!f) return;
   readJson(f, function(j){
-    if (j.schema === 'kumitate/1') { ST = j; ST.over = ST.over || {}; ST.stone = ST.stone || {}; $('nm').value = ST.name || ''; SEL = null; renderLeft(); siteIn(); run(true); return; }
+    if (j.schema === 'kumitate/1') { ST = j; ST.over = ST.over || {}; ST.shapes = ST.shapes || {}; ST.stone = ST.stone || {}; $('nm').value = ST.name || ''; SEL = null; renderLeft(); siteIn(); run(true); return; }
     if (j.partsData || j.stoneMaster) { var dt = new DataTransfer(); dt.items.add(f); $('fTanka').files = dt.files; $('fTanka').onchange(); return; }
     alert('組み立ての ファイル（kumitate_….json）では ありません');
   });
@@ -272,7 +332,7 @@ $('seg').addEventListener('click', function(e){
 });
 $('ver').textContent = '組み立て ' + APP_VER + '（部材は ' + (DATA === window.KUMITATE_DATA ? '見本' : '読んだ ファイル') + '）';
 
-renderLeft(); siteIn(); run();
+RES = KM.compute(DATA, ST); renderLeft(); siteIn(); run();
 import('./kumitate-3d.js').then(function(m){
   V3 = m.create($('v'), function(k){ SEL = k === SEL ? null : k; run(); });
   V3.update(RES, colorOf, SEL, ST.site);

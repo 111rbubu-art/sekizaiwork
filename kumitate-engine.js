@@ -218,7 +218,9 @@ var KM = (function(){
     var errs = [], site = st.site;
     var p = gather(data, st.sel);
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
-    Object.keys(st.over || {}).forEach(function(k){ if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+    // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
+    Object.keys(st.shapes || {}).forEach(function(k){ var sz = shapeSize(st.shapes[k]); if (p[k] && sz) { p[k] = Object.assign({}, p[k], sz, { shape:st.shapes[k] }); } });
+    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k]) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
     p = applyPos(data.knowhow || [], p, data.anchors || {}, site, data, st.sel, errs);
     var boxes = {};
     Object.keys(p).forEach(function(k){
@@ -227,6 +229,9 @@ var KM = (function(){
     });
     return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs };
   }
+
+  function pv(def, id){ var q = def && def.params && def.params[id]; if (!q) return NaN; return +(q.value != null ? q.value : q.default); }
+  function shapeSize(def){ if (!def || def.schema !== 'buzai/1') return null; var w = pv(def, 'W'), d = pv(def, 'D'), h = pv(def, 'H'); return w > 0 && d > 0 && h > 0 ? { w:w, d:d, h:h } : null; }
 
   // ── 才数と 見積（単価が 無ければ 才数だけ）──
   // 部材の 分け方：石塔＝cg tower（納骨室は 入れない）、墓誌＝墓誌の 部材、外柵＝のこり（外柵・塔婆立など。納骨室は 入れない）
@@ -277,10 +282,10 @@ var KM = (function(){
   function newState(data){
     var first = function(kind, pref){ var v = variants(data, kind); return v[pref] ? pref : Object.keys(v)[0]; };
     return { schema:'kumitate/1', name:'', sel:{ tower:first('tower', 'wa_8sun'), fence:first('fence', 'design1'), boshi:first('boshi', 'none'), toba:first('toba', 'none'), crypt:'' },
-      site:{ W:1500, D:1800, domeH:300, domeT:150, adj:0 }, over:{}, stone:{ tower:'', fence:'', boshi:'' } };
+      site:{ W:1500, D:1800, domeH:300, domeT:150, adj:0 }, over:{}, shapes:{}, stone:{ tower:'', fence:'', boshi:'' } };
   }
 
-  return { SHAKU:SHAKU, sai:sai, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
+  return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
     applyDim:applyDim, applyPos:applyPos, interferences:interferences, compute:compute, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

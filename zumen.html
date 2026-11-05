@@ -165,6 +165,7 @@ body.pdmode #pdv{display:flex}
     <hr>
     <div class="tool" data-tool="line"><b>╱</b>線</div>
     <div class="tool" data-tool="arc"><b>◜</b>円弧</div>
+    <div class="tool" data-tool="rect"><b>▭</b>四角</div>
     <div class="tool" data-tool="hole"><b>◯</b>穴</div>
     <div class="tool" data-tool="leader"><b>↖</b>引出線</div>
     <div class="tool" data-tool="mark"><b>▲</b>磨き</div>
@@ -172,6 +173,9 @@ body.pdmode #pdv{display:flex}
     <div class="tool" data-tool="trim" title="Shift＋クリックで 延長"><b>✂</b>トリム</div>
     <div class="tool" data-tool="extend" title="Shift＋クリックで トリム"><b>⟶|</b>延長</div>
     <div class="tool" data-tool="mirror"><b>⇋</b>鏡像</div>
+    <div class="tool" data-tool="move"><b>⇉</b>移動<br>複写</div>
+    <div class="tool" data-tool="offset"><b>∥</b>オフ<br>セット</div>
+    <div class="tool" data-tool="corner"><b>⌒</b>角丸め<br>面取り</div>
     <hr>
     <div class="tool" data-tool="stone"><b>▭</b>石の<br>寸法</div>
     <div class="tool" data-tool="stretch"><b>⇲</b>伸ばす</div>
@@ -311,9 +315,9 @@ body.pdmode #pdv{display:flex}
 </div></div>
 <div id="printArea"></div>
 
-<script src="buzai-engine.js?v=0.6.5"></script>
+<script src="buzai-engine.js?v=0.6.6"></script>
 <script>
-var APP_VER = "v0.6.5";
+var APP_VER = "v0.6.6";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1484,13 +1488,20 @@ var HINTS = {
   arc:'円弧：3 点（始まり → 通る 点 → 終わり）。右の 欄で「中心から」に 切り替え',
   trim:'トリム：消したい 部分を クリック（交わる 線と 線の 間が 消える）。Shift＋クリックで 延長',
   extend:'延長：伸ばしたい 線の 端の 近くを クリック（当たる 線まで 伸びる）。Shift＋クリックで トリム',
+  rect:'四角：1 つ目の 角 → 反対の 角を クリック（右の 欄で 幅・高さを 打てば 1 クリック）',
+  move:'移動・複写：動かす ものを 選ぶ →［基点を 決める］（Enter）→ 基点 → 行き先を クリック（数字でも）',
+  offset:'オフセット：右の 欄で 幅を 打つ → 線を クリック → ずらす 側を クリック（続けて できる）',
+  corner:'角丸め・面取り：右の 欄で R か C と 大きさ → 1 本目の 線 → 2 本目の 線を クリック（残す 側を クリック）',
   mirror:'鏡像：写す ものを クリック／ドラッグで 選ぶ →［軸を 決める］（Enter）→ 軸の 2 点を クリック（Shift で まっすぐ）'
 };
 function setTool(t){
   ST.tool = t; ST.pts = []; ST.meas = null; ST.win = null; ST.hotGrip = null;
   if (t === 'stretch') ST.sw = { phase:'win1' }; else ST.sw = null;
   if (t !== 'stone') ST.stone = null;
-  if (t === 'mirror') ST.mi = { phase:ST.sel.size || ST.dsel.size || ST.selDim ? 'axis' : 'sel', keep:ST.mi ? ST.mi.keep : true }; else ST.mi = null;
+  if (t === 'mirror' || t === 'move') ST.mi = { phase:ST.sel.size || ST.dsel.size || ST.selDim ? 'axis' : 'sel', keep:t === 'mirror' ? ST.miKeep !== false : !!ST.mvKeep }; else ST.mi = null;
+  if (!ST.of) ST.of = { d:10 }; ST.of.e = null;
+  if (!ST.cn) ST.cn = { mode:'R', val:10 }; ST.cn.e1 = null;
+  if (!ST.rc) ST.rc = { w:0, h:0 };
   if (!ST.arcMode) ST.arcMode = '3p';
   document.querySelectorAll('.tool[data-tool]').forEach(function(el){ el.classList.toggle('on', el.dataset.tool === t); });
   cv.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
@@ -1836,6 +1847,20 @@ function drawCadPreview(c){
     c.save(); c.setLineDash([8, 4]); c.strokeStyle = '#1a5ad0'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(a1[0], a1[1]); c.lineTo(a2[0], a2[1]); c.stroke(); c.restore();
     D.ents.forEach(function(e){ if (!ST.sel.has(e.id)) return; var n = CX.mirrorEnt(e, R); SEQ--; if (n.t === 'text') return; c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5; c.beginPath(); pathEnt(c, V, n); c.stroke(); c.restore(); });
   }
+  if (t === 'move' && ST.mi && ST.mi.phase === 'axis' && ST.pts.length === 1 && ST.cur) {
+    var dx = ST.cur.x - ST.pts[0].x, dy = ST.cur.y - ST.pts[0].y;
+    D.ents.forEach(function(e){ if (!ST.sel.has(e.id) || e.t === 'text') return; var n = clone(e); transEnt(n, dx, dy); c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5; c.beginPath(); pathEnt(c, V, n); c.stroke(); c.restore(); });
+    var b1 = W2S(V, ST.pts[0]), b2 = W2S(V, ST.cur); c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#555'; c.beginPath(); c.moveTo(b1[0], b1[1]); c.lineTo(b2[0], b2[1]); c.stroke(); c.restore();
+  }
+  if (t === 'rect' && ST.cur && (ST.pts.length === 1 || (ST.rc && ST.rc.w > 0 && ST.rc.h > 0))) {
+    var q0 = ST.pts.length ? ST.pts[0] : ST.cur, q1 = ST.pts.length ? ST.cur : P(ST.cur.x + ST.rc.w, ST.cur.y + ST.rc.h), s0 = W2S(V, q0), s1 = W2S(V, q1);
+    c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#ff5a1f'; c.lineWidth = 1.5; c.strokeRect(s0[0], s0[1], s1[0] - s0[0], s1[1] - s0[1]); c.restore();
+  }
+  if (t === 'offset' && ST.of && ST.of.e) {
+    c.save(); c.strokeStyle = '#ff5a1f'; c.lineWidth = 3; c.beginPath(); pathEnt(c, V, ST.of.e); c.stroke(); c.restore();
+    if (w) { var oq = CX2.offsetEnt(ST.of.e, ST.of.d, w); SEQ--; if (oq) { c.save(); c.setLineDash([6, 4]); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5; c.beginPath(); pathEnt(c, V, oq); c.stroke(); c.restore(); } }
+  }
+  if (t === 'corner' && ST.cn && ST.cn.e1) { c.save(); c.strokeStyle = '#ff5a1f'; c.lineWidth = 3; c.beginPath(); pathEnt(c, V, ST.cn.e1); c.stroke(); c.restore(); }
   if (t === 'arc' && ST.cur && ST.pts.length === 2) {
     var g = ST.arcMode === 'cse' ? CX.arcC(ST.pts[0], ST.pts[1], ST.cur) : CX.arc3(ST.pts[0], ST.pts[1], ST.cur);
     if (g) drawPiece(c, { k:'A', c:g.c, r:g.r, a0:g.a0, s:sweepCCW(g.a0, g.a1) }, '#ff5a1f', 2);
@@ -1856,7 +1881,7 @@ function cadClick(p, raw, ev){
     pushUndo(); D.ents.push({ id:SEQ++, t:'arc', c:g.c, r:g.r, a0:g.a0, a1:g.a1, layer:drawLay, css:null, aci:256 }); layerOf(drawLay); renderLayers();
     setMsg('円弧 R' + fmtMm(g.r)); changed(); return true;
   }
-  if (t === 'mirror') {
+  if (t === 'mirror' || t === 'move') {
     if (ST.mi.phase === 'sel') {
       var d = hitDim(raw);
       if (d) { if (ST.dsel.has(d.id)) ST.dsel.delete(d.id); else ST.dsel.add(d.id); }
@@ -1865,17 +1890,120 @@ function cadClick(p, raw, ev){
     }
     ST.pts.push(P(p.x, p.y)); if (ST.pts.length < 2) { redraw(); return true; }
     var a = ST.pts[0], b = ST.pts[1]; ST.pts = [];
+    if (t === 'move') { setMsg(CX2.move(b.x - a.x, b.y - a.y, ST.mi.keep)); panel(); return true; }
     setMsg(CX.mirror(a, b, ST.mi.keep)); ST.mi.phase = 'sel'; panel(); return true;
+  }
+  if (t === 'rect') {
+    if (ST.rc.w > 0 && ST.rc.h > 0) ST.pts = [P(p.x, p.y), P(p.x + ST.rc.w, p.y + ST.rc.h)]; else ST.pts.push(P(p.x, p.y));
+    if (ST.pts.length < 2) { redraw(); return true; }
+    var r0 = ST.pts[0], r1 = ST.pts[1]; ST.pts = [];
+    if (Math.abs(r1.x - r0.x) < 1e-9 || Math.abs(r1.y - r0.y) < 1e-9) { setMsg('幅か 高さが 0 です'); redraw(); return true; }
+    pushUndo(); D.ents.push({ id:SEQ++, t:'pl', closed:true, v:[{ x:r0.x, y:r0.y, b:0 }, { x:r1.x, y:r0.y, b:0 }, { x:r1.x, y:r1.y, b:0 }, { x:r0.x, y:r1.y, b:0 }], layer:drawLay, css:null, aci:256 });
+    layerOf(drawLay); renderLayers(); setMsg('四角 ' + fmtMm(Math.abs(r1.x - r0.x)) + '×' + fmtMm(Math.abs(r1.y - r0.y))); changed(); return true;
+  }
+  if (t === 'offset') {
+    if (!ST.of.e) { var oe = nearestEnt(raw, function(x){ return visible(x) && x.t !== 'text'; }); if (!oe) { setMsg('線を クリックして ください'); return true; } ST.of.e = oe; setMsg('ずらす 側を クリック'); redraw(); return true; }
+    var no = CX2.offsetEnt(ST.of.e, ST.of.d, raw); ST.of.e = null;
+    if (!no) { setMsg('この 幅では ずらせません'); redraw(); return true; }
+    pushUndo(); D.ents.push(no); setMsg('ずらしました（' + fmtMm(ST.of.d) + '）'); changed(); return true;
+  }
+  if (t === 'corner') {
+    var ce = nearestEnt(raw, function(x){ return visible(x) && x.t === 'line'; });
+    if (!ST.cn.e1) { if (!ce) { setMsg('1 本の 線を クリックして ください'); return true; } ST.cn.e1 = ce; ST.cn.w1 = P(raw.x, raw.y); setMsg('2 本目の 線を クリック'); redraw(); return true; }
+    var e1 = ST.cn.e1, w1 = ST.cn.w1; ST.cn.e1 = null;
+    setMsg(CX2.corner(e1, w1, ce, raw, ST.cn.mode, ST.cn.val)); redraw(); return true;
   }
   return false;
 }
-function mirrorAxis(){ if (!(ST.sel.size || ST.dsel.size || ST.selDim)) { setMsg('写す ものを 選んで ください'); return; } ST.mi.phase = 'axis'; ST.pts = []; panel(); redraw(); }
+// ═════════ 作図の 道具 その 2（移動・複写・オフセット・四角・角丸め・面取り）═════════
+var CX2 = (function(){
+  function selEnts(){ return D.ents.filter(function(e){ return ST.sel.has(e.id); }); }
+  function selDims(){ return D.dims.filter(function(d){ return ST.dsel.has(d.id) || d.id === ST.selDim; }); }
+  function moveDim(d, dx, dy){ [d.a, d.b, d.off].forEach(function(p){ p.x += dx; p.y += dy; }); }
+  // 移動・複写（keep＝元を 残す）
+  function move(dx, dy, keep){
+    var es = selEnts(), ds = selDims(); if (!es.length && !ds.length) return '動かす ものを 選んで ください';
+    if (!dx && !dy) return 'ずらす 量が 0 です';
+    pushUndo();
+    if (keep) {
+      es.forEach(function(e){ var n = clone(e); n.id = SEQ++; transEnt(n, dx, dy); D.ents.push(n); });
+      ds.forEach(function(d){ var n = clone(d); n.id = SEQ++; n.auto = false; moveDim(n, dx, dy); D.dims.push(n); });
+    } else { es.forEach(function(e){ transEnt(e, dx, dy); }); ds.forEach(function(d){ moveDim(d, dx, dy); }); }
+    changed(); return (keep ? '写しました' : '動かしました') + '（X ' + fmtMm(dx) + '・Y ' + fmtMm(dy) + '）';
+  }
+  // オフセット：e を 距離 d だけ、点 side の 側へ
+  function offsetEnt(e, d, side){
+    var n = clone(e); n.id = SEQ++;
+    if (e.t === 'line') {
+      var u = sub(e.b, e.a), L = Math.hypot(u.x, u.y); if (L < 1e-9) return null; u = mulp(u, 1 / L);
+      var nn = P(-u.y, u.x), s = dot(sub(side, e.a), nn) >= 0 ? 1 : -1;
+      n.a = addp(e.a, mulp(nn, s * d)); n.b = addp(e.b, mulp(nn, s * d)); return n;
+    }
+    if (e.t === 'circle' || e.t === 'arc') { var r = dist(side, e.c) < e.r ? e.r - d : e.r + d; if (r <= 1e-9) return null; n.r = r; return n; }
+    if (e.t === 'pl') {
+      var m = e.v.length, segs = e.closed ? m : m - 1, best = -1, bd = Infinity, i;
+      for (i = 0; i < segs; i++) { var a = e.v[i], b = e.v[(i + 1) % m], dd = distSeg(side, a, b); if (dd < bd) { bd = dd; best = i; } }
+      var a0 = e.v[best], b0 = e.v[(best + 1) % m], u0 = sub(b0, a0), L0 = Math.hypot(u0.x, u0.y) || 1;
+      var sg = dot(sub(side, a0), P(-u0.y / L0, u0.x / L0)) >= 0 ? 1 : -1, off = sg * d; // 進む 向きの 左が ＋
+      // 各 区間を ずらす（円弧は 同じ ふくらみ＝同心）
+      var lines = [];
+      for (i = 0; i < segs; i++) {
+        var p = e.v[i], q = e.v[(i + 1) % m], ba = p.b ? bulgeArc(p, q, p.b) : null;
+        if (!ba) { var w = sub(q, p), l = Math.hypot(w.x, w.y) || 1, nv = P(-w.y / l * off, w.x / l * off); lines.push({ a:addp(p, nv), b:addp(q, nv), b0:0 }); }
+        else { var r2 = ba.r + (ba.ccw ? -off : off); if (r2 <= 1e-9) return null;
+          lines.push({ a:P(ba.c.x + r2 * Math.cos(ba.a0), ba.c.y + r2 * Math.sin(ba.a0)), b:P(ba.c.x + r2 * Math.cos(ba.a1), ba.c.y + r2 * Math.sin(ba.a1)), b0:p.b }); }
+      }
+      function meet(s1, s2){ // まっすぐ 同士は 交点、ほかは 間
+        if (!s1.b0 && !s2.b0) { var r = sub(s1.b, s1.a), s = sub(s2.b, s2.a), den = crs(r, s); if (Math.abs(den) > 1e-12) { var t = crs(sub(s2.a, s1.a), s) / den; return addp(s1.a, mulp(r, t)); } }
+        return mulp(addp(s1.b, s2.a), 0.5);
+      }
+      n.v = e.v.map(function(v, k){
+        var prev = k === 0 ? (e.closed ? lines[segs - 1] : null) : lines[k - 1], next = k < segs ? lines[k] : null, pt;
+        if (prev && next) pt = meet(prev, next); else if (next) pt = next.a; else pt = prev.b;
+        return { x:pt.x, y:pt.y, b:v.b || 0 };
+      });
+      return n;
+    }
+    return null;
+  }
+  // 角丸め（R）・面取り（C）：2 本の 線を クリックした 側を 残して つなぐ
+  function corner(e1, w1, e2, w2, mode, val){
+    if (!e1 || !e2 || e1 === e2 || e1.t !== 'line' || e2.t !== 'line') return '1 本の 線を 2 本 えらんで ください（つながった 線は トリムで 分けてから）';
+    var r = sub(e1.b, e1.a), s = sub(e2.b, e2.a), den = crs(r, s);
+    if (Math.abs(den) < 1e-12) return '2 本が 平行です';
+    var X = addp(e1.a, mulp(r, crs(sub(e2.a, e1.a), s) / den));
+    function dir(e, w){ var u = sub(e.b, e.a), L = Math.hypot(u.x, u.y); u = mulp(u, 1 / L); if (dot(sub(w, X), u) < 0) u = mulp(u, -1); return u; }
+    var u1 = dir(e1, w1), u2 = dir(e2, w2), th = Math.acos(Math.max(-1, Math.min(1, dot(u1, u2))));
+    if (th < 1e-6 || th > PI - 1e-6) return '角が 作れません';
+    var t1, t2, add = null;
+    if (mode === 'R' && val > 0) {
+      var t = val / Math.tan(th / 2); t1 = t; t2 = t;
+      var bis = addp(u1, u2), bl = Math.hypot(bis.x, bis.y); bis = mulp(bis, 1 / bl);
+      var C = addp(X, mulp(bis, val / Math.sin(th / 2))), T1 = addp(X, mulp(u1, t)), T2 = addp(X, mulp(u2, t));
+      var A1 = Math.atan2(T1.y - C.y, T1.x - C.x), A2 = Math.atan2(T2.y - C.y, T2.x - C.x), ccw = sweepCCW(A1, A2) < PI;
+      var nA = function(a){ return (a % (2 * PI) + 2 * PI) % (2 * PI); };
+      add = { id:SEQ++, t:'arc', c:C, r:val, a0:nA(ccw ? A1 : A2), a1:nA(ccw ? A2 : A1), layer:e1.layer, css:e1.css, aci:e1.aci };
+    } else if (mode === 'C' && val > 0) { t1 = val; t2 = val; add = { id:SEQ++, t:'line', a:addp(X, mulp(u1, val)), b:addp(X, mulp(u2, val)), layer:e1.layer, css:e1.css, aci:e1.aci }; }
+    else { t1 = 0; t2 = 0; }
+    function cut(e, u, tt){ // X に 近い 方の 端を X＋u×tt に
+      var pa = dot(sub(e.a, X), u), pb = dot(sub(e.b, X), u), far = Math.max(pa, pb);
+      if (far <= tt + 1e-9) return false;
+      var np = addp(X, mulp(u, tt)); if (pa < pb) e.a = np; else e.b = np; return true;
+    }
+    var L1 = Math.max(dot(sub(e1.a, X), u1), dot(sub(e1.b, X), u1)), L2 = Math.max(dot(sub(e2.a, X), u2), dot(sub(e2.b, X), u2));
+    if (L1 <= t1 + 1e-9 || L2 <= t2 + 1e-9) return '線が 短くて 入りません（' + (mode === 'R' ? 'R' : 'C') + ' を 小さく）';
+    pushUndo(); cut(e1, u1, t1); cut(e2, u2, t2); if (add) D.ents.push(add); changed();
+    return mode === 'R' && val > 0 ? '角を 丸めました（R' + fmtMm(val) + '）' : mode === 'C' && val > 0 ? '面を 取りました（C' + fmtMm(val) + '）' : '角に しました';
+  }
+  return { move:move, offsetEnt:offsetEnt, corner:corner, selEnts:selEnts };
+})();
+function mirrorAxis(){ if (!(ST.sel.size || ST.dsel.size || ST.selDim)) { setMsg(ST.tool === 'move' ? '動かす ものを 選んで ください' : '写す ものを 選んで ください'); return; } ST.mi.phase = 'axis'; ST.pts = []; panel(); redraw(); }
 
 // ═════════ 右の 欄（道具ごと） ═════════
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function panel(){
   var H = document.getElementById('pnToolH'), B = document.getElementById('pnToolB'), t = ST.tool, h = '';
-  var names = { select:'選ぶ', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）' };
+  var names = { select:'選ぶ', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）', move:'移動・複写', offset:'オフセット（平行に 写す）', rect:'四角', corner:'角丸め・面取り' };
   H.textContent = names[t] || t;
   if (t === 'select') {
     var d = ST.selDim && D.dims.filter(function(x){ return x.id === ST.selDim; })[0];
@@ -1945,14 +2073,38 @@ function panel(){
     h += '<div class="muted">' + HINTS[t] + '</div><div class="muted">赤＝消える 所、オレンジの 点線＝伸びる 所（動かすと 下書きが 出ます）。つながった 線（ポリライン）を 切ると 1 本ずつの 線・円弧に 分かれます</div>';
     B.innerHTML = h; return;
   }
-  if (t === 'mirror') {
+  if (t === 'rect') {
+    h += '<div class="row"><label>幅</label><input type="text" id="rcW" class="w" value="' + (ST.rc.w > 0 ? esc(fmtMm(ST.rc.w)) : '') + '"><label>高さ</label><input type="text" id="rcH" class="w" value="' + (ST.rc.h > 0 ? esc(fmtMm(ST.rc.h)) : '') + '"></div>';
+    h += '<div class="muted">空＝2 点を クリック。幅・高さを 打つと、クリックした 所が 左下の 角に なります（尺寸でも 打てます）</div>';
+    B.innerHTML = h; ['rcW', 'rcH'].forEach(function(id){ var el = document.getElementById(id); el.onchange = function(){ var v = el.value.trim() ? parseLen(el.value) : 0; if (v == null || v < 0) { alert('大きさが 読めません'); return; } ST.rc[id === 'rcW' ? 'w' : 'h'] = v || 0; ST.pts = []; }; }); return;
+  }
+  if (t === 'offset') {
+    h += '<div class="row"><label>幅</label><input type="text" id="ofD" class="w" value="' + esc(fmtMm(ST.of.d)) + '"> mm</div>';
+    h += '<div class="muted">線・円・円弧・つながった 線を クリック → ずらす 側を クリック。続けて できます</div>';
+    B.innerHTML = h; var od = document.getElementById('ofD'); od.onchange = function(){ var v = parseLen(od.value); if (!(v > 0)) { alert('幅が 読めません'); return; } ST.of.d = v; }; return;
+  }
+  if (t === 'corner') {
+    h += '<div class="row"><label>形</label><select id="cnM"><option value="R">角丸め（R）</option><option value="C">面取り（C）</option></select><input type="text" id="cnV" class="w" value="' + esc(fmtMm(ST.cn.val)) + '"> mm</div>';
+    h += '<div class="muted">0 に すると 2 本を 角で つなぎます（はみ出しを 切る・届かなければ 伸ばす）。線は 残す 側を クリック</div>';
+    B.innerHTML = h; var cm = document.getElementById('cnM'); cm.value = ST.cn.mode; cm.onchange = function(){ ST.cn.mode = cm.value; };
+    var cv2 = document.getElementById('cnV'); cv2.onchange = function(){ var v = cv2.value.trim() ? parseLen(cv2.value) : 0; if (v == null || v < 0) { alert('大きさが 読めません'); return; } ST.cn.val = v; }; return;
+  }
+  if (t === 'mirror' || t === 'move') {
     var nE = ST.sel.size, nD = ST.dsel.size + (ST.selDim ? 1 : 0);
     h += '<div>図形 <b>' + nE + '</b> 個・寸法 <b>' + nD + '</b> 個 選んで います</div>';
-    h += '<div class="row"><label><input type="checkbox" id="miKeep"' + (ST.mi.keep ? ' checked' : '') + '> 元を 残す（写す）</label></div>';
-    if (ST.mi.phase === 'sel') h += '<div class="muted">写す ものを クリック／ドラッグで 選んで（Ctrl なしで 足せます）、［軸を 決める］か Enter</div><div class="row"><button class="b2 pr" id="miGo">軸を 決める（Enter）</button></div>';
-    else h += '<div class="muted">軸の 1 点目 → 2 点目を クリック（端点・中点に 吸い付く。Shift で まっすぐ）</div><div class="row"><button class="b2" id="miBack">選び直す</button></div>';
+    var mv = t === 'move';
+    h += '<div class="row"><label><input type="checkbox" id="miKeep"' + (ST.mi.keep ? ' checked' : '') + '> ' + (mv ? '複写（元を 残す）' : '元を 残す（写す）') + '</label></div>';
+    if (ST.mi.phase === 'sel') h += '<div class="muted">' + (mv ? '動かす' : '写す') + ' ものを クリック／ドラッグで 選んで（Ctrl なしで 足せます）、［' + (mv ? '基点' : '軸') + 'を 決める］か Enter</div><div class="row"><button class="b2 pr" id="miGo">' + (mv ? '基点' : '軸') + 'を 決める（Enter）</button></div>';
+    else {
+      h += '<div class="muted">' + (mv ? '基点 → 行き先を クリック（端点・中点に 吸い付く。Shift で まっすぐ）' + (ST.mi.keep ? '。続けて 何度でも 写せます' : '') : '軸の 1 点目 → 2 点目を クリック（端点・中点に 吸い付く。Shift で まっすぐ）') + '</div>';
+      if (mv) h += '<div class="row"><label>X</label><input type="text" id="mvX" class="w" placeholder="0"><label>Y</label><input type="text" id="mvY" class="w" placeholder="0"><button class="b2" id="mvGo">数字で ずらす</button></div>';
+      h += '<div class="row"><button class="b2" id="miBack">選び直す</button></div>';
+    }
     B.innerHTML = h;
-    document.getElementById('miKeep').onchange = function(){ ST.mi.keep = this.checked; };
+    document.getElementById('miKeep').onchange = function(){ ST.mi.keep = this.checked; if (mv) ST.mvKeep = this.checked; else ST.miKeep = this.checked; panel(); };
+    var mg = document.getElementById('mvGo'); if (mg) mg.onclick = function(){ var x = document.getElementById('mvX').value.trim(), y = document.getElementById('mvY').value.trim();
+      function rd(v){ if (!v) return 0; var neg = /^[-－−]/.test(v), n = parseLen(v.replace(/^[-－−]/, '')); return n == null ? NaN : neg ? -n : n; }
+      var dx = rd(x), dy = rd(y); if (isNaN(dx) || isNaN(dy)) { alert('数字が 読めません'); return; } setMsg(CX2.move(dx, dy, ST.mi.keep)); };
     var g1 = document.getElementById('miGo'); if (g1) g1.onclick = mirrorAxis;
     var g2 = document.getElementById('miBack'); if (g2) g2.onclick = function(){ ST.mi.phase = 'sel'; ST.pts = []; panel(); redraw(); };
     return;
@@ -2106,7 +2258,7 @@ cv.addEventListener('pointermove', function(ev){
       if (drag.type === 'grip') { pushUndo(); ST.hotGrip = null; }
       if (drag.type === 'maybe') {
         if (drag.touch) drag.type = 'pan';
-        else if (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'sel') drag.type = 'win';
+        else if (ST.mi && ST.mi.phase === 'sel') drag.type = 'win';
         else if (ST.tool === 'select') { var hd = hitDim(drag.w); if (hd && hd.id === ST.selDim) { pushUndo(); drag.type = 'dimmove'; drag.dim = hd; } else drag.type = 'win'; }
         else drag.type = 'pan';
       }
@@ -2117,13 +2269,13 @@ cv.addEventListener('pointermove', function(ev){
     else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
   }
   // スナップ（点を 取る 道具だけ）
-  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc'].indexOf(ST.tool) >= 0 || (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off');
+  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off');
   if (ST.tool === 'select' && ST.hotGrip === 'off') redraw();
   ST.snap = needSnap && !(drag && drag.moved) && !(ST.tool === 'dim' && ST.pts.length === 2) ? findSnap(q[0], q[1]) : null;
   var p = ST.snap ? ST.snap.p : w;
   if (!ST.snap) p = applyOrtho(p, ev);
   ST.cur = p; ST.curRaw = w; ST.shift = !!ev.shiftKey;
-  if (ST.tool === 'trim' || ST.tool === 'extend' || (ST.tool === 'arc' && ST.pts.length) || ST.tool === 'mirror') redraw();
+  if (['trim', 'extend', 'mirror', 'move', 'rect', 'offset', 'corner'].indexOf(ST.tool) >= 0 || (ST.tool === 'arc' && ST.pts.length)) redraw();
   document.getElementById('stXY').textContent = 'X ' + fmtMm(p.x) + '  Y ' + fmtMm(p.y);
   var base = ST.pts.length ? ST.pts[ST.pts.length - 1] : null;
   document.getElementById('stRel').textContent = base ? '距離 ' + fmtLen(dist(base, p)) : '';
@@ -2144,7 +2296,7 @@ function endPtr(ev){
     return;
   }
   if (dg.type === 'maybe' && !dg.moved) {
-    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc'].indexOf(ST.tool) >= 0 || (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off') ? findSnap(q[0], q[1]) : null;
+    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off') ? findSnap(q[0], q[1]) : null;
     if (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'win1' || ST.sw.phase === 'win2')) sn = null;
     if (ST.tool === 'dim' && ST.pts.length === 2) sn = null;
     var p = sn ? sn.p : applyOrtho(raw, ev);
@@ -2181,7 +2333,7 @@ function showCtx(x, y){
   var busy = ST.pts.length || ST.hotGrip || (ST.sw && ST.sw.phase !== 'win1');
   var it = [];
   if (busy) it.push(['✕ やめる（Esc）', cancelOp], '-');
-  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['arc', '◜ 円弧'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['trim', '✂ トリム'], ['extend', '⟶| 延長'], ['mirror', '⇋ 鏡像'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ setTool(t[0]); }, false, ST.tool === t[0]]); });
+  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['arc', '◜ 円弧'], ['rect', '▭ 四角'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['trim', '✂ トリム'], ['extend', '⟶| 延長'], ['mirror', '⇋ 鏡像'], ['move', '⇉ 移動・複写'], ['offset', '∥ オフセット'], ['corner', '⌒ 角丸め・面取り'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ setTool(t[0]); }, false, ST.tool === t[0]]); });
   it.push('-', ['⤢ 全体を 見る', fit], ['↶ 元に 戻す', undo, !UNDO.length], ['↷ やり直す', redo, !REDO.length]);
   if (ST.selDim || ST.dsel.size || ST.sel.size) it.push('-', ['🗑 消す（Delete）', deleteSel]);
   if (selDimObj()) it.push(['寸法の 大きさ・文字…', function(){ document.body.classList.add('sideon'); var el = document.getElementById('dTh'); if (el) { el.focus(); el.select(); } }]);
@@ -2209,8 +2361,8 @@ document.addEventListener('keydown', function(ev){
   var tg = ev.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT') return;
   if (ev.key === 'Escape' && document.getElementById('ctx').style.display === 'block') { hideCtx(); return; }
   if (ev.key === 'Escape' && ST.hotGrip) { ST.hotGrip = null; setMsg(''); redraw(); return; }
-  if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; if (ST.mi) ST.mi.phase = 'sel'; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
-  else if (ev.key === 'Enter' && ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'sel') { mirrorAxis(); ev.preventDefault(); }
+  if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; if (ST.mi) ST.mi.phase = 'sel'; if (ST.of) ST.of.e = null; if (ST.cn) ST.cn.e1 = null; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
+  else if (ev.key === 'Enter' && ST.mi && ST.mi.phase === 'sel') { mirrorAxis(); ev.preventDefault(); }
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.shiftKey ? redo() : undo(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { redo(); ev.preventDefault(); }

@@ -333,8 +333,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
     </div>
     <div class="pdright">
       <div id="pd3d"><div class="pdmsg"></div></div>
-      <div class="pdbox pddrawonly"><b>図面で かく</b><div class="muted">左は 図面の 画面です（作図の 道具が 使えます）。形を 直したら 左の［🧊 部材に する］で 正面・側面・天面の 線を 選び［この 部材に 反映］→ 右の 3D が 変わります</div>
-        <div class="row" style="margin-top:6px"><button class="b2" id="pdRedraw">今の 形から 図を かき直す</button></div></div>
+      <div class="pdbox pddrawonly"><b>図面で かく</b><div class="muted">左は 図面の 画面です（作図の 道具が 使えます）。形を 直したら［🧊 図から 部材に 反映］→ 図に 出して いる 正面・側面・天面の 線から 形を 作り直し、右の 3D が 変わります</div>
+        <div class="row" style="margin-top:6px"><button class="b2 pr" id="pdMkAuto">🧊 図から 部材に 反映</button><button class="b2" id="pdMkSee">読み取りを 見る</button></div>
+        <div class="row"><button class="b2" id="pdRedraw">今の 形から 図を かき直す</button></div></div>
       <div class="pdbox pddrawonly"><b>図に 出す 面</b><div class="pdfaces" id="pdFaces"></div><div class="muted">チェックすると その 面の 図を 左の 図面に 足し、外すと 消します（第三角法の 並び）。［📐 図面に 入れる］でも この 面が 入ります。見えない 線は 点線</div></div>
       <div class="pdbox">才数（外寸）　<b class="big" id="pdSai"></b><div class="muted">外寸 <span id="pdSize"></span> mm</div></div>
     </div>
@@ -349,7 +350,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 
 <script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.2";
+var APP_VER = "v0.7.3";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1531,7 +1532,7 @@ function setTool(t){
   ST.tool = t; ST.pts = []; ST.meas = null; ST.win = null; ST.hotGrip = null;
   if (t === 'stretch') ST.sw = { phase:'win1' }; else ST.sw = null;
   if (t !== 'stone') ST.stone = null;
-  if (t === 'mkpart') { mkStart(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; } else ST.mk = null;
+  if (t === 'mkpart') { mkStart(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; if (PD && PD.saveMain) { var am = mkAuto(); if (am && !am.err) ST.mk = am; } } else ST.mk = null;
   if (t === 'mkpart') ST.mi = { phase:'sel', keep:false }; else if (t === 'mirror' || t === 'move') ST.mi = { phase:ST.sel.size || ST.dsel.size || ST.selDim ? 'axis' : 'sel', keep:t === 'mirror' ? ST.miKeep !== false : !!ST.mvKeep }; else ST.mi = null;
   if (!ST.of) ST.of = { d:10 }; ST.of.e = null;
   if (!ST.cn) ST.cn = { mode:'R', val:10 }; ST.cn.e1 = null;
@@ -2201,6 +2202,28 @@ var MK = (function(){
   return { face:face };
 })();
 function mkStart(){ ST.mk = { step:'front', front:null, side:null, top:null, D:0, holeD:{}, name:'' }; }
+// 部材設計の［図面で かく］：図に 出した 面（e.pv）の 線を そのまま 使う。あとから かいた 線は 近い 面に 入れる
+function mkAuto(){
+  var G = { front:[], side:[], top:[] }, loose = [];
+  function use(e){ var L = layerOf(e.layer); return e.t !== 'text' && visible(e) && !L.dash && !/隠れ|文字|寸法/.test(e.layer || ''); }
+  D.ents.forEach(function(e){ if (!use(e)) return; if (e.pv && G[e.pv]) G[e.pv].push(e); else if (!e.pv) loose.push(e); });
+  if (!G.front.length) return null;
+  var B = {}; Object.keys(G).forEach(function(k){ if (G[k].length) B[k] = bboxOf(G[k]); });
+  loose.forEach(function(e){ var b = bboxOf([e]), c = P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), best = null, bd = Infinity;
+    Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (d < bd) { bd = d; best = k; } });
+    if (best && bd < 0.25) G[best].push(e); });
+  var m = { step:'done', front:null, side:null, top:null, D:0, holeD:{}, name:'', auto:true };
+  m.front = MK.face(G.front); if (!m.front) return { err:'正面の 外形が 閉じて いません。端と 端が つながって いるか 見て ください' };
+  if (G.side.length) m.side = MK.face(G.side); if (G.top.length) m.top = MK.face(G.top);
+  return m;
+}
+function mkAutoApply(direct){
+  var m = mkAuto(); if (!m) return false;
+  if (m.err) { setMsg(m.err); alert(m.err); return true; }
+  setTool('mkpart'); ST.mk = m; panel(); redraw();
+  if (direct) mkBuild();
+  return true;
+}
 function mkSet(skip){
   var k = ST.mk.step, es = D.ents.filter(function(e){ return ST.sel.has(e.id) && e.t !== 'text'; });
   if (!skip) {
@@ -2341,7 +2364,8 @@ function panel(){
       (M.front ? M.front.holes : []).forEach(function(_, i){ hl.push(['f' + i, '正面の 穴 ' + (i + 1) + '：前から 深さ']); });
       (M.top ? M.top.holes : []).forEach(function(_, i){ hl.push(['t' + i, '天面の 穴 ' + (i + 1) + '：上から 深さ']); });
       hl.forEach(function(x){ h += '<div class="row"><label>' + x[1] + '</label><input type="text" class="w mkH" data-k="' + x[0] + '" value="' + (M.holeD[x[0]] ? esc(fmtMm(M.holeD[x[0]])) : '') + '" placeholder="半分"> mm</div>'; });
-      h += '<div class="row"><label>名前</label><input type="text" id="mkN" class="ww" value="' + esc(M.name) + '" placeholder="例 香炉（筆返し 変形）"></div>';
+      if (!(PD && PD.saveMain)) h += '<div class="row"><label>名前</label><input type="text" id="mkN" class="ww" value="' + esc(M.name) + '" placeholder="例 香炉（筆返し 変形）"></div>';
+      if (M.auto) h += '<div class="muted">図に 出した 正面・側面・天面の 線を そのまま 使いました（あとから かいた 線は 近い 面に 入れて います）。色の 線が 読み取った 外形、オレンジ＝穴。違う ときは［はじめから］で 線を 選び直せます</div>';
       h += '<div class="row"><button class="b2 pr" id="mkGo">' + (PD && PD.saveMain ? '🧊 この 部材に 反映' : '🧊 部材を 作る') + '</button><button class="b2" id="mkRe">はじめから</button></div>';
       h += '<div class="muted">正面・側面・天面の 外形を 重ねた 形に なります（叩き台）。作った あと 幅・奥行・高さの 数字で 全体を 伸び縮み できます</div>';
     }
@@ -2351,7 +2375,7 @@ function panel(){
     var b3 = document.getElementById('mkGo'); if (b3) b3.onclick = function(){
       var dEl = document.getElementById('mkD'); if (dEl) { var dv = parseLen(dEl.value); M.D = dv > 0 ? dv : 0; }
       document.querySelectorAll('.mkH').forEach(function(el){ var hv = el.value.trim() ? parseLen(el.value) : 0; if (hv > 0) M.holeD[el.dataset.k] = hv; });
-      M.name = document.getElementById('mkN').value; mkBuild(); };
+      var nEl = document.getElementById('mkN'); if (nEl) M.name = nEl.value; mkBuild(); };
     var b4 = document.getElementById('mkRe'); if (b4) b4.onclick = function(){ mkStart(); ST.sel.clear(); panel(); redraw(); };
     return;
   }
@@ -3744,7 +3768,7 @@ function pdDrawMode(on){
     UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.gaps = null; ST.stone = null;
     document.body.classList.add('pddraw'); pdHidePop(); PD.sel = null;
     renderLayers(); resize(); fit(); setTool('select'); changed();
-    setMsg('部材の 図面です。かき直したら 左の［🧊 部材に する］で 正面・側面・天面を 選び［この 部材に 反映］');
+    setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
   } else if (!on && PD.saveMain) {
     PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; pdKeep();
     D = PD.saveMain.D; UNDO = PD.saveMain.U; REDO = PD.saveMain.R; PD.saveMain = null; updUndo();
@@ -4018,6 +4042,8 @@ function pdOpenLib(){
   document.getElementById('pdDrawUndo').onclick = function(){ undo(); };
   document.getElementById('pdModeChip').onclick = function(){ pdDrawMode(false); };
   document.getElementById('pdModeDraw').onclick = function(){ pdDrawMode(true); };
+  document.getElementById('pdMkAuto').onclick = function(){ if (!PD || !PD.saveMain) return; if (!mkAutoApply(true)) alert('図に 出した 正面の 線が ありません。［今の 形から 図を かき直す］か、左の［🧊 部材に する］で 線を 選んで ください'); };
+  document.getElementById('pdMkSee').onclick = function(){ if (!PD || !PD.saveMain) return; if (!mkAutoApply(false)) setTool('mkpart'); };
   document.getElementById('pdRedraw').onclick = function(){ if (!PD || !PD.saveMain) return; if (D.ents.length && !confirm('今の 図を 消して、部材の 形から かき直します。よろしいですか')) return;
     pushUndo(); var doc = pdSketchDoc(); D.ents = doc.ents; D.dims = doc.dims; D.layers = doc.layers; renderLayers(); changed(); fit(); };
   document.getElementById('bPdNew').onclick = function(){ var d = clone(BZ_KORO); d.id = 'part_' + Date.now().toString(36); d.version = 0; pdEdit(d); };

@@ -198,6 +198,13 @@ var BZ = (function(){
     var out = [];
     function L(a, b, hid){ out.push({ k:'line', a:a, b:b, hid:!!hid }); }
     function rect(x0, y0, x1, y1){ out.push({ k:'pl', v:[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], closed:true }); }
+    // 側面図：外の 端に そろった 部品（筆返し）が 幅いっぱいの 箱（天板）の 上に 乗る 所は 同じ 面 なので 境の 線を 出さない
+    var E = 1e-6, onTop = [], fullBox = [];
+    if (v !== 'front') m.comps.forEach(function(c){ if (c.type === 'profile') onTop.push({ y:c.at.y, x0:c.at.front, x1:c.at.front + c.s.len }); if (c.type === 'box' && c.s.w >= m.W - E) fullBox.push({ y:c.at.y + c.s.h, x0:c.at.front, x1:c.at.front + c.s.d }); });
+    function hLine(x0, x1, y, cut){ // y の 横線から cut の 範囲を 抜く
+      var segs = [[x0, x1]]; cut.forEach(function(r){ if (Math.abs(r.y - y) > E) return; var n = []; segs.forEach(function(g){ if (r.x1 <= g[0] + E || r.x0 >= g[1] - E) { n.push(g); return; } if (r.x0 > g[0] + E) n.push([g[0], r.x0]); if (r.x1 < g[1] - E) n.push([r.x1, g[1]]); }); segs = n; });
+      segs.forEach(function(g){ if (g[1] - g[0] > E) L([g[0], y], [g[1], y]); });
+    }
     m.comps.forEach(function(c){
       var s = c.s, y0 = c.at.y, f0 = c.at.front;
       if (c.type === 'views') { // 図から 作った 部材：描いた 外形を そのまま
@@ -206,10 +213,12 @@ var BZ = (function(){
         else if (vv.side && vv.side.out) pl(vv.side.out); else rect(0, y0, m.D, y0 + m.H);
         return;
       }
-      if (c.type === 'box') { if (v === 'front') rect(-s.w / 2, y0, s.w / 2, y0 + s.h); else rect(f0, y0, f0 + s.d, y0 + s.h); }
+      if (c.type === 'box') { if (v === 'front') rect(-s.w / 2, y0, s.w / 2, y0 + s.h);
+        else if (s.w >= m.W - E) { L([f0, y0], [f0 + s.d, y0]); L([f0, y0], [f0, y0 + s.h]); L([f0 + s.d, y0], [f0 + s.d, y0 + s.h]); hLine(f0, f0 + s.d, y0 + s.h, onTop); }
+        else rect(f0, y0, f0 + s.d, y0 + s.h); }
       else if (c.type === 'profile') {
         if (v === 'front') (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){ out.push({ k:'pl', v:profilePts(c.profile, s, m.W, sg).map(function(q){ return [q[0], q[1] + y0]; }), closed:true }); });
-        else rect(f0, y0, f0 + s.len, y0 + s.h);
+        else { L([f0, y0], [f0, y0 + s.h]); L([f0 + s.len, y0], [f0 + s.len, y0 + s.h]); L([f0, y0 + s.h], [f0 + s.len, y0 + s.h]); hLine(f0, f0 + s.len, y0, fullBox); }
       }
       else if (c.type === 'barrel') {
         var top = s.nb + s.b + s.nt, h = s.b / 2, cyb = y0 + s.nb + h;
@@ -224,10 +233,13 @@ var BZ = (function(){
         };
         if (v === 'front') {
           out.push.apply(out, side(s.w / 2, s.side, 1)); out.push.apply(out, side(-s.w / 2, s.side, -1));
+          // 首と 胴の 境（首の 斜めの 面と 胴の 曲面が 折れて いる 線）
+          if (s.side > E || s.front > E) { var xi = s.w / 2 - s.side; if (s.nb > 0) L([-xi, y0 + s.nb], [xi, y0 + s.nb]); if (s.nt > 0) L([-xi, y0 + s.nb + s.b], [xi, y0 + s.nb + s.b]); }
           c.cuts.forEach(function(ct){ if (ct.type === 'cloudHole') holeArcs({ phi:ct.s.phi, pitch:ct.s.pitch, cy:y0 + ct.s.cy }).forEach(function(a){ a.hole = true; out.push(a); }); });
         } else {
           out.push.apply(out, side(f0, s.front, -1));
           L([f0 + s.d, y0], [f0 + s.d, y0 + top]);
+          if (s.side > E || s.front > E) { var xa = f0 + s.front; if (s.nb > 0) L([xa, y0 + s.nb], [f0 + s.d, y0 + s.nb]); if (s.nt > 0) L([xa, y0 + s.nb + s.b], [f0 + s.d, y0 + s.nb + s.b]); }
           c.cuts.forEach(function(ct){ if (ct.type !== 'cloudHole') return;
             var ya = y0 + ct.s.cy + ct.s.phi / 2, yb = y0 + ct.s.cy - ct.s.phi / 2, xb = f0 + s.d - s.back;
             var xf = function(y){ return f0 + inset(y - y0, s.front, s); };

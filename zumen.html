@@ -350,7 +350,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 
 <script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.6";
+var APP_VER = "v0.7.7";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -2223,6 +2223,19 @@ var MK = (function(){
   return { face:face };
 })();
 function mkStart(){ ST.mk = { step:'front', front:null, side:null, top:null, D:0, holeD:{}, name:'' }; }
+// 部材の 図：どの 面にも 印（pv）の ない 線・文字・寸法（あとから かいた もの）に、いちばん 近い 面の 印を 付ける
+function pvTag(doc){
+  var B = {}, G = {};
+  doc.ents.forEach(function(e){ if (e.pv && e.t !== 'text') (G[e.pv] = G[e.pv] || []).push(e); });
+  Object.keys(G).forEach(function(k){ B[k] = bboxOf(G[k]); }); if (!Object.keys(B).length) return;
+  function best(c, lim){ var bk = null, bd = Infinity;
+    Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (d < bd) { bd = d; bk = k; } });
+    return bd < lim ? bk : null; }
+  var title = doc.info && doc.info.name;
+  doc.ents.forEach(function(e){ if (e.pv) return; if (e.t === 'text' && title && String(e.s || '').indexOf(title) === 0) return; // 下の 題の 文字は 面に 入れない
+    var b = bboxOf([e]); if (!isFinite(b.x0)) return; var k = best(P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), e.t === 'text' ? 0.15 : 0.25); if (k) e.pv = k; });
+  (doc.dims || []).forEach(function(d){ if (d.pv || !d.a || !d.b) return; var k = best(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), 0.5); if (k) d.pv = k; });
+}
 // 部材設計の［図面で かく］：図に 出した 面（e.pv）の 線を そのまま 使う。あとから かいた 線は 近い 面に 入れる
 function mkAuto(){
   var G = { front:[], side:[], top:[] }, loose = [];
@@ -3833,7 +3846,7 @@ function pdDrawMode(on){
     renderLayers(); resize(); fit(); setTool('select'); changed();
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
   } else if (!on && PD.saveMain) {
-    PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; pdKeep();
+    pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; pdKeep();
     D = PD.saveMain.D; UNDO = PD.saveMain.U; REDO = PD.saveMain.R; PD.saveMain = null; updUndo();
     ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.mk = null; setTool('select');
     document.body.classList.remove('pddraw'); renderLayers(); resize(); fit(); VER++; redraw();
@@ -3851,7 +3864,7 @@ function pdApplyViews(v, W, Dd, H){
   d.dims = {}; d.components = [{ id:'body', name:d.name, shape:{ type:'views', views:v }, at:{ y:0, front:0 } }];
   var keepViews = d.drawing && d.drawing.views;
   d.drawing = { dims:[{ view:'front', dir:'h', pos:'bottom', chain:['W'] }, { view:'front', dir:'v', pos:'left', chain:['H'] }, { view:'side', dir:'h', pos:'bottom', chain:['D'] }], views:keepViews || ['front', 'side'] };
-  d.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info };
+  pvTag(D); d.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info };
   pdKeep(); pdRender(); if (PD.viewer) PD.viewer.refit();
   setMsg('この 部材に 反映しました（右の 3D）。［💾 保存］で 部材ライブラリへ');
 }
@@ -3921,9 +3934,11 @@ function pdRender(){
 function pdSkView(v){
   var def = PD.def, sk = def && def.sketch, c0 = def && def.components && def.components[0];
   if (!sk || !sk.ents || !c0 || !c0.shape || c0.shape.type !== 'views') return null;
+  pvTag(sk);
   var nm = {}; PD_FACES.forEach(function(f){ nm[f[0]] = f[1]; });
   function hidL(e){ var L = sk.layers && sk.layers[e.layer]; return !!(L && L.dash) || /隠れ/.test(e.layer || ''); }
-  var es = sk.ents.filter(function(e){ return e.pv === v && !(e.t === 'text' && e.s === nm[v]); });
+  function onL(x){ var L = sk.layers && sk.layers[x.layer]; return !(L && L.on === false); } // 消して いる 画層は 出さない
+  var es = sk.ents.filter(function(e){ return e.pv === v && onL(e) && !(e.t === 'text' && e.s === nm[v]); });
   var ol = es.filter(function(e){ return e.t !== 'text' && !hidL(e); }); if (!ol.length) return null;
   var sb = bboxOf(ol), tb = BZ.bbox(BZ.view6(PD.m, v));
   if (!(sb.x1 > sb.x0 && sb.y1 > sb.y0 && isFinite(tb.x0))) return null;
@@ -3941,7 +3956,7 @@ function pdSkView(v){
     var sg = entSegs(e); if (!sg.length) return; // ふくらみ・縦横で 違う 伸び縮みの 円弧は 細かい 点に
     var pts = [T(sg[0][0])]; sg.forEach(function(x){ pts.push(T(x[1])); }); prims.push({ k:'pl', v:pts, closed:false, hid:hid });
   });
-  var dims = (sk.dims || []).filter(function(d){ return d.pv === v; }).map(function(d){ var n = clone(d); n.a = TP(d.a); n.b = TP(d.b); if (d.off) n.off = TP(d.off); return n; });
+  var dims = (sk.dims || []).filter(function(d){ return d.pv === v && onL(d); }).map(function(d){ var n = clone(d); n.a = TP(d.a); n.b = TP(d.b); if (d.off) n.off = TP(d.off); return n; });
   return { prims:prims, dims:dims, texts:texts };
 }
 function pdDrawView(v){
@@ -4097,7 +4112,7 @@ function pdPutViews(fx, fy, only){
 }
 // 保存・開く（業務アプリから 開いた ときは SharePoint の 部材ライブラリ、それ以外は このパソコン）
 function pdSave(){
-  if (PD.saveMain) PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info };
+  if (PD.saveMain) { pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; }
   var def = clone(PD.def); def.version = (def.version || 0) + 1; def.savedAt = new Date().toISOString();
   var fn = def.id + '.json', txt = JSON.stringify(def, null, 1), w = spParent();
   if (spOK() && w.uploadJsonToFolderPassFromTekkyo) {

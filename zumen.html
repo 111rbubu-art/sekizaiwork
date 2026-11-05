@@ -349,7 +349,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 
 <script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.1";
+var APP_VER = "v0.7.2";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1682,7 +1682,7 @@ var CX = (function(){
         var a = e.v[i], b = e.v[(i + 1) % n], ba = a.b ? bulgeArc(a, b, a.b) : null;
         if (!ba) { if (dist(a, b) > EPS) o.push({ k:'L', a:P(a.x, a.y), b:P(b.x, b.y), seg:i }); }
         else if (ba.ccw) o.push({ k:'A', c:ba.c, r:ba.r, a0:ba.a0, s:sweepCCW(ba.a0, ba.a1), seg:i });
-        else o.push({ k:'A', c:ba.c, r:ba.r, a0:ba.a1, s:sweepCCW(ba.a1, ba.a0), seg:i });
+        else o.push({ k:'A', c:ba.c, r:ba.r, a0:ba.a1, s:sweepCCW(ba.a1, ba.a0), seg:i, rev:true });
       }
       return o;
     }
@@ -1757,8 +1757,72 @@ var CX = (function(){
     return best ? { e:e, q:best } : null;
   }
   // トリム：消す 範囲 と 残る 部品
+  // つながった 線（ポリライン）の トリム：クリックした 所から 線に 沿って 両側へ たどり、ほかの 線と 当たる 所までを 消す
+  function plTrimPlan(h, w, tol){
+    var e = h.e, Q = pieces(e), n = Q.length, cl = !!e.closed, k = -1;
+    Q.forEach(function(q, i){ if (q.seg === h.q.seg) k = i; }); if (k < 0 || !n) return { h:h, none:true };
+    function top(q){ return q.k === 'L' ? 1 : q.s; }
+    function f2n(q, u){ return q.rev ? top(q) - u : u; }
+    var near = function(i, j){ return i === j || (Math.abs(i - j) === 1) || (cl && Math.abs(i - j) === n - 1); };
+    var others = [], H = [];
+    D.ents.forEach(function(x){ if (!visible(x) || x.t === 'text' || x === e) return; pieces(x).forEach(function(q){ q.e = x; others.push(q); }); });
+    function hitsOf(i){
+      if (H[i]) return H[i]; var q = Q[i], T = top(q), tl = (tol * 0.01) / (q.k === 'L' ? Math.max(len(q), 1e-9) : q.r);
+      var cs = others.concat(Q.filter(function(x, j){ return !near(i, j); })), o = [];
+      hits(q, cs, tol * 0.01).forEach(function(t){
+        if (q.k !== 'L' && t > T + tl && t > 2 * PI - tl) t = 0;
+        if (t < -tl || t > T + tl) return; t = Math.max(0, Math.min(T, t)); var u = q.rev ? T - t : t;
+        if (!cl && ((i === 0 && u < tl) || (i === n - 1 && u > T - tl))) return; // 開いた 線の 両端は 数えない
+        if (!o.some(function(x){ return Math.abs(x - u) < tl; })) o.push(u); });
+      return (H[i] = o.sort(function(a, b){ return a - b; }));
+    }
+    var q0 = Q[k], u0 = f2n(q0, par(q0, w)), ek = (q0.k === 'L' ? 1e-6 : 1e-6 / q0.r);
+    function seek(dirn){
+      var hk = hitsOf(k).filter(function(u){ return dirn < 0 ? u < u0 - ek : u > u0 + ek; });
+      if (hk.length) return { i:k, u:dirn < 0 ? hk[hk.length - 1] : hk[0] };
+      for (var st = 1; st <= n; st++) {
+        var j = k + dirn * st; if (cl) j = (j % n + n) % n; else if (j < 0 || j >= n) return null;
+        var hj = hitsOf(j);
+        if (j === k) { hj = hj.filter(function(u){ return dirn < 0 ? u > u0 + ek : u < u0 - ek; }); }
+        if (hj.length) return { i:j, u:dirn < 0 ? hj[hj.length - 1] : hj[0] };
+      }
+      return null;
+    }
+    var lo = seek(-1), hi = seek(1);
+    if (!lo && !hi) return { h:h, none:true };
+    if (cl && lo && hi && lo.i === hi.i && Math.abs(lo.u - hi.u) < 1e-9) return { h:h, none:true }; // 当たる 所が 1 つ だけ
+    if (!lo) lo = { i:0, u:0 }; if (!hi) hi = { i:n - 1, u:top(Q[n - 1]) };
+    // a→b を 前向きに たどった 部品（閉じた 線は 1 周 まで）
+    function run(a, b){
+      var out = [], i = a.i, u = a.u, wrap = (a.i === b.i && b.u < a.u - 1e-12);
+      function put(q, x0, x1){ if (x1 - x0 > 1e-9) { var t0 = f2n(q, x0), t1 = f2n(q, x1), pc = sub2(q, Math.min(t0, t1), Math.max(t0, t1)); pc.rev = q.rev; out.push(pc); } }
+      for (var g = 0; g <= n + 1; g++) {
+        var q = Q[i];
+        if (i === b.i && !wrap) { put(q, u, b.u); break; }
+        put(q, u, top(q)); wrap = false; i++; u = 0;
+        if (i >= n) { if (!cl) break; i = 0; }
+      }
+      return out;
+    }
+    var gone = run(lo, hi), keep = [];
+    if (cl) keep = [run(hi, lo)];
+    else keep = [run({ i:0, u:0 }, lo), run(hi, { i:n - 1, u:top(Q[n - 1]) })];
+    keep = keep.filter(function(r){ return r.length; });
+    return { h:h, gone:gone[0], goneAll:gone, keepRuns:keep, pl:true };
+  }
+  // 部品の 並び → つながった 線
+  function runToPl(r, like){
+    var v = [];
+    r.forEach(function(q){
+      var s0 = q.k === 'L' ? q.a : pt(q, q.rev ? q.s : 0);
+      v.push({ x:s0.x, y:s0.y, b:q.k === 'L' ? 0 : Math.tan(q.s / 4) * (q.rev ? -1 : 1) });
+    });
+    var lq = r[r.length - 1], e1 = lq.k === 'L' ? lq.b : pt(lq, lq.rev ? 0 : lq.s); v.push({ x:e1.x, y:e1.y, b:0 });
+    var e = { id:SEQ++, t:'pl', closed:false, v:v, layer:like.layer, css:like.css, aci:like.aci }; if (like.lt) e.lt = like.lt; if (like.pv) e.pv = like.pv; return e;
+  }
   function trimPlan(w){
     var tol = 6 / V.s, h = pick(w, tol); if (!h) return null;
+    if (h.e.t === 'pl') return plTrimPlan(h, w, tol);
     var q = h.q, cs = cutters(h.e, h.e.t === 'pl' ? q : null), ts = hits(q, cs, tol * 0.01), t0 = par(q, w), keep = [], gone;
     var L = len(q), e2 = q.k === 'L' ? 1e-6 : 1e-6 / Math.max(q.r, 1e-9);
     if (q.k === 'C') {
@@ -1782,10 +1846,11 @@ var CX = (function(){
   function trim(w){
     var pl = trimPlan(w); if (!pl) return '線を クリックして ください';
     if (pl.none) return '交わる 線が ありません（まるごと 消すなら ➤選ぶ → Delete）';
-    var e = pl.h.e, i = D.ents.indexOf(e), add = pl.keep.map(function(q){ return toEnt(q, e); });
-    if (e.t === 'pl') pieces(e).forEach(function(q){ if (q.seg !== pl.h.q.seg) add.push(toEnt(q, e)); });
+    var e = pl.h.e, i = D.ents.indexOf(e), add;
+    if (pl.pl) add = pl.keepRuns.map(function(r){ return runToPl(r, e); });
+    else add = pl.keep.map(function(q){ var x = toEnt(q, e); if (e.pv) x.pv = e.pv; return x; });
     pushUndo(); D.ents.splice.apply(D.ents, [i, 1].concat(add)); ST.sel.clear(); changed();
-    return e.t === 'pl' ? '切りました（つながった 線は 1 本ずつの 線・円弧に 分けました）' : '切りました';
+    return '切りました';
   }
   // 延長：近い 方の 端を、当たる いちばん 近い 線まで
   function extendPlan(w){
@@ -1873,7 +1938,7 @@ function drawCadPreview(c){
   var t = ST.tool, w = ST.curRaw;
   if ((t === 'trim' || t === 'extend') && w) {
     var ext = (t === 'extend') !== !!ST.shift;
-    if (!ext) { var pl = CX.trimPlan(w); if (pl && pl.gone) drawPiece(c, pl.gone, '#e0301e', 4); else if (pl && pl.none) drawPiece(c, pl.h.q, '#999', 3, [3, 3]); }
+    if (!ext) { var pl = CX.trimPlan(w); if (pl && pl.goneAll) pl.goneAll.forEach(function(q){ drawPiece(c, q, '#e0301e', 4); }); else if (pl && pl.gone) drawPiece(c, pl.gone, '#e0301e', 4); else if (pl && pl.none) drawPiece(c, pl.h.q, '#999', 3, [3, 3]); }
     else { var ep = CX.extendPlan(w); if (ep && ep.to) drawPiece(c, { k:'L', a:ep.from, b:ep.to }, '#e05a00', 3, [6, 4]); else if (ep && ep.add) drawPiece(c, ep.add, '#e05a00', 3, [6, 4]); }
   }
   if (t === 'mirror' && ST.mi && ST.mi.phase === 'axis' && ST.pts.length === 1 && ST.cur && dist(ST.pts[0], ST.cur) > 1e-9) {
@@ -2242,7 +2307,7 @@ function panel(){
     B.innerHTML = h; var am = document.getElementById('arcM'); am.value = ST.arcMode; am.onchange = function(){ ST.arcMode = am.value; ST.pts = []; panel(); redraw(); }; return;
   }
   if (t === 'trim' || t === 'extend') {
-    h += '<div class="muted">' + HINTS[t] + '</div><div class="muted">赤＝消える 所、オレンジの 点線＝伸びる 所（動かすと 下書きが 出ます）。つながった 線（ポリライン）を 切ると 1 本ずつの 線・円弧に 分かれます</div>';
+    h += '<div class="muted">' + HINTS[t] + '</div><div class="muted">赤＝消える 所、オレンジの 点線＝伸びる 所（動かすと 下書きが 出ます）。つながった 線（ポリライン・曲線）は 線に 沿って、ほかの 線と 当たる 所まで まとめて 消えます（形を 変える ときは 新しい 線を かいて から 古い 所を トリム）</div>';
     B.innerHTML = h; return;
   }
   if (t === 'rect') {
@@ -3708,7 +3773,7 @@ function pdToList(){ pdDrawMode(false); pdHidePop(); PD.sel = null; document.bod
 var PD_FACES = [['front', '正面図'], ['side', '右側面図'], ['top', '平面図（上）'], ['back', '背面図'], ['left', '左側面図'], ['bottom', '下面図']];
 function pdFaceList(){ var d = PD.def.drawing = PD.def.drawing || {}; if (!d.views) d.views = ['front', 'side']; if (d.views.indexOf('front') < 0) d.views.unshift('front'); return d.views; }
 function pdSyncFaces(){ // 図面で かく：元に戻す あと、図に ある 面に チェックを 合わせる
-  if (!PD.saveMain || !PD.def) return; var has = {}; D.ents.forEach(function(e){ if (e.pv) has[e.pv] = 1; });
+  if (!PD || !PD.saveMain || !PD.def) return; var has = {}; D.ents.forEach(function(e){ if (e.pv) has[e.pv] = 1; });
   var l = pdFaceList(); PD_FACES.forEach(function(f){ var k = f[0], i = l.indexOf(k); if (k === 'front') return; if (has[k] && i < 0) l.push(k); if (!has[k] && i >= 0 && Object.keys(has).length) l.splice(i, 1); });
   [].forEach.call(document.querySelectorAll('#pdFaces input'), function(c){ c.checked = l.indexOf(c.dataset.f) >= 0; });
 }

@@ -102,15 +102,20 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <input type="file" id="fOpen" accept=".json,application/json" hidden>
 <input type="file" id="fPart" accept=".json,application/json" hidden>
 <input type="file" id="fTanka" accept=".json,application/json" hidden>
+<input type="file" id="fSet" accept=".json,application/json" hidden>
 <script src="buzai-engine.js?v=0.7.8"></script>
 <script src="kumitate-data.js"></script>
-<script src="kumitate-engine.js"></script>
+<script src="kumitate-engine.js?v=0.3"></script>
 <script>
-var APP_VER = 'v0.2';
+var APP_VER = 'v0.3';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-var DATA = lsGet('kumitate.data') || window.KUMITATE_DATA;
+var DATA0 = lsGet('kumitate.data') || window.KUMITATE_DATA;
+// セット（図面から 読んだ 石塔・外柵。buzai-set/1）。SharePoint の 部材ライブラリ/セット が 元。この 端末にも 覚える（つながらない ときも 使える）
+var SETS = lsGet('kumitate.sets') || [];
+var DATA = KM.addSets(DATA0, SETS);
+function setsChanged(){ lsSet('kumitate.sets', SETS); DATA = KM.addSets(DATA0, SETS); }
 var TANKA = lsGet('kumitate.tanka');   // { stones:[], estimate:{} }（公開の 場所に 置かない ため ファイルから 読む）
 var ST = lsGet('kumitate.state');
 if (!ST || ST.schema !== 'kumitate/1') ST = KM.newState(DATA);
@@ -134,9 +139,14 @@ function renderLeft(){
     h += '<div><h4>' + KLABEL[K.k] + '</h4>';
     if (K.k === 'crypt') h += '<button class="it' + (!ST.sel.crypt ? ' on' : '') + '" data-k="crypt" data-v="">なし</button>';
     keys.forEach(function(vk){
-      var n = Object.keys(vs[vk].parts || {}).length;
-      h += '<button class="it' + (ST.sel[K.k] === vk ? ' on' : '') + '" data-k="' + K.k + '" data-v="' + esc(vk) + '">' + esc(vs[vk].label || vk) + (n ? '<span class="tag">箱 ' + n + '</span>' : '') + '</button>';
+      var n = Object.keys(vs[vk].parts || {}).length, isSet = !!vs[vk].set;
+      h += '<button class="it' + (ST.sel[K.k] === vk ? ' on' : '') + '" data-k="' + K.k + '" data-v="' + esc(vk) + '">' + (isSet ? '🧱 ' : '') + esc(vs[vk].label || vk) +
+        (n ? '<span class="tag"' + (isSet ? ' style="background:#dff3e4;color:#1d7a3a"' : '') + '>' + (isSet ? 'セット ' : '箱 ') + n + '</span>' : '') + '</button>';
     });
+    if (K.k === 'tower') {
+      h += '<button class="it" id="bSetFile">🧱 セットを 読む（.json）</button>';
+      if (spHost()) h += '<button class="it" id="bSetSp">☁️ SP の セットを 読み直す</button>';
+    }
     h += '</div>';
   });
   h += '<div><h4>形の ある 部材</h4>';
@@ -145,7 +155,8 @@ function renderLeft(){
     h += '<button class="it' + (on ? ' on' : '') + '" data-part="' + i + '">🏺 ' + esc(c.def.name || c.def.id) + '<span class="tag" style="background:#dff3e4;color:#1d7a3a">' + esc(c.tag) + '</span></button>';
   });
   h += '<button class="it" id="bPartFile">📂 部材を 読む（.json）</button></div>';
-  h += '<div class="muted hint" style="margin-top:10px">「箱」＝旧シミュレーターの 寸法を 箱で 取り込んだ もの。「形の ある 部材」を 押すと、同じ 名前の 石（香炉 なら 香炉）が その 形に なる。石を 選んで から 押すと その 石に 入る</div>';
+  h += '<div class="muted hint" style="margin-top:10px">' + (spHost() ? '☁️ SharePoint と つながって います（部材ライブラリ/セット）' : 'SharePoint の セットは、業務アプリ →［📐 図面］→［🧊 部材設計］→［🏯 組み立て］で 開くと 使えます') + '</div>';
+  h += '<div class="muted hint" style="margin-top:10px">「セット」＝図面から 読んだ 石塔・外柵（部材ごとに 形が ある）。「箱」＝旧シミュレーターの 寸法を 箱で 取り込んだ もの。「形の ある 部材」を 押すと、同じ 名前の 石（香炉 なら 香炉）が その 形に なる。石を 選んで から 押すと その 石に 入る</div>';
   $('left').innerHTML = h;
 }
 // 形の ある 部材の 候補：見本（香炉 1 号）／図面アプリで いま 作って いる 部材（同じ サイトの localStorage）／読んだ ファイル
@@ -177,10 +188,62 @@ $('fPart').onchange = function(){
 };
 $('left').addEventListener('click', function(e){
   if (e.target.closest('#bPartFile')) { $('fPart').click(); return; }
+  if (e.target.closest('#bSetFile')) { $('fSet').click(); return; }
+  if (e.target.closest('#bSetSp')) { spLoadSets(true); return; }
   var pb = e.target.closest('[data-part]'); if (pb) { placePart(partChoices()[+pb.dataset.part]); return; }
   var b = e.target.closest('.it'); if (!b) return;
   ST.sel[b.dataset.k] = b.dataset.v; SEL = null; renderLeft(); run(true);
 });
+
+// ── セット：読む・SharePoint ──
+// SharePoint の 読み書きは 業務アプリの 関数（*FromTekkyo）で。組み立ては 図面アプリから 開く ので、開いた 窓を さかのぼって 探す
+var SET_DIR = '/業務アプリ/部材ライブラリ/セット';
+function spHost(){
+  var w = window.opener;
+  for (var i = 0; i < 3 && w; i++) {
+    try { if (!w.closed && w.listItemsInFolderPassFromTekkyo && w.downloadJsonFromFolderPassFromTekkyo && w.uploadJsonToFolderPassFromTekkyo) return w; w = w.opener; } catch (e) { return null; }
+  }
+  return null;
+}
+function putSet(S, keepSel){
+  SETS = SETS.filter(function(x){ return x.id !== S.id; }); SETS.push(S); setsChanged();
+  if (!keepSel) { ST.sel[S.kind] = S.id; SEL = null; }
+}
+function checkSet(j){
+  if (!j || j.schema !== 'buzai-set/1') return 'セットの ファイル（buzai-set/1）では ありません';
+  if (!j.id || !j.parts || !j.parts.length || !j.size) return 'セットの 中身（部材・大きさ）が ありません';
+  if (!KM.KINDS.some(function(K){ return K.k === j.kind; })) return '種類（kind）が わかりません：' + j.kind;
+  return '';
+}
+function spSaveSet(S){
+  var w = spHost(); if (!w) return Promise.resolve(false);
+  var d = JSON.parse(JSON.stringify(S)); d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString();
+  var txt = JSON.stringify(d);
+  return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', SET_DIR).then(function(){
+    return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', SET_DIR + '/履歴');
+  }).then(function(){ putSet(d, true); renderLeft(); run(); alert('SharePoint に 保存しました（版 ' + d.version + '）\n' + SET_DIR + '/' + d.id + '.json'); return true; })
+    .catch(function(e){ alert('SharePoint に 保存 できませんでした\n' + (e && e.message || e)); return false; });
+}
+// SharePoint の セットを ぜんぶ 読む（この 端末にも 覚える）
+function spLoadSets(say){
+  var w = spHost(); if (!w) return;
+  w.listItemsInFolderPassFromTekkyo(SET_DIR).then(function(list){
+    var files = (list || []).filter(function(it){ return !it.folder && /\.json$/i.test(it.name || ''); });
+    return Promise.all(files.map(function(it){ return w.downloadJsonFromFolderPassFromTekkyo(SET_DIR, it.name).then(function(t){ try { return JSON.parse(t); } catch (e) { return null; } }).catch(function(){ return null; }); }));
+  }).then(function(js){
+    var n = 0; (js || []).forEach(function(j){ if (j && !checkSet(j)) { SETS = SETS.filter(function(x){ return x.id !== j.id; }); SETS.push(j); n++; } });
+    setsChanged(); renderLeft(); run(true);
+    if (say) alert('SharePoint の セットを ' + n + ' 件 読みました');
+  }).catch(function(e){ if (say) alert('SharePoint の セットを 読めませんでした\n' + (e && e.message || e)); });
+}
+$('fSet').onchange = function(){
+  var f = this.files[0]; this.value = ''; if (!f) return;
+  readJson(f, function(j){
+    var m = checkSet(j); if (m) { alert(m); return; }
+    putSet(j); renderLeft(); run(true);
+    if (spHost() && confirm('「' + j.name + '」を SharePoint の 部材ライブラリ（セット）に 保存しますか？\n保存すると ほかの 人・ほかの 端末でも 使えます')) spSaveSet(j);
+  });
+};
 
 function siteIn(){
   [['sW', 'W'], ['sD', 'D'], ['sH', 'domeH'], ['sT', 'domeT'], ['sA', 'adj']].forEach(function(a){
@@ -199,6 +262,7 @@ function run(refit){
     $('hitlist').innerHTML = RES.hits.map(function(x){ return esc(x.nameA) + ' ↔ ' + esc(x.nameB) + '　<span class="muted">横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + ' mm 重なる</span>'; }).join('<br>');
   } else { b.className = 'badge ok'; b.textContent = '✓ 干渉 なし'; $('hitlist').style.display = 'none'; }
   renderSel(); renderEst(); renderList();
+  if (RES.notes && RES.notes.length) $('estBox').insertAdjacentHTML('afterbegin', '<div class="err muted" style="margin-bottom:6px">⚠ ' + RES.notes.map(esc).join('<br>⚠ ') + '</div>');
   lsSet('kumitate.state', ST);
 }
 $('badge').onclick = function(){ if (RES.hits.length) { var h = $('hitlist'); h.style.display = h.style.display === 'block' ? 'none' : 'block'; } };
@@ -302,7 +366,7 @@ $('fTanka').onchange = function(){
     if (!stones || !est) { alert('単価（石材と 見積の 設定）が 入って いない ファイルです'); return; }
     TANKA = { stones:stones, estimate:est }; lsSet('kumitate.tanka', TANKA);
     if (j.partsData && j.knowhow && confirm('このファイルには 部材・ノウハウ式・基準点も 入って います。組み立ての 部材も この ファイルの ものに しますか？')) {
-      DATA = { partsData:j.partsData, knowhow:j.knowhow, anchors:j.anchors || {} }; lsSet('kumitate.data', DATA); renderLeft();
+      DATA0 = { partsData:j.partsData, knowhow:j.knowhow, anchors:j.anchors || {} }; lsSet('kumitate.data', DATA0); DATA = KM.addSets(DATA0, SETS); renderLeft();
     }
     run();
   });
@@ -330,9 +394,11 @@ $('seg').addEventListener('click', function(e){
   var b = e.target.closest('button'); if (!b || !V3) return;
   [].forEach.call(this.children, function(x){ x.classList.toggle('on', x === b); }); V3.fit(b.dataset.v);
 });
-$('ver').textContent = '組み立て ' + APP_VER + '（部材は ' + (DATA === window.KUMITATE_DATA ? '見本' : '読んだ ファイル') + '）';
+$('ver').textContent = '組み立て ' + APP_VER + '（部材は ' + (DATA0 === window.KUMITATE_DATA ? '見本' : '読んだ ファイル') + (SETS.length ? '・セット ' + SETS.length : '') + '）';
 
+if (!KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM.newState(DATA).sel.tower;
 RES = KM.compute(DATA, ST); renderLeft(); siteIn(); run();
+spLoadSets(false);
 import('./kumitate-3d.js?v=0.6.8').then(function(m){
   V3 = m.create($('v'), function(k){ SEL = k === SEL ? null : k; run(); });
   V3.update(RES, colorOf, SEL, ST.site);

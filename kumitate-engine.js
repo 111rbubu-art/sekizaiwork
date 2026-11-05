@@ -206,6 +206,7 @@ var KM = (function(){
     for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var a = boxes[ks[i]], b = boxes[ks[j]];
       if (pairs[[ks[i], ks[j]].sort().join('|')]) continue;
+      if (parts[ks[i]].setId && parts[ks[i]].setId === parts[ks[j]].setId) continue; // 同じ セットの 中は 図面どおり（切り欠きに 差し込む 所が ある）
       var ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0), oz = Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0);
       if (ox > th && oy > th && oz > th) list.push({ a:ks[i], b:ks[j], nameA:parts[ks[i]].name, nameB:parts[ks[j]].name, ox:Math.round(ox), oy:Math.round(oy), oz:Math.round(oz) });
     }
@@ -215,19 +216,84 @@ var KM = (function(){
   // ── まとめて 計算 ──
   // st = { sel:{tower,fence,boshi,toba,crypt}, site:{W,D,domeH,domeT,adj}, over:{部材の鍵:{w,h,d}} }
   function compute(data, st){
-    var errs = [], site = st.site;
+    var errs = [], site = st.site, notes = [];
     var p = gather(data, st.sel);
+    stretchSets(data, st, p, notes);
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
     Object.keys(st.shapes || {}).forEach(function(k){ var sz = shapeSize(st.shapes[k]); if (p[k] && sz) { p[k] = Object.assign({}, p[k], sz, { shape:st.shapes[k] }); } });
     Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k]) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+    syncShapes(p, st);
     p = applyPos(data.knowhow || [], p, data.anchors || {}, site, data, st.sel, errs);
     var boxes = {};
     Object.keys(p).forEach(function(k){
       var q = p[k]; if (q.visible === false) return;
       var o = pos(k, p); boxes[k] = { x0:o.ox, y0:o.oy, z0:o.oz, x1:o.ox + q.w, y1:o.oy + q.h, z1:o.oz + q.d };
     });
-    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs };
+    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes };
+  }
+
+  // ── セット（図面から 読んだ 石塔・外柵。buzai-set/1）──
+  // セット＝部材の 一覧（大きさ・置き場所・形）＋ 伸び縮み。組み立てでは 石塔（外柵）の 1 つの 種類 として 並ぶ
+  // 置き場所：セットの 原点（左・前・下）→ 組み立ての 座標（幅の 中心・奥行の 中心が 0、+z が 前）
+  function setSelId(S){ return S.kind + '_set_' + S.id; }
+  function setToVariant(S){
+    var W = S.size.W, Dd = S.size.D, parts = {};
+    S.parts.forEach(function(q){
+      parts[q.key] = { name:q.name, no:String(q.no), grp:S.kind, w:q.w, h:q.h, d:q.d, visible:true, parent:null,
+        offX:r1(q.at.x - W / 2), offY:q.at.y, offZ:r1(Dd / 2 - (q.at.z + q.d)), shape:q.part || null, finish:q.finish || '', setId:S.id };
+    });
+    return { label:S.name, colorGroup:S.kind === 'fence' ? 'fence' : 'tower', parts:parts, set:{ id:S.id, stretch:S.stretch || null, version:S.version || 0 } };
+  }
+  // data に セットを 足した もの（元の data は 変えない）。位置の ルールは 基に した 種類（既定 和型 8 寸）の ものを 写す
+  function addSets(data, sets){
+    if (!sets || !sets.length) return data;
+    var d = clone(data), pd = d.partsData;
+    pd.EDIT_SELECTIONS = pd.EDIT_SELECTIONS || []; d.anchors = d.anchors || {}; d.knowhow = d.knowhow || [];
+    sets.forEach(function(S){
+      if (!S || S.schema !== 'buzai-set/1' || !S.parts || !S.size) return;
+      var K = KINDS.filter(function(x){ return x.k === S.kind; })[0]; if (!K) return;
+      pd[K.vt] = pd[K.vt] || {}; pd[K.vt][S.id] = setToVariant(S);
+      var sid = setSelId(S), Dd = S.size.D;
+      pd.EDIT_SELECTIONS = pd.EDIT_SELECTIONS.filter(function(x){ return x.id !== sid; });
+      pd.EDIT_SELECTIONS.push({ id:sid, label:K.label + ' ー ' + S.name, varType:S.kind, varKey:S.id });
+      d.anchors[sid] = { a1:{ name:'後ろ 中心', x:0, y:0, z:-Dd / 2 }, a2:{ name:'前 中心', x:0, y:0, z:Dd / 2 } };
+      var base = S.baseSel || (S.kind === 'tower' ? 'tower_wa_8sun' : '');
+      if (!base) return;
+      d.knowhow.filter(function(r){ return r.type === 'pos_calc' && (r.srcSelId === base || r.dstSelId === base); }).forEach(function(r){
+        var c = clone(r); c.id = (r.id || r.name) + '__' + sid;
+        if (c.srcSelId === base) { c.srcSelId = sid; c.srcPartKeys = []; }
+        if (c.dstSelId === base) c.dstSelId = sid;
+        d.knowhow.push(c);
+      });
+    });
+    return d;
+  }
+  // 奥行の 伸び縮み（敷地の「石塔 奥行調整」）：grow の 部材の 奥行を 伸ばし、follow_back は 後ろに そろえた まま、のこりは 前へ
+  function stretchSets(data, st, p, notes){
+    KINDS.forEach(function(K){
+      var v = (data.partsData[K.vt] || {})[st.sel[K.k]], sd = v && v.set && v.set.stretch && v.set.stretch.depth;
+      if (!sd) return;
+      var adj = K.k === 'tower' ? +(st.site.adj || 0) : 0; if (!adj) return;
+      var std = sd.std || 0, lo = sd.min != null ? sd.min : -Infinity, hi = sd.max != null ? sd.max : Infinity;
+      if (std) { var to = Math.max(lo, Math.min(hi, std + adj)); if (to !== std + adj) notes.push(v.label + '：奥行は ' + lo + '〜' + hi + ' まで（' + (std + adj) + ' → ' + to + '）'); adj = to - std; }
+      var grow = {}; (sd.grow || []).forEach(function(g){ var a = String(g).split('.'); grow[a[0]] = a[1] || 'd'; });
+      var back = {}; (sd.follow_back || []).forEach(function(k){ back[k] = 1; });
+      Object.keys(v.parts || {}).forEach(function(k){
+        if (!p[k]) return; p[k] = Object.assign({}, p[k]);
+        if (grow[k]) p[k][grow[k]] = r1(p[k][grow[k]] + adj);
+        else if (!back[k]) p[k].offZ = r1((p[k].offZ || 0) + adj);
+      });
+    });
+  }
+  // セットの 部材の 形（buzai/1）を 箱の 大きさに 合わせる（幅・奥行・高さ → params W・D・H）
+  function syncShapes(p, st){
+    Object.keys(p).forEach(function(k){
+      var q = p[k], def = q.shape; if (!def || (st.shapes && st.shapes[k]) || !def.params) return;
+      var cur = shapeSize(def); if (cur && cur.w === q.w && cur.d === q.d && cur.h === q.h) return;
+      var nd = clone(def); [['W', 'w'], ['D', 'd'], ['H', 'h']].forEach(function(a){ if (nd.params[a[0]]) nd.params[a[0]].value = q[a[1]]; });
+      p[k] = Object.assign({}, q, { shape:nd });
+    });
   }
 
   function pv(def, id){ var q = def && def.params && def.params[id]; if (!q) return NaN; return +(q.value != null ? q.value : q.default); }
@@ -286,6 +352,6 @@ var KM = (function(){
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
-    applyDim:applyDim, applyPos:applyPos, interferences:interferences, compute:compute, saiGroups:saiGroups, estimate:estimate, newState:newState };
+    applyDim:applyDim, applyPos:applyPos, addSets:addSets, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

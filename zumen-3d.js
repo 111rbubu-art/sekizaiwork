@@ -56,8 +56,10 @@ export function featureEdges(geo, deg){
     var a = V(t), b = V(t + 1), c = V(t + 2), u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     var nr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(nr[0], nr[1], nr[2]);
     if (L < q * q) continue; nr = [nr[0] / L, nr[1] / L, nr[2] / L];
+    var m2 = Math.max(dot(u, u), dot(w, w), (c[0] - b[0]) * (c[0] - b[0]) + (c[1] - b[1]) * (c[1] - b[1]) + (c[2] - b[2]) * (c[2] - b[2]));
+    var thin = L / Math.sqrt(m2) < sc * 1e-3; // 高さが ほとんど ない 三角（向きが あてに ならない）
     [[a, b], [b, c], [c, a]].forEach(function(e){ var k1 = key(e[0]), k2 = key(e[1]); if (k1 === k2) return; var k = k1 < k2 ? k1 + '|' + k2 : k2 + '|' + k1;
-      (E[k] = E[k] || { p:e, n:[], t:[] }).n.push(nr); E[k].t.push(t); all.push({ a:e[0], b:e[1], n:nr, t:t }); });
+      (E[k] = E[k] || { p:e, n:[], t:[], th:[] }).n.push(nr); E[k].t.push(t); E[k].th.push(thin); all.push({ a:e[0], b:e[1], n:nr, t:t, thin:thin }); });
   }
   // 辺の 升目（近くの 辺を すぐ 探す）
   var cs = sc / 80, G = {};
@@ -67,13 +69,16 @@ export function featureEdges(geo, deg){
   function dseg(p, a, b){ var ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = dot(ab, ab), s = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2)) : 0;
     return Math.hypot(p[0] - a[0] - ab[0] * s, p[1] - a[1] - ab[1] * s, p[2] - a[2] - ab[2] * s); }
   function smoothAt(p, e){ var L = G[ck(p)] || [], found = false;
-    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0) continue; if (dseg(p, f.a, f.b) > tol) continue; found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
-    return found ? -1 : 0; } // 1＝なめらか、-1＝角、0＝相手 なし（ふち）
+    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0 || f.thin) continue; if (dseg(p, f.a, f.b) > tol) continue; found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
+    return found ? -1 : 0; } // 1＝なめらか、-1＝角、0＝相手 なし
   Object.keys(E).forEach(function(k){ var e = E[k];
-    if (e.n.length >= 2) { for (var i = 1; i < e.n.length; i++) if (dot(e.n[0], e.n[i]) < cosT) { out.push(e.p[0], e.p[1]); return; } return; }
-    var a = e.p[0], b = e.p[1], sm = true;
-    [0.2, 0.5, 0.8].forEach(function(s){ if (sm && smoothAt([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s], e) !== 1) sm = false; });
-    if (!sm) out.push(a, b);
+    var ok = e.n.filter(function(_, i){ return !e.th[i]; });
+    if (ok.length >= 2) { for (var i = 1; i < ok.length; i++) if (dot(ok[0], ok[i]) < cosT) { out.push(e.p[0], e.p[1]); return; } return; }
+    if (!ok.length) return; // 高さの ない 三角 だけの 辺は 描かない
+    // 片側だけの 辺：3 点で となりを 探し、角の 所が あって なめらかな 所が ない ときだけ 描く（となりが 見つからない＝すき間 だけ なら 描かない）
+    var a = e.p[0], b = e.p[1], sharp = 0, smooth = 0, e1 = { n:ok, t:e.t };
+    [0.2, 0.5, 0.8].forEach(function(s){ var r = smoothAt([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s], e1); if (r === -1) sharp++; if (r === 1) smooth++; });
+    if (sharp && !smooth) out.push(a, b);
   });
   var arr = []; out.forEach(function(p){ arr.push(p[0], p[1], p[2]); });
   var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); return g;

@@ -3,6 +3,7 @@
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js';
 import { TessellateModifier } from './lib/three-0.160.0/TessellateModifier.js';
+import { Brush, Evaluator, INTERSECTION, SUBTRACTION } from './lib/three-bvh-csg-0.0.16/index.module.js';
 
 export function create(box){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
@@ -84,11 +85,29 @@ export function partGroup(m, fine, mat, lineMat){
     if (hole) line(hole.map(function(p){ return [p[0], p[1] + y0, zw]; }), true);
   }
 
+  // 図から 作った 部材（正面・側面・天面の 外形を 重ねる。穴は 上・前から 掘る）
+  // 図の 座標：正面 [x,y]（x＝左右 中心 0・y＝下 0）、側面 [d,y]（d＝前から 奥へ）、天面 [x,d]
+  function views(c, zf){
+    var v = c.views, W = m.W, Dd = m.D, H = m.H, mg = Math.max(W, Dd, H) * 0.05 + 1;
+    function ext(out, holes, depth){ var sh = shp(out); (holes || []).forEach(function(h){ sh.holes.push(pth(h)); }); return new THREE.ExtrudeGeometry(sh, { depth:depth, bevelEnabled:false, curveSegments:1 }); }
+    function brush(g){ var b = new Brush(g); b.updateMatrixWorld(); return b; }
+    var ev = new Evaluator(); ev.attributes = ['position', 'normal']; ev.useGroups = false;
+    var gF = ext(v.front.out, null, Dd).translate(0, 0, zf - Dd);
+    var res = brush(gF);
+    if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
+    if (v.top && v.top.out) { var gT = ext(v.top.out, null, H + 2 * mg); gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
+    (v.top && v.top.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, H - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), lineMat));
+  }
+
   var BZ = m.BZ, D = m.D;
   m.comps.forEach(function(c){
     var zf = D / 2 - (c.at.front || 0), s = c.s;
     if (c.type === 'box') add(new THREE.BoxGeometry(s.w, s.h, s.d).translate(0, c.at.y + s.h / 2, zf - s.d / 2), true);
     else if (c.type === 'barrel') barrel(c, BZ, zf, fine);
+    else if (c.type === 'views') { try { views(c, zf); } catch (e) { console.error(e); add(new THREE.BoxGeometry(m.W, m.H, m.D).translate(0, m.H / 2, zf - m.D / 2), true); } }
     else if (c.type === 'profile') {
       (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){
         add(new THREE.ExtrudeGeometry(shp(BZ.profilePts(c.profile, s, m.W, sg)), { depth:s.len, bevelEnabled:false }).translate(0, c.at.y, zf - s.len), true);

@@ -124,15 +124,24 @@ var BZ = (function(){
   };
   function profilePts(name, s, W, sign){ var f = PROFILES[name]; if (!f) throw new Error('断面「' + name + '」は まだ ありません'); return f(s, W, sign); }
 
+  // 図から 作った 部材の 外形を 今の 幅・奥行・高さに 合わせて 伸び縮み（base＝作った ときの 大きさ）
+  function scaleViews(v, W, Dd, H){
+    var b = v.base || { W:W, D:Dd, H:H }, kx = W / b.W, kd = Dd / b.D, ky = H / b.H;
+    function m(pts, fx, fy){ return pts.map(function(q){ return [q[0] * fx, q[1] * fy]; }); }
+    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ return { pts:m(h.pts, kx, ky), depth:h.depth * kd }; }) } };
+    if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky) };
+    if (v.top && v.top.out) o.top = { out:m(v.top.out, kx, kd), holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }) };
+    return o;
+  }
   // 部品の 式を 数に（model）
   function model(def, sv){
     var p = def.params, W = sv.val.W, Dd = sv.val.D, H = sv.val.H, comps = [];
     (def.components || []).forEach(function(c){
       var s = {}, at = {}, sh = c.shape || {};
-      Object.keys(sh).forEach(function(k){ if (k !== 'type' && k !== 'profile') s[k] = sv.ev(sh[k]); });
+      Object.keys(sh).forEach(function(k){ if (k !== 'type' && k !== 'profile' && k !== 'views') s[k] = sv.ev(sh[k]); });
       at.y = sv.ev((c.at || {}).y || 0); at.front = sv.ev((c.at || {}).front || 0);
       var cuts = (c.cuts || []).map(function(ct){ var cs = {}; Object.keys(ct).forEach(function(k){ if (k !== 'type' && k !== 'finish') cs[k] = sv.ev(ct[k]); }); return { type:ct.type, s:cs }; });
-      comps.push({ id:c.id, name:c.name, type:sh.type, profile:sh.profile, s:s, at:at, cuts:cuts, mirror:c.mirror });
+      comps.push({ id:c.id, name:c.name, type:sh.type, profile:sh.profile, s:s, at:at, cuts:cuts, mirror:c.mirror, views:sh.views ? scaleViews(sh.views, W, Dd, H) : null });
     });
     return { W:W, D:Dd, H:H, comps:comps, BZ:BZ };
   }
@@ -143,6 +152,12 @@ var BZ = (function(){
     function rect(x0, y0, x1, y1){ out.push({ k:'pl', v:[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], closed:true }); }
     m.comps.forEach(function(c){
       var s = c.s, y0 = c.at.y, f0 = c.at.front;
+      if (c.type === 'views') { // 図から 作った 部材：描いた 外形を そのまま
+        var vv = c.views, pl = function(pts){ out.push({ k:'pl', v:pts.map(function(q){ return [q[0], q[1] + y0]; }), closed:true }); };
+        if (v === 'front') { pl(vv.front.out); (vv.front.holes || []).forEach(function(h){ pl(h.pts); }); }
+        else if (vv.side && vv.side.out) pl(vv.side.out); else rect(0, y0, m.D, y0 + m.H);
+        return;
+      }
       if (c.type === 'box') { if (v === 'front') rect(-s.w / 2, y0, s.w / 2, y0 + s.h); else rect(f0, y0, f0 + s.d, y0 + s.h); }
       else if (c.type === 'profile') {
         if (v === 'front') (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){ out.push({ k:'pl', v:profilePts(c.profile, s, m.W, sg).map(function(q){ return [q[0], q[1] + y0]; }), closed:true }); });

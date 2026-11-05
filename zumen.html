@@ -350,7 +350,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 
 <script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.5";
+var APP_VER = "v0.7.6";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1994,6 +1994,12 @@ function cadClick(p, raw, ev){
     pushUndo(); D.ents.push({ id:SEQ++, t:'arc', c:g.c, r:g.r, a0:g.a0, a1:g.a1, layer:drawLay, css:null, aci:256 }); layerOf(drawLay); renderLayers();
     setMsg('円弧 R' + fmtMm(g.r)); changed(); return true;
   }
+  if (t === 'mkpart' && ST.mkPick && ST.mk) { // 穴の 深さに する 寸法を 押す
+    var pd0 = hitDim(raw); if (!pd0) { setMsg('寸法を 押して ください（やめる＝Esc）'); return true; }
+    var k0 = ST.mkPick; D.dims.forEach(function(d){ if (d.hole === k0) delete d.hole; }); pd0.hole = k0;
+    ST.mk.holeD[k0] = dimGeom(pd0).val; ST.mk.holeSrc = ST.mk.holeSrc || {}; ST.mk.holeSrc[k0] = '寸法 ' + fmtLen(ST.mk.holeD[k0]) + ' に 紐づけ';
+    ST.mkPick = null; changed(); setMsg('穴の 深さを 寸法 ' + fmtLen(ST.mk.holeD[k0]) + ' に 紐づけました'); return true;
+  }
   if (t === 'mirror' || t === 'move' || t === 'mkpart') {
     if (ST.mi.phase === 'sel') {
       var d = hitDim(raw);
@@ -2233,7 +2239,37 @@ function mkAuto(){
   var m = { step:'done', front:null, side:null, top:null, D:0, holeD:{}, name:'', auto:true };
   m.front = MK.face(G.front); if (!m.front) return { err:'正面の 外形が 閉じて いません。端と 端が つながって いるか 見て ください' };
   if (G.side.length) m.side = MK.face(G.side); if (G.top.length) m.top = MK.face(G.top);
+  mkHoleDepths(m);
   return m;
+}
+// 穴の 深さを 図から：① 寸法に 紐づけて ある（d.hole）→ その 値、② 無ければ 点線（見えない 線）から 読む（正面の 穴＝側面図、天面の 穴＝正面図）
+function mkHoleDepths(m){
+  m.holeSrc = m.holeSrc || {};
+  function hid(e){ return e.t !== 'text' && (layerOf(e.layer).dash || /隠れ/.test(e.layer || '')); }
+  function bbH(pg){ var b = { x0:Infinity, y0:Infinity, x1:-Infinity, y1:-Infinity }; pg.forEach(function(p){ b.x0 = Math.min(b.x0, p.x); b.x1 = Math.max(b.x1, p.x); b.y0 = Math.min(b.y0, p.y); b.y1 = Math.max(b.y1, p.y); }); return b; }
+  function near(a, b){ return Math.abs(a - b) <= Math.max(0.6, Math.abs(b) * 0.003); }
+  function findDim(pv, val, ax, u0, u1){ // その 面の 寸法で 値が 同じ で、両端が 測った 所に ある もの
+    return D.dims.filter(function(d){ if (d.pv && d.pv !== pv) return false; var g = dimGeom(d); if (!near(g.val, val)) return false;
+      var A = ax === 'x' ? [d.a.x, d.b.x] : [d.a.y, d.b.y]; return near(Math.min(A[0], A[1]), u0) && near(Math.max(A[0], A[1]), u1); })[0] || null;
+  }
+  var hs = D.ents.filter(function(e){ return hid(e) && e.pv; });
+  [['front', 'f', 'side'], ['top', 't', 'front']].forEach(function(z){
+    var F = m[z[0]]; if (!F) return;
+    F.holes.forEach(function(h, i){ var k = z[1] + i, hb = bbH(h);
+      var ld = D.dims.filter(function(d){ return d.hole === k; })[0];
+      if (ld) { m.holeD[k] = dimGeom(ld).val; m.holeSrc[k] = '寸法 ' + fmtLen(m.holeD[k]) + ' に 紐づけ'; return; }
+      var S = m[z[2]]; if (!S) return;
+      if (z[0] === 'front') { // 側面図：左が 手前。穴の 高さに かかる 点線の いちばん 奥まで
+        var c = hs.filter(function(e){ if (e.pv !== 'side') return false; var b = bboxOf([e]); return Math.min(b.y1, hb.y1) - Math.max(b.y0, hb.y0) > (hb.y1 - hb.y0) * 0.3; });
+        if (!c.length) return; var bx = bboxOf(c), dep = bx.x1 - S.bb.x0; if (!(dep > 0)) return;
+        m.holeD[k] = dep; var fd = findDim('side', dep, 'x', S.bb.x0, bx.x1); m.holeSrc[k] = '側面図の 点線から' + (fd ? '（寸法 ' + fmtLen(dimGeom(fd).val) + '）' : '');
+      } else { // 正面図：天面の 穴の 幅に かかる 点線の いちばん 下まで
+        var c2 = hs.filter(function(e){ if (e.pv !== 'front') return false; var b = bboxOf([e]); return Math.min(b.x1, hb.x1) - Math.max(b.x0, hb.x0) > (hb.x1 - hb.x0) * 0.3; });
+        if (!c2.length) return; var by = bboxOf(c2), dep2 = S.bb.y1 - by.y0; if (!(dep2 > 0)) return;
+        m.holeD[k] = dep2; var fd2 = findDim('front', dep2, 'y', by.y0, S.bb.y1); m.holeSrc[k] = '正面図の 点線から' + (fd2 ? '（寸法 ' + fmtLen(dimGeom(fd2).val) + '）' : '');
+      }
+    });
+  });
 }
 function mkAutoApply(direct){
   var m = mkAuto(); if (!m) return false;
@@ -2382,14 +2418,18 @@ function panel(){
       (M.front ? M.front.holes : []).forEach(function(_, i){ hl.push(['f' + i, '正面の 穴 ' + (i + 1) + '：前から 深さ']); });
       (M.top ? M.top.holes : []).forEach(function(_, i){ hl.push(['t' + i, '天面の 穴 ' + (i + 1) + '：上から 深さ']); });
       if (hl.length) h += '<div class="muted">穴の 番号は 左の 図の オレンジの 札と 同じ です（欄を 押すと その 穴が 光ります）</div>';
-      hl.forEach(function(x){ h += '<div class="row"><label>' + x[1] + '</label><input type="text" class="w mkH" data-k="' + x[0] + '" value="' + (M.holeD[x[0]] ? esc(fmtMm(M.holeD[x[0]])) : '') + '" placeholder="半分"> mm</div>'; });
+      hl.forEach(function(x){ var src = (M.holeSrc || {})[x[0]];
+        h += '<div class="row"><label>' + x[1] + '</label><input type="text" class="w mkH" data-k="' + x[0] + '" value="' + (M.holeD[x[0]] ? esc(fmtMm(M.holeD[x[0]])) : '') + '" placeholder="半分"> mm <button class="b2 mkPk" data-k="' + x[0] + '" title="図の 寸法を 押して この 穴の 深さに 紐づける">' + (ST.mkPick === x[0] ? '寸法を 押す…' : '📏 寸法') + '</button></div>';
+        if (src) h += '<div class="muted" style="margin:-4px 0 4px">　' + esc(src) + '</div>'; });
       if (!(PD && PD.saveMain)) h += '<div class="row"><label>名前</label><input type="text" id="mkN" class="ww" value="' + esc(M.name) + '" placeholder="例 香炉（筆返し 変形）"></div>';
       if (M.auto) h += '<div class="muted">図に 出した 正面・側面・天面の 線を そのまま 使いました（あとから かいた 線は 近い 面に 入れて います）。色の 線が 読み取った 外形、オレンジ＝穴。違う ときは［はじめから］で 線を 選び直せます</div>';
       h += '<div class="row"><button class="b2 pr" id="mkGo">' + (PD && PD.saveMain ? '🧊 この 部材に 反映' : '🧊 部材を 作る') + '</button><button class="b2" id="mkRe">はじめから</button></div>';
       h += '<div class="muted">正面・側面・天面の 外形を 重ねた 形に なります（叩き台）。作った あと 幅・奥行・高さの 数字で 全体を 伸び縮み できます</div>';
     }
     B.innerHTML = h;
-    document.querySelectorAll('.mkH').forEach(function(el){ var row = el.parentNode;
+    document.querySelectorAll('.mkPk').forEach(function(el){ el.onclick = function(){ var k = el.dataset.k; ST.mkPick = ST.mkPick === k ? null : k; ST.mkHot = k; panel(); redraw(); if (ST.mkPick) setMsg('左の 図で この 穴の 深さに する 寸法を 押して ください（やめる＝もう 一度 押す／Esc）'); }; });
+    document.querySelectorAll('.mkH').forEach(function(el){ el.oninput = function(){ if (M.holeSrc) delete M.holeSrc[el.dataset.k]; D.dims.forEach(function(d){ if (d.hole === el.dataset.k) delete d.hole; }); };
+      var row = el.parentNode;
       row.onmouseenter = el.onfocus = function(){ ST.mkHot = el.dataset.k; redraw(); };
       row.onmouseleave = el.onblur = function(){ if (document.activeElement !== el) { ST.mkHot = null; redraw(); } }; });
     var b1 = document.getElementById('mkOk'); if (b1) b1.onclick = function(){ mkSet(); };
@@ -2673,6 +2713,7 @@ document.addEventListener('keydown', function(ev){
   var tg = ev.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT') return;
   if (ev.key === 'Escape' && document.getElementById('ctx').style.display === 'block') { hideCtx(); return; }
   if (ev.key === 'Escape' && ST.hotGrip) { ST.hotGrip = null; setMsg(''); redraw(); return; }
+  if (ev.key === 'Escape' && ST.mkPick) { ST.mkPick = null; panel(); setMsg(''); return; }
   if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; if (ST.mi) ST.mi.phase = 'sel'; if (ST.of) ST.of.e = null; if (ST.cn) ST.cn.e1 = null; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
   else if (ev.key === 'Enter' && ST.mi && ST.mi.phase === 'sel') { if (ST.tool === 'mkpart') { if (ST.mk && ST.mk.step !== 'done') mkSet(); } else mirrorAxis(); ev.preventDefault(); }
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }

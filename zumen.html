@@ -26,6 +26,7 @@ input,select,textarea,button{font-family:inherit;font-size:inherit;color:inherit
 .tool.on{background:#e8f1ff;color:#123;border-color:#7aa7e0}
 .tool.tg.on{background:#ffe9b8;color:#432;border-color:#d9a640}
 .tools hr{border:0;border-top:1px solid #3d4e6a;margin:3px 0}
+@media (max-height:1000px){.tool{padding:3px 2px;line-height:1.2}.tool b{font-size:14px}.tools{gap:2px}.tools hr{margin:2px 0}}
 .cwrap{flex:1;position:relative;min-width:0;background:#fff}
 #cv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
 #hint{position:absolute;left:8px;top:8px;background:rgba(26,37,53,.85);color:#fff;padding:5px 9px;border-radius:4px;font-size:12px;pointer-events:none;max-width:70%}
@@ -163,9 +164,14 @@ body.pdmode #pdv{display:flex}
     <div class="tool" data-tool="text"><b>A</b>文字</div>
     <hr>
     <div class="tool" data-tool="line"><b>╱</b>線</div>
+    <div class="tool" data-tool="arc"><b>◜</b>円弧</div>
     <div class="tool" data-tool="hole"><b>◯</b>穴</div>
     <div class="tool" data-tool="leader"><b>↖</b>引出線</div>
     <div class="tool" data-tool="mark"><b>▲</b>磨き</div>
+    <hr>
+    <div class="tool" data-tool="trim" title="Shift＋クリックで 延長"><b>✂</b>トリム</div>
+    <div class="tool" data-tool="extend" title="Shift＋クリックで トリム"><b>⟶|</b>延長</div>
+    <div class="tool" data-tool="mirror"><b>⇋</b>鏡像</div>
     <hr>
     <div class="tool" data-tool="stone"><b>▭</b>石の<br>寸法</div>
     <div class="tool" data-tool="stretch"><b>⇲</b>伸ばす</div>
@@ -305,9 +311,9 @@ body.pdmode #pdv{display:flex}
 </div></div>
 <div id="printArea"></div>
 
-<script src="buzai-engine.js?v=0.6.4"></script>
+<script src="buzai-engine.js?v=0.6.5"></script>
 <script>
-var APP_VER = "v0.6.4";
+var APP_VER = "v0.6.5";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1172,6 +1178,7 @@ function drawOverlay(c){
       c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#555'; c.lineWidth = 1; c.beginPath(); c.moveTo(l1[0], l1[1]); c.lineTo(l2[0], l2[1]); c.stroke(); c.restore();
     }
   }
+  drawCadPreview(c);
   ST.pts.forEach(function(p){ var q = W2S(V, p); c.fillStyle = '#c0007a'; c.fillRect(q[0] - 3, q[1] - 3, 6, 6); });
   // 選んだ 寸法の つまみ
   var sd = selDimObj();
@@ -1473,12 +1480,18 @@ var HINTS = {
   line:'線：始まりを クリック → 次の 点を クリック（続けて 引ける。Esc／右クリックで 終わり）',
   hole:'穴：中心を クリック → 直径を 入れる',
   leader:'引出線：矢印の 先を クリック → 文字を 置く 所を クリック → 文字を 入れる',
-  mark:'磨き：▲を 置く 所を クリック'
+  mark:'磨き：▲を 置く 所を クリック',
+  arc:'円弧：3 点（始まり → 通る 点 → 終わり）。右の 欄で「中心から」に 切り替え',
+  trim:'トリム：消したい 部分を クリック（交わる 線と 線の 間が 消える）。Shift＋クリックで 延長',
+  extend:'延長：伸ばしたい 線の 端の 近くを クリック（当たる 線まで 伸びる）。Shift＋クリックで トリム',
+  mirror:'鏡像：写す ものを クリック／ドラッグで 選ぶ →［軸を 決める］（Enter）→ 軸の 2 点を クリック（Shift で まっすぐ）'
 };
 function setTool(t){
   ST.tool = t; ST.pts = []; ST.meas = null; ST.win = null; ST.hotGrip = null;
   if (t === 'stretch') ST.sw = { phase:'win1' }; else ST.sw = null;
   if (t !== 'stone') ST.stone = null;
+  if (t === 'mirror') ST.mi = { phase:ST.sel.size || ST.dsel.size || ST.selDim ? 'axis' : 'sel', keep:ST.mi ? ST.mi.keep : true }; else ST.mi = null;
+  if (!ST.arcMode) ST.arcMode = '3p';
   document.querySelectorAll('.tool[data-tool]').forEach(function(el){ el.classList.toggle('on', el.dataset.tool === t); });
   cv.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
   document.getElementById('hint').textContent = HINTS[t] || '';
@@ -1551,6 +1564,7 @@ function onClick(p, raw, ev){
     }
     redraw(); return;
   }
+  if (cadClick(p, raw, ev)) return;
   var drawLay = BM && BM.active ? '部材' : '作図';
   if (t === 'line') {
     if (ST.pts.length) { var a0 = ST.pts[0]; if (dist(a0, p) > 1e-6) { pushUndo(); D.ents.push({ id:SEQ++, t:'line', a:P(a0.x, a0.y), b:P(p.x, p.y), layer:drawLay, css:null, aci:256 }); layerOf(drawLay); changed(); } }
@@ -1608,11 +1622,260 @@ function deleteSel(){
   pushUndo(); D.ents = D.ents.filter(function(e){ return !ST.sel.has(e.id); }); ST.sel.clear(); changed();
 }
 
+// ═════════ 作図の 道具（トリム・延長・鏡像・円弧）═════════
+// 図形を「部品」に 分けて 考える：L＝線分 {a,b}・A＝円弧 {c,r,a0,s（左回りの 角度）}・C＝円 {c,r}
+var CX = (function(){
+  var EPS = 1e-7;
+  function nang(a){ a %= 2 * PI; if (a < 0) a += 2 * PI; return a; }
+  function pieces(e){
+    if (e.t === 'line') return [{ k:'L', a:e.a, b:e.b }];
+    if (e.t === 'arc') return [{ k:'A', c:e.c, r:e.r, a0:e.a0, s:sweepCCW(e.a0, e.a1) }];
+    if (e.t === 'circle') return [{ k:'C', c:e.c, r:e.r }];
+    if (e.t === 'pl') {
+      var o = [], n = e.v.length, m = e.closed ? n : n - 1;
+      for (var i = 0; i < m; i++) {
+        var a = e.v[i], b = e.v[(i + 1) % n], ba = a.b ? bulgeArc(a, b, a.b) : null;
+        if (!ba) { if (dist(a, b) > EPS) o.push({ k:'L', a:P(a.x, a.y), b:P(b.x, b.y), seg:i }); }
+        else if (ba.ccw) o.push({ k:'A', c:ba.c, r:ba.r, a0:ba.a0, s:sweepCCW(ba.a0, ba.a1), seg:i });
+        else o.push({ k:'A', c:ba.c, r:ba.r, a0:ba.a1, s:sweepCCW(ba.a1, ba.a0), seg:i });
+      }
+      return o;
+    }
+    return [];
+  }
+  // 部品の 上の 位置（L は 0〜1、A は 始まりからの 角度、C は 角度）
+  function par(q, p){
+    if (q.k === 'L') { var ab = sub(q.b, q.a), l2 = dot(ab, ab); return l2 < 1e-18 ? 0 : dot(sub(p, q.a), ab) / l2; }
+    var an = Math.atan2(p.y - q.c.y, p.x - q.c.x); return q.k === 'C' ? nang(an) : nang(an - q.a0);
+  }
+  function inside(q, p, tol){
+    var t = par(q, p);
+    if (q.k === 'L') { var L = dist(q.a, q.b) || 1, e = tol / L; return t >= -e && t <= 1 + e; }
+    if (q.k === 'C') return true;
+    var e2 = tol / q.r; return t <= q.s + e2 || t >= 2 * PI - e2;
+  }
+  // 交わる 点（q1 は 伸ばした 線・円として、q2 は 部品の 中だけ）
+  function cross(q1, q2, tol){
+    var out = [];
+    function circ(q){ return q.k !== 'L'; }
+    if (!circ(q1) && !circ(q2)) {
+      var r = sub(q1.b, q1.a), s = sub(q2.b, q2.a), den = crs(r, s);
+      if (Math.abs(den) < 1e-12) return out;
+      var t = crs(sub(q2.a, q1.a), s) / den; out.push(addp(q1.a, mulp(r, t)));
+    } else if (!circ(q1) || !circ(q2)) {
+      var Lq = circ(q1) ? q2 : q1, Cq = circ(q1) ? q1 : q2;
+      var d = sub(Lq.b, Lq.a), f = sub(Lq.a, Cq.c), A = dot(d, d), B = 2 * dot(f, d), Cc = dot(f, f) - Cq.r * Cq.r, disc = B * B - 4 * A * Cc;
+      if (A < 1e-18) return out;
+      if (disc >= -1e-9 * A * Cq.r * Cq.r) { var sq = Math.sqrt(Math.max(0, disc)); [(-B - sq) / (2 * A), (-B + sq) / (2 * A)].forEach(function(t){ out.push(addp(Lq.a, mulp(d, t))); }); }
+    } else {
+      var dd = dist(q1.c, q2.c);
+      if (dd < 1e-12 || dd > q1.r + q2.r + tol || dd < Math.abs(q1.r - q2.r) - tol) return out;
+      var aa = (q1.r * q1.r - q2.r * q2.r + dd * dd) / (2 * dd), h = Math.sqrt(Math.max(0, q1.r * q1.r - aa * aa)), u = mulp(sub(q2.c, q1.c), 1 / dd);
+      var m0 = addp(q1.c, mulp(u, aa)); out.push(addp(m0, P(-u.y * h, u.x * h))); if (h > 1e-9) out.push(addp(m0, P(u.y * h, -u.x * h)));
+    }
+    return out.filter(function(p){ return inside(q2, p, tol); });
+  }
+  function bb(q){ if (q.k === 'L') return { x0:Math.min(q.a.x, q.b.x), y0:Math.min(q.a.y, q.b.y), x1:Math.max(q.a.x, q.b.x), y1:Math.max(q.a.y, q.b.y) };
+    return { x0:q.c.x - q.r, y0:q.c.y - q.r, x1:q.c.x + q.r, y1:q.c.y + q.r }; }
+  function over(a, b, t){ return a.x0 <= b.x1 + t && b.x0 <= a.x1 + t && a.y0 <= b.y1 + t && b.y0 <= a.y1 + t; }
+  // 切る 相手：見えて いる 図形（文字 以外）の 部品
+  function cutters(skipE, skipQ){
+    var o = [];
+    D.ents.forEach(function(e){ if (!visible(e) || e.t === 'text') return; pieces(e).forEach(function(q){ if (e === skipE && (!skipQ || q.seg === skipQ.seg)) return; q.e = e; o.push(q); }); });
+    return o;
+  }
+  // 部品の 上で 交わる 位置（並べた もの）
+  function hits(q, cs, tol, ext){
+    var box = ext ? null : bb(q), ts = [];
+    cs.forEach(function(c2){ if (box && !over(box, bb(c2), tol)) return; cross(q, c2, tol).forEach(function(p){ ts.push(par(q, p)); }); });
+    return ts.sort(function(a, b){ return a - b; });
+  }
+  function pt(q, t){ if (q.k === 'L') return addp(q.a, mulp(sub(q.b, q.a), t)); var an = (q.k === 'C' ? 0 : q.a0) + t; return P(q.c.x + q.r * Math.cos(an), q.c.y + q.r * Math.sin(an)); }
+  function sub2(q, t0, t1){ // 部品の 一部
+    if (q.k === 'L') return { k:'L', a:pt(q, t0), b:pt(q, t1) };
+    var base = q.k === 'C' ? 0 : q.a0; return { k:'A', c:q.c, r:q.r, a0:nang(base + t0), s:t1 - t0 };
+  }
+  function len(q){ return q.k === 'L' ? dist(q.a, q.b) : q.r * (q.k === 'C' ? 2 * PI : q.s); }
+  function toEnt(q, like){
+    var e = { id:SEQ++, layer:like.layer, css:like.css, aci:like.aci };
+    if (like.lt) e.lt = like.lt;
+    if (q.k === 'L') { e.t = 'line'; e.a = P(q.a.x, q.a.y); e.b = P(q.b.x, q.b.y); }
+    else if (q.k === 'C') { e.t = 'circle'; e.c = P(q.c.x, q.c.y); e.r = q.r; }
+    else { e.t = 'arc'; e.c = P(q.c.x, q.c.y); e.r = q.r; e.a0 = nang(q.a0); e.a1 = nang(q.a0 + q.s); }
+    return e;
+  }
+  // クリックした 所に いちばん 近い 部品
+  function pick(w, tol){
+    var e = nearestEnt(w, function(x){ return visible(x) && x.t !== 'text'; }); if (!e) return null;
+    var best = null, bd = Infinity;
+    pieces(e).forEach(function(q){ var d = q.k === 'L' ? distSeg(w, q.a, q.b) : Math.abs(dist(w, q.c) - q.r); if (q.k === 'A' && !inside(q, w, tol * 3)) d += 1e9; if (d < bd) { bd = d; best = q; } });
+    return best ? { e:e, q:best } : null;
+  }
+  // トリム：消す 範囲 と 残る 部品
+  function trimPlan(w){
+    var tol = 6 / V.s, h = pick(w, tol); if (!h) return null;
+    var q = h.q, cs = cutters(h.e, h.e.t === 'pl' ? q : null), ts = hits(q, cs, tol * 0.01), t0 = par(q, w), keep = [], gone;
+    var L = len(q), e2 = q.k === 'L' ? 1e-6 : 1e-6 / Math.max(q.r, 1e-9);
+    if (q.k === 'C') {
+      var u = []; ts.forEach(function(t){ t = nang(t); if (!u.some(function(x){ return Math.abs(x - t) < e2 || Math.abs(x - t) > 2 * PI - e2; })) u.push(t); });
+      u.sort(function(a, b){ return a - b; });
+      if (u.length < 2) return { h:h, none:true };
+      var hi = u.filter(function(t){ return t > t0; })[0], lo = u.filter(function(t){ return t < t0; }).pop();
+      if (hi == null) hi = u[0] + 2 * PI; if (lo == null) lo = u[u.length - 1] - 2 * PI;
+      gone = sub2(q, lo, hi); keep.push({ k:'A', c:q.c, r:q.r, a0:nang(hi), s:2 * PI - (hi - lo) });
+    } else {
+      var top = q.k === 'L' ? 1 : q.s;
+      var inn = ts.filter(function(t){ return t > e2 && t < top - e2; });
+      if (!inn.length) return { h:h, none:true };
+      var lo2 = 0, hi2 = top; inn.forEach(function(t){ if (t < t0 && t > lo2) lo2 = t; if (t > t0 && t < hi2) hi2 = t; });
+      gone = sub2(q, lo2, hi2);
+      if (lo2 > e2) keep.push(sub2(q, 0, lo2));
+      if (hi2 < top - e2) keep.push(sub2(q, hi2, top));
+    }
+    return { h:h, gone:gone, keep:keep, L:L };
+  }
+  function trim(w){
+    var pl = trimPlan(w); if (!pl) return '線を クリックして ください';
+    if (pl.none) return '交わる 線が ありません（まるごと 消すなら ➤選ぶ → Delete）';
+    var e = pl.h.e, i = D.ents.indexOf(e), add = pl.keep.map(function(q){ return toEnt(q, e); });
+    if (e.t === 'pl') pieces(e).forEach(function(q){ if (q.seg !== pl.h.q.seg) add.push(toEnt(q, e)); });
+    pushUndo(); D.ents.splice.apply(D.ents, [i, 1].concat(add)); ST.sel.clear(); changed();
+    return e.t === 'pl' ? '切りました（つながった 線は 1 本ずつの 線・円弧に 分けました）' : '切りました';
+  }
+  // 延長：近い 方の 端を、当たる いちばん 近い 線まで
+  function extendPlan(w){
+    var tol = 6 / V.s, h = pick(w, tol); if (!h) return null;
+    var q = h.q, e = h.e;
+    if (q.k === 'C') return { h:h, msg:'円は 伸ばせません' };
+    if (e.t === 'pl') { if (e.closed) return { h:h, msg:'閉じた 線は 伸ばせません' }; var last = e.v.length - 2; if (q.seg !== 0 && q.seg !== last) return { h:h, msg:'つながった 線は 両端の 線だけ 伸ばせます' }; }
+    var cs = cutters(e, e.t === 'pl' ? q : null), t0 = par(q, w);
+    if (q.k === 'L') {
+      var atB = t0 > 0.5, ts = hits(q, cs, tol * 0.01, true), eps = 1e-6, best = null;
+      if (e.t === 'pl' && e.v.length > 2) atB = q.seg !== 0;
+      ts.forEach(function(t){ if (atB && t > 1 + eps && (best == null || t < best)) best = t; if (!atB && t < -eps && (best == null || t > best)) best = t; });
+      if (best == null) return { h:h, msg:'伸ばした 先に 当たる 線が ありません' };
+      return { h:h, atB:atB, to:pt(q, best), from:atB ? q.b : q.a };
+    }
+    var full = { k:'C', c:q.c, r:q.r }, os = [];
+    cs.forEach(function(c2){ cross(full, c2, tol * 0.01).forEach(function(p){ os.push(nang(Math.atan2(p.y - q.c.y, p.x - q.c.x) - q.a0)); }); });
+    var e3 = 1e-6 / q.r, atEnd = t0 > q.s / 2, cand = os.filter(function(o){ return o > q.s + e3 && o < 2 * PI - e3; });
+    if (e.t === 'pl') return { h:h, msg:'つながった 線の 円弧は 伸ばせません' };
+    if (!cand.length) return { h:h, msg:'伸ばした 先に 当たる 線が ありません' };
+    var o2 = atEnd ? Math.min.apply(null, cand) : Math.max.apply(null, cand);
+    var nq = atEnd ? { k:'A', c:q.c, r:q.r, a0:q.a0, s:o2 } : { k:'A', c:q.c, r:q.r, a0:nang(q.a0 + o2), s:q.s + (2 * PI - o2) };
+    return { h:h, arc:nq, add:atEnd ? sub2(q, q.s, o2) : { k:'A', c:q.c, r:q.r, a0:nang(q.a0 + o2), s:2 * PI - o2 } };
+  }
+  function extend(w){
+    var pl = extendPlan(w); if (!pl) return '線の 端の 近くを クリックして ください';
+    if (pl.msg) return pl.msg;
+    var e = pl.h.e; pushUndo();
+    if (pl.arc) { e.a0 = nang(pl.arc.a0); e.a1 = nang(pl.arc.a0 + pl.arc.s); }
+    else if (e.t === 'line') { if (pl.atB) e.b = P(pl.to.x, pl.to.y); else e.a = P(pl.to.x, pl.to.y); }
+    else { var v = pl.atB ? e.v[e.v.length - 1] : e.v[0]; v.x = pl.to.x; v.y = pl.to.y; }
+    changed(); return '伸ばしました';
+  }
+  // 鏡像：軸 p1→p2 で 写す
+  function refl(p1, p2){
+    var u = sub(p2, p1), L = Math.hypot(u.x, u.y); u = mulp(u, 1 / L); var th = Math.atan2(u.y, u.x);
+    function rp(p){ var d = sub(p, p1), k = dot(d, u); return addp(p1, sub(mulp(u, 2 * k), d)); }
+    function ra(a){ return nang(2 * th - a); }
+    return { p:rp, a:ra, th:th };
+  }
+  function mirrorEnt(e, R){
+    var n = clone(e); n.id = SEQ++;
+    if (n.t === 'line') { n.a = R.p(e.a); n.b = R.p(e.b); }
+    else if (n.t === 'circle') n.c = R.p(e.c);
+    else if (n.t === 'arc') { n.c = R.p(e.c); n.a0 = R.a(e.a1); n.a1 = R.a(e.a0); }
+    else if (n.t === 'pl') n.v = e.v.map(function(v){ var q = R.p(v); return { x:q.x, y:q.y, b:-(v.b || 0) }; });
+    else if (n.t === 'text') { // 文字は 裏返さない（読める まま、揃えだけ 入れかえ）
+      var q = R.p(e.p); n.p = q; var c = Math.abs(Math.cos(R.th)) < 0.5; if (c && (e.ha === 0 || e.ha === 2)) { n.ha = 2 - e.ha; }
+    }
+    return n;
+  }
+  function mirrorDim(d, R){ var n = clone(d); n.id = SEQ++; n.a = R.p(d.a); n.b = R.p(d.b); n.off = R.p(d.off); if (n.mode === 'r') n.ang = R.a(d.ang || 0); n.auto = false; return n; }
+  function mirror(p1, p2, keep){
+    if (dist(p1, p2) < 1e-9) return '軸の 2 点が 同じです';
+    var R = refl(p1, p2), es = D.ents.filter(function(e){ return ST.sel.has(e.id); }), ds = D.dims.filter(function(d){ return ST.dsel.has(d.id) || d.id === ST.selDim; });
+    if (!es.length && !ds.length) return '写す ものを 選んで ください';
+    pushUndo();
+    var ne = es.map(function(e){ return mirrorEnt(e, R); }), nd = ds.map(function(d){ return mirrorDim(d, R); });
+    if (!keep) { D.ents = D.ents.filter(function(e){ return !ST.sel.has(e.id); }); D.dims = D.dims.filter(function(d){ return !(ST.dsel.has(d.id) || d.id === ST.selDim); }); }
+    D.ents = D.ents.concat(ne); D.dims = D.dims.concat(nd);
+    ST.sel = new Set(ne.map(function(e){ return e.id; })); ST.dsel = new Set(nd.map(function(d){ return d.id; })); ST.selDim = null;
+    changed(); return (keep ? '写しました（' : '反転しました（') + '図形 ' + ne.length + '・寸法 ' + nd.length + '）';
+  }
+  // 円弧：3 点 ／ 中心・始まり・終わり
+  function arc3(p1, p2, p3){
+    var ax = p1.x, ay = p1.y, bx = p2.x, by = p2.y, cx = p3.x, cy = p3.y, d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    if (Math.abs(d) < 1e-12) return null;
+    var ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d;
+    var uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d;
+    var c = P(ux, uy), r = dist(c, p1), A = function(p){ return Math.atan2(p.y - uy, p.x - ux); };
+    var a1 = A(p1), a2 = A(p2), a3 = A(p3), ccw = sweepCCW(a1, a2) < sweepCCW(a1, a3);
+    return ccw ? { c:c, r:r, a0:nang(a1), a1:nang(a3) } : { c:c, r:r, a0:nang(a3), a1:nang(a1) };
+  }
+  function arcC(c, p1, p3){ var r = dist(c, p1); if (r < 1e-9) return null; return { c:P(c.x, c.y), r:r, a0:nang(Math.atan2(p1.y - c.y, p1.x - c.x)), a1:nang(Math.atan2(p3.y - c.y, p3.x - c.x)) }; }
+  return { pieces:pieces, trimPlan:trimPlan, trim:trim, extendPlan:extendPlan, extend:extend, mirror:mirror, refl:refl, mirrorEnt:mirrorEnt, arc3:arc3, arcC:arcC, sub2:sub2 };
+})();
+// 下書きの 部品を 描く（トリムで 消える 所・延長で 伸びる 所・円弧の 下書き）
+function drawPiece(c, q, color, w, dash){
+  c.save(); c.strokeStyle = color; c.lineWidth = w; if (dash) c.setLineDash(dash); c.beginPath();
+  if (q.k === 'L') { var a = W2S(V, q.a), b = W2S(V, q.b); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
+  else { var cc = W2S(V, q.c); c.arc(cc[0], cc[1], q.r * V.s, -q.a0, -(q.a0 + (q.k === 'C' ? 2 * PI : q.s)), true); }
+  c.stroke(); c.restore();
+}
+function drawCadPreview(c){
+  var t = ST.tool, w = ST.curRaw;
+  if ((t === 'trim' || t === 'extend') && w) {
+    var ext = (t === 'extend') !== !!ST.shift;
+    if (!ext) { var pl = CX.trimPlan(w); if (pl && pl.gone) drawPiece(c, pl.gone, '#e0301e', 4); else if (pl && pl.none) drawPiece(c, pl.h.q, '#999', 3, [3, 3]); }
+    else { var ep = CX.extendPlan(w); if (ep && ep.to) drawPiece(c, { k:'L', a:ep.from, b:ep.to }, '#e05a00', 3, [6, 4]); else if (ep && ep.add) drawPiece(c, ep.add, '#e05a00', 3, [6, 4]); }
+  }
+  if (t === 'mirror' && ST.mi && ST.mi.phase === 'axis' && ST.pts.length === 1 && ST.cur && dist(ST.pts[0], ST.cur) > 1e-9) {
+    var R = CX.refl(ST.pts[0], ST.cur), a1 = W2S(V, ST.pts[0]), a2 = W2S(V, ST.cur);
+    c.save(); c.setLineDash([8, 4]); c.strokeStyle = '#1a5ad0'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(a1[0], a1[1]); c.lineTo(a2[0], a2[1]); c.stroke(); c.restore();
+    D.ents.forEach(function(e){ if (!ST.sel.has(e.id)) return; var n = CX.mirrorEnt(e, R); SEQ--; if (n.t === 'text') return; c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5; c.beginPath(); pathEnt(c, V, n); c.stroke(); c.restore(); });
+  }
+  if (t === 'arc' && ST.cur && ST.pts.length === 2) {
+    var g = ST.arcMode === 'cse' ? CX.arcC(ST.pts[0], ST.pts[1], ST.cur) : CX.arc3(ST.pts[0], ST.pts[1], ST.cur);
+    if (g) drawPiece(c, { k:'A', c:g.c, r:g.r, a0:g.a0, s:sweepCCW(g.a0, g.a1) }, '#ff5a1f', 2);
+  }
+  if (t === 'arc' && ST.cur && ST.pts.length === 1) {
+    var l1 = W2S(V, ST.pts[0]), l2 = W2S(V, ST.cur);
+    c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#555'; c.beginPath(); c.moveTo(l1[0], l1[1]); c.lineTo(l2[0], l2[1]); c.stroke(); c.restore();
+  }
+}
+// クリック
+function cadClick(p, raw, ev){
+  var t = ST.tool, drawLay = BM && BM.active ? '部材' : '作図';
+  if (t === 'trim' || t === 'extend') { var ext = (t === 'extend') !== !!(ev && ev.shiftKey); setMsg(ext ? CX.extend(raw) : CX.trim(raw)); return true; }
+  if (t === 'arc') {
+    ST.pts.push(P(p.x, p.y)); if (ST.pts.length < 3) { redraw(); return true; }
+    var g = ST.arcMode === 'cse' ? CX.arcC(ST.pts[0], ST.pts[1], ST.pts[2]) : CX.arc3(ST.pts[0], ST.pts[1], ST.pts[2]); ST.pts = [];
+    if (!g) { setMsg('3 点が 一直線です'); redraw(); return true; }
+    pushUndo(); D.ents.push({ id:SEQ++, t:'arc', c:g.c, r:g.r, a0:g.a0, a1:g.a1, layer:drawLay, css:null, aci:256 }); layerOf(drawLay); renderLayers();
+    setMsg('円弧 R' + fmtMm(g.r)); changed(); return true;
+  }
+  if (t === 'mirror') {
+    if (ST.mi.phase === 'sel') {
+      var d = hitDim(raw);
+      if (d) { if (ST.dsel.has(d.id)) ST.dsel.delete(d.id); else ST.dsel.add(d.id); }
+      else { var hit = nearestEnt(raw, visible); if (hit) { if (ST.sel.has(hit.id)) ST.sel.delete(hit.id); else ST.sel.add(hit.id); } }
+      panel(); redraw(); return true;
+    }
+    ST.pts.push(P(p.x, p.y)); if (ST.pts.length < 2) { redraw(); return true; }
+    var a = ST.pts[0], b = ST.pts[1]; ST.pts = [];
+    setMsg(CX.mirror(a, b, ST.mi.keep)); ST.mi.phase = 'sel'; panel(); return true;
+  }
+  return false;
+}
+function mirrorAxis(){ if (!(ST.sel.size || ST.dsel.size || ST.selDim)) { setMsg('写す ものを 選んで ください'); return; } ST.mi.phase = 'axis'; ST.pts = []; panel(); redraw(); }
+
 // ═════════ 右の 欄（道具ごと） ═════════
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function panel(){
   var H = document.getElementById('pnToolH'), B = document.getElementById('pnToolB'), t = ST.tool, h = '';
-  var names = { select:'選ぶ', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）' };
+  var names = { select:'選ぶ', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）' };
   H.textContent = names[t] || t;
   if (t === 'select') {
     var d = ST.selDim && D.dims.filter(function(x){ return x.id === ST.selDim; })[0];
@@ -1671,6 +1934,28 @@ function panel(){
       return;
     }
     B.innerHTML = '<div class="muted">' + HINTS.select + '</div>'; return;
+  }
+  if (t === 'arc') {
+    h += '<div class="row"><label>かき方</label><select id="arcM"><option value="3p">3 点（始まり・通る 点・終わり）</option><option value="cse">中心 → 始まり → 終わり（左回り）</option></select></div>';
+    h += '<div class="muted">' + (ST.arcMode === 'cse' ? '中心を クリック → 始まりの 点（半径が 決まる）→ 終わりの 向き。左回りに かきます' : '始まり → 通る 点 → 終わり の 順に クリック') + '</div>';
+    h += '<div class="muted">端点・中点・中心に 吸い付きます。Esc で やり直し</div>';
+    B.innerHTML = h; var am = document.getElementById('arcM'); am.value = ST.arcMode; am.onchange = function(){ ST.arcMode = am.value; ST.pts = []; panel(); redraw(); }; return;
+  }
+  if (t === 'trim' || t === 'extend') {
+    h += '<div class="muted">' + HINTS[t] + '</div><div class="muted">赤＝消える 所、オレンジの 点線＝伸びる 所（動かすと 下書きが 出ます）。つながった 線（ポリライン）を 切ると 1 本ずつの 線・円弧に 分かれます</div>';
+    B.innerHTML = h; return;
+  }
+  if (t === 'mirror') {
+    var nE = ST.sel.size, nD = ST.dsel.size + (ST.selDim ? 1 : 0);
+    h += '<div>図形 <b>' + nE + '</b> 個・寸法 <b>' + nD + '</b> 個 選んで います</div>';
+    h += '<div class="row"><label><input type="checkbox" id="miKeep"' + (ST.mi.keep ? ' checked' : '') + '> 元を 残す（写す）</label></div>';
+    if (ST.mi.phase === 'sel') h += '<div class="muted">写す ものを クリック／ドラッグで 選んで（Ctrl なしで 足せます）、［軸を 決める］か Enter</div><div class="row"><button class="b2 pr" id="miGo">軸を 決める（Enter）</button></div>';
+    else h += '<div class="muted">軸の 1 点目 → 2 点目を クリック（端点・中点に 吸い付く。Shift で まっすぐ）</div><div class="row"><button class="b2" id="miBack">選び直す</button></div>';
+    B.innerHTML = h;
+    document.getElementById('miKeep').onchange = function(){ ST.mi.keep = this.checked; };
+    var g1 = document.getElementById('miGo'); if (g1) g1.onclick = mirrorAxis;
+    var g2 = document.getElementById('miBack'); if (g2) g2.onclick = function(){ ST.mi.phase = 'sel'; ST.pts = []; panel(); redraw(); };
+    return;
   }
   if (t === 'measure') {
     if (ST.meas) {
@@ -1821,6 +2106,7 @@ cv.addEventListener('pointermove', function(ev){
       if (drag.type === 'grip') { pushUndo(); ST.hotGrip = null; }
       if (drag.type === 'maybe') {
         if (drag.touch) drag.type = 'pan';
+        else if (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'sel') drag.type = 'win';
         else if (ST.tool === 'select') { var hd = hitDim(drag.w); if (hd && hd.id === ST.selDim) { pushUndo(); drag.type = 'dimmove'; drag.dim = hd; } else drag.type = 'win'; }
         else drag.type = 'pan';
       }
@@ -1831,12 +2117,13 @@ cv.addEventListener('pointermove', function(ev){
     else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
   }
   // スナップ（点を 取る 道具だけ）
-  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark'].indexOf(ST.tool) >= 0 || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off');
+  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc'].indexOf(ST.tool) >= 0 || (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off');
   if (ST.tool === 'select' && ST.hotGrip === 'off') redraw();
   ST.snap = needSnap && !(drag && drag.moved) && !(ST.tool === 'dim' && ST.pts.length === 2) ? findSnap(q[0], q[1]) : null;
   var p = ST.snap ? ST.snap.p : w;
   if (!ST.snap) p = applyOrtho(p, ev);
-  ST.cur = p;
+  ST.cur = p; ST.curRaw = w; ST.shift = !!ev.shiftKey;
+  if (ST.tool === 'trim' || ST.tool === 'extend' || (ST.tool === 'arc' && ST.pts.length) || ST.tool === 'mirror') redraw();
   document.getElementById('stXY').textContent = 'X ' + fmtMm(p.x) + '  Y ' + fmtMm(p.y);
   var base = ST.pts.length ? ST.pts[ST.pts.length - 1] : null;
   document.getElementById('stRel').textContent = base ? '距離 ' + fmtLen(dist(base, p)) : '';
@@ -1857,7 +2144,7 @@ function endPtr(ev){
     return;
   }
   if (dg.type === 'maybe' && !dg.moved) {
-    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark'].indexOf(ST.tool) >= 0 || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off') ? findSnap(q[0], q[1]) : null;
+    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc'].indexOf(ST.tool) >= 0 || (ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off') ? findSnap(q[0], q[1]) : null;
     if (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'win1' || ST.sw.phase === 'win2')) sn = null;
     if (ST.tool === 'dim' && ST.pts.length === 2) sn = null;
     var p = sn ? sn.p : applyOrtho(raw, ev);
@@ -1894,7 +2181,7 @@ function showCtx(x, y){
   var busy = ST.pts.length || ST.hotGrip || (ST.sw && ST.sw.phase !== 'win1');
   var it = [];
   if (busy) it.push(['✕ やめる（Esc）', cancelOp], '-');
-  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ setTool(t[0]); }, false, ST.tool === t[0]]); });
+  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['arc', '◜ 円弧'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['trim', '✂ トリム'], ['extend', '⟶| 延長'], ['mirror', '⇋ 鏡像'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ setTool(t[0]); }, false, ST.tool === t[0]]); });
   it.push('-', ['⤢ 全体を 見る', fit], ['↶ 元に 戻す', undo, !UNDO.length], ['↷ やり直す', redo, !REDO.length]);
   if (ST.selDim || ST.dsel.size || ST.sel.size) it.push('-', ['🗑 消す（Delete）', deleteSel]);
   if (selDimObj()) it.push(['寸法の 大きさ・文字…', function(){ document.body.classList.add('sideon'); var el = document.getElementById('dTh'); if (el) { el.focus(); el.select(); } }]);
@@ -1922,7 +2209,8 @@ document.addEventListener('keydown', function(ev){
   var tg = ev.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT') return;
   if (ev.key === 'Escape' && document.getElementById('ctx').style.display === 'block') { hideCtx(); return; }
   if (ev.key === 'Escape' && ST.hotGrip) { ST.hotGrip = null; setMsg(''); redraw(); return; }
-  if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
+  if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; if (ST.mi) ST.mi.phase = 'sel'; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
+  else if (ev.key === 'Enter' && ST.tool === 'mirror' && ST.mi && ST.mi.phase === 'sel') { mirrorAxis(); ev.preventDefault(); }
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.shiftKey ? redo() : undo(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { redo(); ev.preventDefault(); }

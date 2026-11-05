@@ -43,6 +43,42 @@ export function create(box){
   return { build:build, update:update, resize:resize, refit:refit, dispose:dispose };
 }
 
+// 形の かどの 線（CSG の 答え 用）。EdgesGeometry は 三角が 片側に しか ない 辺（T 字の つなぎ目）を 全部 線に して しまい
+// 曲面に すじが 出る。片側だけの 辺は、その 上の 何点かで 隣の 三角を 探し、なめらかに つながって いれば 描かない
+export function featureEdges(geo, deg){
+  var pos = geo.attributes.position, idx = geo.index, n = idx ? idx.count : pos.count, cosT = Math.cos(deg * Math.PI / 180);
+  geo.computeBoundingBox(); var bb = geo.boundingBox, sc = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z) || 1, q = sc * 1e-5, tol = sc * 1e-3;
+  function V(i){ var j = idx ? idx.getX(i) : i; return [pos.getX(j), pos.getY(j), pos.getZ(j)]; }
+  function key(p){ return Math.round(p[0] / q) + ',' + Math.round(p[1] / q) + ',' + Math.round(p[2] / q); }
+  function dot(x, y){ return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; }
+  var E = {}, all = [], out = [];
+  for (var t = 0; t + 2 < n; t += 3) {
+    var a = V(t), b = V(t + 1), c = V(t + 2), u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    var nr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(nr[0], nr[1], nr[2]);
+    if (L < q * q) continue; nr = [nr[0] / L, nr[1] / L, nr[2] / L];
+    [[a, b], [b, c], [c, a]].forEach(function(e){ var k1 = key(e[0]), k2 = key(e[1]); if (k1 === k2) return; var k = k1 < k2 ? k1 + '|' + k2 : k2 + '|' + k1;
+      (E[k] = E[k] || { p:e, n:[], t:[] }).n.push(nr); E[k].t.push(t); all.push({ a:e[0], b:e[1], n:nr, t:t }); });
+  }
+  // 辺の 升目（近くの 辺を すぐ 探す）
+  var cs = sc / 80, G = {};
+  function ck(p){ return Math.floor(p[0] / cs) + ',' + Math.floor(p[1] / cs) + ',' + Math.floor(p[2] / cs); }
+  all.forEach(function(f){ var d = Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1], f.b[2] - f.a[2]), m = Math.max(1, Math.ceil(d / (cs * 0.5))), seen = {};
+    for (var i = 0; i <= m; i++) { var s = i / m, k = ck([f.a[0] + (f.b[0] - f.a[0]) * s, f.a[1] + (f.b[1] - f.a[1]) * s, f.a[2] + (f.b[2] - f.a[2]) * s]); if (seen[k]) continue; seen[k] = 1; (G[k] = G[k] || []).push(f); } });
+  function dseg(p, a, b){ var ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = dot(ab, ab), s = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2)) : 0;
+    return Math.hypot(p[0] - a[0] - ab[0] * s, p[1] - a[1] - ab[1] * s, p[2] - a[2] - ab[2] * s); }
+  function smoothAt(p, e){ var L = G[ck(p)] || [], found = false;
+    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0) continue; if (dseg(p, f.a, f.b) > tol) continue; found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
+    return found ? -1 : 0; } // 1＝なめらか、-1＝角、0＝相手 なし（ふち）
+  Object.keys(E).forEach(function(k){ var e = E[k];
+    if (e.n.length >= 2) { for (var i = 1; i < e.n.length; i++) if (dot(e.n[0], e.n[i]) < cosT) { out.push(e.p[0], e.p[1]); return; } return; }
+    var a = e.p[0], b = e.p[1], sm = true;
+    [0.2, 0.5, 0.8].forEach(function(s){ if (sm && smoothAt([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s], e) !== 1) sm = false; });
+    if (!sm) out.push(a, b);
+  });
+  var arr = []; out.forEach(function(p){ arr.push(p[0], p[1], p[2]); });
+  var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); return g;
+}
+
 // 部材の 形（BZ.model の 答え m）→ Three の Group。原点＝底面の 中心、+z＝前。組み立て（kumitate-3d.js）からも 使う
 export function partGroup(m, fine, mat, lineMat){
   var group = new THREE.Group();
@@ -99,7 +135,7 @@ export function partGroup(m, fine, mat, lineMat){
     (v.top && v.top.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, H - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     var geo = res.geometry; geo.translate(0, c.at.y, 0); geo.computeVertexNormals();
-    group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), lineMat));
+    group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(featureEdges(geo, 30), lineMat));
   }
 
   var BZ = m.BZ, D = m.D;

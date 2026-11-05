@@ -350,7 +350,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 
 <script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.3";
+var APP_VER = "v0.7.4";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1963,8 +1963,15 @@ function drawCadPreview(c){
   if (t === 'mkpart' && ST.mk) {
     var cols = { front:'#1a5ad0', side:'#1a7a3a', top:'#c0007a' };
     ['front', 'side', 'top'].forEach(function(k){ var f = ST.mk[k]; if (!f) return;
-      [f.out].concat(f.holes).forEach(function(pg, i){ c.save(); c.strokeStyle = i ? '#e05a00' : cols[k]; c.lineWidth = 3; c.globalAlpha = 0.75; c.beginPath();
-        pg.forEach(function(p, j){ var q = W2S(V, p); if (j) c.lineTo(q[0], q[1]); else c.moveTo(q[0], q[1]); }); c.closePath(); c.stroke(); c.restore(); }); });
+      [f.out].concat(f.holes).forEach(function(pg, i){ var hk = (k === 'front' ? 'f' : 't') + (i - 1), hot = i && ST.mkHot === hk;
+        c.save(); c.strokeStyle = i ? '#e05a00' : cols[k]; c.lineWidth = hot ? 5 : 3; c.globalAlpha = 0.75; c.beginPath();
+        pg.forEach(function(p, j){ var q = W2S(V, p); if (j) c.lineTo(q[0], q[1]); else c.moveTo(q[0], q[1]); }); c.closePath(); c.stroke();
+        if (hot) { c.fillStyle = 'rgba(224,90,0,.18)'; c.fill(); }
+        if (i && (k === 'front' || k === 'top')) { // 穴の 番号（右の 欄の「穴 1」と 同じ）
+          var cx0 = 0, cy0 = 0; pg.forEach(function(p){ cx0 += p.x / pg.length; cy0 += p.y / pg.length; }); var sq = W2S(V, P(cx0, cy0)), lb = (k === 'front' ? '正面 穴' : '天面 穴') + i;
+          c.globalAlpha = 1; c.font = 'bold 13px sans-serif'; var tw = c.measureText(lb).width + 10; c.fillStyle = hot ? '#e05a00' : '#fff'; c.strokeStyle = '#e05a00'; c.lineWidth = 1.5;
+          c.beginPath(); c.rect(sq[0] - tw / 2, sq[1] - 10, tw, 20); c.fill(); c.stroke(); c.fillStyle = hot ? '#fff' : '#b04400'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(lb, sq[0], sq[1] + 1); }
+        c.restore(); }); });
   }
   if (t === 'corner' && ST.cn && ST.cn.e1) { c.save(); c.strokeStyle = '#ff5a1f'; c.lineWidth = 3; c.beginPath(); pathEnt(c, V, ST.cn.e1); c.stroke(); c.restore(); }
   if (t === 'arc' && ST.cur && ST.pts.length === 2) {
@@ -2161,7 +2168,7 @@ var MK = (function(){
     function snap(p){ var g = (Math.floor(ix(p.x) / 8)) + ',' + (Math.floor(iy(p.y) / 8)), lst = cell[g] || [], best = null, bd = res * 3;
       lst.forEach(function(si){ var sg = segs[si], d = distSeg(p, sg[0], sg[1]); if (d < bd) { bd = d; best = nearOnSeg(p, sg[0], sg[1]); } }); return best || p; }
     var polys = loopsG.map(function(lp){ var w2 = lp.map(toW).map(snap), arr = w2.map(function(p){ return [p.x, p.y]; });
-      return simplify(arr, res * 0.25).map(function(a){ return P(a[0], a[1]); }); });
+      return clean(simplify(arr, res * 0.25).map(function(a){ return P(a[0], a[1]); }), res); });
     polys.sort(function(a, b){ return Math.abs(area(b)) - Math.abs(area(a)); });
     var out = polys[0]; if (area(out) < 0) out.reverse();
     var holes = polys.slice(1).filter(function(pg){ return area(pg) < 0 && inPoly(pg[0], out); }).map(function(pg){ return pg.slice().reverse(); });
@@ -2182,6 +2189,14 @@ var MK = (function(){
       while (nextOf[cur] && nextOf[cur].length && guard++ < 1e6) { var xy = cur.split(','); lp.push([+xy[0], +xy[1]]); var nx2 = nextOf[cur].shift(); cur = nx2[0] + ',' + nx2[1]; if (cur === k) break; }
       if (lp.length >= 4) loops.push(lp); });
     return loops;
+  }
+  function clean(pg, res){ // 同じ 所の 点・行って 戻る だけの とげ を 取る（3D の 面が 荒れない ように）
+    var ch = true, g = 0;
+    while (ch && pg.length > 3 && g++ < 50) { ch = false;
+      for (var i = 0; i < pg.length && pg.length > 3; i++) { var a = pg[(i + pg.length - 1) % pg.length], b = pg[i], c = pg[(i + 1) % pg.length];
+        var u = sub(b, a), v = sub(c, b), lu = Math.hypot(u.x, u.y), lv = Math.hypot(v.x, v.y);
+        if (lu < res * 0.3 || (lu > 0 && lv > 0 && (u.x * v.x + u.y * v.y) / (lu * lv) < -0.97)) { pg.splice(i, 1); ch = true; i--; } } }
+    return pg;
   }
   function simplify(pts, tol){ // 閉じた 点列の 間引き（ダグラス・ポイカー）
     if (pts.length < 8) return pts;
@@ -2211,7 +2226,10 @@ function mkAuto(){
   var B = {}; Object.keys(G).forEach(function(k){ if (G[k].length) B[k] = bboxOf(G[k]); });
   loose.forEach(function(e){ var b = bboxOf([e]), c = P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), best = null, bd = Infinity;
     Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (d < bd) { bd = d; best = k; } });
-    if (best && bd < 0.25) G[best].push(e); });
+    if (best && bd < 0.25) { G[best].push(e); e.pv = best; } }); // あとから かいた 線も その 面の 印を 付ける（図に 出す ときに 使う）
+  D.dims.forEach(function(d){ if (d.pv || !d.a || !d.b) return; var c = P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), best = null, bd = Infinity;
+    Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), dd = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (dd < bd) { bd = dd; best = k; } });
+    if (best && bd < 0.5) d.pv = best; });
   var m = { step:'done', front:null, side:null, top:null, D:0, holeD:{}, name:'', auto:true };
   m.front = MK.face(G.front); if (!m.front) return { err:'正面の 外形が 閉じて いません。端と 端が つながって いるか 見て ください' };
   if (G.side.length) m.side = MK.face(G.side); if (G.top.length) m.top = MK.face(G.top);
@@ -2363,6 +2381,7 @@ function panel(){
       var hl = [];
       (M.front ? M.front.holes : []).forEach(function(_, i){ hl.push(['f' + i, '正面の 穴 ' + (i + 1) + '：前から 深さ']); });
       (M.top ? M.top.holes : []).forEach(function(_, i){ hl.push(['t' + i, '天面の 穴 ' + (i + 1) + '：上から 深さ']); });
+      if (hl.length) h += '<div class="muted">穴の 番号は 左の 図の オレンジの 札と 同じ です（欄を 押すと その 穴が 光ります）</div>';
       hl.forEach(function(x){ h += '<div class="row"><label>' + x[1] + '</label><input type="text" class="w mkH" data-k="' + x[0] + '" value="' + (M.holeD[x[0]] ? esc(fmtMm(M.holeD[x[0]])) : '') + '" placeholder="半分"> mm</div>'; });
       if (!(PD && PD.saveMain)) h += '<div class="row"><label>名前</label><input type="text" id="mkN" class="ww" value="' + esc(M.name) + '" placeholder="例 香炉（筆返し 変形）"></div>';
       if (M.auto) h += '<div class="muted">図に 出した 正面・側面・天面の 線を そのまま 使いました（あとから かいた 線は 近い 面に 入れて います）。色の 線が 読み取った 外形、オレンジ＝穴。違う ときは［はじめから］で 線を 選び直せます</div>';
@@ -2370,6 +2389,9 @@ function panel(){
       h += '<div class="muted">正面・側面・天面の 外形を 重ねた 形に なります（叩き台）。作った あと 幅・奥行・高さの 数字で 全体を 伸び縮み できます</div>';
     }
     B.innerHTML = h;
+    document.querySelectorAll('.mkH').forEach(function(el){ var row = el.parentNode;
+      row.onmouseenter = el.onfocus = function(){ ST.mkHot = el.dataset.k; redraw(); };
+      row.onmouseleave = el.onblur = function(){ if (document.activeElement !== el) { ST.mkHot = null; redraw(); } }; });
     var b1 = document.getElementById('mkOk'); if (b1) b1.onclick = function(){ mkSet(); };
     var b2 = document.getElementById('mkSkip'); if (b2) b2.onclick = function(){ mkSet(true); };
     var b3 = document.getElementById('mkGo'); if (b3) b3.onclick = function(){
@@ -3854,8 +3876,35 @@ function pdRender(){
   if (PD.viewer) PD.viewer.update(PD.m);
 }
 // 図を SVG に。寸法の 数字は 押せる チップ（濃い青＝全体の 大きさ、薄い青＝直せる、色なし＝計算で 決まる）
+// 図から 作った 部材（views 型）は、かいた 図（def.sketch）の その 面の 線・寸法を 今の 幅・奥行・高さに 合わせて 使う（輪郭 だけに ならない）
+function pdSkView(v){
+  var def = PD.def, sk = def && def.sketch, c0 = def && def.components && def.components[0];
+  if (!sk || !sk.ents || !c0 || !c0.shape || c0.shape.type !== 'views') return null;
+  var nm = {}; PD_FACES.forEach(function(f){ nm[f[0]] = f[1]; });
+  function hidL(e){ var L = sk.layers && sk.layers[e.layer]; return !!(L && L.dash) || /隠れ/.test(e.layer || ''); }
+  var es = sk.ents.filter(function(e){ return e.pv === v && !(e.t === 'text' && e.s === nm[v]); });
+  var ol = es.filter(function(e){ return e.t !== 'text' && !hidL(e); }); if (!ol.length) return null;
+  var sb = bboxOf(ol), tb = BZ.bbox(BZ.view6(PD.m, v));
+  if (!(sb.x1 > sb.x0 && sb.y1 > sb.y0 && isFinite(tb.x0))) return null;
+  var kx = (tb.x1 - tb.x0) / (sb.x1 - sb.x0), ky = (tb.y1 - tb.y0) / (sb.y1 - sb.y0), uni = Math.abs(kx / ky - 1) < 1e-6;
+  function T(p){ return [tb.x0 + (p.x - sb.x0) * kx, tb.y0 + (p.y - sb.y0) * ky]; }
+  function TP(p){ var t = T(p); return P(t[0], t[1]); }
+  var prims = [], texts = [];
+  es.forEach(function(e){
+    var hid = hidL(e);
+    if (e.t === 'text') { var t = clone(e); t.p = TP(e.p); texts.push(t); return; }
+    if (e.t === 'line') { prims.push({ k:'line', a:T(e.a), b:T(e.b), hid:hid }); return; }
+    if (uni && e.t === 'arc') { prims.push({ k:'arc', c:T(e.c), r:e.r * kx, a0:e.a0, a1:e.a0 + sweepCCW(e.a0, e.a1), hid:hid }); return; }
+    if (uni && e.t === 'circle') { prims.push({ k:'circle', c:T(e.c), r:e.r * kx, hid:hid }); return; }
+    if (e.t === 'pl' && !e.v.some(function(q){ return q.b; })) { prims.push({ k:'pl', v:e.v.map(T), closed:!!e.closed, hid:hid }); return; }
+    var sg = entSegs(e); if (!sg.length) return; // ふくらみ・縦横で 違う 伸び縮みの 円弧は 細かい 点に
+    var pts = [T(sg[0][0])]; sg.forEach(function(x){ pts.push(T(x[1])); }); prims.push({ k:'pl', v:pts, closed:false, hid:hid });
+  });
+  var dims = (sk.dims || []).filter(function(d){ return d.pv === v; }).map(function(d){ var n = clone(d); n.a = TP(d.a); n.b = TP(d.b); if (d.off) n.off = TP(d.off); return n; });
+  return { prims:prims, dims:dims, texts:texts };
+}
 function pdDrawView(v){
-  var m = PD.m, prims = BZ.view6(m, v), bb = BZ.bbox(prims), dims = BZ.viewDims(PD.def, PD.sv, m, v, bb);
+  var m = PD.m, SK = pdSkView(v), prims = SK ? SK.prims : BZ.view6(m, v), bb = BZ.bbox(prims), dims = BZ.viewDims(PD.def, PD.sv, m, v, bb);
   var big = Math.max(m.W, m.H, m.D), F = big * 0.042, sw = big * 0.0035, Y = function(y){ return -y; }, s = [];
   var box = { x0:bb.x0, y0:bb.y0, x1:bb.x1, y1:bb.y1 };
   function grow(x, y){ if (x < box.x0) box.x0 = x; if (x > box.x1) box.x1 = x; if (y < box.y0) box.y0 = y; if (y > box.y1) box.y1 = y; }
@@ -3896,7 +3945,8 @@ function pdDrawView(v){
     chips.push('<g class="pdchip' + (d.id ? ' can' : '') + '" data-v="' + v + '" data-i="' + i + '"' + (on ? ' id="pdSelChip"' : '') + '><rect x="' + (cx - cw / 2) + '" y="' + (Y(cy) - ch / 2) + '" width="' + cw + '" height="' + ch + '" rx="' + F * 0.3 + '" fill="' + fill + '" stroke="' + st + '" stroke-width="' + stw + '"' + rot + '/>' +
       '<text x="' + cx + '" y="' + (Y(cy) + F * 0.36) + '" font-size="' + F + '" text-anchor="middle" fill="' + col + '"' + (kind === 'main' || on ? ' font-weight="700"' : '') + rot + '>' + esc(txt) + '</text></g>');
   });
-  return { prims:prims, dims:dims, bb:bb, box:box, svg:s.join('') + chips.join('') };
+  if (SK) SK.dims.forEach(function(d){ [d.a, d.b, d.off].forEach(function(p){ if (p) grow(p.x, p.y); }); });
+  return { prims:prims, dims:dims, bb:bb, box:box, svg:s.join('') + chips.join(''), sk:SK };
 }
 function pdHidePop(){ document.getElementById('pdPop').style.display = 'none'; }
 function pdClick(ev){
@@ -3984,12 +4034,15 @@ function pdPutViews(fx, fy, only){
     V2.prims.forEach(function(q){
       var lay = q.hid ? '部材_隠れ線' : '部材_外形', e = { id:SEQ++, layer:lay, css:null, aci:256 };
       if (q.k === 'line') { e.t = 'line'; e.a = T(q.a); e.b = T(q.b); }
-      else if (q.k === 'arc') { e.t = 'arc'; e.c = T(q.c); e.r = q.r; e.a0 = q.a0; e.a1 = q.a1; }
+      else if (q.k === 'arc') { e.t = 'arc'; e.c = T(q.c); e.r = q.r; e.a0 = ((q.a0 % (2 * PI)) + 2 * PI) % (2 * PI); e.a1 = ((q.a1 % (2 * PI)) + 2 * PI) % (2 * PI); }
       else if (q.k === 'circle') { e.t = 'circle'; e.c = T(q.c); e.r = q.r; }
       else { e.t = 'pl'; e.v = q.v.map(function(p){ var t = T(p); return { x:t.x, y:t.y, b:0 }; }); e.closed = !!q.closed; }
       D.ents.push(e);
     });
-    V2.dims.forEach(function(d){ D.dims.push({ id:SEQ++, a:T(d.a), b:T(d.b), off:T(d.off), mode:d.mode, fmt:null, text:d.pre ? d.pre + '<>' : null, layer:'寸法' }); });
+    var TQ = function(p){ return P(p.x + ox, p.y + oy); };
+    if (V2.sk && V2.sk.dims.length) V2.sk.dims.forEach(function(d){ var n = clone(d); n.id = SEQ++; n.a = TQ(d.a); n.b = TQ(d.b); if (d.off) n.off = TQ(d.off); delete n.pv; D.dims.push(n); }); // かいた 図の 寸法
+    else V2.dims.forEach(function(d){ D.dims.push({ id:SEQ++, a:T(d.a), b:T(d.b), off:T(d.off), mode:d.mode, fmt:null, text:d.pre ? d.pre + '<>' : null, layer:'寸法' }); });
+    if (V2.sk) V2.sk.texts.forEach(function(t){ var n = clone(t); n.id = SEQ++; n.p = TQ(t.p); delete n.pv; D.ents.push(n); });
     return V2.bb;
   }
   function tx(x, y, s, h){ D.ents.push({ id:SEQ++, t:'text', p:P(x, y), h:h, rot:0, s:s, ha:1, va:0, wf:1, layer:'文字', css:null, aci:256 }); }

@@ -335,7 +335,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
       <div id="pd3d"><div class="pdmsg"></div></div>
       <div class="pdbox pddrawonly"><b>図面で かく</b><div class="muted">左は 図面の 画面です（作図の 道具が 使えます）。形を 直したら 左の［🧊 部材に する］で 正面・側面・天面の 線を 選び［この 部材に 反映］→ 右の 3D が 変わります</div>
         <div class="row" style="margin-top:6px"><button class="b2" id="pdRedraw">今の 形から 図を かき直す</button></div></div>
-      <div class="pdbox"><b>図に 出す 面</b><div class="pdfaces" id="pdFaces"></div><div class="muted">チェックした 面が 左の 図に 並び（第三角法）、［📐 図面に 入れる］でも 入ります。見えない 線は 点線</div></div>
+      <div class="pdbox pddrawonly"><b>図に 出す 面</b><div class="pdfaces" id="pdFaces"></div><div class="muted">チェックすると その 面の 図を 左の 図面に 足し、外すと 消します（第三角法の 並び）。［📐 図面に 入れる］でも この 面が 入ります。見えない 線は 点線</div></div>
       <div class="pdbox">才数（外寸）　<b class="big" id="pdSai"></b><div class="muted">外寸 <span id="pdSize"></span> mm</div></div>
     </div>
   </div>
@@ -347,9 +347,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 </div></div>
 <div id="printArea"></div>
 
-<script src="buzai-engine.js?v=0.7.0"></script>
+<script src="buzai-engine.js?v=0.7.1"></script>
 <script>
-var APP_VER = "v0.7.0";
+var APP_VER = "v0.7.1";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1492,7 +1492,7 @@ function applyStretch(dx, dy){
 // ═════════ 元に 戻す ═════════
 function snapshot(){ return JSON.stringify({ ents:D.ents, dims:D.dims, layers:D.layers }); }
 function pushUndo(){ UNDO.push(snapshot()); if (UNDO.length > 60) UNDO.shift(); REDO = []; updUndo(); }
-function restore(s){ var o = JSON.parse(s); D.ents = o.ents; D.dims = o.dims; if (o.layers) D.layers = o.layers; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); ST.stone = null; ST.gaps = null; changed(); renderLayers(); }
+function restore(s){ var o = JSON.parse(s); D.ents = o.ents; D.dims = o.dims; if (o.layers) D.layers = o.layers; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); ST.stone = null; ST.gaps = null; changed(); renderLayers(); if (typeof pdSyncFaces === 'function') pdSyncFaces(); }
 function undo(){ if (!UNDO.length) return; REDO.push(snapshot()); restore(UNDO.pop()); updUndo(); }
 function redo(){ if (!REDO.length) return; UNDO.push(snapshot()); restore(REDO.pop()); updUndo(); }
 function updUndo(){ document.getElementById('bUndo').disabled = !UNDO.length; document.getElementById('bRedo').disabled = !REDO.length; }
@@ -3707,15 +3707,26 @@ function pdToList(){ pdDrawMode(false); pdHidePop(); PD.sel = null; document.bod
 // 図に 出す 面（6 面・第三角法）
 var PD_FACES = [['front', '正面図'], ['side', '右側面図'], ['top', '平面図（上）'], ['back', '背面図'], ['left', '左側面図'], ['bottom', '下面図']];
 function pdFaceList(){ var d = PD.def.drawing = PD.def.drawing || {}; if (!d.views) d.views = ['front', 'side']; if (d.views.indexOf('front') < 0) d.views.unshift('front'); return d.views; }
+function pdSyncFaces(){ // 図面で かく：元に戻す あと、図に ある 面に チェックを 合わせる
+  if (!PD.saveMain || !PD.def) return; var has = {}; D.ents.forEach(function(e){ if (e.pv) has[e.pv] = 1; });
+  var l = pdFaceList(); PD_FACES.forEach(function(f){ var k = f[0], i = l.indexOf(k); if (k === 'front') return; if (has[k] && i < 0) l.push(k); if (!has[k] && i >= 0 && Object.keys(has).length) l.splice(i, 1); });
+  [].forEach.call(document.querySelectorAll('#pdFaces input'), function(c){ c.checked = l.indexOf(c.dataset.f) >= 0; });
+}
 function pdFaces(){
   var on = pdFaceList(), box = document.getElementById('pdFaces');
   box.innerHTML = PD_FACES.map(function(f){ return '<label><input type="checkbox" data-f="' + f[0] + '"' + (on.indexOf(f[0]) >= 0 ? ' checked' : '') + (f[0] === 'front' ? ' disabled' : '') + '> ' + f[1] + '</label>'; }).join('');
   box.onchange = function(ev){ var f = ev.target.dataset.f; if (!f) return; var l = pdFaceList(), i = l.indexOf(f);
-    if (ev.target.checked && i < 0) l.push(f); if (!ev.target.checked && i >= 0) l.splice(i, 1); PD.vb = null; pdKeep(); pdRender(); };
+    if (ev.target.checked && i < 0) l.push(f); if (!ev.target.checked && i >= 0) l.splice(i, 1); pdKeep();
+    if (PD.saveMain) { // 図面で かく：その 面の 図を 足す／消す
+      pushUndo();
+      if (ev.target.checked) { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); pdPutViews(0, 0, [f]); }
+      else { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); }
+      ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; renderLayers(); changed(); fit();
+    } };
 }
 // 面の 置き場所（第三角法：平面＝正面の 上・下面＝下・右側面＝右・左側面＝左・背面＝右側面の 右）
-function pdLayout(big){
-  var on = pdFaceList(), g = big * 0.35, V = {}, vs = {};
+function pdLayout(big, keys){
+  var on = keys || pdFaceList(), g = big * 0.35, V = {}, vs = {};
   PD_FACES.forEach(function(f){ if (on.indexOf(f[0]) >= 0) vs[f[0]] = pdDrawView(f[0]); });
   var fb = vs.front.box; V.front = [0, 0];
   var right = fb.x1;
@@ -3735,7 +3746,7 @@ function pdRender(){
   var errs = Object.keys(sv.err);
   document.getElementById('pdErr').textContent = errs.length ? '⚠ ' + errs.map(function(k){ return BZ.nameOf(PD.def, k) + '：' + sv.err[k]; }).join('　') : '';
   try { PD.m = BZ.model(PD.def, sv); } catch (e) { document.getElementById('pdErr').textContent = '⚠ 形を 作れません：' + e.message; return; }
-  var big = Math.max(PD.m.W, PD.m.H, PD.m.D), F = big * 0.042, L = pdLayout(big), names = {};
+  var big = Math.max(PD.m.W, PD.m.H, PD.m.D), F = big * 0.042, L = pdLayout(big, ['front', 'side']), names = {}; // 寸法で 直す 画面は 正面・右側面
   PD_FACES.forEach(function(f){ names[f[0]] = f[1]; });
   PD.views = L.vs; PD.off = L.off;
   var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, html = [];
@@ -3874,8 +3885,8 @@ function pdToDrawing(){
   setMsg('部材の 図（' + names.join('・') + '）を 図面に 入れました（「↶ 戻す」で 取り消せます）。DXF・PDF は いつもの ボタンで');
 }
 // 部材の 面（チェックした もの）を D に 入れる（第三角法の 並び。fx・fy＝ずらす 量）
-function pdPutViews(fx, fy){
-  var m = PD.m, def = PD.def, th = Math.max(m.W, m.H) * 0.04, L = pdLayout(Math.max(m.W, m.H, m.D));
+function pdPutViews(fx, fy, only){
+  var m = PD.m, def = PD.def, th = Math.max(m.W, m.H) * 0.04, L = pdLayout(Math.max(m.W, m.H, m.D)), n0 = D.ents.length, d0 = D.dims.length;
   var LO = layerOf('部材_外形'); LO.aci = 7; LO.css = '#000';
   var LH = layerOf('部材_隠れ線'); LH.aci = 8; LH.css = '#808080'; LH.dash = true; LH.gap = false;
   var LD = layerOf('寸法'); LD.gap = false; var LT = layerOf('文字'); LT.gap = false;
@@ -3894,9 +3905,11 @@ function pdPutViews(fx, fy){
   }
   function tx(x, y, s, h){ D.ents.push({ id:SEQ++, t:'text', p:P(x, y), h:h, rot:0, s:s, ha:1, va:0, wf:1, layer:'文字', css:null, aci:256 }); }
   var nm = {}, b1 = null, lowY = Infinity; PD_FACES.forEach(function(f){ nm[f[0]] = f[1]; });
-  Object.keys(L.vs).forEach(function(k){ var ox = fx + L.off[k][0], oy = fy + L.off[k][1], bb = put(k, ox, oy), bx = L.vs[k].box;
-    var yl2 = oy + bx.y0 - th * 1.8; tx(ox + (bb.x0 + bb.x1) / 2, yl2, nm[k], th); lowY = Math.min(lowY, yl2); if (k === 'front') b1 = { x0:bb.x0 + ox, x1:bb.x1 + ox }; });
-  tx((b1.x0 + b1.x1) / 2, lowY - th * 2.5, def.name + '　' + pdR(m.W) + '×' + pdR(m.D) + '×' + pdR(m.H) + '　' + (def.finish && def.finish.note || ''), th * 0.8);
+  Object.keys(L.vs).forEach(function(k){ if (only && only.indexOf(k) < 0) return; var e0 = D.ents.length, q0 = D.dims.length, ox = fx + L.off[k][0], oy = fy + L.off[k][1], bb = put(k, ox, oy), bx = L.vs[k].box;
+    var yl2 = oy + bx.y0 - th * 1.8; tx(ox + (bb.x0 + bb.x1) / 2, yl2, nm[k], th); lowY = Math.min(lowY, yl2); if (k === 'front') b1 = { x0:bb.x0 + ox, x1:bb.x1 + ox };
+    D.ents.slice(e0).forEach(function(e){ e.pv = k; }); D.dims.slice(q0).forEach(function(d){ d.pv = k; }); }); // どの 面か 印（チェックを 外すと 消す）
+  if (only) return only.map(function(k){ return nm[k]; });
+  if (b1) tx((b1.x0 + b1.x1) / 2, lowY - th * 2.5, def.name + '　' + pdR(m.W) + '×' + pdR(m.D) + '×' + pdR(m.H) + '　' + (def.finish && def.finish.note || ''), th * 0.8);
   return Object.keys(L.vs).map(function(k){ return nm[k]; });
 }
 // 保存・開く（業務アプリから 開いた ときは SharePoint の 部材ライブラリ、それ以外は このパソコン）

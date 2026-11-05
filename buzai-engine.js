@@ -146,6 +146,54 @@ var BZ = (function(){
     return { W:W, D:Dd, H:H, comps:comps, BZ:BZ };
   }
   // 正面図・側面図の 線（k：line・arc・circle・pl。hid＝隠れ線）。x＝右（側面図は 前面から 奥へ）、y＝上
+  // 6 面（第三角法）：front 正面・side 右側面（左が 前）・top 平面（下が 前）・back 背面・left 左側面・bottom 下面
+  function mirX(q){ var o = JSON.parse(JSON.stringify(q)); function f(p){ return [-p[0], p[1]]; }
+    if (o.k === 'line') { o.a = f(q.a); o.b = f(q.b); } else if (o.k === 'pl') o.v = q.v.map(f); else { o.c = f(q.c); if (o.k === 'arc') { o.a0 = Math.PI - q.a1; o.a1 = Math.PI - q.a0; } } return o; }
+  function mirY(q){ var o = JSON.parse(JSON.stringify(q)); function f(p){ return [p[0], -p[1]]; }
+    if (o.k === 'line') { o.a = f(q.a); o.b = f(q.b); } else if (o.k === 'pl') o.v = q.v.map(f); else { o.c = f(q.c); if (o.k === 'arc') { o.a0 = -q.a1; o.a1 = -q.a0; } } return o; }
+  function view6(m, v){
+    if (v === 'front' || v === 'side') return view(m, v);
+    if (v === 'back') return view(m, 'front').map(function(q){ var o = mirX(q); if (q.hole) o.hid = true; return o; });
+    if (v === 'left') return view(m, 'side').map(mirX);
+    var t = topView(m);
+    if (v === 'top') return t;
+    return t.map(function(q){ var o = mirY(q); if (q.topHole) o.hid = true; return o; }); // bottom
+  }
+  // 平面図（上から。y＝前から 奥へ）。上の 部品に 隠れる 部品は 点線
+  function topView(m){
+    var list = [], out = [];
+    function rect(x0, y0, x1, y1){ return { k:'pl', v:[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], closed:true }; }
+    m.comps.forEach(function(c){
+      var s = c.s, f0 = c.at.front || 0, top = c.at.y, prims = [], extra = [], fp;
+      if (c.type === 'box') { fp = [-s.w / 2, f0, s.w / 2, f0 + s.d]; top += s.h; }
+      else if (c.type === 'profile') {
+        (c.mirror === 'x' ? [-1, 1] : [1]).forEach(function(sg){ var pp = profilePts(c.profile, s, m.W, sg), x0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          pp.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+          list.push({ top:c.at.y + y1, fp:[x0, f0, x1, f0 + s.len], extra:[] }); });
+        return;
+      }
+      else if (c.type === 'barrel') { fp = [-s.w / 2, f0, s.w / 2, f0 + s.d]; top += s.nb + s.b + s.nt;
+        c.cuts.forEach(function(ct){ if (ct.type !== 'cloudHole') return; var hw = ct.s.pitch > 1e-6 ? ct.s.pitch + ct.s.phi / 2 : ct.s.phi / 2;
+          var q = rect(-hw, f0, hw, f0 + s.d - s.back); q.hid = true; extra.push(q); }); }
+      else if (c.type === 'views') { var vv = c.views; top += m.H;
+        if (vv.top && vv.top.out) { out.push({ k:'pl', v:vv.top.out, closed:true }); (vv.top.holes || []).forEach(function(h){ out.push({ k:'pl', v:h.pts, closed:true, topHole:true }); }); }
+        else out.push(rect(-m.W / 2, 0, m.W / 2, m.D));
+        (vv.front.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); }); var q = rect(x0, 0, x1, h.depth); q.hid = true; out.push(q); });
+        return; }
+      else return;
+      list.push({ top:top, fp:fp, extra:extra });
+    });
+    list.sort(function(a, b){ return b.top - a.top; });
+    var cover = [];
+    list.forEach(function(it){
+      var f = it.fp, hid = cover.some(function(cv){ return f[0] >= cv[0] - 1e-6 && f[1] >= cv[1] - 1e-6 && f[2] <= cv[2] + 1e-6 && f[3] <= cv[3] + 1e-6; });
+      var q = rect(f[0], f[1], f[2], f[3]); if (hid) q.hid = true; out.push(q);
+      it.extra.forEach(function(e){ out.push(e); });
+      cover.push(f);
+    });
+    out.sort(function(a, b){ return (b.hid ? 1 : 0) - (a.hid ? 1 : 0); }); // 点線を 先に（上に 実線）
+    return out;
+  }
   function view(m, v){
     var out = [];
     function L(a, b, hid){ out.push({ k:'line', a:a, b:b, hid:!!hid }); }
@@ -154,7 +202,7 @@ var BZ = (function(){
       var s = c.s, y0 = c.at.y, f0 = c.at.front;
       if (c.type === 'views') { // 図から 作った 部材：描いた 外形を そのまま
         var vv = c.views, pl = function(pts){ out.push({ k:'pl', v:pts.map(function(q){ return [q[0], q[1] + y0]; }), closed:true }); };
-        if (v === 'front') { pl(vv.front.out); (vv.front.holes || []).forEach(function(h){ pl(h.pts); }); }
+        if (v === 'front') { pl(vv.front.out); (vv.front.holes || []).forEach(function(h){ pl(h.pts); out[out.length - 1].hole = true; }); }
         else if (vv.side && vv.side.out) pl(vv.side.out); else rect(0, y0, m.D, y0 + m.H);
         return;
       }
@@ -176,7 +224,7 @@ var BZ = (function(){
         };
         if (v === 'front') {
           out.push.apply(out, side(s.w / 2, s.side, 1)); out.push.apply(out, side(-s.w / 2, s.side, -1));
-          c.cuts.forEach(function(ct){ if (ct.type === 'cloudHole') holeArcs({ phi:ct.s.phi, pitch:ct.s.pitch, cy:y0 + ct.s.cy }).forEach(function(a){ out.push(a); }); });
+          c.cuts.forEach(function(ct){ if (ct.type === 'cloudHole') holeArcs({ phi:ct.s.phi, pitch:ct.s.pitch, cy:y0 + ct.s.cy }).forEach(function(a){ a.hole = true; out.push(a); }); });
         } else {
           out.push.apply(out, side(f0, s.front, -1));
           L([f0 + s.d, y0], [f0 + s.d, y0 + top]);
@@ -251,7 +299,7 @@ var BZ = (function(){
     if (d.rule === 'fixed') return '固定：いつも ' + r(d.value);
     return '式：' + d.expr;
   }
-  return { norm:norm, evalExpr:evalExpr, solve:solve, model:model, view:view, viewDims:viewDims, bbox:bbox, primPts:primPts, arcPts:arcPts,
+  return { norm:norm, evalExpr:evalExpr, solve:solve, model:model, view:view, view6:view6, viewDims:viewDims, bbox:bbox, primPts:primPts, arcPts:arcPts,
            inset:inset, barrelOutline:barrelOutline, holePts:holePts, holeArcs:holeArcs, profilePts:profilePts, setValue:setValue, setRule:setRule, ruleText:ruleText, nameOf:nameOf };
 })();
 

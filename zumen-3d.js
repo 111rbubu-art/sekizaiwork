@@ -68,18 +68,33 @@ export function featureEdges(geo, deg){
     for (var i = 0; i <= m; i++) { var s = i / m, k = ck([f.a[0] + (f.b[0] - f.a[0]) * s, f.a[1] + (f.b[1] - f.a[1]) * s, f.a[2] + (f.b[2] - f.a[2]) * s]); if (seen[k]) continue; seen[k] = 1; (G[k] = G[k] || []).push(f); } });
   function dseg(p, a, b){ var ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = dot(ab, ab), s = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2)) : 0;
     return Math.hypot(p[0] - a[0] - ab[0] * s, p[1] - a[1] - ab[1] * s, p[2] - a[2] - ab[2] * s); }
+  function unit(a, b){ var d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(d[0], d[1], d[2]) || 1; return [d[0] / l, d[1] / l, d[2] / l]; }
   function smoothAt(p, e){ var L = G[ck(p)] || [], found = false;
-    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0 || f.thin) continue; if (dseg(p, f.a, f.b) > tol) continue; found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
+    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0 || f.thin) continue; if (dseg(p, f.a, f.b) > tol) continue;
+      if (e.dir && Math.abs(dot(e.dir, unit(f.a, f.b))) < 0.999) continue; // 向きの ちがう 辺（細く なって 集まる 線の 近く）は となりと 見ない
+      found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
     return found ? -1 : 0; } // 1＝なめらか、-1＝角、0＝相手 なし
   Object.keys(E).forEach(function(k){ var e = E[k];
     var ok = e.n.filter(function(_, i){ return !e.th[i]; });
     if (ok.length >= 2) { for (var i = 1; i < ok.length; i++) if (dot(ok[0], ok[i]) < cosT) { out.push(e.p[0], e.p[1]); return; } return; }
     if (!ok.length) return; // 高さの ない 三角 だけの 辺は 描かない
-    // 片側だけの 辺：3 点で となりを 探し、角の 所が あって なめらかな 所が ない ときだけ 描く（となりが 見つからない＝すき間 だけ なら 描かない）
-    var a = e.p[0], b = e.p[1], sharp = 0, smooth = 0, e1 = { n:ok, t:e.t };
-    [0.2, 0.5, 0.8].forEach(function(s){ var r = smoothAt([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s], e1); if (r === -1) sharp++; if (r === 1) smooth++; });
-    if (sharp && !smooth) out.push(a, b);
+    // 片側だけの 辺（T 字の つなぎ）：同じ 線の 上に 重なる 相手の 辺を さがし、角に なる 相手が 重なる 区間だけ 描く
+    //（相手が なめらかに つながる 区間は 除く。重ならない 所まで 長く のびた 辺を 全部 描かない）
+    var a = e.p[0], b = e.p[1], dv = unit(a, b), len = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), seenF = {}, sharpI = [], smoothI = [];
+    var m = Math.max(1, Math.ceil(len / (cs * 0.5)));
+    for (var i = 0; i <= m; i++) { var s0 = i / m; (G[ck([a[0] + (b[0] - a[0]) * s0, a[1] + (b[1] - a[1]) * s0, a[2] + (b[2] - a[2]) * s0])] || []).forEach(function(f){
+      if (seenF[f.t + ':' + key(f.a) + key(f.b)] || e.t.indexOf(f.t) >= 0 || f.thin) return; seenF[f.t + ':' + key(f.a) + key(f.b)] = 1;
+      if (Math.abs(dot(dv, unit(f.a, f.b))) < 0.999) return;
+      if (dline(f.a, a, dv) > tol || dline(f.b, a, dv) > tol) return;
+      var sa = proj(f.a, a, dv) / len, sb = proj(f.b, a, dv) / len, lo = Math.max(0, Math.min(sa, sb)), hi = Math.min(1, Math.max(sa, sb)); if (hi - lo < 1e-6) return;
+      (dot(ok[0], f.n) >= cosT ? smoothI : sharpI).push([lo, hi]); }); }
+    union(sharpI).forEach(function(I){ cut(I, union(smoothI)).forEach(function(J){ if ((J[1] - J[0]) * len < tol) return;
+      out.push([a[0] + (b[0] - a[0]) * J[0], a[1] + (b[1] - a[1]) * J[0], a[2] + (b[2] - a[2]) * J[0]], [a[0] + (b[0] - a[0]) * J[1], a[1] + (b[1] - a[1]) * J[1], a[2] + (b[2] - a[2]) * J[1]]); }); });
   });
+  function proj(p, a, dv){ return (p[0] - a[0]) * dv[0] + (p[1] - a[1]) * dv[1] + (p[2] - a[2]) * dv[2]; }
+  function dline(p, a, dv){ var t = proj(p, a, dv); return Math.hypot(p[0] - a[0] - dv[0] * t, p[1] - a[1] - dv[1] * t, p[2] - a[2] - dv[2] * t); }
+  function union(L){ L = L.slice().sort(function(x, y){ return x[0] - y[0]; }); var r = []; L.forEach(function(I){ var l = r[r.length - 1]; if (l && I[0] <= l[1] + 1e-6) l[1] = Math.max(l[1], I[1]); else r.push([I[0], I[1]]); }); return r; }
+  function cut(I, S){ var r = [[I[0], I[1]]]; S.forEach(function(J){ var n = []; r.forEach(function(K){ if (J[1] <= K[0] || J[0] >= K[1]) { n.push(K); return; } if (J[0] > K[0]) n.push([K[0], J[0]]); if (J[1] < K[1]) n.push([J[1], K[1]]); }); r = n; }); return r; }
   var arr = []; out.forEach(function(p){ arr.push(p[0], p[1], p[2]); });
   var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); return g;
 }

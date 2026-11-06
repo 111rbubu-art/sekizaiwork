@@ -1,6 +1,6 @@
 # 石の 図面（zumen.html）引継ぎ ― 社内アプリ開発へ 移す ための まとめ
 
-zumen.html = v0.8.3（2026-11-06）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
+zumen.html = v0.8.4（2026-11-06）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
 
 ---
 
@@ -189,3 +189,4 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - zumen.html v0.8.1・kumitate.html v0.3.3（2026-11-06。本人「細かいところが 再現されて いない」）：views 型に 細部を 足した。front.holes の from:'back'（後ろの 面から）、side.holes（[d,y]・from:'left'｜'right' の 面から depth）、side.cuts（[d,y] を x0〜x1 で 削る＝面取りの 飾りの 線など）、top.cuts（[x,d] を 高さ y0〜y1 で 削る＝角の 欠きなど）。BZ.scaleViews が これらを 写す（buzai-engine.js）。zumen-3d.js を ?v 付きで 読む（kumitate-3d.js）。2D の 図（view6）には まだ 出ない
 - zumen.html v0.8.2・kumitate.html v0.3.4（2026-11-06。本人「腰石の 前の 角の R が 円弧に なって いない」）：views 型の 面の 法線を 30° より 小さい 角では ならす（creased）。R が 平らな 面の 並びに 見えて いた。外柵の セットの R30 は 16 分割に
 - zumen.html v0.8.3・kumitate.html v0.3.5（2026-11-06。本人「階段の 飾りの 線の 端が 荒い」）：side.cuts に taper（両端の 長さ）・apex（消える 点）。両端で 断面が 点へ 細くなる 形（taperCut）で 削る。前は 半分の 大きさの 段で 近似して いた
+- zumen.html v0.8.4・kumitate.html v0.3.6（2026-11-06。本人「中仕切の 右の 端だけ 線が 出る」）：featureEdges の 片側だけの 辺（T 字の つなぎ）は、同じ 線の 上で 角に なる 相手の 辺が 重なる 区間だけ 描く（前は 3 点で 見て 辺 全部を 描いて いたので、削りの 外まで のびた 天面の 辺が 線に なった）

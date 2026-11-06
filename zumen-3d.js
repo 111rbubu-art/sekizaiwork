@@ -138,7 +138,14 @@ export function partGroup(m, fine, mat, lineMat){
     if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
     if (v.top && v.top.out) { var gT = ext(v.top.out, null, H + 2 * mg); gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
     (v.top && v.top.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, H - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
-    (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 前の 穴（from:'back' は 後ろの 面から）。図は 前から 見た 座標の まま
+    (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, h.from === 'back' ? zf - Dd - mg : zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 横の 穴（side.holes：[d,y]、from:'left'｜'right' の 面から depth）・横から 見た 形で 削る（side.cuts：[d,y] を x0〜x1 で。面取りの 飾りの 線など）
+    function sideM(x0){ return new THREE.Matrix4().set(0, 0, 1, x0, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1); }
+    (v.side && v.side.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(sideM(h.from === 'left' ? -W / 2 - mg : W / 2 - h.depth)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    (v.side && v.side.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.x1 - h.x0); g.applyMatrix4(sideM(h.x0)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 天面から 見た 形で 高さ y0〜y1 を 削る（top.cuts：[x,d]。角の 欠きなど）
+    (v.top && v.top.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.y1 - h.y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, h.y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     var geo = res.geometry; geo.translate(0, c.at.y, 0); geo.computeVertexNormals();
     group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(featureEdges(geo, 30), lineMat));
   }

@@ -128,9 +128,12 @@ var BZ = (function(){
   function scaleViews(v, W, Dd, H){
     var b = v.base || { W:W, D:Dd, H:H }, kx = W / b.W, kd = Dd / b.D, ky = H / b.H;
     function m(pts, fx, fy){ return pts.map(function(q){ return [q[0] * fx, q[1] * fy]; }); }
-    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ return { pts:m(h.pts, kx, ky), depth:h.depth * kd }; }) } };
-    if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky) };
-    if (v.top && v.top.out) o.top = { out:m(v.top.out, kx, kd), holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }) };
+    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ return { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; }) } };
+    if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky),
+      holes:(v.side.holes || []).map(function(h){ return { pts:m(h.pts, kd, ky), depth:h.depth * kx, from:h.from }; }),
+      cuts:(v.side.cuts || []).map(function(h){ return { pts:m(h.pts, kd, ky), x0:h.x0 * kx, x1:h.x1 * kx }; }) };
+    if (v.top && v.top.out) o.top = { out:m(v.top.out, kx, kd), holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }),
+      cuts:(v.top.cuts || []).map(function(h){ return { pts:m(h.pts, kx, kd), y0:h.y0 * ky, y1:h.y1 * ky }; }) };
     return o;
   }
   // 部品の 式を 数に（model）

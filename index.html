@@ -8177,7 +8177,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.569';
+var APP_VERSION = 'v1.9.570';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -30043,6 +30043,7 @@ function _bgReloadFull(d, listMode) {
   var itemId = d['id'] || d['ID'] || '';
   if (!itemId) return;
   _bgReloading = true;
+  var _bgT0 = Date.now();
   getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId +
       '/lists/' + listId + '/items/' + itemId + '?$expand=fields',
@@ -30052,6 +30053,7 @@ function _bgReloadFull(d, listMode) {
     var f = item.fields || {};
     f['id'] = item.id || itemId;
     f['ID'] = f['id'];
+    f.__fetchedAt = _bgT0;   // 依頼明細：これより 後に 保存した ものを 古い 中身で 消さない（v1.9.570）
     _bgReloading = false;
     if (!currentItem || (currentItem['id'] !== itemId && currentItem['ID'] !== itemId)) return;
     currentItem = f;
@@ -30193,6 +30195,7 @@ function openNokDetailById(id, tab) {
 function openDetailAt(d, tabIdx) {
   if (tabIdx === 4) tabIdx = 1;   // 資料作成タブは 依頼・資料 に入った（v1.9.494）
   editMode = false;
+  _reqDirty = false;   // 開き直したら 依頼明細の 打ちかけは 捨てる（v1.9.570）
   currentItem = d;
   currentListMode = 'noukotsu';
   currentTab = tabIdx;
@@ -32257,7 +32260,18 @@ function initNkChkCards(d){
 var _reqDetails = null;
 var _reqDetailsPresets = ['彫刻', '納骨作業', '骨出し作業', '朱取', 'クリーニング', '花立交換', '値引き', '校正とゴム作成', 'その他'];
 
+/* v1.9.570：依頼明細の 金額が 0 に 戻る 件。
+   開いて 0.8 秒後の 裏の 読み直し（_bgReloadFull）が 依頼・資料タブを 描き直し、打ちかけの 金額を 消していた。
+   また 保存より 前に 出た 読み直しが 保存の 後に 返ると、古い（0 の）中身で 上書きしていた。
+   → 打ちかけ（_reqDirty）・保存中（_reqSaving）は 同じ 案件なら 今の 中身を 残す。保存した 中身は _reqSaved に 覚える */
+var _reqItemId = null, _reqDirty = false, _reqSaving = false, _reqSaved = {};
+function _reqMarkDirty() { _reqDirty = true; }
 function loadRequestDetails(d) {
+  var did = d ? String(d['id'] || d['ID'] || '') : '';
+  if (_reqDetails && did && did === _reqItemId && (_reqDirty || _reqSaving)) return;
+  if (did && _reqSaved[did] && _reqSaved[did].json !== (d['RequestDetails'] || '') && _reqSaved[did].at > (d.__fetchedAt || 0))
+    d['RequestDetails'] = _reqSaved[did].json;   // 保存の 前に 取った 古い 中身
+  _reqItemId = did; _reqDirty = false;
   _reqDetails = { items: [] };
   var hadSavedItems = false;
   try {
@@ -32360,7 +32374,7 @@ function _buildReqRow(item, idx) {
       '<select onchange="onReqNamePreset(' + idx + ', this.value)" style="width:100%;font-size:11px;padding:3px;font-family:inherit;border:1px solid #ccc;border-radius:3px">' + presetOpts + '</select>' +
       '<input type="text" id="req-name-' + idx + '" value="' + _esc(isCustom ? name : '') + '" oninput="onReqNameCustom(' + idx + ', this.value)" placeholder="自由入力" style="width:100%;font-size:11px;padding:3px;margin-top:3px;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box;' + customDisplay + '">' +
     '</td>' +
-    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="number" value="' + amount + '" oninput="onReqAmount(' + idx + ', this.value)" style="width:100%;font-size:12px;padding:3px;text-align:right;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
+    '<td style="padding:3px;border:1px solid #d8c0a0;vertical-align:top"><input type="text" inputmode="numeric" value="' + amount + '" oninput="onReqAmount(' + idx + ', this.value)" onblur="this.value=_reqAmountNum(this.value)" onfocus="if(this.value===\'0\')this.select()" style="width:100%;font-size:12px;padding:3px;text-align:right;border:1px solid #ccc;border-radius:3px;font-family:inherit;box-sizing:border-box"></td>' +
     '<td style="padding:3px;border:1px solid #d8c0a0;text-align:center;vertical-align:top;white-space:nowrap">' +
       '<button onclick="toggleReqMemo(' + idx + ')" style="' + memoBtnStyle + ';border:1px solid #d8b870;border-radius:3px;width:38px;height:22px;cursor:pointer;font-size:10px;line-height:1;padding:0;margin-right:2px;font-family:inherit">' + memoBtnLabel + '</button>' +
       '<button onclick="deleteReqRow(' + idx + ')" style="background:#c00;color:#fff;border:none;border-radius:3px;width:22px;height:22px;cursor:pointer;font-size:13px;line-height:1">×</button>' +
@@ -32380,11 +32394,13 @@ function _buildReqRow(item, idx) {
 function addReqRow() {
   if (!_reqDetails) return;
   _reqDetails.items.push({name: '', amount: 0, memo: '', _memoOpen: false});
+  _reqMarkDirty();
   refreshRequestDetailsUI();
 }
 function deleteReqRow(idx) {
   if (!_reqDetails) return;
   _reqDetails.items.splice(idx, 1);
+  _reqMarkDirty();
   refreshRequestDetailsUI();
 }
 function toggleReqMemo(idx) {
@@ -32395,6 +32411,7 @@ function toggleReqMemo(idx) {
 function onReqNamePreset(idx, val) {
   if (!_reqDetails || !_reqDetails.items[idx]) return;
   var it = _reqDetails.items[idx];
+  _reqMarkDirty();
   if (val === '__custom__') {
     it._custom = true;
     if (_reqDetailsPresets.indexOf(it.name) >= 0) it.name = '';
@@ -32413,11 +32430,18 @@ function onReqNamePreset(idx, val) {
   }
 }
 function onReqNameCustom(idx, val) {
-  if (_reqDetails && _reqDetails.items[idx]) _reqDetails.items[idx].name = val;
+  if (_reqDetails && _reqDetails.items[idx]) { _reqDetails.items[idx].name = val; _reqMarkDirty(); }
+}
+/* 金額の 文字を 数に（全角・カンマ・円・¥・全角マイナスも）v1.9.570 */
+function _reqAmountNum(v) {
+  var t = String(v == null ? '' : v).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/[－−ー‐]/g, '-').replace(/[,，、\s¥￥円]/g, '');
+  return parseInt(t, 10) || 0;
 }
 function onReqAmount(idx, val) {
   if (!_reqDetails || !_reqDetails.items[idx]) return;
-  _reqDetails.items[idx].amount = parseInt(val, 10) || 0;
+  _reqDetails.items[idx].amount = _reqAmountNum(val);
+  _reqMarkDirty();
   var tr = document.querySelector('#req-details-area tr[data-idx="' + idx + '"]');
   if (tr) tr.style.background = _reqDetails.items[idx].amount < 0 ? '#ffe8e0' : '';
   var total = _reqDetails.items.reduce(function(s, it) { return s + (parseInt(it.amount, 10) || 0); }, 0);
@@ -32425,7 +32449,7 @@ function onReqAmount(idx, val) {
   if (totalEl) totalEl.textContent = '¥' + total.toLocaleString();
 }
 function onReqMemo(idx, val) {
-  if (_reqDetails && _reqDetails.items[idx]) _reqDetails.items[idx].memo = val;
+  if (_reqDetails && _reqDetails.items[idx]) { _reqDetails.items[idx].memo = val; _reqMarkDirty(); }
 }
 /* **彫刻校正：家名・寺名**（v1.9.507。本人「文字校正の入力に 家名と寺名が入力できるように。顧客リストなどと連携はしないので、
    案件の区別の為に使う。Json に入れて、依頼明細の 彫刻内容と項目名の間に入力ボックスを」）。依頼明細の各行に kamei／tera として持つ */
@@ -32440,7 +32464,7 @@ function _reqKTField(item, idx) {
   '</div>';
 }
 function onReqKT(idx, f, val) {
-  if (_reqDetails && _reqDetails.items[idx]) _reqDetails.items[idx][f] = val;
+  if (_reqDetails && _reqDetails.items[idx]) { _reqDetails.items[idx][f] = val; _reqMarkDirty(); }
 }
 /* 案件の区別に使う 家名・寺名（依頼明細の 最初に入っている行） */
 function _reqKT(d) {
@@ -32474,6 +32498,9 @@ function saveRequestDetails() {
   var listId = '3ae4bd1d-47b8-4300-aab5-6b828aa0e480';
   var itemId = currentItem['id'];
   var payload = { 'RequestDetails': JSON.stringify(cleaned) };
+  var saveItem = currentItem, saveJson = payload['RequestDetails'], saveId = String(itemId);
+  _reqSaving = true;
+  var dirtyBefore = _reqDirty; _reqDirty = false;   // 保存中に 打った ものは また dirty に なる
   getToken().then(function(resp) {
     return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + listId + '/items/' + itemId + '/fields', {
       method: 'PATCH',
@@ -32482,14 +32509,32 @@ function saveRequestDetails() {
     });
   }).then(function(r) {
     if (!r.ok) return r.text().then(function(t) { throw new Error(r.status + ': ' + t.substring(0,200)); });
-    currentItem['RequestDetails'] = JSON.stringify(cleaned);
-    _reqDetails = cleaned;
+    _reqSaved[saveId] = { json: saveJson, at: Date.now() };
+    /* 開いている 案件・一覧の 同じ 案件にも 入れる（一覧から 開き直すと 古い 0 が 出ていた） */
+    [currentItem, saveItem].forEach(function (o) { if (o && String(o['id'] || o['ID'] || '') === saveId) o['RequestDetails'] = saveJson; });
+    if (typeof allItems !== 'undefined' && allItems) allItems.forEach(function (o) { if (o && String(o['id'] || o['ID'] || '') === saveId) o['RequestDetails'] = saveJson; });
+    _reqSaving = false;
+    /* 前は _reqDetails = cleaned（空の 行を 抜いた もの）に 置きかえ、画面は 描き直さなかったので、
+       空の 行が あると 画面の 行の 番号と ずれて、保存の 後に 打った 金額が 別の 行や どこにも 入らなかった。
+       保存中に 何も 打って いなければ 保存した 中身で 描き直す */
+    if (!_reqDirty && _reqItemId === saveId) {
+      var open = {};
+      _reqDetails.items.forEach(function (it) { if (it._memoOpen) open[(it.name || '').trim()] = true; });
+      _reqDetails = { items: cleaned.items.map(function (it) {
+        var o = JSON.parse(JSON.stringify(it));
+        o._memoOpen = !!open[o.name] || _isMultilineName(o.name) || !!(o.memo && o.memo.trim());
+        return o;
+      }) };
+      refreshRequestDetailsUI();
+    }
     showSaveToast(true, '💰 依頼明細を保存しました');
     _choFolderSync(currentItem);   // 彫刻校正：寺名・家名が 変わったら フォルダーも（v1.9.510）
   }).catch(function(e) {
+    _reqSaving = false; _reqDirty = true;   // 保存できなかったので 打ちかけの まま
     showSaveToast(false, '保存エラー: ' + (e && e.message || e));
   }).then(function() {
-    if (btn) { btn.textContent = '💾 保存'; btn.disabled = false; }
+    var b2 = document.getElementById('req-save-btn') || btn;
+    if (b2) { b2.textContent = '💾 保存'; b2.disabled = false; }
   });
 }
 // ===========================================

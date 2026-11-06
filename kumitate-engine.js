@@ -377,9 +377,9 @@ var KM = (function(){
     var fences = opts.fences || Object.keys(FV).filter(function(k){ return k !== 'none'; });
     var out = [];
     towers.forEach(function(tk){ fences.forEach(function(fk){
-      var t = TV[tk], f = FV[fk]; if (!t || !f) return;
+      var t = TV[tk], f = FV[fk]; if (!f) return; t = t || { label:'石塔 なし', parts:{} };
       var fs = f.set, ts = t.set, pl = fs && fs.place && fs.place.tower;
-      if (fs && !ts) return; // 外柵の セットには セットの 石塔だけ 置ける（置き場所が 決まって いる ため）
+      if (fs && TV[tk] && !ts) return; // 外柵の セットには セットの 石塔だけ 置ける（置き場所が 決まって いる ため）
       var s2 = clone(st); s2.sel.tower = tk; s2.sel.fence = fk; s2.site.adj = tk === st.sel.tower ? (st.site.adj || 0) : 0;
       var lv = 0, notes = [];
       function say(l, m){ lv = Math.max(lv, l); notes.push({ lv:l, msg:m }); }
@@ -415,7 +415,7 @@ var KM = (function(){
       if (ft && ff) { var ov = Math.max(ff.x0 - ft.x0, ft.x1 - ff.x1, ff.z0 - ft.z0, ft.z1 - ff.z1);
         if (ov > 0.5) say(2, '石塔が 外柵の 外へ ' + r1(ov) + ' mm はみ出す'); }
       var sg = saiGroups(res);
-      out.push({ tower:tk, fence:fk, label:(f.label || fk) + ' ＋ ' + (t.label || tk), lv:lv, notes:notes, adj:s2.site.adj || 0, sai:sg.tower + sg.fence, hits:res.hits.length, cur:tk === st.sel.tower && fk === st.sel.fence });
+      out.push({ tower:tk, fence:fk, label:(f.label || fk) + ' ＋ ' + (t.label || tk || '石塔 なし'), lv:lv, notes:notes, adj:s2.site.adj || 0, sai:sg.tower + sg.fence, hits:res.hits.length, cur:tk === st.sel.tower && fk === st.sel.fence });
     }); });
     out.sort(function(a, b){ return a.lv - b.lv || (b.cur ? 1 : 0) - (a.cur ? 1 : 0) || a.sai - b.sai; });
     return out;

@@ -29,7 +29,7 @@ export function create(box, onPick){
 
   function clear(){ var keep = [lineMat, darkLine, selMat, hitMat]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; }
 
-  // r = KM.compute の 答え、col(key) → '#rrggbb'、sel＝選んだ 部材の 鍵、site＝{W,D}
+  // r = KM.compute の 答え（かくした 部材は 抜いて ある）、col(key) → '#rrggbb'、sel＝選んだ 部材の 鍵 か {鍵:1}、site＝{W,D}（null で 敷地の 線を 出さない）
   function update(r, col, sel, site, refit){
     last = { r:r, col:col, sel:sel, site:site };
     clear();
@@ -39,7 +39,8 @@ export function create(box, onPick){
       if (!(w > 0 && h > 0 && d > 0)) return;
       var g = new THREE.BoxGeometry(w, h, d), dark = new THREE.Color(col(k)).getHSL({}).l < 0.25;
       var sm = new THREE.MeshStandardMaterial({ color:new THREE.Color(col(k)), roughness:0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
-      var lm = k === sel ? selMat : hit[k] ? hitMat : dark ? darkLine : lineMat;
+      var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）
+      var lm = on ? selMat : hit[k] ? hitMat : dark ? darkLine : lineMat;
       var m = new THREE.Mesh(g, sm);
       m.position.set(b.x0 + w / 2, b.y0 + h / 2, b.z0 + d / 2); m.userData.key = k;
       var shp = r.parts[k].shape, pg = null;
@@ -50,7 +51,7 @@ export function create(box, onPick){
         group.add(m); meshes.push(m);
         var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lm); e.position.copy(m.position); group.add(e);
       }
-      if (k === sel) { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
+      if (k === sel && typeof sel === 'string') { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
     if (site && site.W > 20 && site.D > 20) {
       var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W - 20, site.D - 20)), new THREE.LineBasicMaterial({ color:0x3355aa }));

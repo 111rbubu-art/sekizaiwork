@@ -361,6 +361,66 @@ var KM = (function(){
     return out;
   }
 
+  // ── 自動で 設計する（案を 並べる）──
+  // 外柵 × 石塔 の 組を 1 つずつ 計算して、収まるか（✓ ok・⚠ adjust・✕ ng）と 何 mm かを 出す。石塔の 大きさは 勝手に 変えない
+  //（奥行の 伸び縮みを 持つ セットだけ、外柵の 置き場所に 合わせて 奥行を 変える 案を 出す）
+  // opts = { towers:[鍵…]（なければ 全部）, fences:[鍵…] }
+  function footprint(res, cg){
+    var b = null; Object.keys(res.boxes).forEach(function(k){ var p = res.parts[k], x = res.boxes[k]; if ((p.cg === 'tower') !== (cg === 'tower')) return;
+      if (!b) b = { x0:x.x0, x1:x.x1, z0:x.z0, z1:x.z1 }; else { b.x0 = Math.min(b.x0, x.x0); b.x1 = Math.max(b.x1, x.x1); b.z0 = Math.min(b.z0, x.z0); b.z1 = Math.max(b.z1, x.z1); } });
+    return b;
+  }
+  function autoDesign(data, st, opts){
+    opts = opts || {};
+    var TV = data.partsData.TOWER_VARIANTS || {}, FV = data.partsData.FENCE_VARIANTS || {};
+    var towers = opts.towers || Object.keys(TV).filter(function(k){ return k !== 'none'; });
+    var fences = opts.fences || Object.keys(FV).filter(function(k){ return k !== 'none'; });
+    var out = [];
+    towers.forEach(function(tk){ fences.forEach(function(fk){
+      var t = TV[tk], f = FV[fk]; if (!t || !f) return;
+      var fs = f.set, ts = t.set, pl = fs && fs.place && fs.place.tower;
+      if (fs && !ts) return; // 外柵の セットには セットの 石塔だけ 置ける（置き場所が 決まって いる ため）
+      var s2 = clone(st); s2.sel.tower = tk; s2.sel.fence = fk; s2.site.adj = tk === st.sel.tower ? (st.site.adj || 0) : 0;
+      var lv = 0, notes = [];
+      function say(l, m){ lv = Math.max(lv, l); notes.push({ lv:l, msg:m }); }
+      // 外柵の セットは 大きさが 決まって いる：敷地と くらべる
+      if (fs && fs.size) {
+        var dW = r1(s2.site.W - fs.size.W), dD = r1(s2.site.D - fs.size.D);
+        if (dW < 0 || dD < 0) say(2, '敷地が 足りない：' + (dW < 0 ? '間口 ' + (-dW) + ' mm ' : '') + (dD < 0 ? '奥行 ' + (-dD) + ' mm' : '') + '（外柵 ' + fs.size.W + '×' + fs.size.D + '）');
+        else if (dW > 0 || dD > 0) say(1, '敷地が 余る：' + (dW > 0 ? '間口 ' + dW + ' mm ' : '') + (dD > 0 ? '奥行 ' + dD + ' mm' : '') + '（この 外柵は まだ 伸びない）');
+      }
+      // 石塔の 奥行：外柵の セットの 置き場所（後ろ z・前の 限り front）に 入るか
+      var sd = ts && ts.stretch && ts.stretch.depth;
+      if (pl && ts && ts.size && pl.front != null) {
+        var avail = r1(pl.z - pl.front), std = sd && sd.std || ts.size.D, cur = std + (s2.site.adj || 0);
+        if (cur > avail) {
+          var to = avail, lo = sd && sd.min != null ? sd.min : std;
+          if (sd && to >= lo) { s2.site.adj = r1(to - std); var gn = (sd.grow || []).map(function(g){ var k = String(g).split('.')[0]; return t.parts[k] ? t.parts[k].name : k; }); say(1, '石塔の 奥行 ' + cur + ' → ' + to + ' mm（' + gn.join('・') + ' を ' + r1(cur - to) + ' mm 縮める）'); }
+          else say(2, '石塔の 奥行が ' + r1(cur - avail) + ' mm 長い（置ける 奥行 ' + avail + '）');
+        } else if (cur < avail) notes.push({ lv:0, msg:'石塔の 前に ' + r1(avail - cur) + ' mm 空き' });
+      }
+      if (pl && ts && ts.size) {
+        if (pl.w_max != null && ts.size.W > pl.w_max) say(2, '石塔の 幅が ' + r1(ts.size.W - pl.w_max) + ' mm 広い（' + pl.w_max + ' まで）');
+        if (pl.w_min != null && ts.size.W < pl.w_min) say(2, '石塔の 幅が ' + r1(pl.w_min - ts.size.W) + ' mm 狭い（' + pl.w_min + ' から）');
+      }
+      var res = compute(data, s2), isT = function(k){ return res.parts[k].cg === 'tower'; };
+      // 石塔と 外柵の 重なり＝収まらない（何 mm）。石塔 どうし・外柵 どうしの 重なりは 元の データの くせ（⚠）
+      var cross = res.hits.filter(function(h){ return isT(h.a) !== isT(h.b); }), inner = res.hits.length - cross.length;
+      if (cross.length) { var w = cross.slice().sort(function(x, y){ return Math.min(y.ox, y.oz) - Math.min(x.ox, x.oz); })[0];
+        say(2, '石塔と 外柵が ' + cross.length + ' か所 重なる（いちばん 大きいのは ' + w.nameA + '↔' + w.nameB + '：' + (w.oz <= w.ox ? '奥行 ' + w.oz : '横 ' + w.ox) + ' mm）'); }
+      if (inner) say(1, '元の データの 中で 重なる 所が ' + inner + ' か所（部材の 置き方を 見直す 必要）');
+      (res.notes || []).forEach(function(m){ say(1, m); });
+      // 石塔が 外柵の 外へ はみ出すか（何 mm）
+      var ft = footprint(res, 'tower'), ff = footprint(res, 'fence');
+      if (ft && ff) { var ov = Math.max(ff.x0 - ft.x0, ft.x1 - ff.x1, ff.z0 - ft.z0, ft.z1 - ff.z1);
+        if (ov > 0.5) say(2, '石塔が 外柵の 外へ ' + r1(ov) + ' mm はみ出す'); }
+      var sg = saiGroups(res);
+      out.push({ tower:tk, fence:fk, label:(f.label || fk) + ' ＋ ' + (t.label || tk), lv:lv, notes:notes, adj:s2.site.adj || 0, sai:sg.tower + sg.fence, hits:res.hits.length, cur:tk === st.sel.tower && fk === st.sel.fence });
+    }); });
+    out.sort(function(a, b){ return a.lv - b.lv || (b.cur ? 1 : 0) - (a.cur ? 1 : 0) || a.sai - b.sai; });
+    return out;
+  }
+
   // ── 保存の 形（kumitate/1）──
   function newState(data){
     var first = function(kind, pref){ var v = variants(data, kind); return v[pref] ? pref : Object.keys(v)[0]; };
@@ -369,6 +429,6 @@ var KM = (function(){
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
-    applyDim:applyDim, applyPos:applyPos, addSets:addSets, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, saiGroups:saiGroups, estimate:estimate, newState:newState };
+    applyDim:applyDim, applyPos:applyPos, addSets:addSets, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

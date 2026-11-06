@@ -221,8 +221,16 @@ var KM = (function(){
     stretchSets(data, st, p, notes);
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
-    Object.keys(st.shapes || {}).forEach(function(k){ var sz = shapeSize(st.shapes[k]); if (p[k] && sz) { p[k] = Object.assign({}, p[k], sz, { shape:st.shapes[k] }); } });
-    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k]) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+    // セットの 部材は 前の 位置（幅の 中心・前の 面）を 覚えて おき、大きさが 変わっても そこに そろえる
+    var base = {}; Object.keys(p).forEach(function(k){ if (p[k].setId) base[k] = { w:p[k].w, d:p[k].d, offX:p[k].offX || 0, offZ:p[k].offZ || 0 }; });
+    // 手で 入れた 形（左の「形の ある 部材」）は、入れた ときと 同じ 石（セットか どうか まで 同じ）の ときだけ 使う。
+    // 前に 和型 8 寸の 香炉へ 入れた 形が、同じ 鍵（koro）の セットの 香炉に 入り込まない ように
+    Object.keys(st.shapes || {}).forEach(function(k){ var sh = st.shapes[k], sz = shapeSize(sh); if (!p[k] || !sz) return;
+      if ((p[k].setId || '') !== (sh.__set || '')) return;
+      p[k] = Object.assign({}, p[k], sz, { shape:sh }); });
+    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].shape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+    Object.keys(base).forEach(function(k){ var b = base[k], q = p[k]; if (!q || (q.w === b.w && q.d === b.d)) return;
+      p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
     syncShapes(p, st);
     p = applyPos(data.knowhow || [], p, data.anchors || {}, site, data, st.sel, errs);
     var boxes = {};

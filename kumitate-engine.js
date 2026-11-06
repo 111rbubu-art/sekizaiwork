@@ -219,6 +219,7 @@ var KM = (function(){
     var errs = [], site = st.site, notes = [];
     var p = gather(data, st.sel);
     stretchSets(data, st, p, notes);
+    placeOnSet(data, st, p);
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
     // セットの 部材は 前の 位置（幅の 中心・前の 面）を 覚えて おき、大きさが 変わっても そこに そろえる
@@ -251,7 +252,7 @@ var KM = (function(){
       parts[q.key] = { name:q.name, no:String(q.no), grp:S.kind, w:q.w, h:q.h, d:q.d, visible:true, parent:null,
         offX:r1(q.at.x - W / 2), offY:q.at.y, offZ:r1(Dd / 2 - (q.at.z + q.d)), shape:q.part || null, finish:q.finish || '', setId:S.id };
     });
-    return { label:S.name, colorGroup:S.kind === 'fence' ? 'fence' : 'tower', parts:parts, set:{ id:S.id, stretch:S.stretch || null, version:S.version || 0 } };
+    return { label:S.name, colorGroup:S.kind === 'fence' ? 'fence' : 'tower', parts:parts, set:{ id:S.id, stretch:S.stretch || null, version:S.version || 0, size:S.size, place:S.place || null } };
   }
   // data に セットを 足した もの（元の data は 変えない）。位置の ルールは 基に した 種類（既定 和型 8 寸）の ものを 写す
   function addSets(data, sets){
@@ -293,6 +294,14 @@ var KM = (function(){
         else if (!back[k]) p[k].offZ = r1((p[k].offZ || 0) + adj);
       });
     });
+  }
+  // 外柵の セットに 石塔の 置き場所（place.tower：外柵の 原点から 石塔の 後ろ 中心・底の 高さ）が あり、石塔も セットの ときは そこへ 動かす
+  function placeOnSet(data, st, p){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], t = (data.partsData.TOWER_VARIANTS || {})[st.sel.tower];
+    var pl = f && f.set && f.set.place && f.set.place.tower; if (!pl || !t || !t.set || !t.set.size) return;
+    var dx = r1(pl.x - f.set.size.W / 2), dz = r1((f.set.size.D / 2 - pl.z) + t.set.size.D / 2), dy = pl.y || 0;
+    Object.keys(t.parts || {}).forEach(function(k){ if (!p[k]) return;
+      p[k] = Object.assign({}, p[k], { offX:r1((p[k].offX || 0) + dx), offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
   }
   // セットの 部材の 形（buzai/1）を 箱の 大きさに 合わせる（幅・奥行・高さ → params W・D・H）
   function syncShapes(p, st){

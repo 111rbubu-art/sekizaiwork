@@ -161,7 +161,18 @@ export function partGroup(m, fine, mat, lineMat){
     // 横の 穴（side.holes：[d,y]、from:'left'｜'right' の 面から depth）・横から 見た 形で 削る（side.cuts：[d,y] を x0〜x1 で。面取りの 飾りの 線など）
     function sideM(x0){ return new THREE.Matrix4().set(0, 0, 1, x0, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1); }
     (v.side && v.side.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(sideM(h.from === 'left' ? -W / 2 - mg : W / 2 - h.depth)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
-    (v.side && v.side.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.x1 - h.x0); g.applyMatrix4(sideM(h.x0)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    (v.side && v.side.cuts || []).forEach(function(h){ var g = h.taper ? taperCut(h) : ext(h.pts, null, h.x1 - h.x0); if (!h.taper) g.applyMatrix4(sideM(h.x0)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 両端で 細く なって 消える 削り（taper＝両端の 長さ、apex＝消える 点の 番号）：x0〜x1 は 断面の まま、その 外 taper で 点へ
+    function taperCut(h){
+      var P = h.pts, ap = P[h.apex || 0], xa = h.x0 - h.taper, xb = h.x1 + h.taper;
+      function w(x, q){ return [x, q[1], zf - q[0]]; }
+      var A = w(xa, ap), B = w(xb, ap), t1 = P.map(function(q){ return w(h.x0, q); }), t2 = P.map(function(q){ return w(h.x1, q); }), n = P.length, tri = [];
+      for (var i = 0; i < n; i++) { var j = (i + 1) % n;
+        tri.push([A, t1[i], t1[j]]); tri.push([t1[i], t2[i], t2[j]]); tri.push([t1[i], t2[j], t1[j]]); tri.push([B, t2[j], t2[i]]); }
+      var vol = 0; tri.forEach(function(t){ var a = t[0], b = t[1], c = t[2]; vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]); });
+      var arr = []; tri.forEach(function(t){ (vol < 0 ? [t[0], t[2], t[1]] : t).forEach(function(p){ arr.push(p[0], p[1], p[2]); }); });
+      var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); g.computeVertexNormals(); return g;
+    }
     // 天面から 見た 形で 高さ y0〜y1 を 削る（top.cuts：[x,d]。角の 欠きなど）
     (v.top && v.top.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.y1 - h.y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, h.y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     var geo = res.geometry; geo.translate(0, c.at.y, 0); geo = creased(geo, 30);

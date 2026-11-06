@@ -85,6 +85,24 @@ export function featureEdges(geo, deg){
 }
 
 // 部材の 形（BZ.model の 答え m）→ Three の Group。原点＝底面の 中心、+z＝前。組み立て（kumitate-3d.js）からも 使う
+// 角度が deg より 小さい 面どうしは 法線を ならす（R の 面を なめらかに 見せる。角は そのまま）
+function creased(geo, deg){
+  if (geo.index) geo = geo.toNonIndexed();
+  var pos = geo.attributes.position, n = pos.count, cosT = Math.cos(deg * Math.PI / 180), fn = [], map = {}, out = new Float32Array(n * 3);
+  var a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (var t = 0; t < n / 3; t++) {
+    a.fromBufferAttribute(pos, t * 3); b.fromBufferAttribute(pos, t * 3 + 1); c.fromBufferAttribute(pos, t * 3 + 2);
+    var nn = new THREE.Vector3().subVectors(c, b).cross(new THREE.Vector3().subVectors(a, b)); var ar = nn.length(); fn.push(ar > 0 ? nn.divideScalar(ar) : nn); fn[t].ar = ar;
+  }
+  function key(i){ return Math.round(pos.getX(i) * 100) + ',' + Math.round(pos.getY(i) * 100) + ',' + Math.round(pos.getZ(i) * 100); }
+  for (var i = 0; i < n; i++) { var k = key(i); (map[k] = map[k] || []).push(i); }
+  for (var i = 0; i < n; i++) {
+    var f0 = fn[(i / 3) | 0], acc = new THREE.Vector3();
+    map[key(i)].forEach(function(j){ var f = fn[(j / 3) | 0]; if (f.dot(f0) >= cosT) acc.addScaledVector(f, f.ar); });
+    if (acc.lengthSq() === 0) acc.copy(f0); acc.normalize(); out[i * 3] = acc.x; out[i * 3 + 1] = acc.y; out[i * 3 + 2] = acc.z;
+  }
+  geo.setAttribute('normal', new THREE.BufferAttribute(out, 3)); return geo;
+}
 export function partGroup(m, fine, mat, lineMat){
   var group = new THREE.Group();
   function shp(pts){ var s = new THREE.Shape(); s.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]); s.closePath(); return s; }
@@ -146,7 +164,7 @@ export function partGroup(m, fine, mat, lineMat){
     (v.side && v.side.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.x1 - h.x0); g.applyMatrix4(sideM(h.x0)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 天面から 見た 形で 高さ y0〜y1 を 削る（top.cuts：[x,d]。角の 欠きなど）
     (v.top && v.top.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.y1 - h.y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, h.y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
-    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo.computeVertexNormals();
+    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo = creased(geo, 30);
     group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(featureEdges(geo, 30), lineMat));
   }
 

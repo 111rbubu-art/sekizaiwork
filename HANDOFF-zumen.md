@@ -1,6 +1,6 @@
 # 石の 図面（zumen.html）引継ぎ ― 社内アプリ開発へ 移す ための まとめ
 
-zumen.html = v0.8.4（2026-11-06）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
+zumen.html = v0.8.5（2026-11-07）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
 
 ---
 
@@ -236,3 +236,6 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
   前は OrbitControls に 距離の 限りが なく、ホイールで モデルの 中心（石の 中）まで 入り込み、near／far も 最初の 合わせ（fit）で 決めた まま だった。
   kumitate-3d.js v0.7.2：zoomToCursor（マウスの 所へ 寄る）・minDistance＝max(300, 大きさ×0.35)・maxDistance＝max(40000, 合わせた 距離×4)・zoomSpeed 0.8、
   near／far は 動く たびに 距離に 合わせる（near＝距離／200、far＝max(距離×30, 60000)）。
+- kumitate.html v0.6.9・zumen.html v0.8.5（2026-11-07。本人「マウスの ズーム 感度が ひどい。1 ノッチで 最大から 最小に なる」）：
+  原因は 同梱の OrbitControls（r160）の getZoomScale が「devicePixelRatio | 0」で 割って いた こと。画面の 倍率が 1 未満（Windows の 表示倍率・ブラウザの 縮小で 0.9 など）だと 0 で 割って 無限大 → 1 目盛りで いちばん 近く／遠くへ 飛ぶ。
+  lib/three-0.160.0/OrbitControls.js を 直した（倍率で 割らない・1 回の 量は 150 まで・行／ページ 単位の ホイールを ピクセルに）。読み込みは ?v=2。組み立てと 図面の 3D の 両方に 効く。

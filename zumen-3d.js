@@ -1,7 +1,7 @@
 // 石の 図面（zumen.html）の 部材設計モード：3D の 表示（Three.js r160・同梱）
 // 部材設計を 開いた ときだけ zumen.html から import() で 読む。形の 計算（外形・穴・筆返し）は zumen.html の BZ（部材エンジン）を 使う
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
-import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js';
+import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
 import { TessellateModifier } from './lib/three-0.160.0/TessellateModifier.js';
 import { Brush, Evaluator, INTERSECTION, SUBTRACTION } from './lib/three-bvh-csg-0.0.16/index.module.js';
 

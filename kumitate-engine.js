@@ -426,7 +426,7 @@ var KM = (function(){
           }
         } else {
           var cur = r1((H.offZ || 0) + H.d - (N.offZ || 0));
-          ng.push('拝石が 中仕切に ' + (cur > 0 ? cur + ' mm しか かからない' : (cur < 0 ? -cur + ' mm 届かない' : 'かからない')) + '（' + J.kakari + ' かける ため 拝石か 中仕切の 奥行を 合わせる）');
+          ng.push('拝石が 中仕切に ' + (cur > J.kakari ? cur + ' mm かかる（' + J.kakari + ' より 長い）' : cur > 0 ? cur + ' mm しか かからない' : (cur < 0 ? -cur + ' mm 届かない' : 'かからない')) + '（' + J.kakari + ' かける ため 拝石か 中仕切の 奥行を 合わせる）');
         }
       }
       var op1 = r1((p[naka].offZ || 0) - front);

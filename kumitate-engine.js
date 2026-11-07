@@ -306,15 +306,18 @@ var KM = (function(){
     Object.keys(t.parts || {}).forEach(function(k){ if (!p[k]) return;
       p[k] = Object.assign({}, p[k], { offX:r1((p[k].offX || 0) + dx), offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
   }
+  // ── 目地（共通の ルール）：部材 どうしの 間 横・奥行 6、高さ 5（st.joint で 変えられる）。拝石が 中仕切に かかる 長さ 30 ──
+  function jointOf(st){ var j = st.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5, kakari:j.kakari != null ? +j.kakari : 30 }; }
   // ── 外柵の 中の 拝石（外柵の セット＋石塔の セット）──
-  // 石塔の「拝石」は 外柵の「拝石台」の 上に のせ、後ろを 芝台の 前に つける（拝石の 上の 香炉も いっしょに）。
-  // 拝石台は 芝台の 前まで 伸ばす（前の 端は そのまま。支えなので 隙間は 作らない）。
-  // 拝石の 前と 中仕切の 後ろの 隙間（重なり）は お客様の 好みで 直し方が ちがう ので 自動では 決めない：
-  //   st.haiseki = ''（直さない＝✕ アラーム）｜'haiseki'（拝石の 奥行を 伸ばす）｜'naka'（中仕切の 奥行を 伸ばす）
+  // 拝石台：下の 石（カロート）の 上に 高さの 目地（5）を あけて のせ、前の 端は そのまま、奥は 芝台の 前から 横の 目地（6）まで。
+  // 拝石：拝石台・中仕切の 上に 高さの 目地（5）を あけて のせ、後ろは 芝台の 前から 目地（6）。上の 香炉も いっしょに 動く。
+  // 拝石の 前は 中仕切に かかり（30）だけ のる。合わない ときは お客様の 好みで 直し方が ちがう ので 自動では 決めない：
+  //   st.haiseki = ''（直さない＝✕ アラーム）｜'haiseki'（拝石の 奥行を 合わせる）｜'naka'（中仕切の 奥行を 合わせる）
   // 座標：offZ＝奥の 面（+z が 前）。前の 面＝offZ＋d
   function haisekiRule(data, st, p, notes, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], t = (data.partsData.TOWER_VARIANTS || {})[st.sel.tower];
     if (!f || !f.set || !t || !t.set) return [];
+    var J = jointOf(st);
     var tk = Object.keys(t.parts || {}).filter(function(k){ return p[k]; }), fk = Object.keys(f.parts || {}).filter(function(k){ return p[k]; });
     var hk = tk.filter(function(k){ return /^拝石(?!台)/.test(p[k].name || ''); })[0];
     var dai = fk.filter(function(k){ return /^拝石台/.test(p[k].name || ''); }), naka = fk.filter(function(k){ return /^中仕切/.test(p[k].name || ''); })[0];
@@ -322,29 +325,41 @@ var KM = (function(){
     if (!hk || !dai.length || !shiba.length) return [];
     var front = Math.max.apply(null, shiba.map(function(k){ return (p[k].offZ || 0) + p[k].d; }));   // 芝台の 前の 面
     var out = [];
-    // 拝石台：前の 端は そのまま、奥を 芝台の 前まで
-    dai.forEach(function(k){ var q = p[k], fz = (q.offZ || 0) + q.d, nd = r1(fz - front);
-      if (Math.abs(nd - q.d) > 0.5 && nd > 0) { notes.push(q.name + 'を 芝台の 前まで ' + (nd > q.d ? '伸ばす' : '縮める') + '（奥行 ' + q.d + ' → ' + nd + '）'); p[k] = Object.assign({}, q, { d:nd, offZ:r1(front) }); }
-      else if (nd <= 0) ng.push(q.name + 'が 芝台の 下に 入る（' + r1(-nd) + ' mm）'); });
-    var top = Math.max.apply(null, dai.map(function(k){ return (p[k].offY || 0) + p[k].h; }));
-    // 拝石を 拝石台の 上へ。後ろを 芝台の 前に
-    var h0 = p[hk], dy = r1(top - (h0.offY || 0)), dz = r1(front - (h0.offZ || 0));
+    function xo(a, b){ return Math.min((a.offX || 0) + a.w, (b.offX || 0) + b.w) - Math.max(a.offX || 0, b.offX || 0); }
+    function zo(a, b){ return Math.min((a.offZ || 0) + a.d, (b.offZ || 0) + b.d) - Math.max(a.offZ || 0, b.offZ || 0); }
+    dai.forEach(function(k){
+      var q = p[k], y0 = q.offY || 0;
+      // 下の 石（拝石台の 下に ある 外柵の 部材）の 上 ＋ 高さの 目地
+      var under = fk.filter(function(o){ var r = p[o]; return o !== k && dai.indexOf(o) < 0 && xo(r, q) > 1 && zo(r, q) > 1 && (r.offY || 0) + r.h <= y0 + 1; });
+      var ny = under.length ? r1(Math.max.apply(null, under.map(function(o){ return (p[o].offY || 0) + p[o].h; })) + J.v) : y0;
+      var fz = (q.offZ || 0) + q.d, nz = r1(front + J.h), nd = r1(fz - nz);
+      if (nd <= 0) { ng.push(q.name + 'が 芝台の 下に 入る（' + r1(-nd) + ' mm）'); return; }
+      if (Math.abs(nd - q.d) > 0.5) notes.push(q.name + 'を 芝台の 前（目地 ' + J.h + '）まで ' + (nd > q.d ? '伸ばす' : '縮める') + '（奥行 ' + q.d + ' → ' + nd + '）');
+      p[k] = Object.assign({}, q, { d:nd, offZ:nz, offY:ny });
+    });
+    // 拝石の 下：拝石台と 中仕切の 上の 高い ほう ＋ 高さの 目地
+    var sup = dai.concat(naka ? [naka] : []);
+    var top = r1(Math.max.apply(null, sup.map(function(k){ return (p[k].offY || 0) + p[k].h; })) + J.v);
+    var h0 = p[hk], dy = r1(top - (h0.offY || 0)), dz = r1(front + J.h - (h0.offZ || 0));
     var on = tk.filter(function(k){ var q = p[k]; return k !== hk && Math.abs((q.offY || 0) - ((h0.offY || 0) + h0.h)) < 1 && (q.offZ || 0) >= (h0.offZ || 0) - 1 && (q.offZ || 0) + q.d <= (h0.offZ || 0) + h0.d + 1; });
     [hk].concat(on).forEach(function(k){ p[k] = Object.assign({}, p[k], { offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
-    // 拝石の 前 と 中仕切の 後ろ
+    // 拝石の 前が 中仕切に かかり（30）だけ のるか。g＝足りない 長さ（＋＝拝石を 伸ばす）
     if (naka) {
-      var H = p[hk], N = p[naka], g = r1((N.offZ || 0) - ((H.offZ || 0) + H.d));
+      var H = p[hk], N = p[naka], g = r1((N.offZ || 0) + J.kakari - ((H.offZ || 0) + H.d));
       if (Math.abs(g) > 1) {
         var fix = st.haiseki || '';
         if (fix === 'haiseki' && H.d + g > 0) {
           p[hk] = Object.assign({}, H, { d:r1(H.d + g) });
           on.forEach(function(k){ p[k] = Object.assign({}, p[k], { offZ:r1((p[k].offZ || 0) + g / 2) }); });  // 香炉は 拝石の 真ん中の まま
-          notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + g) + '（中仕切まで）');
+          notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + g) + '（中仕切に ' + J.kakari + ' かかる）');
         } else if (fix === 'naka' && N.d + g > 0) {
           p[naka] = Object.assign({}, N, { d:r1(N.d + g), offZ:r1((N.offZ || 0) - g) });
-          notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + g) + '（拝石まで）');
-        } else ng.push('拝石と 中仕切の 間が ' + (g > 0 ? r1(g) + ' mm 空く' : r1(-g) + ' mm 重なる') + '（拝石を 伸ばす か 中仕切を 伸ばすか 選ぶ）');
-        out.push({ id:'naka', gap:g, fix:fix, haiseki:H.d, naka:N.d });
+          notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + g) + '（拝石が ' + J.kakari + ' かかる）');
+        } else {
+          var cur = r1((H.offZ || 0) + H.d - (N.offZ || 0));
+          ng.push('拝石が 中仕切に ' + (cur > 0 ? cur + ' mm しか かからない' : (cur < 0 ? -cur + ' mm 届かない' : 'かからない')) + '（' + J.kakari + ' かける ため 拝石か 中仕切の 奥行を 合わせる）');
+        }
+        out.push({ id:'naka', gap:g, fix:fix, haiseki:H.d, naka:N.d, kakari:J.kakari, cur:r1((H.offZ || 0) + H.d - (N.offZ || 0)) });
       }
     }
     return out;

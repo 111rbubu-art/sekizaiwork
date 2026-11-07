@@ -316,15 +316,23 @@ var KM = (function(){
   // 座標：offZ＝奥の 面（+z が 前）。前の 面＝offZ＋d
   function haisekiRule(data, st, p, notes, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], t = (data.partsData.TOWER_VARIANTS || {})[st.sel.tower];
-    if (!f || !f.set || !t || !t.set) return [];
+    if (!f || !f.set) return [];
+    if (!t || !t.set) t = { parts:{} };   // 石塔が ない ときも 拝石台の 下の 目地（高さ 5）は つける
     var J = jointOf(st);
     var tk = Object.keys(t.parts || {}).filter(function(k){ return p[k]; }), fk = Object.keys(f.parts || {}).filter(function(k){ return p[k]; });
     var hk = tk.filter(function(k){ return /^拝石(?!台)/.test(p[k].name || ''); })[0];
     var dai = fk.filter(function(k){ return /^拝石台/.test(p[k].name || ''); }), naka = fk.filter(function(k){ return /^中仕切/.test(p[k].name || ''); })[0];
     var shiba = tk.filter(function(k){ return /^芝台/.test(p[k].name || ''); });
-    if (!hk || !dai.length || !shiba.length) return [];
+    if (!dai.length) return [];
+    if (!hk || !shiba.length) {   // 石塔（芝台・拝石）が ない：拝石台は 下の 石の 上 ＋ 高さの 目地 だけ
+      dai.forEach(function(k){ var q = p[k], ny = underTop(k); if (ny != null && Math.abs(ny - (q.offY || 0)) > 0.5) p[k] = Object.assign({}, q, { offY:ny }); });
+      return [];
+    }
     var front = Math.max.apply(null, shiba.map(function(k){ return (p[k].offZ || 0) + p[k].d; }));   // 芝台の 前の 面
     var out = [];
+    function underTop(k){ var q = p[k], y0 = q.offY || 0;
+      var under = fk.filter(function(o){ var r = p[o]; return o !== k && dai.indexOf(o) < 0 && xo(r, q) > 1 && zo(r, q) > 1 && (r.offY || 0) + r.h <= y0 + 1; });
+      return under.length ? r1(Math.max.apply(null, under.map(function(o){ return (p[o].offY || 0) + p[o].h; })) + J.v) : null; }
     function xo(a, b){ return Math.min((a.offX || 0) + a.w, (b.offX || 0) + b.w) - Math.max(a.offX || 0, b.offX || 0); }
     function zo(a, b){ return Math.min((a.offZ || 0) + a.d, (b.offZ || 0) + b.d) - Math.max(a.offZ || 0, b.offZ || 0); }
     dai.forEach(function(k){

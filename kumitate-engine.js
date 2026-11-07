@@ -306,8 +306,11 @@ var KM = (function(){
       p[k] = Object.assign({}, p[k], { offX:r1((p[k].offX || 0) + dx), offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
   }
   // ── 外柵の セットの 寸法の 範囲（fit）──
-  // fit = { W:{auto,min,max,std}（間口）, D:{…}（奥行）, H:{…}（GL から 腰石の 高さ）, parts:{ 鍵:{ w,d,h（☑＝外柵に 合わせて 伸び縮み）, min:{w,d,h}, max:{w,d,h} } } }
-  // 書いて いない 所は 図面の 形から 決める：幅（奥行）が 外柵の 半分 以上の 部材が 伸びる、高さは GL に 置いた 腰石の 高さ（−40 まで）の 部材
+  // fit = { W:{auto,min,max,std}（間口）, D:{…}（奥行）, H:{…}（GL から 腰石の 高さ）,
+  //         parts:{ 鍵:{ w,d,h（☑＝外柵に 合わせて 伸び縮み）, ax:'L'|'C'|'R'（横の 位置：左・中心・右に そろえる）, az:'F'|'C'|'B'（前・中心・奥）, min:{w,d,h}, max:{w,d,h} } } }
+  // 書いて いない 所は 図面の 形から 決める：幅（奥行）が 外柵の 半分 以上の 部材が 伸びる、高さは GL に 置いた 腰石の 高さ（−40 まで）の 部材。
+  // 横の 位置は 左の 端に つく＝左、右の 端に つく＝右、ほか（塔婆柱・カロート・拝石台）＝中心（左右の 間は 変わらない。塔婆柱は 金具の 長さ、カロートは 仕様で 決まる）。
+  // 奥の 位置は 前に つく＝前、後ろに つく＝奥、ほかは 半分より 奥なら 奥
   function r100(v){ return Math.round(v / 100) * 100; }
   function r10(v){ return Math.round(v / 10) * 10; }
   function setH(S){ var h = 0; S.parts.forEach(function(q){ if (!(q.at.y > 0)) h = Math.max(h, q.h); }); return h || S.size.H || 0; }
@@ -317,15 +320,16 @@ var KM = (function(){
     var out = { W:rg(f.W, W, r100(W - 300), r100(W + 600)), D:rg(f.D, D, r100(D - 200), r100(D + 700)), H:rg(f.H, H, r10(H - 80), r10(H + 120)), parts:{} };
     S.parts.forEach(function(q){
       var o = (f.parts || {})[q.key] || {};
+      var ax = q.at.x <= 1 ? 'L' : q.at.x + q.w >= W - 1 ? 'R' : 'C', az = q.at.z <= 1 ? 'F' : q.at.z + q.d >= D - 1 ? 'B' : q.at.z + q.d / 2 > D / 2 ? 'B' : 'F';
       out.parts[q.key] = { w:o.w != null ? !!o.w : q.w >= W / 2, d:o.d != null ? !!o.d : q.d >= D / 2, h:o.h != null ? !!o.h : (!(q.at.y > 0) && q.h >= H - 40),
-        min:clone(o.min || {}), max:clone(o.max || {}) };
+        ax:/^[LCR]$/.test(o.ax) ? o.ax : ax, az:/^[FCB]$/.test(o.az) ? o.az : az, min:clone(o.min || {}), max:clone(o.max || {}) };
     });
     return out;
   }
-  // 伸びない 部材の 動き方（右へ・奥へ・上へ）。外柵の 半分より 右（奥）に ある ものは 動く、GL より 上に のる ものは 上へ
+  // 伸びない 部材の 動き方：外柵が 広がった 分の いくつを 動くか（左・前＝0、中心＝½、右・奥＝1）。GL より 上に のる ものは 上へ
   function fitMove(fit, size, q, at){
-    var fl = fit.parts[q] || {};
-    return { x:!fl.w && at.x + at.w / 2 > size.W / 2, z:!fl.d && at.z + at.d / 2 > size.D / 2, y:!fl.h && at.y > 0 };
+    var fl = fit.parts[q] || {}, F = { L:0, C:0.5, R:1, F:0, B:1 };
+    return { fx:fl.w ? 0 : F[fl.ax] || 0, fz:fl.d ? 0 : F[fl.az] || 0, y:!fl.h && at.y > 0 };
   }
   // いまの 外柵の 寸法（st.fit[セットの id] = {W,D,H}。無ければ 図面の まま）
   function fitCur(fs, st){ var F = fs.fit, c = st.fit && st.fit[fs.id] || {}; return { W:c.W > 0 ? c.W : F.W.std, D:c.D > 0 ? c.D : F.D.std, H:c.H > 0 ? c.H : F.H.std }; }
@@ -336,15 +340,28 @@ var KM = (function(){
     ['W', 'D', 'H'].forEach(function(k){ var R = F[k];
       if (c[k] < R.min) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.min + ' から（' + r1(R.min - c[k]) + ' mm 足りない）');
       if (c[k] > R.max) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.max + ' まで（' + r1(c[k] - R.max) + ' mm 長い）'); });
-    if (dW || dD || dH) Object.keys(v.parts || {}).forEach(function(k){
-      var q = p[k]; if (!q || !q.setAt) return;
+    var b0 = {}, b1 = {};   // セットの 座標（左・前・下）での 箱：図面の まま／いま
+    Object.keys(v.parts || {}).forEach(function(k){
+      var q = p[k], o = v.parts[k]; if (!q || !q.setAt) return;
       var fl = F.parts[k] || {}, a = q.setAt, x = a.x, y = a.y, z = a.z, w = q.w, d = q.d, h = q.h;
-      var mv = fitMove(F, fs.size, k, { x:a.x, y:a.y, z:a.z, w:q.w, d:q.d });
-      if (fl.w) w += dW; else if (mv.x) x += dW;
-      if (fl.d) d += dD; else if (mv.z) z += dD;
-      if (fl.h) h += dH; else if (mv.y) y += dH;
-      p[k] = Object.assign({}, q, { w:r1(w), d:r1(d), h:r1(h), offX:r1(x - c.W / 2), offY:r1(y), offZ:r1(c.D / 2 - (z + d)) });
+      b0[k] = { x0:a.x, x1:a.x + o.w, y0:a.y, y1:a.y + o.h, z0:a.z, z1:a.z + o.d };
+      if (dW || dD || dH) {
+        var mv = fitMove(F, fs.size, k, { x:a.x, y:a.y, z:a.z, w:q.w, d:q.d });
+        if (fl.w) w += dW; else x += dW * mv.fx;
+        if (fl.d) d += dD; else z += dD * mv.fz;
+        if (fl.h) h += dH; else if (mv.y) y += dH;
+        p[k] = Object.assign({}, q, { w:r1(w), d:r1(d), h:r1(h), offX:r1(x - c.W / 2), offY:r1(y), offZ:r1(c.D / 2 - (z + d)) });
+      }
+      b1[k] = { x0:x, x1:x + w, y0:y, y1:y + h, z0:z, z1:z + d };
     });
+    // 外柵が 狭く なって 部材 どうしが 新しく ぶつかる（図面では ぶつからない）＝✕ と 何 mm（カロートと 腰石 など。位置を 調整する）
+    var ks = Object.keys(b1);
+    function ov(A, B){ return { x:Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0), y:Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0), z:Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) }; }
+    if (dW || dD || dH) for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
+      var o1 = ov(b1[ks[i]], b1[ks[j]]); if (!(o1.x > 0.5 && o1.y > 0.5 && o1.z > 0.5)) continue;
+      var o0 = ov(b0[ks[i]], b0[ks[j]]); if (o0.x > 0.5 && o0.y > 0.5 && o0.z > 0.5) continue;
+      ng.push(p[ks[i]].name + ' と ' + p[ks[j]].name + ' が ぶつかる（' + (o1.x <= o1.z ? '横 ' + r1(o1.x) : '奥行 ' + r1(o1.z)) + ' mm。位置を 調整）');
+    }
     Object.keys(v.parts || {}).forEach(function(k){ var q = p[k], fl = F.parts[k]; if (!q || !fl) return;
       ['w', 'd', 'h'].forEach(function(f){
         if (fl.max[f] != null && q[f] > fl.max[f]) ng.push(q.name + '：' + FL[f] + ' ' + q[f] + ' は ' + fl.max[f] + ' まで（' + r1(q[f] - fl.max[f]) + ' mm 長い）');

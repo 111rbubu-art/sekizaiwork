@@ -14,6 +14,10 @@ export function create(box, onPick){
   var controls = new OrbitControls(cam, renderer.domElement);
   controls.enableDamping = true;
   controls.maxPolarAngle = Math.PI * 0.495;
+  // ホイールの ズーム：近づき すぎ・離れ すぎで 消えない ように 距離に 限りを つけ、近い・遠い 切る 面（near・far）を 距離に 合わせて 毎回 直す
+  controls.minDistance = 300; controls.maxDistance = 40000; controls.zoomSpeed = 0.8; controls.zoomToCursor = true;   // マウスの 所へ 寄る
+  function clip(){ var d = cam.position.distanceTo(controls.target); var n = Math.max(1, d / 200), f = Math.max(d * 30, 60000); if (Math.abs(cam.near - n) > n * 0.2 || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } }
+  controls.addEventListener('change', clip);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.5));
   var dl = new THREE.DirectionalLight(0xffffff, 1.6); dl.position.set(800, 1500, 1200); scene.add(dl);
   var dl2 = new THREE.DirectionalLight(0xffffff, 0.45); dl2.position.set(-900, 600, -700); scene.add(dl2);
@@ -66,7 +70,7 @@ export function create(box, onPick){
     var dist = R / Math.sin(cam.fov * Math.PI / 360) * 1.05;
     var dir = viewName === 'front' ? new THREE.Vector3(0, 0.02, 1) : viewName === 'top' ? new THREE.Vector3(0, 1, 0.0001) : new THREE.Vector3(0.55, 0.5, 0.95);
     if (cam.aspect < 1) dist /= Math.max(0.55, cam.aspect);
-    controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); cam.near = dist / 100; cam.far = dist * 20; cam.updateProjectionMatrix(); controls.update();
+    controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip();
   }
   // 押した 部材（動かした ときは 押した ことに しない）
   var down = null, ray = new THREE.Raycaster();

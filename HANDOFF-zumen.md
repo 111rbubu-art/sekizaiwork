@@ -232,3 +232,7 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
   1515 外柵（図面の 目地 6）：6／5 で 高さ 4 か所（塔婆柱 2・拝石台 2 が ＋5）・横 0。10／8 に すると 横・奥行 13 か所 動いて 干渉 なし。
 - kumitate.html v0.6.7（2026-11-07。本人「GL を 入れると 地面の 下の モデルが 見えなく なるので、部材構成に 地面を 入れて、いまの 見え方に 加えて 非表示・半透明を 追加」）：
   部材構成の 敷地の 下に「⛰ 地面（GL）」。押すと 表示 → 半透明 → 非表示（state.ground＝''｜'half'｜'off'）。kumitate-3d.js v0.7.1 の setGround（半透明＝opacity 0.35・depthWrite なし。格子は のこす）。
+- kumitate.html v0.6.8（2026-11-07。本人「マウスの センターの ダイヤルを 回すと モデルが 見えなく なる。ズームの 設定を 確かめて」）：
+  前は OrbitControls に 距離の 限りが なく、ホイールで モデルの 中心（石の 中）まで 入り込み、near／far も 最初の 合わせ（fit）で 決めた まま だった。
+  kumitate-3d.js v0.7.2：zoomToCursor（マウスの 所へ 寄る）・minDistance＝max(300, 大きさ×0.35)・maxDistance＝max(40000, 合わせた 距離×4)・zoomSpeed 0.8、
+  near／far は 動く たびに 距離に 合わせる（near＝距離／200、far＝max(距離×30, 60000)）。

@@ -5,6 +5,20 @@ import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
 import { TessellateModifier } from './lib/three-0.160.0/TessellateModifier.js';
 import { Brush, Evaluator, INTERSECTION, SUBTRACTION } from './lib/three-bvh-csg-0.0.16/index.module.js';
 
+// マウスの 操作を Fusion に そろえる：ホイール＝ズーム（マウスの 所へ）・中ボタン ドラッグ＝移動・Shift＋中ボタン＝回転・中ボタン 2 回＝全体。
+// 左は 押して 選ぶ だけ（ドラッグしても 動かない）。右は 何も しない。指（タッチ）は 前の まま（1 本＝回転・2 本＝ズームと 移動）
+export function fusionMouse(controls, el, onFit){
+  controls.mouseButtons = { LEFT:-1, MIDDLE:THREE.MOUSE.PAN, RIGHT:-1 };   // PAN は Shift／Ctrl／⌘ で 回転（OrbitControls の きまり）
+  controls.zoomToCursor = true; controls.screenSpacePanning = true;
+  var t0 = 0;
+  el.addEventListener('pointerdown', function(e){
+    if (e.pointerType !== 'mouse' || e.button !== 1) return;
+    e.preventDefault();   // Windows の 自動スクロールを 出さない
+    var t = performance.now(); if (t - t0 < 350) { t0 = 0; if (onFit) onFit(); } else t0 = t;
+  });
+  el.addEventListener('mousedown', function(e){ if (e.button === 1) e.preventDefault(); });
+  el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+}
 export function create(box){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -15,6 +29,7 @@ export function create(box){
   var cam = new THREE.PerspectiveCamera(35, 1, 1, 20000);
   var controls = new OrbitControls(cam, renderer.domElement);
   controls.enableDamping = true;
+  fusionMouse(controls, renderer.domElement, function(){ refit(); });
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.6));
   var dl = new THREE.DirectionalLight(0xffffff, 1.6); dl.position.set(400, 700, 600); scene.add(dl);
   var dl2 = new THREE.DirectionalLight(0xffffff, 0.5); dl2.position.set(-500, 200, -300); scene.add(dl2);

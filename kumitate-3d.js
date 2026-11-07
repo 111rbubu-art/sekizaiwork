@@ -1,7 +1,7 @@
 // 組み立て（kumitate.html）の 3D 表示（Three.js r160・同梱）。位置と 大きさは kumitate-engine.js の 答え（boxes）を 使う
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
-import { partGroup } from './zumen-3d.js?v=0.8.5';
+import { partGroup, fusionMouse } from './zumen-3d.js?v=0.8.6';
 
 export function create(box, onPick){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
@@ -14,8 +14,9 @@ export function create(box, onPick){
   var controls = new OrbitControls(cam, renderer.domElement);
   controls.enableDamping = true;
   controls.maxPolarAngle = Math.PI * 0.495;
+  fusionMouse(controls, renderer.domElement, function(){ fit(); });
   // ホイールの ズーム：近づき すぎ・離れ すぎで 消えない ように 距離に 限りを つけ、近い・遠い 切る 面（near・far）を 距離に 合わせて 毎回 直す
-  controls.minDistance = 300; controls.maxDistance = 40000; controls.zoomSpeed = 0.8; controls.zoomToCursor = true;   // マウスの 所へ 寄る
+  controls.minDistance = 300; controls.maxDistance = 40000; controls.zoomSpeed = 0.8;
   function clip(){ var d = cam.position.distanceTo(controls.target); var n = Math.max(1, d / 200), f = Math.max(d * 30, 60000); if (Math.abs(cam.near - n) > n * 0.2 || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } }
   controls.addEventListener('change', clip);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.5));
@@ -74,7 +75,7 @@ export function create(box, onPick){
   }
   // 押した 部材（動かした ときは 押した ことに しない）
   var down = null, ray = new THREE.Raycaster();
-  renderer.domElement.addEventListener('pointerdown', function(e){ down = { x:e.clientX, y:e.clientY }; });
+  renderer.domElement.addEventListener('pointerdown', function(e){ down = e.button === 0 ? { x:e.clientX, y:e.clientY } : null; });   // 左で 押した ときだけ 選ぶ
   renderer.domElement.addEventListener('pointerup', function(e){
     if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) { down = null; return; }
     down = null;

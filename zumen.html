@@ -169,6 +169,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
   <button class="btn ok bmonly" id="bBmPdf" title="全部の ページを 1 つの PDF に（このパソコン か 案件の 提出資料）">📄 PDF</button>
   <button class="btn ok bmonly" id="bBmPrint">🖨 全部 印刷</button>
   <button class="btn mainonly" id="bPd" title="部材（香炉など）を 寸法で 作る：図面の 数字を 押して 直す・3D・図面に 入れる">🧊 部材設計</button>
+  <button class="btn mainonly" id="bKm" title="組み立て（kumitate）で［📐 図面に する］を 押した 形から 配置図・部品寸法表・加工指示図・部品詳細図を 作る">📐 組み立てから</button>
   <button class="btn mainonly" id="bBuhin" title="mics の データ（.mgx）から 部品寸法表・加工指示図・部品詳細図を 作る">🧱 部材図</button>
   <button class="btn ok" id="bDxf">💾 DXF で 保存</button>
   <button class="btn ok mainonly" id="bPrint" title="印刷・PDF で 保存（紙の 大きさ・縮尺を 選ぶ）">🖨 印刷・PDF</button>
@@ -351,8 +352,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <div id="printArea"></div>
 
 <script src="buzai-engine.js?v=0.8.5"></script>
+<script src="zumen-km.js?v=0.8.7"></script>
 <script>
-var APP_VER = "v0.8.6";
+var APP_VER = "v0.8.7";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1503,6 +1505,7 @@ var _asT = 0;
 function changed(){
   VER++; redraw(); panel();
   if (BM && BM.active) bmTouch();
+  if (BM && BM.active && BM.km && KMED) { clearTimeout(_kmH); _kmH = setTimeout(function(){ if (BM && BM.active && BM.km) kmHarvest(BM.pages[BM.cur]); }, 700); }
   clearTimeout(_asT); _asT = setTimeout(function(){ try { localStorage.setItem('zumen.autosave', JSON.stringify({ D:PD && PD.saveMain ? PD.saveMain.D : BM && BM.active ? BM.main : D, file:FILE_NAME, t:Date.now(), folder:FROM && FROM.folderPass || '' })); } catch (e) {} }, 800);
 }
 
@@ -1520,6 +1523,7 @@ var HINTS = {
   hole:'穴：中心を クリック → 直径を 入れる',
   leader:'引出線：矢印の 先を クリック → 文字を 置く 所を クリック → 文字を 入れる',
   mark:'磨き：▲を 置く 所を クリック',
+  rev:'修正の △：印を 置く 所を クリック → 修正の 内容を 入れる（表題欄に 番号・日付・内容が 出ます）',
   arc:'円弧：3 点（始まり → 通る 点 → 終わり）。右の 欄で「中心から」に 切り替え',
   trim:'トリム：消したい 部分を クリック（交わる 線と 線の 間が 消える）。Shift＋クリックで 延長',
   extend:'延長：伸ばしたい 線の 端の 近くを クリック（当たる 線まで 伸びる）。Shift＋クリックで トリム',
@@ -1635,6 +1639,7 @@ function onClick(p, raw, ev){
     D.ents.push({ id:SEQ++, t:'text', p:P(Math.min(el.x, shelf.x), el.y + th2 * 0.3), h:th2, rot:0, s:ls, ha:0, va:0, wf:1, layer:'文字', css:null, aci:256 });
     layerOf('文字'); renderLayers(); changed(); return;
   }
+  if (t === 'rev') { if (BM && BM.km) kmRevAt(p); setTool('select'); return; }
   if (t === 'mark') {
     pushUndo(); D.ents.push({ id:SEQ++, t:'text', p:P(p.x, p.y), h:textH() * 1.3, rot:0, s:'▲', ha:1, va:2, wf:1, layer:drawLay, css:null, aci:256 }); layerOf(drawLay); renderLayers(); changed(); return;
   }
@@ -3538,6 +3543,7 @@ function bmBuildAll(){
   BM.main.buhin = BM.pages;
 }
 function bmRegen(pg, i){
+  if (pg.kind === 'km') { kmHarvest(pg); kmRegen(pg); return; }
   if (i == null) i = BM.pages.indexOf(pg);
   if (pg.kind === 'table') bmTablePage(pg); else if (pg.kind === 'index') bmIndexPage(pg); else bmDetailPage(pg, i + 1, BM.pages.length);
 }
@@ -3562,11 +3568,13 @@ function enterBM(){
 }
 function exitBM(){
   if (!BM || !BM.active) return;
-  BM.main.buhin = BM.pages; D = BM.main; BM.active = false;
+  if (BM.km) { BM.pages.forEach(kmHarvest); D = BM.main; BM.active = false; document.body.classList.remove('kmmode'); }
+  else { BM.main.buhin = BM.pages; D = BM.main; BM.active = false; }
   document.body.classList.remove('bmode'); bmPanel();
   UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); VER++; renderLayers(); fit(); changed();
 }
 function bmShow(i, first){
+  if (BM.km && !first && BM.pages[BM.cur] && BM.cur !== i) kmHarvest(BM.pages[BM.cur]);
   BM.cur = i; D = BM.pages[i].doc; D.layers = BM.layers;
   UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); ST.hotGrip = null; ST.pts = [];
   VER++; renderLayers(); bmFitPage(); bmPages(); panel(); bmPanel(); redraw();
@@ -3598,6 +3606,7 @@ function bmPanel(){
   var el = document.getElementById('pnBM'); if (!el) return;
   if (!BM || !BM.active) { el.style.display = 'none'; return; }
   el.style.display = '';
+  if (BM.km) { kmPanel(el); return; }
   var pg = BM.pages[BM.cur], h = '';
   if (pg.kind !== 'detail') { h = '<h3>' + esc(pg.title) + '</h3><div class="bd"><div class="muted">このページは 自動で 作ります（部材の 名前・磨き・図を 変えると 作り直し）。手で 足した 線・文字は 残ります。</div><div class="row"><button class="b2" id="bmRe">このページを 作り直す</button></div></div>'; }
   else pg.parts.forEach(function(key, slot){
@@ -3651,6 +3660,7 @@ document.getElementById('bBuhinEdit').onclick = enterBM;
 document.getElementById('bBmBack').onclick = exitBM;
 document.getElementById('bBmPrint').onclick = function(){ bmPrintAll(false); };
 document.getElementById('bBmRebuild').onclick = function(){
+  if (BM && BM.km) { kmEnter(true); return; }
   if (!MICS) { alert('作り直すには mics の データ（.mgx）を 開いて ください'); return; }
   if (!confirm('全部の ページを 立体から 作り直します。手で 足した 線・文字・寸法は 残りますが、自動の 線を 手で 動かした 所は 戻ります。よろしいですか')) return;
   BUHIN = null; var keepD = D; D = BM.main; buildBuhin(); D = keepD; bmBuildAll(); bmShow(Math.min(BM.cur, BM.pages.length - 1)); };
@@ -4319,6 +4329,12 @@ try {
 // 件名を 案件から 取り込む（空の とき）
 function ensureTitle(){ if (FROM && FROM.title) { D.info = D.info || {}; if (!D.info.name) { D.info.name = FROM.title; loadInfo(); } } }
 ensureTitle();
+// 組み立てから（kumitate.html の［📐 図面に する］が #km… で 開く）
+var _kmH = 0;
+document.getElementById('bKm').onclick = function(){ kmEnter(false); };
+function kmHash(){ if (/^#km/.test(location.hash)) { if (PD && PD.saveMain) return; kmEnter(!!(BM && BM.active && BM.km)); } }
+window.addEventListener('hashchange', kmHash); kmHash();
+window.addEventListener('storage', function(ev){ if (ev.key === 'kumitate.zumen' && BM && BM.active && BM.km) toastMsg('組み立てが 変わりました。［🔄 立体から 作り直す］で 今の 形に できます（手の 直しは 当て直し）', 8000); });
 </script>
 </body>
 </html>

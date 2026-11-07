@@ -223,3 +223,19 @@ export function partGroup(m, fine, mat, lineMat){
   });
   return group;
 }
+
+// 図面化（組み立て → 加工図）用：部材の 形の 三角（平らな 配列 x,y,z…）と かどの 線（[[x,y,z],[x,y,z]] の 組）。原点＝底面の 中心、+z＝前
+export function partGeo(m){
+  var g = partGroup(m, true, new THREE.MeshBasicMaterial(), new THREE.LineBasicMaterial()), tris = [], edges = [], v = new THREE.Vector3();
+  g.updateMatrixWorld(true);
+  g.traverse(function(o){
+    if (o.isMesh) { var geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry, p = geo.attributes.position;
+      for (var i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); tris.push(v.x, v.y, v.z); } }
+    else if (o.isLine) { var q = o.geometry.attributes.position, pts = [];
+      for (var j = 0; j < q.count; j++) { v.fromBufferAttribute(q, j).applyMatrix4(o.matrixWorld); pts.push([v.x, v.y, v.z]); }
+      if (o.isLineSegments) { for (var k = 0; k + 1 < pts.length; k += 2) edges.push([pts[k], pts[k + 1]]); }
+      else { for (var k2 = 0; k2 + 1 < pts.length; k2++) edges.push([pts[k2], pts[k2 + 1]]); if (o.isLineLoop && pts.length > 2) edges.push([pts[pts.length - 1], pts[0]]); } }
+  });
+  g.traverse(function(o){ if (o.geometry) o.geometry.dispose(); });
+  return { tris:tris, edges:edges };
+}

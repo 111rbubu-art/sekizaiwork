@@ -91,6 +91,7 @@ function kmSeen(r, p3){ var q = r.P(p3), u = q[0] * r.s, v = q[1] * r.s, px = Ma
 
 // ── ページへ 入れる（紙の mm・y 下向き → ページ y 上向き）──
 function kY(y){ return 210 - y; }
+function kCp(q){ return q ? P(q.x, q.y) : q; } // 基準は 写しで 持つ（移動は 点を その まま 書き換える）
 function kOut(pg){ return { ents:[], dims:[], pg:pg }; }
 function kL(o, a, b, vid, hid, lay){ o.ents.push({ id:SEQ++, t:'line', a:P(a[0], kY(a[1])), b:P(b[0], kY(b[1])), layer:lay || (hid ? '隠れ線' : '部材'), css:null, aci:256, auto:true, vid:vid || null }); }
 function kT(o, x, y, s, h, opt){ opt = opt || {}; var e = { id:SEQ++, t:'text', p:P(x, kY(y)), h:h || 2.5, rot:opt.rot || 0, s:String(s), ha:opt.ha || 0, va:opt.va || 0, wf:1, layer:opt.layer || '文字', css:null, aci:256, auto:true, vid:opt.vid || null, aid:opt.aid || null }; o.ents.push(e); return e; }
@@ -339,12 +340,12 @@ function kmApply(pg, o){
     pg.regions.forEach(function(r){ if (r.vid === vid) { r.x0 += mv[0]; r.x1 += mv[0]; r.y0 += mv[1]; r.y1 += mv[1]; } }); });
   // 自動の 寸法・文字の 直し（基準は 直す 前：手の 直しを 読む ときに 比べる）
   pg.base = {};
-  o.dims.forEach(function(d){ if (!d.aid) return; pg.base[d.aid] = { vid:d.vid, a:d.a, b:d.b, off:d.off, text:d.text, th:d.th, al:d.al, at:d.at, fmt:d.fmt, dec:d.dec };
+  o.dims.forEach(function(d){ if (!d.aid) return; pg.base[d.aid] = { vid:d.vid, a:kCp(d.a), b:kCp(d.b), off:kCp(d.off), text:d.text, th:d.th, al:d.al, at:d.at, fmt:d.fmt, dec:d.dec };
     var ov = ovOf(d.aid); if (!ov) return; if (ov.hide) { d._hide = 1; return; }
     if (ov.doff) d.off = P(d.off.x + ov.doff[0], d.off.y + ov.doff[1]); if (ov.da) d.a = P(d.a.x + ov.da[0], d.a.y + ov.da[1]); if (ov.db) d.b = P(d.b.x + ov.db[0], d.b.y + ov.db[1]);
     KM_DF.forEach(function(f){ if (ov[f] !== undefined) d[f] = ov[f]; }); });
   o.dims = o.dims.filter(function(d){ return !d._hide; });
-  o.ents.forEach(function(e){ if (!e.aid) return; pg.base[e.aid] = { vid:e.vid, p:e.p, s:e.s, h:e.h }; var ov = ovOf(e.aid); if (!ov) return; if (ov.hide) { e._hide = 1; return; }
+  o.ents.forEach(function(e){ if (!e.aid) return; pg.base[e.aid] = { vid:e.vid, p:kCp(e.p), s:e.s, h:e.h }; var ov = ovOf(e.aid); if (!ov) return; if (ov.hide) { e._hide = 1; return; }
     if (ov.dp) e.p = P(e.p.x + ov.dp[0], e.p.y + ov.dp[1]); if (ov.s !== undefined) e.s = ov.s; if (ov.h) e.h = ov.h; });
   o.ents = o.ents.filter(function(e){ return !e._hide; });
   // 付け先が 無い 直し（この ページの 図の 名前で 始まるのに 作った 中に 無い もの）

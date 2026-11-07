@@ -220,8 +220,9 @@ var KM = (function(){
     var p = gather(data, st.sel);
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
+    var chg = []; jointFence(data, st, p, chg);
     placeOnSet(data, st, p, ff);
-    var chg = [], gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, ng), dy = gl && gl.bury > 0 ? gl.bury : 0;
+    var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, ng), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
     // セットの 部材は 前の 位置（幅の 中心・前の 面）を 覚えて おき、大きさが 変わっても そこに そろえる
@@ -308,6 +309,46 @@ var KM = (function(){
   }
   // ── 目地（共通の ルール）：部材 どうしの 間 横・奥行 6、高さ 5（st.joint で 変えられる）。拝石が 中仕切に かかる 長さ 30 ──
   function jointOf(st){ var j = st.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5, kakari:j.kakari != null ? +j.kakari : 30, open:j.open != null ? +j.open : 270 }; }
+  // ── 外柵 ぜんたいの 目地：外柵の 部材 どうしが 接する 所は すべて 目地を あける（部材を 名指し しない）──
+  // 高さ：上に のる 石（下の 石の 上と 0〜20 mm）は 下の 石の 上 ＋ J.v。のって いる 石も いっしょに 上がる（下から 順に）。GL の 石は そのまま
+  // 横・奥行：向かい合う 面（ほかの 2 方向で 重なり、間が 20 mm 未満）は 間を J.h に。外柵の 外の 輪郭に つく 石は 動かさず、
+  //   内側の 石の 面を 動かす（両方 内側なら その 向きに 長い ほう）。図面の 目地が 6 なら 6 の ままで 何も 変わらない
+  function jointFence(data, st, p, notes){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return;
+    var J = jointOf(st), T = 20, ks = Object.keys(f.parts || {}).filter(function(k){ return p[k] && p[k].visible !== false; });
+    if (ks.length < 2) return;
+    function bx(k){ var q = p[k]; return { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }
+    function ov(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
+    var B0 = {}; ks.forEach(function(k){ B0[k] = bx(k); });
+    // 高さ
+    var ny = {}, cnt = 0;
+    ks.slice().sort(function(a, b){ return B0[a].y0 - B0[b].y0; }).forEach(function(k){
+      var a = B0[k], top = null;
+      ks.forEach(function(o){ if (o === k) return; var b = B0[o];
+        if (ov(a, b, 'x') > 1 && ov(a, b, 'z') > 1 && b.y1 <= a.y0 + 0.5 && b.y1 >= a.y0 - T) { var t = (ny[o] != null ? ny[o] : b.y0) + (b.y1 - b.y0); top = top == null ? t : Math.max(top, t); } });
+      ny[k] = top == null ? a.y0 : r1(top + J.v);
+      if (Math.abs(ny[k] - a.y0) > 0.5) { p[k] = Object.assign({}, p[k], { offY:ny[k] }); cnt++; }
+    });
+    // 横・奥行
+    var B = {}; ks.forEach(function(k){ B[k] = bx(k); });
+    var E = { x0:Math.min.apply(null, ks.map(function(k){ return B[k].x0; })), x1:Math.max.apply(null, ks.map(function(k){ return B[k].x1; })),
+              z0:Math.min.apply(null, ks.map(function(k){ return B[k].z0; })), z1:Math.max.apply(null, ks.map(function(k){ return B[k].z1; })) };
+    var hc = 0;
+    ['x', 'z'].forEach(function(A){
+      var O = A === 'x' ? 'z' : 'x', L = A === 'x' ? 'w' : 'd', OF = A === 'x' ? 'offX' : 'offZ';
+      for (var i = 0; i < ks.length; i++) for (var j = 0; j < ks.length; j++) {
+        if (i === j) continue;
+        var a = B[ks[i]], b = B[ks[j]], g = r1(b[A + '0'] - a[A + '1']);   // a の 後ろ（右）の 面 → b の 前（左）の 面
+        if (!(g > -0.5 && g < T) || Math.abs(g - J.h) <= 0.5 || ov(a, b, 'y') <= 1 || ov(a, b, O) <= 1) continue;
+        var aOut = Math.abs(a[A + '0'] - E[A + '0']) < 1 || Math.abs(a[A + '1'] - E[A + '1']) < 1, bOut = Math.abs(b[A + '0'] - E[A + '0']) < 1 || Math.abs(b[A + '1'] - E[A + '1']) < 1;
+        var mvA = aOut === bOut ? (a[A + '1'] - a[A + '0']) >= (b[A + '1'] - b[A + '0']) : bOut, dd = r1(g - J.h);
+        if (mvA) { a[A + '1'] = r1(a[A + '1'] + dd); var qa = p[ks[i]], oa = {}; oa[L] = r1(qa[L] + dd); p[ks[i]] = Object.assign({}, qa, oa); }
+        else { b[A + '0'] = r1(b[A + '0'] - dd); var qb = p[ks[j]], ob = {}; ob[L] = r1(qb[L] + dd); ob[OF] = r1((qb[OF] || 0) - dd); p[ks[j]] = Object.assign({}, qb, ob); }
+        hc++;
+      }
+    });
+    if (cnt || hc) notes.push('外柵の 目地（横・奥行 ' + J.h + '／高さ ' + J.v + '）に 合わせた：高さ ' + cnt + ' か所・横と 奥行 ' + hc + ' か所');
+  }
   // ── 外柵の 中の 拝石（外柵の セット＋石塔の セット）──
   // 拝石台：下の 石（カロート）の 上に 高さの 目地（5）を あけて のせ、前の 端は そのまま、奥は 芝台の 前から 横の 目地（6）まで。
   // 拝石：拝石台・中仕切の 上に 高さの 目地（5）を あけて のせ、後ろは 芝台の 前から 目地（6）。上の 香炉も いっしょに 動く。

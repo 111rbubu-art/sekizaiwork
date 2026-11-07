@@ -221,7 +221,7 @@ var KM = (function(){
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
     placeOnSet(data, st, p, ff);
-    var chg = [], gaps = haisekiRule(data, st, p, chg, ng);
+    var chg = [], gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, ng), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
     // セットの 部材は 前の 位置（幅の 中心・前の 面）を 覚えて おき、大きさが 変わっても そこに そろえる
@@ -239,9 +239,9 @@ var KM = (function(){
     var boxes = {};
     Object.keys(p).forEach(function(k){
       var q = p[k]; if (q.visible === false) return;
-      var o = pos(k, p); boxes[k] = { x0:o.ox, y0:o.oy, z0:o.oz, x1:o.ox + q.w, y1:o.oy + q.h, z1:o.oz + q.d };
+      var o = pos(k, p); boxes[k] = { x0:o.ox, y0:r1(o.oy - dy), z0:o.oz, x1:o.ox + q.w, y1:r1(o.oy + q.h - dy), z1:o.oz + q.d };   // 外柵が 埋まる ぶん 下げる（GL＝0）
     });
-    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg };
+    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg, gl:gl };
   }
 
   // ── セット（図面から 読んだ 石塔・外柵。buzai-set/1）──
@@ -400,7 +400,8 @@ var KM = (function(){
   function normFit(S){
     var f = S.fit || {}, W = S.size.W, D = S.size.D, H = setH(S);
     function rg(o, std, lo, hi){ o = o || {}; return { auto:o.auto !== false, std:std, min:o.min != null ? o.min : lo, max:o.max != null ? o.max : hi }; }
-    var out = { W:rg(f.W, W, r100(W - 300), r100(W + 600)), D:rg(f.D, D, r100(D - 200), r100(D + 700)), H:rg(f.H, H, r10(H - 80), r10(H + 120)), parts:{} };
+    var out = { W:rg(f.W, W, r100(W - 300), r100(W + 600)), D:rg(f.D, D, r100(D - 200), r100(D + 700)), H:rg(f.H, H, r10(H - 80), r10(H + 120)), parts:{}, step:null };
+    S.parts.forEach(function(q){ if (/^階段/.test(q.name || '') && !(q.at.y > 0)) out.step = Math.max(out.step || 0, (q.at.y || 0) + q.h); });   // 階段の 上（外柵の 底から）
     S.parts.forEach(function(q){
       var o = (f.parts || {})[q.key] || {};
       var ax = q.at.x <= 1 ? 'L' : q.at.x + q.w >= W - 1 ? 'R' : 'C', az = q.at.z <= 1 ? 'F' : q.at.z + q.d >= D - 1 ? 'B' : q.at.z + q.d / 2 > D / 2 ? 'B' : 'F';
@@ -415,7 +416,20 @@ var KM = (function(){
     return { fx:fl.w ? 0 : F[fl.ax] || 0, fz:fl.d ? 0 : F[fl.az] || 0, y:!fl.h && at.y > 0 };
   }
   // いまの 外柵の 寸法（st.fit[セットの id] = {W,D,H}。無ければ 図面の まま）
-  function fitCur(fs, st){ var F = fs.fit, c = st.fit && st.fit[fs.id] || {}; return { W:c.W > 0 ? c.W : F.W.std, D:c.D > 0 ? c.D : F.D.std, H:c.H > 0 ? c.H : F.H.std }; }
+  function fitCur(fs, st){ var F = fs.fit, c = st.fit && st.fit[fs.id] || {}, o = { W:c.W > 0 ? c.W : F.W.std, D:c.D > 0 ? c.D : F.D.std, H:c.H > 0 ? c.H : F.H.std };
+    var gh = glOf(st); if (gh && F.H.auto && F.step) o.H = r1(Math.max(gh, F.step + gh / 2));   // 階段の 上が GL と 腰石の 上の 真ん中（階段が 低くて 届かない ときは 埋めない）
+    return o; }
+  // ── GL から 腰石の 上までの 高さ（敷地 site.glH）──
+  // 外柵は 少し 土に 埋まる。埋まる 深さ＝腰石の 高さ − glH。理想は 階段の 上が GL と 腰石の 上の 真ん中（腰石の 高さ＝階段の 上 ＋ glH／2）
+  function glOf(st){ var g = +((st.site || {}).glH); return g > 0 ? g : 0; }
+  function glPlan(data, st, ff, ng){
+    var gh = glOf(st), v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], F = v && v.set && v.set.fit;
+    if (!gh || !F || !ff) return null;
+    var bury = r1(ff.H - gh), step = F.step != null ? r1(F.step + (F.parts && Object.keys(v.parts).some(function(k){ return /^階段/.test(v.parts[k].name || '') && F.parts[k] && F.parts[k].h; }) ? ff.dH : 0)) : null;
+    var o = { glH:gh, H:ff.H, bury:bury, step:step, stepGL:step != null ? r1(step - bury) : null, ideal:r1(gh / 2) };
+    if (bury < 0) ng.push('腰石が ' + r1(-bury) + ' mm 浮く（腰石 ' + ff.H + ' ＜ GL から ' + gh + '。腰石を 高く）');
+    return o;
+  }
   function fitFence(data, st, p, ng){
     var v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], fs = v && v.set; if (!fs || !fs.fit) return null;
     var F = fs.fit, c = fitCur(fs, st), dW = r1(c.W - F.W.std), dD = r1(c.D - F.D.std), dH = r1(c.H - F.H.std);
@@ -602,7 +616,7 @@ var KM = (function(){
       site:{ W:1500, D:1800, domeH:300, domeT:150, adj:0 }, over:{}, shapes:{}, stone:{ tower:'', fence:'', boshi:'' } };
   }
 
-  return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
+  return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
     applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

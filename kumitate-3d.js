@@ -80,5 +80,11 @@ export function create(box, onPick){
     if (onPick) onPick(hits.length ? hits[0].object.userData.key : null);
   });
   (function loop(){ if (!alive) return; requestAnimationFrame(loop); controls.update(); renderer.render(scene, cam); })();
-  return { update:update, fit:fit, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); renderer.dispose(); } };
+  // 地面の 見え方：''＝ふつう｜'half'＝半透明（GL の 下も 見える）｜'off'＝出さない（格子は のこす）
+  function setGround(mode){
+    var gm = ground.material;
+    ground.visible = mode !== 'off';
+    gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true;
+  }
+  return { update:update, fit:fit, setGround:setGround, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); renderer.dispose(); } };
 }

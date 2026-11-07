@@ -85,7 +85,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .fx .pk{cursor:pointer;color:var(--acc)}
 .dis{color:#aaa}
 .go{display:block;width:100%;margin-top:10px;background:var(--org);color:#fff;border:0;border-radius:8px;padding:8px 10px;font-weight:700}
-.pick{display:flex;justify-content:space-between;width:100%;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:4px;background:#fff;text-align:left;color:var(--fg)}
+.pick{cursor:pointer;display:flex;justify-content:space-between;width:100%;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:4px;background:#fff;text-align:left;color:var(--fg)}
 .pick.on{border-color:var(--org);background:#fff4ea}
 @media (max-width:900px){
   body{overflow:auto;height:auto;min-height:100%}
@@ -120,6 +120,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
     <div class="tree" id="tree"></div>
   </div>
   <div class="right">
+    <div class="box" id="gapBox" style="display:none;margin-top:0;margin-bottom:10px"></div>
     <div id="selBox"></div>
     <div class="box" id="adBox" style="display:none"></div>
     <div class="box" id="estBox"></div>
@@ -133,17 +134,21 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <input type="file" id="fSet" accept=".json,application/json" hidden>
 <script src="buzai-engine.js?v=0.8.3"></script>
 <script src="kumitate-data.js"></script>
-<script src="kumitate-engine.js?v=0.5.1"></script>
+<script src="kumitate-engine.js?v=0.6"></script>
 <script>
-var APP_VER = 'v0.5.1';
+var APP_VER = 'v0.6';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 var DATA0 = lsGet('kumitate.data') || window.KUMITATE_DATA;
 // セット（図面から 読んだ 石塔・外柵。buzai-set/1）。SharePoint の 部材ライブラリ/セット が 元。この 端末にも 覚える（つながらない ときも 使える）
 var SETS = lsGet('kumitate.sets') || [];
-var DATA = KM.addSets(DATA0, SETS);
-function setsChanged(){ lsSet('kumitate.sets', SETS); DATA = KM.addSets(DATA0, SETS); }
+// 旧シミュレーターの 石塔（和型8寸・9寸・洋型）と 外柵（デザイン1・2・階段付き）は 使わない（本人）。図面から 読んだ セットだけ 出す
+function build(){ var d = KM.addSets(DATA0, SETS), pd = d === DATA0 ? (d = JSON.parse(JSON.stringify(d))).partsData : d.partsData;
+  ['TOWER_VARIANTS', 'FENCE_VARIANTS'].forEach(function(vt){ var V = pd[vt] || {}; Object.keys(V).forEach(function(k){ if (!V[k].set && k !== 'none') delete V[k]; }); });
+  return d; }
+var DATA = build();
+function setsChanged(){ lsSet('kumitate.sets', SETS); DATA = build(); }
 var TANKA = lsGet('kumitate.tanka');   // { stones:[], estimate:{} }（公開の 場所に 置かない ため ファイルから 読む）
 var ST = lsGet('kumitate.state');
 if (!ST || ST.schema !== 'kumitate/1') ST = KM.newState(DATA);
@@ -295,17 +300,31 @@ function run(refit){
   if (kindOf(SEL) && !Object.keys(RES.boxes).some(function(k){ return RES.parts[k].kind === kindOf(SEL); })) SEL = null;
   draw(refit);
   var b = $('badge');
-  if (RES.hits.length) {
-    b.className = 'badge ng'; b.textContent = '⚠ 干渉 ' + RES.hits.length + ' か所（押すと 一覧）';
-    $('hitlist').innerHTML = RES.hits.map(function(x){ return esc(x.nameA) + ' ↔ ' + esc(x.nameB) + '　<span class="muted">横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + ' mm 重なる</span>'; }).join('<br>');
+  var ngs = RES.ng || [];
+  if (RES.hits.length || ngs.length) {
+    b.className = 'badge ng'; b.textContent = (RES.hits.length ? '⚠ 干渉 ' + RES.hits.length + ' か所' : '') + (RES.hits.length && ngs.length ? '・' : '') + (ngs.length ? '✕ ' + ngs.length + ' か所' : '') + '（押すと 一覧）';
+    $('hitlist').innerHTML = RES.hits.map(function(x){ return esc(x.nameA) + ' ↔ ' + esc(x.nameB) + '　<span class="muted">横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + ' mm 重なる</span>'; })
+      .concat(ngs.map(function(m){ return '<span class="err">✕ ' + esc(m) + '</span>'; })).join('<br>');
   } else { b.className = 'badge ok'; b.textContent = '✓ 干渉 なし'; $('hitlist').style.display = 'none'; }
-  renderTree(); renderSel(); renderEst(); renderList();
-  var nt = (RES.ng || []).map(function(m){ return '✕ ' + esc(m); }).concat((RES.notes || []).map(function(m){ return '⚠ ' + esc(m); }));
+  renderTree(); renderGap(); renderSel(); renderEst(); renderList();
+  var nt = ngs.map(function(m){ return '✕ ' + esc(m); }).concat((RES.notes || []).map(function(m){ return '⚠ ' + esc(m); })).concat((RES.chg || []).map(function(m){ return '<span style="color:var(--sub)">・' + esc(m) + '</span>'; }));
   if (nt.length) $('estBox').insertAdjacentHTML('afterbegin', '<div class="err muted" style="margin-bottom:6px">' + nt.join('<br>') + '</div>');
   lsSet('kumitate.state', ST);
   if (typeof AD !== 'undefined' && AD) autoRun(false);
 }
-$('badge').onclick = function(){ if (RES.hits.length) { var h = $('hitlist'); h.style.display = h.style.display === 'block' ? 'none' : 'block'; } };
+// 拝石と 中仕切の 隙間（重なり）：直し方は お客様の 好み。選ぶ まで ✕
+function renderGap(){
+  var g = (RES.gaps || []).filter(function(x){ return x.id === 'naka'; })[0], bx = $('gapBox');
+  if (!g) { bx.style.display = 'none'; return; }
+  var mm = Math.abs(g.gap), word = g.gap > 0 ? '空く' : '重なる', sg = g.gap > 0 ? '+' : '−';
+  var opt = [['', '直さない（✕ の まま）'], ['haiseki', '拝石の 奥行を ' + (g.gap > 0 ? '伸ばす' : '縮める') + '（' + g.haiseki + ' → ' + Math.round(g.haiseki + g.gap) + '）'], ['naka', '中仕切の 奥行を ' + (g.gap > 0 ? '伸ばす' : '縮める') + '（' + g.naka + ' → ' + Math.round(g.naka + g.gap) + '）']];
+  var h = '<b class="' + (g.fix ? '' : 'err') + '">' + (g.fix ? '✓' : '✕') + ' 拝石と 中仕切の 間が ' + mm + ' mm ' + word + '</b>';
+  h += '<div class="muted">お客様の 好みで 選んで ください（' + sg + mm + ' mm）</div>';
+  opt.forEach(function(o){ h += '<label class="pick' + ((g.fix || '') === o[0] ? ' on' : '') + '"><span><input type="radio" name="hfix" value="' + o[0] + '"' + ((g.fix || '') === o[0] ? ' checked' : '') + '> ' + esc(o[1]) + '</span></label>'; });
+  bx.innerHTML = h; bx.style.display = 'block'; bx.style.borderLeft = g.fix ? '' : '4px solid #b42020';
+}
+$('gapBox').addEventListener('change', function(e){ if (e.target.name === 'hfix') { ST.haiseki = e.target.value; run(); } });
+$('badge').onclick = function(){ if (RES.hits.length || (RES.ng || []).length) { var h = $('hitlist'); h.style.display = h.style.display === 'block' ? 'none' : 'block'; } };
 
 // ── 部材構成（3D の 上。Fusion の ブラウザの 形）──
 // 墓所 → 種類（石塔・外柵…）→ 部材。名前の 似た 部材（腰石横（左）・腰石後 など）は たたんだ 組に まとめる
@@ -605,7 +624,7 @@ $('fTanka').onchange = function(){
     if (!stones || !est) { alert('単価（石材と 見積の 設定）が 入って いない ファイルです'); return; }
     TANKA = { stones:stones, estimate:est }; lsSet('kumitate.tanka', TANKA);
     if (j.partsData && j.knowhow && confirm('このファイルには 部材・ノウハウ式・基準点も 入って います。組み立ての 部材も この ファイルの ものに しますか？')) {
-      DATA0 = { partsData:j.partsData, knowhow:j.knowhow, anchors:j.anchors || {} }; lsSet('kumitate.data', DATA0); DATA = KM.addSets(DATA0, SETS); renderLeft();
+      DATA0 = { partsData:j.partsData, knowhow:j.knowhow, anchors:j.anchors || {} }; lsSet('kumitate.data', DATA0); DATA = build(); renderLeft();
     }
     run();
   });
@@ -635,7 +654,8 @@ $('seg').addEventListener('click', function(e){
 });
 $('ver').textContent = '組み立て ' + APP_VER + '（部材は ' + (DATA0 === window.KUMITATE_DATA ? '見本' : '読んだ ファイル') + (SETS.length ? '・セット ' + SETS.length : '') + '）';
 
-if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM.newState(DATA).sel.tower;
+if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM.newState(DATA).sel.tower || '';
+if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 RES = KM.compute(DATA, ST); renderLeft(); run();
 spLoadSets(false);
 import('./kumitate-3d.js?v=0.7').then(function(m){

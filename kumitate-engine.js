@@ -220,7 +220,7 @@ var KM = (function(){
     var p = gather(data, st.sel);
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
-    var chg = []; jointFence(data, st, p, chg);
+    var chg = []; fenceManual(data, st, p); jointFence(data, st, p, chg);
     placeOnSet(data, st, p, ff);
     var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, p, ng, chg), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
@@ -242,7 +242,8 @@ var KM = (function(){
       var q = p[k]; if (q.visible === false) return;
       var o = pos(k, p); boxes[k] = { x0:o.ox, y0:r1(o.oy - dy), z0:o.oz, x1:o.ox + q.w, y1:r1(o.oy + q.h - dy), z1:o.oz + q.d };   // 外柵が 埋まる ぶん 下げる（GL＝0）
     });
-    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg, gl:gl };
+    var jerr = jointCheck(data, st, p, ng);
+    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg, gl:gl, jerr:jerr };
   }
 
   // ── セット（図面から 読んだ 石塔・外柵。buzai-set/1）──
@@ -309,13 +310,77 @@ var KM = (function(){
   }
   // ── 目地（共通の ルール）：部材 どうしの 間 横・奥行 6、高さ 5（st.joint で 変えられる）。拝石が 中仕切に かかる 長さ 30 ──
   function jointOf(st){ var j = st.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5, kakari:j.kakari != null ? +j.kakari : 30, open:j.open != null ? +j.open : 270 }; }
+  // ── 手で 変えた 外柵の 石（大きさ st.over・位置 st.mv）──
+  // 外柵の 目地や 拝石の きまりより 先に 入れる（あとの きまりが 新しい 位置で 決まる ように）。大きさは 幅の 中心・前の 面・底を そのまま
+  function manualOf(st){ var m = {}; Object.keys(st.over || {}).forEach(function(k){ m[k] = 1; }); Object.keys(st.mv || {}).forEach(function(k){ m[k] = 1; }); return m; }
+  function fenceManual(data, st, p){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return;
+    Object.keys(f.parts || {}).forEach(function(k){ var q = p[k]; if (!q) return;
+      var o = (st.over || {})[k], m = (st.mv || {})[k], n = Object.assign({}, q);
+      if (o && !(st.shapes && st.shapes[k])) { ['w', 'h', 'd'].forEach(function(fl){ if (o[fl] > 0) n[fl] = o[fl]; });
+        n.offX = r1((q.offX || 0) + (q.w - n.w) / 2); n.offZ = r1((q.offZ || 0) + (q.d - n.d)); }
+      if (m) { // 面ごとの ずらし（x0・x1＝左右の 面、z0・z1＝奥・前の 面）。［自動で 直す］が 入れる
+        n.offX = r1((n.offX || 0) + (m.x0 || 0)); n.w = r1(n.w + (m.x1 || 0) - (m.x0 || 0)); n.offZ = r1((n.offZ || 0) + (m.z0 || 0)); n.d = r1(n.d + (m.z1 || 0) - (m.z0 || 0)); }
+      p[k] = n; });
+  }
+  // ── 外柵の 石どうしの 目地の 確かめ（さいごの 形で）：向かい合う 面の 間が 目地（横・奥行 J.h）と ちがう／重なる ＝ ✕ ──
+  function fenceBoxes(f, p){ var B = {}; Object.keys(f.parts || {}).forEach(function(k){ var q = p[k]; if (!q || q.visible === false) return;
+    B[k] = { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }); return B; }
+  function ovl(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
+  function jointCheck(data, st, p, ng){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return [];
+    var J = jointOf(st), T = 20, B = fenceBoxes(f, p), ks = Object.keys(B), out = [];
+    for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
+      var a = B[ks[i]], b = B[ks[j]], ox = ovl(a, b, 'x'), oy = ovl(a, b, 'y'), oz = ovl(a, b, 'z'), na = p[ks[i]].name, nb = p[ks[j]].name;
+      if (ox > 0.5 && oy > 0.5 && oz > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'hit' }); ng.push(na + ' と ' + nb + ' が 重なる（' + (ox <= oz ? '横 ' + r1(ox) : '奥行 ' + r1(oz)) + ' mm）'); continue; }
+      if (oy <= 1) continue;
+      ['x', 'z'].forEach(function(A){ var O = A === 'x' ? 'z' : 'x'; if (ovl(a, b, O) <= 1) return;
+        var g = a[A + '0'] < b[A + '0'] ? b[A + '0'] - a[A + '1'] : a[A + '0'] - b[A + '1']; g = r1(g);
+        if (g >= -0.5 && g < T + 50 && Math.abs(g - J.h) > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'gap', g:g });
+          ng.push(na + ' と ' + nb + ' の 間 ' + g + ' mm（目地 ' + J.h + '）'); } });
+    }
+    return out;
+  }
+  // ［自動で 直す］：手で 変えた 石・外の 輪郭の 石から 波の ように 目地を 合わせる。
+  // 動かす 石の 向こう側に まだ 動かせる 石が あれば 石ごと 動かし（中仕切）、なければ 面を 伸び縮み（カロート・拝石台）
+  function fixJoints(data, st, p){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return p;
+    var J = jointOf(st), T = 70, B = fenceBoxes(f, p), ks = Object.keys(B), man = manualOf(st), done = {};
+    var E = { x0:Math.min.apply(null, ks.map(function(k){ return B[k].x0; })), x1:Math.max.apply(null, ks.map(function(k){ return B[k].x1; })),
+              z0:Math.min.apply(null, ks.map(function(k){ return B[k].z0; })), z1:Math.max.apply(null, ks.map(function(k){ return B[k].z1; })) };
+    var anc = {}, q = [];
+    ks.forEach(function(k){ var b = B[k];
+      if (Math.abs(b.x0 - E.x0) < 1 || Math.abs(b.x1 - E.x1) < 1 || Math.abs(b.z0 - E.z0) < 1 || Math.abs(b.z1 - E.z1) < 1) anc[k] = 1;
+      if ((st.over || {})[k]) { done[k] = 1; q.push(k); } });   // 手で 変えた 石から
+    if (!q.length) ks.forEach(function(k){ if (anc[k]) { done[k] = 1; q.push(k); } });
+    function nb(k, A, side){ // side：'0'＝小さい 側の 石、'1'＝大きい 側
+      var a = B[k], O = A === 'x' ? 'z' : 'x';
+      return ks.filter(function(o){ if (o === k) return false; var b = B[o]; if (ovl(a, b, 'y') <= 1 || ovl(a, b, O) <= 1) return false;
+        var g = side === '0' ? a[A + '0'] - b[A + '1'] : b[A + '0'] - a[A + '1']; return g > -Math.min(a[A + '1'] - a[A + '0'], b[A + '1'] - b[A + '0']) && g < T; }); }
+    while (q.length) {
+      var k = q.shift();
+      ['z', 'x'].forEach(function(A){ ['0', '1'].forEach(function(side){ nb(k, A, side).forEach(function(o){
+        if (done[o]) return;
+        var a = B[k], b = B[o], dd = side === '1' ? r1(a[A + '1'] + J.h - b[A + '0']) : r1(a[A + '0'] - J.h - b[A + '1']);
+        if (anc[o]) return;   // 外の 輪郭の 石は 動かさない（✕ の まま 残る）
+        if (Math.abs(dd) > 0.5) {
+          var far = nb(o, A, side).filter(function(x){ return x !== k && !anc[x] && !done[x]; });
+          if (far.length) { b[A + '0'] = r1(b[A + '0'] + dd); b[A + '1'] = r1(b[A + '1'] + dd); }   // 向こうにも 動く 石＝石ごと
+          else if (side === '1') b[A + '0'] = r1(b[A + '0'] + dd); else b[A + '1'] = r1(b[A + '1'] + dd);   // 面を 伸び縮み
+        }
+        done[o] = 1; q.push(o); }); }); });
+    }
+    var q2 = Object.assign({}, p);
+    ks.forEach(function(k){ var b = B[k], q = p[k]; q2[k] = Object.assign({}, q, { offX:b.x0, w:r1(b.x1 - b.x0), offZ:b.z0, d:r1(b.z1 - b.z0) }); });
+    return q2;
+  }
   // ── 外柵 ぜんたいの 目地：外柵の 部材 どうしが 接する 所は すべて 目地を あける（部材を 名指し しない）──
   // 高さ：上に のる 石（下の 石の 上と 0〜20 mm）は 下の 石の 上 ＋ J.v。のって いる 石も いっしょに 上がる（下から 順に）。GL の 石は そのまま
   // 横・奥行：向かい合う 面（ほかの 2 方向で 重なり、間が 20 mm 未満）は 間を J.h に。外柵の 外の 輪郭に つく 石は 動かさず、
   //   内側の 石の 面を 動かす（両方 内側なら その 向きに 長い ほう）。図面の 目地が 6 なら 6 の ままで 何も 変わらない
   function jointFence(data, st, p, notes){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return;
-    var J = jointOf(st), T = 20, ks = Object.keys(f.parts || {}).filter(function(k){ return p[k] && p[k].visible !== false; });
+    var J = jointOf(st), T = 20, man = manualOf(st), ks = Object.keys(f.parts || {}).filter(function(k){ return p[k] && p[k].visible !== false; });
     if (ks.length < 2) return;
     function bx(k){ var q = p[k]; return { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }
     function ov(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
@@ -340,6 +405,7 @@ var KM = (function(){
         if (i === j) continue;
         var a = B[ks[i]], b = B[ks[j]], g = r1(b[A + '0'] - a[A + '1']);   // a の 後ろ（右）の 面 → b の 前（左）の 面
         if (!(g > -0.5 && g < T) || Math.abs(g - J.h) <= 0.5 || ov(a, b, 'y') <= 1 || ov(a, b, O) <= 1) continue;
+        if (man[ks[i]] || man[ks[j]]) continue;   // 手で 変えた 石の まわりは 動かさない（✕ に して［自動で 直す］）
         var aOut = Math.abs(a[A + '0'] - E[A + '0']) < 1 || Math.abs(a[A + '1'] - E[A + '1']) < 1, bOut = Math.abs(b[A + '0'] - E[A + '0']) < 1 || Math.abs(b[A + '1'] - E[A + '1']) < 1;
         var mvA = aOut === bOut ? (a[A + '1'] - a[A + '0']) >= (b[A + '1'] - b[A + '0']) : bOut, dd = r1(g - J.h);
         if (mvA) { a[A + '1'] = r1(a[A + '1'] + dd); var qa = p[ks[i]], oa = {}; oa[L] = r1(qa[L] + dd); p[ks[i]] = Object.assign({}, qa, oa); }
@@ -681,7 +747,7 @@ var KM = (function(){
       site:{ W:1500, D:1800, domeH:300, domeT:150, adj:0 }, over:{}, shapes:{}, stone:{ tower:'', fence:'', boshi:'' } };
   }
 
-  return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
+  return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, fixJoints:fixJoints, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
     applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

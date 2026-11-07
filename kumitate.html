@@ -121,6 +121,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
     <div class="tree" id="tree"></div>
   </div>
   <div class="right">
+    <div class="box" id="jBox" style="display:none;margin-top:0;margin-bottom:10px;border-left:4px solid #b42020"></div>
     <div class="box" id="gapBox" style="display:none;margin-top:0;margin-bottom:10px"></div>
     <div id="selBox"></div>
     <div class="box" id="adBox" style="display:none"></div>
@@ -135,9 +136,9 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <input type="file" id="fSet" accept=".json,application/json" hidden>
 <script src="buzai-engine.js?v=0.8.5"></script>
 <script src="kumitate-data.js"></script>
-<script src="kumitate-engine.js?v=0.7.2"></script>
+<script src="kumitate-engine.js?v=0.7.4"></script>
 <script>
-var APP_VER = 'v0.7.3';
+var APP_VER = 'v0.7.4';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -307,13 +308,40 @@ function run(refit){
     $('hitlist').innerHTML = RES.hits.map(function(x){ return esc(x.nameA) + ' ↔ ' + esc(x.nameB) + '　<span class="muted">横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + ' mm 重なる</span>'; })
       .concat(ngs.map(function(m){ return '<span class="err">✕ ' + esc(m) + '</span>'; })).join('<br>');
   } else { b.className = 'badge ok'; b.textContent = '✓ 干渉 なし'; $('hitlist').style.display = 'none'; }
-  renderTree(); renderGap(); renderSel(); renderEst(); renderList();
+  renderTree(); renderJ(); renderGap(); renderSel(); renderEst(); renderList();
   var nt = ngs.map(function(m){ return '✕ ' + esc(m); }).concat((RES.notes || []).map(function(m){ return '⚠ ' + esc(m); })).concat((RES.chg || []).map(function(m){ return '<span style="color:var(--sub)">・' + esc(m) + '</span>'; }));
   if (nt.length) $('estBox').insertAdjacentHTML('afterbegin', '<div class="err muted" style="margin-bottom:6px">' + nt.join('<br>') + '</div>');
   lsSet('kumitate.state', ST);
   if (typeof AD !== 'undefined' && AD) autoRun(false);
 }
 // 拝石と 中仕切の 隙間（重なり）：直し方は お客様の 好み。選ぶ まで ✕
+// 外柵の 石どうしの 目地が 合わない・重なる ＝ ✕ と［自動で 直す］
+function renderJ(){
+  var bx = $('jBox'), L = RES.jerr || [];
+  if (!L.length) { bx.style.display = 'none'; return; }
+  var h = '<b class="err">✕ 外柵の 目地が 合わない 所 ' + L.length + ' か所</b><div class="muted">';
+  h += L.slice(0, 6).map(function(e){ var a = RES.parts[e.a].name, b = RES.parts[e.b].name; return esc(a + ' と ' + b) + (e.kind === 'hit' ? '：重なる' : '：' + e.g + ' mm'); }).join('<br>') + (L.length > 6 ? '<br>…' : '') + '</div>';
+  h += '<button class="go" id="bFixJ">🔧 自動で 直す（中仕切・カロート・拝石台 などを 動かす）</button>';
+  if (ST.mv && Object.keys(ST.mv).length) h += '<button class="lk" id="bFixJ0" style="margin-top:6px">直した 位置を 消す</button>';
+  bx.innerHTML = h; bx.style.display = 'block';
+}
+function fixJoints(){
+  var tgt = KM.fixJoints(DATA, ST, KM.compute(DATA, ST).parts), fk = Object.keys(fenceV() ? fenceV().parts : {});
+  ST.mv = ST.mv || {};
+  for (var it = 0; it < 3; it++) {
+    var r = KM.compute(DATA, ST), ch = false;
+    fk.forEach(function(k){ var a = r.parts[k], t = tgt[k]; if (!a || !t || (ST.over[k])) return;
+      var d = { x0:t.offX - a.offX, x1:(t.offX + t.w) - (a.offX + a.w), z0:t.offZ - a.offZ, z1:(t.offZ + t.d) - (a.offZ + a.d) };
+      if (Object.keys(d).every(function(f){ return Math.abs(d[f]) < 0.5; })) return;
+      var m = ST.mv[k] = ST.mv[k] || {}; Object.keys(d).forEach(function(f){ m[f] = Math.round(((m[f] || 0) + d[f]) * 10) / 10; }); ch = true; });
+    if (!ch) break;
+  }
+  run();
+}
+$('jBox').addEventListener('click', function(e){
+  var id = e.target.closest('button') && e.target.closest('button').id;
+  if (id === 'bFixJ') fixJoints(); else if (id === 'bFixJ0') { delete ST.mv; run(); }
+});
 function renderGap(){
   var g = (RES.gaps || []).filter(function(x){ return x.id === 'naka'; })[0], bx = $('gapBox');
   if (!g) { bx.style.display = 'none'; return; }
@@ -613,7 +641,7 @@ $('selBox').addEventListener('input', function(e){
 $('selBox').addEventListener('click', function(e){
   var t = e.target, id = t.closest('button') ? t.closest('button').id : t.id;
   if (id === 'bAuto') { autoRun(true); return; }
-  if (id === 'bReset') { delete ST.over[SEL]; run(); return; }
+  if (id === 'bReset') { delete ST.over[SEL]; if (ST.mv) delete ST.mv[SEL]; run(); return; }
   if (id === 'bUnshape' || id === 'bUnshape2') { delete ST.shapes[SEL]; renderLeft(); run(); return; }
   if (id === 'bPartFile2') { $('fPart').click(); return; }
   if (id === 'bSetSave') { var S = fenceS(); if (S) spSaveSet(S); return; }

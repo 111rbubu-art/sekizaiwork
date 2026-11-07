@@ -222,7 +222,7 @@ var KM = (function(){
     var ff = fitFence(data, st, p, ng);
     var chg = []; jointFence(data, st, p, chg);
     placeOnSet(data, st, p, ff);
-    var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, ng), dy = gl && gl.bury > 0 ? gl.bury : 0;
+    var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, p, ng, chg), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
     // セットの 部材は 前の 位置（幅の 中心・前の 面）を 覚えて おき、大きさが 変わっても そこに そろえる
@@ -466,18 +466,34 @@ var KM = (function(){
   }
   // いまの 外柵の 寸法（st.fit[セットの id] = {W,D,H}。無ければ 図面の まま）
   function fitCur(fs, st){ var F = fs.fit, c = st.fit && st.fit[fs.id] || {}, o = { W:c.W > 0 ? c.W : F.W.std, D:c.D > 0 ? c.D : F.D.std, H:c.H > 0 ? c.H : F.H.std };
-    var gh = glOf(st); if (gh && F.H.auto && F.step) o.H = r1(Math.max(gh, F.step + gh / 2));   // 階段の 上が GL と 腰石の 上の 真ん中（階段が 低くて 届かない ときは 埋めない）
     return o; }
   // ── GL から 腰石の 上までの 高さ（敷地 site.glH）──
-  // 外柵は 少し 土に 埋まる。埋まる 深さ＝腰石の 高さ − glH。理想は 階段の 上が GL と 腰石の 上の 真ん中（腰石の 高さ＝階段の 上 ＋ glH／2）
+  // 腰石の 高さは 変えない。変わるのは 地面と 外柵の 相対位置だけ：埋まる 深さ＝腰石の 高さ − glH。
+  // 階段の 高さ（上）＝腰石の 高さ − glH／2（階段の 上が GL と 腰石の 上の 真ん中）。
+  // 例外：階段の 高さに 合わせて ある 削り（腰石横の 内側の R の 始まり など、天面から 見た 削りの 下の 端が 階段の 上と 同じ もの）も 階段に ついて いく
   function glOf(st){ var g = +((st.site || {}).glH); return g > 0 ? g : 0; }
-  function glPlan(data, st, ff, ng){
-    var gh = glOf(st), v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], F = v && v.set && v.set.fit;
-    if (!gh || !F || !ff) return null;
-    var bury = r1(ff.H - gh), step = F.step != null ? r1(F.step + (F.parts && Object.keys(v.parts).some(function(k){ return /^階段/.test(v.parts[k].name || '') && F.parts[k] && F.parts[k].h; }) ? ff.dH : 0)) : null;
-    var o = { glH:gh, H:ff.H, bury:bury, step:step, stepGL:step != null ? r1(step - bury) : null, ideal:r1(gh / 2) };
-    if (bury < 0) ng.push('腰石が ' + r1(-bury) + ' mm 浮く（腰石 ' + ff.H + ' ＜ GL から ' + gh + '。腰石を 高く）');
-    return o;
+  function glPlan(data, st, ff, p, ng, chg){
+    var gh = glOf(st), v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence];
+    if (!gh || !v || !v.set || !ff) return null;
+    var H = ff.H, bury = r1(H - gh), step = r1(H - gh / 2), step0 = null;
+    var ks = Object.keys(v.parts || {}).filter(function(k){ return p[k]; });
+    if (bury < 0) ng.push('外柵が ' + r1(-bury) + ' mm 浮く（腰石 ' + H + ' ＜ GL から ' + gh + '）');
+    ks.forEach(function(k){ var q = p[k]; if (!/^階段/.test(q.name || '') || (q.offY || 0) > 0.5) return;
+      var t0 = r1((q.offY || 0) + q.h); step0 = step0 == null ? t0 : Math.max(step0, t0);
+      var nh = r1(step - (q.offY || 0));
+      if (nh <= 0) { ng.push(q.name + 'の 高さが 0 以下（腰石 ' + H + '・GL から ' + gh + '）'); return; }
+      if (Math.abs(nh - q.h) > 0.5) { chg.push(q.name + 'の 高さ ' + q.h + ' → ' + nh + '（上が GL と 腰石の 上の 真ん中）'); p[k] = Object.assign({}, q, { h:nh }); }
+    });
+    if (step0 != null && Math.abs(step - step0) > 0.5) ks.forEach(function(k){
+      var q = p[k], def = q.shape; if (!def || !def.components) return;
+      var nd = null;
+      def.components.forEach(function(c, ci){ var vw = c.shape && c.shape.views, tc = vw && vw.top && vw.top.cuts; if (!tc) return;
+        var bH = (vw.base && vw.base.H) || q.h, ky = q.h / bH;
+        tc.forEach(function(ct, ti){ if (Math.abs((q.offY || 0) + ct.y0 * ky - step0) > 1) return;
+          nd = nd || clone(def); nd.components[ci].shape.views.top.cuts[ti].y0 = r1((step - (q.offY || 0)) / ky); }); });
+      if (nd) { p[k] = Object.assign({}, q, { shape:nd }); chg.push(q.name + 'の 削りの 下の 端を 階段の 上に 合わせる（' + step0 + ' → ' + step + '）'); }
+    });
+    return { glH:gh, H:H, bury:bury, step0:step0, step:step, stepGL:step0 != null ? r1(step - bury) : null, ideal:r1(gh / 2) };
   }
   function fitFence(data, st, p, ng){
     var v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], fs = v && v.set; if (!fs || !fs.fit) return null;

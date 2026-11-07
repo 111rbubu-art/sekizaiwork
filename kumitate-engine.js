@@ -307,7 +307,7 @@ var KM = (function(){
       p[k] = Object.assign({}, p[k], { offX:r1((p[k].offX || 0) + dx), offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
   }
   // ── 目地（共通の ルール）：部材 どうしの 間 横・奥行 6、高さ 5（st.joint で 変えられる）。拝石が 中仕切に かかる 長さ 30 ──
-  function jointOf(st){ var j = st.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5, kakari:j.kakari != null ? +j.kakari : 30 }; }
+  function jointOf(st){ var j = st.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5, kakari:j.kakari != null ? +j.kakari : 30, open:j.open != null ? +j.open : 270 }; }
   // ── 外柵の 中の 拝石（外柵の セット＋石塔の セット）──
   // 拝石台：下の 石（カロート）の 上に 高さの 目地（5）を あけて のせ、前の 端は そのまま、奥は 芝台の 前から 横の 目地（6）まで。
   // 拝石：拝石台・中仕切の 上に 高さの 目地（5）を あけて のせ、後ろは 芝台の 前から 目地（6）。上の 香炉も いっしょに 動く。
@@ -343,35 +343,47 @@ var KM = (function(){
     var h0 = p[hk], dy = r1(top - (h0.offY || 0)), dz = r1(front + J.h - (h0.offZ || 0));
     var on = tk.filter(function(k){ var q = p[k]; return k !== hk && Math.abs((q.offY || 0) - ((h0.offY || 0) + h0.h)) < 1 && (q.offZ || 0) >= (h0.offZ || 0) - 1 && (q.offZ || 0) + q.d <= (h0.offZ || 0) + h0.d + 1; });
     [hk].concat(on).forEach(function(k){ p[k] = Object.assign({}, p[k], { offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
-    // 拝石の 前が 中仕切に かかり（30）だけ のるか。g＝足りない 長さ（＋＝拝石を 伸ばす）
+    // 拝石の 前が 中仕切に かかり（30）だけ のるか。g＝足りない 長さ（＋＝伸ばす）
+    // 納骨室の 開口部の 奥行（芝台の 前 〜 中仕切の 後ろ）は J.open（270）以上。直し方は 拝石／中仕切／両方（中仕切の ぶん＝st.nakaAdd）
     if (naka) {
       var H = p[hk], N = p[naka], g = r1((N.offZ || 0) + J.kakari - ((H.offZ || 0) + H.d));
+      var op0 = r1((N.offZ || 0) - front), nmax = r1(op0 - J.open);   // 中仕切を 伸ばせる 長さ（開口部を 守る）
+      var fix = st.haiseki || '', na = 0;
       if (Math.abs(g) > 1) {
-        var fix = st.haiseki || '';
-        if (fix === 'haiseki' && H.d + g > 0) {
-          p[hk] = Object.assign({}, H, { d:r1(H.d + g) });
-          on.forEach(function(k){ p[k] = Object.assign({}, p[k], { offZ:r1((p[k].offZ || 0) + g / 2) }); });  // 香炉は 拝石の 真ん中の まま
-          notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + g) + '（中仕切に ' + J.kakari + ' かかる）');
-        } else if (fix === 'naka' && N.d + g > 0) {
-          var N2 = p[naka] = Object.assign({}, N, { d:r1(N.d + g), offZ:r1((N.offZ || 0) - g) });
-          notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + g) + '（拝石が ' + J.kakari + ' かかる）');
-          // 中仕切の 後ろの 石（カロート・拝石台）は 中仕切の 後ろの 面 − 横の 目地（6）まで 縮める
-          var lim = r1(N2.offZ - J.h);
-          fk.forEach(function(o){
-            if (o === naka) return;
-            var r = p[o], z0 = r.offZ || 0, fz = z0 + r.d, yo = Math.min((r.offY || 0) + r.h, (N2.offY || 0) + N2.h) - Math.max(r.offY || 0, N2.offY || 0);
-            if (xo(r, N2) <= 1 || yo <= 1 || z0 >= N2.offZ || fz <= lim + 0.5) return;
-            var nd = r1(lim - z0);
-            if (nd <= 0) { ng.push(r.name + 'が 中仕切に うまる（中仕切を 伸ばせない）'); return; }
-            notes.push(r.name + 'の 奥行 ' + r.d + ' → ' + nd + '（中仕切を 伸ばした ぶん 縮める）');
-            p[o] = Object.assign({}, r, { d:nd });
-          });
+        if (fix === 'naka') na = g;
+        else if (fix === 'both') { var lo = Math.min(0, g), hi = Math.max(0, g), def = Math.max(lo, Math.min(hi, g > 0 ? Math.min(r1(g / 2), nmax) : r1(g / 2)));
+          na = st.nakaAdd != null && st.nakaAdd !== '' ? Math.max(lo, Math.min(hi, +st.nakaAdd)) : def; na = r1(na); }
+        var ha = fix === 'haiseki' ? g : fix === 'both' ? r1(g - na) : 0;
+        if (fix === 'haiseki' || fix === 'naka' || fix === 'both') {
+          if (ha && H.d + ha > 0) {
+            p[hk] = Object.assign({}, H, { d:r1(H.d + ha) });
+            on.forEach(function(k){ p[k] = Object.assign({}, p[k], { offZ:r1((p[k].offZ || 0) + ha / 2) }); });  // 香炉は 拝石の 真ん中の まま
+            notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + ha) + '（中仕切に ' + J.kakari + ' かかる）');
+          }
+          if (na && N.d + na > 0) {
+            var N2 = p[naka] = Object.assign({}, N, { d:r1(N.d + na), offZ:r1((N.offZ || 0) - na) });
+            notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + na) + '（拝石が ' + J.kakari + ' かかる）');
+            // 中仕切の 後ろの 石（カロート・拝石台）は 中仕切の 後ろの 面 − 横の 目地（6）まで 縮める
+            var lim = r1(N2.offZ - J.h);
+            fk.forEach(function(o){
+              if (o === naka) return;
+              var r = p[o], z0 = r.offZ || 0, fz = z0 + r.d, yo = Math.min((r.offY || 0) + r.h, (N2.offY || 0) + N2.h) - Math.max(r.offY || 0, N2.offY || 0);
+              if (xo(r, N2) <= 1 || yo <= 1 || z0 >= N2.offZ || fz <= lim + 0.5) return;
+              var nd = r1(lim - z0);
+              if (nd <= 0) { ng.push(r.name + 'が 中仕切に うまる（中仕切を 伸ばせない）'); return; }
+              notes.push(r.name + 'の 奥行 ' + r.d + ' → ' + nd + '（中仕切を 伸ばした ぶん 縮める）');
+              p[o] = Object.assign({}, r, { d:nd });
+            });
+          }
         } else {
           var cur = r1((H.offZ || 0) + H.d - (N.offZ || 0));
           ng.push('拝石が 中仕切に ' + (cur > 0 ? cur + ' mm しか かからない' : (cur < 0 ? -cur + ' mm 届かない' : 'かからない')) + '（' + J.kakari + ' かける ため 拝石か 中仕切の 奥行を 合わせる）');
         }
-        out.push({ id:'naka', gap:g, fix:fix, haiseki:H.d, naka:N.d, kakari:J.kakari, cur:r1((H.offZ || 0) + H.d - (N.offZ || 0)) });
       }
+      var op1 = r1((p[naka].offZ || 0) - front);
+      if (op1 < J.open - 0.5) ng.push('納骨室の 開口部の 奥行が ' + op1 + ' mm（' + J.open + ' 以上 いる。' + (na > 0 ? '中仕切を 伸ばしすぎ' : '芝台の 前 〜 中仕切') + '）');
+      if (Math.abs(g) > 1 || op1 < J.open - 0.5)
+        out.push({ id:'naka', gap:g, fix:fix, haiseki:H.d, naka:N.d, kakari:J.kakari, cur:r1((H.offZ || 0) + H.d - (N.offZ || 0)), na:na, open0:op0, open:op1, openMin:J.open, nmax:nmax });
     }
     return out;
   }

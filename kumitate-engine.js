@@ -353,8 +353,19 @@ var KM = (function(){
           on.forEach(function(k){ p[k] = Object.assign({}, p[k], { offZ:r1((p[k].offZ || 0) + g / 2) }); });  // 香炉は 拝石の 真ん中の まま
           notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + g) + '（中仕切に ' + J.kakari + ' かかる）');
         } else if (fix === 'naka' && N.d + g > 0) {
-          p[naka] = Object.assign({}, N, { d:r1(N.d + g), offZ:r1((N.offZ || 0) - g) });
+          var N2 = p[naka] = Object.assign({}, N, { d:r1(N.d + g), offZ:r1((N.offZ || 0) - g) });
           notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + g) + '（拝石が ' + J.kakari + ' かかる）');
+          // 中仕切の 後ろの 石（カロート・拝石台）は 中仕切の 後ろの 面 − 横の 目地（6）まで 縮める
+          var lim = r1(N2.offZ - J.h);
+          fk.forEach(function(o){
+            if (o === naka) return;
+            var r = p[o], z0 = r.offZ || 0, fz = z0 + r.d, yo = Math.min((r.offY || 0) + r.h, (N2.offY || 0) + N2.h) - Math.max(r.offY || 0, N2.offY || 0);
+            if (xo(r, N2) <= 1 || yo <= 1 || z0 >= N2.offZ || fz <= lim + 0.5) return;
+            var nd = r1(lim - z0);
+            if (nd <= 0) { ng.push(r.name + 'が 中仕切に うまる（中仕切を 伸ばせない）'); return; }
+            notes.push(r.name + 'の 奥行 ' + r.d + ' → ' + nd + '（中仕切を 伸ばした ぶん 縮める）');
+            p[o] = Object.assign({}, r, { d:nd });
+          });
         } else {
           var cur = r1((H.offZ || 0) + H.d - (N.offZ || 0));
           ng.push('拝石が 中仕切に ' + (cur > 0 ? cur + ' mm しか かからない' : (cur < 0 ? -cur + ' mm 届かない' : 'かからない')) + '（' + J.kakari + ' かける ため 拝石か 中仕切の 奥行を 合わせる）');

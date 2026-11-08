@@ -352,9 +352,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <div id="printArea"></div>
 
 <script src="buzai-engine.js?v=0.8.5"></script>
-<script src="zumen-km.js?v=0.8.8"></script>
+<script src="zumen-km.js?v=0.8.9"></script>
 <script>
-var APP_VER = "v0.8.8";
+var APP_VER = "v0.8.9";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1666,6 +1666,28 @@ function onClick(p, raw, ev){
 }
 // 寸法が 1 つだけ（図形なし）なら いつもの 1 つ 選び（つまみ つき）に する
 function selSettle(){ if (ST.dsel.size === 1 && !ST.sel.size) { ST.selDim = ST.dsel.values().next().value; ST.dsel.clear(); ST.hotGrip = null; } }
+// コピー・切り取り・貼り付け（Ctrl+C／X／V）：選んだ 線・文字・寸法を 写し、マウスの 所に 貼る（同じ 窓の ほかの ページにも）
+var CLIP = null;
+function clipCopy(cut){
+  if (ST.selDim) ST.dsel.add(ST.selDim);
+  var es = D.ents.filter(function(e){ return ST.sel.has(e.id); }), ds = D.dims.filter(function(d){ return ST.dsel.has(d.id); });
+  if (!es.length && !ds.length) { setMsg('コピー する ものを 選んで ください'); return false; }
+  var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, m = function(q){ if (q && typeof q.x === 'number') { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); } };
+  es.forEach(function(e){ ['a', 'b', 'c', 'p'].forEach(function(f){ m(e[f]); }); (e.v || []).forEach(m); }); ds.forEach(function(d){ m(d.a); m(d.b); m(d.off); });
+  CLIP = { ents:clone(es), dims:clone(ds), c:P((x0 + x1) / 2, (y0 + y1) / 2), n:0 };
+  if (cut) { deleteSel(); setMsg('切り取りました（' + (es.length + ds.length) + ' 個）。Ctrl+V で マウスの 所に 貼ります'); }
+  else setMsg('コピー しました（' + (es.length + ds.length) + ' 個）。Ctrl+V で マウスの 所に 貼ります');
+  return true;
+}
+function clipPaste(){
+  if (!CLIP) { setMsg('先に Ctrl+C か Ctrl+X で 選んだ ものを 写して ください'); return false; }
+  CLIP.n++; var to = ST.cur || P(CLIP.c.x + 5 * CLIP.n, CLIP.c.y - 5 * CLIP.n), dx = to.x - CLIP.c.x, dy = to.y - CLIP.c.y;
+  pushUndo(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null;
+  var bare = function(n){ n.id = SEQ++; delete n.auto; delete n.aid; delete n.vid; return n; };
+  CLIP.ents.forEach(function(e){ var n = bare(clone(e)); transEnt(n, dx, dy); D.ents.push(n); ST.sel.add(n.id); if (n.layer) layerOf(n.layer); });
+  CLIP.dims.forEach(function(d){ var n = bare(clone(d)); [n.a, n.b, n.off].forEach(function(p){ p.x += dx; p.y += dy; }); D.dims.push(n); ST.dsel.add(n.id); });
+  selSettle(); renderLayers(); changed(); setMsg('貼りました（' + (CLIP.ents.length + CLIP.dims.length) + ' 個）'); return true;
+}
 function deleteSel(){
   if (ST.dsel.size || (ST.sel.size && ST.selDim)) { pushUndo(); if (ST.selDim) ST.dsel.add(ST.selDim);
     D.dims = D.dims.filter(function(d){ return !ST.dsel.has(d.id); }); D.ents = D.ents.filter(function(e){ return !ST.sel.has(e.id); });
@@ -2051,9 +2073,10 @@ var CX2 = (function(){
     var es = selEnts(), ds = selDims(); if (!es.length && !ds.length) return '動かす ものを 選んで ください';
     if (!dx && !dy) return 'ずらす 量が 0 です';
     pushUndo();
+    if (!keep && typeof kmMoveSet === 'function') { var ex = kmMoveSet(es, ds); es = es.concat(ex.e); ds = ds.concat(ex.d); }
     if (keep) {
-      es.forEach(function(e){ var n = clone(e); n.id = SEQ++; transEnt(n, dx, dy); D.ents.push(n); });
-      ds.forEach(function(d){ var n = clone(d); n.id = SEQ++; n.auto = false; moveDim(n, dx, dy); D.dims.push(n); });
+      es.forEach(function(e){ var n = clone(e); n.id = SEQ++; delete n.auto; delete n.aid; delete n.vid; transEnt(n, dx, dy); D.ents.push(n); });
+      ds.forEach(function(d){ var n = clone(d); n.id = SEQ++; n.auto = false; delete n.aid; delete n.vid; moveDim(n, dx, dy); D.dims.push(n); });
     } else { es.forEach(function(e){ transEnt(e, dx, dy); }); ds.forEach(function(d){ moveDim(d, dx, dy); }); }
     changed(); return (keep ? '写しました' : '動かしました') + '（X ' + fmtMm(dx) + '・Y ' + fmtMm(dy) + '）';
   }
@@ -2739,6 +2762,8 @@ document.addEventListener('keydown', function(ev){
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.shiftKey ? redo() : undo(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { redo(); ev.preventDefault(); }
+  else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'c' || ev.key.toLowerCase() === 'x')) { if (clipCopy(ev.key.toLowerCase() === 'x')) ev.preventDefault(); }
+  else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'v') { if (clipPaste()) ev.preventDefault(); }
   else if (ev.key === 'F3') { S.snap = !S.snap; saveSettings(); updToggles(); ev.preventDefault(); }
   else if (ev.key === 'F8') { S.ortho = !S.ortho; saveSettings(); updToggles(); ev.preventDefault(); }
 });

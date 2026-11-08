@@ -393,12 +393,14 @@ function kmHarvest(pg){
   if (!pg || !pg.doc || !pg.vw || !KMED) return;
   var doc = pg.doc, near = function(a, b){ return Math.abs(a - b) < 0.02; };
   // 図ごと 動かした（自動の 線が そろって ずれて いる）
-  var vmove = {};
-  Object.keys(pg.vw).forEach(function(vid){ var V = pg.vw[vid], x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, n = 0;
-    doc.ents.forEach(function(e){ if (!e.auto || e.vid !== vid || e.t !== 'line') return; n++; [e.a, e.b].forEach(function(q){ x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }); });
-    if (!n || !V.lb) return; var dx = x0 - V.lb.x0, dy = y0 - V.lb.y0;
-    if (Math.abs((x1 - x0) - (V.lb.x1 - V.lb.x0)) < 0.3 && Math.abs((y1 - y0) - (V.lb.y1 - V.lb.y0)) < 0.3 && Math.hypot(dx, dy) > 0.05) {
-      var old = KMED.vm[vid] || [0, 0]; KMED.vm[vid] = [old[0] + dx, old[1] + dy]; vmove[vid] = [dx, dy]; } });
+  // 図ごと 動かした：その 図の 自動の 線の 多く（6 割）が 同じ だけ ずれて いる（線の id で 前の 位置と 比べる）
+  var vmove = {}, lp = pg.lpos || {};
+  Object.keys(pg.vw).forEach(function(vid){ var cnt = {}, n = 0;
+    doc.ents.forEach(function(e){ if (!e.auto || e.vid !== vid || e.t !== 'line' || !lp[e.id]) return; n++;
+      var k = Math.round((e.a.x - lp[e.id][0]) * 20) + ',' + Math.round((e.a.y - lp[e.id][1]) * 20); cnt[k] = (cnt[k] || 0) + 1; });
+    var best = null; Object.keys(cnt).forEach(function(k){ if (!best || cnt[k] > cnt[best]) best = k; });
+    if (!best || best === '0,0' || cnt[best] < n * 0.6) return;
+    var dd = best.split(',').map(function(v){ return +v / 20; }), old = KMED.vm[vid] || [0, 0]; KMED.vm[vid] = [old[0] + dd[0], old[1] + dd[1]]; vmove[vid] = dd; });
   // 図ごと 動かした ぶんは 基準も 動かす（いっしょに 動いた 寸法・文字は 直し なし、残した ものは その 場所を 覚える）
   Object.keys(pg.base).forEach(function(aid){ var b = pg.base[aid], mv = b.vid && vmove[b.vid]; if (!mv) return; var sh = function(q){ return q ? P(q.x + mv[0], q.y + mv[1]) : q; };
     pg.base[aid] = Object.assign({}, b, { a:sh(b.a), b:sh(b.b), off:sh(b.off), p:sh(b.p) }); });
@@ -418,11 +420,20 @@ function kmHarvest(pg){
   Object.keys(pg.vw).forEach(function(vid){ delete KMED.man[vid]; }); delete KMED.man['pg:' + pg.key];
   doc.ents.forEach(function(e){ if (e.auto) return; var m = kmBind(pg, e, false), k = m.home || 'pg:' + pg.key; (KMED.man[k] = KMED.man[k] || []).push(m); });
   doc.dims.forEach(function(d){ if (d.auto) return; var m = kmBind(pg, d, true), k = m.home || 'pg:' + pg.key; (KMED.man[k] = KMED.man[k] || []).push(m); });
-  kmSaveEd();
+  kmLpos(pg); kmSaveEd();
 }
 function kmLb(pg, vid){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, n = 0;
   pg.doc.ents.forEach(function(e){ if (!e.auto || e.vid !== vid || e.t !== 'line') return; n++; [e.a, e.b].forEach(function(q){ x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }); });
   pg.vw[vid].lb = n ? { x0:x0, x1:x1, y0:y0, y1:y1 } : null; }
+function kmLpos(pg){ var L = pg.lpos = {}; pg.doc.ents.forEach(function(e){ if (e.auto && e.vid && e.t === 'line') L[e.id] = [e.a.x, e.a.y]; }); }
+// 図ごと 動かす：図の 自動の 線の 半分 以上を 選んで 動かす ときは、その 図の 寸法・文字・残りの 線も いっしょに
+function kmMoveSet(es, ds){ if (!(BM && BM.active && BM.km)) return { e:[], d:[] };
+  var tot = {}, sel = {}, ex = { e:[], d:[] }, inE = new Set(es), inD = new Set(ds);
+  D.ents.forEach(function(e){ if (e.auto && e.vid && e.t === 'line') tot[e.vid] = (tot[e.vid] || 0) + 1; }); es.forEach(function(e){ if (e.auto && e.vid && e.t === 'line') sel[e.vid] = (sel[e.vid] || 0) + 1; });
+  var vs = Object.keys(sel).filter(function(v){ return sel[v] >= tot[v] * 0.5; }); if (!vs.length) return ex;
+  D.ents.forEach(function(e){ if (e.vid && vs.indexOf(e.vid) >= 0 && !inE.has(e)) { ex.e.push(e); ST.sel.add(e.id); } });
+  D.dims.forEach(function(d){ if (d.vid && vs.indexOf(d.vid) >= 0 && !inD.has(d)) { ex.d.push(d); ST.dsel.add(d.id); } });
+  return ex; }
 function kmSaveEd(){ if (!KMED || !KM2) return; KMED.payT = KM2.pay.t; kmLs('zumen.kmEdit', KMED); if (BM && BM.main) BM.main.kmEdit = KMED; }
 
 // ── ページの 一覧・作り直し ──
@@ -438,7 +449,7 @@ function kmPagesDef(){
 function kmRegen(pg){
   var o = kmGen(pg); kmApply(pg, o);
   pg.doc.ents = o.ents; pg.doc.dims = o.dims;
-  Object.keys(pg.vw).forEach(function(vid){ kmLb(pg, vid); });
+  Object.keys(pg.vw).forEach(function(vid){ kmLb(pg, vid); }); kmLpos(pg);
 }
 function kmBuildAll(){
   var defs = kmPagesDef();
@@ -476,6 +487,11 @@ function kmEnter(again){
     var keep = KM2 && BM && BM.active && BM.km ? BM.cur : 0;
     if (KM2 && BM && BM.active && BM.km) BM.pages.forEach(kmHarvest);
     KMED = KMED || (BM && BM.main && BM.main.kmEdit) || (D && D.kmEdit) || kmLs('zumen.kmEdit') || {}; ['ov', 'vm', 'man', 'revs'].forEach(function(f){ KMED[f] = KMED[f] || {}; });
+    if (!KMED.v) { // v0.8.7 の まちがい：図を 動かすと いっしょに 動かした 寸法が「その 場に 残す」と 覚えられて いた → 消す
+      Object.keys(KMED.ov).forEach(function(aid){ var o = KMED.ov[aid], vid = Object.keys(KMED.vm).filter(function(v){ return aid.indexOf(v + '/') === 0; })[0]; if (!vid) return; var m = KMED.vm[vid];
+        var bad = function(q){ return !q || (Math.abs(q[0] + m[0]) < 0.6 && Math.abs(q[1] + m[1]) < 0.6); };
+        if ((o.doff || o.dp) && bad(o.doff) && bad(o.da) && bad(o.db) && bad(o.dp)) { ['doff', 'da', 'db', 'dp'].forEach(function(f){ delete o[f]; }); if (!Object.keys(o).length) delete KMED.ov[aid]; } });
+      KMED.v = 2; }
     KM2 = { pay:pay, geo:geo }; KM2.bundles = kmBundles(pay);
     if (!(BM && BM.active)) { BM = { main:D, layers:null, pages:null, cur:0, active:true, km:true }; }
     BM.km = true; bmSetupLayers(); kmLayers();

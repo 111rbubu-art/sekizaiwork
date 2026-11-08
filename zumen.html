@@ -352,9 +352,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <div id="printArea"></div>
 
 <script src="buzai-engine.js?v=0.8.5"></script>
-<script src="zumen-km.js?v=0.8.9"></script>
+<script src="zumen-km.js?v=0.9.0"></script>
 <script>
-var APP_VER = "v0.8.9";
+var APP_VER = "v0.9.0";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1528,7 +1528,7 @@ var HINTS = {
   trim:'トリム：消したい 部分を クリック（交わる 線と 線の 間が 消える）。Shift＋クリックで 延長',
   extend:'延長：伸ばしたい 線の 端の 近くを クリック（当たる 線まで 伸びる）。Shift＋クリックで トリム',
   rect:'四角：1 つ目の 角 → 反対の 角を クリック（右の 欄で 幅・高さを 打てば 1 クリック）',
-  move:'移動・複写：動かす ものを 選ぶ →［基点を 決める］（Enter）→ 基点 → 行き先を クリック（数字でも）',
+  move:'移動・複写（AutoCAD と 同じ）：選ぶ（クリックで 足す・Shift＋クリックで はずす・窓）→ Enter／スペース／右クリック → 基点 → 2 点目（数字＋Enter＝その 向きへ その 長さ、x,y＝ずらす 量）。M／CO を 打って スペースでも 始まる',
   offset:'オフセット：右の 欄で 幅を 打つ → 線を クリック → ずらす 側を クリック（続けて できる）',
   mkpart:'部材に する：正面の 外形の 線を 選ぶ（クリック／ドラッグ）→［正面に する］→ 側面・天面も 同じく（無ければ 飛ばす）→［部材を 作る］',
   corner:'角丸め・面取り：右の 欄で R か C と 大きさ → 1 本目の 線 → 2 本目の 線を クリック（残す 側を クリック）',
@@ -1547,6 +1547,7 @@ function setTool(t){
   document.querySelectorAll('.tool[data-tool]').forEach(function(el){ el.classList.toggle('on', el.dataset.tool === t); });
   cv.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
   document.getElementById('hint').textContent = HINTS[t] || '';
+  if (typeof ACAD === 'object' && ACAD && (t === 'move' || t === 'mirror')) ACAD.last = t === 'move' && ST.mi && ST.mi.keep ? 'copy' : t;
   if (t === 'gap' && D.ents.length && !ST.gaps) checkGaps();
   panel(); redraw();
 }
@@ -1666,6 +1667,51 @@ function onClick(p, raw, ev){
 }
 // 寸法が 1 つだけ（図形なし）なら いつもの 1 つ 選び（つまみ つき）に する
 function selSettle(){ if (ST.dsel.size === 1 && !ST.sel.size) { ST.selDim = ST.dsel.values().next().value; ST.dsel.clear(); ST.hotGrip = null; } }
+// ── AutoCAD と 同じ 動き（移動・複写）──
+// M／MOVE、CO／CP／COPY を 打って Enter か スペース。何も して いない ときの Enter・スペース＝前の コマンドを もう一度。
+// 選ぶ：クリックで 足す・Shift＋クリックで はずす・左→右の 窓＝中に 入る もの・右→左＝かかる もの → Enter／スペース／右クリックで 選び 終わり。
+// 基点 → 2 点目（Shift／F8 で 直交）。2 点目で 数字を 打って Enter＝カーソルの 向きへ その 長さ、「x,y」「@x,y」＝ずらす 量。
+// 移動は 1 回で 終わり（選んだ ものは はずれる）。複写は 続けて 何度でも、Enter／Esc で 終わり。
+var ACAD = { buf:'', last:null };
+var ACAD_CMD = { M:'move', MOVE:'move', CO:'copy', CP:'copy', COPY:'copy', MI:'mirror', MIRROR:'mirror' };
+function acadStart(c){
+  ACAD.last = c; var keep = c === 'copy';
+  if (ST.selDim) { ST.dsel.add(ST.selDim); ST.selDim = null; }
+  setTool(c === 'copy' ? 'move' : c); if (c === 'copy' || c === 'move') { ST.mi.keep = keep; } ACAD.last = c;
+  ACAD.buf = ''; panel(); redraw();
+  setMsg(ST.mi && ST.mi.phase === 'axis' ? (c === 'mirror' ? '対称軸の 1 点目' : '基点を 指定') : 'オブジェクトを 選択（終わったら Enter／スペース／右クリック）');
+}
+function acadEnd(){ ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.pts = []; setTool('select'); }
+function acadEnter(){
+  if (!(ST.tool === 'move' || ST.tool === 'mirror') || !ST.mi) return false;
+  if (ST.mi.phase === 'sel') { if (!(ST.sel.size || ST.dsel.size || ST.selDim)) { setTool('select'); setMsg(''); return true; } mirrorAxis(); setMsg(ST.tool === 'mirror' ? '対称軸の 1 点目' : '基点を 指定'); return true; }
+  if (ST.mi.phase === 'axis' && ST.tool === 'move' && ST.pts.length === 1 && ACAD.buf) { acadDist(); return true; }
+  if (ST.mi.phase === 'axis' && !ST.pts.length && ACAD.buf) { acadDist(); return true; }
+  if (ST.mi.phase === 'axis') { acadEnd(); setMsg(''); panel(); redraw(); return true; } // 複写を 終わる
+  return false;
+}
+function acadDist(){
+  var t = ACAD.buf.trim().replace(/^@/, ''), dx = null, dy = null; ACAD.buf = '';
+  if (/,/.test(t)) { var a = t.split(','), x = parseLen(a[0].replace(/^[-−]/, '')), y = parseLen((a[1] || '0').replace(/^[-−]/, ''));
+    if (x != null && y != null) { dx = /^[-−]/.test(a[0]) ? -x : x; dy = /^[-−]/.test(a[1] || '') ? -y : y; } }
+  else { var L = parseLen(t); if (L != null && ST.pts.length === 1 && ST.cur) { var b = ST.pts[0], vx = ST.cur.x - b.x, vy = ST.cur.y - b.y, n = Math.hypot(vx, vy); if (n > 1e-9) { dx = vx / n * L; dy = vy / n * L; } } }
+  if (dx == null) { setMsg('数字が 読めません（長さ か「x,y」）'); return; }
+  var base = ST.pts[0]; ST.pts = []; var keep = ST.mi.keep, m = CX2.move(dx, dy, keep); if (!keep) acadEnd(); else if (base) ST.pts = [base]; setMsg(m); panel(); redraw();
+}
+function acadKey(ev){
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+  var k = ev.key, ent = k === 'Enter' || k === ' ';
+  var inPt = (ST.tool === 'move' || ST.tool === 'mirror') && ST.mi && ST.mi.phase === 'axis';
+  if (inPt && ST.tool === 'move' && /^[0-9.,@\-−]$/.test(k)) { ACAD.buf += k; setMsg('距離／ずらす 量：' + ACAD.buf + '（Enter）'); return true; }
+  if (k === 'Backspace' && ACAD.buf) { ACAD.buf = ACAD.buf.slice(0, -1); setMsg(ACAD.buf ? 'コマンド：' + ACAD.buf : ''); return true; }
+  if (/^[a-zA-Z]$/.test(k) && !inPt && !(ST.mi && ST.mi.phase === 'sel')) { ACAD.buf += k.toUpperCase(); setMsg('コマンド：' + ACAD.buf + '（Enter／スペース）'); return true; }
+  if (!ent) return false;
+  if (ACAD.buf && ACAD_CMD[ACAD.buf]) { acadStart(ACAD_CMD[ACAD.buf]); return true; }
+  if (ACAD.buf && !inPt) { setMsg('コマンドが ありません：' + ACAD.buf); ACAD.buf = ''; return true; }
+  if (acadEnter()) return true;
+  if (ST.tool === 'select' && ACAD.last && !ST.pts.length) { acadStart(ACAD.last); return true; }
+  return false;
+}
 // コピー・切り取り・貼り付け（Ctrl+C／X／V）：選んだ 線・文字・寸法を 写し、マウスの 所に 貼る（同じ 窓の ほかの ページにも）
 var CLIP = null;
 function clipCopy(cut){
@@ -1978,7 +2024,10 @@ function drawCadPreview(c){
   }
   if (t === 'move' && ST.mi && ST.mi.phase === 'axis' && ST.pts.length === 1 && ST.cur) {
     var dx = ST.cur.x - ST.pts[0].x, dy = ST.cur.y - ST.pts[0].y;
-    D.ents.forEach(function(e){ if (!ST.sel.has(e.id) || e.t === 'text') return; var n = clone(e); transEnt(n, dx, dy); c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5; c.beginPath(); pathEnt(c, V, n); c.stroke(); c.restore(); });
+    D.ents.forEach(function(e){ if (!ST.sel.has(e.id)) return; var n = clone(e); transEnt(n, dx, dy); c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1.5;
+      if (e.t === 'text') { var tq = W2S(V, n.p), th = (n.h || 2.5) * V.s; c.strokeRect(tq[0], tq[1] - th, Math.max(th, String(n.s || '').length * th * 0.9), th); } else { c.beginPath(); pathEnt(c, V, n); c.stroke(); } c.restore(); });
+    D.dims.forEach(function(d){ if (!(ST.dsel.has(d.id) || d.id === ST.selDim)) return; var q = [d.a, d.b, d.off].map(function(p){ return W2S(V, P(p.x + dx, p.y + dy)); });
+      c.save(); c.strokeStyle = '#ff8a3d'; c.lineWidth = 1; c.setLineDash([3, 2]); c.beginPath(); c.moveTo(q[0][0], q[0][1]); c.lineTo(q[2][0], q[2][1]); c.lineTo(q[1][0], q[1][1]); c.stroke(); c.restore(); });
     var b1 = W2S(V, ST.pts[0]), b2 = W2S(V, ST.cur); c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#555'; c.beginPath(); c.moveTo(b1[0], b1[1]); c.lineTo(b2[0], b2[1]); c.stroke(); c.restore();
   }
   if (t === 'rect' && ST.cur && (ST.pts.length === 1 || (ST.rc && ST.rc.w > 0 && ST.rc.h > 0))) {
@@ -2032,13 +2081,14 @@ function cadClick(p, raw, ev){
   if (t === 'mirror' || t === 'move' || t === 'mkpart') {
     if (ST.mi.phase === 'sel') {
       var d = hitDim(raw);
-      if (d) { if (ST.dsel.has(d.id)) ST.dsel.delete(d.id); else ST.dsel.add(d.id); }
-      else { var hit = nearestEnt(raw, visible); if (hit) { if (ST.sel.has(hit.id)) ST.sel.delete(hit.id); else ST.sel.add(hit.id); } }
+      // AutoCAD と 同じ：クリックで 足す、Shift＋クリックで はずす
+      if (d) { if (ev && ev.shiftKey) ST.dsel.delete(d.id); else ST.dsel.add(d.id); }
+      else { var hit = nearestEnt(raw, visible); if (hit) { if (ev && ev.shiftKey) ST.sel.delete(hit.id); else ST.sel.add(hit.id); } }
       panel(); redraw(); return true;
     }
     ST.pts.push(P(p.x, p.y)); if (ST.pts.length < 2) { redraw(); return true; }
     var a = ST.pts[0], b = ST.pts[1]; ST.pts = [];
-    if (t === 'move') { setMsg(CX2.move(b.x - a.x, b.y - a.y, ST.mi.keep)); panel(); return true; }
+    if (t === 'move') { var mm = CX2.move(b.x - a.x, b.y - a.y, ST.mi.keep); if (!ST.mi.keep) acadEnd(); else ST.pts = [a]; setMsg(mm + (ST.mi && ST.mi.keep ? '。続けて 2 点目（Enter で 終わり）' : '')); panel(); return true; }
     setMsg(CX.mirror(a, b, ST.mi.keep)); ST.mi.phase = 'sel'; panel(); return true;
   }
   if (t === 'rect') {
@@ -2684,6 +2734,7 @@ function endPtr(ev){
   var dg = drag; drag = null;
   cv.style.cursor = ST.tool === 'pan' ? 'grab' : 'crosshair';
   if (ev.type === 'pointercancel') { ST.win = null; redraw(); return; }
+  if (dg.right && !dg.moved && acadEnter()) return; // AutoCAD と 同じ：選び 終わり・続けて 写すのを 終わる
   if (dg.right && !dg.moved) { showCtx(ev.clientX, ev.clientY); return; } // 右クリック（動かさない）＝メニュー
   if (dg.type === 'grip') {
     if (dg.moved) { ST.snap = null; changed(); }
@@ -2757,7 +2808,10 @@ document.addEventListener('keydown', function(ev){
   if (ev.key === 'Escape' && document.getElementById('ctx').style.display === 'block') { hideCtx(); return; }
   if (ev.key === 'Escape' && ST.hotGrip) { ST.hotGrip = null; setMsg(''); redraw(); return; }
   if (ev.key === 'Escape' && ST.mkPick) { ST.mkPick = null; panel(); setMsg(''); return; }
+  if (ev.key === 'Escape' && ACAD.buf) { ACAD.buf = ''; setMsg(''); return; }
+  if (ev.key === 'Escape' && (ST.tool === 'move' || ST.tool === 'mirror')) { ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; setTool('select'); panel(); redraw(); setMsg('*キャンセル*'); return; }
   if (ev.key === 'Escape') { ST.pts = []; ST.meas = null; ST.win = null; if (ST.tool === 'stretch') ST.sw = { phase:'win1' }; if (ST.mi) ST.mi.phase = 'sel'; if (ST.of) ST.of.e = null; if (ST.cn) ST.cn.e1 = null; ST.sel.clear(); ST.selDim = null; ST.dsel.clear(); panel(); redraw(); }
+  else if (acadKey(ev)) { ev.preventDefault(); }
   else if (ev.key === 'Enter' && ST.mi && ST.mi.phase === 'sel') { if (ST.tool === 'mkpart') { if (ST.mk && ST.mk.step !== 'done') mkSet(); } else mirrorAxis(); ev.preventDefault(); }
   else if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSel(); ev.preventDefault(); }
   else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.shiftKey ? redo() : undo(); ev.preventDefault(); }

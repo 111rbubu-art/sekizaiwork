@@ -181,6 +181,30 @@ function kmPgDetail(o, pg){
   pg.groups.forEach(function(g, j){ kmDetail(o, pg, g, j ? 148.5 : 8, B); });
   kmFrame(o, pg, '【部品詳細図】　' + B.title, '部品詳細図');
 }
+// 部材の 図面（部材マスターで かいた 1 枚）に 加工図面の 範囲（e.frame）が あれば、その 枠の 中を そのまま 縮めて 入れる
+function kmSketch(o, pg, p, X, T){
+  var sk = p && p.shape && p.shape.sketch; if (!sk || !sk.ents) return false;
+  var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl'; })[0]; if (!fr) return false;
+  var fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity; fr.v.forEach(function(q){ fx0 = Math.min(fx0, q.x); fx1 = Math.max(fx1, q.x); fy0 = Math.min(fy0, q.y); fy1 = Math.max(fy1, q.y); });
+  var area = { x0:X + 3, x1:X + 137.5, y0:36, y1:184 }, n = kmPick(fx1 - fx0, fy1 - fy0, area.x1 - area.x0, area.y1 - area.y0), s = 1 / n;
+  var ox = (area.x0 + area.x1) / 2 - (fx1 - fx0) * s / 2, oy = (area.y0 + area.y1) / 2 - (fy1 - fy0) * s / 2;   // 紙（y 下）
+  var M = function(q){ return P(ox + (q.x - fx0) * s, kY(oy + (fy1 - q.y) * s)); }, vid = T + '/sk';
+  var inF = function(q){ return q.x >= fx0 - 1e-6 && q.x <= fx1 + 1e-6 && q.y >= fy0 - 1e-6 && q.y <= fy1 + 1e-6; };
+  var lay = sk.layers || {}, hidL = function(n){ var L = lay[n]; return L && L.on === false; };
+  sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
+    var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.id != null ? e.id : i) : null; delete n2.pv; delete n2.iso; delete n2.frame;
+    if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
+    else if (e.t === 'text') { n2.p = M(e.p); n2.h = Math.max(2.2, (e.h || 3.5) * s); } else { n2.c = M(e.c); n2.r = e.r * s; }
+    if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
+    o.ents.push(n2); });
+  (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = 2.3; n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+  var c = [M(P(fx0, fy0)), M(P(fx1, fy1))];
+  kView(o, vid, n, [[c[0].x, kY(c[0].y)], [c[1].x, kY(c[1].y)]], {}); pg.regions.push(kmRegion(o, vid));
+  kT(o, X + 136, 186, '1/' + n, 2.2, { ha:2, aid:vid + '/scale' });
+  return true;
+}
 // 部材の「加工図面に 出す もの」（部材マスター：drawing.out.mode＝auto・iso・full、top＝天面図も）
 function kmOut(k){ var p = kmPart(k); return (p && p.shape && p.shape.drawing && p.shape.drawing.out) || {}; }
 function kmSimple(k){ var om = kmOut(k).mode; if (om === 'iso') return true; if (om === 'full') return false; var p = kmPart(k), v = p.shape && p.shape.components && p.shape.components[0] && p.shape.components[0].shape && p.shape.components[0].shape.views;
@@ -195,6 +219,7 @@ function kmDetail(o, pg, g, X, B){
   kT(o, X + 2, 27.4, W + '×' + D2 + '×' + H + ' mm', 2.4);
   kT(o, X + 2, 31.6, g.sai.toFixed(3) + ' × ' + g.ks.length + '本 = ' + (g.sai * g.ks.length).toFixed(3) + ' 才', 2.4);
   if (g.kakou) { kT(o, X + 60, 23.2, g.kakou.slice(0, 34), 2.1, { aid:T + '/h/kakou1' }); if (g.kakou.length > 34) kT(o, X + 60, 27.4, g.kakou.slice(34, 68), 2.1, { aid:T + '/h/kakou2' }); }
+  if (kmSketch(o, pg, p, X, T)) return;
   var simple = kmSimple(k);
   // 斜め（寸法つき）
   var ia = simple ? { x0:X + 6, x1:X + 134, y0:40, y1:184 } : { x0:X + 6, x1:X + 134, y0:38, y1:100 };

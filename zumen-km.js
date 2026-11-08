@@ -183,9 +183,7 @@ function kmPgSite3(o, pg){
   var pP = function(x, z){ return Mp([x * s, -z * s]); }, pF = function(x, y){ return Mf([x * s, y * s]); }, pS = function(z, y){ return Ms([-z * s, y * s]); };
   kView(o, 'site/plan', n, [pP(X0, Z0), pP(X1, Z1)]); kView(o, 'site/front', n, [pF(X0, Y0), pF(X1, Y1)]); kView(o, 'site/right', n, [pS(Z0, Y0), pS(Z1, Y1)]);
   ['site/plan', 'site/front', 'site/right'].forEach(function(v){ pg.regions.push(kmRegion(o, v)); });
-  // GL
-  kL(o, pF(X0 - 150, 0), pF(X1 + 150, 0), 'site/front', false, '部材'); kT(o, pF(X0 - 150, 0)[0] - 1, pF(0, 0)[1] + 0.9, 'GL', 2.4, { ha:2, vid:'site/front', aid:'site/front/gl' });
-  kL(o, pS(Z1 + 150, 0), pS(Z0 - 150, 0), 'site/right', false, '部材'); kT(o, pS(Z0 - 150, 0)[0] + 1, pF(0, 0)[1] + 0.9, 'GL', 2.4, { vid:'site/right', aid:'site/right/gl' });
+  // GL と GL からの 寸法は 部材図では 出さない（本人 2026-11-08。施工図で 出す）
   // 平面：間口・奥行・奥行の 連なり（真ん中を 通る 外柵の 石＋石塔の 下の 段）
   kD(o, pP(X0, Z1), pP(X1, Z1), [0, 1], 6, n, 'site/plan/W', 'site/plan');
   kD(o, pP(X0, Z0), pP(X0, Z1), [-1, 0], 8, n, 'site/plan/D', 'site/plan');
@@ -195,15 +193,14 @@ function kmPgSite3(o, pg){
   if (tb.length) fz.push([Math.min.apply(null, tb.map(function(b){ return b.z0; })), Math.max.apply(null, tb.map(function(b){ return b.z1; }))]);
   var zs = []; fz.forEach(function(q){ zs.push(q[0], q[1]); }); zs.push(Z0, Z1); zs = zs.map(function(z){ return Math.round(z * 10) / 10; }).sort(function(a, b){ return a - b; }).filter(function(z, i, a){ return !i || z - a[i - 1] > 0.5; });
   for (var i = 0; i < zs.length - 1; i++) kD(o, pP(X1, zs[i]), pP(X1, zs[i + 1]), [1, 0], 6, n, 'site/plan/z' + i, 'site/plan', { h:2 });
-  // 正面：間口・高さ（GL から）・埋まる 深さ・外柵の 高さ
+  // 正面：間口・全体の 高さ（いちばん 下の 石から）・外柵の 高さ
   kD(o, pF(X0, Y0), pF(X1, Y0), [0, 1], 7, n, 'site/front/W', 'site/front');
-  kD(o, pF(X1, 0), pF(X1, Y1), [1, 0], 14, n, 'site/front/H', 'site/front', { text:'GL+<>' });
+  kD(o, pF(X1, Y0), pF(X1, Y1), [1, 0], 14, n, 'site/front/H', 'site/front');
   var fen = KM2.pay.parts.filter(function(p){ return p.grp === 'fence'; });
   if (fen.length) { var edge = fen.filter(function(p){ return Math.abs(p.box.x1 - X1) < 1; })[0];
-    if (edge && edge.box.y1 > 0) kD(o, pF(X1, 0), pF(X1, edge.box.y1), [1, 0], 6, n, 'site/front/fenceH', 'site/front', { h:2 });
+    if (edge) kD(o, pF(X1, edge.box.y0), pF(X1, edge.box.y1), [1, 0], 6, n, 'site/front/fenceH', 'site/front', { h:2 });
     var hi = fen.reduce(function(a, p){ return p.box.y1 > a.box.y1 ? p : a; }, fen[0]);
-    if (hi.box.y1 > (edge ? edge.box.y1 : 0) + 50) kD(o, pF(X0, 0), pF(X0, hi.box.y1), [-1, 0], 11, n, 'site/front/fenceTop', 'site/front', { text:'GL+<>', h:2.1 }); }
-  if (Y0 < -1) kD(o, pF(X0, Y0), pF(X0, 0), [-1, 0], 5, n, 'site/front/bury', 'site/front', { h:2 });
+    if (hi.box.y1 > (edge ? edge.box.y1 : 0) + 50) kD(o, pF(X0, hi.box.y0), pF(X0, hi.box.y1), [-1, 0], 8, n, 'site/front/fenceTop', 'site/front', { h:2.1 }); }
   // 右側面：奥行・いちばん 前の 石（階段）の 高さ
   kD(o, pS(Z1, Y0), pS(Z0, Y0), [0, 1], 6, n, 'site/right/D', 'site/right');
   var fr = fen.filter(function(p){ return Math.abs(p.box.z1 - Z1) < 1 && p.box.x0 < 0 && p.box.x1 > 0; })[0];
@@ -213,8 +210,6 @@ function kmPgSite3(o, pg){
   var pay = KM2.pay, nx = Math.max(Xs + (Z1 - Z0) * s / 2 + 12, 175), ny = 24, J = pay.joint || {}, gl = pay.gl || {}, notes = [];
   if (J.h != null) notes.push('目地　横・奥行 ' + J.h + '／高さ ' + J.v);
   if (pay.open != null) notes.push('納骨室の 開口部 ' + Math.round(pay.open) + '（' + (J.open || 270) + ' 以上）');
-  if (gl.glH != null) notes.push('GL から 腰石の 上 ' + gl.glH + '（埋まる ' + Math.round(gl.bury) + '）');
-  if (gl.stepGL != null) notes.push('階段の 上 GL+' + Math.round(gl.stepGL));
   notes.push('寸法は 目地を 引いた 製作寸法（mm）');
   var st = {}; KM2.bundles.forEach(function(B){ if (B.stone) st[B.title] = B.stone; }); var sl = Object.keys(st).map(function(t){ return t + ' ' + st[t]; }); if (sl.length) notes.push('石種　' + sl.join('／'));
   kT(o, nx, ny, '注記', 3, { aid:'site/notes/h' }); notes.forEach(function(t, i){ kT(o, nx, ny + 5.5 * (i + 1), '・' + t, 2.5, { aid:'site/notes/' + i }); });
@@ -328,7 +323,7 @@ function kmDetail(o, pg, g, X, B){
 
 // ── 直しを 当てる ──
 function kmShiftItem(it, dx, dy){ ['a', 'b', 'c', 'p', 'off'].forEach(function(f){ if (it[f]) it[f] = P(it[f].x + dx, it[f].y + dy); }); if (it.v) it.v = it.v.map(function(q){ return { x:q.x + dx, y:q.y + dy, b:q.b }; }); }
-var KM_DF = ['text', 'th', 'al', 'at', 'fmt', 'dec'];
+var KM_DF = ['text', 'th', 'al', 'at', 'fmt', 'dec', 'tx'];
 function kmApply(pg, o){
   var tpl = kmTpl(), lost = [];
   function ovOf(aid){ if (KMED.ov[aid]) return KMED.ov[aid]; var T = aid && Object.keys(tpl).filter(function(t){ return aid.indexOf(t + '/') === 0; })[0]; return T && tpl[T].ov && tpl[T].ov[aid] || null; }

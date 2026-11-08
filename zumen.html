@@ -352,9 +352,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <div id="printArea"></div>
 
 <script src="buzai-engine.js?v=0.8.5"></script>
-<script src="zumen-km.js?v=0.9.0"></script>
+<script src="zumen-km.js?v=0.9.1"></script>
 <script>
-var APP_VER = "v0.9.0";
+var APP_VER = "v0.9.1";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1086,8 +1086,12 @@ function dimGeom(d){
   var rot = Math.atan2(u.y, u.x);
   if (rot > PI / 2 + 1e-6) rot -= PI; if (rot <= -PI / 2 + 1e-6) rot += PI;
   var up = P(-Math.sin(rot), Math.cos(rot)), mid = mulp(addp(A2, B2), 0.5);
-  var s = dimText(d, val);
-  return { lines:lines, arrows:arrows, al:al, at:d.at || S.arrowType, val:val, text:{ t:'text', p:addp(mid, mulp(up, th * 0.35)), h:th, rot:rot, s:s, ha:1, va:0, wf:1 }, n:n };
+  var s = dimText(d, val), e = P(Math.cos(rot), Math.sin(rot)), tx = d.tx || 0;
+  // 文字を 寸法線に 沿って ずらす（tx）。矢印の 外へ 出したら 寸法線を 文字の 下まで 伸ばす（AutoCAD と 同じ）
+  if (tx && L2 > 1e-9) { var hw = String(s).length * th * 0.45 + th * 0.3, ta = dot(sub(A2, mid), e), tb = dot(sub(B2, mid), e), lo = Math.min(ta, tb), hi = Math.max(ta, tb);
+    if (tx + hw > hi) lines.push([addp(mid, mulp(e, hi)), addp(mid, mulp(e, tx + hw))]);
+    if (tx - hw < lo) lines.push([addp(mid, mulp(e, lo)), addp(mid, mulp(e, tx - hw))]); }
+  return { lines:lines, arrows:arrows, al:al, at:d.at || S.arrowType, val:val, text:{ t:'text', p:addp(addp(mid, mulp(e, tx)), mulp(up, th * 0.35)), h:th, rot:rot, s:s, ha:1, va:0, wf:1 }, n:n, e:e, mid:mid };
 }
 function dimText(d, val){ var keep = S.mmDec; if (d.dec > keep) S.mmDec = d.dec; var v = fmtLen(val * (d.k || 1), d.fmt); S.mmDec = keep; if (d.text) return d.text.indexOf('<>') >= 0 ? d.text.replace('<>', v) : d.text; return v; }
 
@@ -1564,11 +1568,17 @@ function dimGrips(d){ var g = dimGeom(d), L = g.lines, mid = null;
   // 寸法線の 中ほど（矢印の 間の 線）
   var A2 = addp(d.a, mulp(g.n, dot(sub(d.off, d.a), g.n))), B2 = addp(d.b, mulp(g.n, dot(sub(d.off, d.b), g.n)));
   mid = mulp(addp(A2, B2), 0.5);
-  return [{ k:'a', p:d.a }, { k:'b', p:d.b }, { k:'off', p:mid }]; }
+  var tp = addp(mid, mulp(g.e, d.tx || 0));
+  // txt＝文字の つまみ（寸法線に 沿って 文字を ずらす・横へ 引くと 寸法線も）。文字が 真ん中の ときは off と 重なる ので 文字の 上に 置く
+  return [{ k:'a', p:d.a }, { k:'b', p:d.b }, { k:'off', p:mid }, { k:'txt', p:addp(tp, mulp(P(-g.e.y, g.e.x), (d.th > 0 ? d.th : textH()) * 0.9)) }]; }
 function selDimObj(){ return ST.selDim ? D.dims.filter(function(x){ return x.id === ST.selDim; })[0] : null; }
 function hitGrip(sx, sy){ var d = selDimObj(); if (!d) return null; var gs = dimGrips(d);
-  for (var i = 0; i < gs.length; i++) { var q = W2S(V, gs[i].p); if (Math.abs(q[0] - sx) <= 7 && Math.abs(q[1] - sy) <= 7) return gs[i].k; } return null; }
-function setGrip(d, k, p){ if (k === 'off') d.off = P(p.x, p.y); else d[k] = P(p.x, p.y); }
+  var best = null, bd = 1e9; for (var i = 0; i < gs.length; i++) { var q = W2S(V, gs[i].p), dd = Math.hypot(q[0] - sx, q[1] - sy); if (Math.abs(q[0] - sx) <= 7 && Math.abs(q[1] - sy) <= 7 && dd < bd) { bd = dd; best = gs[i].k; } } return best; }
+function setGrip(d, k, p){
+  if (k === 'txt') { var g = dimGeom(d), q = sub(p, mulp(P(-g.e.y, g.e.x), (d.th > 0 ? d.th : textH()) * 0.9)), mid0 = g.mid;
+    var along = dot(sub(q, mid0), g.e), across = sub(sub(q, mid0), mulp(g.e, along));
+    d.tx = Math.abs(along) < 1e-6 ? 0 : along; d.off = addp(d.off, across); return; }
+  if (k === 'off') d.off = P(p.x, p.y); else d[k] = P(p.x, p.y); }
 function hitDim(p){
   var tol = 6 / V.s;
   for (var i = D.dims.length - 1; i >= 0; i--) {
@@ -1581,7 +1591,7 @@ function hitDim(p){
 function onClick(p, raw, ev){
   var t = ST.tool;
   if (t === 'select' && ST.hotGrip && selDimObj()) {
-    pushUndo(); setGrip(selDimObj(), ST.hotGrip, ST.hotGrip === 'off' ? raw : p); ST.hotGrip = null; setMsg(''); changed(); return;
+    pushUndo(); setGrip(selDimObj(), ST.hotGrip, ST.hotGrip === 'off' || ST.hotGrip === 'txt' ? raw : p); ST.hotGrip = null; setMsg(''); changed(); return;
   }
   if (t === 'select') {
     var d = hitDim(raw);
@@ -2711,10 +2721,10 @@ cv.addEventListener('pointermove', function(ev){
     if (drag.type === 'pan') { V.ox += q[0] - drag.lx; V.oy += q[1] - drag.ly; drag.lx = q[0]; drag.ly = q[1]; redraw(); }
     else if (drag.type === 'win') { ST.win = { a:drag.w, b:w }; redraw(); }
     else if (drag.type === 'dimmove') { drag.dim.off = w; VER++; redraw(); }
-    else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
+    else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' || drag.k === 'txt' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
   }
   // スナップ（点を 取る 道具だけ）
-  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off');
+  var needSnap = ['measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt');
   if (ST.tool === 'select' && ST.hotGrip === 'off') redraw();
   ST.snap = needSnap && !(drag && drag.moved) && !(ST.tool === 'dim' && ST.pts.length === 2) ? findSnap(q[0], q[1]) : null;
   var p = ST.snap ? ST.snap.p : w;
@@ -2742,7 +2752,7 @@ function endPtr(ev){
     return;
   }
   if (dg.type === 'maybe' && !dg.moved) {
-    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off') ? findSnap(q[0], q[1]) : null;
+    var raw = S2W(q[0], q[1]), sn = ['measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt') ? findSnap(q[0], q[1]) : null;
     if (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'win1' || ST.sw.phase === 'win2')) sn = null;
     if (ST.tool === 'dim' && ST.pts.length === 2) sn = null;
     var p = sn ? sn.p : applyOrtho(raw, ev);

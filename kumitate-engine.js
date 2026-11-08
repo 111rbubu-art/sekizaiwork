@@ -254,7 +254,8 @@ var KM = (function(){
     var W = S.size.W, Dd = S.size.D, parts = {};
     S.parts.forEach(function(q){
       parts[q.key] = { name:q.name, no:String(q.no), grp:S.kind, w:q.w, h:q.h, d:q.d, visible:true, parent:null,
-        offX:r1(q.at.x - W / 2), offY:q.at.y, offZ:r1(Dd / 2 - (q.at.z + q.d)), shape:q.part || null, finish:q.finish || '', setId:S.id, setAt:{ x:q.at.x, y:q.at.y || 0, z:q.at.z } };
+        offX:r1(q.at.x - W / 2), offY:q.at.y, offZ:r1(Dd / 2 - (q.at.z + q.d)), shape:q.part || null, finish:q.finish || '', setId:S.id, setAt:{ x:q.at.x, y:q.at.y || 0, z:q.at.z },
+        role:q.role || '', partId:q.partId || (q.part && q.part.id) || '', mirror:!!q.mirror, stone:q.stone || '', kakou:q.kakou || '', added:!!q.added };
     });
     return { label:S.name, colorGroup:S.kind === 'fence' ? 'fence' : 'tower', parts:parts, set:{ id:S.id, stretch:S.stretch || null, version:S.version || 0, size:S.size, place:S.place || null, fit:S.kind === 'fence' ? normFit(S) : null } };
   }

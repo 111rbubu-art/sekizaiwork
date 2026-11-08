@@ -92,6 +92,8 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .go{display:block;width:100%;margin-top:10px;background:var(--org);color:#fff;border:0;border-radius:8px;padding:8px 10px;font-weight:700}
 .pick{cursor:pointer;display:flex;justify-content:space-between;width:100%;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:4px;background:#fff;text-align:left;color:var(--fg)}
 .pick.on{border-color:var(--org);background:#fff4ea}
+#busy{position:fixed;left:50%;top:70px;transform:translateX(-50%);z-index:50;background:#223;color:#fff;padding:10px 18px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:14px;display:none}
+#busy.ok{background:#1d7a3a}#busy.ng{background:#b42020}
 .tg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px}
 .tc{position:relative;cursor:pointer;border:1px solid var(--line);border-radius:8px;background:#fff;padding:3px;text-align:center;font-size:11px;line-height:1.3;color:var(--fg)}
 .tc.on{border-color:var(--org);background:#fff4ea;box-shadow:0 0 0 1px var(--org)}
@@ -160,7 +162,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.8.0"></script>
 <script src="zumen-hlr.js?v=0.8.0"></script>
 <script>
-var APP_VER = 'v0.8.0';
+var APP_VER = 'v0.8.1';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -207,7 +209,7 @@ function renderLeft(){
     keys.forEach(function(vk){
       var n = Object.keys(vs[vk].parts || {}).length, isSet = !!vs[vk].set;
       h += '<button class="it' + (ST.sel[K.k] === vk ? ' on' : '') + '" data-k="' + K.k + '" data-v="' + esc(vk) + '">' + (isSet ? '🧱 ' : '') + esc(vs[vk].label || vk) +
-        (n ? '<span class="tag"' + (isSet ? ' style="background:#dff3e4;color:#1d7a3a"' : '') + '>' + (isSet ? 'セット ' : '箱 ') + n + '</span>' : '') + '</button>';
+        (n ? '<span class="tag"' + (isSet ? ' style="background:#dff3e4;color:#1d7a3a"' : '') + '>' + (isSet ? 'セット ' : '箱 ') + n + (isSet && vs[vk].set.version ? '・版 ' + vs[vk].set.version : '') + '</span>' : '') + '</button>';
     });
     if (K.k === 'tower') {
       h += '<button class="it" id="bSetFile">🧱 セットを 読む（.json）</button>';
@@ -290,18 +292,25 @@ function spSavePart(w, p){
   return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', PART_DIR).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', PART_DIR + '/履歴'); })
     .then(function(){ p.version = d.version; p.savedAt = d.savedAt; p.__sp = d.version; });
 }
+// 保存中などの 知らせ（上の 真ん中）。ms を 渡すと その あと 消える
+function busy(msg, cls, ms){ var b = $('busy'); if (!b) { b = document.createElement('div'); b.id = 'busy'; document.body.appendChild(b); }
+  clearTimeout(busy.t); if (!msg) { b.style.display = 'none'; return; } b.className = cls || ''; b.textContent = msg; b.style.display = 'block'; if (ms) busy.t = setTimeout(function(){ b.style.display = 'none'; }, ms); }
+var SAVING = false;
 function spSaveSet(S){
-  var w = spHost(); if (!w) return Promise.resolve(false);
+  var w = spHost(); if (!w || SAVING) return Promise.resolve(false); SAVING = true;
   var ids = {}; (S.slots || []).forEach(function(sl){ if (sl.part && LIB[sl.part.id]) ids[sl.part.id] = 1; });
-  return Object.keys(ids).reduce(function(pr, id){ return pr.then(function(){ return spSavePart(w, LIB[id]); }); }, Promise.resolve()).then(function(){
+  var ks = Object.keys(ids), todo = ks.filter(function(id){ var p = LIB[id]; return !(p.__sp && p.__sp === (p.version || 0)); }), n = 0;
+  busy('☁️ SharePoint に 保存中…' + (todo.length ? '（部材 0 / ' + todo.length + '）' : ''));
+  return ks.reduce(function(pr, id){ return pr.then(function(){ var go = todo.indexOf(id) >= 0; return spSavePart(w, LIB[id]).then(function(){ if (go) busy('☁️ SharePoint に 保存中…（部材 ' + (++n) + ' / ' + todo.length + '）'); }); }); }, Promise.resolve()).then(function(){
+  busy('☁️ SharePoint に 保存中…（セット）');
   (S.slots || []).forEach(function(sl){ if (sl.part && LIB[sl.part.id]) sl.part.version = LIB[sl.part.id].version; }); libSave();
   var d = JSON.parse(JSON.stringify(S)); d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString();
   var txt = JSON.stringify(d);
   return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', SET_DIR); }).then(function(){
     var d = JSON.parse(JSON.stringify(S)); d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString();
     return w.uploadJsonToFolderPassFromTekkyo(JSON.stringify(d), d.id + '_v' + d.version + '.json', SET_DIR + '/履歴').then(function(){ return d; });
-  }).then(function(d){ putSet(d, true); renderLeft(); run(); alert('SharePoint に 保存しました（版 ' + d.version + '）\n' + SET_DIR + '/' + d.id + '.json'); return true; })
-    .catch(function(e){ alert('SharePoint に 保存 できませんでした\n' + (e && e.message || e)); return false; });
+  }).then(function(d){ SAVING = false; putSet(d, true); renderLeft(); run(); busy('✓ 保存しました：' + d.name + '（版 ' + d.version + '・部材 ' + n + ' 個を 更新）', 'ok', 6000); return true; })
+    .catch(function(e){ SAVING = false; busy(''); alert('SharePoint に 保存 できませんでした\n' + (e && e.message || e)); return false; });
 }
 // SharePoint の セットを ぜんぶ 読む（この 端末にも 覚える）
 function spLoadSets(say){

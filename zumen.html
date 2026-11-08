@@ -310,6 +310,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
     <span class="tag">🧊 部材設計</span><b class="pded" id="pdName"></b><span class="pdtag pded" id="pdVer"></span>
     <span class="pdseg pded"><button id="pdModeChip" class="on" title="図の 数字を 押して 直す">🔢 寸法で 直す</button><button id="pdModeDraw" title="図面の 画面で かいて［🧊 部材に する］で 形を 決める">✏ 図面で かく</button></span><b class="pdls">部材ライブラリ <span class="muted" id="pdLibWhere" style="color:#cbd5e1;font-weight:400"></span></b>
     <span class="sp"></span>
+    <button class="btn pdls" id="bPdMaster2" title="部材ライブラリの 一覧・名前や 役目・下書き／登録・保存と 履歴">🗂 部材マスター</button>
     <button class="btn pdls" id="bPdKumi" title="墓所に 部材・セット（石塔・外柵）を 並べる 3D。SharePoint の セットも ここから 使える">🏯 組み立て</button>
     <button class="btn pr pdls" id="bPdNew">＋ 見本から 新しく</button>
     <label class="btn pdls">💻 ファイルから<input type="file" id="fPdOpen2" accept=".json" hidden></label>
@@ -317,6 +318,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
     <button class="btn pded pdchiponly" id="pdUndo" title="直す 前に 戻す">↶ 戻す</button>
     <button class="btn pr" id="bPdLib" style="display:none">☁️ 部材を 開く</button>
     <button class="btn pded" id="bPdSave" title="部材ライブラリに 保存（業務アプリから 開いた ときは SharePoint）">💾 保存</button>
+    <button class="btn ok pded" id="bPdMaster" style="display:none" title="図から 形を 作り直して 部材マスターに 渡す（保存は 部材マスターで）">✓ 図から 反映して マスターへ 戻る</button>
     <button class="btn ok pded" id="bPdToDraw" title="正面図・側面図と 寸法を 今の 図面に 入れる（DXF・PDF は いつもの ボタンで）">📐 図面に 入れる</button>
   </div>
   <div id="pdList"></div>
@@ -352,11 +354,11 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <div id="printArea"></div>
 
 <script src="buzai-engine.js?v=0.8.5"></script>
-<script src="zumen-hlr.js?v=0.9.3"></script>
-<script src="buzai-lib.js?v=0.9.3"></script>
-<script src="zumen-km.js?v=0.9.3"></script>
+<script src="zumen-hlr.js?v=0.9.4"></script>
+<script src="buzai-lib.js?v=0.9.4"></script>
+<script src="zumen-km.js?v=0.9.4"></script>
 <script>
-var APP_VER = "v0.9.3";
+var APP_VER = "v0.9.4";
 document.getElementById('ver').textContent = APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -3941,7 +3943,7 @@ function pdGetDef(key){
 }
 function pdEdit(def){
   if (!def || def.schema !== 'buzai/1') { alert('部材の ファイルでは ありません'); return; }
-  PD.def = def; PD.hist = []; PD.sel = null; PD.vb = null; pdHidePop();
+  PD.def = def; PD.master = false; PD.hist = []; PD.sel = null; PD.vb = null; pdHidePop();
   document.body.classList.remove('pdlist'); pdKeep(); pdRender(); pdFaces();
   var el = document.getElementById('pd3d');
   if (PD.viewer) { PD.viewer.resize(); PD.viewer.refit(); return; }
@@ -4023,11 +4025,32 @@ function pdLayout(big, keys){
   return { vs:vs, off:V };
 }
 function pdClose(){ if (!PD) return; pdDrawMode(false); if (PD.viewer) PD.viewer.dispose(); PD = null; document.body.classList.remove('pdmode'); pdHidePop(); }
+// 部材マスター（buzai.html）から 開いた 部材：図面で 直して［✓ 図から 反映して マスターへ 戻る］→ マスターの bmTake へ（保存・版は マスターで）
+function pdFromMaster(){
+  var d = null; try { d = JSON.parse(localStorage.getItem('zumen.part') || 'null'); } catch (e) {}
+  if (!d || !d.__master || d.__back) return;
+  if (BM && BM.active) { if (BM.km) { kmSaveEd(); exitBM(); kmSaveEd(); } else { alert('部材図を 直して いる 間は 開けません。部材図を 閉じて から もう一度［✎ 図面で 直す］を 押して ください'); return; } }
+  if (PD && PD.saveMain) pdDrawMode(false);
+  if (!PD) pdOpen();
+  delete d.__master; pdEdit(d); PD.master = true; pdRender(); pdDrawMode(true);
+  setMsg('部材マスターから 開きました。図を 直して［✓ 図から 反映して マスターへ 戻る］（寸法・注記は 図面に 残り、形は 正面・側面・天面の 線から）');
+}
+function pdToMaster(){
+  if (!PD || !PD.master) return;
+  if (PD.saveMain) { var m = mkAuto(); if (m && m.err) { alert(m.err); return; }
+    if (m) { setTool('mkpart'); ST.mk = m; mkBuild(); } else if (!confirm('図に 正面の 線が ありません。形は そのまま（図だけ）で 戻しますか')) return;
+    pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; }
+  var d = clone(PD.def); d.__master = 1; d.__back = Date.now();
+  try { localStorage.setItem('zumen.part', JSON.stringify(d)); } catch (e) {}
+  try { if (window.opener && !window.opener.closed && window.opener.bmTake) { window.opener.bmTake(clone(PD.def)); window.opener.focus(); } } catch (e) {}
+  setMsg('部材マスターに 渡しました。部材マスターの 画面で［💾 保存］すると 版が 上がります');
+}
 function pdKeep(){ try { localStorage.setItem('zumen.part', JSON.stringify(PD.def)); } catch (e) {} }
 function pdRender(){
   var sv = BZ.solve(PD.def); PD.sv = sv;
   document.getElementById('pdName').textContent = PD.def.name;
-  document.getElementById('pdVer').textContent = PD.def.version ? '版 ' + PD.def.version : 'まだ 保存して いません';
+  document.getElementById('pdVer').textContent = (PD.master ? '🗂 部材マスターから・' : '') + (PD.def.version ? '版 ' + PD.def.version : 'まだ 保存して いません');
+  document.getElementById('bPdMaster').style.display = PD.master ? '' : 'none'; document.getElementById('bPdToDraw').style.display = PD.master ? 'none' : '';
   var errs = Object.keys(sv.err);
   document.getElementById('pdErr').textContent = errs.length ? '⚠ ' + errs.map(function(k){ return BZ.nameOf(PD.def, k) + '：' + sv.err[k]; }).join('　') : '';
   try { PD.m = BZ.model(PD.def, sv); } catch (e) { document.getElementById('pdErr').textContent = '⚠ 形を 作れません：' + e.message; return; }
@@ -4232,6 +4255,7 @@ function pdPutViews(fx, fy, only){
 }
 // 保存・開く（業務アプリから 開いた ときは SharePoint の 部材ライブラリ、それ以外は このパソコン）
 function pdSave(){
+  if (PD.master) { pdToMaster(); return; }
   if (PD.saveMain) { pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; }
   var def = clone(PD.def); def.version = (def.version || 0) + 1; def.savedAt = new Date().toISOString();
   var fn = def.id + '.json', txt = JSON.stringify(def, null, 1), w = spParent();
@@ -4275,6 +4299,8 @@ function pdOpenLib(){
   document.getElementById('pdMkSee').onclick = function(){ if (!PD || !PD.saveMain) return; if (!mkAutoApply(false)) setTool('mkpart'); };
   document.getElementById('pdRedraw').onclick = function(){ if (!PD || !PD.saveMain) return; if (D.ents.length && !confirm('今の 図を 消して、部材の 形から かき直します。よろしいですか')) return;
     pushUndo(); var doc = pdSketchDoc(); D.ents = doc.ents; D.dims = doc.dims; D.layers = doc.layers; renderLayers(); changed(); fit(); };
+  document.getElementById('bPdMaster').onclick = pdToMaster;
+  document.getElementById('bPdMaster2').onclick = function(){ window.open('buzai.html', 'buzai'); };
   document.getElementById('bPdKumi').onclick = function(){ window.open('kumitate.html', 'kumitate'); }; // 組み立ては この 画面を 通して 業務アプリの SharePoint を 使う
   document.getElementById('bPdNew').onclick = function(){ var d = clone(BZ_KORO); d.id = 'part_' + Date.now().toString(36); d.version = 0; pdEdit(d); };
   document.getElementById('fPdOpen2').onchange = function(ev){ var f = ev.target.files[0]; if (!f) return; ev.target.value = ''; f.text().then(function(t){ try { pdEdit(JSON.parse(t)); } catch (e) { alert('開けませんでした：' + e.message); } }); };
@@ -4429,7 +4455,7 @@ ensureTitle();
 // 組み立てから（kumitate.html の［📐 図面に する］が #km… で 開く）
 var _kmH = 0;
 document.getElementById('bKm').onclick = function(){ kmEnter(false); };
-function kmHash(){ if (/^#km/.test(location.hash)) { if (PD && PD.saveMain) return; kmEnter(!!(BM && BM.active && BM.km)); } }
+function kmHash(){ if (/^#pd/.test(location.hash)) { pdFromMaster(); return; } if (/^#km/.test(location.hash)) { if (PD && PD.master) pdClose(); if (PD && PD.saveMain) return; kmEnter(!!(BM && BM.active && BM.km)); } }
 window.addEventListener('hashchange', kmHash); kmHash();
 window.addEventListener('storage', function(ev){ if (ev.key === 'kumitate.zumen' && BM && BM.active && BM.km) toastMsg('組み立てが 変わりました。［🔄 立体から 作り直す］で 今の 形に できます（手の 直しは 当て直し）', 8000); });
 </script>

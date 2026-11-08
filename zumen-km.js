@@ -181,7 +181,9 @@ function kmPgDetail(o, pg){
   pg.groups.forEach(function(g, j){ kmDetail(o, pg, g, j ? 148.5 : 8, B); });
   kmFrame(o, pg, '【部品詳細図】　' + B.title, '部品詳細図');
 }
-function kmSimple(k){ var p = kmPart(k), v = p.shape && p.shape.components && p.shape.components[0] && p.shape.components[0].shape && p.shape.components[0].shape.views;
+// 部材の「加工図面に 出す もの」（部材マスター：drawing.out.mode＝auto・iso・full、top＝天面図も）
+function kmOut(k){ var p = kmPart(k); return (p && p.shape && p.shape.drawing && p.shape.drawing.out) || {}; }
+function kmSimple(k){ var om = kmOut(k).mode; if (om === 'iso') return true; if (om === 'full') return false; var p = kmPart(k), v = p.shape && p.shape.components && p.shape.components[0] && p.shape.components[0].shape && p.shape.components[0].shape.views;
   if (!v) return KM2.geo[k].tris.length / 9 <= 12;
   var r4 = function(q){ return !q || (q.out && q.out.length === 4); };
   return r4(v.front) && r4(v.side) && r4(v.top) && !(v.front.holes || []).length && !(v.side && ((v.side.holes || []).length || (v.side.cuts || []).length)) && !(v.top && ((v.top.holes || []).length || (v.top.cuts || []).length)); }
@@ -210,7 +212,7 @@ function kmDetail(o, pg, g, X, B){
   if (simple) return;
   // 三面（正面・右側面・平面。左の 面から の 穴が あれば 左側面も）
   var v = (p.shape.components[0].shape.views) || {}, hasL = ((v.side && v.side.holes) || []).some(function(h){ return h.from === 'left'; });
-  var needTop = !!((v.top && (((v.top.holes || []).length) || ((v.top.cuts || []).length))) || (v.side && (v.side.cuts || []).length));
+  var needTop = !!(kmOut(k).top || (v.top && (((v.top.holes || []).length) || ((v.top.cuts || []).length))) || (v.side && (v.side.cuts || []).length));
   var rot = needTop && D2 > 2.5 * W;
   var area = { x0:X + 4, x1:X + 138, y0:106, y1:186 }, needW = W + D2 + (hasL ? D2 : 0), needH = H + (needTop ? (rot ? W : D2) : 0);
   var m = kmPick(needW, needH, (area.x1 - area.x0) - 34 - (hasL ? 12 : 0), (area.y1 - area.y0) - 22), t = 1 / m;
@@ -367,10 +369,11 @@ function kmSaveEd(){ if (!KMED || !KM2) return; KMED.payT = KM2.pay.t; kmLs('zum
 
 // ── ページの 一覧・作り直し ──
 function kmPagesDef(){
-  var L = [{ key:'site/iso', gen:'siteIso', title:'配置図 斜め' }, { key:'site/3v', gen:'site3', title:'配置図 三面' }];
+  var one = KM2.pay.only === 'detail';   // 部材マスターの［📄 加工図面］：この 部材の 部品詳細図 だけ
+  var L = one ? [] : [{ key:'site/iso', gen:'siteIso', title:'配置図 斜め' }, { key:'site/3v', gen:'site3', title:'配置図 三面' }];
   KM2.bundles.forEach(function(B){
-    L.push({ key:B.id + '/table', gen:'table', title:B.title + ' 部品寸法表', B:B });
-    L.push({ key:B.id + '/index', gen:'index', title:B.title + ' 加工指示図', B:B });
+    if (!one) { L.push({ key:B.id + '/table', gen:'table', title:B.title + ' 部品寸法表', B:B });
+      L.push({ key:B.id + '/index', gen:'index', title:B.title + ' 加工指示図', B:B }); }
     for (var i = 0; i < B.groups.length; i += 2) { var gs = B.groups.slice(i, i + 2); L.push({ key:B.id + '/detail/' + gs.map(function(g){ return g.type; }).join('+'), gen:'detail', title:B.title + ' 詳細 ' + gs.map(function(g){ return g.no; }).join('・'), B:B, groups:gs }); }
   });
   return L;

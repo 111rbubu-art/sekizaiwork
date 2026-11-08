@@ -177,11 +177,42 @@ function kmPgIndex(o, pg){
   kmFrame(o, pg, '加工指示図　【' + B.title + '】', '加工指示図'); kT(o, 12, 186, '縮尺 1/' + n, 2.6, { aid:pg.key + '/scale' });
 }
 function kmPgDetail(o, pg){
-  var B = pg.B; kL(o, [148.5, 15], [148.5, 190], null, false, '枠');
+  var B = pg.B;
+  if (pg.sheet) { pg.groups.forEach(function(g, j){ kmSheetPut(o, pg, g, j * 148.5, B); }); return; }
+  kL(o, [148.5, 15], [148.5, 190], null, false, '枠');
   pg.groups.forEach(function(g, j){ kmDetail(o, pg, g, j ? 148.5 : 8, B); });
   kmFrame(o, pg, '【部品詳細図】　' + B.title, '部品詳細図');
 }
-// 部材の 図面（部材マスターで かいた 1 枚）に 加工図面の 範囲（e.frame）が あれば、その 枠の 中を そのまま 縮めて 入れる
+// 部材の 図枠（部材マスターの 図面で 直す＝加工図面 1 枚）：{ fr, paper, n }。図枠が 無い・前の 範囲の 枠だけ なら null
+function kmSheetOf(g){ var p = kmPart(g.ks[0]), sk = p && p.shape && p.shape.sketch; if (!sk || !sk.ents) return null;
+  var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0]; return fr ? { fr:fr, sk:sk, paper:fr.sheet.paper === 'A4h' ? 'A4h' : 'A4', n:fr.sheet.n } : null; }
+// 図枠を 縮尺 そのままで ページに（X＝紙の 左。半分なら 0 か 148.5）。表題欄は 組み立ての 件名・石種で
+function kmSheetPut(o, pg, g, X, B){
+  var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = S0.sk, n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';
+  var fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity; fr.v.forEach(function(q){ fx0 = Math.min(fx0, q.x); fx1 = Math.max(fx1, q.x); fy0 = Math.min(fy0, q.y); fy1 = Math.max(fy1, q.y); });
+  var M = function(q){ return P(X + (q.x - fx0) * s, kY((fy1 - q.y) * s)); };
+  var inF = function(q){ return q.x >= fx0 - 1e-6 && q.x <= fx1 + 1e-6 && q.y >= fy0 - 1e-6 && q.y <= fy1 + 1e-6; };
+  var lay = sk.layers || {}, hidL = function(nm){ var L = lay[nm]; return L && L.on === false; };
+  sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
+    var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.id != null ? e.id : i) : null; delete n2.pv; delete n2.iso; delete n2.frame;
+    if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
+    else if (e.t === 'text') { n2.p = M(e.p); n2.h = (e.h || 3.5) * s; } else { n2.c = M(e.c); n2.r = e.r * s; }
+    if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
+    o.ents.push(n2); });
+  (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 2.5; n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+  var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
+  var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:(pg.no || 0) + ' / ' + (pg.tot || 0),
+    sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + (B.stone || ''), sub2:g.kakou || '',
+    ken:info.name || pay.name || '', zu:'加工図面（' + B.title + '）', scale:'1/' + n, date:pay.date || '' };
+  var dc = sheetDeco(S0.paper, inf);
+  dc.lines.forEach(function(l){ kL(o, [X + l[0], l[1]], [X + l[2], l[3]], null, false, '枠'); });
+  dc.texts.forEach(function(t){ kT(o, X + t.x, t.y, t.s, t.h, { ha:t.ha || 0, layer:'枠' }); });
+  if (S0.paper === 'A4h' && !X) kL(o, [148.5, 0], [148.5, 210], null, false, '枠');
+  kView(o, vid, n, [[X + dc.area.x0, dc.area.y0], [X + dc.area.x1, dc.area.y1]], {}); pg.regions.push(kmRegion(o, vid));
+}
+// （前の 形）部材の 図面に 加工図面の 範囲（e.frame）が あれば、その 枠の 中を そのまま 縮めて 入れる
 function kmSketch(o, pg, p, X, T){
   var sk = p && p.shape && p.shape.sketch; if (!sk || !sk.ents) return false;
   var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl'; })[0]; if (!fr) return false;
@@ -399,7 +430,11 @@ function kmPagesDef(){
   KM2.bundles.forEach(function(B){
     if (!one) { L.push({ key:B.id + '/table', gen:'table', title:B.title + ' 部品寸法表', B:B });
       L.push({ key:B.id + '/index', gen:'index', title:B.title + ' 加工指示図', B:B }); }
-    for (var i = 0; i < B.groups.length; i += 2) { var gs = B.groups.slice(i, i + 2); L.push({ key:B.id + '/detail/' + gs.map(function(g){ return g.type; }).join('+'), gen:'detail', title:B.title + ' 詳細 ' + gs.map(function(g){ return g.no; }).join('・'), B:B, groups:gs }); }
+    // 図枠の ある 部材：A4 横は 1 枚・A4 横の 半分は 2 つで 1 枚。図枠の 無い 部材は 今まで どおり 2 つで 1 枚
+    var plain = [], half = [], full = [];
+    B.groups.forEach(function(g){ var sh = kmSheetOf(g); (sh ? (sh.paper === 'A4h' ? half : full) : plain).push(g); });
+    var put = function(list, step, sheet){ for (var i = 0; i < list.length; i += step) { var gs = list.slice(i, i + step); L.push({ key:B.id + '/detail/' + gs.map(function(g){ return g.type; }).join('+'), gen:'detail', title:B.title + ' 詳細 ' + gs.map(function(g){ return g.no; }).join('・'), B:B, groups:gs, sheet:sheet }); } };
+    put(plain, 2, false); put(half, 2, true); put(full, 1, true);
   });
   return L;
 }
@@ -410,7 +445,7 @@ function kmRegen(pg){
 }
 function kmBuildAll(){
   var defs = kmPagesDef();
-  BM.pages = defs.map(function(d, i){ return { key:d.key, gen:d.gen, title:d.title, kind:'km', B:d.B, groups:d.groups, no:i + 1, tot:defs.length, N:1, doc:bmNewDoc() }; });
+  BM.pages = defs.map(function(d, i){ return { key:d.key, gen:d.gen, title:d.title, kind:'km', B:d.B, groups:d.groups, sheet:d.sheet, no:i + 1, tot:defs.length, N:1, doc:bmNewDoc() }; });
   BM.pages.forEach(function(pg){ kmRegen(pg); });
   KM2.lost = []; BM.pages.forEach(function(pg){ KM2.lost = KM2.lost.concat(pg.lost || []); });
   // 図が どこにも 無い 手の 直し

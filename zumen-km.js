@@ -464,7 +464,8 @@ function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { 
 function kmPanel(el){
   var pg = BM.pages[BM.cur], tpl = kmTpl(), h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';
   h += '<div class="muted">組み立ての 形から 作った ページです。寸法・文字・図は 手で 動かす・直す・消す・足すが できます。<b>直した 所は 覚えて</b>、組み立てを 変えて 作り直しても 当て直します。</div>';
-  h += '<div class="row"><button class="b2" id="kmRe">🔄 組み立ての 今の 形で 作り直す</button></div>';
+  var fromPd = KM2.pay && KM2.pay.master;
+  h += fromPd ? '<div class="row"><button class="b2 pr" id="kmRe">✎ 図面で 直すに 戻る</button></div><div class="muted">この 加工図面は 部材の 図面の 枠の 中です。形・寸法・注記は 図面で 直す ほうで 直して ください</div>' : '<div class="row"><button class="b2" id="kmRe">🔄 組み立ての 今の 形で 作り直す</button></div>';
   h += '<div class="row"><button class="b2" id="kmRev">△ 修正の 印を 置く</button></div>';
   var types = (pg.groups || []).map(function(g){ return g.type; });
   if (types.length) { h += '<div class="row"><button class="b2" id="kmTplSave">📌 この ページの 部材の 直しを ひな形に</button></div>';
@@ -474,7 +475,7 @@ function kmPanel(el){
   if (KM2.lost && KM2.lost.length) h += '<div class="muted" style="color:#c03">付け先が 無い 直し ' + KM2.lost.length + ' 件：' + KM2.lost.slice(0, 6).map(function(q){ return esc(q.what) + '（' + esc(String(q.aid || q.pg)) + '）'; }).join('、') + '　<a href="#" id="kmLostClr">捨てる</a></div>';
   h += '</div>';
   el.innerHTML = h;
-  document.getElementById('kmRe').onclick = function(){ kmEnter(true); };
+  document.getElementById('kmRe').onclick = function(){ if (fromPd) kmBackToPd(); else kmEnter(true); };
   document.getElementById('kmRev').onclick = function(){ setTool('rev'); };
   document.getElementById('kmClr').onclick = function(){ if (!confirm('この ページの 手の 直し（動かした・消した・足した もの）を 消して 自動に 戻します')) return;
     Object.keys(pg.vw).forEach(function(v){ delete KMED.vm[v]; delete KMED.man[v]; Object.keys(KMED.ov).forEach(function(a){ if (a.indexOf(v + '/') === 0) delete KMED.ov[a]; }); });

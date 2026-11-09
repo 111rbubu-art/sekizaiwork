@@ -362,9 +362,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-engine.js?v=0.8.5"></script>
 <script src="zumen-hlr.js?v=0.9.11"></script>
 <script src="buzai-lib.js?v=0.9.4"></script>
-<script src="zumen-km.js?v=0.9.13"></script>
+<script src="zumen-km.js?v=0.9.14"></script>
 <script>
-var APP_VER = "v0.9.13";
+var APP_VER = "v0.9.14";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var SHAKU = 1000 / 3.3; // 303.0303… mm
@@ -1082,6 +1082,7 @@ function dimDiaTo(d, w){ var c = P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), r 
   d.tx = L > r * 1.02 ? dot(sub(w, c), e) : 0; }
 function dimGeom(d){
   var th = d.th > 0 ? d.th : textH(), a = d.a, b = d.b, o = d.off, u;
+  if (d.mode === 'rad') return dimGeomRad(d, th);
   if (d.mode === 'dia') o = P((a.x + b.x) / 2, (a.y + b.y) / 2); // 直径：寸法線は 円の 中心を 通る（a・b＝円の 上の 向かい合う 2 点）
   if (d.mode === 'h') u = P(1, 0); else if (d.mode === 'v') u = P(0, 1); else if (d.mode === 'r') u = P(Math.cos(d.ang || 0), Math.sin(d.ang || 0));
   else { var L = dist(a, b); u = L > 1e-9 ? P((b.x - a.x) / L, (b.y - a.y) / L) : P(1, 0); }
@@ -1110,6 +1111,14 @@ function dimGeom(d){
     if (tx - hw < lo) lines.push([addp(mid, mulp(e, lo)), addp(mid, mulp(e, tx - hw))]); }
   return { lines:lines, arrows:arrows, al:al, at:d.at || S.arrowType, val:val, text:{ t:'text', p:addp(addp(mid, mulp(e, tx)), mulp(up, th * 0.35)), h:th, rot:rot, s:s, ha:1, va:0, wf:1 }, n:n, e:e, mid:mid };
 }
+// 半径（R）：a＝円の 中心、b＝矢印の 先（円の 上）、off＝引出線の 折れ。その 先は 横の 線（肩）で 文字は 横書き
+function dimGeomRad(d, th){ var a = d.a, b = d.b, o = d.off, r = dist(a, b), al = d.al > 0 ? d.al : S.arrow > 0 ? S.arrow : th, Lo = dist(o, b);
+  var dir = Lo > 1e-9 ? mulp(sub(o, b), 1 / Lo) : r > 1e-9 ? mulp(sub(b, a), 1 / r) : P(1, 0);
+  var s = dimText(d, r), hw = String(s).length * th * 0.45 + th * 0.3, sx = dir.x >= 0 ? 1 : -1, end = P(o.x + sx * hw * 2, o.y), tc = P(o.x + sx * hw, o.y + th * 0.35);
+  return { lines:[[b, o], [o, end]], arrows:[{ p:b, d:mulp(dir, -1) }], al:al, at:d.at || S.arrowType, val:r, text:{ t:'text', p:tc, h:th, rot:0, s:s, ha:1, va:0, wf:1 }, n:P(-dir.y, dir.x), e:P(1, 0), mid:o }; }
+// 半径の 引出線を p へ：矢印の 先は 中心と p を 結ぶ 線の 上（へこんだ 角＝中心の 向こう側 は そのまま）
+function dimRadTo(d, p){ var r = dist(d.a, d.b), L = dist(p, d.a); if (L < 1e-9 || r < 1e-9) return; var far = dot(sub(d.b, d.a), sub(d.off, d.a)) < 0, u = mulp(sub(p, d.a), (far ? -1 : 1) / L);
+  d.b = addp(d.a, mulp(u, r)); d.off = P(p.x, p.y); }
 function dimText(d, val){ var keep = S.mmDec; if (d.dec > keep) S.mmDec = d.dec; var v = fmtLen(val * (d.k || 1), d.fmt); S.mmDec = keep; if (d.text) return d.text.indexOf('<>') >= 0 ? d.text.replace('<>', v) : d.text; return v; }
 
 // ═════════ 描く ═════════
@@ -1483,6 +1492,7 @@ function moveDims(fn){
     var da = fn(d.a), db = fn(d.b), dofs = fn(d.off);
     if (da) { d.a.x += da.x; d.a.y += da.y; }
     if (db) { d.b.x += db.x; d.b.y += db.y; }
+    if (d.mode === 'rad') { var dr = da || db || dofs; if (dr && (da || db)) { d.off.x += dr.x; d.off.y += dr.y; } else if (dofs) { d.off.x += dofs.x; d.off.y += dofs.y; } return; }
     var g = dimGeom(d), n = g.n;
     var avg = P(((da ? da.x : 0) + (db ? db.x : 0)) / 2, ((da ? da.y : 0) + (db ? db.y : 0)) / 2);
     if (dofs && !da && !db) { d.off.x += dofs.x; d.off.y += dofs.y; }
@@ -1585,7 +1595,8 @@ function resolveDimMode(a, b, c){
   return 'a';
 }
 // 寸法の つまみ（a・b＝測る 2 点、off＝寸法線の 位置）
-function dimGrips(d){ var g = dimGeom(d), L = g.lines, mid = null;
+function dimGrips(d){ if (d.mode === 'rad') return [{ k:'b', p:d.b }, { k:'off', p:d.off }];
+  var g = dimGeom(d), L = g.lines, mid = null;
   // 寸法線の 中ほど（矢印の 間の 線）
   var A2 = addp(d.a, mulp(g.n, dot(sub(d.off, d.a), g.n))), B2 = addp(d.b, mulp(g.n, dot(sub(d.off, d.b), g.n)));
   mid = mulp(addp(A2, B2), 0.5);
@@ -1596,6 +1607,7 @@ function selDimObj(){ return ST.selDim ? D.dims.filter(function(x){ return x.id 
 function hitGrip(sx, sy){ var d = selDimObj(); if (!d) return null; var gs = dimGrips(d);
   var best = null, bd = 1e9; for (var i = 0; i < gs.length; i++) { var q = W2S(V, gs[i].p), dd = Math.hypot(q[0] - sx, q[1] - sy); if (Math.abs(q[0] - sx) <= 7 && Math.abs(q[1] - sy) <= 7 && dd < bd) { bd = dd; best = gs[i].k; } } return best; }
 function setGrip(d, k, p){
+  if (d.mode === 'rad') { if (k === 'b') { var rr = dist(d.a, d.b), LL = dist(p, d.a); if (LL > 1e-9) { var dv = sub(d.off, d.b); d.b = addp(d.a, mulp(sub(p, d.a), rr / LL)); d.off = addp(d.b, dv); } } else dimRadTo(d, p); return; }
   if (d.mode !== 'dia' && /^[φΦ]/.test(d.text || '') && k === 'txt') d.mode = 'dia'; // 前の φ の 寸法も 直径に
   if (d.mode === 'dia') { // 直径：どの つまみも 円の 中心の まわりに 回す（文字の つまみは 文字の 位置へ）
     if (k === 'txt') { // 文字の つまみは 線から 0.9 文字ぶん 上。行き先の 向きで 上を 決めて 線の 上の 点に 直す
@@ -2759,7 +2771,7 @@ cv.addEventListener('pointermove', function(ev){
     else if (drag.type === 'win') { ST.win = { a:drag.w, b:w }; redraw(); }
     else if (drag.type === 'dimmove') { var dd = drag.dim;
       if (dd.mode !== 'dia' && /^[φΦ]/.test(dd.text || '') && !drag.dia0) drag.dia0 = 1, dd.mode = 'dia'; // φ の 寸法は 直径として 回す
-      if (dd.mode === 'dia') { dimDiaTo(dd, w); } else dd.off = w; VER++; redraw(); }
+      if (dd.mode === 'dia') { dimDiaTo(dd, w); } else if (dd.mode === 'rad') dimRadTo(dd, w); else dd.off = w; VER++; redraw(); }
     else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' || drag.k === 'txt' || (selDimObj() || {}).mode === 'dia' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
   }
   // スナップ（点を 取る 道具だけ）
@@ -4101,11 +4113,11 @@ function skFrame(force, paper, n){
   ne.sheet.inf = PD && PD.def ? skSheetInfo(n) : {}; D.ents.push(ne); skSheetLabels(n); skSheetUi();
 }
 // 面の 名前（正面図 など）と 部材名の 行は 紙で 3.5mm・3mm に（前の 図は 名前で 見分ける）
-function skSheetLabels(n){ var nm = {}; PD_FACES.forEach(function(f){ nm[f[1]] = 1; }); var pn = PD && PD.def && PD.def.name, dF = 0;
+function skSheetLabels(n){ var nm = {}; PD_FACES.forEach(function(f){ nm[f[1]] = 1; }); var pn = PD && PD.def && PD.def.name;
   var isLine = function(e){ return pn && String(e.s).indexOf(pn + '　') === 0; };
-  D.ents.forEach(function(e){ if (e.t === 'text' && !e.iso && nm[e.s]) { var d = 4 * n - e.h; if (!dF) dF = d; e.p = P(e.p.x, e.p.y - d); e.h = 4 * n; e.lab = 1; } });   // 下へ 大きく（上は 寸法）
-  D.ents.forEach(function(e){ if (e.t === 'text' && e.note) e.h = 3 * n; });
-  D.ents.forEach(function(e){ if (e.t === 'text' && !e.iso && !e.note && !nm[e.s] && (isLine(e) || e.lab)) { var d = 3.5 * n - e.h; e.p = P(e.p.x, e.p.y - dF - d); e.h = 3.5 * n; e.lab = 1; } }); }
+  D.ents = D.ents.filter(function(e){ return !(e.t === 'text' && !e.iso && !e.note && !nm[e.s] && isLine(e)); });   // 名前・大きさの 行は 図枠の 上の 欄に ある ので 出さない
+  D.ents.forEach(function(e){ if (e.t === 'text' && !e.iso && nm[e.s] && Math.abs(e.h - 4 * n) > 1e-6) { var d = 4 * n - e.h; e.p = P(e.p.x, e.p.y - d); e.h = 4 * n; e.lab = 1; } });   // 下へ 大きく（上は 寸法）
+  D.ents.forEach(function(e){ if (e.t === 'text' && e.note) e.h = 3 * n; }); }
 function skSheetUi(){ var f = skSheet(), a = document.getElementById('pdPaper'), b = document.getElementById('pdScale'); if (!a || !b) return;
   if (!b.options.length) b.innerHTML = '<option value="0">自動（図が 入る 大きさ）</option>' + SHEET_N.map(function(n){ return '<option value="' + n + '">1/' + n + '</option>'; }).join('');
   if (f && f.sheet) { a.value = f.sheet.paper; b.value = String(f.sheet.n); } }
@@ -4141,14 +4153,14 @@ function skSheetDxf(){ var f = skSheet(); if (!f || !f.sheet) { alert('図枠が
 // 面の 図の 中の 線（3D から 隠れ線 計算）：外形・穴（図の 線）に 無い 線を 足す。見える 線＝部材_中の線、見えない＝部材_隠れ線（点線）
 // 例：水鉢の 前の 板の 縁、下面図の 下の 逃げ、上からの 穴（正面図では 点線）。図から 部材に 反映（mkAuto）は この 線を 使わない
 var SK_IN = '部材_中の線', SK_HV = { front:'front', side:'right', top:'top', back:'back', left:'left', bottom:'bottom' };
-function skInner(){
+function skInner(only){
   if (!PD || !PD.saveMain || !PD.m || !PD.mod) return;
   var g = PD.mod.partGeo(PD.m); if (!g || !g.tris.length) return; g.tan = kmTan(g.tris);
   var it = [{ tris:g.tris, edges:g.edges, tan:g.tan, off:[0, 0, 0] }];
-  D.ents = D.ents.filter(function(e){ return !e.inner; });
+  D.ents = D.ents.filter(function(e){ return !e.inner || (only && only.indexOf(e.pv) < 0); });
   var LI = layerOf(SK_IN); LI.aci = 7; LI.css = '#000'; LI.gap = false;
   var LH = layerOf('部材_隠れ線'); LH.aci = 8; LH.css = '#808080'; LH.dash = true; LH.gap = false;
-  Object.keys(SK_HV).forEach(function(v){
+  Object.keys(SK_HV).forEach(function(v){ if (only && only.indexOf(v) < 0) return;
     var own = D.ents.filter(function(e){ return e.pv === v && e.t !== 'text' && !e.iso; }), ol = own.filter(function(e){ return e.layer === '部材_外形'; }); if (!ol.length) return;
     var sb = skBox(ol), r = kmHlr(it, SK_HV[v], 1, 4); if (!(r.u1 > r.u0)) return;
     if (Math.abs((r.u1 - r.u0) - (sb.x1 - sb.x0)) > 2 || Math.abs((r.v1 - r.v0) - (sb.y1 - sb.y0)) > 2) return; // 図を 手で 伸ばした 面は さわらない
@@ -4241,7 +4253,9 @@ function pdFaces(){
     if (ev.target.checked && i < 0) l.push(f); if (!ev.target.checked && i >= 0) l.splice(i, 1); pdKeep();
     if (PD.saveMain) { // 図面で かく：その 面の 図を 足す／消す
       pushUndo();
-      if (ev.target.checked) { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); pdPutViews(0, 0, [f]); }
+      if (ev.target.checked) { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); pdPutViews(0, 0, [f]);
+        var sf1 = skSheet(); if (sf1 && sf1.sheet) skSheetLabels(sf1.sheet.n);   // 足した 面の 名前も 大きく
+        (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ skInner([f]); renderLayers(); changed(); redraw(); }).catch(function(){}); }   // 足した 面の 中の 線・隠れ線・中心線
       else { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); }
       ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; renderLayers(); changed(); fit();
     } };
@@ -4515,6 +4529,33 @@ function pdHoleDims(v, bb){
   uy.forEach(function(y, i){ out.dims.push({ a:[bb.x1, bb.y0], b:[bb.x1, y], off:[bb.x1 + g * (0.8 + i * 0.9), (bb.y0 + y) / 2], mode:'v' }); });
   return out;
 }
+// 外形の 角の R（半径の 寸法）：出っ張った 角だけ、同じ 半径は 1 つ（右上を 先に）。引出線は 角から 外へ
+function pdRDims(v, bb){
+  var c = PD.m && PD.m.comps && PD.m.comps[0], vv = c && c.views, out = []; if (!vv || !isFinite(bb.x0)) return out;
+  var y0 = c.at && c.at.y || 0, src = v === 'front' ? vv.front : v === 'side' ? vv.side : v === 'top' ? vv.top : null; if (!src || !src.out || src.out.length < 4) return out;
+  var pts = v === 'top' ? src.out : src.out.map(function(q){ return [q[0], q[1] + y0]; }), S = holeShape(pts); if (!S) return out;
+  var big = Math.max(PD.m.W, PD.m.H, PD.m.D), g = Math.max(big * 0.1, (PD.nEst || 5) * 9), seen = {};
+  var inside = function(p){ var k = false; for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) { var a = pts[i], b = pts[j]; if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) k = !k; } return k; };
+  var tH = (PD.nEst || 5) * 3.5, pref = function(A){ var on = pts.filter(function(q){ return Math.abs(Math.hypot(q[0] - A.c[0], q[1] - A.c[1]) - A.r) < Math.max(0.6, A.r * 0.02); }), mx = 0, my = 0; on.forEach(function(q){ mx += q[0] - A.c[0]; my += q[1] - A.c[1]; }); return mx * 2 + my; };
+  S.arcs.slice().sort(function(p1, p2){ return pref(p2) - pref(p1); }).forEach(function(A){ if (A.r < 1 || A.r > big * 0.45) return; var key = Math.round(A.r); if (seen[key]) return;
+    var on = pts.filter(function(q){ return Math.abs(Math.hypot(q[0] - A.c[0], q[1] - A.c[1]) - A.r) < Math.max(0.6, A.r * 0.02); }); if (on.length < 3) return;
+    var mx = 0, my = 0; on.forEach(function(q){ mx += q[0] - A.c[0]; my += q[1] - A.c[1]; }); var L = Math.hypot(mx, my); if (L < 1e-9) return; var u = [mx / L, my / L];
+    var conv = inside(A.c); if (!conv) return; /* へこんだ R（逃げ など）は 書き込みに ある ので 出さない */ seen[key] = 1; var b = [A.c[0] + u[0] * A.r, A.c[1] + u[1] * A.r], off = conv ? [b[0] + u[0] * tH * 2, b[1] + u[1] * tH * 2] : [A.c[0] - u[0] * tH * 2.5, A.c[1] - u[1] * tH * 2.5];
+    out.push({ a:A.c.slice(), b:b, off:off, mode:'rad', text:'R<>' }); });
+  return out;
+}
+// R の 文字が 外形・ほかの 寸法に 重ならない まで 引出線を 伸ばす
+function pdRClear(nd, ents, dims){
+  var pts = [], seg = function(a, b, st){ var n = Math.max(1, Math.ceil(dist(a, b) / st)); for (var i = 0; i <= n; i++) pts.push(P(a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n)); };
+  var g0 = dimGeom(nd), th = g0.text.h, st = th * 0.4, b0 = nd.off, dir = sub(nd.off, nd.b), L0 = Math.hypot(dir.x, dir.y); if (L0 < 1e-9) return; dir = mulp(dir, 1 / L0);
+  ents.forEach(function(e){ if (e.t === 'line') seg(e.a, e.b, st); else if (e.t === 'pl') e.v.forEach(function(q, i){ var q2 = e.v[(i + 1) % e.v.length]; if (i < e.v.length - 1 || e.closed) seg(q, q2, st); });
+    else if (e.t === 'arc' || e.t === 'circle') { var a0 = e.t === 'arc' ? e.a0 : 0, a1 = e.t === 'arc' ? e.a1 : 2 * PI; if (a1 < a0) a1 += 2 * PI; for (var t = a0; t <= a1 + 1e-9; t += (a1 - a0) / 24) pts.push(P(e.c.x + e.r * Math.cos(t), e.c.y + e.r * Math.sin(t))); }
+    else if (e.t === 'text') pts.push(e.p); });
+  dims.forEach(function(d){ var g = dimGeom(d); g.lines.forEach(function(l){ seg(l[0], l[1], st); }); var w = String(g.text.s).length * g.text.h * 0.45, c = g.text.p, e = P(Math.cos(g.text.rot), Math.sin(g.text.rot)), u = P(-e.y, e.x);
+    for (var i = -2; i <= 2; i++) for (var j = 0; j <= 2; j++) pts.push(addp(addp(c, mulp(e, w * i / 2)), mulp(u, g.text.h * j / 2))); });
+  for (var k = 0; k < 8; k++) { var g = dimGeom(nd), hw = String(g.text.s).length * th * 0.45 + th * 0.3, x0 = Math.min(nd.off.x, nd.off.x + (dir.x >= 0 ? 1 : -1) * hw * 2) - th * 0.2, x1 = Math.max(nd.off.x, nd.off.x + (dir.x >= 0 ? 1 : -1) * hw * 2) + th * 0.2, y0 = nd.off.y - th * 0.3, y1 = nd.off.y + th * 1.5;
+    if (!pts.some(function(q){ return q.x > x0 && q.x < x1 && q.y > y0 && q.y < y1; })) return;
+    nd.off = addp(b0, mulp(dir, th * 1.2 * (k + 1))); } nd.off = b0; }
 // 部材の 面（チェックした もの）を D に 入れる（第三角法の 並び。fx・fy＝ずらす 量）
 function pdPutViews(fx, fy, only){
   var m = PD.m, def = PD.def, th = Math.max(m.W, m.H) * 0.04, L = pdLayout(Math.max(m.W, m.H, m.D)), n0 = D.ents.length, d0 = D.dims.length;
@@ -4525,7 +4566,7 @@ function pdPutViews(fx, fy, only){
   var LH = layerOf('部材_隠れ線'); LH.aci = 8; LH.css = '#808080'; LH.dash = true; LH.gap = false;
   var LD = layerOf('寸法'); LD.gap = false; var LT = layerOf('文字'); LT.gap = false;
   function put(v, ox, oy){
-    var V2 = L.vs[v], T = function(p){ return P(p[0] + ox, p[1] + oy); };
+    var e00 = D.ents.length, q00 = D.dims.length, V2 = L.vs[v], T = function(p){ return P(p[0] + ox, p[1] + oy); };
     V2.prims.forEach(function(q){
       var lay = q.hid ? '部材_隠れ線' : '部材_外形', e = { id:SEQ++, layer:lay, css:null, aci:256 };
       if (q.k === 'line') { e.t = 'line'; e.a = T(q.a); e.b = T(q.b); }
@@ -4538,6 +4579,7 @@ function pdPutViews(fx, fy, only){
     if (V2.sk && V2.sk.dims.length) V2.sk.dims.forEach(function(d){ var n = clone(d); n.id = SEQ++; n.a = TQ(d.a); n.b = TQ(d.b); if (d.off) n.off = TQ(d.off); delete n.pv; D.dims.push(n); }); // かいた 図の 寸法
     else { V2.dims.forEach(function(d){ D.dims.push({ id:SEQ++, a:T(d.a), b:T(d.b), off:T(d.off), mode:d.mode, fmt:null, text:d.pre ? d.pre + '<>' : null, layer:'寸法' }); });
       var hd = pdHoleDims(v, V2.bb); hd.dims.forEach(function(d){ D.dims.push({ id:SEQ++, a:T(d.a), b:T(d.b), off:T(d.off), mode:d.mode, fmt:null, text:d.text || null, layer:'寸法', hole:1 }); });
+      pdRDims(v, V2.bb).forEach(function(d){ var nd = { id:SEQ++, a:T(d.a), b:T(d.b), off:T(d.off), mode:'rad', fmt:null, text:d.text, layer:'寸法', hole:1 }; pdRClear(nd, D.ents.slice(e00), D.dims.slice(q00)); D.dims.push(nd); });
       hd.notes.forEach(function(t){ D.ents.push({ id:SEQ++, t:'text', p:T(t.p), h:th * 0.8, rot:0, s:t.s, ha:1, va:2, wf:1, layer:'文字', css:null, aci:256, note:1 }); }); }
     if (V2.sk) V2.sk.texts.forEach(function(t){ var n = clone(t); n.id = SEQ++; n.p = TQ(t.p); delete n.pv; D.ents.push(n); });
     return V2.bb;

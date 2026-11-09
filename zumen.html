@@ -1164,7 +1164,7 @@ function drawAll(c, v, o){
     if (e.t === 'text') { drawText(c, v, e, col); return; }
     c.strokeStyle = col; c.lineWidth = sel ? lw * 2.2 : lw;
     var dash = layerOf(e.layer).dash;
-    if (dash) c.setLineDash(o.print ? [lw * 5, lw * 3] : [6, 4]);
+    if (dash) c.setLineDash(dash === 'dd' ? (o.print ? [lw * 14, lw * 3, lw * 2, lw * 3] : [14, 3, 2, 3]) : o.print ? [lw * 5, lw * 3] : [6, 4]);
     c.beginPath(); pathEnt(c, v, e); c.stroke();
     if (dash) c.setLineDash([]);
   });
@@ -4152,6 +4152,7 @@ function skInner(){
       var y0 = sb.y0 + h.top - h.depth, y1 = sb.y0 + h.top, L = [[xa, y0, xb, y0], [xa, y0, xa, y1], [xb, y0, xb, y1]];
       L.forEach(function(q){ var e = { id:SEQ++, t:'line', a:P(sb.x0 + q[0], q[1]), b:P(sb.x0 + q[2], q[3]), layer:'部材_隠れ線', css:null, aci:256, inner:1, pv:v }; D.ents.push(e); own.push(e); }); });
     add(r.vis, SK_IN); add(r.hid, '部材_隠れ線');
+    skCenters(v).forEach(function(q){ D.ents.push({ id:SEQ++, t:'line', a:P(sb.x0 + q[0], sb.y0 + q[1]), b:P(sb.x0 + q[2], sb.y0 + q[3]), layer:SK_CL, css:null, aci:256, inner:1, pv:v }); });
   });
   if (D.info) D.info.inn = 1;
 }
@@ -4161,6 +4162,32 @@ function skTopHoles(){ var c = PD.m && PD.m.comps && PD.m.comps[0], vv = c && c.
   return (vv.top.holes || []).map(function(h){ var x0 = Infinity, x1 = -Infinity, d0 = Infinity, d1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); d0 = Math.min(d0, q[1]); d1 = Math.max(d1, q[1]); });
     var top = Math.min(hAt(vv.front.out, (x0 + x1) / 2), vv.side && vv.side.out ? hAt(vv.side.out, (d0 + d1) / 2) : Infinity); if (!isFinite(top)) top = PD.m.H;
     return { x0:x0, x1:x1, d0:d0, d1:d1, top:top, depth:h.depth || 0 }; }).filter(function(h){ return h.depth > 0; }); }
+// 穴の 中心線（一点鎖線）：円に 見える 面は 十字、横から 見える 面は 穴の 軸。答えは 面の 左下からの mm
+var SK_CL = '中心線';
+function skCenters(v){
+  var c = PD.m && PD.m.comps && PD.m.comps[0], vv = c && c.views; if (!vv) return [];
+  var LC = layerOf(SK_CL); LC.aci = 1; LC.css = '#c0392b'; LC.dash = 'dd'; LC.gap = false;
+  var W = PD.m.W, Dd = PD.m.D, ex = Math.max(W, PD.m.H, Dd) * 0.03, out = [];
+  var cen = function(pts){ var S = holeShape(pts); if (!S) return null; var b = S.bb;
+    if (S.arcs.length && !S.lines) return { c:S.arcs.map(function(a){ return a.c; }), r:S.arcs[0].r, bb:b, round:1 };
+    return { c:[[(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]], bb:b, round:0 }; };
+  var cross = function(h, fx, fy){ // fx・fy：穴の 座標 → 面の 座標
+    var xs = h.c.map(function(q){ return fx(q[0]); }), y = fy(h.c[0][1]), bx = [fx(h.bb.x0), fx(h.bb.x1)].sort(function(a, b){ return a - b; }), by = [fy(h.bb.y0), fy(h.bb.y1)].sort(function(a, b){ return a - b; });
+    out.push([bx[0] - ex, y, bx[1] + ex, y]); xs.forEach(function(x){ out.push([x, by[0] - ex, x, by[1] + ex]); }); };
+  var axisV = function(x, y0, y1){ out.push([x, y0 - ex, x, y1 + ex]); }, axisH = function(y, x0, x1){ out.push([x0 - ex, y, x1 + ex, y]); };
+  var FX = { front:function(x){ return x + W / 2; }, back:function(x){ return W / 2 - x; }, top:function(x){ return x + W / 2; }, bottom:function(x){ return x + W / 2; } };
+  var DX = { side:function(d){ return d; }, left:function(d){ return Dd - d; } }, DY = { top:function(d){ return d; }, bottom:function(d){ return Dd - d; } };
+  (vv.front.holes || []).forEach(function(h){ var H = cen(h.pts); if (!H) return;
+    if (FX[v] && (v === 'front' || v === 'back')) cross(H, FX[v], function(y){ return y; });
+    else if (FX[v]) H.c.forEach(function(q){ var a = DY[v](0), b = DY[v](h.depth); axisV(FX[v](q[0]), Math.min(a, b), Math.max(a, b)); });
+    else if (DX[v]) { var a = DX[v](0), b = DX[v](h.depth); axisH(H.c[0][1], Math.min(a, b), Math.max(a, b)); } });
+  var tops = skTopHoles();
+  ((vv.top && vv.top.holes) || []).forEach(function(h, i){ var H = cen(h.pts), T = tops.filter(function(t){ return Math.abs(t.x0 - Math.min.apply(null, h.pts.map(function(q){ return q[0]; }))) < 1e-6 && Math.abs(t.d0 - Math.min.apply(null, h.pts.map(function(q){ return q[1]; }))) < 1e-6; })[0]; if (!H) return;
+    if (DY[v]) cross(H, FX[v], DY[v]);
+    else if (T && FX[v]) H.c.forEach(function(q){ axisV(FX[v](q[0]), T.top - T.depth, T.top); });
+    else if (T && DX[v]) { var ds = H.c.map(function(q){ return q[1]; }).filter(function(d, j, a){ return a.indexOf(d) === j; }); ds.forEach(function(d){ axisV(DX[v](d), T.top - T.depth, T.top); }); } });
+  return out;
+}
 function skPrep(force){ return skIso().then(function(){ skInner(); skFrame(force); renderLayers(); changed(); redraw(); }).catch(function(e){ setMsg('立体の 絵を 作れませんでした：' + (e && e.message || e)); }); }
 function pdApplyViews(v, W, Dd, H){
   PD.hist.push(JSON.stringify(PD.def));

@@ -7844,6 +7844,57 @@ function _gcalIsAuthErr(err){
 
 var _GCAL_CALENDAR_ID = 'shojisekizai%40gmail.com';
 
+/* ───── **書き込めない ときの 知らせを 日本語で**（v1.9.572。本人の 報告
+   「納骨担当を 変えた あと、グーグルカレンダーへの 書き込みが できません。新人なので 登録して いないとか？」）─────
+   調べた こと：納骨担当の 名前は 予定の 題に 入れる だけで、担当者の 名簿とは 照らして いない（名前で 失敗する 所は 無い）。
+   書き込めるかは **Google に ログインした アカウント** で 決まる。会社の カレンダーを
+   「予定の変更」で 共有されて いない アカウント（新人の 個人の Google アカウント など）だと、
+   Google は 403（Forbidden／writer access）や 404（Not Found）を 返し、これまでは 英語の まま 出て いた。
+   また ログイン画面で 断られた とき（このアプリが テスト中で、登録した 人しか 入れない＝access_denied など）は
+   何も 出ずに 終わって いた。どちらも 何を すれば よいか 分かる ように 出す。 */
+function _gcalErrMsg(err, status) {
+  var code = err ? (err.code || status) : status;
+  var m = String((err && err.message) || '');
+  if (code == 403 || code == 404 || /writer access|Forbidden|Not Found|requiredAccessLevel/i.test(m)) {
+    _gcalClearToken();   /* 次に 押したとき アカウントを 選び直せる ように */
+    /* お知らせ（下の 帯）は 1 行で 4 秒で 消えるので、することは alert で しっかり 出す */
+    setTimeout(function(){ alert('📅 Googleカレンダーに 書き込めませんでした。\n\n' +
+      'いま ログインして いる Googleアカウントには、会社のカレンダー（shojisekizai@gmail.com）を 書きかえる 権限が ありません。\n' +
+      '（納骨担当の 名前は 関係ありません。新人の方の 個人の Googleアカウントで 入ったときなどに 出ます）\n\n' +
+      'どちらかを してください：\n' +
+      '・会社のカレンダーの「設定と共有」→「特定のユーザーとの共有」に このアカウントを「予定の変更」で 追加する\n' +
+      '・権限の ある アカウントで 入り直す（もう一度［カレンダー登録］を 押すと Google の アカウントを 選び直せます）\n\n' +
+      '［Google: ' + (code || '') + ' ' + m + '］'); }, 50);
+    return 'カレンダーを 書きかえる 権限の ない Googleアカウントです（' + (code || '') + '）';
+  }
+  return 'カレンダー登録エラー: ' + m + (code ? '（' + code + '）' : '');
+}
+/* ログイン画面から エラーで 戻って きたか（#error=access_denied など）。戻って きたら 1 回だけ 知らせる */
+var _gcalSignInErr = null;
+(function(){
+  try {
+    var h = location.hash || '';
+    if (h.indexOf('error=') < 0 || h.indexOf('access_token') >= 0) return;
+    var p = {};
+    h.substring(1).split('&').forEach(function(kv){ var a = kv.split('='); p[a[0]] = decodeURIComponent((a[1] || '').replace(/\+/g, ' ')); });
+    if (!p.error) return;
+    var st = null; try { st = sessionStorage.getItem('gcal_state'); } catch(e){}
+    if (!st) return;                                   /* Google の ログインから 戻った ときだけ */
+    _gcalSignInErr = p.error + (p.error_description ? '：' + p.error_description : '');
+    try { sessionStorage.removeItem('gcal_state'); sessionStorage.removeItem('gcal_kjnok'); } catch(e){}
+    history.replaceState(null, '', location.pathname + location.search);
+  } catch(e){}
+})();
+function _gcalShowSignInErr() {
+  if (!_gcalSignInErr) return;
+  var e = _gcalSignInErr; _gcalSignInErr = null;
+  var msg = (e.indexOf('access_denied') === 0)
+    ? 'Google の ログインが 通りませんでした（access_denied）。選んだ Google アカウントが このアプリの 利用者に 登録されて いないか、許可を 断った ときに 出ます。' +
+      '会社の カレンダーを 使える アカウントで 入るか、管理者が Google Cloud の「OAuth 同意画面」の テストユーザーに この アカウントを 足してください。'
+    : 'Google の ログインに 失敗しました：' + e;
+  setTimeout(function(){ alert('📅 ' + msg); }, 1500);
+}
+
 // identifierをdescriptionに埋め込むキー
 function _gcalIdentifier(itemId) {
   return 'sekizaiwork-nok:' + itemId;
@@ -8037,11 +8088,9 @@ function registerGcalEvent(silent, _retry) {
           showSaveToast(null, '📅 Google のログインが切れました。入り直します…');
           setTimeout(function(){ registerGcalEvent(silent, true); }, 300);
         } else {
-          showSaveToast(false, 'カレンダー登録エラー: ' +
-            (ev.error && ev.error.message || '') +
-            (_gcalIsAuthErr(ev.error)
-              ? '（Google のログインが切れています。画面を読み直してから、もう一度押してください）'
-              : ''));
+          showSaveToast(false, _gcalIsAuthErr(ev.error)
+            ? 'カレンダー登録エラー: ' + (ev.error && ev.error.message || '') + '（Google のログインが切れています。画面を読み直してから、もう一度押してください）'
+            : _gcalErrMsg(ev.error));
         }
       })
       .catch(function(e){ showSaveToast(false, 'エラー: ' + e.message); });
@@ -8066,7 +8115,7 @@ function deleteGcalEvent() {
           showSaveToast(true, '📅 カレンダーイベントを削除しました');
           _gcalUpdateBtn(false);
         } else {
-          showSaveToast(false, '削除エラー: ' + r.status);
+          showSaveToast(false, (r.status === 403 || r.status === 404) ? _gcalErrMsg(null, r.status) : '削除エラー: ' + r.status);
         }
       })
       .catch(function(e){ showSaveToast(false, 'エラー: ' + e.message); });
@@ -8150,7 +8199,7 @@ function kjNokGcalRegister(silent, _retry) {
       }).then(function (r) { return r.json(); }).then(function (res) {
         if (res.id) showSaveToast(true, '📅 ' + (k['区分'] || '納骨') + 'を カレンダーに' + (exId ? '更新' : '登録') + 'しました');
         else if (_gcalIsAuthErr(res.error) && !_retry) { _gcalClearToken(); setTimeout(function () { kjNokGcalRegister(silent, true); }, 300); }
-        else showSaveToast(false, 'カレンダー登録エラー: ' + ((res.error && res.error.message) || ''));
+        else showSaveToast(false, _gcalErrMsg(res.error));
       }).catch(function (e) { showSaveToast(false, 'エラー: ' + e.message); });
     });
   });
@@ -8164,7 +8213,7 @@ function kjNokGcalDelete() {
     _kjNokFind(token, d['id'], String(k['日付'] || '').substring(0, 10), function (exId) {
       if (!exId) { showSaveToast(false, '登録済みの予定が見つかりません'); return; }
       fetch('https://www.googleapis.com/calendar/v3/calendars/' + _GCAL_CALENDAR_ID + '/events/' + exId, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } })
-        .then(function (r) { showSaveToast(r.ok || r.status === 204, (r.ok || r.status === 204) ? '📅 カレンダーから削除しました' : '削除エラー: ' + r.status); })
+        .then(function (r) { showSaveToast(r.ok || r.status === 204, (r.ok || r.status === 204) ? '📅 カレンダーから削除しました' : ((r.status === 403 || r.status === 404) ? _gcalErrMsg(null, r.status) : '削除エラー: ' + r.status)); })
         .catch(function (e) { showSaveToast(false, 'エラー: ' + e.message); });
     });
   });
@@ -8178,7 +8227,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.571';
+var APP_VERSION = 'v1.9.572';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8478,6 +8527,7 @@ function startApp() {
   renderTopLinks(); // トップ画面の外部リンクボタンを生成
   aiPingCheck();    // AIサーバーに届くか静かに確かめる（届かなければボタンで知らせる）
   currentListMode = 'noukotsu';
+  _gcalShowSignInErr();   // Google の ログインで 断られて 戻った とき（v1.9.572）
   // Googleカレンダー認証リダイレクト戻りを検知
   // （_gcalTokenはMSAL初期化前に取得済み。location.hashはMSALが既に消去している）
   if (_gcalToken && sessionStorage.getItem('gcal_state')) {

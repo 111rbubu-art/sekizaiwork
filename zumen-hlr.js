@@ -7,6 +7,8 @@ var KPJ = {
   topR:function(p){ return [-p[2], p[0], -p[1]]; },
   right:function(p){ return [-p[2], p[1], -p[0]]; },
   left:function(p){ return [p[2], p[1], p[0]]; },
+  back:function(p){ return [-p[0], p[1], p[2]]; },
+  bottom:function(p){ return [p[0], p[2], p[1]]; },
   iso:function(p){ return [(p[0] + p[2]) / KR2 * KISO, (p[0] + 2 * p[1] - p[2]) / KR6 * KISO, -(-p[0] + p[1] + p[2]) / KR3]; }
 };
 // 平らな 大きい 面の 縁（R 面取りの 始まりの 線 など。CSG の T 字の つなぎが あっても 線の 上の 重なりで 見る）

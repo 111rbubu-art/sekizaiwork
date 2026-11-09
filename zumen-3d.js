@@ -189,7 +189,22 @@ export function partGroup(m, fine, mat, lineMat){
     // 上下の 削り（top.cuts：[x,d] を 高さ y0〜y1 で。底からの 耐震穴・中空など）
     (v.top && v.top.cuts || []).forEach(function(h){ var y0 = h.y0 <= 0 ? -mg : h.y0, y1 = h.y1 >= H ? H + mg : h.y1; if (!(y1 > y0)) return; var g = ext(h.pts, null, y1 - y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 前の 穴（from:'back' は 後ろの 面から）。図は 前から 見た 座標の まま
-    (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, h.from === 'back' ? zf - Dd - mg : zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // ogami（拝み）：前の 面 d0 から 奥 depth へ 行くほど 低く なる 逃げ（1/4 円で 高さ 0 へ）。穴の 形は そのまま 下の 線へ 縮む
+    (v.front.holes || []).forEach(function(h){ var g = h.ogami ? ogamiGeo(h) : ext(h.pts, null, h.depth + mg).translate(0, 0, h.from === 'back' ? zf - Dd - mg : zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    function ogamiGeo(h){
+      var P = h.pts.slice(), n = P.length, a2 = 0; for (var i = 0; i < n; i++) { var j = (i + 1) % n; a2 += P[i][0] * P[j][1] - P[j][0] * P[i][1]; } if (a2 < 0) P.reverse();
+      var yb = Math.min.apply(null, P.map(function(q){ return q[1]; })), y0 = Math.max(yb, 0), d0 = h.d0 || 0, L = Math.max(h.depth - d0, 1), N = 10, back = h.from === 'back';
+      function zz(d){ return back ? zf - Dd + d : zf - d; }
+      var rings = [{ z:zz(-mg), k:1 }, { z:zz(d0), k:1 }];
+      for (var s = 1; s <= N; s++) { var t = s / N; rings.push({ z:zz(d0 + L * t), k:Math.max(Math.sqrt(Math.max(0, 1 - t * t)), 0.004) }); }
+      var R = rings.map(function(r){ return P.map(function(q){ return [q[0], q[1] > y0 ? y0 + (q[1] - y0) * r.k : q[1], r.z]; }); });
+      var tri = [], T = THREE.ShapeUtils.triangulateShape(P.map(function(q){ return new THREE.Vector2(q[0], q[1]); }), []);
+      T.forEach(function(f){ tri.push([R[0][f[0]], R[0][f[2]], R[0][f[1]]]); var L2 = R[R.length - 1]; tri.push([L2[f[0]], L2[f[1]], L2[f[2]]]); });
+      for (var r = 0; r + 1 < R.length; r++) for (var i2 = 0; i2 < n; i2++) { var j2 = (i2 + 1) % n, A = R[r][i2], B = R[r][j2], C = R[r + 1][j2], D2 = R[r + 1][i2]; tri.push([A, B, C]); tri.push([A, C, D2]); }
+      var vol = 0; tri.forEach(function(t){ var a = t[0], b = t[1], c = t[2]; vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]); });
+      var arr = []; tri.forEach(function(t){ (vol < 0 ? [t[0], t[2], t[1]] : t).forEach(function(p){ arr.push(p[0], p[1], p[2]); }); });
+      var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); g.computeVertexNormals(); return g;
+    }
     // 横の 穴（side.holes：[d,y]、from:'left'｜'right' の 面から depth）・横から 見た 形で 削る（side.cuts：[d,y] を x0〜x1 で。面取りの 飾りの 線など）
     function sideM(x0){ return new THREE.Matrix4().set(0, 0, 1, x0, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1); }
     (v.side && v.side.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(sideM(h.from === 'left' ? -W / 2 - mg : W / 2 - h.depth)); res = ev.evaluate(res, brush(g), SUBTRACTION); });

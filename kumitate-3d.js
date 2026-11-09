@@ -1,7 +1,7 @@
 // 組み立て（kumitate.html）の 3D 表示（Three.js r160・同梱）。位置と 大きさは kumitate-engine.js の 答え（boxes）を 使う
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
-import { partGroup, fusionMouse } from './zumen-3d.js?v=0.9.17';
+import { partGroup, fusionMouse } from './zumen-3d.js?v=0.9.18';
 
 export function create(box, onPick){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });

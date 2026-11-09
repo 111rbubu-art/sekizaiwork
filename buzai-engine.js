@@ -136,7 +136,7 @@ var BZ = (function(){
       var fx = ax(0, A0, A1, fa), fy = ax(1, B0, B1, fb);
       return pts.map(function(q){ return [fx(q[0]), fy(q[1])]; });
     }
-    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; if (h.nige) { r.nige = 1; r.run = m(h.run || [], kx, ky); } return r; }) } };
+    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; if (h.nige) { r.nige = 1; r.run = m(h.run || [], kx, ky); } if (h.ogami) { r.ogami = 1; r.d0 = (h.d0 || 0) * kd; } return r; }) } };
     if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky),
       holes:(v.side.holes || []).map(function(h){ return { pts:m(h.pts, kd, ky), depth:h.depth * kx, from:h.from }; }),
       cuts:(v.side.cuts || []).map(function(h){ return { pts:keep(h.pts, b.D, Dd, b.H, H, kd, ky), x0:h.x0 * kx, x1:h.x1 * kx, taper:h.taper ? h.taper * kx : 0, apex:h.apex }; }) };

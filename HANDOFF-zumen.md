@@ -1,6 +1,6 @@
 # 石の 図面（zumen.html）引継ぎ ― 社内アプリ開発へ 移す ための まとめ
 
-zumen.html = v0.9.17（2026-11-09）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
+zumen.html = v0.9.18（2026-11-09）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
 
 ---
 
@@ -359,3 +359,7 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
   - 上台の 耐震穴：部材には あったが `scaleViews` が 天面の 外形（top.out）が 無いと 天面ごと 捨てて いた → 天面の 穴・上下の 削り（top.cuts）を 残す。3D（zumen-3d）に top.cuts（底から の 穴・中空）を 足した。平面図・下面図に φ・深さ・中心の 位置の 寸法、正面・側面に 点線と 中心線。小さい 穴の φ は 斜めに 外へ（深さも 一緒に）
   - 上の 欄の 書き込み：右の 欄「仕上げ」「加工の 書き込み」（改行で 3 行まで）。打つと すぐ 図枠に 出て、部材（PD.def.finish／kakou）に 残る
   - buzai-engine.js?v=0.9.17・zumen-3d.js（kumitate-3d の import も）を 上げた
+- zumen.html v0.9.18・kumitate.html v0.8.3・buzai.html v0.2.3（2026-11-09。本人「水鉢と香炉の 下の 波は 拝み という 一般的な 形。波が 奥へ 行くほど 高さが 小さく なる」）：
+  - 拝み：`front.holes` の 逃げ（nige 形式）に `ogami:1`・`d0`（前の 面＝波の 高さの まま の 奥行。水鉢は 台の 前が 15 下がって いるので 15）。3D（zumen-3d の `ogamiGeo`）は d0 から depth へ 1/4 円で 高さ 0 へ 縮む 押し出し（10 段）で 削る。`scaleViews` が ogami・d0 を 写す。2D の 図は 今までの 逃げ（nige）と 同じ 見せ方
+  - 使う ところ：和型8寸 高級型（香箱・亀腹・水ダレ）の 水鉢・経机香炉（セットは project-files の torikomi）
+  - buzai-engine.js?v=0.9.18・zumen-3d.js（kumitate-3d の import も）を 上げた

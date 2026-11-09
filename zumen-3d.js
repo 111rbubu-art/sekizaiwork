@@ -186,6 +186,8 @@ export function partGroup(m, fine, mat, lineMat){
     if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
     if (v.top && v.top.out) { var gT = ext(v.top.out, null, H + 2 * mg); gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
     (v.top && v.top.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, H - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 上下の 削り（top.cuts：[x,d] を 高さ y0〜y1 で。底からの 耐震穴・中空など）
+    (v.top && v.top.cuts || []).forEach(function(h){ var y0 = h.y0 <= 0 ? -mg : h.y0, y1 = h.y1 >= H ? H + mg : h.y1; if (!(y1 > y0)) return; var g = ext(h.pts, null, y1 - y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 前の 穴（from:'back' は 後ろの 面から）。図は 前から 見た 座標の まま
     (v.front.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg).translate(0, 0, h.from === 'back' ? zf - Dd - mg : zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 横の 穴（side.holes：[d,y]、from:'left'｜'right' の 面から depth）・横から 見た 形で 削る（side.cuts：[d,y] を x0〜x1 で。面取りの 飾りの 線など）

@@ -136,11 +136,11 @@ var BZ = (function(){
       var fx = ax(0, A0, A1, fa), fy = ax(1, B0, B1, fb);
       return pts.map(function(q){ return [fx(q[0]), fy(q[1])]; });
     }
-    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ return { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; }) } };
+    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; if (h.nige) { r.nige = 1; r.run = m(h.run || [], kx, ky); } return r; }) } };
     if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky),
       holes:(v.side.holes || []).map(function(h){ return { pts:m(h.pts, kd, ky), depth:h.depth * kx, from:h.from }; }),
       cuts:(v.side.cuts || []).map(function(h){ return { pts:keep(h.pts, b.D, Dd, b.H, H, kd, ky), x0:h.x0 * kx, x1:h.x1 * kx, taper:h.taper ? h.taper * kx : 0, apex:h.apex }; }) };
-    if (v.top && v.top.out) o.top = { out:m(v.top.out, kx, kd), holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }),
+    if (v.top && (v.top.out || (v.top.holes || []).length || (v.top.cuts || []).length)) o.top = { out:v.top.out ? m(v.top.out, kx, kd) : null, holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }),
       cuts:(v.top.cuts || []).map(function(h){ return { pts:m(h.pts, kx, kd), y0:h.y0 * ky, y1:h.y1 * ky }; }) };
     return o;
   }
@@ -168,7 +168,7 @@ var BZ = (function(){
     if (v === 'left') return view(m, 'side').map(mirX);
     var t = topView(m);
     if (v === 'top') return t;
-    return t.map(function(q){ var o = mirY(q); if (q.topHole) o.hid = true; return o; }); // bottom
+    return t.map(function(q){ var o = mirY(q); if (q.topHole || q.botHid) o.hid = true; if (q.botCut) o.hid = false; return o; }); // bottom
   }
   // 平面図（上から。y＝前から 奥へ）。上の 部品に 隠れる 部品は 点線
   function topView(m){
@@ -187,9 +187,12 @@ var BZ = (function(){
         c.cuts.forEach(function(ct){ if (ct.type !== 'cloudHole') return; var hw = ct.s.pitch > 1e-6 ? ct.s.pitch + ct.s.phi / 2 : ct.s.phi / 2;
           var q = rect(-hw, f0, hw, f0 + s.d - s.back); q.hid = true; extra.push(q); }); }
       else if (c.type === 'views') { var vv = c.views; top += m.H;
-        if (vv.top && vv.top.out) { out.push({ k:'pl', v:vv.top.out, closed:true }); (vv.top.holes || []).forEach(function(h){ out.push({ k:'pl', v:h.pts, closed:true, topHole:true }); }); }
-        else out.push(rect(-m.W / 2, 0, m.W / 2, m.D));
-        (vv.front.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); }); var q = rect(x0, 0, x1, h.depth); q.hid = true; out.push(q); });
+        if (vv.top && vv.top.out) out.push({ k:'pl', v:vv.top.out, closed:true }); else out.push(rect(-m.W / 2, 0, m.W / 2, m.D));
+        if (vv.top) (vv.top.holes || []).forEach(function(h){ out.push({ k:'pl', v:h.pts, closed:true, topHole:true }); });
+        // 上下の 削り：底から（y0≦0）は 平面図で 点線・下面図で 実線、上まで 抜ける ものは 平面図で 実線
+        if (vv.top) (vv.top.cuts || []).forEach(function(h){ var fb = h.y0 <= 1e-6, ft = h.y1 >= m.H - 1e-6; if (!fb && !ft) { out.push({ k:'pl', v:h.pts, closed:true, hid:true, botHid:true }); return; }
+          if (ft) out.push({ k:'pl', v:h.pts, closed:true, topHole:!fb }); else out.push({ k:'pl', v:h.pts, closed:true, hid:true, botCut:true }); });
+        (vv.front.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); }); var q = h.from === 'back' ? rect(x0, m.D - h.depth, x1, m.D) : rect(x0, 0, x1, h.depth); q.hid = true; if (h.nige) q.botCut = true; out.push(q); });   // 逃げは 下面図で 実線
         return; }
       else return;
       list.push({ top:top, fp:fp, extra:extra });
@@ -205,6 +208,12 @@ var BZ = (function(){
     out.sort(function(a, b){ return (b.hid ? 1 : 0) - (a.hid ? 1 : 0); }); // 点線を 先に（上に 実線）
     return out;
   }
+  // 外形の 下の 辺に 切り欠き（run＝下の 辺の 2 点を 結ぶ 折れ線）を はめる
+  function spliceRun(out, run){ var a = run[0], b = run[run.length - 1], y = a[1], lo = Math.min(a[0], b[0]), hi = Math.max(a[0], b[0]);
+    for (var i = 0; i < out.length; i++) { var p = out[i], q = out[(i + 1) % out.length]; if (Math.abs(p[1] - y) > 1e-6 || Math.abs(q[1] - y) > 1e-6) continue;
+      if (Math.min(p[0], q[0]) > lo + 1e-6 || Math.max(p[0], q[0]) < hi - 1e-6) continue;
+      var r = (q[0] - p[0]) * (b[0] - a[0]) > 0 ? run : run.slice().reverse(); return out.slice(0, i + 1).concat(r).concat(out.slice(i + 1)); }
+    return out; }
   function view(m, v){
     var out = [];
     function L(a, b, hid){ out.push({ k:'line', a:a, b:b, hid:!!hid }); }
@@ -220,7 +229,8 @@ var BZ = (function(){
       var s = c.s, y0 = c.at.y, f0 = c.at.front;
       if (c.type === 'views') { // 図から 作った 部材：描いた 外形を そのまま
         var vv = c.views, pl = function(pts){ out.push({ k:'pl', v:pts.map(function(q){ return [q[0], q[1] + y0]; }), closed:true }); };
-        if (v === 'front') { pl(vv.front.out); (vv.front.holes || []).forEach(function(h){ pl(h.pts); out[out.length - 1].hole = true; }); }
+        if (v === 'front') { var fo = vv.front.out; (vv.front.holes || []).forEach(function(h){ if (h.nige && h.from !== 'back' && h.run && h.run.length > 1) fo = spliceRun(fo, h.run); }); // 前から の 逃げは 正面では 外形の 切り欠きに 見える
+          pl(fo); (vv.front.holes || []).forEach(function(h){ if (h.nige && h.from !== 'back') return; pl(h.nige && h.run ? h.run.concat([h.run[0]]) : h.pts); out[out.length - 1].hole = true; }); }
         else if (vv.side && vv.side.out) pl(vv.side.out); else rect(0, y0, m.D, y0 + m.H);
         return;
       }

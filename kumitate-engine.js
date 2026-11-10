@@ -612,13 +612,55 @@ var KM = (function(){
   function pv(def, id){ var q = def && def.params && def.params[id]; if (!q) return NaN; return +(q.value != null ? q.value : q.default); }
   function shapeSize(def){ if (!def || def.schema !== 'buzai/1') return null; var w = pv(def, 'W'), d = pv(def, 'D'), h = pv(def, 'H'); return w > 0 && d > 0 && h > 0 ? { w:w, d:d, h:h } : null; }
 
+  // ── 足した 部材（部材マスターの 部材を 1 つずつ。セットに 入れない。2026-11-10 本人「支点を クリックで、2 点なら 中間が 接点、オフセット・回転は 手入力」）──
+  // fr = { key, name, role, cg, shape（buzai/1 の 写し）, self:[{f:[fx,fy,fz]}], tgt:{ pts:[{key, f:[…]}] }, off:{x,y,z}, rot }
+  //   f＝部材の 箱の 中の 割合（0〜1。x 左→右・y 下→上・z 奥→前）。回す 前の 箱で 見る
+  //   置き場所：自分の 支点（self の 平均）が 相手の 支点（tgt の 点の 平均。点ごとに 部材が ちがって よい）＋オフセットに 重なる
+  //   off：x＝右へ・y＝上へ・z＝奥へ（mm）。rot＝上から 見て 左回り（度）、自分の 支点を 中心に。箱は 回した 形を 囲む 箱（干渉も その 箱）
+  //   相手を 決めて いない 部材は 墓所の 前に 並べる
+  function rotY(x, z, deg){ var a = (deg || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return { x:x * c + z * s, z:-x * s + z * c }; }
+  function frameOf(res, k){
+    var b = res.boxes[k], p = res.parts[k]; if (!b || !p) return null;
+    var rot = +p.rot || 0, w = rot ? p.w : b.x1 - b.x0, d = rot ? p.d : b.z1 - b.z0;
+    return { cx:(b.x0 + b.x1) / 2, y0:b.y0, cz:(b.z0 + b.z1) / 2, w:w, h:b.y1 - b.y0, d:d, rot:rot };
+  }
+  function framePt(F, f){ var x = (f[0] - 0.5) * F.w, z = (f[2] - 0.5) * F.d, r = rotY(x, z, F.rot); return { x:F.cx + r.x, y:F.y0 + f[1] * F.h, z:F.cz + r.z }; }
+  function meanF(pts){ var s = [0, 0, 0]; pts.forEach(function(q){ for (var i = 0; i < 3; i++) s[i] += +q.f[i] || 0; }); return s.map(function(v){ return v / pts.length; }); }
+  function freeSize(fr){ return shapeSize(fr.shape) || { w:+fr.w || 300, d:+fr.d || 300, h:+fr.h || 300 }; }
+  function placeFree(res, free){
+    free = free || []; if (!free.length) return res;
+    var zmax = 0, n0 = 0, base = Object.keys(res.boxes);
+    base.forEach(function(k){ zmax = Math.max(zmax, res.boxes[k].z1); });
+    res.free = {};
+    free.forEach(function(fr){
+      var sz = freeSize(fr), w = sz.w, h = sz.h, d = sz.d, rot = +fr.rot || 0, C = null, o = fr.off || {}, msg = '';
+      var tp = (fr.tgt && fr.tgt.pts || []).filter(function(q){ return q && q.key && res.boxes[q.key]; });
+      if (fr.tgt && fr.tgt.pts && fr.tgt.pts.length && tp.length < fr.tgt.pts.length) msg = '相手の 部材が 無く なった（' + fr.name + '）→ 支点を 選び直して ください';
+      if (!msg && tp.length && fr.self && fr.self.length) {
+        var T = { x:0, y:0, z:0 }; tp.forEach(function(q){ var P = framePt(frameOf(res, q.key), q.f); T.x += P.x / tp.length; T.y += P.y / tp.length; T.z += P.z / tp.length; });
+        var f = meanF(fr.self), sx = (f[0] - 0.5) * w, sz2 = (f[2] - 0.5) * d, r = rotY(sx, sz2, rot);
+        C = { x:T.x + (+o.x || 0) - r.x, y:T.y + (+o.y || 0) - f[1] * h, z:T.z - (+o.z || 0) - r.z };
+      } else {   // まだ 置いて いない：墓所の 前に 並べる
+        C = { x:n0 * 500, y:0, z:zmax + 400 + d / 2 }; n0++;
+      }
+      if (msg) (res.ng = res.ng || []).push(msg);
+      var a = rot * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a)), ex = (c * w + s * d) / 2, ez = (s * w + c * d) / 2;
+      res.boxes[fr.key] = { x0:r1(C.x - ex), y0:r1(C.y), z0:r1(C.z - ez), x1:r1(C.x + ex), y1:r1(C.y + h), z1:r1(C.z + ez) };
+      res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:'free', cg:fr.cg || 'tower', grp:fr.cg || 'tower', role:fr.role || '', w:w, d:d, h:h, rot:rot,
+        shape:fr.shape || null, partId:fr.shape && fr.shape.id || '', kakou:fr.shape && fr.shape.kakou || '', free:true, placed:!!(tp.length && !msg && fr.self && fr.self.length), visible:true };
+      res.free[fr.key] = fr;
+    });
+    res.hits = interferences(res.parts, res.boxes);
+    return res;
+  }
+
   // ── 才数と 見積（単価が 無ければ 才数だけ）──
   // 部材の 分け方：石塔＝cg tower（納骨室は 入れない）、墓誌＝墓誌の 部材、外柵＝のこり（外柵・塔婆立など。納骨室は 入れない）
   function saiGroups(res){
     var g = { tower:[], fence:[], boshi:[], crypt:[] };
     Object.keys(res.boxes).forEach(function(k){
       var p = res.parts[k], row = { key:k, name:p.name, w:p.w, h:p.h, d:p.d, sai:sai(p.w, p.d, p.h) };
-      if (p.kind === 'boshi') g.boshi.push(row);
+      if (p.kind === 'boshi' || p.cg === 'boshi') g.boshi.push(row);
       else if (p.kind === 'crypt' || p.cg === 'crypt') g.crypt.push(row);
       else if (p.cg === 'tower') g.tower.push(row);
       else g.fence.push(row);
@@ -749,6 +791,6 @@ var KM = (function(){
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, fixJoints:fixJoints, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
-    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
+    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, placeFree:placeFree, frameOf:frameOf, framePt:framePt, rotY:rotY, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

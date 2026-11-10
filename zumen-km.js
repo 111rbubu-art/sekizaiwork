@@ -560,13 +560,44 @@ function kmTenkai(pay, geo, opt){
     var bb = function(v){ var r = R[v], o = at[v]; return { x0:r.u0 / s + o[0], x1:r.u1 / s + o[0], y0:r.v0 / s + o[1], y1:r.v1 / s + o[1] }; };
     var th = Math.max(40, Math.round((X1 - X0) / 22 / 5) * 5), dg = th * 2.2;
     var dim = function(a, b, mode, off){ D.dims.push({ id:SEQ++, a:P(a[0], a[1]), b:P(b[0], b[1]), off:P(off[0], off[1]), mode:mode, fmt:null, text:null, th:th, al:th * 0.9, layer:'寸法', tk:1 }); };
-    var name = function(v, s0){ var b = bb(v); D.ents.push({ id:SEQ++, t:'text', p:P((b.x0 + b.x1) / 2, b.y0 - dg - th * 2.6), h:th * 1.2, rot:0, s:s0, ha:1, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 }); };
+    var name = function(v, s0){ var b = bb(v); D.ents.push({ id:SEQ++, t:'text', p:P((b.x0 + b.x1) / 2, b.y0 - (v === 'top' && typeof rowB !== 'undefined' && rowB ? th * 1.8 * 1.6 : dg) - th * 2.6), h:th * 1.2, rot:0, s:s0, ha:1, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 }); };
     // 全体の 寸法：正面＝間口・高さ、平面＝間口・奥行、側面＝奥行・高さ、背面＝間口
     var f = bb('front'), t = bb('top'), l = bb('left'), rt = bb('right'), bk = bb('back');
     dim([f.x0, f.y0], [f.x1, f.y0], 'h', [(f.x0 + f.x1) / 2, f.y0 - dg]);
     dim([f.x1, f.y0], [f.x1, f.y1], 'v', [f.x1 + dg, (f.y0 + f.y1) / 2]);
-    dim([t.x0, t.y1], [t.x1, t.y1], 'h', [(t.x0 + t.x1) / 2, t.y1 + dg]);
-    dim([t.x0, t.y0], [t.x0, t.y1], 'v', [t.x0 - dg, (t.y0 + t.y1) / 2]);
+    // 平面図：外柵の 部材寸法と 目地の 連なり（2026-11-10 本人「平面図には 外柵の 部材寸法と 目地寸法も」）。外の 4 辺に 接する 外柵の 石を 辺に 沿って 並べ、石の 長さ・目地を 1 本ずつ。
+    // 右は 中（x＝真ん中を 通る 外柵の 石。中仕切など）の 奥行の 連なり。全体の 寸法は その 外側
+    var pP = function(x, z){ return [x + at.top[0], -z + at.top[1]]; }, fenB = pay.parts.filter(function(p){ return p.grp === 'fence'; }).map(function(p){ return p.box; });
+    var chain = function(list, lo, hi){ var I = list.map(function(q){ return [Math.max(lo, q[0]), Math.min(hi, q[1])]; }).filter(function(q){ return q[1] - q[0] > 0.5; }).sort(function(a, b){ return a[0] - b[0]; }), M = [];
+      I.forEach(function(q){ var l = M[M.length - 1]; if (l && q[0] <= l[1] + 0.5) l[1] = Math.max(l[1], q[1]); else M.push([q[0], q[1]]); });
+      var pts = [lo]; M.forEach(function(q){ pts.push(q[0], q[1]); }); pts.push(hi); pts = pts.map(function(v){ return Math.round(v * 10) / 10; }).filter(function(v, i, A){ return !i || v - A[i - 1] > 0.5; });
+      return pts.length > 2 ? pts : null; };   // 石が 1 つ だけ（全体と 同じ）なら 出さない
+    var cdim = function(a, b, mode, off){ D.dims.push({ id:SEQ++, a:P(a[0], a[1]), b:P(b[0], b[1]), off:P(off[0], off[1]), mode:mode, fmt:'mm', text:null, th:th * 0.75, al:th * 0.6, layer:'寸法', tk:1 }); };
+    // 連なりの 文字が 重ならない ように：いちばん 長い 寸法の 文字は まん中の まま、両側へ 押し出す（tx＝寸法の 向きに ずらす）
+    var spread = function(ds){ if (ds.length < 2 || typeof dimGeom !== 'function') return; var G2 = ds.map(function(d){ var g = dimGeom(d), e = g.e, c = g.mid.x * e.x + g.mid.y * e.y; return { d:d, c:c, p:c, w:String(Math.round(Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y))).length * d.th * 0.75 + d.th * 0.5 }; });
+      if (G2[0].c > G2[G2.length - 1].c) G2.reverse();
+      var m = 0; G2.forEach(function(q, i){ if (Math.hypot(q.d.b.x - q.d.a.x, q.d.b.y - q.d.a.y) > Math.hypot(G2[m].d.b.x - G2[m].d.a.x, G2[m].d.b.y - G2[m].d.a.y)) m = i; });
+      for (var j = m - 1; j >= 0; j--) G2[j].p = Math.min(G2[j].c, G2[j + 1].p - (G2[j].w + G2[j + 1].w) / 2);
+      for (j = m + 1; j < G2.length; j++) G2[j].p = Math.max(G2[j].c, G2[j - 1].p + (G2[j].w + G2[j - 1].w) / 2);
+      G2.forEach(function(q){ if (Math.abs(q.p - q.c) > 0.01) q.d.tx = q.p - q.c; }); };
+    var run = function(pts, mk){ var ds = []; for (var j = 0; j < pts.length - 1; j++) { var q = mk(pts[j], pts[j + 1]); cdim(q[0], q[1], q[2], q[3]); ds.push(D.dims[D.dims.length - 1]); } spread(ds); };
+    var tol = 1, rowT = 0, rowL = 0, rowR = 0, rowB = 0, cg = th * 1.8;
+    if (fenB.length) {
+      var side = function(f){ return fenB.filter(f); };
+      var cBack = chain(side(function(b){ return b.z0 <= Z0 + tol; }).map(function(b){ return [b.x0, b.x1]; }), X0, X1);
+      var cFront = chain(side(function(b){ return b.z1 >= Z1 - tol; }).map(function(b){ return [b.x0, b.x1]; }), X0, X1);
+      var cLeft = chain(side(function(b){ return b.x0 <= X0 + tol; }).map(function(b){ return [b.z0, b.z1]; }), Z0, Z1);
+      var cRight = chain(side(function(b){ return b.x1 >= X1 - tol; }).map(function(b){ return [b.z0, b.z1]; }), Z0, Z1);
+      var cMid = chain(side(function(b){ return b.x0 < (X0 + X1) / 2 && b.x1 > (X0 + X1) / 2; }).map(function(b){ return [b.z0, b.z1]; }), Z0, Z1);
+      var same = function(A, B){ return A && B && A.length === B.length && A.every(function(v, i){ return Math.abs(v - B[i]) < 0.6; }); };
+      if (cBack) { run(cBack, function(u, w){ var a1 = pP(u, Z0), b1 = pP(w, Z0); return [a1, b1, 'h', [(a1[0] + b1[0]) / 2, a1[1] + cg]]; }); rowT = 1; }
+      if (cFront) { run(cFront, function(u, w){ var a1 = pP(u, Z1), b1 = pP(w, Z1); return [a1, b1, 'h', [(a1[0] + b1[0]) / 2, a1[1] - cg]]; }); rowB = 1; }
+      if (cLeft) { run(cLeft, function(u, w){ var a1 = pP(X0, u), b1 = pP(X0, w); return [a1, b1, 'v', [a1[0] - cg, (a1[1] + b1[1]) / 2]]; }); rowL = 1; }
+      if (cRight && !same(cRight, cLeft)) { run(cRight, function(u, w){ var a1 = pP(X1, u), b1 = pP(X1, w); return [a1, b1, 'v', [a1[0] + cg, (a1[1] + b1[1]) / 2]]; }); rowR = 1; }
+      if (cMid && !same(cMid, cLeft) && !same(cMid, cRight)) { run(cMid, function(u, w){ var a1 = pP(X1, u), b1 = pP(X1, w); return [a1, b1, 'v', [a1[0] + cg * (rowR + 1), (a1[1] + b1[1]) / 2]]; }); rowR++; }
+    }
+    dim([t.x0, t.y1], [t.x1, t.y1], 'h', [(t.x0 + t.x1) / 2, t.y1 + dg + cg * rowT]);
+    dim([t.x0, t.y0], [t.x0, t.y1], 'v', [t.x0 - dg - cg * rowL, (t.y0 + t.y1) / 2]);
     dim([l.x0, l.y0], [l.x1, l.y0], 'h', [(l.x0 + l.x1) / 2, l.y0 - dg]);
     dim([rt.x0, rt.y0], [rt.x1, rt.y0], 'h', [(rt.x0 + rt.x1) / 2, rt.y0 - dg]);
     dim([bk.x0, bk.y0], [bk.x1, bk.y0], 'h', [(bk.x0 + bk.x1) / 2, bk.y0 - dg]);

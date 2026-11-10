@@ -43,6 +43,15 @@ button{font:inherit;cursor:pointer}input,select{font:inherit}
 #busy.ok{background:var(--ok)}
 .dlg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:40}
 .dlg>div{background:#fff;border-radius:12px;padding:16px 18px;width:420px;max-width:92vw}
+.skb{margin:4px 6px 8px;border:1px solid var(--line);border-radius:8px;padding:4px 0;background:#fbfcfd}
+.skb .t,.pt{font-weight:700;padding:2px 10px;font-size:13px}.pt{margin-top:6px}
+.skb .r{padding-left:18px}.skb .r.on{padding-left:14px}
+.cd .use{position:absolute;top:6px;left:6px;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:700;color:#fff;background:var(--org)}
+.grid.sets{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}.grid.sets .th{aspect-ratio:1;height:auto}
+.kbox{border:2px solid var(--org);background:#fff7ef;border-radius:10px;padding:8px 10px;margin-bottom:10px}
+.kbox b{font-size:14px}.kbox .q{display:flex;gap:8px;align-items:center;margin-top:6px}.kbox input{width:56px;border:2px solid var(--navy);border-radius:6px;padding:3px 6px;font-weight:700;text-align:center}
+.kbox .go{background:var(--org);color:#fff;border:0;border-radius:8px;padding:8px 12px;font-weight:700;margin-left:auto}.kbox .go:disabled{opacity:.45;cursor:default}
+.bigp{background:#fafbfc;border:1px solid #eef0f4;border-radius:10px;aspect-ratio:1;margin:6px 0}.bigp svg{width:100%;height:100%}
 @media (max-width:1100px){.right{width:380px}.left{width:170px}}
 </style><script src="sekkei-in.js?v=0.1"></script></head><body>
 <div class="top"><b>🗂 部材マスター</b><input id="q" placeholder="🔍 名前・id・タグで さがす"><button class="b o" id="bNew">＋ 新しい 部材</button><button class="b" id="bFile">📂 ファイルを 読む</button><button class="b" id="bSync">☁️ SP から 読む</button><span class="sp"></span><span class="w" id="where"></span><button class="b" id="bKumi">🏯 組み立てへ</button></div>
@@ -59,7 +68,7 @@ button{font:inherit;cursor:pointer}input,select{font:inherit}
 <script src="buzai-lib.js?v=0.9.4"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
 <script>
-var APP_VER = 'v0.2.6';
+var APP_VER = 'v0.3';
 // 部材マスター：部材ライブラリ（buzai/1）の 一覧・名前や 役目の 直し・複製・新しく・保存（版と 履歴）。
 // 形と 図面は 図面アプリ（zumen.html#pd）で 直し、ここへ 戻す。加工図面の 見本は zumen.html#km（この 部材 だけ）。
 // 部材は この 端末（kumitate.lib・組み立てと 同じ）と SharePoint（/業務アプリ/部材ライブラリ/部材/<id>.json、履歴/<id>_v<n>.json）
@@ -69,8 +78,32 @@ function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
 var PART_DIR = '/業務アプリ/部材ライブラリ/部材', LIB = lsGet('kumitate.lib') || {}, SETS = lsGet('kumitate.sets') || [];
-var CUR = { role:'', sel:'', st:'', tag:'', q:'' }, Z3 = null, THQ = {}, HIST = {};
-try { var c0 = lsGet('buzai.cur'); if (c0) { CUR.role = c0.role || ''; CUR.sel = c0.sel || ''; } } catch (e) {}
+var CUR = { role:'', sel:'', st:'', tag:'', q:'', sk:'', sid:'' }, Z3 = null, THQ = {}, HIST = {};
+try { var c0 = lsGet('buzai.cur'); if (c0) { CUR.role = c0.role || ''; CUR.sel = c0.sel || ''; CUR.sk = c0.sk || ''; CUR.sid = c0.sid || ''; } } catch (e) {}
+(function(){ var m = /sk=(tower|fence)/.exec(location.hash || ''); if (m) { CUR.sk = m[1]; CUR.sid = ''; } })();
+// ── 組み立てと つなぐ（枠の 中なら 組み立てタブ、単独なら 開いた 組み立ての 窓）v0.3 ──
+function kumi(fn){ if (SKP && SKP.kumi) { SKP.kumi(function(w){ fn(w && w.kmMaster ? w : null); }); return; }
+  var w = null; try { w = window.opener && !window.opener.closed && window.opener.kmMaster ? window.opener : null; } catch (e) { w = null; } fn(w); }
+function toKumi(){ if (skGo('kumi')) return; try { window.opener.focus(); } catch (e) {} }
+var KSEL = {}, KUMI_OK = false;
+function refreshSel(then){ kumi(function(w){ KUMI_OK = !!w; if (w) KSEL = w.kmMaster.sel(); if (then) then(); }); }
+// セットを 組んだ 形の サムネ（組み立てで 作る。セットの 版と 部材の 版が 同じ あいだは 覚えた ものを 使う）
+var SETTH = lsGet('buzai.setThumbs') || {}, STQ = {};
+function setSig(S){ return (S.version || 0) + ':' + (S.slots || []).map(function(sl){ var q = sl.part && LIB[sl.part.id]; return (sl.part && sl.part.id) + '@' + (q ? q.version || 0 : 0) + (sl.mirror ? 'm' : '') + (sl.w || '') + 'x' + (sl.d || '') + 'x' + (sl.h || ''); }).join(','); }
+function setPic(S){ var c = SETTH[S.id]; return c && c.svg ? c.svg : ''; }
+function makeSetThumbs(list){
+  var need = list.filter(function(S){ var c = SETTH[S.id]; return (!c || c.sig !== setSig(S)) && !STQ[S.id]; }); if (!need.length) return;
+  need.forEach(function(S){ STQ[S.id] = 1; });
+  kumi(function(w){ if (!w) { need.forEach(function(S){ STQ[S.id] = 0; }); return; }
+    w.kmMaster.setThumbs(need.map(function(S){ return S.id; }), 240).then(function(r){
+      need.forEach(function(S){ STQ[S.id] = 0; if (r[S.id]) SETTH[S.id] = { sig:setSig(S), svg:r[S.id] }; });
+      try { localStorage.setItem('buzai.setThumbs', JSON.stringify(SETTH)); } catch (e) {}
+      if (CUR.sk) { renderMid(); renderRight(); } }).catch(function(){ need.forEach(function(S){ STQ[S.id] = 0; }); }); });
+}
+var SKN = { tower:'石塔', fence:'外柵' };
+function setsOf(kd){ return SETS.filter(function(S){ return S.kind === kd; }).sort(function(a, b){ return String(a.name).localeCompare(String(b.name), 'ja'); }); }
+// 組み立てから 開く（{ sk:'tower' } で その セットの 一覧）
+window.bmShow = function(o){ if (o && o.sk) { CUR.sk = o.sk; CUR.sid = ''; } SETS = lsGet('kumitate.sets') || SETS; refreshSel(function(){ if (CUR.sk && !CUR.sid) CUR.sid = KSEL[CUR.sk] && SETS.some(function(S){ return S.id === KSEL[CUR.sk]; }) ? KSEL[CUR.sk] : ''; render(); }); };
 function libPut(p){ var o = LIB[p.id]; if (o && (o.version || 0) > (p.version || 0)) return false; if (o && o.__dirty && (o.version || 0) === (p.version || 0)) return false; if (o && o.thumb && !p.thumb && (o.version || 0) === (p.version || 0)) p.thumb = o.thumb; LIB[p.id] = p; return true; }
 function libSave(){ lsSet('kumitate.lib', LIB); }
 // 前の 形の セット（部材を 丸ごと）が 端末に あれば、組み立てと 同じく 分けて ライブラリへ
@@ -100,8 +133,9 @@ function pic(p){ return p.thumb ? '<span class="th">' + p.thumb + '</span>' : '<
 // ── 画面 ──
 function counts(){ var c = {}; Object.keys(LIB).forEach(function(id){ var r = roleOfP(LIB[id]); c[r] = (c[r] || 0) + 1; }); return c; }
 function renderLeft(){
-  var c = counts(), h = '<div class="r' + (CUR.role === '' ? ' on' : '') + '" data-role="">すべて<span>' + Object.keys(LIB).length + '</span></div>';
-  BL.BUNRUI.forEach(function(b){ h += '<div class="g">' + esc(b.g) + '</div>'; b.roles.forEach(function(r){ var n = c[r] || 0; h += '<div class="r' + (CUR.role === r ? ' on' : '') + (n ? '' : ' z') + '" data-role="' + esc(r) + '">' + esc(r) + '<span>' + n + '</span></div>'; }); });
+  var c = counts(), h = '<div class="skb"><div class="t">🧱 セット</div>' + ['tower', 'fence'].map(function(kd){ return '<div class="r' + (CUR.sk === kd ? ' on' : '') + '" data-sk="' + kd + '">' + SKN[kd] + '<span>' + setsOf(kd).length + '</span></div>'; }).join('') + '</div>';
+  h += '<div class="pt">🏺 部材</div><div class="r' + (!CUR.sk && CUR.role === '' ? ' on' : '') + '" data-role="">すべて<span>' + Object.keys(LIB).length + '</span></div>';
+  BL.BUNRUI.forEach(function(b){ h += '<div class="g">' + esc(b.g) + '</div>'; b.roles.forEach(function(r){ var n = c[r] || 0; h += '<div class="r' + (!CUR.sk && CUR.role === r ? ' on' : '') + (n ? '' : ' z') + '" data-role="' + esc(r) + '">' + esc(r) + '<span>' + n + '</span></div>'; }); });
   if (c['']) h += '<div class="g">分類 なし</div><div class="r' + (CUR.role === '?' ? ' on' : '') + '" data-role="?">役目が ない<span>' + c[''] + '</span></div>';
   $('left').innerHTML = h;
 }
@@ -114,7 +148,35 @@ function listIds(){
     if (q && (id + ' ' + (p.name || '') + ' ' + (p.tags || []).join(' ')).toLowerCase().indexOf(q) < 0) return false;
     return true; }).sort(function(a, b){ return String(LIB[a].name).localeCompare(String(LIB[b].name), 'ja'); });
 }
+function renderSetMid(){
+  var L = setsOf(CUR.sk), h = '<h2>🧱 ' + SKN[CUR.sk] + 'の セット <small>' + L.length + ' 件　押すと 右に［🏯 組み立てで 使う］</small></h2><div class="grid sets">';
+  L.forEach(function(S){ var use = KSEL[S.kind] === S.id, sz = S.size || {}, pc = setPic(S);
+    h += '<div class="cd' + (CUR.sid === S.id ? ' on' : '') + '" data-sid="' + esc(S.id) + '">' + (use ? '<span class="use">使用中</span>' : '') + (pc ? '<span class="th">' + pc + '</span>' : '<span class="th no">' + (KUMI_OK ? '…' : '🧱') + '</span>') +
+      '<div class="nm">' + esc(S.name || S.id) + '</div><div class="mt">' + (sz.W ? Math.round(sz.W) + '×' + Math.round(sz.D) + '・' : '') + '部材 ' + (S.slots || []).length + (S.version ? '・版 ' + S.version : '') + '</div></div>'; });
+  h += '</div>';
+  if (!L.length) h += '<div class="empty">' + SKN[CUR.sk] + 'の セットが まだ ありません。組み立ての［📂 読む ▾］→［🧱 セットを 読む］か ☁️ SP から 入ります</div>';
+  $('mid').innerHTML = h; makeSetThumbs(L);
+}
+function renderSetRight(){
+  var S = SETS.filter(function(x){ return x.id === CUR.sid; })[0];
+  if (!S) { $('right').innerHTML = '<div class="empty">真ん中の セットを 押すと ここに 出ます</div>'; return; }
+  var use = KSEL[S.kind] === S.id, sz = S.size || {}, cur = SETS.filter(function(x){ return x.id === KSEL[S.kind]; })[0];
+  var h = '<h3>' + esc(S.name || S.id) + '</h3><div class="idl">' + SKN[S.kind] + 'の セット　' + esc(S.id) + (S.version ? '　版 ' + S.version : '') + '</div>';
+  h += '<div class="kbox"><b>🏯 組み立てで 使う</b>' + (use ? '<div style="margin-top:6px"><b style="color:var(--org)">使用中</b>　<button class="btn" id="bNoSet">使わない（なし）</button></div>'
+    : '<div class="q"><span class="muted">' + (cur ? 'いまの ' + SKN[S.kind] + '（' + esc(cur.name) + '）と 入れ替え' : 'いまは ' + SKN[S.kind] + ' なし') + '</span><button class="go" id="bUseSet"' + (KUMI_OK ? '' : ' disabled') + '>' + SKN[S.kind] + 'を この セットに する</button></div>') +
+    (KUMI_OK ? '' : '<div class="muted">組み立てから 開いた ときに 使えます</div>') + '</div>';
+  h += '<div class="bigp">' + setPic(S) + '</div>';
+  h += '<div class="row"><span class="k">幅 × 奥行</span><span>' + (sz.W ? Math.round(sz.W) + ' × ' + Math.round(sz.D) + ' mm' : '—') + '</span></div>';
+  h += '<div class="row"><span class="k">部材</span><span>' + (S.slots || []).length + ' 個（左右の 反転 含む）</span></div>';
+  $('right').innerHTML = h;
+}
+function insBox(p){ var dr = isDraft(p);
+  return '<div class="kbox"><b>🏯 組み立てに 入れる</b><div class="q">数 <input id="insN" type="number" inputmode="numeric" min="1" max="20" value="1"><button class="go" id="bIns"' + (dr || !KUMI_OK ? ' disabled' : '') + '>＋ 入れて 支点を 選ぶ →</button></div>' +
+    '<div class="muted" style="margin-top:4px">' + (dr ? '下書きの 部材は 入れられません（状態を［登録済み］に）' : KUMI_OK ? '組み立てに 戻り、3D で 自分と 相手の 支点を クリック。サムネを ダブルクリックでも' : '組み立てから 開いた ときに 使えます') + '</div></div>'; }
+function insPart(id, n){ var p = LIB[id]; if (!p || isDraft(p)) return; libSave();
+  kumi(function(w){ if (!w) { alert('組み立てが 見つかりません（組み立てから 開いて ください）'); return; } toKumi(); setTimeout(function(){ if (!w.kmMaster.addPart(id, n)) alert('組み立てに 入れられませんでした'); }, 80); }); }
 function renderMid(){
+  if (CUR.sk) { renderSetMid(); return; }
   var ids = listIds(), all = Object.keys(LIB).filter(function(id){ var r = roleOfP(LIB[id]); return CUR.role === '?' ? !r : !CUR.role || r === CUR.role; });
   var tags = []; all.forEach(function(id){ (LIB[id].tags || []).forEach(function(t){ if (tags.indexOf(t) < 0) tags.push(t); }); });
   var g = CUR.role && CUR.role !== '?' ? BL.groupOf(CUR.role) + ' › ' + CUR.role : CUR.role === '?' ? '役目が ない 部材' : 'すべての 部材';
@@ -131,9 +193,10 @@ function renderMid(){
 function roleSelect(cur){ return '<select data-f="role"><option value="">（なし）</option>' + BL.BUNRUI.map(function(b){ return '<optgroup label="' + esc(b.g) + '">' + b.roles.map(function(r){ return '<option' + (r === cur ? ' selected' : '') + '>' + esc(r) + '</option>'; }).join('') + '</optgroup>'; }).join('') + '</select>'; }
 var OUTM = [['auto', '自動（直方体なら 立体の 絵だけ）'], ['iso', '立体の 絵だけ'], ['full', 'いつも 立体の 絵＋正面・右側面']];
 function renderRight(){
+  if (CUR.sk) { renderSetRight(); return; }
   var p = LIB[CUR.sel]; if (!p) { $('right').innerHTML = '<div class="empty">真ん中の 部材を 押すと ここに 中身が 出ます</div>'; return; }
   var s = sizeOf(p), r = roleOfP(p), out = (p.drawing && p.drawing.out) || {}, sp = !!spHost();
-  var h = '<h3>' + esc(p.name || p.id) + '</h3><div class="idl">' + esc(p.id) + '　版 ' + (p.version || 0) + '　' + (isDraft(p) ? '<b style="color:var(--org)">下書き</b>' : '<b style="color:var(--ok)">登録済み</b>') + (p.savedAt ? '　' + esc(p.savedAt.slice(0, 10)) + ' 保存' : '') + (p.__dirty ? '　<b style="color:#a16207">未保存の 直し あり</b>' : '') + '</div>';
+  var h = insBox(p) + '<h3>' + esc(p.name || p.id) + '</h3><div class="idl">' + esc(p.id) + '　版 ' + (p.version || 0) + '　' + (isDraft(p) ? '<b style="color:var(--org)">下書き</b>' : '<b style="color:var(--ok)">登録済み</b>') + (p.savedAt ? '　' + esc(p.savedAt.slice(0, 10)) + ' 保存' : '') + (p.__dirty ? '　<b style="color:#a16207">未保存の 直し あり</b>' : '') + '</div>';
   h += '<div class="hd"><div class="pic">' + (p.thumb || '') + '</div><div class="kv">';
   h += '<div class="row"><span class="k">名前</span><input data-f="name" value="' + esc(p.name || '') + '"></div>';
   h += '<div class="row"><span class="k">役目</span>' + roleSelect(r) + '</div>';
@@ -157,17 +220,25 @@ function renderRight(){
   if (p.sources && p.sources.length) h += '<div class="muted" style="margin-top:8px">元：' + p.sources.map(function(s){ return esc(s.set ? s.set + '/' + s.key : s.file || ''); }).join('、') + '</div>';
   $('right').innerHTML = h;
 }
-function render(){ renderLeft(); renderMid(); renderRight(); lsSet('buzai.cur', { role:CUR.role, sel:CUR.sel }); }
+function render(){ renderLeft(); renderMid(); renderRight(); lsSet('buzai.cur', { role:CUR.role, sel:CUR.sel, sk:CUR.sk, sid:CUR.sid }); }
 function touch(p){ if (!p.__dirty) { p.__base = clone(p); delete p.__base.__base; p.__dirty = 1; } }
 
 // ── 直す ──
-$('left').onclick = function(e){ var r = e.target.closest('[data-role]'); if (!r) return; CUR.role = r.dataset.role; CUR.tag = ''; render(); };
+$('left').onclick = function(e){ var k = e.target.closest('[data-sk]'); if (k) { CUR.sk = k.dataset.sk; CUR.sid = ''; refreshSel(function(){ if (KSEL[CUR.sk] && SETS.some(function(S){ return S.id === KSEL[CUR.sk]; })) CUR.sid = KSEL[CUR.sk]; render(); }); return; }
+  var r = e.target.closest('[data-role]'); if (!r) return; CUR.sk = ''; CUR.role = r.dataset.role; CUR.tag = ''; render(); };
+$('mid').addEventListener('dblclick', function(e){ var cd = e.target.closest('[data-id]'); if (cd && !CUR.sk && KUMI_OK) insPart(cd.dataset.id, 1); });
 $('mid').onclick = function(e){ var t = e.target;
   var st = t.closest('[data-st]'); if (st) { CUR.st = st.dataset.st; renderMid(); return; }
   var tg = t.closest('[data-tag]'); if (tg) { CUR.tag = CUR.tag === tg.dataset.tag ? '' : tg.dataset.tag; renderMid(); return; }
+  var sc = t.closest('[data-sid]'); if (sc) { CUR.sid = sc.dataset.sid; renderMid(); renderRight(); lsSet('buzai.cur', { role:CUR.role, sel:CUR.sel, sk:CUR.sk, sid:CUR.sid }); return; }
   if (t.closest('#cAdd')) { openNew(); return; }
   var cd = t.closest('[data-id]'); if (cd) { CUR.sel = cd.dataset.id; render(); } };
-$('q').oninput = function(){ CUR.q = this.value; renderMid(); };
+$('q').oninput = function(){ CUR.q = this.value; if (CUR.sk && CUR.q) { CUR.sk = ''; render(); return; } renderMid(); };
+$('right').addEventListener('click', function(e){ var b = e.target.closest('button'); if (!b) return;
+  if (b.id === 'bIns') { insPart(CUR.sel, Math.max(1, Math.min(20, parseInt($('insN').value, 10) || 1))); return; }
+  if (b.id === 'bUseSet' || b.id === 'bNoSet') { var S = SETS.filter(function(x){ return x.id === CUR.sid; })[0]; if (!S) return;
+    kumi(function(w){ if (!w) return; var ok = b.id === 'bUseSet' ? w.kmMaster.useSet(S.id) : w.kmMaster.noSet(S.kind); if (!ok) { alert('組み立てに 入れられませんでした'); return; }
+      KSEL = w.kmMaster.sel(); render(); if (b.id === 'bUseSet') toKumi(); }); } });
 $('right').addEventListener('change', function(e){ var t = e.target, p = LIB[CUR.sel]; if (!p) return; var f = t.dataset.f;
   if (f) { touch(p);
     if (f === 'tags') p.tags = t.value.split(/[、,，\s]+/).filter(Boolean);
@@ -217,7 +288,8 @@ window.bmTake = function(def){ if (!def || !def.id) return; var sig = JSON.strin
   LIB[def.id] = n; libSave(); CUR.sel = def.id; render(); busy('図面から 戻しました：' + (n.name || n.id) + '。［💾 保存］で 版が 上がります', 'ok', 5000); window.focus(); };
 window.addEventListener('storage', function(e){
   if (e.key === 'zumen.part') { var z = lsGet('zumen.part'); if (z && z.__master && z.__back && z.__back !== window.__lastBack) { window.__lastBack = z.__back; delete z.__back; bmTake(z); } }
-  if (e.key === 'kumitate.sets') { SETS = lsGet('kumitate.sets') || []; renderRight(); }
+  if (e.key === 'kumitate.sets') { SETS = lsGet('kumitate.sets') || []; render(); }
+  if (e.key === 'kumitate.state') { var k0 = JSON.stringify(KSEL); refreshSel(function(){ if (JSON.stringify(KSEL) !== k0) render(); }); }
   if (e.key === 'kumitate.lib') { var L = lsGet('kumitate.lib') || {}; Object.keys(L).forEach(function(id){ if (!LIB[id] || (!LIB[id].__dirty && (L[id].version || 0) >= (LIB[id].version || 0))) LIB[id] = L[id]; }); render(); }
 });
 // 加工図面（この 部材 だけ の 部品詳細図）を 図面アプリで
@@ -270,6 +342,6 @@ $('fOpen').onchange = function(){ var f = this.files[0]; this.value = ''; if (!f
 $('bKumi').onclick = function(){ if (!skGo('kumi')) window.open('kumitate.html', 'kumitate'); };
 $('where').textContent = spHost() ? '☁️ SharePoint と つながって います' : 'この 端末だけ（SharePoint は 業務アプリから 開いた とき）';
 window.addEventListener('beforeunload', function(e){ if (Object.keys(LIB).some(function(id){ return LIB[id].__dirty; })) { e.preventDefault(); e.returnValue = ''; } });
-render(); if (spHost()) spLoad(false);
+render(); refreshSel(render); if (spHost()) spLoad(false);
 </script>
 </body></html>

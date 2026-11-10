@@ -66,8 +66,12 @@ export function featureEdges(geo, deg){
   geo.computeBoundingBox(); var bb = geo.boundingBox, sc = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z) || 1, q = sc * 1e-5, tol = sc * 1e-3;
   function P(i){ var j = idx ? idx.getX(i) : i; return [pos.getX(j), pos.getY(j), pos.getZ(j)]; }
   // 点を まとめる
-  var VK = {}, V = [];
-  function vid(p){ var k = Math.round(p[0] / q) + ',' + Math.round(p[1] / q) + ',' + Math.round(p[2] / q); if (VK[k] === undefined) { VK[k] = V.length; V.push(p); } return VK[k]; }
+  // 点を まとめる：CSG の 答えは 同じ 点が 少し（0.1mm ほど）ずれて 別の 点に なる ことが ある（線が 途切れる）。tol の 半分 以内は 同じ 点に する
+  var VK = {}, V = [], rw = tol * 0.5;
+  function vid(p){ var gx = Math.floor(p[0] / rw), gy = Math.floor(p[1] / rw), gz = Math.floor(p[2] / rw);
+    for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) for (var dz = -1; dz <= 1; dz++) { var L = VK[(gx + dx) + ',' + (gy + dy) + ',' + (gz + dz)]; if (!L) continue;
+      for (var i = 0; i < L.length; i++) { var o = V[L[i]]; if (Math.abs(o[0] - p[0]) <= rw && Math.abs(o[1] - p[1]) <= rw && Math.abs(o[2] - p[2]) <= rw) return L[i]; } }
+    var k = gx + ',' + gy + ',' + gz; (VK[k] = VK[k] || []).push(V.length); V.push(p); return V.length - 1; }
   var cs = Math.max(tol * 4, sc / 200), G = {};
   function ck(x, y, z){ return x + ',' + y + ',' + z; }
   var T = [];
@@ -77,7 +81,7 @@ export function featureEdges(geo, deg){
     var nr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(nr[0], nr[1], nr[2]); if (!(L > 0)) continue;
     var m2 = Math.max(u[0] * u[0] + u[1] * u[1] + u[2] * u[2], w[0] * w[0] + w[1] * w[1] + w[2] * w[2], (c[0] - b[0]) * (c[0] - b[0]) + (c[1] - b[1]) * (c[1] - b[1]) + (c[2] - b[2]) * (c[2] - b[2]));
     var nn = [nr[0] / L, nr[1] / L, nr[2] / L];
-    T.push({ v:[ia, ib, ic], n:nn, thin:L / Math.sqrt(m2) < tol, pl:nn.map(function(x){ return Math.round(x * 200); }).join(',') + '|' + Math.round((nn[0] * a[0] + nn[1] * a[1] + nn[2] * a[2]) / (tol * 2)) });
+    T.push({ v:[ia, ib, ic], n:nn, thin:L / Math.sqrt(m2) < q, pl:nn.map(function(x){ return Math.round(x * 200); }).join(',') + '|' + Math.round((nn[0] * a[0] + nn[1] * a[1] + nn[2] * a[2]) / (tol * 2)) });
   }
   V.forEach(function(p, i){ var k = ck(Math.floor(p[0] / cs), Math.floor(p[1] / cs), Math.floor(p[2] / cs)); (G[k] = G[k] || []).push(i); });
   // 辺の 上に ある 点で 辺を 切る（T 字の つなぎを なくす）→ 小さい 辺どうしで となりの 面を 見る

@@ -18,6 +18,7 @@ function kmTan(tr){
   var dx = bx[1] - bx[0], dy = bx[3] - bx[2], dz = bx[5] - bx[4], big = Math.max(dx * dy, dy * dz, dx * dz) * 0.03, TR = [], PA = {};
   for (var t = 0; t < n; t++) { i = t * 9; var a = [tr[i], tr[i + 1], tr[i + 2]], b = [tr[i + 3], tr[i + 4], tr[i + 5]], c = [tr[i + 6], tr[i + 7], tr[i + 8]];
     var u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], cr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(cr[0], cr[1], cr[2]); if (L < 1e-6) continue;
+    var mx2 = Math.max(u[0] * u[0] + u[1] * u[1] + u[2] * u[2], w[0] * w[0] + w[1] * w[1] + w[2] * w[2], (c[0] - b[0]) * (c[0] - b[0]) + (c[1] - b[1]) * (c[1] - b[1]) + (c[2] - b[2]) * (c[2] - b[2])); if (L / mx2 < 0.002) continue;   // 細すぎる 三角（向きが あてに ならない）は 見ない
     var nn = [cr[0] / L, cr[1] / L, cr[2] / L], d = nn[0] * a[0] + nn[1] * a[1] + nn[2] * a[2], pk = nn.map(function(v){ return Math.round(v * 100); }).join(',') + '|' + Math.round(d);
     PA[pk] = (PA[pk] || 0) + L / 2; TR.push({ v:[a, b, c], n:nn, pk:pk }); }
   var LN = {};
@@ -36,7 +37,10 @@ function kmTan(tr){
     var lo = Infinity, hi = -Infinity; PV[pk].forEach(function(q){ var t = dot(q, pp); if (t < lo) lo = t; if (t > hi) hi = t; }); return WC[ck] = hi - lo < lim; }
   K0.forEach(function(key){ var o = LN[key];
     o.iv.forEach(function(I){ var T = TR[I.ti]; if ((PA[T.pk] || 0) < big || narrow(T.pk, T.n, o.dv)) return; var rest = [[I.a, I.b]];
-      o.iv.forEach(function(J){ if (J.ti === I.ti || dot(TR[J.ti].n, T.n) < 0.9995) return; var nr = []; rest.forEach(function(K){ if (J.b <= K[0] + 0.05 || J.a >= K[1] - 0.05) { nr.push(K); return; } if (J.a > K[0]) nr.push([K[0], J.a]); if (J.b < K[1]) nr.push([J.b, K[1]]); }); rest = nr; });
+      // 同じ 面の 相手が 重なる 所は 除き、なだらかに 続く 曲面（R など）が となりに ある 所だけ のこす（何も ない 所・三角の 継ぎ目は 線に しない）
+      var smo = [];
+      o.iv.forEach(function(J){ if (J.ti === I.ti) return; var dn = dot(TR[J.ti].n, T.n); if (dn > 0.94 && dn < 0.999) smo.push([J.a, J.b]); if (dn < 0.999) return; var nr = []; rest.forEach(function(K){ if (J.b <= K[0] + 0.05 || J.a >= K[1] - 0.05) { nr.push(K); return; } if (J.a > K[0]) nr.push([K[0], J.a]); if (J.b < K[1]) nr.push([J.b, K[1]]); }); rest = nr; });
+      var keep = []; rest.forEach(function(K){ smo.forEach(function(M){ var a = Math.max(K[0], M[0]), b = Math.min(K[1], M[1]); if (b > a) keep.push([a, b]); }); }); rest = keep;
       rest.forEach(function(K){ if (K[1] - K[0] > 0.3) out.push([o.c0.map(function(v, j){ return v + o.dv[j] * K[0]; }), o.c0.map(function(v, j){ return v + o.dv[j] * K[1]; })]); }); }); });
   return out;
 }
@@ -57,9 +61,9 @@ function kmHlr(items, view, s, res){
       for (var e = 0; e < 3; e++) { var a = V[e], b = V[(e + 1) % 3], ka = qk(a), kb = qk(b); if (ka === kb) continue; var key = ka < kb ? ka + '|' + kb : kb + '|' + ka; if (E[key]) E[key].s.push(sg); else E[key] = { a:a, b:b, s:[sg] }; } }
     Object.keys(E).forEach(function(key){ var x = E[key]; if (x.s.length === 2 && x.s[0] !== null && x.s[1] !== null && (x.s[0] * x.s[1] < 0 || (x.s[0] === 0) !== (x.s[1] === 0))) ed.push({ a:pj(x.a), b:pj(x.b) }); });
     (it.tan || []).forEach(function(q){ ed.push({ a:pj(q[0]), b:pj(q[1]) }); });
-    // なめらかな 辺（featureEdges が 線に しなかった もの）：この 向きで 片方の 面が 手前、もう 片方が 奥 向きなら 輪郭
+    // なめらかな 辺（featureEdges が 線に しなかった もの）：この 向きで 片方の 面が 手前、もう 片方が 横・奥 向きなら 輪郭
     var sf = it.soft || [], fz = function(i){ return Pf([sf[i], sf[i + 1], sf[i + 2]])[2]; };
-    for (i = 0; i + 11 < sf.length; i += 12) { var z1 = fz(i + 6), z2 = fz(i + 9); if ((z1 < -0.01 && z2 > 0.01) || (z2 < -0.01 && z1 > 0.01)) ed.push({ a:pj([sf[i], sf[i + 1], sf[i + 2]]), b:pj([sf[i + 3], sf[i + 4], sf[i + 5]]) }); }
+    for (i = 0; i + 11 < sf.length; i += 12) { var z1 = fz(i + 6), z2 = fz(i + 9); if ((z1 < -0.02 && z2 > -0.005) || (z2 < -0.02 && z1 > -0.005)) ed.push({ a:pj([sf[i], sf[i + 1], sf[i + 2]]), b:pj([sf[i + 3], sf[i + 4], sf[i + 5]]) }); }
     it.edges.forEach(function(q){ ed.push({ a:pj(q[0]), b:pj(q[1]), k:it.k }); });
   });
   var u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity, d0 = Infinity, d1 = -Infinity;
@@ -73,21 +77,23 @@ function kmHlr(items, view, s, res){
     for (var py = ya; py <= yb; py++) for (var px = xa; px <= xb; px++) {
       var A = ((y[1] - y[2]) * (px - x[2]) + (x[2] - x[1]) * (py - y[2])) / den, B = ((y[2] - y[0]) * (px - x[2]) + (x[0] - x[2]) * (py - y[2])) / den, C = 1 - A - B;
       if (A < -1e-4 || B < -1e-4 || C < -1e-4) continue; var dd = A * d[0] + B * d[1] + C * d[2], ii = py * W + px; if (dd < Z[ii]) Z[ii] = dd; } });
-  var tol = 1.5 + (d1 - d0) * 0.004, vis = [], hid = [];
+  // 深さの ゆとり：1 画素（実寸で 1/(s・RES) mm）の 中でも 横向きに 近い 面は 深さが 大きく 変わる ので、画素の 大きさに 合わせて 広げる
+  var tol = 1.5 + (d1 - d0) * 0.004 + 2 / (s * RES), vis = [], hid = [];
   ed.forEach(function(e){ var L = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]); if (L < 0.08) return;
     var n = Math.max(2, Math.ceil(L * RES / 1.5)), cur = null, cv = null, Q = [], VV = [];
     for (var i = 0; i <= n; i++) { var t = i / n, q = [e.a[0] + (e.b[0] - e.a[0]) * t, e.a[1] + (e.b[1] - e.a[1]) * t], d = e.a[2] + (e.b[2] - e.a[2]) * t;
       var px = Math.round(X(q)), py = Math.round(Y(q)), zm = -1e9;
       for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) { var ix = px + dx, iy = py + dy; if (ix >= 0 && iy >= 0 && ix < W && iy < H) { var z = Z[iy * W + ix]; if (z < 1e8) zm = Math.max(zm, z); } }
-      Q.push(q); VV.push(zm < -1e8 || d <= zm + tol); }
+      var zc = px >= 0 && py >= 0 && px < W && py < H ? Z[py * W + px] : 1e9;   // 線の 真下に 面が ない（外形の 上）なら 見える
+      Q.push(q); VV.push(zm < -1e8 || zc > 1e8 || d <= zm + tol); }
     // 1 点だけ 見え方が 変わる ところ（面の 境目の ゆらぎ）は 両どなりに 合わせる（見える 線が 破線の ように 切れない）
     for (i = 1; i < n; i++) if (VV[i - 1] === VV[i + 1] && VV[i] !== VV[i - 1]) VV[i] = VV[i - 1];
     var runs = 0;
     for (i = 0; i <= n; i++) { if (cur && VV[i] === cv) cur.b = Q[i]; else { if (cur) { (cv ? vis : hid).push(cur); runs++; } cur = { a:Q[i], b:Q[i] }; cv = VV[i]; } }
     if (cur) { if (!runs) cur.whole = 1; (cv ? vis : hid).push(cur); } });
   // 短い 切れ端は 捨てる（辺 まるごと 見える／隠れる 短い 辺は のこす）
-  var ok = function(g){ var l = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]); return l > 0.15 || (g.whole && l > 0.02); };
-  return { vis:vis.filter(ok), hid:hid.filter(ok), u0:u0, u1:u1, v0:v0, v1:v1, Z:Z, X:X, Y:Y, W:W, H:H, P:Pf, s:s };
+  var ok = function(g){ var l = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]); return l > 0.15 || (g.whole && l > 0.02); }, okV = function(g){ var l = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]); return l > 0.04; };
+  return { vis:vis.filter(okV), hid:hid.filter(ok), u0:u0, u1:u1, v0:v0, v1:v1, Z:Z, X:X, Y:Y, W:W, H:H, P:Pf, s:s };
 }
 function kmSeen(r, p3){ var q = r.P(p3), u = q[0] * r.s, v = q[1] * r.s, px = Math.round(r.X([u, v])), py = Math.round(r.Y([u, v]));
   if (px < 0 || py < 0 || px >= r.W || py >= r.H) return null; return q[2] <= r.Z[py * r.W + px] + 3 ? [u, v] : null; }

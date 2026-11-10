@@ -96,20 +96,23 @@ export function featureEdges(geo, deg){
   // 両側に 面が ある 辺は そのまま（切るのは 片側だけの 辺。速さの ため）
   var CNT = {}; T.forEach(function(tr){ if (tr.thin) return; for (var e = 0; e < 3; e++) { var i0 = tr.v[e], i1 = tr.v[(e + 1) % 3], k = i0 < i1 ? i0 + '|' + i1 : i1 + '|' + i0; CNT[k] = (CNT[k] || 0) + 1; } });
   T.forEach(function(tr){ if (tr.thin) return; for (var e = 0; e < 3; e++) { var i0 = tr.v[e], i1 = tr.v[(e + 1) % 3]; (CNT[i0 < i1 ? i0 + '|' + i1 : i1 + '|' + i0] >= 2 ? [[i0, i1]] : split(i0, i1)).forEach(function(se){ var k = se[0] < se[1] ? se[0] + '|' + se[1] : se[1] + '|' + se[0]; var o = E[k] = E[k] || { a:se[0], b:se[1], n:[], pl:[] }; o.n.push(tr.n); o.pl.push(tr.pl); }); } });
-  // 浅い 角（5°〜deg）：浅い 面取り（9×4.5 など）・水ダレは 線に、細かく 割った 曲面（円柱の 穴・胴の 帯）の 割れ目は 線に しない。
-  // 曲面の 1 枚（細い 帯）は 浅い 角の 辺が 近くに 平行に 2 本 ある。両側が 帯の 辺だけ 線に しない（平らな 面と R の 始まりは 線に する）
-  var S = [], cosM = Math.cos(5 * Math.PI / 180), MR = {}, mild = [];
+  // 浅い 角（1°〜deg）のきまり（本人）：平らな 面から 曲面に 変わる 所は 線を 入れる、曲面＋曲面は 角度 しだい（deg 以上で 線）。
+  // 曲面の 1 枚＝その 辺に 直角の 向きの 幅が 細い 平らな 面（形の 大きさの 8% 未満）。両側とも 細い 面なら 線に しない
+  //（浅い 面取り 9×4.5・水ダレ・R の 始まりは 線、円柱の 穴・胴の 帯・拝みの 割れ目は 線なし）
+  var S = [], soft = [], cosM = Math.cos(1 * Math.PI / 180), RV = {}, RN = {}, WC = {}, lim = sc * 0.08;
+  T.forEach(function(tr){ if (tr.thin) return; var L = RV[tr.pl] = RV[tr.pl] || {}; RN[tr.pl] = tr.n; L[tr.v[0]] = L[tr.v[1]] = L[tr.v[2]] = 1; });
+  Object.keys(RV).forEach(function(k){ RV[k] = Object.keys(RV[k]).map(Number); });
+  function narrow(R, d){ var n = RN[R], pp = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]], l = Math.hypot(pp[0], pp[1], pp[2]); if (!(l > 1e-9)) return false;
+    pp = [pp[0] / l, pp[1] / l, pp[2] / l]; var ck2 = R + '#' + pp.map(function(x){ return Math.round(x * 50); }).join(','); if (WC[ck2] !== undefined) return WC[ck2];
+    var lo = Infinity, hi = -Infinity; RV[R].forEach(function(vi){ var q = V[vi], t = q[0] * pp[0] + q[1] * pp[1] + q[2] * pp[2]; if (t < lo) lo = t; if (t > hi) hi = t; });
+    return WC[ck2] = hi - lo < lim; }
   Object.keys(E).forEach(function(k){ var e = E[k], N = e.n, best = 1, bi = -1, bj = -1;
     if (N.length < 2) return;
     for (var i = 0; i < N.length; i++) for (var j = i + 1; j < N.length; j++) { var dd = N[i][0] * N[j][0] + N[i][1] * N[j][1] + N[i][2] * N[j][2]; if (dd < best) { best = dd; bi = i; bj = j; } }
     if (best < cosT) { S.push([e.a, e.b]); return; }
-    if (best < cosM) { var A = e.pl[bi], B = e.pl[bj]; if (A === B) return; var m = { a:e.a, b:e.b, A:A, B:B, d:dir(e.a, e.b) }; mild.push(m); (MR[A] = MR[A] || []).push(m); (MR[B] = MR[B] || []).push(m); } });
-  function strip(R, m){ var L = MR[R], p = V[m.a];
-    for (var i = 0; i < L.length; i++) { var o = L[i]; if (o === m || Math.abs(o.d[0] * m.d[0] + o.d[1] * m.d[1] + o.d[2] * m.d[2]) < 0.999) continue;
-      var q = V[o.a], w = [q[0] - p[0], q[1] - p[1], q[2] - p[2]], t = w[0] * m.d[0] + w[1] * m.d[1] + w[2] * m.d[2];
-      var dl = Math.hypot(w[0] - m.d[0] * t, w[1] - m.d[1] * t, w[2] - m.d[2] * t); if (dl > tol && dl < sc * 0.08) return true; }
-    return false; }
-  mild.forEach(function(m){ if (!(strip(m.A, m) && strip(m.B, m))) S.push([m.a, m.b]); });
+    var A = e.pl[bi], B = e.pl[bj]; if (A === B) return;
+    if (best < cosM) { var d = dir(e.a, e.b); if (!(narrow(A, d) && narrow(B, d))) { S.push([e.a, e.b]); return; } }
+    var P = V[e.a], Q = V[e.b]; soft.push(P[0], P[1], P[2], Q[0], Q[1], Q[2], N[bi][0], N[bi][1], N[bi][2], N[bj][0], N[bj][1], N[bj][2]); });
   // まっすぐ 続く 小さい 辺は 1 本に つなぐ（図面化の 隠れ線で 短い 切れ端が 落ちて 破線に ならない ように）
   var AT = {}; S.forEach(function(s, i){ (AT[s[0]] = AT[s[0]] || []).push(i); (AT[s[1]] = AT[s[1]] || []).push(i); });
   function dir(i0, i1){ var a = V[i0], b = V[i1], d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(d[0], d[1], d[2]) || 1; return [d[0] / l, d[1] / l, d[2] / l]; }
@@ -118,7 +121,9 @@ export function featureEdges(geo, deg){
     for (;;) { var L = AT[cur]; if (!L || L.length !== 2) return cur; var nx = used[L[0]] ? L[1] : L[0]; if (used[nx]) return cur;
       var o = S[nx][0] === cur ? S[nx][1] : S[nx][0], d2 = dir(cur, o); if (d2[0] * dv[0] + d2[1] * dv[1] + d2[2] * dv[2] < 0.99995) return cur; used[nx] = 1; cur = o; } }
   S.forEach(function(s, i){ if (used[i]) return; used[i] = 1; var dv = dir(s[0], s[1]), b = grow(i, s[1], dv), a = grow(i, s[0], [-dv[0], -dv[1], -dv[2]]), A = V[a], B = V[b]; arr.push(A[0], A[1], A[2], B[0], B[1], B[2]); });
-  var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); return g;
+  var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  g.userData.soft = soft;   // 線に しない なめらかな 辺（[a, b, 法線1, 法線2] を 12 個ずつ）。図面化で 見る 向きの 輪郭に 使う
+  return g;
 }
 
 // 部材の 形（BZ.model の 答え m）→ Three の Group。原点＝底面の 中心、+z＝前。組み立て（kumitate-3d.js）からも 使う
@@ -200,10 +205,10 @@ export function partGroup(m, fine, mat, lineMat){
     (v.front.holes || []).forEach(function(h){ var g = h.ogami ? ogamiGeo(h) : ext(h.pts, null, h.depth + mg).translate(0, 0, h.from === 'back' ? zf - Dd - mg : zf - h.depth); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     function ogamiGeo(h){
       var P = h.pts.slice(), n = P.length, a2 = 0; for (var i = 0; i < n; i++) { var j = (i + 1) % n; a2 += P[i][0] * P[j][1] - P[j][0] * P[i][1]; } if (a2 < 0) P.reverse();
-      var yb = Math.min.apply(null, P.map(function(q){ return q[1]; })), y0 = Math.max(yb, 0), d0 = h.d0 || 0, L = Math.max(h.depth - d0, 1), N = 10, back = h.from === 'back';
+      var yb = Math.min.apply(null, P.map(function(q){ return q[1]; })), y0 = Math.max(yb, 0), d0 = h.d0 || 0, L = Math.max(h.depth - d0, 1), N = 16, back = h.from === 'back';
       function zz(d){ return back ? zf - Dd + d : zf - d; }
       var rings = [{ z:zz(-mg), k:1 }, { z:zz(d0), k:1 }];
-      for (var s = 1; s <= N; s++) { var t = s / N; rings.push({ z:zz(d0 + L * t), k:Math.max(Math.sqrt(Math.max(0, 1 - t * t)), 0.004) }); }
+      for (var s = 1; s <= N; s++) { var th = s / N * Math.PI / 2; rings.push({ z:zz(d0 + L * Math.sin(th)), k:Math.max(Math.cos(th), 0.004) }); }   // 1/4 円を 角度で 等分（終わりの 急な 所も 細かく。面の ねじれで 線が 出ない ように）
       var R = rings.map(function(r){ return P.map(function(q){ return [q[0], q[1] > y0 ? y0 + (q[1] - y0) * r.k : q[1], r.z]; }); });
       var tri = [], T = THREE.ShapeUtils.triangulateShape(P.map(function(q){ return new THREE.Vector2(q[0], q[1]); }), []);
       T.forEach(function(f){ tri.push([R[0][f[0]], R[0][f[2]], R[0][f[1]]]); var L2 = R[R.length - 1]; tri.push([L2[f[0]], L2[f[1]], L2[f[2]]]); });
@@ -252,7 +257,11 @@ export function partGroup(m, fine, mat, lineMat){
 export function partGeo(m){
   var g = partGroup(m, true, new THREE.MeshBasicMaterial(), new THREE.LineBasicMaterial()), tris = [], edges = [], v = new THREE.Vector3();
   g.updateMatrixWorld(true);
+  var soft = [], v2 = new THREE.Vector3();
   g.traverse(function(o){
+    if (o.isLineSegments && o.geometry.userData.soft) { var S2 = o.geometry.userData.soft; for (var si = 0; si < S2.length; si += 12) {
+      v.set(S2[si], S2[si + 1], S2[si + 2]).applyMatrix4(o.matrixWorld); v2.set(S2[si + 3], S2[si + 4], S2[si + 5]).applyMatrix4(o.matrixWorld); soft.push(v.x, v.y, v.z, v2.x, v2.y, v2.z);
+      v.set(S2[si + 6], S2[si + 7], S2[si + 8]).transformDirection(o.matrixWorld); v2.set(S2[si + 9], S2[si + 10], S2[si + 11]).transformDirection(o.matrixWorld); soft.push(v.x, v.y, v.z, v2.x, v2.y, v2.z); } }
     if (o.isMesh) { var geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry, p = geo.attributes.position;
       for (var i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); tris.push(v.x, v.y, v.z); } }
     else if (o.isLine) { var q = o.geometry.attributes.position, pts = [];
@@ -261,5 +270,5 @@ export function partGeo(m){
       else { for (var k2 = 0; k2 + 1 < pts.length; k2++) edges.push([pts[k2], pts[k2 + 1]]); if (o.isLineLoop && pts.length > 2) edges.push([pts[pts.length - 1], pts[0]]); } }
   });
   g.traverse(function(o){ if (o.geometry) o.geometry.dispose(); });
-  return { tris:tris, edges:edges };
+  return { tris:tris, edges:edges, soft:soft };
 }

@@ -12,7 +12,6 @@ var KPJ = {
   iso:function(p){ return [(p[0] + p[2]) / KR2 * KISO, (p[0] + 2 * p[1] - p[2]) / KR6 * KISO, -(-p[0] + p[1] + p[2]) / KR3]; }
 };
 // 平らな 大きい 面の 縁（R 面取りの 始まりの 線 など。CSG の T 字の つなぎが あっても 線の 上の 重なりで 見る）。
-// 曲面を 大きい 帯で 作った 所（水鉢の 胴など）は 帯どうしの 境を 縁に しない
 function kmTan(tr){
   var n = tr.length / 9, bx = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity], i;
   for (i = 0; i < tr.length; i += 3) { bx[0] = Math.min(bx[0], tr[i]); bx[1] = Math.max(bx[1], tr[i]); bx[2] = Math.min(bx[2], tr[i + 1]); bx[3] = Math.max(bx[3], tr[i + 1]); bx[4] = Math.min(bx[4], tr[i + 2]); bx[5] = Math.max(bx[5], tr[i + 2]); }
@@ -27,15 +26,21 @@ function kmTan(tr){
     var tp = p[0] * dv[0] + p[1] * dv[1] + p[2] * dv[2], tq = q[0] * dv[0] + q[1] * dv[1] + q[2] * dv[2], c0 = [p[0] - dv[0] * tp, p[1] - dv[1] * tp, p[2] - dv[2] * tp];
     var key = dv.map(function(x){ return Math.round(x * 300); }).join(',') + '|' + c0.map(function(x){ return Math.round(x * 2); }).join(',');
     var o = LN[key] || (LN[key] = { dv:dv, c0:c0, iv:[] }); o.iv.push({ a:Math.min(tp, tq), b:Math.max(tp, tq), ti:ti }); } });
-  var out = [], dot = function(x, y){ return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; };
-  Object.keys(LN).forEach(function(key){ var o = LN[key]; if ([0, 1, 2].filter(function(j){ return Math.abs(o.dv[j]) > 0.002; }).length !== 1) return; // まっすぐ 軸の 向きの 線だけ
-    // 同じ 面か、となりも 大きい 平らな 面で なだらかに 続く（曲面の 帯）なら 縁に しない
-    o.iv.forEach(function(I){ var T = TR[I.ti]; if ((PA[T.pk] || 0) < big) return; var rest = [[I.a, I.b]];
-      o.iv.forEach(function(J){ if (J.ti === I.ti) return; var dn = dot(TR[J.ti].n, T.n); if (dn < 0.9995 && !(dn > 0.94 && (PA[TR[J.ti].pk] || 0) >= big)) return; var nr = []; rest.forEach(function(K){ if (J.b <= K[0] + 0.05 || J.a >= K[1] - 0.05) { nr.push(K); return; } if (J.a > K[0]) nr.push([K[0], J.a]); if (J.b < K[1]) nr.push([J.b, K[1]]); }); rest = nr; });
+  var out = [], dot = function(x, y){ return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; }, K0 = Object.keys(LN).filter(function(key){ var o = LN[key]; return [0, 1, 2].filter(function(j){ return Math.abs(o.dv[j]) > 0.002; }).length === 1; }); // まっすぐ 軸の 向きの 線だけ
+  // 本人の きまり：平らな 面 → 曲面 は 線を 入れる、曲面＋曲面 は 角度 しだい（角は featureEdges が 出す）。
+  // 曲面の 1 枚（線に 直角の 向きの 幅が 形の 大きさの 8% 未満の 細い 面。水鉢の 胴の 帯など）の 縁は ここでは 出さない
+  var lim = Math.max(dx, dy, dz) * 0.08, PV = {}, WC = {};
+  TR.forEach(function(T){ (PV[T.pk] = PV[T.pk] || []).push(T.v[0], T.v[1], T.v[2]); });
+  function narrow(pk, n, d){ var pp = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]], l = Math.hypot(pp[0], pp[1], pp[2]); if (!(l > 1e-9)) return false;
+    pp = [pp[0] / l, pp[1] / l, pp[2] / l]; var ck = pk + '#' + pp.map(function(x){ return Math.round(x * 50); }).join(','); if (WC[ck] !== undefined) return WC[ck];
+    var lo = Infinity, hi = -Infinity; PV[pk].forEach(function(q){ var t = dot(q, pp); if (t < lo) lo = t; if (t > hi) hi = t; }); return WC[ck] = hi - lo < lim; }
+  K0.forEach(function(key){ var o = LN[key];
+    o.iv.forEach(function(I){ var T = TR[I.ti]; if ((PA[T.pk] || 0) < big || narrow(T.pk, T.n, o.dv)) return; var rest = [[I.a, I.b]];
+      o.iv.forEach(function(J){ if (J.ti === I.ti || dot(TR[J.ti].n, T.n) < 0.9995) return; var nr = []; rest.forEach(function(K){ if (J.b <= K[0] + 0.05 || J.a >= K[1] - 0.05) { nr.push(K); return; } if (J.a > K[0]) nr.push([K[0], J.a]); if (J.b < K[1]) nr.push([J.b, K[1]]); }); rest = nr; });
       rest.forEach(function(K){ if (K[1] - K[0] > 0.3) out.push([o.c0.map(function(v, j){ return v + o.dv[j] * K[0]; }), o.c0.map(function(v, j){ return v + o.dv[j] * K[1]; })]); }); }); });
   return out;
 }
-// 隠れ線：items＝[{k, tris, edges, tan, off}]、s＝縮尺（1/n）。答えの 線は 紙の mm（u 右・v 上）
+// 隠れ線：items＝[{k, tris, edges, soft, tan, off}]、s＝縮尺（1/n）。答えの 線は 紙の mm（u 右・v 上）
 function kmHlr(items, view, s, res){
   var Pf = KPJ[view], RES = res || 8, tr = [], ed = [];
   items.forEach(function(it){ var o = it.off || [0, 0, 0], i, j;
@@ -52,6 +57,9 @@ function kmHlr(items, view, s, res){
       for (var e = 0; e < 3; e++) { var a = V[e], b = V[(e + 1) % 3], ka = qk(a), kb = qk(b); if (ka === kb) continue; var key = ka < kb ? ka + '|' + kb : kb + '|' + ka; if (E[key]) E[key].s.push(sg); else E[key] = { a:a, b:b, s:[sg] }; } }
     Object.keys(E).forEach(function(key){ var x = E[key]; if (x.s.length === 2 && x.s[0] !== null && x.s[1] !== null && (x.s[0] * x.s[1] < 0 || (x.s[0] === 0) !== (x.s[1] === 0))) ed.push({ a:pj(x.a), b:pj(x.b) }); });
     (it.tan || []).forEach(function(q){ ed.push({ a:pj(q[0]), b:pj(q[1]) }); });
+    // なめらかな 辺（featureEdges が 線に しなかった もの）：この 向きで 片方の 面が 手前、もう 片方が 奥 向きなら 輪郭
+    var sf = it.soft || [], fz = function(i){ return Pf([sf[i], sf[i + 1], sf[i + 2]])[2]; };
+    for (i = 0; i + 11 < sf.length; i += 12) { var z1 = fz(i + 6), z2 = fz(i + 9); if ((z1 < -0.01 && z2 > 0.01) || (z2 < -0.01 && z1 > 0.01)) ed.push({ a:pj([sf[i], sf[i + 1], sf[i + 2]]), b:pj([sf[i + 3], sf[i + 4], sf[i + 5]]) }); }
     it.edges.forEach(function(q){ ed.push({ a:pj(q[0]), b:pj(q[1]), k:it.k }); });
   });
   var u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity, d0 = Infinity, d1 = -Infinity;
@@ -87,7 +95,7 @@ function kmSeen(r, p3){ var q = r.P(p3), u = q[0] * r.s, v = q[1] * r.s, px = Ma
 
 // サムネ（斜め・線だけの SVG）：g＝{ tris, edges:[[a,b]…] }（部材の 座標）
 function kmThumbSvg(g, size){ size = size || 160;
-  var it = { tris:g.tris, edges:g.edges, tan:g.tan || kmTan(g.tris), off:[0, 0, 0] }, r0 = kmHlr([it], 'iso', 1, 0.2);
+  var it = { tris:g.tris, edges:g.edges, soft:g.soft, tan:g.tan || kmTan(g.tris), off:[0, 0, 0] }, r0 = kmHlr([it], 'iso', 1, 0.2);
   var sc = (size - 12) / Math.max(r0.u1 - r0.u0, r0.v1 - r0.v0, 1), r = kmHlr([it], 'iso', sc, 4), cx = (r.u0 + r.u1) / 2, cy = (r.v0 + r.v1) / 2, h = size / 2;
   var d = r.vis.map(function(s){ return 'M' + (h + s.a[0] - cx).toFixed(1) + ' ' + (h - (s.a[1] - cy)).toFixed(1) + 'L' + (h + s.b[0] - cx).toFixed(1) + ' ' + (h - (s.b[1] - cy)).toFixed(1); }).join('');
   return '<svg viewBox="0 0 ' + size + ' ' + size + '" xmlns="http://www.w3.org/2000/svg"><path d="' + d + '" stroke="#222" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>'; }

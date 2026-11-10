@@ -69,7 +69,7 @@ function kmMigType(bundles){
 }
 function kmBase(n){ return String(n || '').replace(/（[左右]）/, ''); }
 function kmPart(k){ return KM2.pay.parts.filter(function(p){ return p.k === k; })[0]; }
-function kmItem(k, world){ var p = kmPart(k), g = KM2.geo[k], b = p.box; return { k:k, tris:g.tris, edges:g.edges, tan:g.tan, off:world ? [(b.x0 + b.x1) / 2, b.y0, (b.z0 + b.z1) / 2] : [0, 0, 0] }; }
+function kmItem(k, world){ var p = kmPart(k), g = KM2.geo[k], b = p.box; return { k:k, tris:g.tris, edges:g.edges, soft:g.soft, tan:g.tan, off:world ? [(b.x0 + b.x1) / 2, b.y0, (b.z0 + b.z1) / 2] : [0, 0, 0] }; }
 
 // ── 枠・表題欄（修正の △ の 一覧も）──
 function kmFrame(o, pg, title, kind){

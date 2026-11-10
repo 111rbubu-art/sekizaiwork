@@ -531,3 +531,55 @@ function kmRevAt(p){
   pushUndo(); D.ents.push({ id:SEQ++, t:'text', p:P(p.x, p.y), h:3.2, rot:0, s:'△' + n, ha:1, va:2, wf:1, layer:'文字', css:null, aci:256 });
   kmHarvest(pg); kmRegen(pg); D = pg.doc; kmSaveEd(); changed(); bmPanel();
 }
+
+// ── 図面タブ：組み立ての 形の 展開図（2026-11-10 本人「図面タブには 組み立てで 作った モデルの 展開図を 配置して」）──
+// 第三角法で 正面図を まん中、上に 平面図、左に 左側面図、右に 右側面図、その 右に 背面図。実寸（mm）で 今の 図面（D）に 入れる（DXF・印刷は いつもの ボタン）
+// 線は 画層 展開_外形・展開_隠れ線（破線）、寸法は 寸法、名前は 文字。作り直すと 前の 展開図（tk:1）だけ 消して 描き直す（手で 足した 線・寸法は 残る）
+function kmTenkai(pay, geo, opt){
+  opt = opt || {}; var keep = KM2; KM2 = { pay:pay, geo:geo };
+  try {
+    var items = pay.parts.map(function(p){ return kmItem(p.k, true); }), B = pay.parts.map(function(p){ return p.box; });
+    var mn = function(f){ return Math.min.apply(null, B.map(f)); }, mx = function(f){ return Math.max.apply(null, B.map(f)); };
+    var X0 = mn(function(b){ return b.x0; }), X1 = mx(function(b){ return b.x1; }), Z0 = mn(function(b){ return b.z0; }), Z1 = mx(function(b){ return b.z1; }), Y0 = mn(function(b){ return b.y0; }), Y1 = mx(function(b){ return b.y1; });
+    var s = 1 / 20, G = Math.max(250, Math.round(Math.max(X1 - X0, Z1 - Z0) * 0.25 / 50) * 50);
+    var LO = layerOf('展開_外形'); LO.aci = 7; LO.css = '#000'; LO.dash = false; LO.gap = false;
+    var LH = layerOf('展開_隠れ線'); LH.aci = 8; LH.css = '#808080'; LH.dash = true; LH.gap = false; if (opt.first) LH.on = false;   // 隠れ線は はじめ かくす（画層で 出せる）
+    layerOf('寸法'); layerOf('文字');
+    D.ents = D.ents.filter(function(e){ return !e.tk; }); D.dims = D.dims.filter(function(d){ return !d.tk; });
+    var other = bboxOf(D.ents);   // ほかの 図（開いた DXF など）が あれば その 右に 置く
+    var R = {}; ['top', 'front', 'left', 'right', 'back'].forEach(function(v){ R[v] = kmHlr(items, v, s, 10); });
+    // 図ごとの ずらし（mm）：紙の u・v（s 倍）→ 図面の x・y
+    var at = {}, fr = R.front;
+    at.front = [0, 0];
+    at.top = [0, fr.v1 / s + G - R.top.v0 / s];
+    at.left = [fr.u0 / s - G - R.left.u1 / s, 0];
+    at.right = [fr.u1 / s + G - R.right.u0 / s, 0];
+    at.back = [R.right.u1 / s + at.right[0] + G - R.back.u0 / s, 0];
+    var ln = function(a, b, v, lay){ D.ents.push({ id:SEQ++, t:'line', a:P(a[0] / s + at[v][0], a[1] / s + at[v][1]), b:P(b[0] / s + at[v][0], b[1] / s + at[v][1]), layer:lay, css:null, aci:256, tk:1, tv:v }); };
+    Object.keys(R).forEach(function(v){ var r = R[v]; r.vis.forEach(function(g){ ln(g.a, g.b, v, '展開_外形'); }); r.hid.forEach(function(g){ ln(g.a, g.b, v, '展開_隠れ線'); }); });
+    var bb = function(v){ var r = R[v], o = at[v]; return { x0:r.u0 / s + o[0], x1:r.u1 / s + o[0], y0:r.v0 / s + o[1], y1:r.v1 / s + o[1] }; };
+    var th = Math.max(40, Math.round((X1 - X0) / 22 / 5) * 5), dg = th * 2.2;
+    var dim = function(a, b, mode, off){ D.dims.push({ id:SEQ++, a:P(a[0], a[1]), b:P(b[0], b[1]), off:P(off[0], off[1]), mode:mode, fmt:null, text:null, th:th, al:th * 0.9, layer:'寸法', tk:1 }); };
+    var name = function(v, s0){ var b = bb(v); D.ents.push({ id:SEQ++, t:'text', p:P((b.x0 + b.x1) / 2, b.y0 - dg - th * 2.6), h:th * 1.2, rot:0, s:s0, ha:1, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 }); };
+    // 全体の 寸法：正面＝間口・高さ、平面＝間口・奥行、側面＝奥行・高さ、背面＝間口
+    var f = bb('front'), t = bb('top'), l = bb('left'), rt = bb('right'), bk = bb('back');
+    dim([f.x0, f.y0], [f.x1, f.y0], 'h', [(f.x0 + f.x1) / 2, f.y0 - dg]);
+    dim([f.x1, f.y0], [f.x1, f.y1], 'v', [f.x1 + dg, (f.y0 + f.y1) / 2]);
+    dim([t.x0, t.y1], [t.x1, t.y1], 'h', [(t.x0 + t.x1) / 2, t.y1 + dg]);
+    dim([t.x0, t.y0], [t.x0, t.y1], 'v', [t.x0 - dg, (t.y0 + t.y1) / 2]);
+    dim([l.x0, l.y0], [l.x1, l.y0], 'h', [(l.x0 + l.x1) / 2, l.y0 - dg]);
+    dim([rt.x0, rt.y0], [rt.x1, rt.y0], 'h', [(rt.x0 + rt.x1) / 2, rt.y0 - dg]);
+    dim([bk.x0, bk.y0], [bk.x1, bk.y0], 'h', [(bk.x0 + bk.x1) / 2, bk.y0 - dg]);
+    // 外柵の 高さ（正面の 左）・石塔の 高さ（右側面の 右）
+    var fen = pay.parts.filter(function(p){ return p.grp === 'fence'; }), tw = pay.parts.filter(function(p){ return p.grp === 'tower'; });
+    if (fen.length) { var fy1 = Math.max.apply(null, fen.map(function(p){ return p.box.y1; })), fy0 = Math.min.apply(null, fen.map(function(p){ return p.box.y0; }));
+      dim([f.x0, fy0 - Y0 + f.y0], [f.x0, fy1 - Y0 + f.y0], 'v', [f.x0 - dg, (fy0 + fy1) / 2 - Y0 + f.y0]); }
+    if (tw.length) { var ty0 = Math.min.apply(null, tw.map(function(p){ return p.box.y0; })), ty1 = Math.max.apply(null, tw.map(function(p){ return p.box.y1; }));
+      if (ty1 - ty0 < Y1 - Y0 - 1) dim([rt.x1, ty0 - Y0 + rt.y0], [rt.x1, ty1 - Y0 + rt.y0], 'v', [rt.x1 + dg, (ty0 + ty1) / 2 - Y0 + rt.y0]); }
+    name('top', '平面図'); name('front', '正面図'); name('left', '左側面図'); name('right', '右側面図'); name('back', '背面図');
+    D.ents.push({ id:SEQ++, t:'text', p:P(l.x0, t.y1 + dg + th * 2), h:th * 1.3, rot:0, s:'展開図　' + (pay.name || '組み立て') + '（' + (pay.date || '') + '）', ha:0, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 });
+    if (isFinite(other.x1)) { var mine = bboxOf(D.ents.filter(function(e){ return e.tk; })), dx = other.x1 + G * 2 - mine.x0, dy = other.y1 - mine.y1;
+      D.ents.forEach(function(e){ if (e.tk) transEnt(e, dx, dy); }); D.dims.forEach(function(d){ if (!d.tk) return; ['a', 'b', 'off'].forEach(function(k){ d[k] = P(d[k].x + dx, d[k].y + dy); }); }); }
+    return { views:Object.keys(R).length, lines:D.ents.filter(function(e){ return e.tk; }).length };
+  } finally { KM2 = keep; }
+}

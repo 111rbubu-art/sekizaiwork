@@ -4080,7 +4080,7 @@ function pdDrawMode(on){
     document.body.classList.add('pddraw'); pdHidePop(); PD.sel = null;
     renderLayers(); resize(); fit(); setTool('select'); changed();
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); });
-    else if (!(D.info && D.info.inn) || !D.ents.some(function(e){ return e.sec; })) (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ if (!(D.info && D.info.inn)) skInner(); if (!D.ents.some(function(e){ return e.sec; })) secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(){});
+    else if (!(D.info && D.info.inn) || !(D.info && D.info.stp) || !D.ents.some(function(e){ return e.sec; })) (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ if (!(D.info && D.info.inn)) skInner(); if (!(D.info && D.info.stp)) { skStepDims(); var sf1 = skSheet(); if (sf1 && sf1.sheet) skFrame(true, sf1.sheet.paper, sf1.sheet.n); } if (!D.ents.some(function(e){ return e.sec; })) secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(){});
     else secPanel();
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
   } else if (!on && PD.saveMain) {
@@ -4294,7 +4294,106 @@ function skCenters(v){
     else if (T && DX[v]) { var ds = H.c.map(function(q){ return q[1]; }).filter(function(d, j, a){ return a.indexOf(d) === j; }); ds.forEach(function(d){ axisV(DX[v](d), T.top - T.depth, T.top); }); } });
   return out;
 }
-function skPrep(force){ return skIso().then(function(){ skInner(); skFrame(force); secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(e){ setMsg('立体の 絵を 作れませんでした：' + (e && e.message || e)); }); }
+// ── 段の 寸法（既定）：正面・側面の 外形から 各段の 幅（奥行）と 高さの 並び、天場の 面取りを 自動で（v0.9.22）──
+// 外形の 角（折れ）・ふくらみの いちばん 出た 所・縦の 直線の 段を 拾う。寸法は step:1（作り直すと 入れ替え）
+function stepOutline(v){ var c = PD.m && PD.m.comps && PD.m.comps[0], vv = c && c.views, y0 = c && c.at && c.at.y || 0, src = vv && (v === 'front' ? vv.front : v === 'side' ? vv.side : null);
+  if (!src || !src.out || src.out.length < 4) return null; return src.out.map(function(q){ return [q[0], q[1] + y0]; }); }
+function stepWidth(pts, y){ var xs = []; for (var i = 0; i < pts.length; i++) { var a = pts[i], b = pts[(i + 1) % pts.length]; if ((a[1] - y) * (b[1] - y) > 0 || a[1] === b[1]) continue; xs.push(a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])); }
+  return xs.length >= 2 ? [Math.min.apply(null, xs), Math.max.apply(null, xs)] : null; }
+function stepLevels(pts){
+  var n = pts.length, ys = [], r1 = function(x){ return Math.round(x * 10) / 10; };
+  var bb = { y0:Infinity, y1:-Infinity, x0:Infinity, x1:-Infinity }; pts.forEach(function(q){ bb.y0 = Math.min(bb.y0, q[1]); bb.y1 = Math.max(bb.y1, q[1]); bb.x0 = Math.min(bb.x0, q[0]); bb.x1 = Math.max(bb.x1, q[0]); });
+  var big = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0), add = function(y){ y = r1(y); if (!ys.some(function(o){ return Math.abs(o - y) < 0.6; })) ys.push(y); };
+  add(bb.y0); add(bb.y1);
+  for (var i = 0; i < n; i++) { var a = pts[(i - 1 + n) % n], b = pts[i], c = pts[(i + 1) % n];
+    if ((Math.abs(c[0] - b[0]) < 1e-6 && Math.abs(c[1] - b[1]) > 1) || (Math.abs(c[1] - b[1]) < 1e-6 && Math.abs(c[0] - b[0]) > 1)) { add(b[1]); add(c[1]); }   // 縦・横の 直線の 端
+    var u = Math.atan2(b[1] - a[1], b[0] - a[0]), w = Math.atan2(c[1] - b[1], c[0] - b[0]), d = w - u; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+    var tn = function(j){ var p = pts[(j - 1 + n) % n], q = pts[j], r = pts[(j + 1) % n], t = Math.atan2(r[1] - q[1], r[0] - q[0]) - Math.atan2(q[1] - p[1], q[0] - p[0]); while (t > Math.PI) t -= 2 * Math.PI; while (t < -Math.PI) t += 2 * Math.PI; return Math.abs(t); };
+    var t0 = Math.abs(d), tp = tn((i - 1 + n) % n), tq = tn((i + 1) % n);
+    if (t0 > 0.6 || (t0 > 0.3 && tp < t0 * 0.5 && tq < t0 * 0.5)) add(b[1]);   // 角（折れ）。円弧の 細かい 折れは 拾わない
+    else if ((b[0] - a[0]) * (c[0] - b[0]) < 0 && (b[0] >= bb.x1 - 0.5 || b[0] <= bb.x0 + 0.5)) add(b[1]);   // ふくらみの いちばん 出た 所
+  }
+  return ys.sort(function(p, q){ return p - q; });
+}
+function stepDimsOf(v){
+  var pts = stepOutline(v); if (!pts) return null;
+  var ys = stepLevels(pts), y0 = ys[0], y1 = ys[ys.length - 1], bx0 = Math.min.apply(null, pts.map(function(q){ return q[0]; })), bx1 = Math.max.apply(null, pts.map(function(q){ return q[0]; }));
+  var Wt = bx1 - bx0, big = Math.max(Wt, y1 - y0), e = Math.max(0.05, big * 1e-4), r1 = function(x){ return Math.round(x * 10) / 10; };
+  // 段ごとの 幅：区切りの 高さで はかる（角の 点も 入れる）。縦の 直線で 同じ 幅が 続く 所は 1 つに
+  var wAt = function(y){ var xs = []; for (var i = 0; i < pts.length; i++) { var p = pts[i], q = pts[(i + 1) % pts.length]; if (Math.abs(p[1] - y) < 1e-9) xs.push(p[0]); if ((p[1] - y) * (q[1] - y) < 0) xs.push(p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])); }
+    return xs.length >= 2 ? [Math.min.apply(null, xs), Math.max.apply(null, xs)] : null; };
+  var ws = [], ee = 1e-3;
+  ys.forEach(function(y){ [y - ee, y + ee].forEach(function(yy){ if (yy < y0 || yy > y1) return; var w = wAt(yy); if (!w) return; w = [Math.round(w[0] * 2) / 2, Math.round(w[1] * 2) / 2]; var L = r1(w[1] - w[0]), last = ws[ws.length - 1];
+    if (last && Math.abs(last.L - L) < 0.6 && Math.abs(last.x0 - w[0]) < 0.6) { if (last.yb === y) return; var m = wAt((last.yb + y) / 2); if (m && Math.abs(r1(m[1] - m[0]) - L) < 0.6) { last.yb = y; return; } }
+    ws.push({ x0:w[0], x1:w[1], L:L, ya:y, yb:y, y:y }); }); });
+  var out = { ws:[], chamf:[], chain:ys, bb:{ x0:bx0, x1:bx1, y0:y0, y1:y1 } };
+  ws.forEach(function(w, i){ if (Math.abs(w.L - Wt) < 0.6) return;   // 全体の 幅は もう ある
+    var top = w.yb >= y1 - e * 2, bot = w.ya <= y0 + e * 2;
+    // 天場・下の 面取り（小さい 斜め）：となりの 段の 幅との 差を 片側で
+    var nb = top ? ws[i - 1] : bot ? ws[i + 1] : null;
+    if (nb && (nb.L - w.L) > 0 && (nb.L - w.L) / 2 < big * 0.08 && Math.abs((top ? y1 - nb.yb : nb.ya - y0)) < big * 0.08) { var dR = nb.x1 - w.x1, dL = w.x0 - nb.x0;   // 面取りの ある 側（右を 先に）
+      out.chamf.push(dR >= dL - 0.3 ? { x0:w.x1, x1:nb.x1, y:top ? y1 : y0, top:top, L:r1(dR), nb:nb, right:1 } : { x0:nb.x0, x1:w.x0, y:top ? y1 : y0, top:top, L:r1(dL), nb:nb }); return; }
+    // 上から 見て 段が 見える（上の 段が みな 細い）なら 図の 上へ、下も 同じ
+    var mid = (y0 + y1) / 2;
+    if (!top && ws.every(function(o){ return o.ya < w.yb - 1e-6 || o.L <= w.L + 0.6; })) top = true;
+    else if (!bot && w.ya < mid && ws.every(function(o){ return o.yb > w.ya + 1e-6 || o.L <= w.L + 0.6; })) bot = true;
+    out.ws.push({ x0:w.x0, x1:w.x1, y:(w.ya + w.yb) / 2, ya:w.ya, yb:w.yb, L:w.L, top:top, bot:bot }); });
+  // 天場・下に 面取りが ある ときは、その となりの 段を 上（下）に 出す
+  out.ws.forEach(function(w){ out.chamf.forEach(function(c){ if (c.nb.ya === w.ya && c.nb.yb === w.yb) { if (c.top) w.top = 1; else w.bot = 1; } }); });
+  return out;
+}
+function skStepDims(){
+  if (!PD || !PD.saveMain || !PD.m) return;
+  D.dims = D.dims.filter(function(d){ return !d.step; });
+  var sf = skSheet(), n = sf && sf.sheet ? sf.sheet.n : (PD.nEst || 5), g = Math.max(Math.max(PD.m.W, PD.m.H, PD.m.D) * 0.1, n * 9), fv = null;
+  ['front', 'side'].forEach(function(v){
+    var S = stepDimsOf(v); if (!S) return;
+    var ol = D.ents.filter(function(e){ return e.pv === v && e.layer === '部材_外形' && !e.iso; }); if (!ol.length) return;
+    var sb = skBox(ol); if (Math.abs((sb.x1 - sb.x0) - (S.bb.x1 - S.bb.x0)) > 2 || Math.abs((sb.y1 - sb.y0) - (S.bb.y1 - S.bb.y0)) > 2) return;   // 図を 手で 伸ばした 面は さわらない
+    var T = function(x, y){ return P(sb.x0 + x - S.bb.x0, sb.y0 + y - S.bb.y0); }, put = function(a, b, off, mode){ D.dims.push({ id:SEQ++, a:a, b:b, off:off, mode:mode, fmt:'mm', text:null, layer:'寸法', step:1, pv:v }); };
+    var mine = D.dims.filter(function(d){ return d.pv === v && !d.step && !d.sec; });
+    var nTop = 0, nBot = 0, below = mine.filter(function(d){ return d.mode === 'h' && d.off && d.off.y < sb.y0 - 1e-6; }), above = mine.filter(function(d){ return d.mode === 'h' && d.off && d.off.y > sb.y1 + 1e-6; });
+    // 幅：上の 段は 図の 上、下の 段は 図の 下、間は その 高さで 図の 中に
+    var c0 = PD.m.comps && PD.m.comps[0], vv0 = c0 && c0.views, hy = c0 && c0.at && c0.at.y || 0, holeBB = v === 'front' && vv0 && vv0.front.holes ? vv0.front.holes.filter(function(h){ return !h.nige; }).map(function(h){ var b = { x0:Infinity, x1:-Infinity, y0:Infinity, y1:-Infinity }; h.pts.forEach(function(q){ b.x0 = Math.min(b.x0, q[0]); b.x1 = Math.max(b.x1, q[0]); b.y0 = Math.min(b.y0, q[1] + hy); b.y1 = Math.max(b.y1, q[1] + hy); }); return b; }) : [];
+    var inBB = []; if (S.chamf.some(function(c){ return !c.top; })) nBot++;
+    S.ws.slice().sort(function(p, q){ return p.L - q.L; }).forEach(function(w){
+      if (w.top) { nTop++; put(T(w.x0, S.bb.y1), T(w.x1, S.bb.y1), T((w.x0 + w.x1) / 2, S.bb.y1 + g * (0.8 + (nTop - 1) * 0.75)), 'h'); }
+      else if (w.bot) { nBot++; put(T(w.x0, w.ya), T(w.x1, w.ya), T((w.x0 + w.x1) / 2, S.bb.y0 - g * (0.8 + (nBot - 1) * 0.75)), 'h'); }
+      else { var yy = w.ya === w.yb ? w.y : w.ya + Math.min((w.yb - w.ya) / 2, g * 0.35), th0 = 3.5 * n, hw0 = String(w.L).length * th0 * 0.3 + th0 * 0.5, cx0 = (w.x0 + w.x1) / 2;
+        var tb = { x0:cx0 - hw0, x1:cx0 + hw0, y0:yy - th0 * 0.3, y1:yy + th0 * 1.6 }, hit = function(b){ return b.x0 < tb.x1 && b.x1 > tb.x0 && b.y0 < tb.y1 && b.y1 > tb.y0; };
+        if (holeBB.some(hit) || inBB.some(hit)) {   // 穴や ほかの 寸法の 文字に かかる ときは 図の 外へ
+          if (yy > (S.bb.y0 + S.bb.y1) / 2) { nTop++; put(T(w.x0, yy), T(w.x1, yy), T(cx0, S.bb.y1 + g * (0.8 + (nTop - 1) * 0.75)), 'h'); }
+          else { nBot++; put(T(w.x0, yy), T(w.x1, yy), T(cx0, S.bb.y0 - g * (0.8 + (nBot - 1) * 0.75)), 'h'); } return; }
+        inBB.push(tb); put(T(w.x0, yy), T(w.x1, yy), T(cx0, yy), 'h'); } });
+    // 面取り：天場（下）の 角から となりの 段まで、図の 外の 横に
+    S.chamf.forEach(function(c){ var yy = c.top ? S.bb.y1 + g * 0.4 : S.bb.y0 - g * 0.8; put(T(c.x0, c.y), T(c.x1, c.y), T(c.right ? c.x1 + g * 0.6 : c.x0 - g * 0.6, yy), 'h'); });
+    // 前から ある 全体の 幅（奥行）を 外へ ずらす
+    if (nBot) { below.forEach(function(d){ d.off = P(d.off.x, d.off.y - g * 0.75 * nBot); }); D.ents.forEach(function(e){ if (e.pv === v && e.t === 'text' && e.lab && e.p.y < sb.y0) e.p = P(e.p.x, e.p.y - g * 0.75 * nBot); }); }
+    if (nTop) above.forEach(function(d){ d.off = P(d.off.x, d.off.y + g * 0.75 * nTop); });
+    // 高さの 並び（右）：正面と 同じ 区切りなら 側面には 出さない
+    var key = S.chain.map(function(y){ return Math.round(y - S.bb.y0); }).join(',');
+    if (S.chain.length > 2 && (v === 'front' || !fv || key.split(',').some(function(y){ return fv.split(',').indexOf(y) < 0; }))) {
+      var right = mine.filter(function(d){ return d.mode === 'v' && d.off && d.off.x > sb.x1 + 1e-6; }).reduce(function(m, d){ return Math.max(m, d.off.x); }, sb.x1), xl = Math.max(right + g * 0.75, sb.x1 + g * 0.8);
+      var po = stepOutline(v), xr = function(y){ var e = 0.05, w1 = stepWidth(po, Math.min(y + e, S.bb.y1)), w2 = stepWidth(po, Math.max(y - e, S.bb.y0)); return Math.max(w1 ? w1[1] : -Infinity, w2 ? w2[1] : -Infinity); };
+      for (var i = 1; i < S.chain.length; i++) { var ya = S.chain[i - 1], yb = S.chain[i];
+        put(T(xr(ya), ya), T(xr(yb), yb), T(S.bb.x1 + (xl - sb.x1), (ya + yb) / 2), 'v'); }
+      // 文字が 重なる 短い 段は、となりと 押し合って ずらす（寸法線は 文字の 下まで 伸びる）
+      var ch = D.dims.slice(D.dims.length - (S.chain.length - 1)), th = 3.5 * n, gp = th * 0.45;
+      var seg = ch.map(function(d){ var L = Math.abs(d.b.y - d.a.y), c = (d.a.y + d.b.y) / 2; return { d:d, c:c, p:c, h:String(Math.round(L * 10) / 10).length * th * 0.28 + th * 0.15 }; });
+      for (var it = 0; it < 200; it++) { var mv = 0; for (var j = 0; j + 1 < seg.length; j++) { var ov = seg[j].p + seg[j].h + gp - (seg[j + 1].p - seg[j + 1].h); if (ov > 1e-3) { seg[j].p -= ov / 2; seg[j + 1].p += ov / 2; mv = 1; } } if (!mv) break; }
+      seg.forEach(function(q){ if (Math.abs(q.p - q.c) > 1e-3) q.d.tx = q.p - q.c; });
+    }
+    if (v === 'front') fv = key;
+    // 角の R の 文字が 新しい 寸法に かかれば 引出線を 伸ばす
+    var vd = D.dims.filter(function(d){ return !d.sec && !d.iso; }); vd.filter(function(d){ return d.pv === v && d.mode === 'rad'; }).forEach(function(d){ pdRClear(d, ol, vd.filter(function(o){ return o !== d; })); });
+    // 上からの 穴（水溜 など）の 深さ：側面図の 右に
+    if (v === 'side') { var xr0 = D.dims.filter(function(d){ return d.pv === v && d.mode === 'v' && d.off && d.off.x > sb.x1 + 1e-6; }).reduce(function(m, d){ return Math.max(m, d.off.x); }, -Infinity), k2 = 0;
+      skTopHoles().filter(function(h){ return !h.bot && h.depth > 0; }).forEach(function(h){ var xo = isFinite(xr0) ? xr0 + g * 0.75 * (k2 + 1) : sb.x1 + g * (0.8 + k2 * 0.75); k2++;
+        put(T(h.d1, h.top - h.depth), T(h.d1, h.top), P(xo, sb.y0 + h.top - h.depth / 2 - S.bb.y0), 'v'); }); }
+  });
+  if (D.info) D.info.stp = 1;
+}
+function skPrep(force){ return skIso().then(function(){ skInner(); skStepDims(); skFrame(force); secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(e){ setMsg('立体の 絵を 作れませんでした：' + (e && e.message || e)); }); }
 // ── 断面 A–A：モデルを 直す 図（既定は 図枠の 外＝印刷しない）。3D の 形を 正面の x で 切った 切り口＋斜線 ──
 // 切る 位置＝PD.def.drawing.secX（正面の 中心から mm。無ければ 自動）。正面からの 穴・逃げの 奥行は 右の 欄で 直す
 var SEC_L = '断面', SEC_H = '断面_斜線', SEC_C = '切断線';
@@ -4361,7 +4460,10 @@ function secDraw(){
   var xf = sb.x0 + (cx + PD.m.W / 2), ex = th * 1.2;
   push({ t:'line', a:P(xf, sb.y1 + ex), b:P(xf, sb.y0 - ex), layer:SEC_C });
   [sb.y1 + ex, sb.y0 - ex].forEach(function(y){ push({ t:'line', a:P(xf, y), b:P(xf - th * 1.4, y), layer:SEC_L }); push({ t:'line', a:P(xf - th * 1.4, y), b:P(xf - th * 0.9, y + th * 0.3), layer:SEC_L }); push({ t:'line', a:P(xf - th * 1.4, y), b:P(xf - th * 0.9, y - th * 0.3), layer:SEC_L });
-    push({ t:'text', p:P(xf - th * 2.1, y - th * 0.5), h:3.5 * n, rot:0, s:'A', ha:1, va:0, wf:1, layer:'文字' }); });
+    push({ t:'text', p:P(xf - th * 2.1, y - th * 0.5), h:3.5 * n, rot:0, s:'A', ha:1, va:0, wf:1, layer:'文字' });
+    // 切断線の 端に かかる 寸法の 文字は 右へ よける
+    D.dims.forEach(function(d){ if (d.pv !== 'front' || d.sec || d.mode !== 'h' || d.tx) return; var g = dimGeom(d), hw = String(g.text.s).length * g.text.h * 0.3 + g.text.h * 0.3;
+      if (Math.abs(g.text.p.y + g.text.h * 0.5 - y) < th * 1.3 && Math.abs(g.text.p.x - xf) < hw + th * 0.6) d.tx = xf + hw + th * 0.6 - g.mid.x; }); });
   // 奥行の 寸法（穴・逃げ。切る 位置に かかる もの）
   var kd = PD.m.D / ((vv.base && vv.base.D) || PD.m.D), ky = PD.m.H / ((vv.base && vv.base.H) || PD.m.H), y00 = (PD.m.comps[0].at && PD.m.comps[0].at.y) || 0, kx = PD.m.W / ((vv.base && vv.base.W) || PD.m.W);
   secFeats(vv).forEach(function(f){ if (!(f.x0 * kx < cx && f.x1 * kx > cx) || f.from === 'thru') return; var dp = f.depth * kd; if (dp >= PD.m.D - 0.5) return;
@@ -4387,7 +4489,7 @@ function secApply(f, dv, fr){ var vv = secViews(); if (!vv) return; PD.hist.push
   pdKeep(); pdRender(); pdRegen('断面で 奥行を ' + pdR(dv) + ' に しました（3D・図を かき直し）'); }
 // 部材の 形から 図を かき直す（紙・図の 名前は そのまま）
 function pdRegen(msg){ if (!PD || !PD.saveMain) return; pushUndo(); var keepInfo = D.info; PD.noSk = true; var doc; try { doc = pdSketchDoc(); } finally { PD.noSk = false; }
-  D.ents = doc.ents; D.dims = doc.dims; D.layers = doc.layers; if (keepInfo) { D.info = keepInfo; delete D.info.inn; } renderLayers(); changed();
+  D.ents = doc.ents; D.dims = doc.dims; D.layers = doc.layers; if (keepInfo) { D.info = keepInfo; delete D.info.inn; delete D.info.stp; } renderLayers(); changed();
   return skPrep(true).then(function(){ fit(); secPanel(); if (msg) setMsg(msg); }); }
 function pdApplyViews(v, W, Dd, H){
   PD.hist.push(JSON.stringify(PD.def));

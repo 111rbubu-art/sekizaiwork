@@ -58,59 +58,66 @@ export function create(box){
   return { build:build, update:update, resize:resize, refit:refit, dispose:dispose };
 }
 
-// 形の かどの 線（CSG の 答え 用）。EdgesGeometry は 三角が 片側に しか ない 辺（T 字の つなぎ目）を 全部 線に して しまい
-// 曲面に すじが 出る。片側だけの 辺は、その 上の 何点かで 隣の 三角を 探し、なめらかに つながって いれば 描かない
+// 形の かどの 線（CSG の 答え 用）。CSG の 答えは T 字の つなぎ（となりの 面の 辺が 途中で 切れる）が 多いので、
+// 辺の 上に のる 点で 辺を 小さく 切って から となりの 面を 見る（片側の 辺が 抜けて 破線に ならない）。細すぎる 三角は 見ない。
+// 角度が deg 以上の 所は 線に する。まっすぐ 続く 小さい 辺は 1 本に つなぐ
 export function featureEdges(geo, deg){
   var pos = geo.attributes.position, idx = geo.index, n = idx ? idx.count : pos.count, cosT = Math.cos(deg * Math.PI / 180);
   geo.computeBoundingBox(); var bb = geo.boundingBox, sc = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z) || 1, q = sc * 1e-5, tol = sc * 1e-3;
-  function V(i){ var j = idx ? idx.getX(i) : i; return [pos.getX(j), pos.getY(j), pos.getZ(j)]; }
-  function key(p){ return Math.round(p[0] / q) + ',' + Math.round(p[1] / q) + ',' + Math.round(p[2] / q); }
-  function dot(x, y){ return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; }
-  var E = {}, all = [], out = [];
+  function P(i){ var j = idx ? idx.getX(i) : i; return [pos.getX(j), pos.getY(j), pos.getZ(j)]; }
+  // 点を まとめる
+  var VK = {}, V = [];
+  function vid(p){ var k = Math.round(p[0] / q) + ',' + Math.round(p[1] / q) + ',' + Math.round(p[2] / q); if (VK[k] === undefined) { VK[k] = V.length; V.push(p); } return VK[k]; }
+  var cs = Math.max(tol * 4, sc / 200), G = {};
+  function ck(x, y, z){ return x + ',' + y + ',' + z; }
+  var T = [];
   for (var t = 0; t + 2 < n; t += 3) {
-    var a = V(t), b = V(t + 1), c = V(t + 2), u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    var nr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(nr[0], nr[1], nr[2]);
-    if (L < q * q) continue; nr = [nr[0] / L, nr[1] / L, nr[2] / L];
-    var m2 = Math.max(dot(u, u), dot(w, w), (c[0] - b[0]) * (c[0] - b[0]) + (c[1] - b[1]) * (c[1] - b[1]) + (c[2] - b[2]) * (c[2] - b[2]));
-    var thin = L / Math.sqrt(m2) < sc * 1e-3; // 高さが ほとんど ない 三角（向きが あてに ならない）
-    [[a, b], [b, c], [c, a]].forEach(function(e){ var k1 = key(e[0]), k2 = key(e[1]); if (k1 === k2) return; var k = k1 < k2 ? k1 + '|' + k2 : k2 + '|' + k1;
-      (E[k] = E[k] || { p:e, n:[], t:[], th:[] }).n.push(nr); E[k].t.push(t); E[k].th.push(thin); all.push({ a:e[0], b:e[1], n:nr, t:t, thin:thin }); });
+    var a = P(t), b = P(t + 1), c = P(t + 2), ia = vid(a), ib = vid(b), ic = vid(c); if (ia === ib || ib === ic || ic === ia) continue;
+    var u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    var nr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], L = Math.hypot(nr[0], nr[1], nr[2]); if (!(L > 0)) continue;
+    var m2 = Math.max(u[0] * u[0] + u[1] * u[1] + u[2] * u[2], w[0] * w[0] + w[1] * w[1] + w[2] * w[2], (c[0] - b[0]) * (c[0] - b[0]) + (c[1] - b[1]) * (c[1] - b[1]) + (c[2] - b[2]) * (c[2] - b[2]));
+    var nn = [nr[0] / L, nr[1] / L, nr[2] / L];
+    T.push({ v:[ia, ib, ic], n:nn, thin:L / Math.sqrt(m2) < tol, pl:nn.map(function(x){ return Math.round(x * 200); }).join(',') + '|' + Math.round((nn[0] * a[0] + nn[1] * a[1] + nn[2] * a[2]) / (tol * 2)) });
   }
-  // 辺の 升目（近くの 辺を すぐ 探す）
-  var cs = sc / 80, G = {};
-  function ck(p){ return Math.floor(p[0] / cs) + ',' + Math.floor(p[1] / cs) + ',' + Math.floor(p[2] / cs); }
-  all.forEach(function(f){ var d = Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1], f.b[2] - f.a[2]), m = Math.max(1, Math.ceil(d / (cs * 0.5))), seen = {};
-    for (var i = 0; i <= m; i++) { var s = i / m, k = ck([f.a[0] + (f.b[0] - f.a[0]) * s, f.a[1] + (f.b[1] - f.a[1]) * s, f.a[2] + (f.b[2] - f.a[2]) * s]); if (seen[k]) continue; seen[k] = 1; (G[k] = G[k] || []).push(f); } });
-  function dseg(p, a, b){ var ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = dot(ab, ab), s = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2)) : 0;
-    return Math.hypot(p[0] - a[0] - ab[0] * s, p[1] - a[1] - ab[1] * s, p[2] - a[2] - ab[2] * s); }
-  function unit(a, b){ var d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(d[0], d[1], d[2]) || 1; return [d[0] / l, d[1] / l, d[2] / l]; }
-  function smoothAt(p, e){ var L = G[ck(p)] || [], found = false;
-    for (var i = 0; i < L.length; i++) { var f = L[i]; if (e.t.indexOf(f.t) >= 0 || f.thin) continue; if (dseg(p, f.a, f.b) > tol) continue;
-      if (e.dir && Math.abs(dot(e.dir, unit(f.a, f.b))) < 0.999) continue; // 向きの ちがう 辺（細く なって 集まる 線の 近く）は となりと 見ない
-      found = true; if (dot(e.n[0], f.n) >= cosT) return 1; }
-    return found ? -1 : 0; } // 1＝なめらか、-1＝角、0＝相手 なし
-  Object.keys(E).forEach(function(k){ var e = E[k];
-    var ok = e.n.filter(function(_, i){ return !e.th[i]; });
-    if (ok.length >= 2) { for (var i = 1; i < ok.length; i++) if (dot(ok[0], ok[i]) < cosT) { out.push(e.p[0], e.p[1]); return; } return; }
-    if (!ok.length) return; // 高さの ない 三角 だけの 辺は 描かない
-    // 片側だけの 辺（T 字の つなぎ）：同じ 線の 上に 重なる 相手の 辺を さがし、角に なる 相手が 重なる 区間だけ 描く
-    //（相手が なめらかに つながる 区間は 除く。重ならない 所まで 長く のびた 辺を 全部 描かない）
-    var a = e.p[0], b = e.p[1], dv = unit(a, b), len = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), seenF = {}, sharpI = [], smoothI = [];
-    var m = Math.max(1, Math.ceil(len / (cs * 0.5)));
-    for (var i = 0; i <= m; i++) { var s0 = i / m; (G[ck([a[0] + (b[0] - a[0]) * s0, a[1] + (b[1] - a[1]) * s0, a[2] + (b[2] - a[2]) * s0])] || []).forEach(function(f){
-      if (seenF[f.t + ':' + key(f.a) + key(f.b)] || e.t.indexOf(f.t) >= 0 || f.thin) return; seenF[f.t + ':' + key(f.a) + key(f.b)] = 1;
-      if (Math.abs(dot(dv, unit(f.a, f.b))) < 0.999) return;
-      if (dline(f.a, a, dv) > tol || dline(f.b, a, dv) > tol) return;
-      var sa = proj(f.a, a, dv) / len, sb = proj(f.b, a, dv) / len, lo = Math.max(0, Math.min(sa, sb)), hi = Math.min(1, Math.max(sa, sb)); if (hi - lo < 1e-6) return;
-      (dot(ok[0], f.n) >= cosT ? smoothI : sharpI).push([lo, hi]); }); }
-    union(sharpI).forEach(function(I){ cut(I, union(smoothI)).forEach(function(J){ if ((J[1] - J[0]) * len < tol) return;
-      out.push([a[0] + (b[0] - a[0]) * J[0], a[1] + (b[1] - a[1]) * J[0], a[2] + (b[2] - a[2]) * J[0]], [a[0] + (b[0] - a[0]) * J[1], a[1] + (b[1] - a[1]) * J[1], a[2] + (b[2] - a[2]) * J[1]]); }); });
-  });
-  function proj(p, a, dv){ return (p[0] - a[0]) * dv[0] + (p[1] - a[1]) * dv[1] + (p[2] - a[2]) * dv[2]; }
-  function dline(p, a, dv){ var t = proj(p, a, dv); return Math.hypot(p[0] - a[0] - dv[0] * t, p[1] - a[1] - dv[1] * t, p[2] - a[2] - dv[2] * t); }
-  function union(L){ L = L.slice().sort(function(x, y){ return x[0] - y[0]; }); var r = []; L.forEach(function(I){ var l = r[r.length - 1]; if (l && I[0] <= l[1] + 1e-6) l[1] = Math.max(l[1], I[1]); else r.push([I[0], I[1]]); }); return r; }
-  function cut(I, S){ var r = [[I[0], I[1]]]; S.forEach(function(J){ var n = []; r.forEach(function(K){ if (J[1] <= K[0] || J[0] >= K[1]) { n.push(K); return; } if (J[0] > K[0]) n.push([K[0], J[0]]); if (J[1] < K[1]) n.push([J[1], K[1]]); }); r = n; }); return r; }
-  var arr = []; out.forEach(function(p){ arr.push(p[0], p[1], p[2]); });
+  V.forEach(function(p, i){ var k = ck(Math.floor(p[0] / cs), Math.floor(p[1] / cs), Math.floor(p[2] / cs)); (G[k] = G[k] || []).push(i); });
+  // 辺の 上に ある 点で 辺を 切る（T 字の つなぎを なくす）→ 小さい 辺どうしで となりの 面を 見る
+  var SPL = {}, E = {}, SEEN = new Int32Array(V.length), stamp = 0;
+  function split(i0, i1){ var k = i0 < i1 ? i0 + '|' + i1 : i1 + '|' + i0; if (SPL[k]) return SPL[k];
+    var a = V[i0], b = V[i1], d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], on = [[0, i0], [1, i1]], seenC = {}; stamp++;
+    var lo = [Math.min(a[0], b[0]) - tol, Math.min(a[1], b[1]) - tol, Math.min(a[2], b[2]) - tol], hi = [Math.max(a[0], b[0]) + tol, Math.max(a[1], b[1]) + tol, Math.max(a[2], b[2]) + tol];
+    var len = Math.sqrt(l2), m = Math.max(1, Math.ceil(len / cs));
+    for (var s = 0; s <= m; s++) { var x = a[0] + d[0] * s / m, y = a[1] + d[1] * s / m, z = a[2] + d[2] * s / m, gx = Math.floor(x / cs), gy = Math.floor(y / cs), gz = Math.floor(z / cs);
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) for (var dz = -1; dz <= 1; dz++) { var cc = ck(gx + dx, gy + dy, gz + dz); if (seenC[cc]) continue; seenC[cc] = 1; var L = G[cc]; if (!L) continue;
+        for (var j = 0; j < L.length; j++) { var vi = L[j]; if (SEEN[vi] === stamp || vi === i0 || vi === i1) continue; SEEN[vi] = stamp; var p = V[vi];
+          if (p[0] < lo[0] || p[0] > hi[0] || p[1] < lo[1] || p[1] > hi[1] || p[2] < lo[2] || p[2] > hi[2]) continue;
+          var tt = ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / l2; if (tt <= 0 || tt >= 1) continue;
+          if (Math.hypot(a[0] + d[0] * tt - p[0], a[1] + d[1] * tt - p[1], a[2] + d[2] * tt - p[2]) > tol) continue; on.push([tt, vi]); } } }
+    on.sort(function(x, y){ return x[0] - y[0]; }); var r = []; for (var i = 0; i + 1 < on.length; i++) r.push([on[i][1], on[i + 1][1]]); SPL[k] = r; return r; }
+  // 両側に 面が ある 辺は そのまま（切るのは 片側だけの 辺。速さの ため）
+  var CNT = {}; T.forEach(function(tr){ if (tr.thin) return; for (var e = 0; e < 3; e++) { var i0 = tr.v[e], i1 = tr.v[(e + 1) % 3], k = i0 < i1 ? i0 + '|' + i1 : i1 + '|' + i0; CNT[k] = (CNT[k] || 0) + 1; } });
+  T.forEach(function(tr){ if (tr.thin) return; for (var e = 0; e < 3; e++) { var i0 = tr.v[e], i1 = tr.v[(e + 1) % 3]; (CNT[i0 < i1 ? i0 + '|' + i1 : i1 + '|' + i0] >= 2 ? [[i0, i1]] : split(i0, i1)).forEach(function(se){ var k = se[0] < se[1] ? se[0] + '|' + se[1] : se[1] + '|' + se[0]; var o = E[k] = E[k] || { a:se[0], b:se[1], n:[], pl:[] }; o.n.push(tr.n); o.pl.push(tr.pl); }); } });
+  // 浅い 角（5°〜deg）：浅い 面取り（9×4.5 など）・水ダレは 線に、細かく 割った 曲面（円柱の 穴・胴の 帯）の 割れ目は 線に しない。
+  // 曲面の 1 枚（細い 帯）は 浅い 角の 辺が 近くに 平行に 2 本 ある。両側が 帯の 辺だけ 線に しない（平らな 面と R の 始まりは 線に する）
+  var S = [], cosM = Math.cos(5 * Math.PI / 180), MR = {}, mild = [];
+  Object.keys(E).forEach(function(k){ var e = E[k], N = e.n, best = 1, bi = -1, bj = -1;
+    if (N.length < 2) return;
+    for (var i = 0; i < N.length; i++) for (var j = i + 1; j < N.length; j++) { var dd = N[i][0] * N[j][0] + N[i][1] * N[j][1] + N[i][2] * N[j][2]; if (dd < best) { best = dd; bi = i; bj = j; } }
+    if (best < cosT) { S.push([e.a, e.b]); return; }
+    if (best < cosM) { var A = e.pl[bi], B = e.pl[bj]; if (A === B) return; var m = { a:e.a, b:e.b, A:A, B:B, d:dir(e.a, e.b) }; mild.push(m); (MR[A] = MR[A] || []).push(m); (MR[B] = MR[B] || []).push(m); } });
+  function strip(R, m){ var L = MR[R], p = V[m.a];
+    for (var i = 0; i < L.length; i++) { var o = L[i]; if (o === m || Math.abs(o.d[0] * m.d[0] + o.d[1] * m.d[1] + o.d[2] * m.d[2]) < 0.999) continue;
+      var q = V[o.a], w = [q[0] - p[0], q[1] - p[1], q[2] - p[2]], t = w[0] * m.d[0] + w[1] * m.d[1] + w[2] * m.d[2];
+      var dl = Math.hypot(w[0] - m.d[0] * t, w[1] - m.d[1] * t, w[2] - m.d[2] * t); if (dl > tol && dl < sc * 0.08) return true; }
+    return false; }
+  mild.forEach(function(m){ if (!(strip(m.A, m) && strip(m.B, m))) S.push([m.a, m.b]); });
+  // まっすぐ 続く 小さい 辺は 1 本に つなぐ（図面化の 隠れ線で 短い 切れ端が 落ちて 破線に ならない ように）
+  var AT = {}; S.forEach(function(s, i){ (AT[s[0]] = AT[s[0]] || []).push(i); (AT[s[1]] = AT[s[1]] || []).push(i); });
+  function dir(i0, i1){ var a = V[i0], b = V[i1], d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(d[0], d[1], d[2]) || 1; return [d[0] / l, d[1] / l, d[2] / l]; }
+  var used = new Uint8Array(S.length), arr = [];
+  function grow(s0, end, dv){ var cur = end;
+    for (;;) { var L = AT[cur]; if (!L || L.length !== 2) return cur; var nx = used[L[0]] ? L[1] : L[0]; if (used[nx]) return cur;
+      var o = S[nx][0] === cur ? S[nx][1] : S[nx][0], d2 = dir(cur, o); if (d2[0] * dv[0] + d2[1] * dv[1] + d2[2] * dv[2] < 0.99995) return cur; used[nx] = 1; cur = o; } }
+  S.forEach(function(s, i){ if (used[i]) return; used[i] = 1; var dv = dir(s[0], s[1]), b = grow(i, s[1], dv), a = grow(i, s[0], [-dv[0], -dv[1], -dv[2]]), A = V[a], B = V[b]; arr.push(A[0], A[1], A[2], B[0], B[1], B[2]); });
   var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); return g;
 }
 
@@ -222,7 +229,7 @@ export function partGroup(m, fine, mat, lineMat){
     }
     // 天面から 見た 形で 高さ y0〜y1 を 削る（top.cuts：[x,d]。角の 欠きなど）
     (v.top && v.top.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.y1 - h.y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, h.y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
-    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo = creased(geo, 30);
+    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo = creased(geo, 20);   // 20°：浅い 面取り（9×4.5＝27°）は 角に 見せる
     group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(featureEdges(geo, 30), lineMat));
   }
 

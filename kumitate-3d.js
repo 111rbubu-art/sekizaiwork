@@ -3,7 +3,7 @@ import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
 import { partGroup, fusionMouse } from './zumen-3d.js?v=0.9.23';
 
-export function create(box, onPick){
+export function create(box, onPick, onDbl){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(0xf3f5f8);
@@ -109,6 +109,11 @@ export function create(box, onPick){
     var hits = ray.intersectObjects(meshes, false);
     if (onPick) onPick(hits.length ? hits[0].object.userData.key : null);
   });
+  // ダブルクリック＝その 部材の 加工図面（タブの 枠の 中だけ）
+  if (onDbl) renderer.domElement.addEventListener('dblclick', function(e){ if (PM || e.button !== 0) return;
+    var rc = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);
+    var hits = ray.intersectObjects(meshes, false); if (hits.length) onDbl(hits[0].object.userData.key); });
   // ── 支点を 選ぶ（足した 部材の 置き方）。マウスを 当てた 部材の 面の 角・辺の 中点・面の 中心に 吸い付く。そこから 外れたら 面の 上の 点 ──
   // opts = { ok:function(鍵)→押せるか, onHover(info|null), onClick(info) }。info = { key, face, f:[fx,fy,fz], snap:'corner'|'edge'|'center'|'', p:{x,y,z} }
   var PM = null, marks = new THREE.Group(), hoverG = new THREE.Group(); marks.renderOrder = 999; hoverG.renderOrder = 999; scene.add(marks); scene.add(hoverG);

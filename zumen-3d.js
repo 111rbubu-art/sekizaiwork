@@ -110,8 +110,13 @@ export function featureEdges(geo, deg){
     pp = [pp[0] / l, pp[1] / l, pp[2] / l]; var ck2 = R + '#' + pp.map(function(x){ return Math.round(x * 50); }).join(','); if (WC[ck2] !== undefined) return WC[ck2];
     var lo = Infinity, hi = -Infinity; RV[R].forEach(function(vi){ var q = V[vi], t = q[0] * pp[0] + q[1] * pp[1] + q[2] * pp[2]; if (t < lo) lo = t; if (t > hi) hi = t; });
     return WC[ck2] = hi - lo < lim; }
+  // 片側にしか 面が ない 辺（CSG の すき間。となりの 面の 点が 0.4mm ほど ずれて 対に ならない）：両端が 同じ「角度の ちがう 平面」にも 乗って いれば、
+  // その 平面との 角（竿の 縦の 角が 消えて いた 2026-11-11）
+  var VP = {}; T.forEach(function(tr){ if (tr.thin) return; tr.v.forEach(function(vi){ var o = VP[vi] = VP[vi] || {}; o[tr.pl] = tr.n; }); });
+  function crack(e){ var n0 = e.n[0], A = VP[e.a] || {}, B = VP[e.b] || {};
+    return Object.keys(A).some(function(pl){ var m = A[pl]; return pl !== e.pl[0] && B[pl] && n0[0] * m[0] + n0[1] * m[1] + n0[2] * m[2] < cosT; }); }
   Object.keys(E).forEach(function(k){ var e = E[k], N = e.n, best = 1, bi = -1, bj = -1;
-    if (N.length < 2) return;
+    if (N.length < 2) { if (N.length === 1 && crack(e)) S.push([e.a, e.b]); return; }
     for (var i = 0; i < N.length; i++) for (var j = i + 1; j < N.length; j++) { var dd = N[i][0] * N[j][0] + N[i][1] * N[j][1] + N[i][2] * N[j][2]; if (dd < best) { best = dd; bi = i; bj = j; } }
     if (best < cosT) { S.push([e.a, e.b]); return; }
     var A = e.pl[bi], B = e.pl[bj]; if (A === B) return;

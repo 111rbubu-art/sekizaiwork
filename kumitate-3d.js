@@ -85,6 +85,8 @@ export function create(box, onPick, onDbl){
       var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W - 20, site.D - 20)), new THREE.LineBasicMaterial({ color:0x3355aa }));
       ol.rotation.x = -Math.PI / 2; ol.position.y = 1; group.add(ol);
     }
+    // 作り直した 部材の 位置を すぐ 当たり判定に 効かせる（次の 描画を 待たない）。ダブルクリックの 1 回目で 作り直すと、2 回目が 古い 位置（原点）で 当たって ちがう 部材に なって いた（2026-11-11）
+    scene.updateMatrixWorld(true);
     if (!fitted || refit) { fit(); fitted = true; }
     dirty = true;
   }

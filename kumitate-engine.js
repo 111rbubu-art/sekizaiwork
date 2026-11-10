@@ -646,7 +646,8 @@ var KM = (function(){
       if (msg) (res.ng = res.ng || []).push(msg);
       var a = rot * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a)), ex = (c * w + s * d) / 2, ez = (s * w + c * d) / 2;
       res.boxes[fr.key] = { x0:r1(C.x - ex), y0:r1(C.y), z0:r1(C.z - ez), x1:r1(C.x + ex), y1:r1(C.y + h), z1:r1(C.z + ez) };
-      res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:'free', cg:fr.cg || 'tower', grp:fr.cg || 'tower', role:fr.role || '', w:w, d:d, h:h, rot:rot,
+      var cat = fr.cat && fr.cat.kind ? fr.cat : null, CG = { tower:'tower', fence:'fence', boshi:'boshi', toba:'fence', crypt:'crypt' }, cg = cat ? CG[cat.kind] || 'tower' : fr.cg || 'tower';   // 部材構成で 移した 分類（石塔・外柵…）
+      res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:cat ? cat.kind : 'free', tgroup:cat && cat.group || '', cg:cg, grp:cg, role:fr.role || '', w:w, d:d, h:h, rot:rot,
         shape:fr.shape || null, partId:fr.shape && fr.shape.id || '', kakou:fr.shape && fr.shape.kakou || '', free:true, placed:!!(tp.length && !msg && fr.self && fr.self.length), visible:true };
       res.free[fr.key] = fr;
     });

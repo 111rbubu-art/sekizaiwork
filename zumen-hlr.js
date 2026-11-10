@@ -82,8 +82,10 @@ function kmHlr(items, view, s, res){
   ed.forEach(function(e){ var L = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]); if (L < 0.08) return;
     var n = Math.max(2, Math.ceil(L * RES / 1.5)), cur = null, cv = null, Q = [], VV = [];
     for (var i = 0; i <= n; i++) { var t = i / n, q = [e.a[0] + (e.b[0] - e.a[0]) * t, e.a[1] + (e.b[1] - e.a[1]) * t], d = e.a[2] + (e.b[2] - e.a[2]) * t;
-      var px = Math.round(X(q)), py = Math.round(Y(q)), zm = -1e9;
-      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) { var ix = px + dx, iy = py + dy; if (ix >= 0 && iy >= 0 && ix < W && iy < H) { var z = Z[iy * W + ix]; if (z < 1e8) zm = Math.max(zm, z); } }
+      // まわり 3×3 の 深さで いちばん 奥の 次（2 番目）を 見る：三角の すき間の 1 画素（奥が 見える）で 隠れ線が 切れ切れに 見えない ように
+      var px = Math.round(X(q)), py = Math.round(Y(q)), zm = -1e9, z2 = -1e9;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) { var ix = px + dx, iy = py + dy; if (ix >= 0 && iy >= 0 && ix < W && iy < H) { var z = Z[iy * W + ix]; if (z < 1e8) { if (z > zm) { z2 = zm; zm = z; } else if (z > z2) z2 = z; } } }
+      if (z2 > -1e8) zm = z2;
       var zc = px >= 0 && py >= 0 && px < W && py < H ? Z[py * W + px] : 1e9;   // 線の 真下に 面が ない（外形の 上）なら 見える
       Q.push(q); VV.push(zm < -1e8 || zc > 1e8 || d <= zm + tol); }
     // 1 点だけ 見え方が 変わる ところ（面の 境目の ゆらぎ）は 両どなりに 合わせる（見える 線が 破線の ように 切れない）

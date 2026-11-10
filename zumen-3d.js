@@ -201,7 +201,11 @@ export function partGroup(m, fine, mat, lineMat){
     var res = brush(gF);
     if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
     if (v.top && v.top.out) { var gT = ext(v.top.out, null, H + 2 * mg); gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
-    (v.top && v.top.holes || []).forEach(function(h){ var g = ext(h.pts, null, h.depth + mg); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, H - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
+    // 上からの 穴は その 場所の 天面から（前の 板の 奥など、天面が 低い 所の 水溜）
+    function hAt(out, x){ var h = -Infinity; for (var i = 0; i < out.length; i++) { var a = out[i], b = out[(i + 1) % out.length]; if ((a[0] - x) * (b[0] - x) > 0 || a[0] === b[0]) { if (Math.abs(a[0] - x) < 1e-6) h = Math.max(h, a[1]); continue; } h = Math.max(h, a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0])); } return h; }
+    (v.top && v.top.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity, d0 = Infinity, d1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); d0 = Math.min(d0, q[1]); d1 = Math.max(d1, q[1]); });
+      var tp = Math.min(hAt(v.front.out, (x0 + x1) / 2), v.side && v.side.out ? hAt(v.side.out, (d0 + d1) / 2) : Infinity); if (!isFinite(tp) || tp > H) tp = H;
+      var g = ext(h.pts, null, h.depth + mg + (H - tp)); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, tp - h.depth, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 上下の 削り（top.cuts：[x,d] を 高さ y0〜y1 で。底からの 耐震穴・中空など）
     (v.top && v.top.cuts || []).forEach(function(h){ var y0 = h.y0 <= 0 ? -mg : h.y0, y1 = h.y1 >= H ? H + mg : h.y1; if (!(y1 > y0)) return; var g = ext(h.pts, null, y1 - y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
     // 前の 穴（from:'back' は 後ろの 面から）。図は 前から 見た 座標の まま

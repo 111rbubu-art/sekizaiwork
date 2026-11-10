@@ -8242,7 +8242,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.574';
+var APP_VERSION = 'v1.9.575';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -15170,6 +15170,9 @@ function _renderDynamicSections(tplList, sectionKey, useFn, editFn, themeColor, 
     } else {
       mark = '<span title="未分類" style="display:inline-flex;align-items:center;padding:0 4px;font-size:9px;background:#eee;color:#888;border-radius:3px;margin-right:2px;font-weight:700">?</span>';
     }
+    if (meta && meta.saveFolder === '帳票類') {
+      mark += '<span title="PDFは 帳票類 に保存（社内資料）" style="display:inline-flex;align-items:center;padding:0 4px;font-size:9px;background:#e4e0f4;color:#4a3a8a;border-radius:3px;margin-right:2px;font-weight:700">社内</span>';
+    }
     return '<div draggable="true" ' +
       'ondragstart="_tplDragStart(event,\'' + jsName + '\',\'' + sectionKey + '\',\'' + jsGrp + '\')" ' +
       'ondragend="_tplDragEnd(event)" ' +
@@ -17829,7 +17832,7 @@ function _fillMissingTplMeta() {
       }).then(function(r) { return r.ok ? r.json() : null; });
     }).then(function(tpl) {
       if (tpl && tpl._meta && tpl._meta.targetList) {
-        _choukokuTplMeta[name] = { targetList: tpl._meta.targetList };
+        _choukokuTplMeta[name] = { targetList: tpl._meta.targetList, saveFolder: _choukokuPdfFolder(tpl._meta.saveFolder) };
         changed = true;
       }
       next();
@@ -18629,7 +18632,7 @@ function _saveChoukokuTplFromPopup(data, name) {
       try { _hakaChoukokuTemplate = JSON.parse(JSON.stringify(data)); } catch(_) {}
       // メタキャッシュも保存値で即時更新
       if (data && data._meta && data._meta.targetList) {
-        _choukokuTplMeta[safe] = { targetList: data._meta.targetList };
+        _choukokuTplMeta[safe] = { targetList: data._meta.targetList, saveFolder: _choukokuPdfFolder(data._meta.saveFolder) };
         _saveChoukokuTplMeta();
       }
       loadChoukokuTemplates().then(function() {
@@ -18647,14 +18650,19 @@ function _saveChoukokuTplFromPopup(data, name) {
   });
 }
 
-function _saveChoukokuPdfFromPopup(blob, name) {
+/* PDF の 保存先は テンプレートごとに 選べる（v1.9.575。本人「お客様に出すものは 提出資料、社内資料は 帳票類」）。
+   folder は 提出資料／帳票類 だけ（どちらも 案件フォルダーの 直下）。ほかや 未設定は 提出資料 */
+var CHOUKOKU_PDF_FOLDERS = ['提出資料', '帳票類'];
+function _choukokuPdfFolder(f) { return CHOUKOKU_PDF_FOLDERS.indexOf(f) >= 0 ? f : '提出資料'; }
+function _saveChoukokuPdfFromPopup(blob, name, folder) {
   return new Promise(function(resolve, reject) {
     var folderPass = _getItemFolderPath(currentItem);
     if (!folderPass) {
       reject(new Error('Folder_Pass がありません')); return;
     }
     var safe = String(name).replace(/[\\\/:\*\?"<>\|]/g, '_');
-    var fpath = folderPass + '/提出資料/' + safe + '.pdf';
+    var sub = _choukokuPdfFolder(folder);
+    var fpath = folderPass + '/' + sub + '/' + safe + '.pdf';
     var enc = fpath.split('/').map(encodeURIComponent).join('/');
     getToken().then(function(resp) {
       return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + enc + ':/content', {
@@ -18664,7 +18672,7 @@ function _saveChoukokuPdfFromPopup(blob, name) {
       });
     }).then(function(r) {
       if (!r.ok) throw new Error(r.status);
-      showSaveToast(true, 'PDF保存: 提出資料/' + safe + '.pdf');
+      showSaveToast(true, 'PDF保存: ' + sub + '/' + safe + '.pdf');
       resolve();
     }).catch(function(e) {
       showSaveToast(false, 'PDF保存エラー: ' + (e && e.message || e));
@@ -18675,7 +18683,7 @@ function _saveChoukokuPdfFromPopup(blob, name) {
 
 // 領収書ウィンドウ（receipt.html）からのPDF保存。保存先は資料制作と同じ 提出資料 フォルダー
 function _saveReceiptPdfFromPopup(blob, name) {
-  return _saveChoukokuPdfFromPopup(blob, name);
+  return _saveChoukokuPdfFromPopup(blob, name, '提出資料');
 }
 
 // SharePointから保存済み資料制作を一覧表示・選択して開く
@@ -19301,7 +19309,9 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   } else {
     normPages = [{ elements: (tpl && tpl.elements) || [] }];
   }
-  var normTpl = { name: (tpl && tpl.name) || '', orientation: orientation, pages: normPages };
+  var normTpl = { name: (tpl && tpl.name) || '', orientation: orientation, pages: normPages,
+    // PDF の 保存先（テンプレートは _meta.saveFolder、途中保存の 資料は saveFolder）
+    saveFolder: (tpl && (tpl.saveFolder || (tpl._meta && tpl._meta.saveFolder))) || '' };
   var allElemCount = normPages.reduce(function(n,p){ return n+(p.elements||[]).length; }, 0);
   var isNormalMode = !!(spData && Object.keys(spData).length > 0);
   var tplBtnStyle  = isNormalMode ? 'display:none' : '';
@@ -19435,6 +19445,11 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
         '<option value="kouji">🏗️ 工事関連</option>' +
         '<option value="noukotsu">📿 納骨リスト</option>' +
       '</select>' +
+      '<span style="font-size:11px;color:#aac;margin-left:8px">PDF保存先:</span>' +
+      '<select id="tplSaveFolder" onchange="_changeSaveFolder(this.value)" title="このテンプレートで作った資料の PDF を 案件フォルダーの どこに保存するか" style="padding:4px 8px;background:#fff;color:#333;border:1px solid #aaa;border-radius:4px;font-size:11px;font-family:inherit">' +
+        '<option value="提出資料">📤 提出資料（お客様に出す）</option>' +
+        '<option value="帳票類">📋 帳票類（社内資料）</option>' +
+      '</select>' +
     '</span>' +
     '<div class="ddmenu" id="tplMenu">' +
       '<div class="it" style="background:#f7f7f7;color:#888;font-size:10px;padding:4px 14px;cursor:default" onmousedown="event.preventDefault()">― 保存 ―</div>' +
@@ -19483,6 +19498,8 @@ pagesHtml +
 'var NOK_FIELDS=' + JSON.stringify(NOUKOTSU_BIND_FIELDS) + ';' +
 'var KOU_FIELDS=' + JSON.stringify(CHOUKOKU_BIND_FIELDS) + ';' +
 'var _currentTargetList=(_tplData&&_tplData._meta&&_tplData._meta.targetList)||' + JSON.stringify(currentListMode === 'noukotsu' ? 'noukotsu' : 'kouji') + ';' +
+'var _currentSaveFolder=(_tplData&&(_tplData.saveFolder||(_tplData._meta&&_tplData._meta.saveFolder)))||"提出資料";' +
+'if(_currentSaveFolder!=="帳票類")_currentSaveFolder="提出資料";' +
 'function _getBindFields(){return _currentTargetList==="noukotsu"?NOK_FIELDS:KOU_FIELDS;}' +
 'function _getTargetLabel(){return _currentTargetList==="noukotsu"?"📿 納骨リスト":"🏗️ 工事関連";}' +
 'var _spData=' + JSON.stringify(spData) + ';' +
@@ -19735,6 +19752,7 @@ pagesHtml +
 // 旧 toggleTplMode はスコープ不整合で動作しなかったため削除。
 'window.toggleTplMode=function(){};' +
 'window._changeTargetList=function(v){_currentTargetList=v;refreshPanel();};' +
+'window._changeSaveFolder=function(v){_currentSaveFolder=(v==="帳票類")?"帳票類":"提出資料";};' +
 'window.toggleTplMenu=function(e){' +
   'if(e)e.stopPropagation();' +
   'var m=document.getElementById("tplMenu");if(m)m.classList.toggle("on");' +
@@ -19805,7 +19823,7 @@ pagesHtml +
   'if(!name||!name.trim()){alert("テンプレート名を入力してください");return;}' +
   'name=name.trim();' +
   '_gatherTplPayload().then(function(payload){' +
-    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList,pageSize:payload.pageSize||"A3"}};' +
+    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList,saveFolder:_currentSaveFolder,pageSize:payload.pageSize||"A3"}};' +
     'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
     'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
     '.then(function(){' +
@@ -19830,7 +19848,7 @@ pagesHtml +
   'name=name.trim();' +
   'if(name===oldName){_saveTemplateWithName(name);return;}' +
   '_gatherTplPayload().then(function(payload){' +
-    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList,pageSize:payload.pageSize||"A3"}};' +
+    'var newTpl={name:name,orientation:payload.orientation,pages:payload.pages,_meta:{targetList:_currentTargetList,saveFolder:_currentSaveFolder,pageSize:payload.pageSize||"A3"}};' +
     'if(!window.opener||!window.opener._saveChoukokuTplFromPopup){alert("親ウィンドウとの接続が切れています。再度実行してください。");return;}' +
     'window.opener._saveChoukokuTplFromPopup(newTpl,name)' +
     '.then(function(){' +
@@ -19887,7 +19905,7 @@ pagesHtml +
   'function _doSaveDoc(){' +
     // keepBoxImages=true: 途中保存なので名前付き枠の画像も一緒に保存する
     '_gatherTplPayload(true).then(function(payload){' +
-      'var data={version:1,name:name,orientation:payload.orientation,pageSize:payload.pageSize,pages:payload.pages};' +
+      'var data={version:1,name:name,orientation:payload.orientation,pageSize:payload.pageSize,pages:payload.pages,saveFolder:_currentSaveFolder};' +
       'window.opener._saveChoukokuDocFromPopup(data,name).then(function(){alert("SharePointに保存しました\\n"+name+".json");}).catch(function(e){alert("保存失敗: "+(e&&e.message||e));});' +
     '});' +
   '}' +
@@ -19916,7 +19934,7 @@ pagesHtml +
   'var _defaultName=_dateStr+"_"+_bnLast;' +
   'if(_hakaPart)_defaultName+="__"+_hakaPart;' +
   'if(_workPart)_defaultName+="__"+_workPart;' +
-  'var name=prompt("ファイル名（.pdf不要）\\n保存先: ルート/提出資料/",_defaultName);' +
+  'var name=prompt("ファイル名（.pdf不要）\\n保存先: ルート/"+_currentSaveFolder+"/",_defaultName);' +
   'if(!name||!name.trim())return;name=name.trim();' +
   'var toast=document.createElement("div");' +
   'toast.style.cssText="position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#1a2535;color:#fff;padding:12px 24px;border-radius:8px;z-index:9999;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.4)";' +
@@ -19935,7 +19953,7 @@ pagesHtml +
           'var blob=pdf.output("blob");' +
           'toast.textContent="SharePointに保存中...";' +
           'if(!window.opener||!window.opener._saveChoukokuPdfFromPopup){toast.remove();alert("親ウィンドウとの接続が切れています");return;}' +
-          'window.opener._saveChoukokuPdfFromPopup(blob,name).then(function(){toast.remove();var ok=document.createElement("div");ok.style.cssText="position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#2a7a2a;color:#fff;padding:12px 24px;border-radius:8px;z-index:9999;font-size:13px";ok.textContent="PDFを保存しました！（"+pgs.length+"ページ）";document.body.appendChild(ok);setTimeout(function(){ok.remove();},2500);' +
+          'window.opener._saveChoukokuPdfFromPopup(blob,name,_currentSaveFolder).then(function(){toast.remove();var ok=document.createElement("div");ok.style.cssText="position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#2a7a2a;color:#fff;padding:12px 24px;border-radius:8px;z-index:9999;font-size:13px";ok.textContent="PDFを保存しました！（"+pgs.length+"ページ）";document.body.appendChild(ok);setTimeout(function(){ok.remove();},2500);' +
           '}).catch(function(e){toast.remove();alert("保存エラー: "+(e&&e.message||e));});' +
           'return;' +
         '}' +
@@ -20396,6 +20414,7 @@ pagesHtml +
   'var _btnImg=document.getElementById("btnAddImage");if(_btnImg)_btnImg.textContent="＋画像枠";' +
   'var _tw=document.getElementById("tplTargetWrap");if(_tw)_tw.style.display="inline-flex";' +
   'var _tls=document.getElementById("tplTargetList");if(_tls)_tls.value=_currentTargetList;' +
+  'var _tsf=document.getElementById("tplSaveFolder");if(_tsf)_tsf.value=_currentSaveFolder;' +
 '}' +
 'function _setupPageHandlers(pg){' +
   'pg.addEventListener("mousedown",function(e){if(e.target===pg){var i=_pages.indexOf(pg);if(i>=0)currentPageIdx=i;_highlightActivePage();setSel(null);}});' +

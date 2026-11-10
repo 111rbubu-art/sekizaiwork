@@ -29,15 +29,36 @@ export function create(box, onPick){
   var meshes = [], alive = true, fitted = false, last = null, viewName = '3d';
   var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a }), darkLine = new THREE.LineBasicMaterial({ color:0x9aa0a8 }), selMat = new THREE.LineBasicMaterial({ color:0xe07a1f }), hitMat = new THREE.LineBasicMaterial({ color:0xd92020 });
 
-  function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); }
+  function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true; }
   new ResizeObserver(size).observe(box); size();
 
-  function clear(){ var keep = [lineMat, darkLine, selMat, hitMat]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; }
+  function clear(){ var keep = [lineMat, darkLine, selMat, hitMat]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; }
+
+  // 形の ある 部材の 立体（CSG・面の ならし・かどの 線）は 重いので、形が 同じ 間は 作り直さない。
+  // 選ぶ・敷地を 打つ などで update が 来ても、形の 中身（JSON）が 同じなら 前に 作った 形を 写して 色と 線だけ 付け直す
+  var cache = new Map(), CACHE_MAX = 80, phMat = new THREE.MeshBasicMaterial(), phLine = new THREE.LineBasicMaterial();
+  function shapeKey(shp){ try { return JSON.stringify(shp, function(k, v){ return k === 'thumb' ? undefined : v; }); } catch (e) { return null; } }
+  function shapeProto(shp){
+    var key = shapeKey(shp), hit = key && cache.get(key);
+    if (hit) { cache.delete(key); cache.set(key, hit); return hit; }   // 使った 順に 並べ直す（古い ものから 捨てる）
+    var pg = partGroup(window.BZ.model(shp, window.BZ.solve(shp)), true, phMat, phLine);
+    pg.traverse(function(o){ if (o.geometry) o.geometry.userData.cached = true; });
+    if (key) { cache.set(key, pg); trim(); }
+    return pg;
+  }
+  var inUse = new Set();
+  function trim(){
+    if (cache.size <= CACHE_MAX) return;
+    for (var it = cache.keys(), k = it.next(); !k.done && cache.size > CACHE_MAX; k = it.next()) {
+      var pg = cache.get(k.value); if (inUse.has(pg)) continue;
+      cache.delete(k.value); pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); });
+    }
+  }
 
   // r = KM.compute の 答え（かくした 部材は 抜いて ある）、col(key) → '#rrggbb'、sel＝選んだ 部材の 鍵 か {鍵:1}、site＝{W,D}（null で 敷地の 線を 出さない）
   function update(r, col, sel, site, refit){
     last = { r:r, col:col, sel:sel, site:site };
-    clear();
+    clear(); inUse = new Set();
     var hit = {}; r.hits.forEach(function(h){ hit[h.a] = hit[h.b] = 1; });
     Object.keys(r.boxes).forEach(function(k){
       var b = r.boxes[k], w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
@@ -49,7 +70,7 @@ export function create(box, onPick){
       var m = new THREE.Mesh(g, sm);
       m.position.set(b.x0 + w / 2, b.y0 + h / 2, b.z0 + d / 2); m.userData.key = k;
       var shp = r.parts[k].shape, pg = null;
-      if (shp && window.BZ) { try { pg = partGroup(window.BZ.model(shp, window.BZ.solve(shp)), true, sm, lm); } catch (err) { pg = null; } }
+      if (shp && window.BZ) { try { var pr = shapeProto(shp); inUse.add(pr); pg = pr.clone(); pg.traverse(function(o){ if (o.isMesh) o.material = sm; else if (o.isLine) o.material = lm; }); } catch (err) { pg = null; } }
       if (pg) { // 形の ある 部材：底面の 中心に 置く。押せる ように 中の 面に 鍵を つける
         g.dispose(); pg.position.set(b.x0 + w / 2, b.y0, b.z0 + d / 2); pg.traverse(function(o){ if (o.isMesh) { o.userData.key = k; meshes.push(o); } }); group.add(pg);
       } else {
@@ -63,6 +84,7 @@ export function create(box, onPick){
       ol.rotation.x = -Math.PI / 2; ol.position.y = 1; group.add(ol);
     }
     if (!fitted || refit) { fit(); fitted = true; }
+    dirty = true;
   }
   function bounds(){ var bb = new THREE.Box3(); meshes.forEach(function(m){ bb.expandByObject(m); }); if (bb.isEmpty()) bb.set(new THREE.Vector3(-800, 0, -800), new THREE.Vector3(800, 1000, 800)); return bb; }
   function fit(name){
@@ -71,7 +93,7 @@ export function create(box, onPick){
     var dist = R / Math.sin(cam.fov * Math.PI / 360) * 1.05;
     var dir = viewName === 'front' ? new THREE.Vector3(0, 0.02, 1) : viewName === 'top' ? new THREE.Vector3(0, 1, 0.0001) : new THREE.Vector3(0.55, 0.5, 0.95);
     if (cam.aspect < 1) dist /= Math.max(0.55, cam.aspect);
-    controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip();
+    controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip(); dirty = true;
   }
   // 押した 部材（動かした ときは 押した ことに しない）
   var down = null, ray = new THREE.Raycaster();
@@ -84,12 +106,15 @@ export function create(box, onPick){
     var hits = ray.intersectObjects(meshes, false);
     if (onPick) onPick(hits.length ? hits[0].object.userData.key : null);
   });
-  (function loop(){ if (!alive) return; requestAnimationFrame(loop); controls.update(); renderer.render(scene, cam); })();
+  // 描くのは 変わった ときだけ（止まって いる 間は 描かない。回す・ズーム・慣性の 間と 部材・地面・大きさが 変わった とき）
+  var dirty = true;
+  controls.addEventListener('change', function(){ dirty = true; });
+  (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { dirty = false; renderer.render(scene, cam); } })();
   // 地面の 見え方：''＝ふつう｜'half'＝半透明（GL の 下も 見える）｜'off'＝出さない（格子は のこす）
   function setGround(mode){
     var gm = ground.material;
     ground.visible = mode !== 'off';
-    gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true;
+    gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true; dirty = true;
   }
-  return { update:update, fit:fit, setGround:setGround, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); renderer.dispose(); } };
+  return { update:update, fit:fit, setGround:setGround, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
 }

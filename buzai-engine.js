@@ -125,9 +125,32 @@ var BZ = (function(){
   function profilePts(name, s, W, sign){ var f = PROFILES[name]; if (!f) throw new Error('断面「' + name + '」は まだ ありません'); return f(s, W, sign); }
 
   // 図から 作った 部材の 外形を 今の 幅・奥行・高さに 合わせて 伸び縮み（base＝作った ときの 大きさ）
+  // 決まり（2026-11-12 本人）：面取り・ハショリ など 端の 近く（30 mm か 長さの 2 割 まで）は mm の まま 近い 端に つく、真ん中は 伸びる。
+  // 穴の 径・深さは 変えない（貫通は 貫通の まま）。穴の 位置は fit（図面で 端から 寸法を 入れた 穴＝その 端から mm の まま）、無ければ 比率。
+  // 長さの 半分を 超える 大きな 穴（中空・逃げ）は 壁の 厚みを 守る
+  function edgeMap(a0, a1, b0, b1){
+    var L = a1 - a0, M = b1 - b0, t = Math.min(30, L * 0.2);
+    if (!(L > 0)) return function(v){ return v; };
+    if (Math.abs(M - L) < 1e-9) return function(v){ return v + (b0 - a0); };
+    if (M < 2 * t) return function(v){ return b0 + (v - a0) * M / L; };
+    return function(v){ if (v <= a0 + t) return v - a0 + b0; if (v >= a1 - t) return v - a1 + b1; return b0 + t + (v - a0 - t) * (M - 2 * t) / (L - 2 * t); };
+  }
+  function ratioMap(a0, a1, b0, b1){ var L = a1 - a0; return L > 0 ? function(v){ return b0 + (v - a0) * (b1 - b0) / L; } : function(v){ return v; }; }
+  function depthMap(dep, a, b){ if (!(dep > 0)) return dep; if (dep >= a - 0.5) return b; return Math.min(dep, b); }
+  // 穴を 1 軸で 動かす：fit 'L'＝下（左・前）の 端から mm／'R'＝上（右・奥）の 端から mm／無し＝比率。大きい 穴は 点ごとに 近い 端から
+  function holeAxis(pts, i, a0, a1, b0, b1, fit){
+    var vs = pts.map(function(q){ return q[i]; }), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs), c = (lo + hi) / 2;
+    if (Math.abs((b1 - b0) - (a1 - a0)) < 1e-9 && Math.abs(b0 - a0) < 1e-9) return function(v){ return v; };
+    if (hi - lo > (a1 - a0) * 0.5) { var mid = (a0 + a1) / 2; return function(v){ return v < mid ? v - a0 + b0 : v - a1 + b1; }; }
+    var c1 = fit === 'L' ? c - a0 + b0 : fit === 'R' ? c - a1 + b1 : ratioMap(a0, a1, b0, b1)(c);
+    return function(v){ return v + (c1 - c); };
+  }
   function scaleViews(v, W, Dd, H){
     var b = v.base || { W:W, D:Dd, H:H }, kx = W / b.W, kd = Dd / b.D, ky = H / b.H;
     function m(pts, fx, fy){ return pts.map(function(q){ return [q[0] * fx, q[1] * fy]; }); }
+    function mp(pts, fx, fy){ return pts.map(function(q){ return [fx(q[0]), fy(q[1])]; }); }
+    function hole(h, ax, ay, depA, depB){ var fit = h.fit || {}, fx = holeAxis(h.pts, 0, ax[0], ax[1], ax[2], ax[3], fit.x), fy = holeAxis(h.pts, 1, ay[0], ay[1], ay[2], ay[3], fit.y);
+      var r = {}; Object.keys(h).forEach(function(k){ r[k] = h[k]; }); r.pts = mp(h.pts, fx, fy); if (h.depth != null) r.depth = depthMap(h.depth, depA, depB); return r; }
     // 小さい 削り（面取り・飾りの 線）は 伸ばさず mm の まま、近い 端（前／奥・下／上）に つける。伸ばすと 角度が 変わって 線が 消える
     function keep(pts, A0, A1, B0, B1, fa, fb){
       function ax(i, L0, L1, f){ var vs = pts.map(function(q){ return q[i]; }), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs);
@@ -136,11 +159,16 @@ var BZ = (function(){
       var fx = ax(0, A0, A1, fa), fy = ax(1, B0, B1, fb);
       return pts.map(function(q){ return [fx(q[0]), fy(q[1])]; });
     }
-    var o = { front:{ out:m(v.front.out, kx, ky), holes:(v.front.holes || []).map(function(h){ var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from }; if (h.nige) { r.nige = 1; r.run = m(h.run || [], kx, ky); } if (h.ogami) { r.ogami = 1; r.d0 = (h.d0 || 0) * kd; } return r; }) } };
-    if (v.side && v.side.out) o.side = { out:m(v.side.out, kd, ky),
-      holes:(v.side.holes || []).map(function(h){ return { pts:m(h.pts, kd, ky), depth:h.depth * kx, from:h.from }; }),
+    var X = edgeMap(-b.W / 2, b.W / 2, -W / 2, W / 2), Y = edgeMap(0, b.H, 0, H), Z = edgeMap(0, b.D, 0, Dd);
+    var AX = [-b.W / 2, b.W / 2, -W / 2, W / 2], AY = [0, b.H, 0, H], AZ = [0, b.D, 0, Dd];
+    var o = { front:{ out:mp(v.front.out, X, Y), holes:(v.front.holes || []).map(function(h){
+      if (h.ogami) { var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from, ogami:1, d0:(h.d0 || 0) * kd }; return r; }
+      if (h.nige) { var r2 = { pts:mp(h.pts, X, Y), depth:depthMap(h.depth, b.D, Dd), from:h.from, nige:1, run:mp(h.run || [], X, Y) }; return r2; }
+      return hole(h, AX, AY, b.D, Dd); }) } };
+    if (v.side && v.side.out) o.side = { out:mp(v.side.out, Z, Y),
+      holes:(v.side.holes || []).map(function(h){ return hole(h, AZ, AY, b.W, W); }),
       cuts:(v.side.cuts || []).map(function(h){ return { pts:keep(h.pts, b.D, Dd, b.H, H, kd, ky), x0:h.x0 * kx, x1:h.x1 * kx, taper:h.taper ? h.taper * kx : 0, apex:h.apex }; }) };
-    if (v.top && (v.top.out || (v.top.holes || []).length || (v.top.cuts || []).length)) o.top = { out:v.top.out ? m(v.top.out, kx, kd) : null, holes:(v.top.holes || []).map(function(h){ return { pts:m(h.pts, kx, kd), depth:h.depth * ky }; }),
+    if (v.top && (v.top.out || (v.top.holes || []).length || (v.top.cuts || []).length)) o.top = { out:v.top.out ? mp(v.top.out, X, Z) : null, holes:(v.top.holes || []).map(function(h){ return hole(h, AX, AZ, b.H, H); }),
       cuts:(v.top.cuts || []).map(function(h){ return { pts:m(h.pts, kx, kd), y0:h.y0 * ky, y1:h.y1 * ky }; }) };
     return o;
   }
@@ -333,7 +361,7 @@ var BZ = (function(){
     return '式：' + d.expr;
   }
   return { norm:norm, evalExpr:evalExpr, solve:solve, model:model, view:view, view6:view6, viewDims:viewDims, bbox:bbox, primPts:primPts, arcPts:arcPts,
-           inset:inset, barrelOutline:barrelOutline, holePts:holePts, holeArcs:holeArcs, profilePts:profilePts, setValue:setValue, setRule:setRule, ruleText:ruleText, nameOf:nameOf };
+           inset:inset, barrelOutline:barrelOutline, holePts:holePts, holeArcs:holeArcs, profilePts:profilePts, setValue:setValue, setRule:setRule, scaleViews:scaleViews, ruleText:ruleText, nameOf:nameOf };
 })();
 
 // 1 号の 部材：香炉（筆返し・雲形穴）。元図面 W360×D150×H270、底以外 全面磨き

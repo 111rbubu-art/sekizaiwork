@@ -112,6 +112,7 @@ body.pdmode #pdv{display:flex}
 /* 編集画面の 左を 図面の 画面に（下の 図面アプリを そのまま 使う） */
 body.pddraw .topbar{display:none} body.pddraw{padding-top:46px}
 body.pdmaster.tsel #pnTool,body.pdmaster #pnInfo{display:none}
+body.pdmaster.tsel.hfsel #pnTool{display:block}
 body.pddraw #pdv{pointer-events:none;background:transparent} body.pddraw .pdtop,body.pddraw .pdright{pointer-events:auto}
 body.pddraw .pdtop{position:fixed;top:0;left:0;right:0;min-height:46px;box-sizing:border-box}
 body.pddraw .pdmain{padding-top:54px} body.pddraw #pdDraw{visibility:hidden}
@@ -374,12 +375,12 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 </div></div>
 <div id="printArea"></div>
 
-<script src="buzai-engine.js?v=0.9.18"></script>
+<script src="buzai-engine.js?v=0.9.34"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
-<script src="buzai-lib.js?v=0.9.4"></script>
+<script src="buzai-lib.js?v=0.9.34"></script>
 <script src="zumen-km.js?v=0.9.25"></script>
 <script>
-var APP_VER = "v0.9.33";
+var APP_VER = "v0.9.34";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1201,10 +1202,12 @@ function drawAll(c, v, o){
     c.beginPath(); pathEnt(c, v, e); c.stroke();
     if (dash) c.setLineDash([]);
   });
+  var hfm = !o.print && !o.mono ? holeFitNow() : null;
   D.dims.forEach(function(d){
     if (d.layer && !layerOf(d.layer).on) return;
-    var sel = !o.print && (ST.selDim === d.id || ST.dsel.has(d.id));
-    drawDim(c, v, d, sel ? '#ff5a1f' : (o.mono ? '#000' : '#1a5ad0'), o.lw ? o.lw * 0.8 : 1);
+    var sel = !o.print && (ST.selDim === d.id || ST.dsel.has(d.id)), hf = !o.print && !o.mono && hfm && hfm.dims[d.id];
+    drawDim(c, v, d, sel ? '#ff5a1f' : hf ? (hf.on ? '#c2410c' : '#1d4ed8') : (o.mono ? '#000' : '#1a5ad0'), o.lw ? o.lw * 0.8 : 1);
+    if (hf) { var g9 = dimGeom(d), q9 = W2S(v, g9.text.p), hw9 = String(g9.text.s).length * g9.text.h * 0.3 * (v.s || 1); c.save(); c.font = '13px sans-serif'; c.fillStyle = hf.on ? '#c2410c' : '#1d4ed8'; c.fillText(hf.on ? '📌' : '↔', q9[0] - 18 - hw9, q9[1]); c.restore(); }
   });
   var sf = window.SHEETS && skSheet(); // 図枠の 線・表題欄
   if (sf && sf.sheet && visible(sf)) { var sel2 = !o.print && ST.sel.has(sf.id), col2 = sel2 ? '#ff5a1f' : '#000';
@@ -2567,6 +2570,40 @@ function mkSet(skip){
   ST.mk.step = k === 'front' ? 'side' : k === 'side' ? 'top' : 'done';
   panel(); redraw();
 }
+// 大きさを 変えた ときの 穴の 位置（2026-11-12 本人「穴は 場所に よる。図面で 指示したい」）：
+// 穴と 外形の 端を 結ぶ 寸法が あれば その 端から mm の まま（📌 守る）。寸法を 押して［↔ 比率］に できる（d.fit='ratio'）。寸法が 無い 穴は 比率
+function holeFitDims(m){
+  var out = { fit:{}, dims:{} }; if (!m || !m.front) return out;
+  function near(a, b, L){ return Math.abs(a - b) <= Math.max(0.8, L * 0.004); }
+  [['front', 'f'], ['top', 't']].forEach(function(z){ var F = m[z[0]]; if (!F) return; var bb = F.bb, Lx = bb.x1 - bb.x0, Ly = bb.y1 - bb.y0;
+    F.holes.forEach(function(h, i){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; h.forEach(function(p){ x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); });
+      var hx = [x0, (x0 + x1) / 2, x1], hy = [y0, (y0 + y1) / 2, y1];
+      D.dims.forEach(function(d){ if (!d.a || !d.b || typeof d.hole === 'string' || d.sec || d.mode === 'rad' || d.mode === 'dia') return; if (d.pv && d.pv !== z[0]) return;
+        var g = dimGeom(d), ax = near(Math.abs(d.b.x - d.a.x), g.val, Lx) && g.val > 0.5 ? 'x' : near(Math.abs(d.b.y - d.a.y), g.val, Ly) && g.val > 0.5 ? 'y' : null; if (!ax) return;
+        var e0 = ax === 'x' ? bb.x0 : bb.y0, e1 = ax === 'x' ? bb.x1 : bb.y1, L = ax === 'x' ? Lx : Ly, hs = ax === 'x' ? hx : hy, A = [d.a[ax], d.b[ax]], side = null;
+        // 外形の 内に 無い 寸法は 見ない（ほかの 面の 寸法）
+        var o = ax === 'x' ? [d.a.y, d.b.y] : [d.a.x, d.b.x], lo = ax === 'x' ? bb.y0 : bb.x0, hi = ax === 'x' ? bb.y1 : bb.x1, pad = (hi - lo) * 0.6 + 50;
+        if (o.some(function(v){ return v < lo - pad || v > hi + pad; })) return;
+        // 穴に 近い ほうの 端からの 寸法だけ（左から 並べた 寸法 790 は 右の 穴を 左に しばらない）。真ん中の 穴は 真ん中の まま
+        var hc = hs[1], mid = (e0 + e1) / 2; if (near(hc, mid, L)) return;
+        [[0, 1], [1, 0]].forEach(function(k){ if (side) return; var pe = A[k[0]], ph = A[k[1]]; if (!hs.some(function(v){ return near(v, ph, L); })) return;
+          if (near(pe, e0, L) && !near(ph, e0, L) && hc < mid) side = 'L'; else if (near(pe, e1, L) && !near(ph, e1, L) && hc > mid) side = 'R'; });
+        if (!side) return;
+        out.dims[d.id] = { k:z[1] + i, ax:ax, side:side, on:d.fit !== 'ratio' };
+        if (d.fit === 'ratio') return;
+        var f = out.fit[z[1] + i] = out.fit[z[1] + i] || {}; f[ax] = side; });
+    });
+    // 左右（前後）対称の 相手：端から a で しばった 穴と 同じ 大きさで、反対の 端から a の 所の 穴は 反対の 端から しばる
+    var C = F.holes.map(function(h){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; h.forEach(function(p){ x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }); return { x:(x0 + x1) / 2, y:(y0 + y1) / 2, w:x1 - x0, h:y1 - y0 }; });
+    C.forEach(function(c, i){ var f = out.fit[z[1] + i]; if (!f) return; ['x', 'y'].forEach(function(ax){ var sd = f[ax]; if (!sd) return; var e0 = ax === 'x' ? bb.x0 : bb.y0, e1 = ax === 'x' ? bb.x1 : bb.y1, L = e1 - e0, a = sd === 'L' ? c[ax] - e0 : e1 - c[ax], t = sd === 'L' ? e1 - a : e0 + a, o = ax === 'x' ? 'y' : 'x';
+      C.forEach(function(q, j){ if (j === i || !near(q[ax], t, L) || !near(q[o], c[o], ax === 'x' ? Ly : Lx) || Math.abs(q.w - c.w) > 1 || Math.abs(q.h - c.h) > 1) return; var g = out.fit[z[1] + j] = out.fit[z[1] + j] || {}; if (!g[ax]) { g[ax] = sd === 'L' ? 'R' : 'L'; (out.sym = out.sym || {})[z[1] + j] = 1; } }); }); });
+  });
+  return out;
+}
+var _hfd = { v:'', d:null, r:null };
+function holeFitNow(){ if (!(PD && PD.saveMain)) return null; var key = VER + ':' + D.ents.length + ':' + D.dims.length + ':' + D.dims.map(function(d){ return (d.fit || '') + Math.round(d.a ? d.a.x + d.b.x : 0); }).join(''); if (_hfd.v === key && _hfd.d === D) return _hfd.r; _hfd.v = key; _hfd.d = D; _hfd.r = null;
+  try { var keep = D.ents.map(function(e){ return e.pv; }), kd = D.dims.map(function(d){ return d.pv; }), m = mkAuto(); D.ents.forEach(function(e, i){ e.pv = keep[i]; }); D.dims.forEach(function(d, i){ d.pv = kd[i]; }); if (m && !m.err) _hfd.r = holeFitDims(m); } catch (e) {}
+  return _hfd.r; }
 function mkBuild(){
   var m = ST.mk, F = m.front; if (!F) return;
   var W = F.bb.x1 - F.bb.x0, H = F.bb.y1 - F.bb.y0, cx = (F.bb.x0 + F.bb.x1) / 2;
@@ -2579,6 +2616,7 @@ function mkBuild(){
   if (m.top) { var T = m.top, tcx = (T.bb.x0 + T.bb.x1) / 2, kx = W / (T.bb.x1 - T.bb.x0), kd = Dd / (T.bb.y1 - T.bb.y0);
     var tf = function(pg){ return pg.map(function(p){ return [R((p.x - tcx) * kx), R((p.y - T.bb.y0) * kd)]; }); };
     v.top = { out:tf(T.out), holes:T.holes.map(function(h, i){ return { pts:tf(h), depth:m.holeD['t' + i] || R(H * 0.4) }; }) }; }
+  var HF = holeFitDims(m); (v.front.holes || []).forEach(function(h, i){ if (HF.fit['f' + i]) h.fit = HF.fit['f' + i]; }); if (v.top) (v.top.holes || []).forEach(function(h, i){ if (HF.fit['t' + i]) h.fit = HF.fit['t' + i]; });
   if (PD && PD.saveMain) { mkCarry(v, m); mkDepthText(m); pdApplyViews(v, R(W), R(Dd), R(H)); mkStart(); setTool('select'); return; }
   var name = (m.name || '').trim() || '図から 作った 部材', id = 'zu_' + Date.now().toString(36);
   var def = { schema:'buzai/1', id:id, name:name, category:'図から', version:0, from:'drawing',
@@ -2597,11 +2635,18 @@ function panel(){
   var H = document.getElementById('pnToolH'), B = document.getElementById('pnToolB'), t = ST.tool, h = '';
   var names = { select:'選ぶ', paste:'貼り付け', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）', move:'移動・複写', offset:'オフセット（平行に 写す）', rect:'四角', corner:'角丸め・面取り', mkpart:'🧊 図から 部材を 作る（叩き台）' };
   H.textContent = names[t] || t;
+  document.body.classList.remove('hfsel');
   if (t === 'select') {
     var d = ST.selDim && D.dims.filter(function(x){ return x.id === ST.selDim; })[0];
     if (d) {
       var g = dimGeom(d);
       h += '<div class="big">' + esc(fmtLen(g.val)) + '</div>';
+      var hfi = PD && PD.saveMain && (holeFitNow() || { dims:{} }).dims[d.id];
+      if (hfi) h += '<div class="box" style="margin:6px 0;border:2px solid #e07a1f;border-radius:8px;padding:6px 8px"><b>大きさを 変えた とき</b>（穴の 位置の 寸法）<br>' +
+        '<label style="display:block"><input type="radio" name="dFit" value=""' + (hfi.on ? ' checked' : '') + '> <b style="color:#c2410c">📌 この 寸法を 守る</b>（' + (hfi.side === 'L' ? (hfi.ax === 'x' ? '左' : '下') : (hfi.ax === 'x' ? '右' : '上')) + 'の 端から ' + esc(fmtLen(g.val)) + ' の まま）</label>' +
+        '<label style="display:block"><input type="radio" name="dFit" value="ratio"' + (hfi.on ? '' : ' checked') + '> <b style="color:#1d4ed8">↔ 比率で 動く</b>（大きさに 合わせて 伸びる）</label>' +
+        '<div class="muted">セットで 大きさを 変えた とき に 効きます（［💾 部材に 保存］・［図から 反映］で 部材に 入る）。色と 印は 画面だけ（印刷・PDF・DXF には 出ない）</div></div>';
+      document.body.classList.toggle('hfsel', !!hfi);
       h += '<div class="row"><label>表記</label><select id="dFmt"><option value="">全体と 同じ</option><option value="mm">mm</option><option value="shaku">尺・寸・分</option><option value="sun">寸（小数）</option><option value="both">mm（寸・5.4）</option><option value="both2">mm／寸（改行・5.4）</option></select></div>';
       h += '<div class="row"><label>文字</label><input type="text" id="dTxt" class="ww" placeholder="空＝測った 値（&lt;&gt; で 値を 入れる）" value="' + esc(d.text || '') + '"></div>';
       h += '<div class="row"><button class="b2" id="dApply">文字を 決める</button><button class="b2 dg" id="dDel">寸法を 消す</button></div>';
@@ -2615,6 +2660,7 @@ function panel(){
       sel.onchange = function(){ pushUndo(); d.fmt = sel.value || null; changed(); };
       document.getElementById('dApply').onclick = function(){ pushUndo(); d.text = document.getElementById('dTxt').value || null; changed(); };
       document.getElementById('dDel').onclick = deleteSel;
+      [].forEach.call(B.querySelectorAll('input[name=dFit]'), function(r){ r.onchange = function(){ pushUndo(); if (r.value) d.fit = r.value; else delete d.fit; changed(); }; });
       var dAt = document.getElementById('dAt'); dAt.value = d.at || ''; dAt.onchange = function(){ pushUndo(); d.at = dAt.value || null; changed(); };
       ['dTh', 'dAl'].forEach(function(id){ var el = document.getElementById(id); el.onchange = function(){
         var v = el.value.trim() ? parseLen(el.value) : 0; if (v == null || v < 0) { alert('大きさが 読めません'); return; }

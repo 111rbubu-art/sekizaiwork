@@ -250,7 +250,7 @@ var KM = (function(){
     //（戻すと 前の 面を 引いても 奥行が 元に 戻り、前の 面に そろえ直されて 石が 動いた。v0.8.36 本人「階段で 前矢印を 動かすと 移動に なります」）
     var fpk = ((data.partsData.FENCE_VARIANTS || {})[st.sel.fence] || {}).parts || {};
     Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].jobShape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); var mvk = fpk[k] && (st.mv || {})[k];
-      ['w', 'h', 'd'].forEach(function(f){ if (mvk && f !== 'h') return; if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+      ['w', 'h', 'd'].forEach(function(f){ if (mvk && f !== 'h') return; if (f === 'h' && gl && gl.hk && gl.hk[k]) return; if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });   // 階段の 高さは GL の きまり（v0.8.39）
     Object.keys(base).forEach(function(k){ var b = base[k], q = p[k]; if (!q || (q.w === b.w && q.d === b.d)) return;
       p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
     // 大きさを 変更で 引いた 面の ぶん 位置を ずらす（st.osh = { 鍵:{ x, z } }。右だけ・前だけ 伸ばす ため。v0.8.28）
@@ -607,24 +607,27 @@ var KM = (function(){
     var gh = glOf(st), v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence];
     if (!gh || !v || !v.set || !ff) return null;
     var H = ff.H, bury = r1(H - gh), step = r1(H - gh / 2), step0 = null;
-    var ks = Object.keys(v.parts || {}).filter(function(k){ return p[k]; });
+    var ks = Object.keys(v.parts || {}).filter(function(k){ return p[k]; }), hk = {}, stepS = null;
     if (bury < 0) ng.push('外柵が ' + r1(-bury) + ' mm 浮く（腰石 ' + H + ' ＜ GL から ' + gh + '）');
     ks.forEach(function(k){ var q = p[k]; if (!/^階段/.test(q.name || '') || (q.offY || 0) > 0.5) return;
-      var t0 = r1((q.offY || 0) + q.h); step0 = step0 == null ? t0 : Math.max(step0, t0);
+      var t0 = r1((q.offY || 0) + q.h); step0 = step0 == null ? t0 : Math.max(step0, t0); hk[k] = 1;
+      var vs = v.parts[k] && v.parts[k].h, tS = vs > 0 ? r1((q.offY || 0) + vs) : t0; stepS = stepS == null ? tS : Math.max(stepS, tS);   // セットの 図面の 階段の 上（削りの 下の 端は ここに 合って いる）
       var nh = r1(step - (q.offY || 0));
       if (nh <= 0) { ng.push(q.name + 'の 高さが 0 以下（腰石 ' + H + '・GL から ' + gh + '）'); return; }
       if (Math.abs(nh - q.h) > 0.5) { chg.push(q.name + 'の 高さ ' + q.h + ' → ' + nh + '（上が GL と 腰石の 上の 真ん中）'); p[k] = Object.assign({}, q, { h:nh }); }
     });
-    if (step0 != null && Math.abs(step - step0) > 0.5) ks.forEach(function(k){
+    // 階段の 高さは 手で 入れて いても GL の きまりで 決める ので、削りの 下の 端は セットの 図面の 階段の 上（stepS）か いまの 上（step0）に 合う 所を 動かす
+    //（前は いまの 上 だけを 見て いて、階段の 高さに 手の 数字が 入ると 合わず、R 面取りの 始まりが 動かなかった。v0.8.39）
+    if (step0 != null && (Math.abs(step - step0) > 0.5 || (stepS != null && Math.abs(step - stepS) > 0.5))) ks.forEach(function(k){
       var q = p[k], def = q.shape; if (!def || !def.components) return;
       var nd = null;
       def.components.forEach(function(c, ci){ var vw = c.shape && c.shape.views, tc = vw && vw.top && vw.top.cuts; if (!tc) return;
         var bH = (vw.base && vw.base.H) || q.h, ky = q.h / bH;
-        tc.forEach(function(ct, ti){ if (Math.abs((q.offY || 0) + ct.y0 * ky - step0) > 1) return;
+        tc.forEach(function(ct, ti){ var yc = (q.offY || 0) + ct.y0 * ky; if (Math.abs(yc - step0) > 1 && !(stepS != null && Math.abs(yc - stepS) <= 1)) return; if (Math.abs(yc - step) <= 0.5) return;
           nd = nd || clone(def); nd.components[ci].shape.views.top.cuts[ti].y0 = r1((step - (q.offY || 0)) / ky); }); });
-      if (nd) { p[k] = Object.assign({}, q, { shape:nd }); chg.push(q.name + 'の 削りの 下の 端を 階段の 上に 合わせる（' + step0 + ' → ' + step + '）'); }
+      if (nd) { p[k] = Object.assign({}, q, { shape:nd }); chg.push(q.name + 'の 削りの 下の 端を 階段の 上に 合わせる（' + (stepS != null ? stepS : step0) + ' → ' + step + '）'); }
     });
-    return { glH:gh, H:H, bury:bury, step0:step0, step:step, stepGL:step0 != null ? r1(step - bury) : null, ideal:r1(gh / 2) };
+    return { hk:hk, glH:gh, H:H, bury:bury, step0:step0, step:step, stepGL:step0 != null ? r1(step - bury) : null, ideal:r1(gh / 2) };
   }
   function fitFence(data, st, p, ng){
     var v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], fs = v && v.set; if (!fs || !fs.fit) return null;

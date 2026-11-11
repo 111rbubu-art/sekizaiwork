@@ -71,6 +71,7 @@ body{font-family:'Hiragino Sans','Meiryo',sans-serif;background:#f0f2f5;color:#1
 /* フィルター */
 .filter-bar{background:#fff;padding:10px 12px;display:flex;gap:6px;overflow-x:auto;border-bottom:1px solid #e8e8e8;flex-shrink:0}
 .filter-bar::-webkit-scrollbar{display:none}
+#kk-ans-pill.on{background:#d35400!important;color:#fff!important}
 .fpill{padding:7px 16px;border-radius:20px;border:1px solid #ddd;background:#f5f5f5;font-size:13px;cursor:pointer;white-space:nowrap;color:#555;font-family:inherit}
 .fpill.on{background:#1a2535;color:#fff;border-color:#1a2535}
 
@@ -747,6 +748,7 @@ body.force-sp #panel-resizer { display: none !important; }
     <div class="filter-bar" id="filter-bar">
       <button class="fpill" data-f="all">すべて</button>
       <button class="fpill on" data-f="micom">未完了</button>
+      <button class="fpill" data-f="kkans" id="kk-ans-pill" title="お客様確認（Web）の 回答（まだ 取り込んで いない もの）だけ" style="display:none;border-color:#d35400;color:#d35400;font-weight:700">📨 回答 <b>0</b></button>
       <button class="fpill" data-f="follow" title="フォロー" aria-label="フォロー">★</button>
       <button class="fpill" data-f="nyukin">入金待ち</button>
       <button class="fpill" data-f="cho" title="彫刻校正だけ">彫刻校正</button>
@@ -21745,12 +21747,49 @@ function _kkLoadRows(d){
   var ref=_kkRef(d);
   return _kkAct('list').then(function(r){
     if(!r || !r.ok) throw new Error((r && r.error) || '一覧を読めません');
+    _kkSetAnsMap(r.items);
     var rows=(r.items||[]).filter(function(x){ return x.ref===ref; });
     rows.sort(function(a,b){ return String(b.created).localeCompare(String(a.created)); });
     return Promise.all(rows.map(function(x){
       return _kkAct('status',{token:x.token}).then(function(s){ if(s && s.ok){ x.log=s.log||[]; x.answer=s.answer||null; x.case=s.case||{}; } return x; }).catch(function(){ return x; });
     }));
   });
+}
+/* 納骨リストに お客様の 回答（まだ 取り込んで いない もの）を 印で 出す（v1.9.577。本人の 選択「アプリに印だけ」＝メールは 使わない）。
+   さくらの list を 1 回 聞くだけ（5 分は 覚えておく。🔄 では 聞き直す）。取り込むと 印は 消える */
+var _kkAnsMap=null, _kkAnsAt=0, _kkAnsBusy=false;
+function _kkSetAnsMap(items){
+  var m={};
+  (items||[]).forEach(function(x){ if(x.status!=='answered' || x.imported) return; var p=m[x.ref]; if(!p || String(x.answeredAt)>String(p.answeredAt)) m[x.ref]=x; });
+  _kkAnsMap=m; _kkAnsAt=Date.now(); _kkMarkListAns();
+}
+function _kkRefreshAnswers(force){
+  var c=_kkCfg(); if(!c.url || !c.secret) return;
+  if(!force && _kkAnsMap && Date.now()-_kkAnsAt<5*60*1000){ _kkMarkListAns(); return; }
+  if(_kkAnsBusy) return; _kkAnsBusy=true;
+  _kkAct('list').then(function(r){ if(r && r.ok) _kkSetAnsMap(r.items); }).catch(function(){}).then(function(){ _kkAnsBusy=false; });
+}
+/* アプリを 開いた ままでも 5 分ごとに 聞く（画面が 見えている ときだけ） */
+setInterval(function(){ try{ if(document.visibilityState==='visible' && currentListMode!=='kouji' && document.getElementById('kk-ans-pill')) _kkRefreshAnswers(); }catch(e){} }, 5*60*1000);
+function _kkAnsOf(d){ return (_kkAnsMap && d) ? _kkAnsMap[_kkRef(d)] || null : null; }
+function _kkAnsChip(x){
+  var t = x.result==='ok' ? ['📨 回答：承諾','#1a7a3a'] : x.result==='grave_ng' ? ['📨 回答：お墓が違う','#b3261e'] : ['📨 回答：訂正あり','#d35400'];
+  return '<span class="kk-anschip" title="お客様確認（Web）に 回答が あります（'+_gaichuEsc(_kkMDHM(x.answeredAt))+'）。依頼・資料タブの［📨 お客様確認（Web）］で 見て 取り込んでください" '+
+    'style="background:'+t[1]+';color:#fff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25)">'+t[0]+'</span>';
+}
+function _kkMarkListAns(){
+  if(currentListMode==='kouji') return;
+  var n=0;
+  document.querySelectorAll('#list-content .card[data-item-id]').forEach(function(row){
+    var id=row.getAttribute('data-item-id'), x=_kkAnsMap && _kkAnsMap['n-'+id];
+    var ex=row.querySelector('.kk-anstag');
+    if(!x){ if(ex) ex.remove(); return; }
+    if(!ex){ ex=document.createElement('div'); ex.className='kk-anstag'; ex.style.cssText='padding:2px 12px 4px'; row.insertBefore(ex, row.querySelector('.card-main') || row.firstChild); }
+    ex.innerHTML=_kkAnsChip(x);
+  });
+  if(_kkAnsMap) Object.keys(_kkAnsMap).forEach(function(k){ if(/^n-/.test(k) && allItems.some(function(d){ return 'n-'+(d['id']||d['ID'])===k; })) n++; });
+  var pill=document.getElementById('kk-ans-pill');
+  if(pill){ pill.style.display=(n || currentFilter==='kkans') ? '' : 'none'; pill.innerHTML='📨 回答 <b>'+n+'</b>'; }
 }
 function _kkKeepUntil(d){
   var t=new Date(); t.setHours(0,0,0,0); var a=new Date(t); a.setDate(a.getDate()+30);
@@ -28329,6 +28368,7 @@ function reloadList() {
     loadKoujiList();
   } else if (mode !== 'customer') {
     allItems = [];
+    _kkAnsAt = 0;   // お客様確認の 回答も 聞き直す（v1.9.577）
     loadItems();
   } else {
     // 顧客リスト単体では再取得対象が無い。allItemsは消さない（消すと一覧が壊れるため）
@@ -29671,6 +29711,7 @@ function loadItems() {
     _fb.innerHTML =
       '<button class="fpill" data-f="all">すべて</button>' +
       '<button class="fpill on" data-f="micom">未完了</button>' +
+      '<button class="fpill" data-f="kkans" id="kk-ans-pill" title="お客様確認（Web）の 回答（まだ 取り込んで いない もの）だけ" style="display:none;border-color:#d35400;color:#d35400;font-weight:700">📨 回答 <b>0</b></button>' +
       '<button class="fpill" data-f="follow" title="フォロー" aria-label="フォロー">★</button>' +
       '<button class="fpill" data-f="nyukin">入金待ち</button>' +
       '<button class="fpill" data-f="cho" title="彫刻校正だけ">彫刻校正</button>' +
@@ -30000,6 +30041,8 @@ function renderList() {
     if (currentFilter === 'nyukin' && !isNyukinMachi) return false;
     /* 彫刻校正 だけを 出す（v1.9.571。本人「彫刻校正のみの表示にして」。追加は 不要）。完了も 出す（並びは いつもどおり） */
     if (currentFilter === 'cho' && (G(d,'分類') || '') !== '彫刻校正') return false;
+    /* お客様確認（Web）の 回答（まだ 取り込んで いない もの）だけ（v1.9.577）。完了も 出す */
+    if (currentFilter === 'kkans' && !_kkAnsOf(d)) return false;
     if (q) {
       var name = (G(d,'顧客名') || '');
       var title = (d['Title'] || '');
@@ -30124,6 +30167,7 @@ function renderList() {
   });
   _loadNokListThumbs();
   _gaichuRefreshListNew(); // 外注報告の新着バッジ
+  _kkRefreshAnswers();     // お客様確認（Web）の 回答の 印（v1.9.577）
 }
 
 // ===== フィルター =====

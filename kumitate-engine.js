@@ -220,8 +220,8 @@ var KM = (function(){
     var p = gather(data, st.sel);
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
-    var chg = []; fenceManual(data, st, p); jointFence(data, st, p, chg);
-    placeOnSet(data, st, p, ff);
+    var chg = []; fenceManual(data, st, p); var kdy = karotoRule(data, st, p, chg); jointFence(data, st, p, chg);
+    placeOnSet(data, st, p, ff, kdy);
     var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, p, ng, chg), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
@@ -301,11 +301,29 @@ var KM = (function(){
     });
   }
   // 外柵の セットに 石塔の 置き場所（place.tower：外柵の 原点から 石塔の 後ろ 中心・底の 高さ）が あり、石塔も セットの ときは そこへ 動かす
-  function placeOnSet(data, st, p, ff){
+  // ── カロートの 高さ（設計仕様 st.site.karotoH・既定 300）：外柵の セットの「カロート」の 石の 高さを そろえる。底は そのまま。
+  // 石塔（芝台）は カロートの 上に のる ので、変えた ぶん 上下する（戻り値）。手で 高さを 入れた カロートは そのまま
+  function karotoRule(data, st, p, notes){
+    var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return 0;
+    var H = +(st.site && st.site.karotoH) || 300, dy = null;
+    Object.keys(f.parts || {}).forEach(function(k){ var q = p[k]; if (!q || !/^カロート/.test(q.name || '')) return;
+      if (st.over && st.over[k] && st.over[k].h > 0) return;
+      if (Math.abs(q.h - H) <= 0.5) { if (dy == null) dy = 0; return; }
+      if (dy == null) dy = r1(H - q.h);
+      var top = (q.offY || 0) + q.h;
+      // カロートの 上に のる 外柵の 石（拝石台）も いっしょに 上下
+      Object.keys(f.parts || {}).forEach(function(o){ var r = p[o]; if (!r || o === k || /^カロート/.test(r.name || '')) return;
+        var y = r.offY || 0, xo = Math.min((r.offX || 0) + r.w, (q.offX || 0) + q.w) - Math.max(r.offX || 0, q.offX || 0);
+        if (xo > 1 && y >= top - 1 && y <= top + 20) p[o] = Object.assign({}, r, { offY:r1(y + H - q.h) }); });
+      p[k] = Object.assign({}, q, { h:H }); });
+    if (dy) notes.push('カロートの 高さを 設計仕様に 合わせた（' + r1(H - dy) + ' → ' + H + '）');
+    return dy || 0;
+  }
+  function placeOnSet(data, st, p, ff, kdy){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence], t = (data.partsData.TOWER_VARIANTS || {})[st.sel.tower];
     var pl = f && f.set && f.set.place && f.set.place.tower; if (!pl || !t || !t.set || !t.set.size) return;
     var g = ff || { W:f.set.size.W, D:f.set.size.D, dW:0, dD:0, dH:0 };
-    var dx = r1(pl.x + g.dW / 2 - g.W / 2), dz = r1((g.D / 2 - (pl.z + g.dD)) + t.set.size.D / 2), dy = (pl.y || 0) + g.dH;
+    var dx = r1(pl.x + g.dW / 2 - g.W / 2), dz = r1((g.D / 2 - (pl.z + g.dD)) + t.set.size.D / 2), dy = (pl.y || 0) + g.dH + (kdy || 0);
     Object.keys(t.parts || {}).forEach(function(k){ if (!p[k]) return;
       p[k] = Object.assign({}, p[k], { offX:r1((p[k].offX || 0) + dx), offY:r1((p[k].offY || 0) + dy), offZ:r1((p[k].offZ || 0) + dz) }); });
   }

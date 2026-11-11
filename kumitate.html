@@ -197,7 +197,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.5"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.21';
+var APP_VER = 'v0.8.22';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -210,7 +210,9 @@ var PART_DIR = '/業務アプリ/部材ライブラリ/部材';
 function libPut(p){ BL.mhIn(p); var o = LIB[p.id]; if (o && (o.version || 0) > (p.version || 0)) return false; if (o && o.thumb && !p.thumb && (o.version || 0) === (p.version || 0)) p.thumb = o.thumb; LIB[p.id] = p; return true; }
 function libSave(){ lsSet('kumitate.lib', LIB); }
 // 前の 形の セット（部材を 丸ごと）→ 枠と 参照 ＋ 部材ライブラリ（左右で 同じ 石は 反転で 1 つ）
-function toNewSet(S){ if (!S || BL.isNew(S)) { (S && S.parts_lib || []).forEach(libPut); if (S) delete S.parts_lib; return S; } var r = BL.split(S); r.parts.forEach(libPut); return r.set; }
+// セットの ファイルに 入った 部材（parts_lib）は、この 端末に 無い・古い ときだけ 入れる（同じ 版の 手元の 直しを 消さない。v0.8.22）
+function libFill(p){ var o = LIB[p.id]; if (o && (o.version || 0) >= (p.version || 0)) return false; return libPut(p); }
+function toNewSet(S){ if (!S || BL.isNew(S)) { (S && S.parts_lib || []).forEach(libFill); if (S) delete S.parts_lib; return S; } var r = BL.split(S); r.parts.forEach(libPut); return r.set; }
 (function(){ var ch = false; SETS = SETS.map(function(S){ if (BL.isNew(S)) return S; ch = true; return toNewSet(S); }); if (ch) { lsSet('kumitate.sets', SETS); libSave(); } })();
 function addsOf(id){ return ((typeof ST !== 'undefined' && ST && ST.add) || []).filter(function(a){ return a.setId === id; }); }
 // 旧シミュレーターの 石塔（和型8寸・9寸・洋型）と 外柵（デザイン1・2・階段付き）は 使わない（本人）。図面から 読んだ セットだけ 出す
@@ -230,6 +232,20 @@ window.addEventListener('storage', function(e){
   DATA = build(); if (typeof RES !== 'undefined' && RES) { renderLeft(); run(); }
 });
 function setsChanged(){ lsSet('kumitate.sets', SETS); libSave(); DATA = build(); }
+// 見つからない 部材（セットが 指して いるが 部材ライブラリに 無い）。その 枠は 箱で 出る（v0.8.22）
+function missingParts(sel){ var m = {}; (RSETS || []).forEach(function(R){ if (sel && !(typeof ST !== 'undefined' && ST && ST.sel && (ST.sel.tower === R.id || ST.sel.fence === R.id))) return; (R.missing || []).forEach(function(id){ (m[id] = m[id] || []).indexOf(R.name) < 0 && m[id].push(R.name); }); }); return m; }
+// SharePoint から 見つからない 部材を 取りに いく → まだ 無ければ 知らせる
+function fixMissing(say){
+  var ids = Object.keys(missingParts()), w = spHost();
+  var tell = function(){ var m = missingParts(!say), k = Object.keys(m); if (!k.length) return;
+    var msg = '⚠ 部材が 見つかりません（' + k.length + ' 個・箱で 出して います）：' + k.join('、');
+    busy(msg, 'ng', 12000);
+    if (say) alert(msg + '\n\nセットが 指して いる 部材が、この 端末にも SharePoint の 部材ライブラリにも ありません。\n部材の 入った セットの ファイル（セットの［⬇］で 書き出した もの）か 部材の ファイルを［📂 読む］から 読むと 形が 出ます。'); };
+  if (!ids.length) return Promise.resolve();
+  if (!w) { tell(); return Promise.resolve(); }
+  return Promise.all(ids.map(function(id){ return w.downloadJsonFromFolderPassFromTekkyo(PART_DIR, id + '.json').then(function(t){ try { var p = JSON.parse(t); if (p.schema === 'buzai/1' && p.status !== 'deleted') { p.__sp = p.version || 0; libPut(p); } } catch (e) {} }).catch(function(){}); }))
+    .then(function(){ setsChanged(); if (typeof RES !== 'undefined' && RES) { renderLeft(); run(true); } tell(); });
+}
 var TANKA = lsGet('kumitate.tanka');   // { stones:[], estimate:{} }（公開の 場所に 置かない ため ファイルから 読む）
 var ST = lsGet('kumitate.state');
 if (!ST || ST.schema !== 'kumitate/1') ST = KM.newState(DATA);
@@ -383,6 +399,7 @@ function spLoadSets(say){
   }).then(function(n){
     setsChanged(); renderLeft(); run(true);
     if (say) alert('SharePoint の セットを ' + n + ' 件 読みました');
+    fixMissing(false);
   }).catch(function(e){ if (say) alert('SharePoint の セットを 読めませんでした\n' + (e && e.message || e)); });
 }
 $('fSet').onchange = function(){
@@ -390,6 +407,8 @@ $('fSet').onchange = function(){
   readJson(f, function(j){
     var m = checkSet(j); if (m) { alert(m); return; }
     putSet(j); renderLeft(); run(true);
+    var miss = Object.keys(missingParts()).length;
+    if (miss) { fixMissing(true); return; }   // 部材が 足りない セットは SharePoint に 上げない（上げると 箱の まま 広がる）
     if (spHost() && confirm('「' + j.name + '」を SharePoint の 部材ライブラリ（セット）に 保存しますか？\n保存すると ほかの 人・ほかの 端末でも 使えます')) spSaveSet(j);
   });
 };
@@ -1365,7 +1384,7 @@ $('ver').textContent = '組み立て ' + APP_VER + '（部材は ' + (DATA0 === 
 if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM.newState(DATA).sel.tower || '';
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
-spLoadSets(false);
+spLoadSets(false); if (!spHost()) fixMissing(false);
 import('./kumitate-3d.js?v=0.8.16').then(function(m){
   V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null);
   draw();

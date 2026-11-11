@@ -79,7 +79,7 @@ button{font:inherit;cursor:pointer}input,select{font:inherit}
 <script src="buzai-lib.js?v=0.9.5"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
 <script>
-var APP_VER = 'v0.3.6';
+var APP_VER = 'v0.3.7';
 // 部材マスター：部材ライブラリ（buzai/1）の 一覧・名前や 役目の 直し・複製・新しく・保存（版と 履歴）。
 // 形と 図面は 図面アプリ（zumen.html#pd）で 直し、ここへ 戻す。加工図面の 見本は zumen.html#km（この 部材 だけ）。
 // 部材は この 端末（kumitate.lib・組み立てと 同じ）と SharePoint（/業務アプリ/部材ライブラリ/部材/<id>.json、履歴/<id>_v<n>.json）
@@ -324,9 +324,20 @@ $('dCmp').addEventListener('click', function(e){ var t = e.target;
   libSave(); setSaveLocal(S); $('dCmp').style.display = 'none'; render(); spSaveSetB(S); });
 function setSaveLocal(S){ var all = lsGet('kumitate.sets') || [], i = all.findIndex(function(x){ return x.id === S.id; }); if (i >= 0) all[i] = S; else all.push(S); SETS = all; lsSet('kumitate.sets', all); }
 var SET_DIR = '/業務アプリ/部材ライブラリ/セット';
+// セットが 指す 部材で まだ SharePoint に 無い（この 端末だけの）ものを 先に 上げる。上げないと 別の 端末で 部材が 見つからず 箱に なる（v0.3.7）
+function spPartsFirst(w, S){
+  var ids = {}; (S.slots || []).forEach(function(sl){ var p = sl.part && LIB[sl.part.id]; if (p && !p.__dirty && !(p.__sp && p.__sp === (p.version || 0))) ids[p.id] = 1; });
+  var ks = Object.keys(ids), n = 0;
+  return ks.reduce(function(pr, id){ return pr.then(function(){ var p = LIB[id], d = clone(p); Object.keys(d).forEach(function(k){ if (k.indexOf('__') === 0) delete d[k]; });
+    d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString(); busy('☁️ 部材を 保存中…（' + (++n) + ' / ' + ks.length + '）'); var txt;
+    return mhOut(d).then(function(d2){ txt = JSON.stringify(d2); return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', PART_DIR); }).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', PART_DIR + '/履歴'); })
+      .then(function(){ p.version = d.version; p.savedAt = d.savedAt; p.__sp = d.version; }); }); }, Promise.resolve())
+    .then(function(){ (S.slots || []).forEach(function(sl){ if (sl.part && LIB[sl.part.id]) sl.part.version = LIB[sl.part.id].version || 0; }); if (ks.length) libSave(); return ks.length; });
+}
 function spSaveSetB(S){ var w = spHost(); if (!w) { busy('✓ 入れ替えました（この 端末だけ。SharePoint は 業務アプリから 開いた とき）', 'ok', 5000); return; }
-  var d = clone(S); d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString(); var txt = JSON.stringify(d); busy('☁️ セットを 保存中…');
-  w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', SET_DIR).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', SET_DIR + '/履歴'); })
+  var d, txt;
+  spPartsFirst(w, S).then(function(){ d = clone(S); d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString(); txt = JSON.stringify(d); busy('☁️ セットを 保存中…');
+  return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', SET_DIR); }).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', SET_DIR + '/履歴'); })
     .then(function(){ S.version = d.version; S.savedAt = d.savedAt; setSaveLocal(S); render(); busy('✓ 入れ替えて 保存しました：' + S.name + '（版 ' + d.version + '）', 'ok', 5000); })
     .catch(function(e){ busy(''); alert('SharePoint に 保存 できませんでした\n' + (e && e.message || e)); }); }
 // 削除：セットに 入って いれば ことわる（この 端末の セット＋SharePoint の セット）

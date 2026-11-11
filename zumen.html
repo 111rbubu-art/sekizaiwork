@@ -349,6 +349,8 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
         <div class="muted" style="margin-top:6px"><b>この 図面 1 枚が 加工図面</b>。図枠（表題欄つき）の 中が 印刷・PDF・DXF に 出ます。載せない 展開図は 図枠の 外へ（図枠は 選んで 動かせます）。立体の 絵（寸法つき）は 反映の たびに 3D から 描き直し</div>
         <div style="margin-top:6px"><b style="font-size:12px">上の 欄の 書き込み</b>
           <div class="row" style="margin-top:3px">仕上げ <input type="text" id="pdFin" style="flex:1" placeholder="例：底面以外 磨き"></div>
+          <div class="row" style="margin-top:3px;flex-wrap:wrap;gap:2px 8px" id="pdMg"></div>
+          <label class="muted" style="display:block;margin-top:3px"><input type="checkbox" id="pdIsoOnly"> 図枠には 立体の 絵 だけ（正面図・側面図は 枠の 外＝印刷しない）</label>
           <textarea id="pdKakou" rows="3" style="width:100%;box-sizing:border-box;margin-top:3px;font-size:12px" placeholder="加工の 書き込み（例：天場真・底面真 耐震穴 φ30 深 90、下段 ハショリ 9×3 mm）"></textarea>
           <div class="muted">打つと すぐ 図枠の 上の 欄に 出ます（部材マスターに 戻す と 部材に 残る）</div></div>
         <div class="row" style="margin-top:4px">用紙 <select id="pdPaper"><option value="A4">A4 横</option><option value="A4h">A4 横の 半分</option></select></div><div class="row" style="margin-top:4px">縮尺 <select id="pdScale"></select></div>
@@ -377,7 +379,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.4"></script>
 <script src="zumen-km.js?v=0.9.25"></script>
 <script>
-var APP_VER = "v0.9.28";
+var APP_VER = "v0.9.29";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -4088,6 +4090,7 @@ function pdDrawMode(on){
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); });
     else if (!(D.info && D.info.inn) || !(D.info && D.info.stp) || !D.ents.some(function(e){ return e.sec; })) (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ if (!(D.info && D.info.inn)) skInner(); if (!(D.info && D.info.stp)) { skStepDims(); var sf1 = skSheet(); if (sf1 && sf1.sheet) skFrame(true, sf1.sheet.paper, sf1.sheet.n); } if (!D.ents.some(function(e){ return e.sec; })) secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(){});
     else secPanel();
+    if (PD.def.drawing && (PD.def.drawing.migaki || []).length && !D.ents.some(function(e){ return e.mg; })) { if (D.info && D.info.isoMap) { skMigaki(); redraw(); } else skPrep(false); }
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
   } else if (!on && PD.saveMain) {
     pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; pdKeep();
@@ -4118,6 +4121,7 @@ function skIso(){
     var rest = D.ents.filter(function(e){ return !e.frame; }), rb = rest.length ? skBox(rest) : { x0:0, y0:0, x1:0, y1:0 };
     var ox = ob ? ob.x0 : rb.x1 + Math.max(PD.m.W, 100) * 0.4, oy = ob ? ob.y0 : rb.y0;
     var M = function(q){ return P(ox + q[0] - r.u0, oy + q[1] - r.v0); };
+    D.info = D.info || {}; D.info.isoMap = { ox:ox, oy:oy, u0:r.u0, v0:r.v0 };
     r.vis.forEach(function(sg){ D.ents.push({ id:SEQ++, t:'line', a:M(sg.a), b:M(sg.b), layer:SK_ISO, css:null, aci:256, iso:1 }); });
     var W = PD.m.W, Dd = PD.m.D, H = PD.m.H, ip = function(q){ var z = KPJ.iso(q); return M(z); };
     var off = Math.max(W, Dd, H) * 0.12, u = function(a, b){ var L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return P((b.x - a.x) / L, (b.y - a.y) / L); };
@@ -4173,9 +4177,9 @@ function skFrame(force, paper, n){
   if (D.layers[SK_FR_OLD] && !D.ents.some(function(e){ return e.layer === SK_FR_OLD; })) delete D.layers[SK_FR_OLD];
   if (f && f.sheet && !force) return;
   var fb = f ? skBox([f]) : null, inF = function(q){ return !fb || skInBox(fb, q); };
-  var pick = function(all){ return D.ents.filter(function(e){ return !e.frame && !e.sec && visible(e) && (all || entPts(e).every(inF)); }); };
+  var io = skIsoOnly(), pick = function(all){ return D.ents.filter(function(e){ return !e.frame && !e.sec && visible(e) && (!io || e.iso || e.mg || e.note) && (all || entPts(e).every(inF)); }); };
   var cont = pick(false); if (!cont.length) { cont = pick(true); fb = null; }
-  var b = skBox(cont); D.dims.forEach(function(d){ if (d.sec || (fb && ![d.a, d.b].every(inF))) return; [d.a, d.b, d.off].forEach(function(q){ if (q) { b.x0 = Math.min(b.x0, q.x); b.x1 = Math.max(b.x1, q.x); b.y0 = Math.min(b.y0, q.y); b.y1 = Math.max(b.y1, q.y); } }); });
+  var b = skBox(cont); D.dims.forEach(function(d){ if (d.sec || (io && !d.iso) || (fb && ![d.a, d.b].every(inF))) return; [d.a, d.b, d.off].forEach(function(q){ if (q) { b.x0 = Math.min(b.x0, q.x); b.x1 = Math.max(b.x1, q.x); b.y0 = Math.min(b.y0, q.y); b.y1 = Math.max(b.y1, q.y); } }); });
   if (!isFinite(b.x0)) return;
   paper = paper || (f && f.sheet && f.sheet.paper) || 'A4'; if (!SHEETS[paper]) paper = 'A4';
   var ar = sheetDeco(paper, {}).area, aw = ar.x1 - ar.x0, ah = ar.y1 - ar.y0, bw = (b.x1 - b.x0) * 1.08, bh = (b.y1 - b.y0) * 1.08;
@@ -4184,6 +4188,46 @@ function skFrame(force, paper, n){
   D.ents = D.ents.filter(function(e){ return !e.frame; });
   var ne = { id:SEQ++, t:'pl', v:[{ x:fx0, y:fy1 - ph, b:0 }, { x:fx0 + pw, y:fy1 - ph, b:0 }, { x:fx0 + pw, y:fy1, b:0 }, { x:fx0, y:fy1, b:0 }], closed:true, layer:SK_FR, css:null, aci:256, frame:1, sheet:{ paper:paper, n:n } };
   ne.sheet.inf = PD && PD.def ? skSheetInfo(n) : {}; D.ents.push(ne); skSheetLabels(n); skSheetUi();
+  if (io) skViewsOut(ne);
+}
+// 図枠には 立体の 絵 だけ（部材ごと drawing.isoOnly、v0.9.29）：正面図・側面図などは 部材の 形の もと なので 消さず、図枠の 左の 外へ
+function skIsoOnly(){ return !!(PD && PD.def && PD.def.drawing && PD.def.drawing.isoOnly); }
+function skViewsOut(fr){ var fb = skBox([fr]), mv = D.ents.filter(function(e){ return !e.frame && !e.iso && !e.mg && !e.sec && !e.note; }), md = D.dims.filter(function(d){ return !d.iso && !d.sec; });
+  if (!mv.length) return; var vb = skBox(mv), gap = (fb.x1 - fb.x0) * 0.06; if (vb.x1 < fb.x0 - gap * 0.5 || vb.x0 > fb.x1 || vb.y0 > fb.y1 || vb.y1 < fb.y0) return;
+  var dx = fb.x0 - gap - vb.x1; moveEnts(mv, dx, 0); md.forEach(function(d){ [d.a, d.b, d.off].forEach(function(q){ if (q) q.x += dx; }); });
+  var lb = D.ents.filter(function(e){ return e.sec && e.secAt; })[0]; if (lb) { D.ents = D.ents.filter(function(e){ return !e.sec; }); D.dims = D.dims.filter(function(d){ return !d.sec; }); } }
+// 磨きの 印 ▲（部材ごと drawing.migaki＝['top','front','left','right','back','bottom']、v0.9.29）
+// 立体の 絵で 見える 面（上・正面・左）は 面の まん中に ▲、見えない 面（右・背面・下）は 矢印で その 面を さして 先に ▲
+var MG_FACES = [['top', '上'], ['front', '正面'], ['left', '左'], ['right', '右'], ['back', '背面'], ['bottom', '下']];
+function skMigaki(){
+  D.ents = D.ents.filter(function(e){ return !e.mg; });
+  var dr = PD && PD.def && PD.def.drawing, fs = (dr && dr.migaki) || [], mp = D.info && D.info.isoMap; if (!fs.length || !mp || !PD.m) return;
+  var sf = skSheet(), n = sf && sf.sheet ? sf.sheet.n : (PD.nEst || 10), W = PD.m.W, Dd = PD.m.D, H = PD.m.H;
+  var ip = function(q){ var z = KPJ.iso(q); return P(mp.ox + z[0] - mp.u0, mp.oy + z[1] - mp.v0); };
+  var LM = layerOf('磨き'); LM.aci = 7; LM.css = '#000'; LM.gap = false;
+  var push = function(e){ e.id = SEQ++; e.mg = 1; e.iso = 1; e.css = null; e.aci = 256; e.layer = '磨き'; D.ents.push(e); };
+  var tri = function(c){ push({ t:'text', p:P(c.x, c.y - 1.6 * n), h:3.2 * n, rot:0, s:'▲', ha:1, va:0, wf:1 }); };
+  var x0 = -W / 2, x1 = W / 2, z0 = -Dd / 2, z1 = Dd / 2;
+  // 面の まん中（見える 面）・見えない 面は さす 辺（見える 面との 境）と 向き
+  var F = { top:{ c:[0, H, 0] }, front:{ c:[0, H / 2, z1] }, left:{ c:[x0, H / 2, 0] },
+    right:{ e:[[x1, H, z0], [x1, H, z1]], at:0.25, n:[1, 0, 0] }, back:{ e:[[x0, H, z0], [x1, H, z0]], at:0.8, n:[0, 0, -1] }, bottom:{ e:[[x0, 0, z1], [x1, 0, z1]], at:0.3, n:[0, -1, 0] } };
+  fs.forEach(function(k){ var f = F[k]; if (!f) return;
+    if (f.c) { tri(ip(f.c)); return; }
+    var a = f.e[0], b = f.e[1], m = [a[0] + (b[0] - a[0]) * f.at, a[1] + (b[1] - a[1]) * f.at, a[2] + (b[2] - a[2]) * f.at], tip = ip(m), q = ip([m[0] + f.n[0] * 100, m[1] + f.n[1] * 100, m[2] + f.n[2] * 100]);
+    var ux = q.x - tip.x, uy = q.y - tip.y, L = Math.hypot(ux, uy) || 1; ux /= L; uy /= L; if (k === 'back') { ux = 0.5; uy = 0.87; }   // 背面は 右上へ
+    var len = 9 * n, st = P(tip.x + ux * len, tip.y + uy * len), ah = 2.2 * n, an = Math.atan2(uy, ux);
+    push({ t:'line', a:st, b:tip });
+    [0.35, -0.35].forEach(function(da){ push({ t:'line', a:tip, b:P(tip.x + Math.cos(an + da) * ah, tip.y + Math.sin(an + da) * ah) }); });
+    tri(P(st.x + ux * 3 * n, st.y + uy * 3 * n)); });
+}
+function pdMgUi(){ var box = document.getElementById('pdMg'), io = document.getElementById('pdIsoOnly'); if (!box || !PD || !PD.def) return;
+  var dr = PD.def.drawing = PD.def.drawing || {}, on = dr.migaki || [];
+  box.innerHTML = '<span>磨き ▲</span>' + MG_FACES.map(function(f){ return '<label><input type="checkbox" data-mg="' + f[0] + '"' + (on.indexOf(f[0]) >= 0 ? ' checked' : '') + '> ' + f[1] + '</label>'; }).join('');
+  box.onchange = function(ev){ var k = ev.target.dataset.mg; if (!k) return; var l = (dr.migaki = dr.migaki || []), i = l.indexOf(k);
+    if (ev.target.checked && i < 0) l.push(k); if (!ev.target.checked && i >= 0) l.splice(i, 1); l.sort(function(a, b){ return MG_FACES.findIndex(function(x){ return x[0] === a; }) - MG_FACES.findIndex(function(x){ return x[0] === b; }); });
+    if (!l.length) delete dr.migaki; pdKeep(); if (PD.saveMain) { pushUndo(); if (!(D.info && D.info.isoMap)) { skPrep(false); return; } skMigaki(); renderLayers(); changed(); redraw(); } };
+  if (io) { io.checked = !!dr.isoOnly; io.onchange = function(){ if (io.checked) dr.isoOnly = 1; else delete dr.isoOnly; pdKeep();
+    if (PD.saveMain) { pushUndo(); var sf = skSheet(); skFrame(true, sf && sf.sheet ? sf.sheet.paper : 'A4', 0); skMigaki(); if (!io.checked) secDraw(); renderLayers(); changed(); fit(); } }; }
 }
 // 面の 名前（正面図 など）と 部材名の 行は 紙で 3.5mm・3mm に（前の 図は 名前で 見分ける）
 function skSheetLabels(n){ var nm = {}; PD_FACES.forEach(function(f){ nm[f[1]] = 1; }); var pn = PD && PD.def && PD.def.name;
@@ -4195,7 +4239,7 @@ function skSheetUi(){ var f = skSheet(), a = document.getElementById('pdPaper'),
   var fi = document.getElementById('pdFin'), ka = document.getElementById('pdKakou'), p = (PD && PD.def) || {};
   if (fi && document.activeElement !== fi) fi.value = p.finish || ''; if (ka && document.activeElement !== ka) ka.value = p.kakou || '';
   if (!b.options.length) b.innerHTML = '<option value="0">自動（図が 入る 大きさ）</option>' + SHEET_N.map(function(n){ return '<option value="' + n + '">1/' + n + '</option>'; }).join('');
-  if (f && f.sheet) { a.value = f.sheet.paper; b.value = String(f.sheet.n); } }
+  if (f && f.sheet) { a.value = f.sheet.paper; b.value = String(f.sheet.n); } pdMgUi(); }
 // 紙に：A4 横 1 枚（半分の ときは 左に）。枠の 外は 切る
 function skSheetCanvas(){
   var f = skSheet(); if (!f || !f.sheet) return null; f.sheet.inf = skSheetInfo(f.sheet.n);
@@ -4401,7 +4445,7 @@ function skStepDims(){
   });
   if (D.info) D.info.stp = 1;
 }
-function skPrep(force){ return skIso().then(function(){ skInner(); if (!(D.info && D.info.stp)) skStepDims(); skFrame(force); secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(e){ setMsg('立体の 絵を 作れませんでした：' + (e && e.message || e)); }); }
+function skPrep(force){ return skIso().then(function(){ skInner(); if (!(D.info && D.info.stp)) skStepDims(); skMigaki(); skFrame(force); skMigaki(); secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(e){ setMsg('立体の 絵を 作れませんでした：' + (e && e.message || e)); }); }
 // ── 断面 A–A：モデルを 直す 図（既定は 図枠の 外＝印刷しない）。3D の 形を 正面の x で 切った 切り口＋斜線 ──
 // 切る 位置＝PD.def.drawing.secX（正面の 中心から mm。無ければ 自動）。正面からの 穴・逃げの 奥行は 右の 欄で 直す
 var SEC_L = '断面', SEC_H = '断面_斜線', SEC_C = '切断線';
@@ -4433,6 +4477,8 @@ function secDraw(){
   if (!PD || !PD.saveMain || !PD.m || !PD.mod) return; var vv = secViews(); if (!vv) return;
   var old = D.ents.filter(function(e){ return e.sec && e.secAt; })[0], at = old ? old.secAt : null;
   D.ents = D.ents.filter(function(e){ return !e.sec; }); D.dims = D.dims.filter(function(d){ return !d.sec; });
+  if (skIsoOnly()) return;   // 立体の 絵 だけの 図には 断面も 切断線も 出さない
+  if (!secFeats(vv).length && typeof (PD.def.drawing || {}).secX !== 'number') return;   // 穴・逃げの 無い 部材（ただの 箱 など）は 断面 不要（v0.9.29）
   var g = PD.mod.partGeo(PD.m), t = g.tris; if (!t.length) return;
   var zmax = -Infinity, ymin = Infinity, i; for (i = 0; i < t.length; i += 3) { zmax = Math.max(zmax, t[i + 2]); ymin = Math.min(ymin, t[i + 1]); }
   var cx = secX(), X = cx + 0.0137, segs = [];

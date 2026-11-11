@@ -806,7 +806,7 @@ var KM = (function(){
   function newState(data){
     var first = function(kind, pref){ var v = variants(data, kind); return v[pref] ? pref : Object.keys(v)[0]; };
     return { schema:'kumitate/1', name:'', sel:{ tower:first('tower', 'wa_8sun'), fence:first('fence', 'design1'), boshi:first('boshi', 'none'), toba:first('toba', 'none'), crypt:'' },
-      site:{ W:1500, D:1800, domeH:300, domeT:150, adj:0 }, over:{}, shapes:{}, stone:{ tower:'', fence:'', boshi:'' } };
+      site:{ W:1500, D:1800, domeH:330, domeT:150, adj:0 }, over:{}, shapes:{}, stone:{ tower:'', fence:'', boshi:'' } };
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, fixJoints:fixJoints, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,

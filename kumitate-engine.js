@@ -217,7 +217,8 @@ var KM = (function(){
   // st = { sel:{tower,fence,boshi,toba,crypt}, site:{W,D,domeH,domeT,adj}, over:{部材の鍵:{w,h,d}} }
   function compute(data, st){
     var errs = [], site = st.site, notes = [], ng = [];
-    var p = gather(data, st.sel);
+    var p = gather(data, st.sel), p0 = {};
+    Object.keys(p).forEach(function(k){ p0[k] = { w:p[k].w, d:p[k].d, h:p[k].h }; });   // きまりで 大きさが 変わったかを 見る ため（v0.8.25）
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
     var chg = []; fenceManual(data, st, p); var kdy = karotoRule(data, st, p, chg); jointFence(data, st, p, chg);
@@ -231,8 +232,12 @@ var KM = (function(){
     // 前に 和型 8 寸の 香炉へ 入れた 形が、同じ 鍵（koro）の セットの 香炉に 入り込まない ように
     Object.keys(st.shapes || {}).forEach(function(k){ var sh = st.shapes[k], sz = shapeSize(sh); if (!p[k] || !sz) return;
       if ((p[k].setId || '') !== (sh.__set || '')) return;
-      p[k] = Object.assign({}, p[k], sz, { shape:sh }); });
-    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].shape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+      // きまり（外柵の 範囲・目地・拝石の 奥行・大きさを 変更）で 箱の 大きさが 変わった 石は、その 大きさで 形を 作る（形の 大きさに 戻すと 石が ずれて 見えた。v0.8.25）
+      var q0 = p0[k], q = p[k], ch = q0 && ['w', 'd', 'h'].some(function(f){ return Math.abs(q0[f] - q[f]) > 0.5; });
+      if (ch && sh.params) { var nd = clone(sh); [['W', 'w'], ['D', 'd'], ['H', 'h']].forEach(function(a){ if (nd.params[a[0]]) nd.params[a[0]].value = q[a[1]]; });
+        p[k] = Object.assign({}, q, { shape:nd, jobShape:sh }); }
+      else p[k] = Object.assign({}, q, sz, { shape:sh, jobShape:sh }); });
+    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].jobShape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
     Object.keys(base).forEach(function(k){ var b = base[k], q = p[k]; if (!q || (q.w === b.w && q.d === b.d)) return;
       p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
     syncShapes(p, st);

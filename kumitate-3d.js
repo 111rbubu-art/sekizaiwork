@@ -205,7 +205,7 @@ export function create(box, onPick, onDbl, onCtx){
     SZ = opts || null; dirty = true; if (!SZ) { renderer.domElement.style.cursor = ''; return; }
     var dist = cam.position.distanceTo(controls.target), L = Math.max(90, dist * 0.05), R = L * 0.12;
     SZ.faces.forEach(function(f){
-      var col = f.ok === false ? 0x9aa0a8 : f.id === (szDrag && szDrag.id) ? 0xe07a1f : 0x1f9d55, mat = new THREE.MeshBasicMaterial({ color:col, depthTest:false, transparent:true, opacity:0.95 });
+      var col = f.ok === false ? 0x9aa0a8 : f.id === (szDrag && szDrag.id) ? 0xe07a1f : f.touch ? 0x8fd1a8 : 0x1f9d55, mat = new THREE.MeshBasicMaterial({ color:col, depthTest:false, transparent:true, opacity:0.95 });
       var a = new THREE.Group(), sh = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.35, R * 0.35, L * 0.7, 12), mat), hd = new THREE.Mesh(new THREE.ConeGeometry(R, L * 0.35, 16), mat.clone());
       var dot = new THREE.Mesh(new THREE.SphereGeometry(R * 0.55, 12, 8), mat.clone());
       sh.position.y = L * 0.35; hd.position.y = L * 0.7 + L * 0.175; a.add(sh); a.add(hd); a.add(dot);

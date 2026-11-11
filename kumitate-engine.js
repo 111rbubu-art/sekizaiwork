@@ -498,8 +498,8 @@ var KM = (function(){
     if (naka) {
       var H = p[hk], N = p[naka], g = r1((N.offZ || 0) + J.kakari - ((H.offZ || 0) + H.d));
       var op0 = r1((N.offZ || 0) - front), nmax = r1(op0 - J.open);   // 中仕切を 伸ばせる 長さ（開口部を 守る）
-      var hm = st.hman || {}, fix = st.haiseki || '', ha = 0, na = 0;
-      if (hm.h > 0 || hm.n > 0) { if (hm.h > 0) ha = r1(+hm.h - H.d); if (hm.n > 0) na = r1(+hm.n - N.d); fix = 'man'; }
+      var hm = st.hman || {}, fix = st.haiseki || '', ha = 0, na = 0, nz = r1(+hm.nz || 0);   // nz＝中仕切を 後ろへ 動かす mm（－＝前へ。階段と 重なる ときの［自動処理］。v0.8.27）
+      if (hm.h > 0 || hm.n > 0 || nz) { if (hm.h > 0) ha = r1(+hm.h - H.d); if (hm.n > 0) na = r1(+hm.n - N.d); fix = 'man'; }
       else if (Math.abs(g) > 1 && (fix === 'haiseki' || fix === 'naka' || fix === 'both')) {
         if (fix === 'naka') na = g;
         else if (fix === 'both') { var lo = Math.min(0, g), hi = Math.max(0, g), def = Math.max(lo, Math.min(hi, g > 0 ? Math.min(r1(g / 2), nmax) : r1(g / 2)));
@@ -511,16 +511,17 @@ var KM = (function(){
         on.forEach(function(k){ p[k] = Object.assign({}, p[k], { offZ:r1((p[k].offZ || 0) + ha / 2) }); });  // 香炉は 拝石の 真ん中の まま
         notes.push('拝石の 奥行 ' + H.d + ' → ' + r1(H.d + ha) + (fix === 'man' ? '（手で 決めた）' : '（中仕切に ' + J.kakari + ' かかる）'));
       }
-      if (na && N.d + na > 0) {
-        var N2 = p[naka] = Object.assign({}, N, { d:r1(N.d + na), offZ:r1((N.offZ || 0) - na) });
-        notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + na) + (fix === 'man' ? '（手で 決めた）' : '（拝石が ' + J.kakari + ' かかる）'));
+      if ((na || nz) && N.d + na > 0) {
+        var N2 = p[naka] = Object.assign({}, N, { d:r1(N.d + na), offZ:r1((N.offZ || 0) - na - nz) });
+        if (na) notes.push('中仕切の 奥行 ' + N.d + ' → ' + r1(N.d + na) + (fix === 'man' ? '（手で 決めた）' : '（拝石が ' + J.kakari + ' かかる）'));
+        if (nz) notes.push('中仕切を ' + (nz > 0 ? '後ろへ ' + nz : '前へ ' + (-nz)) + ' mm 動かした');
         // 中仕切の 後ろの 石（カロート・拝石台）は 中仕切の 後ろの 面 − 横の 目地（6）まで 縮める／縮めた ときは 伸ばす（目地は 自動）
         var lim = r1(N2.offZ - J.h), old = r1((N.offZ || 0) - J.h);
         fk.forEach(function(o){
           if (o === naka) return;
           var r = p[o], z0 = r.offZ || 0, fz = z0 + r.d, yo = Math.min((r.offY || 0) + r.h, (N2.offY || 0) + N2.h) - Math.max(r.offY || 0, N2.offY || 0);
           if (xo(r, N2) <= 1 || yo <= 1 || z0 >= Math.max(N.offZ || 0, N2.offZ)) return;
-          var grow = na < 0 && Math.abs(fz - old) < 1;   // 中仕切に 目地で ついて いた 石
+          var grow = N2.offZ > (N.offZ || 0) + 0.5 && Math.abs(fz - old) < 1;   // 中仕切に 目地で ついて いた 石（後ろの 面が 前へ 来た）
           if (!grow && fz <= lim + 0.5) return;
           var nd = r1(lim - z0);
           if (nd <= 0) { ng.push(r.name + 'が 中仕切に うまる（中仕切を 伸ばせない）'); return; }

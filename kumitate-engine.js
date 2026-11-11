@@ -198,7 +198,9 @@ var KM = (function(){
   }
 
   // ── 干渉（箱の 重なり。つないだ 2 つは 見ない）──
-  function interferences(parts, boxes, th){
+  // p0＝セットの 図面の 大きさ（compute の はじめ）。同じ セットの 中は 図面で 重なって いた 組（切り欠きに 差し込む 所）だけ 見ない。
+  //   大きさを 変えて 新しく 重なった 組は 干渉（v0.8.28 本人「大きさを 変更し、石が 干渉しても アラートが 出ない」）。外柵の セットは jointCheck が 見る
+  function interferences(parts, boxes, th, p0){
     th = th == null ? 1 : th;
     var pairs = {}, list = [];
     Object.keys(parts).forEach(function(k){ var j = parts[k].joint; if (j && j.dstKey) pairs[[k, j.dstKey].sort().join('|')] = 1; });
@@ -206,7 +208,13 @@ var KM = (function(){
     for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var a = boxes[ks[i]], b = boxes[ks[j]];
       if (pairs[[ks[i], ks[j]].sort().join('|')]) continue;
-      if (parts[ks[i]].setId && parts[ks[i]].setId === parts[ks[j]].setId) continue; // 同じ セットの 中は 図面どおり（切り欠きに 差し込む 所が ある）
+      var A = parts[ks[i]], Bp = parts[ks[j]];
+      if (A.setId && A.setId === Bp.setId) {   // 同じ セットの 中
+        if (A.grp === 'fence' || !p0 || !A.setAt || !Bp.setAt || !p0[ks[i]] || !p0[ks[j]]) continue;
+        var a0 = p0[ks[i]], b0 = p0[ks[j]], sa = A.setAt, sb = Bp.setAt;
+        var o0 = Math.min(sa.x + a0.w, sb.x + b0.w) - Math.max(sa.x, sb.x) > th && Math.min(sa.y + a0.h, sb.y + b0.h) - Math.max(sa.y, sb.y) > th && Math.min(sa.z + a0.d, sb.z + b0.d) - Math.max(sa.z, sb.z) > th;
+        if (o0) continue;   // 図面で 重なって いた（差し込み）
+      }
       var ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0), oz = Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0);
       if (ox > th && oy > th && oz > th) list.push({ a:ks[i], b:ks[j], nameA:parts[ks[i]].name, nameB:parts[ks[j]].name, ox:Math.round(ox), oy:Math.round(oy), oz:Math.round(oz) });
     }
@@ -223,6 +231,7 @@ var KM = (function(){
     var ff = fitFence(data, st, p, ng);
     var chg = []; fenceManual(data, st, p); var kdy = karotoRule(data, st, p, chg); jointFence(data, st, p, chg);
     placeOnSet(data, st, p, ff, kdy);
+    var early = preTower(st, p);
     var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, p, ng, chg), dy = gl && gl.bury > 0 ? gl.bury : 0;
     p = applyDim(data.knowhow || [], p, site, data, st.sel, errs);
     // 形の ある 部材（buzai/1）を 入れた 石は、部材の 幅・奥行・高さ（params W・D・H）が 箱の 大きさ
@@ -240,6 +249,9 @@ var KM = (function(){
     Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].jobShape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
     Object.keys(base).forEach(function(k){ var b = base[k], q = p[k]; if (!q || (q.w === b.w && q.d === b.d)) return;
       p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
+    // 大きさを 変更で 引いた 面の ぶん 位置を ずらす（st.osh = { 鍵:{ x, z } }。右だけ・前だけ 伸ばす ため。v0.8.28）
+    Object.keys(st.osh || {}).forEach(function(k){ var o = st.osh[k], q = p[k]; if (!q || !o || early[k]) return;
+      p[k] = Object.assign({}, q, { offX:r1((q.offX || 0) + (+o.x || 0)), offZ:r1((q.offZ || 0) + (+o.z || 0)) }); });
     syncShapes(p, st);
     p = applyPos(data.knowhow || [], p, data.anchors || {}, site, data, st.sel, errs);
     var boxes = {};
@@ -248,9 +260,22 @@ var KM = (function(){
       var o = pos(k, p); boxes[k] = { x0:o.ox, y0:r1(o.oy - dy), z0:o.oz, x1:o.ox + q.w, y1:r1(o.oy + q.h - dy), z1:o.oz + q.d };   // 外柵が 埋まる ぶん 下げる（GL＝0）
     });
     var jerr = jointCheck(data, st, p, ng);
-    return { parts:p, boxes:boxes, hits:interferences(p, boxes), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg, gl:gl, jerr:jerr };
+    return { parts:p, boxes:boxes, hits:interferences(p, boxes, 1, p0), errs:errs, notes:notes, ng:ng, fit:ff, gaps:gaps, chg:chg, gl:gl, jerr:jerr };
   }
 
+  // ── 石塔の セットの 石の 手で 変えた 大きさ・位置（st.over・この お墓の 形・st.osh）を 拝石の きまりより 先に 入れる ──
+  // 芝台の 前を 伸ばすと 拝石・拝石台が ついてくる ように（v0.8.28 本人「芝台の 奥行を 変更して 調整する ことも ある」）。幅は 中心・奥行は 前の 面を そろえ、osh で 引いた 面の ぶん ずらす
+  function preTower(st, p){
+    var done = {};
+    Object.keys(p).forEach(function(k){ var q = p[k]; if (!q.setId || q.grp === 'fence') return;
+      var n = Object.assign({}, q), sh = st.shapes && st.shapes[k], sz = sh && (q.setId || '') === (sh.__set || '') ? shapeSize(sh) : null, o = (st.over || {})[k], m = (st.osh || {})[k];
+      if (sz) { n.w = sz.w; n.d = sz.d; n.h = sz.h; }
+      else if (o) ['w', 'd', 'h'].forEach(function(f){ if (o[f] > 0) n[f] = o[f]; });
+      if (!sz && !o && !m) return;
+      n.offX = r1((q.offX || 0) + (q.w - n.w) / 2 + (m ? +m.x || 0 : 0)); n.offZ = r1((q.offZ || 0) + (q.d - n.d) + (m ? +m.z || 0 : 0));
+      p[k] = n; if (m) done[k] = 1; });
+    return done;
+  }
   // ── セット（図面から 読んだ 石塔・外柵。buzai-set/1）──
   // セット＝部材の 一覧（大きさ・置き場所・形）＋ 伸び縮み。組み立てでは 石塔（外柵）の 1 つの 種類 として 並ぶ
   // 置き場所：セットの 原点（左・前・下）→ 組み立ての 座標（幅の 中心・奥行の 中心が 0、+z が 前）

@@ -182,11 +182,11 @@ export function create(box, onPick, onDbl, onCtx){
   controls.addEventListener('change', function(){ dirty = true; });
   (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { dirty = false; renderer.render(scene, cam); } })();
   // 3D の 中の 文字（赤い 札）。画面の 大きさで 一定
-  function textSprite(txt){
+  function textSprite(txt, bg, fg){
     var c = document.createElement('canvas'), x = c.getContext('2d'), fs = 30; x.font = 'bold ' + fs + 'px sans-serif';
     var tw = Math.ceil(x.measureText(txt).width) + 28; c.width = tw; c.height = fs + 22; x = c.getContext('2d'); x.font = 'bold ' + fs + 'px sans-serif';
-    x.fillStyle = '#b42020'; x.beginPath(); if (x.roundRect) x.roundRect(0, 0, c.width, c.height, 10); else x.rect(0, 0, c.width, c.height); x.fill();
-    x.fillStyle = '#fff'; x.textBaseline = 'middle'; x.fillText(txt, 14, c.height / 2 + 1);
+    x.fillStyle = bg || '#b42020'; x.beginPath(); if (x.roundRect) x.roundRect(0, 0, c.width, c.height, 10); else x.rect(0, 0, c.width, c.height); x.fill();
+    x.fillStyle = fg || '#fff'; x.textBaseline = 'middle'; x.fillText(txt, 14, c.height / 2 + 1);
     var t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; var m = new THREE.SpriteMaterial({ map:t, depthTest:false, sizeAttenuation:false }), s = new THREE.Sprite(m);
     s.scale.set(c.width / 3600, c.height / 3600, 1); s.center.set(0.5, 0); s.renderOrder = 1000; return s;
   }
@@ -211,6 +211,15 @@ export function create(box, onPick, onDbl, onCtx){
       sh.position.y = L * 0.35; hd.position.y = L * 0.7 + L * 0.175; a.add(sh); a.add(hd); a.add(dot);
       a.position.set(f.p.x, f.p.y, f.p.z); a.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(f.n[0], f.n[1], f.n[2]).normalize());
       a.traverse(function(c){ c.renderOrder = 998; c.userData.face = f.id; c.userData.ok = f.ok !== false; }); szG.add(a);
+    });
+    // 部材の 寸法（幅・奥行・高さ）：寸法線と 札。変えて いる 寸法は 橙（v0.8.24 本人「寸法を 変更する とき 部材の 寸法を 表示させて」）
+    (SZ.dims || []).forEach(function(d){
+      var col = d.hot ? 0xe07a1f : 0x1f3a5f, lm = new THREE.LineBasicMaterial({ color:col, depthTest:false }), A = new THREE.Vector3(d.a.x, d.a.y, d.a.z), B = new THREE.Vector3(d.b.x, d.b.y, d.b.z);
+      var pts = [A, B], t = d.t ? new THREE.Vector3(d.t[0], d.t[1], d.t[2]).multiplyScalar(L * 0.18) : null;
+      if (t) pts.push(A.clone().sub(t), A.clone().add(t), B.clone().sub(t), B.clone().add(t));
+      var ln = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lm); ln.renderOrder = 997; szG.add(ln);
+      if (d.e) d.e.forEach(function(e){ var el = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(e[0].x, e[0].y, e[0].z), new THREE.Vector3(e[1].x, e[1].y, e[1].z)]), lm.clone()); el.renderOrder = 997; szG.add(el); });
+      var sp = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); sp.center.set(0.5, 0.5); sp.position.copy(A).add(B).multiplyScalar(0.5); szG.add(sp);
     });
   }
   function szHit(e){

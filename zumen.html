@@ -379,7 +379,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.4"></script>
 <script src="zumen-km.js?v=0.9.25"></script>
 <script>
-var APP_VER = "v0.9.30";
+var APP_VER = "v0.9.31";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2474,13 +2474,42 @@ function mkHoleDepths(m){
         var c = hs.filter(function(e){ if (e.pv !== 'side') return false; var b = bboxOf([e]); return Math.min(b.y1, hb.y1) - Math.max(b.y0, hb.y0) > (hb.y1 - hb.y0) * 0.3; });
         if (!c.length) return; var bx = bboxOf(c), dep = bx.x1 - S.bb.x0; if (!(dep > 0)) return;
         m.holeD[k] = dep; var fd = findDim('side', dep, 'x', S.bb.x0, bx.x1); m.holeSrc[k] = '側面図の 点線から' + (fd ? '（寸法 ' + fmtLen(dimGeom(fd).val) + '）' : '');
-      } else { // 正面図：天面の 穴の 幅に かかる 点線の いちばん 下まで
-        var c2 = hs.filter(function(e){ if (e.pv !== 'front') return false; var b = bboxOf([e]); return Math.min(b.x1, hb.x1) - Math.max(b.x0, hb.x0) > (hb.x1 - hb.x0) * 0.3; });
-        if (!c2.length) return; var by = bboxOf(c2), dep2 = S.bb.y1 - by.y0; if (!(dep2 > 0)) return;
-        m.holeD[k] = dep2; var fd2 = findDim('front', dep2, 'y', by.y0, S.bb.y1); m.holeSrc[k] = '正面図の 点線から' + (fd2 ? '（寸法 ' + fmtLen(dimGeom(fd2).val) + '）' : '');
+      } else { // 天面の 穴：その 場所の 天面（前の 板の 奥など 低い 所も）から、点線の いちばん 下まで。正面図・側面図の 両方を 見る
+        var Fv = m.front, Sv = m.side, Tv = m.top, tw = Tv.bb.x1 - Tv.bb.x0, td = Tv.bb.y1 - Tv.bb.y0;
+        var fx0 = Fv.bb.x0 + (hb.x0 - Tv.bb.x0) * (Fv.bb.x1 - Fv.bb.x0) / tw, fx1 = Fv.bb.x0 + (hb.x1 - Tv.bb.x0) * (Fv.bb.x1 - Fv.bb.x0) / tw;
+        var sx0 = Sv ? Sv.bb.x0 + (hb.y0 - Tv.bb.y0) * (Sv.bb.x1 - Sv.bb.x0) / td : 0, sx1 = Sv ? Sv.bb.x0 + (hb.y1 - Tv.bb.y0) * (Sv.bb.x1 - Sv.bb.x0) / td : 0;
+        var tp = Math.min(hAt(Fv.out, (fx0 + fx1) / 2) - Fv.bb.y0, Sv ? hAt(Sv.out, (sx0 + sx1) / 2) - Sv.bb.y0 : Infinity), Hh = Fv.bb.y1 - Fv.bb.y0; if (!isFinite(tp) || tp > Hh) tp = Hh;
+        var low = function(pv, u0, u1, bb){ // その 面の 点線：両端が 穴の 幅に 合う 横の 線（無ければ 幅に かかる 線）の いちばん 下
+          var all = hs.filter(function(e){ return e.pv === pv && !/中心/.test(e.layer || ''); }), w = u1 - u0, tol = Math.max(1.5, w * 0.03);
+          var c = all.filter(function(e){ var b = bboxOf([e]); return b.y1 - b.y0 < tol && Math.abs(b.x0 - u0) < tol && Math.abs(b.x1 - u1) < tol; });
+          if (!c.length) c = all.filter(function(e){ var b = bboxOf([e]); return Math.min(b.x1, u1) - Math.max(b.x0, u0) > w * 0.3; });
+          if (!c.length) return null; var d = tp - (bboxOf(c).y0 - bb.y0); return d > 0 ? { d:d, y:bboxOf(c).y0 } : null; };
+        var rF = low('front', fx0, fx1, Fv.bb), rS = Sv ? low('side', sx0, sx1, Sv.bb) : null;
+        var old = (function(){ var ov = secViews(), oh = ov && ov.top && ov.top.holes || [], cx = (hb.x0 + hb.x1) / 2 - (Tv.bb.x0 + Tv.bb.x1) / 2, cy = (hb.y0 + hb.y1) / 2 - Tv.bb.y0, best = null, bd = 3;
+          oh.forEach(function(g){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; g.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); });
+            var dd = Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy); if (dd < bd) { bd = dd; best = g.depth; } }); return best; })();
+        var r = rF || rS, from = rF ? 'front' : 'side';
+        if (rF && rS && old != null && near(rF.d, old) && !near(rS.d, old)) { r = rS; from = 'side'; }   // 側面図の 点線だけ 動かした とき
+        if (!r) return;
+        var dep2 = Math.round(r.d * 100) / 100; m.holeD[k] = dep2;
+        var fd2 = from === 'front' ? findDim('front', dep2, 'y', r.y, Fv.bb.y0 + tp) : findDim('side', dep2, 'y', r.y, Sv.bb.y0 + tp);
+        m.holeSrc[k] = (from === 'front' ? '正面図' : '側面図') + 'の 点線から' + (fd2 ? '（寸法 ' + fmtLen(dimGeom(fd2).val) + '）' : '');
       }
     });
   });
+  function hAt(out, x){ var h = -Infinity; for (var i = 0; i < out.length; i++) { var a = out[i], b = out[(i + 1) % out.length]; if ((a.x - x) * (b.x - x) > 0 || a.x === b.x) { if (Math.abs(a.x - x) < 1e-6) h = Math.max(h, a.y); continue; } h = Math.max(h, a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x)); } return h; }
+}
+// 図から 反映した とき、平面図の 書き込み（「165×90 深 40」・「φ60 深 180」）の 深さを 新しい 値に
+function mkDepthText(m){
+  if (!m.top || !m.holeD) return 0; var n = 0, r1 = function(x){ return Math.round(x * 10) / 10; };
+  m.top.holes.forEach(function(h, i){ var dep = m.holeD['t' + i]; if (!(dep > 0)) return;
+    var b = { x0:Infinity, y0:Infinity, x1:-Infinity, y1:-Infinity }; h.forEach(function(p){ b.x0 = Math.min(b.x0, p.x); b.x1 = Math.max(b.x1, p.x); b.y0 = Math.min(b.y0, p.y); b.y1 = Math.max(b.y1, p.y); });
+    var hh = b.y1 - b.y0, best = null, bd = Infinity;
+    D.ents.forEach(function(e){ if (e.t !== 'text' || !/深\s*[\d.]+/.test(e.s || '')) return; if (e.p.x < b.x0 || e.p.x > b.x1 || e.p.y > b.y0 + hh * 0.2 || e.p.y < b.y0 - hh) return; var dd = b.y0 - e.p.y; if (dd < bd) { bd = dd; best = e; } });
+    if (best) { var s1 = best.s.replace(/深\s*[\d.]+/, '深 ' + r1(dep)); if (s1 !== best.s) { best.s = s1; n++; } }
+    D.dims.forEach(function(d){ if (!d.text || !/深\s*[\d.]+/.test(d.text) || !d.off) return; if (d.off.x < b.x0 || d.off.x > b.x1 || d.off.y < b.y0 || d.off.y > b.y1) return; var t1 = d.text.replace(/深\s*[\d.]+/, '深 ' + r1(dep)); if (t1 !== d.text) { d.text = t1; n++; } });
+  });
+  return n;
 }
 function mkAutoApply(direct){
   var m = mkAuto(); if (!m) return false;
@@ -2523,7 +2552,7 @@ function mkBuild(){
   if (m.top) { var T = m.top, tcx = (T.bb.x0 + T.bb.x1) / 2, kx = W / (T.bb.x1 - T.bb.x0), kd = Dd / (T.bb.y1 - T.bb.y0);
     var tf = function(pg){ return pg.map(function(p){ return [R((p.x - tcx) * kx), R((p.y - T.bb.y0) * kd)]; }); };
     v.top = { out:tf(T.out), holes:T.holes.map(function(h, i){ return { pts:tf(h), depth:m.holeD['t' + i] || R(H * 0.4) }; }) }; }
-  if (PD && PD.saveMain) { mkCarry(v, m); pdApplyViews(v, R(W), R(Dd), R(H)); mkStart(); setTool('select'); return; }
+  if (PD && PD.saveMain) { mkCarry(v, m); mkDepthText(m); pdApplyViews(v, R(W), R(Dd), R(H)); mkStart(); setTool('select'); return; }
   var name = (m.name || '').trim() || '図から 作った 部材', id = 'zu_' + Date.now().toString(36);
   var def = { schema:'buzai/1', id:id, name:name, category:'図から', version:0, from:'drawing',
     params:{ W:{ name:'幅', default:R(W), value:R(W) }, D:{ name:'奥行', default:R(Dd), value:R(Dd) }, H:{ name:'高さ', default:R(H), value:R(H) } },

@@ -219,7 +219,7 @@ export function create(box, onPick, onDbl, onCtx){
       if (t) pts.push(A.clone().sub(t), A.clone().add(t), B.clone().sub(t), B.clone().add(t));
       var ln = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lm); ln.renderOrder = 997; szG.add(ln);
       if (d.e) d.e.forEach(function(e){ var el = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(e[0].x, e[0].y, e[0].z), new THREE.Vector3(e[1].x, e[1].y, e[1].z)]), lm.clone()); el.renderOrder = 997; szG.add(el); });
-      var sp = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); sp.center.set(0.5, 0.5); sp.position.copy(A).add(B).multiplyScalar(0.5); szG.add(sp);
+      if (d.text) { var sp = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); sp.center.set(0.5, 0.5); sp.position.copy(A).add(B).multiplyScalar(0.5); szG.add(sp); }   // 札が 無い ときは 線だけ（札は HTML。v0.8.42）
     });
   }
   function szHit(e){

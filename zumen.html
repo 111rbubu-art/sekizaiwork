@@ -323,8 +323,8 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
     <button class="btn pded pddrawonly" id="pdDrawUndo" title="図面の 戻す（Ctrl+Z）">↶ 戻す</button>
     <button class="btn pded pdchiponly" id="pdUndo" title="直す 前に 戻す">↶ 戻す</button>
     <button class="btn pr" id="bPdLib" style="display:none">☁️ 部材を 開く</button>
-    <button class="btn pded" id="bPdSave" title="部材ライブラリに 保存（業務アプリから 開いた ときは SharePoint）">💾 保存</button>
-    <button class="btn ok pded" id="bPdMaster" style="display:none" title="図から 形を 作り直して 部材に 保存（版が 1 つ 上がる）">💾 部材に 保存</button>
+    <button class="btn pded" id="bPdSave" title="部材ライブラリに 保存（業務アプリから 開いた ときは SharePoint、ほかは この パソコンへ）">💾 マスター部材に 保存</button>
+    <button class="btn ok pded" id="bPdMaster" style="display:none" title="図から 形を 作り直して 部材に 保存（版が 1 つ 上がる）">💾 マスター部材に 保存</button>
     <button class="btn ok pded" id="bPdToDraw" title="正面図・側面図と 寸法を 今の 図面に 入れる（DXF・PDF は いつもの ボタンで）">📐 図面に 入れる</button>
   </div>
   <div id="pdList"></div>
@@ -379,7 +379,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.4"></script>
 <script src="zumen-km.js?v=0.9.25"></script>
 <script>
-var APP_VER = "v0.9.29";
+var APP_VER = "v0.9.30";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2312,6 +2312,7 @@ var MK = (function(){
       else entSegs(e).forEach(function(sg){ segs.push(sg); });
     });
     if (!segs.length) return null;
+    var ex = exact(ents); if (ex) return ex;
     var bb = bboxOf(ents), w = bb.x1 - bb.x0, h = bb.y1 - bb.y0; if (!(w > 0 && h > 0)) return null;
     var res = Math.max(w, h) / 700, M = 4, nx = Math.ceil(w / res) + 2 * M + 1, ny = Math.ceil(h / res) + 2 * M + 1, N = nx * ny;
     var line = new Uint8Array(N), lab = new Int32Array(N).fill(-1);
@@ -2361,6 +2362,22 @@ var MK = (function(){
     var holes = polys.slice(1).filter(function(pg){ return area(pg) < 0 && inPoly(pg[0], out); }).map(function(pg){ return pg.slice().reverse(); });
     var others = polys.slice(1).filter(function(pg){ return area(pg) > 0; }).length;
     return { out:out, holes:holes, bb:bbOf(out), n:polys.length, others:others }; // 箱は 外形から（はみ出した 線は 入れない）
+  }
+  // 線が みな 閉じた 線（閉じた pl・円）だけ なら 升目を 使わず その 点の まま（升目だと 角が 1 升 ぶん 丸まり、1mm ほどの 段が 入る、v0.9.30）
+  function exact(ents){
+    if (!ents.length || !ents.every(function(e){ return (e.t === 'pl' && e.closed && e.v.length >= 3) || e.t === 'circle'; })) return null;
+    var pgs = ents.map(function(e){
+      if (e.t === 'circle') return arcPoints(e.c, e.r, 0, 2 * PI - 1e-9, true, PI / 90).slice(0, -1);
+      var o = [], n = e.v.length; for (var i = 0; i < n; i++) { var a = e.v[i], b = e.v[(i + 1) % n], ba = a.b ? bulgeArc(a, b, a.b) : null;
+        if (ba) o = o.concat(arcPoints(ba.c, ba.r, ba.a0, ba.a1, ba.ccw, PI / 90).slice(0, -1)); else o.push(P(a.x, a.y)); }
+      return o; }).filter(function(pg){ return pg.length >= 3 && Math.abs(area(pg)) > 1e-6; });
+    if (!pgs.length) return null;
+    pgs.sort(function(a, b){ return Math.abs(area(b)) - Math.abs(area(a)); });
+    var out = pgs[0].slice(); if (area(out) < 0) out.reverse();
+    var rest = pgs.slice(1), holes = rest.filter(function(pg){ return pg.every(function(q){ return inPoly(q, out); }); });
+    if (holes.length !== rest.length) return null;   // 外に はみ出す 線が ある ときは 今までの 升目で
+    holes = holes.map(function(pg){ pg = pg.slice(); if (area(pg) < 0) pg.reverse(); return pg; });   // 今までと 同じ 向き（升目の 版も 穴は 面積が 正）
+    return { out:out, holes:holes, bb:bbOf(out), n:pgs.length, others:0 };
   }
   // 石の 升目の ふち（石を 左に 見て 回る）
   function contour(sol, nx, ny){
@@ -4604,14 +4621,15 @@ function pdFromMaster(){
   if (BM && BM.active) { if (BM.km) { kmSaveEd(); exitBM(); kmSaveEd(); } else { alert('部材図を 直して いる 間は 開けません。部材図を 閉じて から もう一度［✎ 図面で 直す］を 押して ください'); return; } }
   if (PD && PD.saveMain) pdDrawMode(false);
   if (!PD) pdOpen();
-  var job = d.__job || null; delete d.__job;
+  var job = d.__job || null; delete d.__job; if (Array.isArray(job)) job = { diff:job };   // お墓（組み立ての 案件）から 開いた 印 { key, diff, name }
   delete d.__master; pdEdit(d); PD.master = true; PD.job = job; pdRender(); pdDrawMode(true); if (SK_TAB === 'kakou') try { SKP.kakouState(true, d.name || d.id); } catch (e) {}
-  if (job) setMsg('組み立ての この 案件の 形（' + job.join('・') + '）で 開きました。［✓ マスターへ 戻る］と 部材マスターの 部材も この 形に なります');
+  if (job && job.key) setMsg('お墓' + (job.name ? '（' + job.name + '）' : '') + 'の 加工図面として 開きました' + (job.diff && job.diff.length ? '（' + job.diff.join('・') + '）' : '') + '。［💾 この お墓に 保存］は この お墓だけに 残り、部材マスターは 変わりません');
+  else if (job) setMsg('組み立ての この 案件の 形（' + (job.diff || []).join('・') + '）で 開きました。［💾 マスター部材に 保存］と 部材マスターの 部材も この 形に なります');
   else setMsg('部材マスターから 開きました。図を 直して［✓ 図から 反映して マスターへ 戻る］（寸法・注記は 図面に 残り、形は 正面・側面・天面の 線から）');
 }
 function pdToMaster(after){
   if (!PD || !PD.master) return;
-  if (PD.job && !confirm('この 図は 組み立ての 案件の 形（' + PD.job.join('・') + '）です。\n部材マスターの 部材を この 形に 書き換えますか（ほかの 案件・セットにも 効きます）')) return; PD.after = typeof after === 'function' ? after : null;
+  if (PD.job && !PD.job.key && !confirm('この 図は 組み立ての 案件の 形（' + (PD.job.diff || []).join('・') + '）です。\n部材マスターの 部材を この 形に 書き換えますか（ほかの 案件・セットにも 効きます）')) return; PD.after = typeof after === 'function' ? after : null;
   if (PD.saveMain) { var m = mkAuto(); if (m && m.err) { alert(m.err); return; }
     PD.skDone = null;
     if (m) { setTool('mkpart'); ST.mk = m; mkBuild(); } else if (!confirm('図に 正面の 線が ありません。形は そのまま（図だけ）で 戻しますか')) return;
@@ -4621,6 +4639,7 @@ function pdToMaster(after){
 }
 function pdToMaster2(){
   if (PD.saveMain) { var sf = skSheet(); if (sf && sf.sheet) sf.sheet.inf = skSheetInfo(sf.sheet.n); pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; }
+  if (PD.job && PD.job.key) { pdToJob(); return; }
   var d = clone(PD.def); d.__master = 1; d.__back = Date.now();
   try { localStorage.setItem('zumen.part', JSON.stringify(d)); } catch (e) {}
   if (SKP) { try { SKP.toMaster(clone(PD.def), !PD.after); } catch (e) {} }   // 枠の 中：組み立てタブの 部材マスターへ
@@ -4630,6 +4649,12 @@ function pdToMaster2(){
   setMsg('部材に 保存しました（形と 加工図面・版が 1 つ 上がります）');
   var f = PD.after; PD.after = null; if (f) f();
 }
+// お墓（組み立ての 案件）から 開いた ときの 保存：組み立ての この 石だけに 渡す（部材マスターには 渡さない・版も 上げない、v0.9.30）
+function pdToJob(){ var key = PD.job.key, def = clone(PD.def), ok = false, f = PD.after; PD.after = null;
+  if (SKP && SKP.kumi) { try { SKP.kumi(function(w){ ok = w.kmJobTake ? w.kmJobTake(key, def) : false; if (!ok) alert('組み立てに 渡せませんでした（組み立ての この お墓が 開いて いるか 見て ください）'); }); ok = true; } catch (e) {} }
+  if (!ok) { alert('組み立てが 見つかりません。墓石設計の 枠（組み立てタブ）から 開いて ください'); return; }
+  pdKeep(); setMsg('この お墓に 保存しました（部材マスターは 変わりません）。案件の ファイルに 残すには 組み立ての［💾 保存］を');
+  if (f) f(); }
 // 加工図面から 図面で 直すに 戻る（部材は 渡した ときの もの）
 function kmBackToPd(){ var p = KM2 && KM2.pay && KM2.pay.parts[0] && KM2.pay.parts[0].shape; if (!p) return; var d = clone(p); d.__master = 1;
   try { localStorage.setItem('zumen.part', JSON.stringify(d)); } catch (e) {} if (!skGo('kakou', '#pd' + Date.now())) location.hash = '#pd' + Date.now(); }
@@ -4637,8 +4662,10 @@ function pdKeep(){ try { localStorage.setItem('zumen.part', JSON.stringify(PD.de
 function pdRender(){
   var sv = BZ.solve(PD.def); PD.sv = sv;
   document.getElementById('pdName').textContent = PD.def.name;
-  document.getElementById('pdVer').textContent = (PD.master ? '🗂 部材マスターから・' : '') + (PD.def.version ? '版 ' + PD.def.version : 'まだ 保存して いません');
-  document.getElementById('bPdMaster').style.display = PD.master ? '' : 'none'; document.getElementById('bPdToDraw').style.display = PD.master ? 'none' : '';
+  var jb = PD.job && PD.job.key ? PD.job : null;
+  document.getElementById('pdVer').textContent = jb ? '🏯 お墓' + (jb.name ? '（' + jb.name + '）' : '') + 'の 加工図面・マスターの 版 ' + (PD.def.version || '―') : (PD.master ? '🗂 部材マスターから・' : '') + (PD.def.version ? '版 ' + PD.def.version : 'まだ 保存して いません');
+  var bm = document.getElementById('bPdMaster'); bm.textContent = jb ? '💾 この お墓に 保存' : '💾 マスター部材に 保存'; bm.title = jb ? 'この お墓（組み立ての 案件）の この 石だけに 保存。部材マスターは 変わりません' : '図から 形を 作り直して 部材マスターの 部材に 保存（版が 1 つ 上がる）';
+  document.getElementById('bPdMaster').style.display = PD.master ? '' : 'none'; document.getElementById('bPdSave').style.display = PD.master ? 'none' : '';   // 部材マスターから 開いた ときは［💾 部材に 保存］だけ（同じ 動きの ボタンを 2 つ 出さない、v0.9.30） document.getElementById('bPdToDraw').style.display = PD.master ? 'none' : '';
   var errs = Object.keys(sv.err);
   document.getElementById('pdErr').textContent = errs.length ? '⚠ ' + errs.map(function(k){ return BZ.nameOf(PD.def, k) + '：' + sv.err[k]; }).join('　') : '';
   try { PD.m = BZ.model(PD.def, sv); } catch (e) { document.getElementById('pdErr').textContent = '⚠ 形を 作れません：' + e.message; return; }

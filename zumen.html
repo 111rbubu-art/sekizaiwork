@@ -379,7 +379,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.4"></script>
 <script src="zumen-km.js?v=0.9.25"></script>
 <script>
-var APP_VER = "v0.9.31";
+var APP_VER = "v0.9.32";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2520,14 +2520,41 @@ function mkAutoApply(direct){
 }
 // 図から 反映する とき、図に 出ない もの（後ろからの 穴・底からの 穴・横の 穴・逃げの 奥行）を 前の 部材から 引き継ぐ
 function mkCarry(v, m){ var old = secViews(); if (!old) return; var cl = function(x){ return JSON.parse(JSON.stringify(x)); };
-  if (old.side && v.side) { if (!(v.side.holes || []).length && (old.side.holes || []).length) v.side.holes = cl(old.side.holes); if (!(v.side.cuts || []).length && (old.side.cuts || []).length) v.side.cuts = cl(old.side.cuts); }
-  if (old.top) { if (!v.top) v.top = cl(old.top); else { if (!(v.top.cuts || []).length && (old.top.cuts || []).length) v.top.cuts = cl(old.top.cuts); if (!(v.top.holes || []).length && (old.top.holes || []).length) v.top.holes = cl(old.top.holes); } }
+  // 図に まだ 線（破線・実線）が 残って いる ものだけ 引き継ぐ。破線を 消した 穴・中空は 部材からも 消す
+  var B = v.base, W = B.W, Dd = B.D, H = B.H, F = m.front, Sf = m.side, Tf = m.top;
+  var has = {}; D.ents.forEach(function(e){ if (e.pv && e.t !== 'text') has[e.pv] = 1; });
+  var map = { front:F && function(x, y){ return [(F.bb.x0 + F.bb.x1) / 2 + x, F.bb.y0 + y]; },
+    side:Sf && function(d, y){ return [Sf.bb.x0 + d * (Sf.bb.x1 - Sf.bb.x0) / Dd, Sf.bb.y0 + y * (Sf.bb.y1 - Sf.bb.y0) / H]; },
+    top:Tf && function(x, d){ return [(Tf.bb.x0 + Tf.bb.x1) / 2 + x * (Tf.bb.x1 - Tf.bb.x0) / W, Tf.bb.y0 + d * (Tf.bb.y1 - Tf.bb.y0) / Dd]; } };
+  var rng = function(pts, k){ var a = Infinity, b = -Infinity; pts.forEach(function(q){ a = Math.min(a, q[k]); b = Math.max(b, q[k]); }); return [a, b]; };
+  var cut = function(r){ return [Math.max(r[0], 0), r[1]]; };
+  function seen(bx){ // bx：{ 面: [u0,u1,w0,w1]（部材の 座標） }。その 面が 図に あるのに 線が 1 本も 無ければ false
+    var judged = false, ok = false;
+    Object.keys(bx).forEach(function(pv){ if (ok || !has[pv] || !map[pv]) return; judged = true; var r = bx[pv], p0 = map[pv](r[0], r[2]), p1 = map[pv](r[1], r[3]);
+      var x0 = Math.min(p0[0], p1[0]), x1 = Math.max(p0[0], p1[0]), y0 = Math.min(p0[1], p1[1]), y1 = Math.max(p0[1], p1[1]), tol = Math.max(1.5, Math.max(x1 - x0, y1 - y0) * 0.03);
+      ok = D.ents.some(function(e){ if (e.pv !== pv || e.t === 'text' || /中心|文字|寸法/.test(e.layer || '') || e.iso || e.frame) return false; var b = bboxOf([e]);
+        if (!(b.x0 > x0 - tol && b.x1 < x1 + tol && b.y0 > y0 - tol && b.y1 < y1 + tol)) return false;
+        return Math.abs(b.x0 - x0) < tol || Math.abs(b.x1 - x1) < tol || Math.abs(b.y0 - y0) < tol || Math.abs(b.y1 - y1) < tol; }); });
+    return ok || !judged; }
+  var keepTopCut = function(h){ var xr = rng(h.pts, 0), dr = rng(h.pts, 1), yr = [Math.max(h.y0, 0), Math.min(h.y1, H)]; return seen({ front:[xr[0], xr[1], yr[0], yr[1]], side:[dr[0], dr[1], yr[0], yr[1]], top:[xr[0], xr[1], dr[0], dr[1]] }); };
+  var keepTopHole = function(h){ var xr = rng(h.pts, 0), dr = rng(h.pts, 1), yr = cut([H - h.depth, H]); return seen({ front:[xr[0], xr[1], yr[0], yr[1]], side:[dr[0], dr[1], yr[0], yr[1]], top:[xr[0], xr[1], dr[0], dr[1]] }); };
+  var keepSideHole = function(h){ var dr = rng(h.pts, 0), yr = rng(h.pts, 1), xr = h.from === 'left' ? [-W / 2, -W / 2 + h.depth] : [W / 2 - h.depth, W / 2]; return seen({ side:[dr[0], dr[1], yr[0], yr[1]], front:[xr[0], xr[1], yr[0], yr[1]], top:[xr[0], xr[1], dr[0], dr[1]] }); };
+  var keepSideCut = function(h){ var dr = rng(h.pts, 0), yr = rng(h.pts, 1), xr = [h.x0 == null ? -W / 2 : h.x0, h.x1 == null ? W / 2 : h.x1]; return seen({ side:[dr[0], dr[1], yr[0], yr[1]], front:[xr[0], xr[1], yr[0], yr[1]], top:[xr[0], xr[1], dr[0], dr[1]] }); };
+  var keepBackHole = function(h){ var xr = rng(h.pts, 0), yr = rng(h.pts, 1), dr = h.from === 'back' ? [Dd - h.depth, Dd] : [0, h.depth]; return seen({ front:[xr[0], xr[1], yr[0], yr[1]], side:[dr[0], dr[1], yr[0], yr[1]], top:[xr[0], xr[1], dr[0], dr[1]] }); };
+  var gone = 0, flt = function(a, f){ var r = (a || []).filter(f); gone += (a || []).length - r.length; return r.map(cl); };
+  if (old.side && v.side) { if (!(v.side.holes || []).length && (old.side.holes || []).length) v.side.holes = flt(old.side.holes, keepSideHole); if (!(v.side.cuts || []).length && (old.side.cuts || []).length) v.side.cuts = flt(old.side.cuts, keepSideCut); }
+  if (old.top) { if (!v.top) { v.top = cl(old.top); v.top.cuts = flt(old.top.cuts, keepTopCut); v.top.holes = flt(old.top.holes, keepTopHole); }
+    else { if (!(v.top.cuts || []).length && (old.top.cuts || []).length) v.top.cuts = flt(old.top.cuts, keepTopCut); if (!(v.top.holes || []).length && (old.top.holes || []).length) v.top.holes = flt(old.top.holes, keepTopHole); } }
   var bbc = function(pts){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }); return [(x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0]; };
+  var used = [];
   (v.front.holes || []).forEach(function(h, i){ var a = bbc(h.pts), o = (old.front.holes || []).filter(function(g){ if (g.nige) return false; var b = bbc(g.pts); return Math.abs(a[0] - b[0]) < 1.5 && Math.abs(a[1] - b[1]) < 1.5 && Math.abs(a[2] - b[2]) < 2 && Math.abs(a[3] - b[3]) < 2; })[0];
-    if (!o) return; if (o.from) h.from = o.from; if (!(m.holeD && m.holeD['f' + i])) h.depth = o.depth; });
+    if (!o) return; used.push(o); if (o.from) h.from = o.from; if (!(m.holeD && m.holeD['f' + i]) || (o.from === 'back' && !/^寸法/.test((m.holeSrc || {})['f' + i] || ''))) h.depth = o.depth; });   // 後ろからの 穴は 側面図の 点線を 前から 測ると まちがう ので 前の 深さ（寸法に 紐づけた ときは その 値）
+  // 後ろからの 穴（正面図では 破線で 外形に 入らない）：破線が 残って いれば 引き継ぐ
+  (old.front.holes || []).forEach(function(g){ if (g.nige || g.from !== 'back' || used.indexOf(g) >= 0) return; if (keepBackHole(g)) { v.front.holes = v.front.holes || []; v.front.holes.push(cl(g)); } else gone++; });
   (old.front.holes || []).filter(function(g){ return g.nige && g.run; }).forEach(function(g){ var a = g.run[0], b = g.run[g.run.length - 1], r = nigeRuns(v.front.out).filter(function(n){ var p = n.run[0], q = n.run[n.run.length - 1];
       return Math.abs(Math.min(p[0], q[0]) - Math.min(a[0], b[0])) < 1.5 && Math.abs(Math.max(p[0], q[0]) - Math.max(a[0], b[0])) < 1.5; })[0];
     if (r) nigeToHole(v, r, g.depth, g.from); });
+  m.gone = gone;
 }
 function mkSet(skip){
   var k = ST.mk.step, es = D.ents.filter(function(e){ return ST.sel.has(e.id) && e.t !== 'text'; });

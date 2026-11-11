@@ -110,6 +110,15 @@
     });
     return R;
   }
-  root.BL = { BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve };
+  // 見本図面（1 枚）：画像は IndexedDB（buzai-mihon）、部材には 印（mihon:{key,w,h,at}）だけ。ファイル・SharePoint では mihon.src に 画像を 入れる
+  var MHC = {}, MHDB = null;
+  function mhDb(){ return MHDB || (MHDB = new Promise(function(ok, ng){ try { var r = indexedDB.open('buzai-mihon', 1); r.onupgradeneeded = function(){ r.result.createObjectStore('img'); }; r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ng(r.error); }; } catch (e) { ng(e); } })); }
+  function mhPut(key, src){ MHC[key] = src; return mhDb().then(function(db){ return new Promise(function(ok){ var t = db.transaction('img', 'readwrite'); t.objectStore('img').put(src, key); t.oncomplete = ok; t.onerror = ok; }); }).catch(function(){}); }
+  function mhGet(m){ if (!m || !m.key) return Promise.resolve(''); if (MHC[m.key]) return Promise.resolve(MHC[m.key]);
+    return mhDb().then(function(db){ return new Promise(function(ok){ var q = db.transaction('img').objectStore('img').get(m.key); q.onsuccess = function(){ if (q.result) MHC[m.key] = q.result; ok(q.result || ''); }; q.onerror = function(){ ok(''); }; }); }).catch(function(){ return ''; }); }
+  function mhIn(p){ var m = p && p.mihon; if (!m || !m.src) return; m.key = m.key || (p.id + '@' + (m.at || Date.now())); mhPut(m.key, m.src); delete m.src; }
+  function mhOut(d){ if (!d || !d.mihon) return Promise.resolve(d); return mhGet(d.mihon).then(function(src){ if (!src) return d; var e = JSON.parse(JSON.stringify(d)); e.mihon.src = src; return e; }); }
+  function mhNow(m){ return m && m.key ? MHC[m.key] || '' : ''; }
+  root.BL = { BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

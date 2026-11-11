@@ -34,7 +34,7 @@
   function flipPts(pts){ return pts.map(function(q){ var r = q.slice(); r[0] = -q[0]; return r; }).reverse(); }
   function flipView(v, side){
     if (!v) return v; var o = clone(v);
-    if (!side) { if (o.out) o.out = flipPts(o.out); (o.holes || []).forEach(function(h){ if (h.pts) h.pts = flipPts(h.pts); if (h.x != null) h.x = -h.x; }); (o.cuts || []).forEach(function(c){ if (c.pts) c.pts = flipPts(c.pts); }); }
+    if (!side) { if (o.out) o.out = flipPts(o.out); (o.holes || []).forEach(function(h){ if (h.pts) h.pts = flipPts(h.pts); if (h.x != null) h.x = -h.x; if (h.fit && h.fit.x) h.fit.x = h.fit.x === 'L' ? 'R' : 'L'; }); (o.cuts || []).forEach(function(c){ if (c.pts) c.pts = flipPts(c.pts); }); }
     else (o.holes || []).forEach(function(h){ if (h.from === 'left') h.from = 'right'; else if (h.from === 'right') h.from = 'left'; });
     return o;
   }
@@ -53,6 +53,31 @@
     return JSON.stringify(o);
   }
   function sameShape(a, b){ var x = sig(a), y = sig(b); return !!x && x === y; }
+  // 大きさ違いの 形が 同じか：a を b の 大きさに（buzai-engine の 決まりで）伸ばして 重ね、いちばん 大きい ずれ（mm）と その 場所。
+  // 面が 片方に しか 無い・穴の 数が ちがう ときは Infinity（v0.3.9）
+  function shapeGap(a, b){
+    var BZ = root.BZ; if (!BZ || !BZ.scaleViews) return { gap:Infinity, where:'' };
+    var va = a && a.components && a.components[0] && a.components[0].shape && a.components[0].shape.views, vb = b && b.components && b.components[0] && b.components[0].shape && b.components[0].shape.views;
+    if (!va || !vb || !va.front || !vb.front) return { gap:Infinity, where:'形の データ' };
+    var pv = function(p, k){ var x = p.params && p.params[k]; return x ? +(x.value != null ? x.value : x.default) : 0; };
+    var W = pv(b, 'W'), D = pv(b, 'D'), H = pv(b, 'H'); if (!(W > 0 && D > 0 && H > 0)) return { gap:Infinity, where:'大きさ' };
+    var A = BZ.scaleViews(va, W, D, H), B = BZ.scaleViews(vb, W, D, H), worst = { gap:0, where:'' };
+    var NM = { front:'正面', side:'右側面', top:'天面' };
+    function hd(P, Q){ if (!P || !Q || !P.length || !Q.length) return (P && P.length) === (Q && Q.length) ? 0 : Infinity; var m = 0;
+      [[P, Q], [Q, P]].forEach(function(z){ z[0].forEach(function(p){ var d = Infinity; z[1].forEach(function(q){ d = Math.min(d, Math.hypot(p[0] - q[0], p[1] - q[1])); }); m = Math.max(m, d); }); }); return m; }
+    function put(g, w){ if (g > worst.gap) worst = { gap:g, where:w }; }
+    ['front', 'side', 'top'].forEach(function(k){ var x = A[k], y = B[k];
+      if (!x && !y) return; if (!x || !y) { if ((x && (x.out || (x.holes || []).length)) || (y && (y.out || (y.holes || []).length))) put(Infinity, NM[k] + 'の 図'); return; }
+      put(hd(x.out, y.out), NM[k] + 'の 外形');
+      var hx = x.holes || [], hy = y.holes || []; if (hx.length !== hy.length) { put(Infinity, NM[k] + 'の 穴の 数'); return; }
+      var used = [];
+      hx.forEach(function(h){ var bi = -1, bd = Infinity; hy.forEach(function(g, j){ if (used.indexOf(j) >= 0) return; var d = hd(h.pts, g.pts); if (d < bd) { bd = d; bi = j; } });
+        if (bi < 0) return; used.push(bi); put(bd, NM[k] + 'の 穴の 位置'); put(Math.abs((h.depth || 0) - (hy[bi].depth || 0)), NM[k] + 'の 穴の 深さ'); });
+      var cx = x.cuts || [], cy = y.cuts || []; if (cx.length !== cy.length) put(Infinity, NM[k] + 'の 切り欠きの 数');
+      else cx.forEach(function(c, i){ put(hd(c.pts, cy[i].pts), NM[k] + 'の 切り欠き'); });
+    });
+    return worst;
+  }
 
   // ── タグ（セットの 名前から：和型・洋型・寸・メーカーの 名前 など）──
   function tagsOf(S){
@@ -104,6 +129,8 @@
       if (p) { var d = sl.mirror ? mirror(p) : clone(p); delete d.thumb; q.part = d;
         var pv = function(k){ var x = d.params && d.params[k]; return x ? +(x.value != null ? x.value : x.default) : null; };
         if (pv('W') > 0) { q.w = pv('W'); q.d = pv('D'); q.h = pv('H'); }
+        // 大きさ違いを まとめた 部材：セットの 枠の 大きさ（sl.size）で 使う。形の 中は 部材の 決まりで 伸びる（buzai-engine の scaleViews）
+        var zs = sl.size; if (zs && zs.W > 0 && zs.D > 0 && zs.H > 0) { q.w = +zs.W; q.d = +zs.D; q.h = +zs.H; ['W', 'D', 'H'].forEach(function(k){ if (d.params && d.params[k]) d.params[k].value = +zs[k]; }); q.size = { W:+zs.W, D:+zs.D, H:+zs.H }; }
         if (!q.finish) q.finish = d.finish || ''; if (!q.kakou) q.kakou = d.kakou || ''; }
       else if (sl.part) R.missing.push(sl.part.id);
       if (q.w > 0) R.parts.push(q);
@@ -119,6 +146,6 @@
   function mhIn(p){ var m = p && p.mihon; if (!m || !m.src) return; m.key = m.key || (p.id + '@' + (m.at || Date.now())); mhPut(m.key, m.src); delete m.src; }
   function mhOut(d){ if (!d || !d.mihon) return Promise.resolve(d); return mhGet(d.mihon).then(function(src){ if (!src) return d; var e = JSON.parse(JSON.stringify(d)); e.mihon.src = src; return e; }); }
   function mhNow(m){ return m && m.key ? MHC[m.key] || '' : ''; }
-  root.BL = { BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  root.BL = { BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

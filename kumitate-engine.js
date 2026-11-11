@@ -606,10 +606,12 @@ var KM = (function(){
   function glPlan(data, st, ff, p, ng, chg){
     var gh = glOf(st), v = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence];
     if (!gh || !v || !v.set || !ff) return null;
-    var H = ff.H, bury = r1(H - gh), step = r1(H - gh / 2), step0 = null;
+    // 地面（埋まる 深さ）は いまの GL、階段の 高さ・R の 始まりは［自動で 設計する］の ときの GL（site.glAuto。v0.8.40 本人「GL を 入力した 際は 地面が 動く のみ」）
+    var gA = st.site && st.site.glAuto !== undefined ? +st.site.glAuto || 0 : gh;
+    var H = ff.H, bury = r1(H - gh), step = r1(H - (gA > 0 ? gA : gh) / 2), step0 = null;
     var ks = Object.keys(v.parts || {}).filter(function(k){ return p[k]; }), hk = {}, stepS = null;
     if (bury < 0) ng.push('外柵が ' + r1(-bury) + ' mm 浮く（腰石 ' + H + ' ＜ GL から ' + gh + '）');
-    ks.forEach(function(k){ var q = p[k]; if (!/^階段/.test(q.name || '') || (q.offY || 0) > 0.5) return;
+    ks.forEach(function(k){ var q = p[k]; if (!(gA > 0) || !/^階段/.test(q.name || '') || (q.offY || 0) > 0.5) return;
       var t0 = r1((q.offY || 0) + q.h); step0 = step0 == null ? t0 : Math.max(step0, t0); hk[k] = 1;
       var vs = v.parts[k] && v.parts[k].h, tS = vs > 0 ? r1((q.offY || 0) + vs) : t0; stepS = stepS == null ? tS : Math.max(stepS, tS);   // セットの 図面の 階段の 上（削りの 下の 端は ここに 合って いる）
       var nh = r1(step - (q.offY || 0));

@@ -246,7 +246,11 @@ var KM = (function(){
       if (ch && sh.params) { var nd = clone(sh); [['W', 'w'], ['D', 'd'], ['H', 'h']].forEach(function(a){ if (nd.params[a[0]]) nd.params[a[0]].value = q[a[1]]; });
         p[k] = Object.assign({}, q, { shape:nd, jobShape:sh }); }
       else p[k] = Object.assign({}, q, sz, { shape:sh, jobShape:sh }); });
-    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].jobShape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); ['w', 'h', 'd'].forEach(function(f){ if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
+    // 外柵の 石で 面を ずらした（st.mv）ものは、幅・奥行を fenceManual が 手の 大きさ＋面の ずれで 決めて いる ので ここで 戻さない
+    //（戻すと 前の 面を 引いても 奥行が 元に 戻り、前の 面に そろえ直されて 石が 動いた。v0.8.36 本人「階段で 前矢印を 動かすと 移動に なります」）
+    var fpk = ((data.partsData.FENCE_VARIANTS || {})[st.sel.fence] || {}).parts || {};
+    Object.keys(st.over || {}).forEach(function(k){ if (st.shapes && st.shapes[k] && (p[k] && p[k].jobShape === st.shapes[k])) return; if (p[k]) { p[k] = Object.assign({}, p[k]); var mvk = fpk[k] && (st.mv || {})[k];
+      ['w', 'h', 'd'].forEach(function(f){ if (mvk && f !== 'h') return; if (st.over[k][f] > 0) p[k][f] = st.over[k][f]; }); } });
     Object.keys(base).forEach(function(k){ var b = base[k], q = p[k]; if (!q || (q.w === b.w && q.d === b.d)) return;
       p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
     // 大きさを 変更で 引いた 面の ぶん 位置を ずらす（st.osh = { 鍵:{ x, z } }。右だけ・前だけ 伸ばす ため。v0.8.28）

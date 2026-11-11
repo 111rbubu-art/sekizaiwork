@@ -198,6 +198,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
       <div class="hitlist" id="hitlist"></div>
       <div class="box" id="jBox" style="display:none;border-left:4px solid #b42020"></div>
       <div class="box" id="gapBox" style="display:none"></div>
+      <div class="box" id="skBox" style="display:none;border-left:4px solid #b42020"></div>
       <div class="box" id="noteBox" style="display:none"></div>
     </div>
     <div class="tree" id="tree"></div>
@@ -221,7 +222,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.5"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.28';
+var APP_VER = 'v0.8.29';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -277,7 +278,48 @@ ST.shapes = ST.shapes || {};
 var SEL = null, RES = null, V3 = null;
 ST.free = ST.free || [];
 // 計算：組み立てエンジン ＋ 足した 部材（支点で 置く）
-function calc(){ return KM.placeFree(KM.compute(DATA, ST), ST.free); }
+function calc(){ return calcOn(ST); }
+function calcOn(S){ var r = KM.placeFree(KM.compute(DATA, S), S.free); skAdd(r, S); return r; }
+// ── 目地より 広い 隙間（v0.8.29 本人「設定した 目地以上に 隙間が 空く 場合、アラートを 出して」）──
+// 手で 変える 前（大きさ・位置・自動処理を 抜いた 形）で 目地 以下で 向き合って いた 石の 組が、いま 目地より 広く 空いて いたら ✕。
+// 外柵の 石どうしは 目地の ✕（jointCheck）が 見る
+var SKB = { key:'', r:null }, PREVSK = null;
+function skBase(S){
+  var c = JSON.parse(JSON.stringify(S)); ['over', 'osh', 'mv', 'mvman', 'hman', 'haiseki', 'nakaAdd'].forEach(function(f){ delete c[f]; });
+  var key = JSON.stringify(c); if (SKB.key !== key) { SKB.key = key; SKB.r = KM.placeFree(KM.compute(DATA, c), c.free); } return SKB.r;
+}
+function skJ(S){ var j = S.joint || {}; return { h:j.h != null ? +j.h : 6, v:j.v != null ? +j.v : 5 }; }
+function skFind(r, S){
+  var B = skBase(S), J = skJ(S), fp = fenceV() ? fenceV().parts : {}, out = [], ks = Object.keys(r.boxes).filter(function(k){ return !S.hide[k] && B.boxes[k]; });
+  var hg = (r.gaps || []).filter(function(x){ return x.id === 'naka'; })[0];
+  function ov(a, b, ax){ return Math.min(a[ax + '1'], b[ax + '1']) - Math.max(a[ax + '0'], b[ax + '0']); }
+  for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
+    var p = ks[i], q = ks[j]; if (fp[p] && fp[q]) continue; if (hg && ((p === hg.hk && q === hg.nk) || (p === hg.nk && q === hg.hk))) continue;
+    ['x', 'z', 'y'].forEach(function(A){
+      var O = ['x', 'y', 'z'].filter(function(a){ return a !== A; });
+      [[p, q], [q, p]].forEach(function(pr){
+        var a = r.boxes[pr[0]], b = r.boxes[pr[1]], a0 = B.boxes[pr[0]], b0 = B.boxes[pr[1]];
+        if (O.some(function(o){ return ov(a, b, o) <= 1 || ov(a0, b0, o) <= 1; })) return;
+        var g = b[A + '0'] - a[A + '1'], g0 = b0[A + '0'] - a0[A + '1'], jj = A === 'y' ? J.v : J.h;
+        if (g0 < -60 || g0 > jj + 0.5 || g <= jj + 0.5 || g > 600) return;
+        if (a0[A + '0'] > b0[A + '0'] || a[A + '0'] > b[A + '0']) return;   // 向きが 逆
+        var ex = Math.max(0, Math.min(jj, g0)); g = Math.round(g * 10) / 10;
+        out.push({ key:pr[0] + '|' + pr[1] + '|' + A, a:pr[0], b:pr[1], A:A, g:g, J:jj, exp:ex, need:Math.round((g - ex) * 10) / 10,
+          msg:r.parts[pr[0]].name + ' と ' + r.parts[pr[1]].name + ' の 間が ' + g + ' mm 空く（目地 ' + jj + '）' });
+      });
+    });
+  }
+  return out;
+}
+function skAdd(r, S){ r.sk = skFind(r, S); if (r.sk.length) r.ng = (r.ng || []).concat(r.sk.map(function(s){ return s.msg; }));
+  // 外柵の 石どうしの 目地が 広い・狭い（jointCheck の ✕）も 同じ 直し方の 案を 出す
+  var J = skJ(S).h;
+  (r.jerr || []).forEach(function(e){ if (e.kind !== 'gap' || !r.boxes[e.a] || !r.boxes[e.b]) return; var P = r.boxes[e.a], Q = r.boxes[e.b];
+    ['x', 'z'].forEach(function(A){ var O = A === 'x' ? 'z' : 'x'; if (Math.min(P[O + '1'], Q[O + '1']) - Math.max(P[O + '0'], Q[O + '0']) <= 1) return;
+      var lo = P[A + '0'] < Q[A + '0'] ? e.a : e.b, hi = lo === e.a ? e.b : e.a, g = Math.round((r.boxes[hi][A + '0'] - r.boxes[lo][A + '1']) * 10) / 10; if (Math.abs(g - e.g) > 0.6) return;
+      r.sk.push({ key:lo + '|' + hi + '|' + A, a:lo, b:hi, A:A, g:g, J:J, exp:J, need:Math.round((g - J) * 10) / 10, j:1,
+        msg:r.parts[e.a].name + ' と ' + r.parts[e.b].name + ' の 間 ' + e.g + ' mm（目地 ' + J + '）' }); }); });
+}
 var KLABEL = { tower:'石塔', fence:'外柵', boshi:'墓誌', toba:'塔婆立', crypt:'納骨室', free:'足した 部材' };
 var GRAY = { tower:'#4a4d52', fence:'#9aa0a6', boshi:'#5a5d62', crypt:'#b8b2a6' };
 function $(id){ return document.getElementById(id); }
@@ -479,9 +521,13 @@ function run(refit){
   if (RES.hits.length || ngs.length) {
     b.className = 'badge ng'; b.textContent = (RES.hits.length ? '⚠ 干渉 ' + RES.hits.length + ' か所' : '') + (RES.hits.length && ngs.length ? '・' : '') + (ngs.length ? '✕ ' + ngs.length + ' か所' : '') + '（押すと 一覧）';
     $('hitlist').innerHTML = RES.hits.map(function(x){ return esc(x.nameA) + ' ↔ ' + esc(x.nameB) + '　<span class="muted">横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + ' mm 重なる</span>'; })
-      .concat(ngs.map(function(m){ return '<span class="err">✕ ' + esc(m) + '</span>'; })).join('<br>');
+      .concat(ngs.map(function(m){ var sk = (RES.sk || []).filter(function(x){ return x.msg === m; })[0]; return sk ? '<button class="lk err" data-skk="' + esc(sk.key) + '" style="text-align:left;padding:0">✕ ' + esc(m) + '（押すと 直し方）</button>' : '<span class="err">✕ ' + esc(m) + '</span>'; })).join('<br>');
   } else { b.className = 'badge ok'; b.textContent = '✓ 干渉 なし'; $('hitlist').style.display = 'none'; }
-  renderTree(); renderJ(); renderGap(); renderAlert(); renderSel(); renderEst(); renderList();
+  // 手で 変えて 新しく 隙間が できたら アラート（大きさを 変更の 間は 決定の とき）
+  var skm = (RES.sk || []).map(function(x){ return x.msg; });
+  if (PREVSK && !SZ && !ALERT) { var nsk = skm.filter(function(m){ return PREVSK.indexOf(m) < 0; }); if (nsk.length && UNDO.length) ALERT = { name:isKey(SEL) && RES.parts[SEL] ? RES.parts[SEL].name : '部材', list:nsk, snap:UNDO[UNDO.length - 1] }; }
+  if (!SZ) PREVSK = skm;
+  renderTree(); renderJ(); renderGap(); renderSk(); renderAlert(); renderSel(); renderEst(); renderList();
   // ⚠ と 自動で 変えた 所は 3D の 右上（✕ は 上の 赤い 印を 押すと 一覧）
   var nw = (RES.notes || []).map(function(m){ return '<span class="err">⚠ ' + esc(m) + '</span>'; }), nc = (RES.chg || []).map(function(m){ return '・' + esc(m); }), nb = $('noteBox');
   if (nw.length || nc.length) { var op = nb.querySelector('details') && nb.querySelector('details').open;
@@ -608,8 +654,58 @@ function probs(){
     if (g.open < g.openMin - 0.5) { bad[g.nk] = 1;
       zones.push({ x0:H.x0 + 40, x1:H.x1 - 40, y0:H.y0 - 60, y1:H.y0 - 2, z0:N.z0 - g.open, z1:N.z0, label:'開口部 ' + Math.round(g.open) + '（' + g.openMin + ' 以上）' }); }
   }
+  (RES.sk || []).forEach(function(e){ var A = RES.boxes[e.a], B = RES.boxes[e.b]; if (!A || !B) return; bad[e.a] = bad[e.b] = 1;
+    var z = {}; ['x', 'y', 'z'].forEach(function(a){ if (a === e.A) { z[a + '0'] = A[a + '1']; z[a + '1'] = B[a + '0']; } else { z[a + '0'] = Math.max(A[a + '0'], B[a + '0']); z[a + '1'] = Math.min(A[a + '1'], B[a + '1']); } });
+    z.label = '隙間 ' + e.g + '（目地 ' + e.J + '）'; zones.push(z); });
   return { bad:bad, zones:zones };
 }
+// 隙間の 直し方（いくつも あれば ぜんぶ 出す・既定は 選ばない）：片方の 面を 伸ばす・片方を 寄せる。ためしに 直して、隙間が 消えるか・ほかに 合わない 所が 出るかを 添える
+var SKOPEN = null;
+var FNAME = { x0:'左', x1:'右', z0:'後ろ', z1:'前', y1:'上' }, AXD = { x:'w', z:'d', y:'h' };
+function skOf(key){ return (RES.sk || []).filter(function(s){ return s.key === key; })[0]; }
+function skFaceOk(k, f){ var m = szMode(k); if (!m || m === 'free' || f === 'y0') return false; if (m === 'h' && f === 'z0') return false; if (m === 'n' && f === 'z1') return false; return true; }
+function skOpts(s){
+  RES.__sko = RES.__sko || {}; if (RES.__sko[s.key]) return RES.__sko[s.key];
+  var o = [], A = s.A, dm = AXD[A], n = s.need, an = Math.abs(n), gw = n > 0 ? '伸ばす' : '縮める', mvw = n > 0 ? '寄せる' : '離す', R = function(v){ return Math.round(v * 10) / 10; }, now = probList();
+  function nm(k){ return RES.parts[k].name; }
+  function tryIt(t, fn){ var S = JSON.parse(JSON.stringify(ST)); if (fn(S) === false) return; var r = calcOn(S);
+    var left = r.sk.some(function(x){ return x.key === s.key; });
+    var nw = r.ng.concat(r.hits.map(function(x){ return x.nameA + ' と ' + x.nameB + ' が 重なる（横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + '）'; })).filter(function(m){ return now.indexOf(m) < 0; });
+    if (!left) o.push({ t:t, S:S, nw:nw }); }
+  var fa = A + '1', fb = A + '0', ca = RES.parts[s.a][dm], cb = RES.parts[s.b][dm];
+  if (skFaceOk(s.a, fa)) tryIt(nm(s.a) + ' の ' + FNAME[fa] + 'を ' + an + ' ' + gw + '（' + { w:'幅', d:'奥行', h:'高さ' }[dm] + ' ' + R(ca) + ' → ' + R(ca + n) + '）', function(S){ setFace(S, s.a, szMode(s.a), dm, ca + n, fa, ca); });
+  if (A !== 'y' && skFaceOk(s.b, fb)) tryIt(nm(s.b) + ' の ' + FNAME[fb] + 'を ' + an + ' ' + gw + '（' + { w:'幅', d:'奥行' }[dm] + ' ' + R(cb) + ' → ' + R(cb + n) + '）', function(S){ setFace(S, s.b, szMode(s.b), dm, cb + n, fb, cb); });
+  if (A !== 'y') {
+    var dB = A === 'x' ? '左' : '後ろ', dA = A === 'x' ? '右' : '前';
+    if (szMode(s.b) !== 'free') tryIt(nm(s.b) + ' を ' + (n > 0 ? dB : dA) + 'へ ' + an + ' 動かす（' + mvw + '・大きさは そのまま）', function(S){ return moveStone(S, s.b, szMode(s.b), A, -n); });
+    if (szMode(s.a) !== 'free') tryIt(nm(s.a) + ' を ' + (n > 0 ? dA : dB) + 'へ ' + an + ' 動かす（' + mvw + '・大きさは そのまま）', function(S){ return moveStone(S, s.a, szMode(s.a), A, n); });
+  }
+  if (an > 1.5 && skFaceOk(s.a, fa) && A !== 'y' && skFaceOk(s.b, fb)) { var h1 = R(n / 2), h2 = R(n - h1);
+    tryIt('両方を 半分ずつ ' + gw + '（' + nm(s.a) + ' ' + h1 + '・' + nm(s.b) + ' ' + h2 + '）', function(S){ setFace(S, s.a, szMode(s.a), dm, ca + h1, fa, ca); setFace(S, s.b, szMode(s.b), dm, cb + h2, fb, cb); }); }
+  if (s.j && canFixJoints()) tryIt('カロート・拝石台 などの 目地を まとめて 合わせる（自動処理と 同じ）', function(S){ fixJointsOn(S); });
+  o.sort(function(x, y){ return x.nw.length - y.nw.length; });
+  return RES.__sko[s.key] = o;
+}
+function skOptsHtml(s){
+  var o = skOpts(s); if (!o.length) return '<div class="muted" style="margin-top:4px">直せる 案が ありません。右クリック →［📏 大きさを 変更］で 直して ください</div>';
+  return '<div class="gopt">' + o.map(function(x, i){ return '<button data-sko="' + esc(s.key) + '" data-oi="' + i + '">' + esc(x.t) + '<br>' +
+    (x.nw.length ? '<span class="err">⚠ ほかに 合わない 所が ' + x.nw.length + ' か所 出る：' + esc(x.nw.slice(0, 2).join('・')) + (x.nw.length > 2 ? '…' : '') + '</span>' : '<span style="color:#1d7a3a">✓ ほかに 合わない 所は 出ない</span>') + '</button>'; }).join('') + '</div>';
+}
+function skApply(key, i){ var s = skOf(key); if (!s) return; var x = skOpts(s)[+i]; if (!x) return; undoPush();
+  ['over', 'osh', 'mv', 'mvman', 'hman', 'haiseki', 'nakaAdd', 'shapes'].forEach(function(f){ if (x.S[f] == null) delete ST[f]; else ST[f] = x.S[f]; });
+  SKOPEN = null; run(); }
+function renderSk(){
+  var bx = $('skBox'), L = RES.sk || []; if (SKOPEN && !skOf(SKOPEN)) SKOPEN = null;
+  if (!L.length) { bx.style.display = 'none'; return; }
+  var h = '<b class="err">✕ 目地と ちがう 隙間 ' + L.length + ' か所</b><div class="muted" style="margin:2px 0 4px">押すと 直し方が 出ます。選ぶと 直します（直し方は 自動では 選びません）</div>';
+  h += L.slice(0, 8).map(function(s){ var op = SKOPEN === s.key;
+    return '<div style="margin-top:4px"><button class="lk" data-skk="' + esc(s.key) + '" style="text-align:left">' + (op ? '▴ ' : '▾ ') + esc(s.msg) + '</button>' + (op ? skOptsHtml(s) : '') + '</div>'; }).join('');
+  bx.innerHTML = h; bx.style.display = 'block';
+}
+function skClick(e){ var b = e.target.closest('button'); if (!b) return false;
+  if (b.dataset.skk) { SKOPEN = SKOPEN === b.dataset.skk ? null : b.dataset.skk; renderSk(); renderAlert(); return true; }
+  if (b.dataset.sko) { skApply(b.dataset.sko, b.dataset.oi); return true; } return false; }
+$('skBox').addEventListener('click', skClick);
 
 // ── 右クリックの メニュー（v0.8.23）──
 function ctxClose(){ var c = $('ctx'); c.style.display = 'none'; c.dataset.k = ''; }
@@ -679,18 +775,31 @@ function szStart(k){
 }
 function szCur(dim){ var p = RES.parts[SZ.k]; return p ? p[dim] : 0; }
 // その 寸法を val に（face＝動かす 面）
-function szSet(dim, val, face){
-  var k = SZ.k, m = SZ.mode, cur = szCur(dim), s = val - cur; val = Math.round(val * 10) / 10; if (!(val > 0) || Math.abs(s) < 0.05) return;
-  if (m === 'h' && dim === 'd') { ST.hman = Object.assign({}, ST.hman || {}, { h:val }); delete ST.haiseki; delete ST.nakaAdd; }
-  else if (m === 'n' && dim === 'd') { ST.hman = Object.assign({}, ST.hman || {}, { n:val }); delete ST.haiseki; delete ST.nakaAdd; }
-  else if (m === 'fence' && dim !== 'h') { ST.mv = ST.mv || {}; ST.mvman = ST.mvman || {}; ST.mvman[k] = 1; var v = ST.mv[k] = ST.mv[k] || {}, f = face || SZ.last[dim];
+function szSet(dim, val, face){ setFace(ST, SZ.k, SZ.mode, dim, val, face || SZ.last[dim], szCur(dim)); }
+// 石 k の 寸法 dim を val に（face＝動かす 面、cur＝いまの 寸法）。S＝ST か その 写し（ためしに 直す とき）
+function setFace(S, k, m, dim, val, face, cur){
+  var s = val - cur; val = Math.round(val * 10) / 10; if (!(val > 0) || Math.abs(s) < 0.05) return;
+  S.over = S.over || {};
+  if (m === 'h' && dim === 'd') { S.hman = Object.assign({}, S.hman || {}, { h:val }); delete S.haiseki; delete S.nakaAdd; }
+  else if (m === 'n' && dim === 'd') { S.hman = Object.assign({}, S.hman || {}, { n:val }); delete S.haiseki; delete S.nakaAdd; }
+  else if (m === 'fence' && dim !== 'h') { S.mv = S.mv || {}; S.mvman = S.mvman || {}; S.mvman[k] = 1; var v = S.mv[k] = S.mv[k] || {}, f = face;
     if (f[1] === '1') v[f] = Math.round(((v[f] || 0) + s) * 10) / 10; else v[f] = Math.round(((v[f] || 0) - s) * 10) / 10; }
-  else if (RES.parts[k].jobShape && ST.shapes[k] && ST.shapes[k].params && ST.shapes[k].params[{ w:'W', d:'D', h:'H' }[dim]]) ST.shapes[k].params[{ w:'W', d:'D', h:'H' }[dim]].value = val;   // この お墓の 形・差し替えた 形は 形の 寸法を 直す
-  else { ST.over[k] = ST.over[k] || {}; ST.over[k][dim] = val; }
+  else if (RES.parts[k] && RES.parts[k].jobShape && S.shapes && S.shapes[k] && S.shapes[k].params && S.shapes[k].params[{ w:'W', d:'D', h:'H' }[dim]]) S.shapes[k].params[{ w:'W', d:'D', h:'H' }[dim]].value = val;   // この お墓の 形・差し替えた 形は 形の 寸法を 直す
+  else { S.over[k] = S.over[k] || {}; S.over[k][dim] = val; }
   // 石塔などの 石：大きさは 幅の 中心・前の 面を そろえる ので、引いた 面だけ 動く ように 位置を ずらす（v0.8.28 本人「前方向に 大きさを 変更できない」）
-  if (m !== 'fence' && !(m === 'h' && dim === 'd') && !(m === 'n' && dim === 'd')) { var f2 = face || SZ.last[dim], o = null;
-    if (dim === 'w') o = { x:f2 === 'x1' ? s / 2 : -s / 2 }; else if (dim === 'd' && f2 === 'z1') o = { z:s };
-    if (o) { ST.osh = ST.osh || {}; var q2 = ST.osh[k] = ST.osh[k] || {}; Object.keys(o).forEach(function(a){ q2[a] = Math.round(((+q2[a] || 0) + o[a]) * 10) / 10; }); } }
+  if (m !== 'fence' && !(m === 'h' && dim === 'd') && !(m === 'n' && dim === 'd')) { var o = null;
+    if (dim === 'w') o = { x:face === 'x1' ? s / 2 : -s / 2 }; else if (dim === 'd' && face === 'z1') o = { z:s };
+    if (o) shiftOsh(S, k, o); }
+}
+function shiftOsh(S, k, o){ S.osh = S.osh || {}; var q2 = S.osh[k] = S.osh[k] || {}; Object.keys(o).forEach(function(a){ q2[a] = Math.round(((+q2[a] || 0) + o[a]) * 10) / 10; }); }
+// 石 k を 軸 A（'x'｜'z'）に s mm 動かす（大きさは そのまま）。動かせない 石は false
+function moveStone(S, k, m, A, s){
+  if (Math.abs(s) < 0.05) return false;
+  if (m === 'h' && A === 'z') return false;   // 拝石の 前後は きまり（芝台の 前＋目地）
+  if (m === 'n' && A === 'z') { S.hman = Object.assign({}, S.hman || {}); S.hman.nz = Math.round(((+S.hman.nz || 0) - s) * 10) / 10; return true; }   // 中仕切は 中仕切ごと（後ろの 石が ついてくる）
+  if (m === 'fence') { S.mv = S.mv || {}; S.mvman = S.mvman || {}; S.mvman[k] = 1; var v = S.mv[k] = S.mv[k] || {};
+    v[A + '0'] = Math.round(((v[A + '0'] || 0) + s) * 10) / 10; v[A + '1'] = Math.round(((v[A + '1'] || 0) + s) * 10) / 10; return true; }
+  var o = {}; o[A] = s; shiftOsh(S, k, o); return true;
 }
 // 吸い付く 寸法：拝石・中仕切は「ちょうど 30 かかる」、ほかは「となりの 石と 目地 6」
 function szTarget(dim, face){
@@ -751,7 +860,8 @@ function renderAlert(){
   var bx = $('alertBar');
   if (ALERT) { var now = probList(); ALERT.list = ALERT.list.filter(function(m){ return now.indexOf(m) >= 0; }); if (!ALERT.list.length) ALERT = null; }
   if (!ALERT) { bx.style.display = 'none'; return; }
-  var g = gapOf(), h = '<div><b>⚠ ' + esc(ALERT.name) + ' を 変えたら 合わない 所が ' + ALERT.list.length + ' か所</b><div class="al">' + ALERT.list.slice(0, 3).map(esc).join('<br>') + (ALERT.list.length > 3 ? '<br>…' : '') + '</div></div><div class="ab">';
+  var g = gapOf(), h = '<div><b>⚠ ' + esc(ALERT.name) + ' を 変えたら 合わない 所が ' + ALERT.list.length + ' か所</b><div class="al">' + ALERT.list.slice(0, 4).map(function(m){ var sk = (RES.sk || []).filter(function(x){ return x.msg === m; })[0];
+    return sk ? '<button class="lk" data-skk="' + esc(sk.key) + '" style="text-align:left;padding:0;text-decoration:underline">' + (SKOPEN === sk.key ? '▴ ' : '▾ ') + esc(m) + '（押すと 直し方）</button>' + (SKOPEN === sk.key ? skOptsHtml(sk) : '') : esc(m); }).join('<br>') + (ALERT.list.length > 4 ? '<br>…' : '') + '</div></div><div class="ab">';
   var nm = nakaMove(); if (nm) h += '<button class="go" id="alNaka">🔧 自動処理（中仕切を ' + (nm > 0 ? '後ろへ ' + nm : '前へ ' + (-nm)) + ' mm 動かす）</button>';
   if (canFixJoints()) h += '<button class="go" id="alFixJ">🔧 自動処理（目地を 合わせる）</button>';
   if (g && g.bad && ALERT.list.some(function(m){ return /^拝石が 中仕切|^納骨室の 開口部/.test(m); })) h += '<button class="go" id="alGap">🔧 自動処理（直し方を 選ぶ）</button>';
@@ -759,12 +869,13 @@ function renderAlert(){
   bx.innerHTML = h; bx.style.display = 'flex';
 }
 $('alertBar').addEventListener('click', function(e){
-  var b = e.target.closest('button'); if (!b || !ALERT) return;
+  var b = e.target.closest('button'); if (!b || !ALERT) return; if (skClick(e)) return;
   if (b.id === 'alFixJ') fixJoints(); else if (b.id === 'alNaka') nakaMoveDo();
   else if (b.id === 'alGap') { GAPOPEN = true; renderGap(); $('gapBox').scrollIntoView({ block:'nearest' }); }
   else if (b.id === 'alUndo') { undoPush(); szRestore(ALERT.snap); ALERT = null; run(); }
   else if (b.id === 'alX') alertOff();
 });
+$('hitlist').addEventListener('click', function(e){ var b = e.target.closest('button'); if (!b || !b.dataset.skk) return; SKOPEN = b.dataset.skk; renderSk(); renderAlert(); $('hitlist').style.display = 'none'; $('skBox').scrollIntoView({ block:'nearest' }); });
 $('badge').onclick = function(){ if (RES.hits.length || (RES.ng || []).length) { var h = $('hitlist'); h.style.display = h.style.display === 'block' ? 'none' : 'block'; } };
 
 // ── 部材構成（3D の 上。Fusion の ブラウザの 形）──
@@ -1167,6 +1278,7 @@ $('selBox').addEventListener('change', function(e){
   if (d.sat) { var p6 = RES.parts[SEL], sl6 = p6 && slotOf(setById(p6.setId), SEL), vs = parseFloat(t.value); if (sl6 && isFinite(vs)) { sl6.at[d.sat] = vs; setsChanged(); run(); } return; }
   if (t.tagName === 'SELECT' && d.g) { ST.stone[d.g] = t.value; run(); return; }
   if (d.site) { var v = parseFloat(t.value); if (v > 0) ST.site[d.site] = v; else if (d.site === 'glH' && t.value === '') delete ST.site.glH; if (AD) autoRun(true); else run(); return; }
+  if (d.f && isKey(SEL)) { run(); return; }   // 打ち終えたら 合わない 所・隙間の アラートを 出す（v0.8.29）
   if (d.joint) { var vj = parseFloat(t.value); ST.joint = ST.joint || {}; if (vj >= 0) ST.joint[d.joint] = vj; run(); return; }
   if (d.fc) { var v2 = parseFloat(t.value), fv = fenceV(); if (fv && v2 > 0) { var c = KM.fitCur(fv.set, ST); c[d.fc] = v2; ST.fit[fv.set.id] = c; } AD = null; renderAuto(); run(); return; }
   var S;

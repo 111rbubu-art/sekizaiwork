@@ -64,7 +64,7 @@ export function create(box, onPick, onDbl, onCtx){
     Object.keys(r.boxes).forEach(function(k){
       var b = r.boxes[k], w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
       if (!(w > 0 && h > 0 && d > 0)) return;
-      var bad = r.bad && r.bad[k], c0 = new THREE.Color(col(k)); if (bad) c0.lerp(new THREE.Color(0xd9534f), 0.85);   // ✕ の 部材は 赤く（v0.8.23）
+      var bad = r.bad && r.bad[k], c0 = new THREE.Color(col(k)); var hl = r.hl && r.hl[k]; if (hl) c0 = new THREE.Color(hl); else if (bad) c0.lerp(new THREE.Color(0xd9534f), 0.85);   // 開いた 札の 部材は 選択肢の 部材名と 同じ 色（v0.8.47）   // ✕ の 部材は 赤く（v0.8.23）
       var g = new THREE.BoxGeometry(w, h, d), dark = c0.getHSL({}).l < 0.25;
       var sm = new THREE.MeshStandardMaterial({ color:c0, roughness:0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
       var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）

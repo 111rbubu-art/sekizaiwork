@@ -379,6 +379,8 @@ var KM = (function(){
   // ── 外柵の 石どうしの 目地の 確かめ（さいごの 形で）：向かい合う 面の 間が 目地（横・奥行 J.h）と ちがう／重なる ＝ ✕ ──
   function fenceBoxes(f, p){ var B = {}; Object.keys(f.parts || {}).forEach(function(k){ var q = p[k]; if (!q || q.visible === false) return;
     B[k] = { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }); return B; }
+  // 塔婆柱・塔婆立は 下の 面の 接着で 固定。横（左右・前後）の 目地は 見ない（v0.8.46 本人「下面は 有効、それ以外の 側面の 目地 6 mm は 対象外」）
+  function tobaQ(q){ return !!q && /塔婆/.test(q.name || ''); }
   function ovl(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
   function jointCheck(data, st, p, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return [];
@@ -386,7 +388,7 @@ var KM = (function(){
     for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var a = B[ks[i]], b = B[ks[j]], ox = ovl(a, b, 'x'), oy = ovl(a, b, 'y'), oz = ovl(a, b, 'z'), na = p[ks[i]].name, nb = p[ks[j]].name;
       if (ox > 0.5 && oy > 0.5 && oz > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'hit' }); ng.push(na + ' と ' + nb + ' が 重なる（' + (ox <= oz ? '横 ' + r1(ox) : '奥行 ' + r1(oz)) + ' mm）'); continue; }
-      if (oy <= 1) continue;
+      if (oy <= 1 || tobaQ(p[ks[i]]) || tobaQ(p[ks[j]])) continue;
       ['x', 'z'].forEach(function(A){ var O = A === 'x' ? 'z' : 'x'; if (ovl(a, b, O) <= 1) return;
         var g = a[A + '0'] < b[A + '0'] ? b[A + '0'] - a[A + '1'] : a[A + '0'] - b[A + '1']; g = r1(g);
         if (g >= -0.5 && g < T + 50 && Math.abs(g - J.h) > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'gap', g:g });
@@ -409,7 +411,8 @@ var KM = (function(){
     if (!q.length) ks.forEach(function(k){ if (anc[k]) { done[k] = 1; q.push(k); } });
     function nb(k, A, side){ // side：'0'＝小さい 側の 石、'1'＝大きい 側
       var a = B[k], O = A === 'x' ? 'z' : 'x';
-      return ks.filter(function(o){ if (o === k) return false; var b = B[o]; if (ovl(a, b, 'y') <= 1 || ovl(a, b, O) <= 1) return false;
+      if (tobaQ(p[k])) return [];
+      return ks.filter(function(o){ if (o === k || tobaQ(p[o])) return false; var b = B[o]; if (ovl(a, b, 'y') <= 1 || ovl(a, b, O) <= 1) return false;
         var g = side === '0' ? a[A + '0'] - b[A + '1'] : b[A + '0'] - a[A + '1']; return g > -Math.min(a[A + '1'] - a[A + '0'], b[A + '1'] - b[A + '0']) && g < T; }); }
     while (q.length) {
       var k = q.shift();

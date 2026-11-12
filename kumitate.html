@@ -239,7 +239,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.34"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.43';
+var APP_VER = 'v0.8.44';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -535,7 +535,9 @@ function sel3d(){
   var o = {}; Object.keys(RES.boxes).forEach(function(k){ if (RES.parts[k].kind === kd) o[k] = 1; }); return o;
 }
 function draw(refit){ if (V3 && V3.setGround) V3.setGround(ST.ground || ''); if (V3) V3.update(viewRes(), colorOf, sel3d(), ST.hide['#site'] ? null : ST.site, refit);
-  if (V3 && V3.sizeMode && SZ) V3.sizeMode({ faces:szFaces(), dims:szDims(), onDrag:szDrag });
+  if (SZ || PM) DIMP = [];   // 大きさを 変更・移動の 間は 選んだ 部材の 札を 出さない
+  if (V3 && V3.sizeMode && SZ && SZ.mv) V3.sizeMode({ faces:mvFaces(), dims:mvDims(), onDrag:mvDrag });
+  else if (V3 && V3.sizeMode && SZ) V3.sizeMode({ faces:szFaces(), dims:szDims(), onDrag:szDrag });
   else if (V3 && V3.sizeMode) { var sd = selDims(); V3.sizeMode(sd.length ? { faces:[], dims:sd } : null); }
   renderDimPins(); }
 // ── 部材を 選んだ ら 幅・奥行・高さの 寸法線（3D）と 札（押すと 数を 入れて 変える。v0.8.42 本人「部材を 選択したら 縦横高さの 寸法を 画面で 表示、クリックで 変更」）──
@@ -829,7 +831,7 @@ function ctxOpen(k, x, y){
   if (SEL !== k) { SEL = k; run(); }
   var p = RES.parts[k], c = $('ctx'), h = '<div class="h">' + esc(p.name) + '（' + Math.round(p.w) + ' × ' + Math.round(p.h) + ' × ' + Math.round(p.d) + '）</div>';
   h += '<button data-c="sz">📏 大きさを 変更</button>';
-  if (freeOf(k)) h += '<button data-c="mv">✥ 動かす　<span class="muted">M</span></button>';
+  h += '<button data-c="mv">✥ 移動</button>';
   if (SKP) h += '<button data-c="kk">📄 加工図面</button>';
   h += '<button data-c="hd">👁 隠す</button>';
   c.innerHTML = h; c.dataset.k = k; c.style.display = 'block';
@@ -839,7 +841,7 @@ $('ctx').addEventListener('click', function(e){
   var b = e.target.closest('button'), k = this.dataset.k; if (!b || !k) return; ctxClose();
   var c = b.dataset.c;
   if (c === 'sz') szStart(k);
-  else if (c === 'mv') { var f0 = freeOf(k); if (f0) startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); }
+  else if (c === 'mv') { var f0 = freeOf(k); if (f0) startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); else mvStart(k); }
   else if (c === 'kk') openKakou(k);
   else if (c === 'hd') { undoPush(); ST.hide[k] = 1; if (SEL === k) SEL = null; run(); }
 });
@@ -935,6 +937,7 @@ function szDrag(id, mm, done, how){
   if (!SZ.raf) SZ.raf = requestAnimationFrame(function(){ if (!SZ) return; SZ.raf = 0; run(); szStatus(); });
 }
 function szPanel(focus){
+  if (SZ && SZ.mv) return mvPanel(focus);
   if (!SZ) return; var p = RES.parts[SZ.k], fs = szFaces(), can = {}; if (!p) return;
   fs.forEach(function(f){ if (f.ok) can[FD[f.id]] = 1; });
   var L = { w:'幅', d:'奥行', h:'高さ' }, h = '<b>📏 ' + esc(p.name) + ' の 大きさを 変更</b>';
@@ -947,7 +950,7 @@ function szPanel(focus){
   if (focus) { var i = bx.querySelector('[data-szd="' + focus + '"]'); if (i) { i.focus(); i.select(); } }
 }
 function szStatus(){
-  var el = $('szSt'); if (!el || !SZ) return; var g = gapOf(), L = [];
+  var el = $('szSt'); if (!el || !SZ) return; if (SZ.mv) return mvStatus(el); var g = gapOf(), L = [];
   if (g && (SZ.k === g.hk || SZ.k === g.nk)) {
     if (Math.abs(g.gap) <= 1) L.push('<div style="color:#1d7a3a">✓ 中仕切に ' + g.kakari + ' かかる</div>');
     gapMsg(g).forEach(function(m){ L.push('<div class="err">✕ ' + esc(m) + '</div>'); });
@@ -965,8 +968,59 @@ function szOk(){
 }
 function szNo(){ if (!SZ) return; szRestore(SZ.snap); szEnd(); run(); }
 $('szBox').addEventListener('click', function(e){ var b = e.target.closest('button'); if (!b) return; if (b.id === 'szOk') szOk(); else if (b.id === 'szNo') szNo(); else if (b.id === 'szUndo') undo(); });
+$('szBox').addEventListener('change', function(e){ var a = e.target.dataset.mvd; if (a && SZ && SZ.mv) { var v = parseFloat(e.target.value); if (isFinite(v)) { undoPush(); mvBy(a, v - SZ.off[a]); run(); mvPanel(); } return; } });
 $('szBox').addEventListener('change', function(e){ var d = e.target.dataset.szd; if (!d || !SZ) return; var v = parseFloat(e.target.value); if (v > 0) { undoPush(); szSet(d, v); run(); szPanel(); } });
-$('szBox').addEventListener('keydown', function(e){ if (e.key === 'Enter' && e.target.dataset.szd) { e.target.blur(); e.preventDefault(); } });
+$('szBox').addEventListener('keydown', function(e){ if (e.key === 'Enter' && (e.target.dataset.szd || e.target.dataset.mvd)) { e.target.blur(); e.preventDefault(); } });
+
+// ── 移動（v0.8.44 本人「移動も できる 様に して」）：右クリック［✥ 移動］。前後・左右の 矢印を 引く（となりと 目地 6 で 吸い付く）か 数を 入れる。
+//   大きさは そのまま。外柵の 石＝st.mv、石塔などの 石＝st.osh、中仕切＝hman.nz。拝石の 前後は きまり（芝台の 前＋目地）で 灰色
+var MVF = { x0:['x', -1], x1:['x', 1], z0:['z', -1], z1:['z', 1] };
+function mvStart(k){
+  if (PM) pmCancel(); if (SZ) szOk();
+  var m = szMode(k); SEL = k; if (m === 'free') { var f0 = freeOf(k); if (f0) startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); return; }
+  SZ = { k:k, mv:1, mode:m, snap:szSnap(), before:probList(), off:{ x:0, z:0 }, d0:{} };
+  alertOff(); run(); mvPanel();
+}
+function mvOk(id){ return !(SZ.mode === 'h' && MVF[id][0] === 'z'); }
+function mvFaces(){
+  var b = RES.boxes[SZ.k]; if (!b) return []; var cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, cz = (b.z0 + b.z1) / 2;
+  var P = { x0:{ x:b.x0, y:cy, z:cz }, x1:{ x:b.x1, y:cy, z:cz }, z0:{ x:cx, y:cy, z:b.z0 }, z1:{ x:cx, y:cy, z:b.z1 } };
+  return ['x0', 'x1', 'z0', 'z1'].map(function(id){ var t = szTouch(SZ.k, id); return { id:id, p:P[id], n:FN[id], ok:mvOk(id), touch:t != null && t <= 20 }; });
+}
+// となりの 石までの 間（前後・左右）を 寸法線で
+function mvDims(){
+  var k = SZ.k, b = RES.boxes[k]; if (!b) return []; var out = [], cy = b.y1;
+  ['x0', 'x1', 'z0', 'z1'].forEach(function(id){ var g = szTouch(k, id); if (g == null || g > 400) return; var A = MVF[id][0], sg = MVF[id][1], f = b[id];
+    var a = { x:(b.x0 + b.x1) / 2, y:cy, z:(b.z0 + b.z1) / 2 }, c; a[A] = f; c = Object.assign({}, a); c[A] = f + sg * g;
+    out.push({ a:a, b:c, t:A === 'x' ? [0, 0, 1] : [1, 0, 0], text:'間 ' + Math.round(g), hot:SZ.drag && SZ.drag.id === id }); });
+  return out;
+}
+function mvBy(A, s){ if (moveStone(ST, SZ.k, SZ.mode, A, s)) SZ.off[A] = Math.round((SZ.off[A] + s) * 10) / 10; }
+function mvDrag(id, mm, done, how){
+  if (!SZ) return; if (how === 'click') return; var A = MVF[id][0], sg = MVF[id][1];
+  if (SZ.drag == null || SZ.drag.id !== id) { undoPush(); var g = szTouch(SZ.k, id), J = (ST.joint && ST.joint.h != null) ? +ST.joint.h : 6; SZ.drag = { id:id, done:0, tgt:g != null && g < 400 ? g - J : null }; }
+  var v = Math.round(mm), t = SZ.drag.tgt; if (t != null && Math.abs(v - t) <= 6) v = Math.round(t * 10) / 10;
+  mvBy(A, sg * (v - SZ.drag.done)); SZ.drag.done = v;
+  if (done) { SZ.drag = null; run(); mvPanel(); return; }
+  if (!SZ.raf) SZ.raf = requestAnimationFrame(function(){ if (!SZ) return; SZ.raf = 0; run(); szStatus(); });
+}
+function mvPanel(focus){
+  if (!SZ) return; var p = RES.parts[SZ.k]; if (!p) return;
+  var h = '<b>✥ ' + esc(p.name) + ' を 移動</b>';
+  h += '<div class="szr"><span class="k" style="width:44px">左右</span><input type="number" inputmode="numeric" data-mvd="x" value="' + SZ.off.x + '"> mm <span class="muted">＋＝右</span></div>';
+  h += '<div class="szr"><span class="k" style="width:44px">前後</span>' + (SZ.mode === 'h' ? '<span class="muted">芝台の 前で 決まる</span>' : '<input type="number" inputmode="numeric" data-mvd="z" value="' + SZ.off.z + '"> mm <span class="muted">＋＝前</span>') + '</div>';
+  h += '<div id="szSt"></div>';
+  h += '<div class="muted" style="margin:4px 0 6px">緑の 矢印を 引く（となりと 目地 ' + ((ST.joint && ST.joint.h != null) ? +ST.joint.h : 6) + ' で 止まる）か 数を 入れて Enter（Esc で やめる）</div>';
+  h += '<div style="display:flex;gap:6px;align-items:center"><button class="go" id="szOk" style="flex:1">✓ 決定</button><button class="lk" id="szUndo" title="1 つ 前に 戻す（Ctrl+Z）"' + (UNDO.length ? '' : ' disabled') + '>↶ 戻る</button><button class="lk" id="szNo">やめる</button></div>';
+  var bx = $('szBox'); bx.innerHTML = h; bx.style.display = 'block'; szStatus();
+  if (focus) { var i = bx.querySelector('[data-mvd="' + focus + '"]'); if (i) { i.focus(); i.select(); } }
+}
+function mvStatus(el){
+  var L = [];
+  probList().filter(function(m){ return SZ.before.indexOf(m) < 0; }).slice(0, 4).forEach(function(m){ L.push('<div class="err">⚠ ' + esc(m) + '</div>'); });
+  ['x', 'z'].forEach(function(a){ var i = document.querySelector('#szBox [data-mvd="' + a + '"]'); if (i && document.activeElement !== i) i.value = SZ.off[a]; });
+  el.innerHTML = L.join('');
+}
 
 // ── 変えた あとの アラート：重なる・目地が 合わない。自動で 直せる ものは［🔧 自動処理］（v0.8.23）──
 var ALERT = null;

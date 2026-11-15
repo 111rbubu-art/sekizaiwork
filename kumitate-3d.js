@@ -3,7 +3,7 @@ import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
 import { partGroup, fusionMouse } from './zumen-3d.js?v=0.9.27';
 
-export function create(box, onPick, onDbl, onCtx){
+export function create(box, onPick, onDbl, onCtx, onBox){
   var renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(0xf3f5f8);
@@ -109,16 +109,35 @@ export function create(box, onPick, onDbl, onCtx){
     controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip(); dirty = true;
   }
   // 押した 部材（動かした ときは 押した ことに しない）
-  var down = null, ray = new THREE.Raycaster();
-  renderer.domElement.addEventListener('pointerdown', function(e){ down = e.button === 0 ? { x:e.clientX, y:e.clientY } : null; });   // 左で 押した ときだけ 選ぶ
+  var down = null, ray = new THREE.Raycaster(), selRect = null;
+  renderer.domElement.addEventListener('pointerdown', function(e){ down = e.button === 0 ? { x:e.clientX, y:e.clientY, mouse:e.pointerType === 'mouse' } : null; });   // 左で 押した ときだけ 選ぶ
+  // 窓で 選ぶ（マウスの 左で 引く。v0.8.48）：左から 右＝囲んだ 部材（青の 実線）、右から 左＝かかった 部材（緑の 破線）。AutoCAD・Fusion と 同じ
+  renderer.domElement.addEventListener('pointermove', function(e){
+    if (!down || !down.mouse || !onBox || PM || SZ || szDrag || !(e.buttons & 1)) return;
+    if (!selRect && Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 6) return;
+    if (!selRect) { selRect = document.createElement('div'); selRect.style.cssText = 'position:fixed;z-index:40;pointer-events:none'; document.body.appendChild(selRect); try { renderer.domElement.setPointerCapture(e.pointerId); } catch (er) {} }
+    var cross = e.clientX < down.x;
+    selRect.style.left = Math.min(e.clientX, down.x) + 'px'; selRect.style.top = Math.min(e.clientY, down.y) + 'px';
+    selRect.style.width = Math.abs(e.clientX - down.x) + 'px'; selRect.style.height = Math.abs(e.clientY - down.y) + 'px';
+    selRect.style.border = cross ? '1.5px dashed #1f9d55' : '1.5px solid #2563eb'; selRect.style.background = cross ? 'rgba(31,157,85,.10)' : 'rgba(37,99,235,.10)';
+  });
+  function boxPick(x0, y0, x1, y1, cross){
+    var r = last && last.r; if (!r) return []; var rc = renderer.domElement.getBoundingClientRect(), L = Math.min(x0, x1) - rc.left, R = Math.max(x0, x1) - rc.left, T = Math.min(y0, y1) - rc.top, B = Math.max(y0, y1) - rc.top, out = [];
+    Object.keys(r.boxes).forEach(function(k){ var b = r.boxes[k], mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9, behind = false;
+      [b.x0, b.x1].forEach(function(x){ [b.y0, b.y1].forEach(function(y){ [b.z0, b.z1].forEach(function(z){ var v = new THREE.Vector3(x, y, z).project(cam); if (v.z > 1) behind = true; var q = { x:(v.x + 1) / 2 * rc.width, y:(1 - v.y) / 2 * rc.height }; mnx = Math.min(mnx, q.x); mxx = Math.max(mxx, q.x); mny = Math.min(mny, q.y); mxy = Math.max(mxy, q.y); }); }); });
+      if (behind) return;
+      if (cross ? (mxx >= L && mnx <= R && mxy >= T && mny <= B) : (mnx >= L && mxx <= R && mny >= T && mxy <= B)) out.push(k); });
+    return out;
+  }
   renderer.domElement.addEventListener('pointerup', function(e){
+    if (selRect) { selRect.remove(); selRect = null; var d0 = down; down = null; if (d0) onBox(boxPick(d0.x, d0.y, e.clientX, e.clientY, e.clientX < d0.x), e); return; }
     if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) { down = null; return; }
     down = null;
     var rc = renderer.domElement.getBoundingClientRect();
     ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);
     if (PM) { var inf = pmHit(e); if (inf && PM.onClick) PM.onClick(inf); return; }
     var hits = ray.intersectObjects(meshes, false);
-    if (onPick) onPick(hits.length ? hits[0].object.userData.key : null);
+    if (onPick) onPick(hits.length ? hits[0].object.userData.key : null, e);
   });
   // ダブルクリック＝その 部材の 加工図面（タブの 枠の 中だけ）
   if (onDbl) renderer.domElement.addEventListener('dblclick', function(e){ if (PM || e.button !== 0) return;

@@ -245,7 +245,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.34"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.47';
+var APP_VER = 'v0.8.48';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -299,6 +299,10 @@ var ST = lsGet('kumitate.state');
 if (!ST || ST.schema !== 'kumitate/1') ST = KM.newState(DATA);
 ST.shapes = ST.shapes || {};
 var SEL = null, RES = null, V3 = null;
+// ── まとめて 選ぶ（v0.8.48 本人「選択されている部材をまとめて移動できるようにして」）──
+//   MSEL＝SEL の ほかに 選んだ 部材 {鍵:1}。Ctrl／Shift＋クリック（3D・部材構成）で 足す・外す、3D を 左で 引くと 窓で 選ぶ（Fusion・AutoCAD と 同じ）。
+//   MSELO＝MSEL を 作った ときの SEL。ほかの 所で SEL が 変わったら（ふつうの クリック・部材を 足す など）MSEL は 消える
+var MSEL = {}, MSELO = null;
 ST.free = ST.free || [];
 // 計算：組み立てエンジン ＋ 足した 部材（支点で 置く）
 function calc(){ mvClean(ST); return calcOn(ST); }
@@ -534,6 +538,30 @@ function takeSetFile(j, keepSel){
 function isKey(k){ return !!k && k[0] !== '#'; }
 ST.fit = ST.fit || {}; ST.hide = ST.hide || {};
 function kindOf(k){ var m = /^#k:(\w+)$/.exec(k || ''); return m ? m[1] : ''; }
+// 選んで いる 部材（まとめて 動かす もの）。種類（外柵 ぜんぶ など）を 選んで いる ときは その 部材 ぜんぶ
+function selKeys(){
+  if (!RES) return [];
+  if (isKey(SEL)) return [SEL].concat(Object.keys(MSEL).filter(function(k){ return k !== SEL && RES.boxes[k] && !ST.hide[k]; })).filter(function(k){ return RES.boxes[k]; });
+  var kd = kindOf(SEL); if (!kd) return [];
+  return Object.keys(RES.boxes).filter(function(k){ return RES.parts[k].kind === kd && !ST.hide[k]; });
+}
+function multiSel(){ return isKey(SEL) && Object.keys(MSEL).some(function(k){ return k !== SEL && RES && RES.boxes[k] && !ST.hide[k]; }); }
+function selClear(){ SEL = null; MSEL = {}; MSELO = null; }
+// k を 足す／外す（Ctrl・Shift＋クリック）
+function selToggle(k){
+  if (!k || !RES.parts[k]) return;
+  if (!isKey(SEL)) { var ks = kindOf(SEL) ? selKeys() : []; MSEL = {}; ks.forEach(function(x){ MSEL[x] = 1; }); if (ks.indexOf(k) >= 0) { delete MSEL[k]; SEL = ks.filter(function(x){ return x !== k; })[0] || null; } else SEL = k; }
+  else if (k === SEL) { var rest = Object.keys(MSEL).filter(function(x){ return x !== k && RES.boxes[x]; }); delete MSEL[k]; SEL = rest[0] || null; if (SEL) delete MSEL[SEL]; }
+  else if (MSEL[k]) delete MSEL[k];
+  else MSEL[k] = 1;
+  MSELO = SEL;
+}
+// 窓で 選んだ 部材 ks を 選ぶ（add＝いまの 選択に 足す）
+function selSet(ks, add){
+  ks = ks.filter(function(k){ return RES.parts[k]; }); if (!ks.length) return;
+  if (!add || !isKey(SEL)) { if (add && kindOf(SEL)) { var o = selKeys(); MSEL = {}; o.forEach(function(x){ MSEL[x] = 1; }); SEL = o[0] || ks[0]; } else { MSEL = {}; SEL = ks[0]; } }
+  ks.forEach(function(k){ if (k !== SEL) MSEL[k] = 1; }); MSELO = SEL;
+}
 // 3D に 出す 答え（👁 で かくした 部材は 抜く。干渉の 判断は かくしても そのまま）
 function viewRes(){
   var b = {}; Object.keys(RES.boxes).forEach(function(k){ if (!ST.hide[k]) b[k] = RES.boxes[k]; });
@@ -541,6 +569,7 @@ function viewRes(){
   return { parts:RES.parts, boxes:b, hits:RES.hits.filter(function(h){ return !ST.hide[h.a] && !ST.hide[h.b]; }), bad:pb.bad, hl:hlMap(), zones:pb.zones.map(function(z){ return z.pin ? Object.assign({}, z, { label:'' }) : z; }) };
 }
 function sel3d(){
+  if (multiSel()) { var o0 = {}; selKeys().forEach(function(k){ o0[k] = 1; }); return o0; }
   if (isKey(SEL)) return SEL;
   var kd = kindOf(SEL); if (!kd) return null;
   var o = {}; Object.keys(RES.boxes).forEach(function(k){ if (RES.parts[k].kind === kd) o[k] = 1; }); return o;
@@ -553,7 +582,7 @@ function draw(refit){ if (V3 && V3.setGround) V3.setGround(ST.ground || ''); if 
   renderDimPins(); }
 // ── 部材を 選んだ ら 幅・奥行・高さの 寸法線（3D）と 札（押すと 数を 入れて 変える。v0.8.42 本人「部材を 選択したら 縦横高さの 寸法を 画面で 表示、クリックで 変更」）──
 var DIMP = [], DIMED = null;
-function selOn(){ return isKey(SEL) && !SZ && !PM && RES && RES.boxes[SEL] && !ST.hide[SEL] && RES.parts[SEL] && !RES.parts[SEL].free; }
+function selOn(){ return isKey(SEL) && !multiSel() && !SZ && !PM && RES && RES.boxes[SEL] && !ST.hide[SEL] && RES.parts[SEL] && !RES.parts[SEL].free; }
 function selDims(){
   if (!selOn()) { DIMP = []; return []; }
   var b = RES.boxes[SEL], p = RES.parts[SEL], o = 70, zf = b.z1 + o, xr = b.x1 + o, L = { w:'幅', d:'奥行', h:'高さ' };
@@ -606,6 +635,7 @@ function szDims(){
 function run(refit){
   RES = calc();
   if (isKey(SEL) && !RES.boxes[SEL]) SEL = null;
+  if (SEL !== MSELO || !isKey(SEL)) { MSEL = {}; MSELO = null; }   // ほかの 所で 選び直した
   if (SZ && (!RES.boxes[SZ.k] || ST.hide[SZ.k])) szEnd();
   if (kindOf(SEL) && !Object.keys(RES.boxes).some(function(k){ return RES.parts[k].kind === kindOf(SEL); })) SEL = null;
   draw(refit);
@@ -848,8 +878,17 @@ function ctxClose(){ var c = $('ctx'); c.style.display = 'none'; c.dataset.k = '
 function ctxOpen(k, x, y){
   if (!k || !RES.parts[k]) { ctxClose(); return; }
   if (SZ && SZ.k !== k) szOk();
-  if (SEL !== k) { SEL = k; run(); }
-  var p = RES.parts[k], c = $('ctx'), h = '<div class="h">' + esc(p.name) + '（' + Math.round(p.w) + ' × ' + Math.round(p.h) + ' × ' + Math.round(p.d) + '）</div>';
+  var ks = selKeys(), grp = ks.length > 1 && ks.indexOf(k) >= 0;   // 選んだ 部材の 上で 右クリック＝まとめて
+  if (!grp && SEL !== k) { SEL = k; run(); }
+  var p = RES.parts[k], c = $('ctx'), h;
+  if (grp) {
+    h = '<div class="h">' + ks.length + ' 個を 選択中（' + esc(ks.slice(0, 3).map(function(x){ return RES.parts[x].name; }).join('・')) + (ks.length > 3 ? ' ほか' : '') + '）</div>';
+    h += '<button data-c="mv">✥ まとめて 移動</button><button data-c="hd">👁 まとめて 隠す</button><button data-c="one">▢ ' + esc(p.name) + ' だけを 選ぶ</button>';
+    c.innerHTML = h; c.dataset.k = k; c.dataset.g = '1'; c.style.display = 'block';
+    var w0 = c.offsetWidth, hh0 = c.offsetHeight; c.style.left = Math.min(x, window.innerWidth - w0 - 8) + 'px'; c.style.top = Math.min(y, window.innerHeight - hh0 - 8) + 'px'; return;
+  }
+  c.dataset.g = '';
+  h = '<div class="h">' + esc(p.name) + '（' + Math.round(p.w) + ' × ' + Math.round(p.h) + ' × ' + Math.round(p.d) + '）</div>';
   h += '<button data-c="sz">📏 大きさを 変更</button>';
   h += '<button data-c="mv">✥ 移動</button>';
   if (SKP) h += '<button data-c="kk">📄 加工図面</button>';
@@ -858,8 +897,13 @@ function ctxOpen(k, x, y){
   var w = c.offsetWidth, hh = c.offsetHeight; c.style.left = Math.min(x, window.innerWidth - w - 8) + 'px'; c.style.top = Math.min(y, window.innerHeight - hh - 8) + 'px';
 }
 $('ctx').addEventListener('click', function(e){
-  var b = e.target.closest('button'), k = this.dataset.k; if (!b || !k) return; ctxClose();
+  var b = e.target.closest('button'), k = this.dataset.k, g = this.dataset.g === '1'; if (!b || !k) return; ctxClose();
   var c = b.dataset.c;
+  if (g) { var ks = selKeys();
+    if (c === 'mv') mvStartG(k, ks);
+    else if (c === 'hd') { undoPush(); ks.forEach(function(x){ ST.hide[x] = 1; }); selClear(); run(); }
+    else if (c === 'one') { SEL = k; MSEL = {}; MSELO = null; run(); }
+    return; }
   if (c === 'sz') szStart(k);
   else if (c === 'mv') { var f0 = freeOf(k); if (f0) startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); else mvStart(k); }
   else if (c === 'kk') openKakou(k);
@@ -874,9 +918,9 @@ var SZ = null;
 var FN = { x0:[-1, 0, 0], x1:[1, 0, 0], z0:[0, 0, -1], z1:[0, 0, 1], y1:[0, 1, 0] }, FD = { x0:'w', x1:'w', z0:'d', z1:'d', y1:'h' };
 function szMode(k){ var g = gapOf(), p = RES.parts[k]; if (!p) return '';
   if (g && k === g.hk) return 'h'; if (g && k === g.nk) return 'n'; if (p.free) return 'free'; if (fenceV() && fenceV().parts[k]) return 'fence'; return 'over'; }
-function szTouch(k, f){   // その 面の 向こうに 20 mm 以内で ほかの 石が ある
-  var b = RES.boxes[k], A = f[0], O = ['x', 'y', 'z'].filter(function(a){ return a !== A; }), J = (ST.joint && ST.joint.h != null) ? +ST.joint.h : 6, best = null;
-  Object.keys(RES.boxes).forEach(function(o){ if (o === k || ST.hide[o]) return; var c = RES.boxes[o];
+function szTouch(k, f, ex){   // その 面の 向こうに 20 mm 以内で ほかの 石が ある（ex＝見ない 石 {鍵:1}。まとめて 動かす ときの 仲間）
+  var b = typeof k === 'object' ? k : RES.boxes[k], A = f[0], O = ['x', 'y', 'z'].filter(function(a){ return a !== A; }), J = (ST.joint && ST.joint.h != null) ? +ST.joint.h : 6, best = null;
+  Object.keys(RES.boxes).forEach(function(o){ if (o === k || ST.hide[o] || (ex && ex[o])) return; var c = RES.boxes[o];
     if (O.some(function(a){ return Math.min(b[a + '1'], c[a + '1']) - Math.max(b[a + '0'], c[a + '0']) <= 1; })) return;
     var gp = f[1] === '1' ? c[A + '0'] - b[A + '1'] : b[A + '0'] - c[A + '1']; if (gp < -0.5) return;
     if (best == null || gp < best) best = gp; });
@@ -892,9 +936,11 @@ function szFaces(){
     return { id:id, p:P[id], n:FN[id], ok:ok, touch:ok && t != null && t <= 20 }; });
 }
 function szSnap(){ var shp = {}; Object.keys(ST.shapes || {}).forEach(function(k){ if (ST.shapes[k] && ST.shapes[k].params) shp[k] = ST.shapes[k].params; });
-  return JSON.stringify({ over:ST.over || {}, osh:ST.osh || null, mv:ST.mv || null, mvman:ST.mvman || null, hman:ST.hman || null, haiseki:ST.haiseki, nakaAdd:ST.nakaAdd, hide:ST.hide || {}, shp:shp }); }
+  var fo = {}; (ST.free || []).forEach(function(f){ if (f.off) fo[f.key] = f.off; });
+  return JSON.stringify({ over:ST.over || {}, osh:ST.osh || null, mv:ST.mv || null, mvman:ST.mvman || null, hman:ST.hman || null, haiseki:ST.haiseki, nakaAdd:ST.nakaAdd, hide:ST.hide || {}, shp:shp, fo:fo }); }
 function szRestore(s){ var o = JSON.parse(s); ST.over = o.over || {}; ['osh', 'mv', 'mvman', 'hman', 'haiseki', 'nakaAdd'].forEach(function(f){ if (o[f] == null) delete ST[f]; else ST[f] = o[f]; });
-  if (o.hide) ST.hide = o.hide; Object.keys(o.shp || {}).forEach(function(k){ if (ST.shapes[k]) ST.shapes[k].params = o.shp[k]; }); }
+  if (o.hide) ST.hide = o.hide; Object.keys(o.shp || {}).forEach(function(k){ if (ST.shapes[k]) ST.shapes[k].params = o.shp[k]; });
+  if (o.fo) (ST.free || []).forEach(function(f){ if (o.fo[f.key]) f.off = o.fo[f.key]; }); }
 // ［↶ 戻る］（Ctrl+Z）：大きさ・自動処理・隠す の 変更を 1 つずつ 戻す（v0.8.26）
 var UNDO = [];
 function undoPush(){ var s = szSnap(); if (UNDO[UNDO.length - 1] !== s) { UNDO.push(s); if (UNDO.length > 50) UNDO.shift(); } undoBtn(); }
@@ -904,7 +950,7 @@ function undo(){ if (!UNDO.length) return; var cur = szSnap(), s = UNDO.pop(); w
 function probList(){ return (RES.ng || []).concat(RES.hits.map(function(x){ return x.nameA + ' と ' + x.nameB + ' が 重なる（横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + '）'; })); }
 function szStart(k){
   if (PM) pmCancel(); if (SZ) szOk();
-  var m = szMode(k); SEL = k;
+  var m = szMode(k); SEL = k; MSEL = {}; MSELO = null;
   if (m === 'free') { run(); var i = document.querySelector('#selBox [data-fw]'); if (i) { i.focus(); i.select(); } return; }
   var p = RES.parts[k]; SZ = { k:k, mode:m, snap:szSnap(), before:probList(), d0:{ w:p.w, d:p.d, h:p.h }, last:{ w:'x1', d:m === 'n' || m === 'over' ? 'z0' : 'z1', h:'y1' } };
   alertOff(); run(); szPanel();
@@ -932,6 +978,8 @@ function shiftOsh(S, k, o){ S.osh = S.osh || {}; var q2 = S.osh[k] = S.osh[k] ||
 // 石 k を 軸 A（'x'｜'z'）に s mm 動かす（大きさは そのまま）。動かせない 石は false
 function moveStone(S, k, m, A, s){
   if (Math.abs(s) < 0.05) return false;
+  if (m === 'free') { var fr = (S.free || []).filter(function(f){ return f.key === k; })[0]; if (!fr || !(fr.tgt && fr.tgt.pts && fr.tgt.pts.length)) return false;   // 足した 部材は 支点からの ずれ（off。z は ＋＝後ろ）
+    fr.off = Object.assign({ x:0, y:0, z:0 }, fr.off || {}); fr.off[A] = Math.round(((+fr.off[A] || 0) + (A === 'z' ? -s : s)) * 10) / 10; return true; }
   if (m === 'h' && A === 'z') return false;   // 拝石の 前後は きまり（芝台の 前＋目地）
   if (m === 'n' && A === 'z') { S.hman = Object.assign({}, S.hman || {}); S.hman.nz = Math.round(((+S.hman.nz || 0) - s) * 10) / 10; return true; }   // 中仕切は 中仕切ごと（後ろの 石が ついてくる）
   if (m === 'fence') { S.mv = S.mv || {}; S.mvman = S.mvman || {}; S.mvman[k] = 1; var v = S.mv[k] = S.mv[k] || {};
@@ -982,7 +1030,7 @@ function szStatus(){
 }
 function szEnd(){ SZ = null; if (V3 && V3.sizeMode) V3.sizeMode(null); $('szBox').style.display = 'none'; }
 function szOk(){
-  if (!SZ) return; var name = RES.parts[SZ.k] ? RES.parts[SZ.k].name : '', before = SZ.before, snap = SZ.snap; szEnd(); run();
+  if (!SZ) return; var name = SZ.ks ? SZ.ks.length + ' 個の 部材' : RES.parts[SZ.k] ? RES.parts[SZ.k].name : '', before = SZ.before, snap = SZ.snap; szEnd(); run();
   var nw = probList().filter(function(m){ return before.indexOf(m) < 0; });
   if (nw.length) alertOn(name, nw, snap);
 }
@@ -1001,24 +1049,54 @@ function mvStart(k){
   SZ = { k:k, mv:1, mode:m, snap:szSnap(), before:probList(), off:{ x:0, z:0 }, d0:{} };
   alertOff(); run(); mvPanel();
 }
-function mvOk(id){ return !(SZ.mode === 'h' && MVF[id][0] === 'z'); }
+// まとめて 移動：選んだ 部材 ぜんぶを 同じだけ 動かす。矢印は 選んだ 部材を 囲む 箱に、吸い付くのは 仲間で ない 石との 目地
+function mvStartG(k, ks){
+  if (PM) pmCancel(); if (SZ) szOk();
+  ks = ks.filter(function(x){ return RES.boxes[x]; }); if (ks.length < 2) { mvStart(k); return; }
+  var b0 = {}, ex = {}; ks.forEach(function(x){ b0[x] = Object.assign({}, RES.boxes[x]); ex[x] = 1; });
+  SZ = { k:k, ks:ks, ex:ex, b0:b0, mv:1, mode:'grp', snap:szSnap(), before:probList(), off:{ x:0, z:0 }, d0:{} };
+  alertOff(); run(); mvPanel();
+}
+// 動かせる 向き：拝石の 前後は きまり（芝台に ついて くる）、置いて いない 足した 部材は 動かない
+function grpCan(k, A){ var m = szMode(k); if (m === 'h' && A === 'z') return false; if (m === 'free') { var fr = freeOf(k); return !!(fr && fr.tgt && fr.tgt.pts && fr.tgt.pts.length); } return !!m; }
+// 始めの 位置＋off に 置く。ほかの 石に ついて 動く 石（芝台に つく 拝石・拝石に のる 香炉 など）が 二重に 動かない ように、計算して ずれを 直す（3 回まで）
+function grpPlace(){
+  // 動かしても 位置が 変わらない 石（きまりで 大きさが 変わる 拝石台 など）は 2 回目から 押さない（1 つ だけ 動かす ときと 同じ 結果に する）
+  var prev = {};
+  for (var it = 0; it < 4; it++) {
+    var r = calc(), any = false;
+    SZ.ks.forEach(function(k){ var b = r.boxes[k], b0 = SZ.b0[k]; if (!b || !b0) return;
+      ['x', 'z'].forEach(function(A){ if (!grpCan(k, A)) return; var d = Math.round((b0[A + '0'] + SZ.off[A] - b[A + '0']) * 10) / 10, pk = k + A;
+        if (it && !(Math.abs(d) < Math.abs(prev[pk]) - 0.05)) return;
+        prev[pk] = d; if (Math.abs(d) >= 0.1 && moveStone(ST, k, szMode(k), A, d)) any = true; }); });
+    if (!any) break;
+  }
+}
+function grpBox(){ var u = null; SZ.ks.forEach(function(k){ var b = RES.boxes[k]; if (!b) return; if (!u) u = Object.assign({}, b); else ['x', 'y', 'z'].forEach(function(a){ u[a + '0'] = Math.min(u[a + '0'], b[a + '0']); u[a + '1'] = Math.max(u[a + '1'], b[a + '1']); }); }); return u; }
+// 仲間で ない 石までの 間（いちばん 近い もの）
+function grpTouch(id){ var best = null; SZ.ks.forEach(function(k){ var b = RES.boxes[k]; if (!b) return; var g = szTouch(b, id, SZ.ex); if (g != null && (best == null || g < best)) best = g; }); return best; }
+function mvTouch(id){ return SZ.ks ? grpTouch(id) : szTouch(SZ.k, id); }
+function mvBox(){ return SZ.ks ? grpBox() : RES.boxes[SZ.k]; }
+function mvOk(id){ if (SZ.ks) return MVF[id][0] === 'x' || SZ.ks.some(function(k){ return grpCan(k, 'z'); }); return !(SZ.mode === 'h' && MVF[id][0] === 'z'); }
 function mvFaces(){
-  var b = RES.boxes[SZ.k]; if (!b) return []; var cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, cz = (b.z0 + b.z1) / 2;
+  var b = mvBox(); if (!b) return []; var cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, cz = (b.z0 + b.z1) / 2;
   var P = { x0:{ x:b.x0, y:cy, z:cz }, x1:{ x:b.x1, y:cy, z:cz }, z0:{ x:cx, y:cy, z:b.z0 }, z1:{ x:cx, y:cy, z:b.z1 } };
-  return ['x0', 'x1', 'z0', 'z1'].map(function(id){ var t = szTouch(SZ.k, id); return { id:id, p:P[id], n:FN[id], ok:mvOk(id), touch:t != null && t <= 20 }; });
+  return ['x0', 'x1', 'z0', 'z1'].map(function(id){ var t = mvTouch(id); return { id:id, p:P[id], n:FN[id], ok:mvOk(id), touch:t != null && t <= 20 }; });
 }
 // となりの 石までの 間（前後・左右）を 寸法線で
 function mvDims(){
-  var k = SZ.k, b = RES.boxes[k]; if (!b) return []; var out = [], cy = b.y1;
-  ['x0', 'x1', 'z0', 'z1'].forEach(function(id){ var g = szTouch(k, id); if (g == null || g > 400) return; var A = MVF[id][0], sg = MVF[id][1], f = b[id];
+  var b = mvBox(); if (!b) return []; var out = [], cy = b.y1;
+  ['x0', 'x1', 'z0', 'z1'].forEach(function(id){ var g = mvTouch(id); if (g == null || g > 400) return; var A = MVF[id][0], sg = MVF[id][1], f = b[id];
     var a = { x:(b.x0 + b.x1) / 2, y:cy, z:(b.z0 + b.z1) / 2 }, c; a[A] = f; c = Object.assign({}, a); c[A] = f + sg * g;
     out.push({ a:a, b:c, t:A === 'x' ? [0, 0, 1] : [1, 0, 0], text:'間 ' + Math.round(g), hot:SZ.drag && SZ.drag.id === id }); });
   return out;
 }
-function mvBy(A, s){ if (moveStone(ST, SZ.k, SZ.mode, A, s)) SZ.off[A] = Math.round((SZ.off[A] + s) * 10) / 10; }
+function mvBy(A, s){
+  if (SZ.ks) { if (!SZ.ks.some(function(k){ return grpCan(k, A); })) return; SZ.off[A] = Math.round((SZ.off[A] + s) * 10) / 10; grpPlace(); return; }
+  if (moveStone(ST, SZ.k, SZ.mode, A, s)) SZ.off[A] = Math.round((SZ.off[A] + s) * 10) / 10; }
 function mvDrag(id, mm, done, how){
   if (!SZ) return; if (how === 'click') return; var A = MVF[id][0], sg = MVF[id][1];
-  if (SZ.drag == null || SZ.drag.id !== id) { undoPush(); var g = szTouch(SZ.k, id), J = (ST.joint && ST.joint.h != null) ? +ST.joint.h : 6; SZ.drag = { id:id, done:0, tgt:g != null && g < 400 ? g - J : null }; }
+  if (SZ.drag == null || SZ.drag.id !== id) { undoPush(); var g = mvTouch(id), J = (ST.joint && ST.joint.h != null) ? +ST.joint.h : 6; SZ.drag = { id:id, done:0, tgt:g != null && g < 400 ? g - J : null }; }
   var v = Math.round(mm), t = SZ.drag.tgt; if (t != null && Math.abs(v - t) <= 6) v = Math.round(t * 10) / 10;
   mvBy(A, sg * (v - SZ.drag.done)); SZ.drag.done = v;
   if (done) { SZ.drag = null; run(); mvPanel(); return; }
@@ -1026,9 +1104,13 @@ function mvDrag(id, mm, done, how){
 }
 function mvPanel(focus){
   if (!SZ) return; var p = RES.parts[SZ.k]; if (!p) return;
-  var h = '<b>✥ ' + esc(p.name) + ' を 移動</b>';
+  var G = SZ.ks, nz = G && !G.some(function(k){ return grpCan(k, 'z'); });
+  var h = G ? '<b>✥ ' + G.length + ' 個を まとめて 移動</b><div class="muted" style="margin:2px 0 4px">' + esc(G.map(function(k){ return RES.parts[k] ? RES.parts[k].name : k; }).join('・')) + '</div>' : '<b>✥ ' + esc(p.name) + ' を 移動</b>';
+  if (G) { var fx = G.filter(function(k){ return !grpCan(k, 'x'); }), fz = G.filter(function(k){ return grpCan(k, 'x') && !grpCan(k, 'z'); });
+    if (fx.length) h += '<div class="muted">動かない：' + esc(fx.map(function(k){ return RES.parts[k].name; }).join('・')) + '（置いて いない）</div>';
+    if (fz.length) h += '<div class="muted">前後は きまりで 決まる：' + esc(fz.map(function(k){ return RES.parts[k].name; }).join('・')) + '</div>'; }
   h += '<div class="szr"><span class="k" style="width:44px">左右</span><input type="number" inputmode="numeric" data-mvd="x" value="' + SZ.off.x + '"> mm <span class="muted">＋＝右</span></div>';
-  h += '<div class="szr"><span class="k" style="width:44px">前後</span>' + (SZ.mode === 'h' ? '<span class="muted">芝台の 前で 決まる</span>' : '<input type="number" inputmode="numeric" data-mvd="z" value="' + SZ.off.z + '"> mm <span class="muted">＋＝前</span>') + '</div>';
+  h += '<div class="szr"><span class="k" style="width:44px">前後</span>' + (nz ? '<span class="muted">動かせない</span>' : !G && SZ.mode === 'h' ? '<span class="muted">芝台の 前で 決まる</span>' : '<input type="number" inputmode="numeric" data-mvd="z" value="' + SZ.off.z + '"> mm <span class="muted">＋＝前</span>') + '</div>';
   h += '<div id="szSt"></div>';
   h += '<div class="muted" style="margin:4px 0 6px">緑の 矢印を 引く（となりと 目地 ' + ((ST.joint && ST.joint.h != null) ? +ST.joint.h : 6) + ' で 止まる）か 数を 入れて Enter（Esc で やめる）</div>';
   h += '<div style="display:flex;gap:6px;align-items:center"><button class="go" id="szOk" style="flex:1">✓ 決定</button><button class="lk" id="szUndo" title="1 つ 前に 戻す（Ctrl+Z）"' + (UNDO.length ? '' : ' disabled') + '>↶ 戻る</button><button class="lk" id="szNo">やめる</button></div>';
@@ -1085,7 +1167,7 @@ function trow(lv, id, ar, keys, ic, nm, sel, cls){
   TK[id] = keys;
   var off = keys.length > 0 && keys.every(function(k){ return ST.hide[k]; });
   var dg = RES.parts[id] && RES.parts[id].free;   // 足した 部材は 引いて 分類を 移せる
-  return '<div class="n' + (sel && sel === SEL ? ' on' : '') + (off ? ' off' : '') + (cls || '') + '" style="padding-left:' + (2 + lv * 16) + 'px" data-id="' + esc(id) + '"' + (dg ? ' draggable="true" title="引いて 石塔・外柵や その 中の 分類へ 移せます"' : '') + (sel ? ' data-sel="' + esc(sel) + '"' : '') + '>' +
+  return '<div class="n' + (sel && (sel === SEL || (MSEL[sel] && isKey(SEL))) ? ' on' : '') + (off ? ' off' : '') + (cls || '') + '" style="padding-left:' + (2 + lv * 16) + 'px" data-id="' + esc(id) + '"' + (dg ? ' draggable="true" title="引いて 石塔・外柵や その 中の 分類へ 移せます"' : '') + (sel ? ' data-sel="' + esc(sel) + '"' : '') + '>' +
     '<span class="ar"' + (ar ? ' data-tg="1"' : '') + '>' + (ar === 'o' ? '▾' : ar === 'c' ? '▸' : '') + '</span>' +
     '<span class="ey' + (off ? ' off' : '') + '" data-ey="1">' + (off ? '⊘' : '👁') + '</span><span class="ic">' + ic + '</span><span class="nm">' + esc(nm) + '</span></div>';
 }
@@ -1137,8 +1219,14 @@ $('tree').addEventListener('click', function(e){
     ks.forEach(function(k){ if (off) delete ST.hide[k]; else ST.hide[k] = 1; });
     lsSet('kumitate.state', ST); draw(); renderTree(); return;
   }
+  var mod = e.ctrlKey || e.shiftKey || e.metaKey;
+  if (mod && !t.closest('[data-tg]') && id !== '#all' && id !== '#site') {   // Ctrl・Shift＋クリック＝足す・外す（分類の 行は 中の 部材 ぜんぶ）
+    if (isKey(id) && RES.parts[id]) { if (SZ) szOk(); selToggle(id); run(); return; }
+    var gk = (TK[id] || []).filter(function(k){ return RES.parts[k] && !ST.hide[k]; });
+    if (gk.length) { if (SZ) szOk(); var allOn = gk.every(function(k){ return k === SEL || MSEL[k]; }); if (allOn) gk.forEach(function(k){ if (k === SEL || MSEL[k]) selToggle(k); }); else selSet(gk, true); run(); return; }
+  }
   if (t.closest('[data-tg]') || (!n.dataset.sel && n.querySelector('[data-tg]'))) { TREE.open[id] = !openOf(id); saveTree(); renderTree(); return; }
-  if (n.dataset.sel) { SEL = n.dataset.sel === SEL ? null : n.dataset.sel; run(); }
+  if (n.dataset.sel) { SEL = n.dataset.sel === SEL && !multiSel() ? null : n.dataset.sel; MSEL = {}; MSELO = null; run(); }
 });
 // 部材構成で 足した 部材を 引いて 分類を 移す（2026-11-10 本人）。落とせる 所＝種類（石塔・外柵…）・その 中の 分類・「足した 部材」
 var DRAG = null;
@@ -1179,7 +1267,11 @@ window.addEventListener('pointerup', function(e){
 });
 window.addEventListener('pointercancel', function(){ DRAG = null; if (DGH) { DGH.remove(); DGH = null; } dzClear(); });
 $('tree').addEventListener('dragstart', function(e){ e.preventDefault(); });   // ブラウザの 引き（画像・文字）は 使わない
-function pick(k){ if (SZ && k !== SZ.k) szOk(); if (k && RES.parts[k]) TREE.open[groupId(k)] = true; SEL = k && k === SEL ? null : k; run(); }
+function pick(k, e){
+  if (e && (e.ctrlKey || e.shiftKey || e.metaKey)) { if (!k) return; if (SZ) szOk(); TREE.open[groupId(k)] = true; selToggle(k); run(); return; }   // Ctrl・Shift＋クリック＝足す・外す
+  if (SZ && k !== SZ.k) szOk(); if (k && RES.parts[k]) TREE.open[groupId(k)] = true; SEL = k && k === SEL && !multiSel() ? null : k; MSEL = {}; MSELO = null; run(); }
+// 窓で 選ぶ（3D を 左で 引く）。Ctrl・Shift で 足す
+function pickBox(ks, e){ if (PM) return; var add = e && (e.ctrlKey || e.shiftKey || e.metaKey); if (!ks.length) { if (!add) { if (SZ) szOk(); selClear(); run(); } return; } if (SZ) szOk(); selSet(ks, add); ks.forEach(function(k){ TREE.open[groupId(k)] = true; }); run(); }
 
 // ── 自動で 設計する：選んだ 外柵＋石塔 だけを 敷地に 合わせて 自動で 変え（外柵は 範囲の 中で 伸び縮み・石塔は 奥行）、収まるかを 出す ──
 var AD = null;
@@ -1453,9 +1545,16 @@ function partHtml(){
   h += '<div class="muted" style="margin-top:6px">数字を 変えると、上に のる 石・つながる 石も ついてくる。手で 変えた 寸法は ノウハウ式より 優先。3D で 右クリック →［📏 大きさを 変更］で 矢印を 引いても 変えられる</div>';
   return h;
 }
+function multiHtml(){
+  var ks = selKeys(), h = '<div class="box"><b>' + ks.length + ' 個を 選択中</b><div class="muted" style="margin:4px 0">' + ks.map(function(k){ return esc(RES.parts[k].name); }).join('・') + '</div>';
+  h += '<button class="go" id="bGrpMv">✥ まとめて 移動</button> <button class="lk" id="bGrpClr">選択を 解除</button>';
+  h += '<div class="muted" style="margin-top:6px">Ctrl・Shift＋クリックで 足す・外す。3D を 左で 引くと 窓で 選ぶ（左から 右＝囲んだ 部材、右から 左＝かかった 部材）。M キーで 移動、Esc で 解除</div></div>';
+  return h;
+}
 function renderSel(){
   var kd = kindOf(SEL), h;
-  if (isKey(SEL) && RES.parts[SEL] && RES.parts[SEL].free) h = freeHtml();
+  if (multiSel()) h = multiHtml();
+  else if (isKey(SEL) && RES.parts[SEL] && RES.parts[SEL].free) h = freeHtml();
   else if (isKey(SEL) && RES.parts[SEL]) h = partHtml();
   else if (kd === 'fence' && fenceV()) h = fenceHtml(fenceV());
   else if (kd) h = kindHtml(kd);
@@ -1507,6 +1606,8 @@ $('selBox').addEventListener('input', function(e){
 $('selBox').addEventListener('click', function(e){
   var t = e.target, id = t.closest('button') ? t.closest('button').id : t.id;
   if (id === 'bAuto') { autoRun(true); return; }
+  if (id === 'bGrpMv') { var gk = selKeys(); mvStartG(SEL, gk); return; }
+  if (id === 'bGrpClr') { selClear(); run(); return; }
   var msk = t.closest('[data-msk]'); if (msk) { openMaster({ sk:msk.dataset.msk }); return; }
   if (freeClick(t, id)) return;
   if (id === 'bReset') { delete ST.over[SEL]; if (ST.osh) delete ST.osh[SEL]; if (ST.mv) delete ST.mv[SEL]; if (ST.mvman) delete ST.mvman[SEL]; var gr = gapOf(); if (gr && ST.hman && (SEL === gr.hk || SEL === gr.nk)) { delete ST.hman[SEL === gr.hk ? 'h' : 'n']; if (!Object.keys(ST.hman).length) delete ST.hman; } run(); return; }
@@ -1694,7 +1795,10 @@ document.addEventListener('keydown', function(e){
   if (PM && e.key === 'Escape') { pmCancel(); e.preventDefault(); return; }
   if (PM && e.key === 'Enter' && PM.pts.length) { pmNext(); e.preventDefault(); return; }
   if (PK.open && e.key === 'Escape') { closePicker(); return; }
-  if (!PM && !PK.open && (e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && isKey(SEL) && freeOf(SEL)) { var f0 = freeOf(SEL); startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); e.preventDefault(); }
+  if (!PM && !PK.open && (e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && selKeys().length > 1) { mvStartG(isKey(SEL) ? SEL : selKeys()[0], selKeys()); e.preventDefault(); return; }   // まとめて 移動（AutoCAD の M）
+  if (!PM && !PK.open && (e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && isKey(SEL) && freeOf(SEL)) { var f0 = freeOf(SEL); startPick(f0.key, f0.self && f0.self.length ? 'tgt' : 'self'); e.preventDefault(); return; }
+  if (!PM && !PK.open && (e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && isKey(SEL) && RES.boxes[SEL]) { mvStart(SEL); e.preventDefault(); return; }
+  if (!PM && !PK.open && e.key === 'Escape' && (multiSel() || isKey(SEL))) { selClear(); run(); e.preventDefault(); }   // Esc＝選択を 解除
 });
 
 // ── 右の 欄：足した 部材 ──
@@ -1974,8 +2078,8 @@ if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
 spLoadSets(false); if (!spHost()) fixMissing(false);
-import('./kumitate-3d.js?v=0.8.47').then(function(m){
-  V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen);
+import('./kumitate-3d.js?v=0.8.48').then(function(m){
+  V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen, pickBox);
   draw();
   window.__ready = true;
 }).catch(function(e){ $('v').innerHTML = '<div class="muted" style="padding:20px">3D を 開けませんでした：' + esc(e.message) + '</div>'; window.__ready = true; });

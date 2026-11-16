@@ -128,13 +128,20 @@ var BZ = (function(){
   // 決まり（2026-11-12 本人）：面取り・ハショリ など 端の 近く（30 mm か 長さの 2 割 まで）は mm の まま 近い 端に つく、真ん中は 伸びる。
   // 穴の 径・深さは 変えない（貫通は 貫通の まま）。穴の 位置は fit（図面で 端から 寸法を 入れた 穴＝その 端から mm の まま）、無ければ 比率。
   // 長さの 半分を 超える 大きな 穴（中空・逃げ）は 壁の 厚みを 守る
-  function edgeMap(a0, a1, b0, b1){
-    var L = a1 - a0, M = b1 - b0, t = Math.min(30, L * 0.2);
+  // kp＝図面で 🔒 鍵を かけた 中の 寸法（{ L:下の 端から mm, R:上の 端から mm }）。その 長さ までは mm の まま（v0.9.40）
+  function edgeMap(a0, a1, b0, b1, kp){
+    var L = a1 - a0, M = b1 - b0, t = Math.min(30, L * 0.2), tL = Math.max(t, kp && kp.L || 0), tR = Math.max(t, kp && kp.R || 0);
     if (!(L > 0)) return function(v){ return v; };
     if (Math.abs(M - L) < 1e-9) return function(v){ return v + (b0 - a0); };
-    if (M < 2 * t) return function(v){ return b0 + (v - a0) * M / L; };
-    return function(v){ if (v <= a0 + t) return v - a0 + b0; if (v >= a1 - t) return v - a1 + b1; return b0 + t + (v - a0 - t) * (M - 2 * t) / (L - 2 * t); };
+    if (tL + tR >= L) { tL = Math.min(tL, L * 0.5); tR = Math.min(tR, L * 0.5); }
+    if (M < tL + tR + 1e-6 || L - tL - tR < 1e-6) return function(v){ return b0 + (v - a0) * M / L; };
+    return function(v){ if (v <= a0 + tL) return v - a0 + b0; if (v >= a1 - tR) return v - a1 + b1; return b0 + tL + (v - a0 - tL) * (M - tL - tR) / (L - tL - tR); };
   }
+  // 鍵の 寸法が 今の 大きさに 入りきらない 所（モデリングの ✕ 用）
+  function keepFail(def){ var out = [], pv = function(k){ var a = def && def.params && def.params[k]; return a ? +(a.value != null ? a.value : a.default) : NaN; }, now = { X:pv('W'), Y:pv('H'), Z:pv('D') }, NM = { X:'幅', Y:'高さ', Z:'奥行' };
+    ((def && def.components) || []).forEach(function(c){ var v = c.shape && c.shape.views, kp = v && v.keep; if (!kp || !v.base) return; var base = { X:v.base.W, Y:v.base.H, Z:v.base.D };
+      Object.keys(kp).forEach(function(a){ var need = (kp[a].L || 0) + (kp[a].R || 0); if (now[a] > 0 && Math.abs(now[a] - base[a]) > 0.5 && need > 0 && now[a] < need + 1) out.push({ ax:a, name:NM[a], need:need, now:now[a], L:kp[a].L || 0, R:kp[a].R || 0 }); }); });
+    return out; }
   function ratioMap(a0, a1, b0, b1){ var L = a1 - a0; return L > 0 ? function(v){ return b0 + (v - a0) * (b1 - b0) / L; } : function(v){ return v; }; }
   function depthMap(dep, a, b){ if (!(dep > 0)) return dep; if (dep >= a - 0.5) return b; return Math.min(dep, b); }
   // 穴を 1 軸で 動かす：fit 'L'＝下（左・前）の 端から mm／'R'＝上（右・奥）の 端から mm／無し＝比率。大きい 穴は 点ごとに 近い 端から
@@ -159,7 +166,7 @@ var BZ = (function(){
       var fx = ax(0, A0, A1, fa), fy = ax(1, B0, B1, fb);
       return pts.map(function(q){ return [fx(q[0]), fy(q[1])]; });
     }
-    var X = edgeMap(-b.W / 2, b.W / 2, -W / 2, W / 2), Y = edgeMap(0, b.H, 0, H), Z = edgeMap(0, b.D, 0, Dd);
+    var KP = v.keep || {}, X = edgeMap(-b.W / 2, b.W / 2, -W / 2, W / 2, KP.X), Y = edgeMap(0, b.H, 0, H, KP.Y), Z = edgeMap(0, b.D, 0, Dd, KP.Z);
     var AX = [-b.W / 2, b.W / 2, -W / 2, W / 2], AY = [0, b.H, 0, H], AZ = [0, b.D, 0, Dd];
     var o = { front:{ out:mp(v.front.out, X, Y), holes:(v.front.holes || []).map(function(h){
       if (h.ogami) { var r = { pts:m(h.pts, kx, ky), depth:h.depth * kd, from:h.from, ogami:1, d0:(h.d0 || 0) * kd }; return r; }
@@ -361,7 +368,7 @@ var BZ = (function(){
     return '式：' + d.expr;
   }
   return { norm:norm, evalExpr:evalExpr, solve:solve, model:model, view:view, view6:view6, viewDims:viewDims, bbox:bbox, primPts:primPts, arcPts:arcPts,
-           inset:inset, barrelOutline:barrelOutline, holePts:holePts, holeArcs:holeArcs, profilePts:profilePts, setValue:setValue, setRule:setRule, scaleViews:scaleViews, ruleText:ruleText, nameOf:nameOf };
+           inset:inset, barrelOutline:barrelOutline, holePts:holePts, holeArcs:holeArcs, profilePts:profilePts, setValue:setValue, setRule:setRule, scaleViews:scaleViews, keepFail:keepFail, ruleText:ruleText, nameOf:nameOf };
 })();
 
 // 1 号の 部材：香炉（筆返し・雲形穴）。元図面 W360×D150×H270、底以外 全面磨き

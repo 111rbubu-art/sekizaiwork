@@ -260,7 +260,15 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     if (MS.onHover) MS.onHover(inf ? msOut(inf) : null); dirty = true;
   });
   function measureMode(opts){ MS = opts || null; msLast = null; clearDeep(msHov); renderer.domElement.style.cursor = MS ? 'default' : ''; dirty = true; }
-  // 測った 結果：list = [{ a:{x,y,z}, b:{x,y,z}, text, color, sel:[info…]（押した 面・点の 印） }]、one＝1 つ目を 押した ところ（info）
+  // 部材 key の 面で、点 p を 通り 向き n の 平面に ある 面（部材を 動かした あとの 面を 探す）
+  function regionAt(key, p, n){
+    var N = new THREE.Vector3(n[0], n[1], n[2]), d = N.x * p.x + N.y * p.y + N.z * p.z, best = null;
+    meshes.forEach(function(m){ if (best || m.userData.key !== key) return; var w = wtris(m);
+      for (var i = 0, c = w.length / 9; i < c; i++) { var t = triN(w, i); if (!t || Math.abs(t.n.dot(N)) < 0.9995 || Math.abs(t.n.dot(t.a) * Math.sign(t.n.dot(N)) - d) > 0.6) continue; best = faceRegion(m, i); return; } });
+    return best;
+  }
+  function tagSprite(txt, bg){ var sp = textSprite(txt, bg); sp.center.set(0.5, 0.5); sp.scale.multiplyScalar(0.8); return sp; }
+  // 測った 結果：list = [{ a:{x,y,z}, b:{x,y,z}, text, color, faces:[{key,p,n,color}]（色を ぬる 面）, tags:[{p,text,color}]（A・B の 札） }]、one＝1 つ目を 押した ところ（info）
   function setMeasures(list, one){
     clearDeep(msG);
     (list || []).forEach(function(m){
@@ -270,6 +278,9 @@ export function create(box, onPick, onDbl, onCtx, onBox){
         var lg = new THREE.Line(new THREE.BufferGeometry().setFromPoints(P), dl); lg.computeLineDistances(); lg.renderOrder = 999; msG.add(lg); }
       msG.add(pts([A, B], m.color || '#e07a1f', 12, false));
       if (m.text) { var sp = textSprite(m.text, m.color || '#e07a1f'); sp.center.set(0.5, -0.15); sp.position.copy(A).add(B).multiplyScalar(0.5); msG.add(sp); }
+      (m.faces || []).forEach(function(f){ var rg = regionAt(f.key, f.p, f.n); if (rg) { var fm = faceMesh(rg, f.color, 0.45); msG.add(fm);
+      } });
+      (m.tags || []).forEach(function(t){ var sp = tagSprite(t.text, t.color); sp.position.set(t.p.x, t.p.y, t.p.z); msG.add(sp); msG.add(pts([t.p], t.color, 14, false)); });
     });
     if (one) msG.add(pts([new THREE.Vector3(one.p.x, one.p.y, one.p.z)], '#e07a1f', 20, true));
     dirty = true;

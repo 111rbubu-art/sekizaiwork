@@ -55,6 +55,7 @@ button{font:inherit;cursor:pointer}
 #ctx button{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 14px;font:inherit;color:var(--fg);cursor:pointer}
 #ctx button:hover{background:#e8f0ff}
 #szBox{position:absolute;left:10px;bottom:10px;width:260px;max-width:calc(100% - 20px);margin:0;background:rgba(255,255,255,.97);box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:6}
+#szBox.near{bottom:auto}
 #szBox .szr{display:flex;align-items:center;gap:6px;margin:5px 0}
 #szBox .szr .k{width:36px;color:var(--sub)}
 #szBox input{width:72px;font-weight:700;font-size:15px;padding:3px 6px;border:2px solid #1f9d55;border-radius:6px}
@@ -259,7 +260,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.34"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.50';
+var APP_VER = 'v0.8.51';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -882,7 +883,17 @@ function placePins(){
     pins[i].style.left = (q.x - pr.left) + 'px'; pins[i].style.top = (q.y - pr.top) + 'px';
     pins[i].style.display = q.x < rc.left || q.x > rc.right || q.y < rc.top || q.y > rc.bottom ? 'none' : 'flex'; }
 }
-(function pinLoop(){ requestAnimationFrame(pinLoop); placePins(); placeDimPins(); })();
+// 移動の 数の 欄は 緑の 矢印の 上に（v0.8.51 本人「移動の微調整用の数値入力は矢印の上にあった方が分かりやすい」）。部材の 箱の 上の 角より 上、はみ出す ときは 箱の 横
+function placeSzBox(){
+  var bx = $('szBox'); if (!SZ || !SZ.mv || !V3 || !V3.project || bx.style.display === 'none') { if (bx.classList.contains('near')) { bx.classList.remove('near'); bx.style.left = bx.style.top = ''; } return; }
+  var b = mvBox(); if (!b) return; var rc = $('v').getBoundingClientRect(), pr = bx.offsetParent ? bx.offsetParent.getBoundingClientRect() : rc, mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9;
+  [b.x0, b.x1].forEach(function(x){ [b.y0, b.y1].forEach(function(y){ [b.z0, b.z1].forEach(function(z){ var q = V3.project({ x:x, y:y, z:z }); mnx = Math.min(mnx, q.x); mxx = Math.max(mxx, q.x); mny = Math.min(mny, q.y); mxy = Math.max(mxy, q.y); }); }); });
+  var w = bx.offsetWidth, h = bx.offsetHeight, x = (mnx + mxx) / 2 - w / 2, y = mny - h - 46;
+  if (y < rc.top + 8) { y = Math.max(rc.top + 8, Math.min((mny + mxy) / 2 - h / 2, rc.bottom - h - 8)); x = mxx + 40 + w < rc.right ? mxx + 40 : mnx - 40 - w; }   // 上に 入らない ときは 横
+  x = Math.max(rc.left + 8, Math.min(x, rc.right - w - 8)); y = Math.max(rc.top + 8, Math.min(y, rc.bottom - h - 8));
+  bx.classList.add('near'); bx.style.left = (x - pr.left) + 'px'; bx.style.top = (y - pr.top) + 'px';
+}
+(function pinLoop(){ requestAnimationFrame(pinLoop); placePins(); placeDimPins(); placeSzBox(); })();
 $('skPins').addEventListener('click', function(e){ if (skClick(e)) { renderPins(); return; }
   var b = e.target.closest('button'); if (b && b.dataset.gi != null) { var g = gapOf(), o = g && gapOpts(g)[+b.dataset.gi]; if (!o || o.ng) return; undoPush(); setHman(o.h, o.n); SKOPEN = null; alertOff(); run(); } });
 $('skPins').addEventListener('pointerdown', function(e){ e.stopPropagation(); });
@@ -1837,23 +1848,38 @@ function msCalc(a, b){
   else if (a.t === 'pt') { P1 = a.p; P2 = foot(a.p, b); kind = '点と 面（面に 垂直）'; }
   else if (b.t === 'pt') { P1 = foot(b.p, a); P2 = b.p; kind = '面と 点（面に 垂直）'; }
   else { var c = a.n[0] * b.n[0] + a.n[1] * b.n[1] + a.n[2] * b.n[2]; ang = Math.acos(Math.min(1, Math.abs(c))) * 180 / Math.PI;
-    if (Math.abs(c) > 0.9995) { P1 = a.p; P2 = foot(a.p, b); kind = '面と 面（平行・面の 間）'; ang = 0; }
+    if (Math.abs(c) > 0.9995) { P1 = a.p; P2 = foot(a.p, b); ang = 0; var g0 = Math.hypot(P2.x - P1.x, P2.y - P1.y, P2.z - P1.z) < 0.5;
+      kind = c > 0 ? (g0 ? '面と 面（同じ 平面＝面一）' : '面と 面（同じ 向きの 平行な 面の 段差）') : (g0 ? '面と 面（向かい合って 接して いる）' : '面と 面（向かい合う 面の 間）'); }
     else { P1 = a.p; P2 = b.p; kind = '面と 面（平行で ない・押した 点の 間）'; } }
-  var d = sub(P2, P1);
+  var d = sub(P2, P1); if ((a.t === 'pt') !== (b.t === 'pt') && Math.hypot(d.x, d.y, d.z) < 0.5) kind = kind.replace('（面に 垂直）', '（点が 面と 同じ 平面に ある）');
   return { a:P1, b:P2, d:Math.hypot(d.x, d.y, d.z), dx:d.x, dy:d.y, dz:d.z, kind:kind, ang:ang, ta:a.t, tb:b.t, ka:a.key || '', kb:b.key || '' };
 }
 function msName(k){ var p = RES && RES.parts[k]; return p ? p.name : ''; }
+// 部材に ついて 動く（v0.8.51 本人「測定後、部材を移動したら寸法はそのままでした、ちゃんと追従させて」）：押した 所を 部材の 箱の 中の 割合で 覚え、いまの 箱から 戻す
+function msPin(i){ var b = RES && RES.boxes[i.key]; if (!b) return null; var f = function(v, a0, a1){ return a1 - a0 > 0.01 ? (v - a0) / (a1 - a0) : 0; };
+  return { t:i.t, key:i.key, n:i.n, f:[f(i.p.x, b.x0, b.x1), f(i.p.y, b.y0, b.y1), f(i.p.z, b.z0, b.z1)] }; }
+function msAt(s){ var b = RES && RES.boxes[s.key]; if (!b) return null; return { t:s.t, key:s.key, n:s.n, p:{ x:b.x0 + s.f[0] * (b.x1 - b.x0), y:b.y0 + s.f[1] * (b.y1 - b.y0), z:b.z0 + s.f[2] * (b.z1 - b.z0) } }; }
+function msSync(){ msList().forEach(function(m){ if (!m.sa || !m.sb) return; var A = msAt(m.sa), B = msAt(m.sb); if (!A || !B) return; var r = msCalc(A, B); r.pa = A.p; r.pb = B.p; Object.assign(m, r); }); }
+var MS_A = '#2563eb', MS_B = '#16a34a';
+function msSide(t, k, n){ if (t !== 'face') return '角（点）'; var a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])], i = a.indexOf(Math.max.apply(null, a)), v = n[i];
+  return (i === 0 ? (v > 0 ? '右' : '左') : i === 1 ? (v > 0 ? '上' : '下') : (v > 0 ? '前' : '後ろ')) + 'の 面'; }
 function msDraw(){
   if (!V3 || !V3.setMeasures) return;
+  msSync();
   var L = ST.measHide ? [] : msList().filter(function(m){ return !m.hide; });
   if (MSR && MSR.last && MSR.last.hide) L = L.concat([MSR.last]);
-  V3.setMeasures(L.map(function(m){ return { a:m.a, b:m.b, text:m1(m.d) + ' mm', color:MSR && m === MSR.last ? '#c2410c' : '#e07a1f', leg:MSR && m === MSR.last }; }), MSR && MSR.a);
+  V3.setMeasures(L.map(function(m){ var cur = MSR && m === MSR.last, o = { a:m.a, b:m.b, text:(cur ? 'A→B ' : '') + m1(m.d) + ' mm', color:cur ? '#c2410c' : '#e07a1f', leg:cur };
+    if (cur && m.sa && m.sb) { var A = msAt(m.sa), B = msAt(m.sb); o.faces = []; o.tags = [];   // 測った 2 か所：A＝青、B＝緑（面は ぬる・点は 札）
+      [[A, 'A', MS_A], [B, 'B', MS_B]].forEach(function(x){ if (!x[0]) return; if (x[0].t === 'face') o.faces.push({ key:x[0].key, p:x[0].p, n:x[0].n, color:x[2] }); o.tags.push({ p:x[0].p, text:x[1], color:x[2] }); }); }
+    return o; }), MSR && MSR.a);
 }
 function msRes(m){
-  return '<div class="big">' + m1(m.d) + ' mm</div><div class="muted">' + esc(m.kind) + '</div>' +
+  var who = function(s, L, c, k){ return '<div style="margin:2px 0"><span style="display:inline-block;min-width:18px;text-align:center;background:' + c + ';color:#fff;border-radius:4px;font-weight:700;margin-right:6px">' + L + '</span>' + esc(msName(k) || '—') + ' の ' + esc(s) + '</div>'; };
+  var ab = m.sa && m.sb ? who(msSide(m.sa.t, m.ka, m.sa.n), 'A', MS_A, m.ka) + who(msSide(m.sb.t, m.kb, m.sb.n), 'B', MS_B, m.kb) : '';
+  return ab + '<div class="big">' + m1(m.d) + ' mm</div><div class="muted">' + esc(m.kind) + '</div>' +
     '<table><tr><td>左右（X）</td><td>' + m1(Math.abs(m.dx)) + ' mm</td></tr><tr><td>前後（奥行）</td><td>' + m1(Math.abs(m.dz)) + ' mm</td></tr><tr><td>高さ</td><td>' + m1(Math.abs(m.dy)) + ' mm</td></tr>' +
     (m.ang != null ? '<tr><td>面の 角度</td><td>' + m1(m.ang) + '°</td></tr>' : '') + '</table>' +
-    ((m.ka || m.kb) ? '<div class="muted">' + esc(msName(m.ka) || '—') + ' → ' + esc(msName(m.kb) || '—') + '</div>' : '');
+    (!m.sa && (m.ka || m.kb) ? '<div class="muted">' + esc(msName(m.ka) || '—') + ' → ' + esc(msName(m.kb) || '—') + '（前の 版で 測った ので 部材に ついて 動きません）</div>' : '<div class="muted">部材を 動かすと ついて 動き、測り直します</div>');
 }
 function msBar(){
   var b = $('msBar'); if (!MSR) { b.className = ''; b.innerHTML = ''; return; }
@@ -1877,12 +1903,12 @@ function msToggle(){ if (MSR) msEnd(); else msStart(); }
 function msClick(i){
   if (!MSR || !i) return;
   if (!MSR.a) { MSR.a = i; MSR.last = null; }
-  else { var m = msCalc(MSR.a, i); m.no = msList().reduce(function(x, o){ return Math.max(x, o.no || 0); }, 0) + 1; msList().push(m); MSR.a = null; MSR.last = m; ST.measHide = false; TREE.open['#meas'] = true; saveTree(); lsSet('kumitate.state', ST); renderTree(); }
+  else { var m = msCalc(MSR.a, i); m.sa = msPin(MSR.a); m.sb = msPin(i); if (!m.sa || !m.sb) { delete m.sa; delete m.sb; } m.no = msList().reduce(function(x, o){ return Math.max(x, o.no || 0); }, 0) + 1; msList().push(m); MSR.a = null; MSR.last = m; ST.measHide = false; TREE.open['#meas'] = true; saveTree(); lsSet('kumitate.state', ST); renderTree(); }
   msDraw(); msBar();
 }
 // 部材構成の「墓所 - 設計仕様」の 中の「📏 測量」：👁＝ぜんぶの 表示／非表示、1 つずつ も。✕＝消す
 function msTreeHtml(){
-  var L = msList(), off = !!ST.measHide, op = TREE.open['#meas'] !== false;
+  msSync(); var L = msList(), off = !!ST.measHide, op = TREE.open['#meas'] !== false;
   var h = '<div class="n' + (off ? ' off' : '') + '" style="padding-left:18px" data-id="#meas" title="［📏 測定］で 測った 距離。👁 で 3D に 出す／かくす"><span class="ar"' + (L.length ? ' data-mtg="1"' : '') + '>' + (L.length ? (op ? '▾' : '▸') : '') + '</span><span class="ey' + (off ? ' off' : '') + '" data-mey="1">' + (off ? '⊘' : '👁') + '</span><span class="ic">📏</span><span class="nm" data-mtg="1">測量' + (L.length ? '（' + L.length + '）' : '<span class="muted">（まだ なし・上の［📏 測定］で 測る）</span>') + '</span>' + (L.length ? '<span class="xx" data-mx="all" title="測量を ぜんぶ 消す">✕</span>' : '') + '</div>';
   if (op) L.forEach(function(m, i){ var o2 = off || m.hide;
     h += '<div class="n' + (o2 ? ' off' : '') + '" style="padding-left:34px" data-id="#ms:' + i + '" title="' + esc(m.kind + '　左右 ' + m1(Math.abs(m.dx)) + '・前後 ' + m1(Math.abs(m.dz)) + '・高さ ' + m1(Math.abs(m.dy)) + ' mm') + '"><span class="ar"></span><span class="ey' + (o2 ? ' off' : '') + '" data-mey="1">' + (o2 ? '⊘' : '👁') + '</span><span class="ic">↔</span><span class="nm">測量 ' + (m.no || i + 1) + '　' + m1(m.d) + ' mm</span><span class="xx" data-mx="1" title="この 測量を 消す">✕</span></div>'; });
@@ -2176,7 +2202,7 @@ if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
 spLoadSets(false); if (!spHost()) fixMissing(false);
-import('./kumitate-3d.js?v=0.8.50').then(function(m){
+import('./kumitate-3d.js?v=0.8.51').then(function(m){
   V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen, pickBox);
   draw();
   window.__ready = true;

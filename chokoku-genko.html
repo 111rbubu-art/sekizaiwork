@@ -2857,7 +2857,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v56.2";
+var APP_VER = "v56.3";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -9876,10 +9876,18 @@ function grpNichiFit(g, F){
   var src = Array.from(String(K.src || "")), per = Array.isArray(K.chars) && K.chars.length === src.length ? K.chars : null;
   undo();
   if (!per) return 0;
+  /* **★ 行（ガイドラインにする行）に ある 字は ★ 行の 字だけで 合わせる**（v56.3。本人「1行目をガイドラインにするという指定があるので、
+     1行目の命日に日という文字があるので、新しく作る校正で日という文字があれば、同じサイズにする仕様のはず」）。
+     src は ★ 行の 字（先頭 K.baseN 字）＋ チェックした ほかの行の 字。前は ぜんぶの 行の 同じ字の 平均だった（日 が 3 行に あれば 3 つの 平均）。
+     ★ 行に 無い 字だけ、ほかの行の 同じ字（平均）で 合わせる（前のまま） */
+  var bN = (K.baseN != null && K.baseN > 0 && K.baseN <= src.length) ? K.baseN : src.length;
+  var inBase = {};
+  src.forEach(function(c, i){ if (i < bN && per[i]) inBase[c] = 1; });
+  var useI = function(c, i){ return !!per[i] && !!wantC[c] && (!inBase[c] || i < bN); };
   /* 拓本の字ごとの 墨の縦・横（同じ字は平均） */
   var inkBy = {};
   src.forEach(function(c, i){
-    if (!per[i] || !wantC[c]) return;
+    if (!useI(c, i)) return;
     var e = inkBy[c] || (inkBy[c] = { h: 0, w: 0, n: 0 });
     e.h += num(per[i][0], 0); e.w += num(per[i][1], 0); e.n++;
   });
@@ -9895,7 +9903,7 @@ function grpNichiFit(g, F){
   /* **同じ字が いくつもあるときは 順に 1 対 1 で合わせる**（v44.6。本人の表「二 … 2 字の平均」）。
      行の中の その字の数と 拓本の中の数が同じなら、1 つめ↔1 つめ、2 つめ↔2 つめ。数がちがうときだけ 平均。 */
   var srcAt = {}, txtCnt = {};
-  src.forEach(function(c, i){ if (per[i] && wantC[c]) (srcAt[c] = srcAt[c] || []).push(i); });
+  src.forEach(function(c, i){ if (useI(c, i)) (srcAt[c] = srcAt[c] || []).push(i); });
   chs.forEach(function(c){ txtCnt[c] = (txtCnt[c] || 0) + 1; });
   var seen = {}, done = {};
   chs.forEach(function(c, i){
@@ -9905,8 +9913,8 @@ function grpNichiFit(g, F){
     var a = g.adj[i] || (g.adj[i] = {});
     if ((a.hmm > 0 || a.wmm > 0) && !a.nichi) return;     /* 人が手で入れた大きさは さわらない */
     var list = srcAt[c] || [];
-    if (list.length > 1 && list.length === txtCnt[c] && em.r){
-      var k9 = list[nth - 1];
+    if ((list.length === 1 || (list.length > 1 && list.length === txtCnt[c])) && em.r){
+      var k9 = list.length === 1 ? list[0] : list[nth - 1];   /* 1 字だけなら その字（どの字か 内訳に 出す。v56.3） */
       a.hmm = +(num(per[k9][0], 0) / em.r[0]).toFixed(2); a.wmm = +(num(per[k9][1], 0) / em.r[1]).toFixed(2);
       a.nichiK = k9;
     } else { a.hmm = em.h; a.wmm = em.w; delete a.nichiK; }
@@ -10026,6 +10034,9 @@ function grpSizeTable(g){
   var rows = chs.map(function(c, i){
     var a = (g.adj || [])[i] || {}, how = "", rub = null, rh = 0, rw = 0;
     var idx = []; if (per) src.forEach(function(s9, k){ if (s9 === c) idx.push(k); });
+    /* ★ 行に ある 字は ★ 行の 字だけ（grpNichiFit と 同じ。v56.3） */
+    var bN9 = (K.baseN != null && K.baseN > 0) ? K.baseN : src.length;
+    if (idx.some(function(k){ return k < bN9; })) idx = idx.filter(function(k){ return k < bN9; });
     if (a.nichi && a.nichiK != null && per[a.nichiK]) rub = [num(per[a.nichiK][0], 0), num(per[a.nichiK][1], 0)];
     else if (idx.length){
       rub = [0, 0]; idx.forEach(function(k){ rub[0] += num(per[k][0], 0); rub[1] += num(per[k][1], 0); });
@@ -10033,7 +10044,7 @@ function grpSizeTable(g){
     }
     if (F){ var gid = shapeOne(c, g.axes || {}, g.fontIdx);
       if (gid){ var r = glyphInk(gid, g.axes || {}, g.fontIdx); rh = (r.top - r.bot) / F.upem; rw = (r.right - r.left) / F.upem; } }
-    if (a.nichi) how = "拓本の同じ字" + (a.nichiK != null ? "（拓本の " + (a.nichiK + 1) + " 字目）" : idx.length > 1 ? "（" + idx.length + " 字の平均）" : "");
+    if (a.nichi) how = "拓本の同じ字" + (a.nichiK != null ? "（" + ((K.nRows > 1 && a.nichiK < bN9) ? "★ 行の " + (a.nichiK + 1) : "拓本の " + (a.nichiK + 1)) + " 字目）" : idx.length > 1 ? "（" + idx.length + " 字の平均）" : "");
     else if (a.hmm > 0 || a.wmm > 0) how = "手で入れた";
     else if (grpFitOvOf(g, chs, i) === false) how = "行の大きさ（この字だけ 切）";
     else if (!grpCharFitWant(g, c) && grpFitOvOf(g, chs, i) !== true) how = "行の大きさ（合わせる字ではない）";
@@ -10118,6 +10129,7 @@ function rubToGuidesOpen(){
       '<span style="float:right;font-size:11px;color:var(--muted);">✥ つかんで動かせます</span></div>' +
     '<p class="hint" style="margin:4px 0 8px;">センターライン 1 本を ' + (had ? '<b>いまのガイドラインの左に 足します</b>' : '作ります') +
       '。字と上下の位置は［ガイドラインにする行］から、字の大きさは まとまりごとに <b>チェックした行</b>の 1 字あたりの平均から決めます。' +
+      '［拓本と同じ字は 縦横を拓本に合わせる］の 字は、<b>★ の行に その字が あれば ★ の行の字と 同じ大きさ</b>（無い字だけ ほかの行の 同じ字の平均）。' +
       '「平均との差」は その行の字の大きさが まとまりの平均より どれだけ大きい（＋）か 小さい（−）か。1 割以上 ずれたら <span style="color:#B00020;">赤</span>。おかしい行は チェックを外してください。</p>' +
     '<div style="margin:0 0 6px;font-size:13px;">ガイドラインにする行 <select id="r2gBase" style="width:auto;max-width:100%;">' +
       (function(){

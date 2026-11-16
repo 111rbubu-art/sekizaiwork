@@ -262,7 +262,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.52';
+var APP_VER = 'v0.8.53';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -626,8 +626,9 @@ function placeDimPins(){
 }
 function dimSet(dm, v){
   var k = SEL, m = szMode(k), cur = RES.parts[k][dm]; if (!(v > 0) || Math.abs(v - cur) < 0.05) return;
-  var snap = szSnap(), before = probList(), name = RES.parts[k].name; undoPush();
+  var snap = szSnap(), before = probList(), name = RES.parts[k].name, lb = lockSnap([k]); undoPush();
   setFace(ST, k, m, dm, v, dm === 'w' ? 'c' : dm === 'd' ? (m === 'h' ? 'z1' : 'z0') : 'y1', cur); run();
+  if (!lockAsk([k], lb, function(){ szRestore(snap); if (UNDO[UNDO.length - 1] === snap) UNDO.pop(); undoBtn(); run(); })) return;
   var nw = probList().filter(function(x){ return before.indexOf(x) < 0; }); if (nw.length) alertOn(name, nw, snap);
 }
 $('dimPins').addEventListener('pointerdown', function(e){ e.stopPropagation(); });
@@ -981,7 +982,7 @@ function szStart(k){
   if (PM) pmCancel(); if (SZ) szOk();
   var m = szMode(k); SEL = k; MSEL = {}; MSELO = null;
   if (m === 'free') { run(); var i = document.querySelector('#selBox [data-fw]'); if (i) { i.focus(); i.select(); } return; }
-  var p = RES.parts[k]; SZ = { k:k, mode:m, snap:szSnap(), before:probList(), d0:{ w:p.w, d:p.d, h:p.h }, last:{ w:'x1', d:m === 'n' || m === 'over' ? 'z0' : 'z1', h:'y1' } };
+  var p = RES.parts[k]; SZ = { k:k, mode:m, snap:szSnap(), before:probList(), lockB:lockSnap([k]), d0:{ w:p.w, d:p.d, h:p.h }, last:{ w:'x1', d:m === 'n' || m === 'over' ? 'z0' : 'z1', h:'y1' } };
   alertOff(); run(); szPanel();
 }
 function szCur(dim){ var p = RES.parts[SZ.k]; return p ? p[dim] : 0; }
@@ -1059,7 +1060,8 @@ function szStatus(){
 }
 function szEnd(){ SZ = null; if (V3 && V3.sizeMode) V3.sizeMode(null); $('szBox').style.display = 'none'; }
 function szOk(){
-  if (!SZ) return; var name = SZ.ks ? SZ.ks.length + ' 個の 部材' : RES.parts[SZ.k] ? RES.parts[SZ.k].name : '', before = SZ.before, snap = SZ.snap; szEnd(); run();
+  if (!SZ) return; var name = SZ.ks ? SZ.ks.length + ' 個の 部材' : RES.parts[SZ.k] ? RES.parts[SZ.k].name : '', before = SZ.before, snap = SZ.snap, lk = SZ.ks || [SZ.k], lb = SZ.lockB || {}; szEnd(); run();
+  if (!lockAsk(lk, lb, function(){ szRestore(snap); run(); })) return;
   var nw = probList().filter(function(m){ return before.indexOf(m) < 0; });
   if (nw.length) alertOn(name, nw, snap);
 }
@@ -1621,7 +1623,11 @@ $('selBox').addEventListener('change', function(e){
     if (isFinite(y)) o[c3[2]] = y; else delete o[c3[2]]; return fitChanged(); }
 });
 function fitChanged(){ setsChanged(); run(); }
-$('selBox').addEventListener('focusin', function(e){ if (e.target.dataset && (e.target.dataset.f || e.target.dataset.fw)) undoPush(); });
+$('selBox').addEventListener('focusin', function(e){ if (e.target.dataset && (e.target.dataset.f || e.target.dataset.fw)) { undoPush(); if (isKey(SEL)) { LKF = { k:SEL, b:lockSnap([SEL]), snap:szSnap() }; } } });
+// 右の 欄の 幅・奥行・高さを 打ち終えた とき：鍵の 寸法が 変わったら 一度 聞く（やめる → 打つ 前に 戻す）
+var LKF = null;
+$('selBox').addEventListener('change', function(e){ var d = e.target.dataset; if (!d || !(d.f || d.fw) || !LKF || !RES || !RES.parts[LKF.k]) return; var o = LKF; LKF = null;
+  lockAsk([o.k], o.b, function(){ szRestore(o.snap); if (UNDO[UNDO.length - 1] === o.snap) UNDO.pop(); undoBtn(); run(); }); LKF = { k:o.k, b:lockSnap([o.k]), snap:szSnap() }; });
 $('selBox').addEventListener('input', function(e){
   var t = e.target, d = t.dataset;
   if (d.site) { var v = parseFloat(t.value); if (d.site === 'glH' && ST.site.glAuto === undefined) ST.site.glAuto = +ST.site.glH > 0 ? +ST.site.glH : 0; if (v > 0) { ST.site[d.site] = v; quick(); } return; }
@@ -2182,15 +2188,28 @@ function lockSrc(k){ var q = RES && RES.parts[k]; if (!q) return null; return ST
 function lockDiff(k){ var q = RES && RES.parts[k], s = lockSrc(k), L = s && s.lock, out = []; if (!q || !L) return out;
   [['W', 'w', '幅'], ['D', 'd', '奥行'], ['H', 'h', '高さ']].forEach(function(a){ var v = +L[a[0]]; if (!(v > 0)) return; out.push({ ax:a[0], f:a[1], n:a[2], lock:v, model:q[a[1]], diff:Math.abs(q[a[1]] - v) > 0.5 }); });
   return out; }
+// 鍵の 寸法を モデリングで 変えた ときの 改訂の 番号（△1・△2…）。部材ごとに 数える（ST.lockRev＝{ 鍵:{ n, ax:{ W:{ no, val } } } }・案件の ファイルに 入る。マスターは 変えない）
+function revOf(k, ax, val){ ST.lockRev = ST.lockRev || {}; var r = ST.lockRev[k] = ST.lockRev[k] || { n:0, ax:{} }, c = r.ax[ax]; val = Math.round(val * 10) / 10;
+  if (c && Math.abs(c.val - val) < 0.5) return c.no; r.n++; r.ax[ax] = { no:r.n, val:val }; return r.n; }
+function lockSnap(keys){ var o = {}; keys.forEach(function(k){ o[k] = {}; lockDiff(k).forEach(function(x){ o[k][x.ax] = x.model; }); }); return o; }
+// 変えた あと：鍵の 寸法が 新しく 変わったら 一度 聞く（2026-11-16 本人「一度アラームを出して、OKなら」）。やめる → revert
+function lockAsk(keys, before, revert){ var nw = [];
+  keys.forEach(function(k){ lockDiff(k).forEach(function(x){ var b = (before[k] || {})[x.ax]; if (!x.diff || (b != null && Math.abs(b - x.model) < 0.5)) return; nw.push({ k:k, x:x }); }); });
+  if (!nw.length) return true;
+  var t = nw.map(function(o){ var q = RES.parts[o.k], r = ST.lockRev && ST.lockRev[o.k], no = r && r.ax[o.x.ax] && Math.abs(r.ax[o.x.ax].val - o.x.model) < 0.5 ? r.ax[o.x.ax].no : (r ? r.n : 0) + 1;
+    return '・' + q.name + ' の ' + o.x.n + '：加工図面は ' + o.x.lock + ' に 鍵 → ' + Math.round(o.x.model * 10) / 10 + '（加工図面は ' + o.x.lock + ' を 横線で 消して △' + no + ' ' + Math.round(o.x.model * 10) / 10 + '）'; }).join('\n');
+  if (confirm('🔒 鍵の かかった 寸法を 変えます。よろしいですか？\n' + t + '\n\nマスター部材は 変わりません（この お墓の 加工図面だけ）')) { nw.forEach(function(o){ revOf(o.k, o.x.ax, o.x.model); }); lsSet('kumitate.state', ST); run(); return true; }
+  revert(); return false; }
 function lockNotes(){ var out = []; if (!RES) return out;
   Object.keys(RES.parts).forEach(function(k){ var q = RES.parts[k]; if (q.visible === false || !RES.boxes[k]) return;
     lockDiff(k).forEach(function(x){ if (!x.diff) return; var d = Math.round((x.model - x.lock) * 10) / 10;
-      out.push('🔒 ' + q.name + '：' + x.n + 'は 加工図面で ' + x.lock + ' に 鍵（モデリング ' + Math.round(x.model * 10) / 10 + '・差 ' + (d > 0 ? '+' : '') + d + '）'); }); });
+      var r = ST.lockRev && ST.lockRev[k] && ST.lockRev[k].ax[x.ax], no = r && Math.abs(r.val - x.model) < 0.5 ? '△' + r.no + ' ' : '';
+      out.push('🔒 ' + q.name + '：' + x.n + 'は 加工図面で ' + x.lock + ' に 鍵 → ' + no + Math.round(x.model * 10) / 10 + '（差 ' + (d > 0 ? '+' : '') + d + '）'); }); });
   return out; }
 function openKakou(k){
   var q = RES && RES.parts[k]; if (!q) return;
   var lk = lockDiff(k), lkd = lk.filter(function(x){ return x.diff; }), lkN = {}; lk.forEach(function(x){ lkN[x.n] = 1; });
-  var lockInfo = lkd.map(function(x){ return { ax:x.ax, n:x.n, lock:x.lock, model:Math.round(x.model * 10) / 10 }; });
+  var lockInfo = lkd.map(function(x){ return { ax:x.ax, n:x.n, lock:x.lock, model:Math.round(x.model * 10) / 10, no:revOf(k, x.ax, x.model) }; }); if (lockInfo.length) lsSet('kumitate.state', ST);
   // 案件で 大きさ・左右が 変わった 部材は、3D と 同じ 形（q.shape）で 加工図面を 開く。前の 図（sketch）は 元の 大きさなので 外し、今の 形から かき直させる
   // （2026-11-11 本人「部材と 加工図面が 同じで ない」「水鉢と 同じように 拝石も」＝部品詳細図でなく 水鉢と 同じ 加工図面の 画面で）
   var jd = jobDiff(k).filter(function(t){ return !lkN[t.split(' ')[0]]; });   // 鍵の 寸法の ちがいは 形を 変えない（前の 図の まま 開く）

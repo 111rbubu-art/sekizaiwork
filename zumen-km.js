@@ -473,8 +473,8 @@ function kmBoxGeo(w, h, d){ var x = w / 2, z = d / 2, V = [[-x, 0, -z], [x, 0, -
   return { tris:tris, edges:edges }; }
 function kmEnter(again){
   var pay = kmLoadPay();
-  if (!pay) { alert('組み立ての 画面で［📐 図面に する］を 押して ください'); return; }
-  toastMsg('組み立ての 形から 図面を 作って います…', 8000);
+  if (!pay) { alert('モデリングの 画面で［📐 図面に する］を 押して ください'); return; }
+  toastMsg('モデリングの 形から 図面を 作って います…', 8000);
   kmPrepare(pay).then(function(geo){
     var keep = KM2 && BM && BM.active && BM.km ? BM.cur : 0;
     if (KM2 && BM && BM.active && BM.km) BM.pages.forEach(kmHarvest);
@@ -491,16 +491,16 @@ function kmEnter(again){
     kmBuildAll(); kmSaveEd();
     document.body.classList.add('bmode'); document.body.classList.add('kmmode');
     bmShow(Math.min(keep, BM.pages.length - 1), true);
-    toastMsg(again ? '組み立ての 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 5000);
+    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 5000);
   }).catch(function(e){ alert('図面を 作れませんでした：' + (e && e.message || e)); });
 }
 function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; }
 // 右の 欄（組み立てから 作った ページ）
 function kmPanel(el){
   var pg = BM.pages[BM.cur], tpl = kmTpl(), h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';
-  h += '<div class="muted">組み立ての 形から 作った ページです。寸法・文字・図は 手で 動かす・直す・消す・足すが できます。<b>直した 所は 覚えて</b>、組み立てを 変えて 作り直しても 当て直します。</div>';
+  h += '<div class="muted">モデリングの 形から 作った ページです。寸法・文字・図は 手で 動かす・直す・消す・足すが できます。<b>直した 所は 覚えて</b>、モデリングを 変えて 作り直しても 当て直します。</div>';
   var fromPd = KM2.pay && KM2.pay.master;
-  h += fromPd ? '<div class="row"><button class="b2 pr" id="kmRe">✎ 図面で 直すに 戻る</button></div><div class="muted">この 加工図面は 部材の 図面の 枠の 中です。形・寸法・注記は 図面で 直す ほうで 直して ください</div>' : '<div class="row"><button class="b2" id="kmRe">🔄 組み立ての 今の 形で 作り直す</button></div>';
+  h += fromPd ? '<div class="row"><button class="b2 pr" id="kmRe">✎ 図面で 直すに 戻る</button></div><div class="muted">この 加工図面は 部材の 図面の 枠の 中です。形・寸法・注記は 図面で 直す ほうで 直して ください</div>' : '<div class="row"><button class="b2" id="kmRe">🔄 モデリングの 今の 形で 作り直す</button></div>';
   h += '<div class="row"><button class="b2" id="kmRev">△ 修正の 印を 置く</button></div>';
   var types = (pg.groups || []).map(function(g){ return g.type; });
   if (types.length) { h += '<div class="row"><button class="b2" id="kmTplSave">📌 この ページの 部材の 直しを ひな形に</button></div>';
@@ -608,7 +608,7 @@ function kmTenkai(pay, geo, opt){
     if (tw.length) { var ty0 = Math.min.apply(null, tw.map(function(p){ return p.box.y0; })), ty1 = Math.max.apply(null, tw.map(function(p){ return p.box.y1; }));
       if (ty1 - ty0 < Y1 - Y0 - 1) dim([rt.x1, ty0 - Y0 + rt.y0], [rt.x1, ty1 - Y0 + rt.y0], 'v', [rt.x1 + dg, (ty0 + ty1) / 2 - Y0 + rt.y0]); }
     name('top', '平面図'); name('front', '正面図'); name('left', '左側面図'); name('right', '右側面図'); name('back', '背面図');
-    D.ents.push({ id:SEQ++, t:'text', p:P(l.x0, t.y1 + dg + th * 2), h:th * 1.3, rot:0, s:'展開図　' + (pay.name || '組み立て') + '（' + (pay.date || '') + '）', ha:0, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 });
+    D.ents.push({ id:SEQ++, t:'text', p:P(l.x0, t.y1 + dg + th * 2), h:th * 1.3, rot:0, s:'展開図　' + (pay.name || 'モデリング') + '（' + (pay.date || '') + '）', ha:0, va:0, wf:1, layer:'文字', css:null, aci:256, tk:1 });
     if (isFinite(other.x1)) { var mine = bboxOf(D.ents.filter(function(e){ return e.tk; })), dx = other.x1 + G * 2 - mine.x0, dy = other.y1 - mine.y1;
       D.ents.forEach(function(e){ if (e.tk) transEnt(e, dx, dy); }); D.dims.forEach(function(d){ if (!d.tk) return; ['a', 'b', 'off'].forEach(function(k){ d[k] = P(d[k].x + dx, d[k].y + dy); }); }); }
     return { views:Object.keys(R).length, lines:D.ents.filter(function(e){ return e.tk; }).length };

@@ -2857,7 +2857,7 @@ function typingIn(e){
 /* 画面とタブに出すバージョン。直したらここだけ変える。 */
 var TRACE_MIN_MM2 = 0.3;    /* なぞりで落とす、地のごみの大きさ（画面には出さない） */
 var PE_INFO_HOLD = false;   /* 窓の下の帯に、なぞった結果を出しているあいだは true */
-var APP_VER = "v56.3";
+var APP_VER = "v56.4";
 try {
   document.getElementById("appVer").textContent = APP_VER;
   try { appWhoSync(); } catch(e){}
@@ -3589,12 +3589,13 @@ function adjOf(g, i){
   /* **拓本に合わせた 大きさ・位置は、その字の ときだけ**（v55.3。本人「文字を変更すると…何番目という覚え方の為、その文字を変更し、
      拓本と同じ文字で無くなったのに大きさだけ残ります」）。合わせたときの字（nichiC・amaC）と いまの字が ちがえば 使わない。
      付け直しは grpFitSync（字を 変えたら 字ごとに 合わせ直す） */
-  if (a && (a.nichi || a.ama)){
+  if (a && (a.nichi || a.ama || a.pos)){
     var c9 = Array.from(String(g.text || ""))[i] || "";
-    if ((a.nichi && a.nichiC && a.nichiC !== c9) || (a.ama && a.amaC && a.amaC !== c9)){
+    if ((a.nichi && a.nichiC && a.nichiC !== c9) || (a.ama && a.amaC && a.amaC !== c9) || (a.pos && a.posC && a.posC !== c9)){
       a = Object.assign({}, a);
       if (a.nichi && a.nichiC !== c9){ delete a.hmm; delete a.wmm; }
       if (a.ama && a.amaC !== c9){ delete a.dx; delete a.dy; }
+      if (a.pos && a.posC !== c9){ delete a.dx; delete a.dy; }
     }
   }
   var sc = a && isFinite(a.sc) && a.sc > 0 ? a.sc : 1;
@@ -9952,6 +9953,57 @@ function rubFitAllGroups(){
   msg("拓本に合わせました（" + nAll + " 字）。<br>" + rep.join("<br>"), false, true);
 }
 function grpAmaPos(g){
+  var n = grpAmaPos0(g);
+  try { grpSamePos(g); } catch(e){}
+  return n;
+}
+/* ───── **ためし：★ 行と 同じ字が 同じ順で 並ぶときは 1 字ずつ 拓本と 同じ 位置に**（v56.4。本人「明らかにあっていないと思います」
+   （拓本の 1 行目と 同じ戒名の 校正が 拓本と 重ならない））─────
+   校正は 上端〜下端の間に 字を 同じ間隔で 並べる。拓本は 字ごとに 間が ちがうので、同じ字でも 上下が ずれる。
+   入れると（S.rub.samePos。既定 切）、行の字が ★ 行の 字（inkSize.src の 先頭 baseN 字）と まったく同じ ときだけ、
+   字ごとの ずらし（adj[i].dx・dy、印 pos）で フォントの墨の まん中を 拓本の枠の まん中に そろえる。
+   字を 打ちかえて ちがう字に なったら 外す（adjOf の posC）。人が 手で ずらした字・尼（ama）は さわらない */
+function rubSamePosOn(){ return !!(S.rub && S.rub.samePos); }
+function grpSamePos(g){
+  var K = g && g.inkSize; if (!K || !Array.isArray(g.adj)) return 0;
+  g.adj.forEach(function(a){ if (a && a.pos){ delete a.dx; delete a.dy; delete a.pos; delete a.posC; } });
+  delete K.pos;
+  if (!rubSamePosOn()) return 0;
+  var src = Array.from(String(K.src || "")), per = K.chars, chsT = Array.from(String(g.text || ""));
+  if (!Array.isArray(per) || per.length !== src.length) return 0;
+  var bN = (K.baseN != null && K.baseN > 0) ? K.baseN : src.length;
+  if (chsT.length !== bN || chsT.join("") !== src.slice(0, bN).join("")) return 0;
+  var gi = S.groups.indexOf(g); if (gi < 0) return 0;
+  var cpx = (S.rub.centersPx || [])[g.col], mpx = mmPerPxX() || mmPerPx();
+  if (cpx == null || !mpx) return 0;
+  var rows = layout(), r = rows.filter(function(x){ return x.gi === gi; })[0];
+  if (!r) return 0;
+  var chs = r.chars, n = 0;
+  chs.forEach(function(c, i){
+    var pk = per[i]; if (!pk || pk.length < 4 || c !== src[i]) return;
+    var a = g.adj[i] || (g.adj[i] = {});
+    if (a.ama || (isFinite(a.dx) && a.dx) || (isFinite(a.dy) && a.dy)) return;   /* 尼・人が手でずらした字は さわらない */
+    var t0 = mmOf(pk[3]); if (t0 == null) return;
+    var tCy = t0 + num(pk[0], 0) / 2, tDx = (pk[2] - cpx) * mpx;
+    var fi = fontIdxOf(g, i), F = FR(fi), ax = axesOf(g, i); if (!F) return;
+    var gid = shapeOne(c, ax, fi); if (!gid) return;
+    var AD = adjOf(g, i);
+    var hh = AD.hmm > 0 ? AD.hmm : r.h * AD.sc, ww = AD.wmm > 0 ? AD.wmm : r.w * AD.scw;
+    var s = hh / F.upem, sx = ww / F.upem, bb = charInk(g, i, gid, ax, fi);
+    /* layout と同じ置き方（grpAmaPos と 同じ） */
+    var nn = chs.length, al = 0.5;
+    if (nn > 1 && i === 0)        al = (F.asc - bb.top) / F.upem;
+    else if (nn > 1 && i === nn-1) al = (F.asc - bb.bot) / F.upem;
+    al = Math.max(0, Math.min(1, al));
+    var cellTop = r.emTop + (r.cum[i] || 0) + (r.h - hh) * al;
+    var inkCy = cellTop + (F.asc - (bb.top + bb.bot) / 2) * s;
+    var inkCx = num(g.dx, 0) + ((bb.left + bb.right) / 2 - F.upem / 2) * sx;
+    a.dx = +(tDx - inkCx).toFixed(2); a.dy = +(tCy - inkCy).toFixed(2); a.pos = 1; a.posC = c; n++;
+  });
+  if (n) K.pos = { n: n };
+  return n;
+}
+function grpAmaPos0(g){
   var K = g && g.inkSize; if (!K || !Array.isArray(g.adj)) return 0;
   g.adj.forEach(function(a){ if (a && a.ama){ delete a.dx; delete a.dy; delete a.ama; delete a.amaC; } });
   if (g.role !== "kai") return 0;
@@ -9986,6 +10038,7 @@ function grpAmaPos(g){
     var inkTop = cellTop + (F.asc - bb.top) * s;
     var inkCx = num(g.dx, 0) + ((bb.left + bb.right) / 2 - F.upem / 2) * sx;
     var a = g.adj[i] || (g.adj[i] = {});
+    if (a.pos){ delete a.dx; delete a.dy; delete a.pos; delete a.posC; }   /* 位置の ためし（v56.4）より 尼 が 先 */
     if ((isFinite(a.dx) && a.dx) || (isFinite(a.dy) && a.dy)) return;   /* 人が手でずらした字は さわらない */
     a.dx = +(tDx - inkCx).toFixed(2); a.dy = +(tTop - inkTop).toFixed(2); a.ama = 1; a.amaC = c; n++;
   });
@@ -10155,6 +10208,8 @@ function rubToGuidesOpen(){
     '<div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-top:10px;">' +
       '<label class="chk" style="margin-right:auto;" title="入れると、日（俗名は除く）・戒名の 院居士信姉尼大（尼は位置も）・命日と年齢の 拓本と同じ字 だけ、墨の縦・横が 拓本の同じ字と同じになる大きさにします。ほかの字は そのままです">' +
       '<input type="checkbox" id="r2gNichi" style="width:auto;"' + (rubFitOn() ? ' checked' : '') + '> 拓本と同じ字は 縦横を拓本に合わせる</label>' +
+      '<label class="chk" style="margin-right:8px;" title="ためし（v56.4）。行の字が ★ の行と まったく同じ（同じ字が 同じ順）ときだけ、1 字ずつ 拓本の字と 同じ 上下・左右の 位置に 置きます。字を 打ちかえると 外れます">' +
+      '<input type="checkbox" id="r2gPos" style="width:auto;"' + (rubSamePosOn() ? ' checked' : '') + '> （ためし）★ 行と同じ字なら 位置も拓本に合わせる</label>' +
       '<button class="mini" id="r2gNo">やめる</button><button class="mini primary" id="r2gGo">作る</button></div></div>';
   document.body.appendChild(ov);
   ovDrag(ov);
@@ -10206,6 +10261,7 @@ function rubToGuidesOpen(){
   $("r2gBase").onchange = function(e){ baseSet = String(e.target.value).split(",").map(Number); base = baseSet[0]; draw(); };
   $("r2gNo").onclick = function(){ ov.remove(); };
   $("r2gNichi").onchange = function(e){ S.rub.fitNichi = !!e.target.checked; persist(); };
+  $("r2gPos").onchange = function(e){ S.rub.samePos = !!e.target.checked; persist(); };
   $("r2gGo").onclick = function(){ ov.remove(); rubToGuidesApply(P, { base: base, bases: baseSet, use: use }); };
 }
 function rubToGuidesApply(P, opt){

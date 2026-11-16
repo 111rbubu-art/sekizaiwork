@@ -130,7 +130,7 @@
         var pv = function(k){ var x = d.params && d.params[k]; return x ? +(x.value != null ? x.value : x.default) : null; };
         if (pv('W') > 0) { q.w = pv('W'); q.d = pv('D'); q.h = pv('H'); }
         // 大きさ違いを まとめた 部材：セットの 枠の 大きさ（sl.size）で 使う。形の 中は 部材の 決まりで 伸びる（buzai-engine の scaleViews）
-        var zs = sl.size; if (zs && zs.W > 0 && zs.D > 0 && zs.H > 0) { q.w = +zs.W; q.d = +zs.D; q.h = +zs.H; ['W', 'D', 'H'].forEach(function(k){ if (d.params && d.params[k]) d.params[k].value = +zs[k]; }); q.size = { W:+zs.W, D:+zs.D, H:+zs.H }; }
+        var zs = sl.size; if (zs && zs.W > 0 && zs.D > 0 && zs.H > 0) { q.w = +zs.W; q.d = +zs.D; q.h = +zs.H; ['W', 'D', 'H'].forEach(function(k){ if (d.params && d.params[k]) d.params[k].value = +zs[k]; if (d.lock && d.lock[k] > 0) d.lock[k] = +zs[k]; }); q.size = { W:+zs.W, D:+zs.D, H:+zs.H }; }
         if (!q.finish) q.finish = d.finish || ''; if (!q.kakou) q.kakou = d.kakou || ''; }
       else if (sl.part) R.missing.push(sl.part.id);
       if (q.w > 0) R.parts.push(q);

@@ -118,7 +118,8 @@ body.pdmode #pdv{display:flex}
 /* 編集画面の 左を 図面の 画面に（下の 図面アプリを そのまま 使う） */
 body.pddraw .topbar{display:none} body.pddraw{padding-top:46px}
 body.pdmaster.tsel #pnTool,body.pdmaster #pnInfo{display:none}
-body.pdmaster.tsel.hfsel #pnTool{display:block}
+body.pdmaster.tsel.hfsel #pnTool,body.pdmaster.tsel.pvsel #pnTool{display:block}
+.pvleg{display:flex;flex-wrap:wrap;gap:2px 10px;font-size:12px;margin-top:4px} .pvleg i{display:inline-block;width:14px;height:4px;border-radius:2px;vertical-align:middle;margin-right:3px}
 body.pddraw #pdv{pointer-events:none;background:transparent} body.pddraw .pdtop,body.pddraw .pdright{pointer-events:auto}
 body.pddraw .pdtop{position:fixed;top:0;left:0;right:0;min-height:46px;box-sizing:border-box}
 body.pddraw .pdmain{padding-top:54px} body.pddraw #pdDraw{visibility:hidden}
@@ -397,7 +398,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.46";
+var APP_VER = "v0.9.47";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1222,6 +1223,7 @@ function drawAll(c, v, o){
     if (!visible(e)) return;
     var sel = !o.print && ST.sel.has(e.id);
     var col = o.mono ? '#000' : entCss(e);
+    if (!o.print && !o.mono && pvCol(e)) col = pvCol(e);
     if (sel) col = '#ff5a1f';
     if (e.t === 'text') { drawText(c, v, e, col); return; }
     c.strokeStyle = col; c.lineWidth = sel ? lw * 2.2 : lw;
@@ -1235,7 +1237,7 @@ function drawAll(c, v, o){
   D.dims.forEach(function(d){
     if (d.layer && !layerOf(d.layer).on) return;
     var sel = !o.print && (ST.selDim === d.id || ST.dsel.has(d.id)), hf = !o.print && !o.mono && hfm && hfm.dims[d.id];
-    drawDim(c, v, d, sel ? '#ff5a1f' : hf && (hf.on || hf.kind === 'hole') ? (hf.on ? '#c2410c' : '#1d4ed8') : (o.mono ? '#000' : '#1a5ad0'), o.lw ? o.lw * 0.8 : 1);
+    drawDim(c, v, d, sel ? '#ff5a1f' : !o.print && !o.mono && pvCol(d) ? pvCol(d) : hf && (hf.on || hf.kind === 'hole') ? (hf.on ? '#c2410c' : '#1d4ed8') : (o.mono ? '#000' : '#1a5ad0'), o.lw ? o.lw * 0.8 : 1);
     if (hf && (hf.on || hf.kind === 'hole') && !d.rev) { var g9 = dimGeom(d), q9 = W2S(v, g9.text.p), hw9 = String(g9.text.s).length * g9.text.h * 0.3 * (v.s || 1); c.save(); c.font = '13px sans-serif'; c.fillStyle = hf.on ? '#c2410c' : '#1d4ed8'; c.fillText(hf.on ? '🔒' : '↔', q9[0] - 18 - hw9, q9[1]); c.restore(); }
     else if (lkv.length && !d.rev) { var g8 = dimGeom(d); if (lkv.some(function(x){ return Math.abs(x - g8.val) < 0.5; })) { var q8 = W2S(v, g8.text.p), hw8 = String(g8.text.s).length * g8.text.h * 0.3 * (v.s || 1); c.save(); c.font = '13px sans-serif'; c.fillText('🔒', q8[0] + hw8 + 4, q8[1]); c.restore(); } }   // 鍵の 寸法（画面だけ、v0.9.36）
   });
@@ -2940,13 +2942,33 @@ function mkBuild(){
 }
 function mirrorAxis(){ if (!(ST.sel.size || ST.dsel.size || ST.selDim)) { setMsg(ST.tool === 'move' ? '動かす ものを 選んで ください' : '写す ものを 選んで ください'); return; } ST.mi.phase = 'axis'; ST.pts = []; panel(); redraw(); }
 
+// ── 面の 目印（v0.9.47）：選んだ 線・寸法が どの 面（正面図 など）か を 見せて 変える。色で 見る は 画面だけ ──
+var PV_COL = { front:'#dc2626', side:'#16a34a', top:'#7c3aed', back:'#0891b2', left:'#ca8a04', bottom:'#db2777', none:'#9ca3af' };
+function pvName(k){ var f = PD_FACES.filter(function(x){ return x[0] === k; })[0]; return f ? f[1] : 'どの 面でも ない'; }
+function pvPanel(B, es, ds){
+  if (!(PD && PD.saveMain)) return; var all = es.concat(ds), fr = all.filter(pvFree), us = all.filter(function(e){ return !pvFree(e); });
+  document.body.classList.add('pvsel');
+  var box = document.createElement('div'); box.className = 'box'; box.style.cssText = 'margin:8px 0 4px;border:2px solid #64748b;border-radius:8px;padding:6px 8px';
+  if (!us.length) { box.innerHTML = '<b>面</b>：図枠・立体の 絵・磨き・断面 は どの 面にも 入りません'; B.appendChild(box); return; }
+  var ks = {}; us.forEach(function(e){ ks[e.pv || 'none'] = 1; }); var kl = Object.keys(ks), cur = kl.length === 1 ? kl[0] : '';
+  box.innerHTML = '<div class="row" style="margin:0"><b style="margin-right:6px">面</b><select id="pvSel" style="flex:1">' + (cur ? '' : '<option value="">（いろいろ：' + kl.map(pvName).join('・') + '）</option>') +
+    PD_FACES.map(function(f){ return '<option value="' + f[0] + '">' + f[1] + '</option>'; }).join('') + '<option value="none">どの 面でも ない</option></select></div>' +
+    '<div class="muted">この 面の 図として 扱います（［図に 出す 面］の チェックを 外すと 一緒に 消える・正面・側面・平面は 形の もと）。' + (fr.length ? '図枠など ' + fr.length + ' 個は 変えません。' : '') + '［図に 出す 面］の「面を 色で 見る」で ほかの 線も 確かめられます</div>';
+  B.appendChild(box); var sl = document.getElementById('pvSel'); sl.value = cur;
+  sl.onchange = function(){ var v = sl.value; if (!v) return; pushUndo(); us.forEach(function(e){ if (v === 'none') delete e.pv; else e.pv = v; }); if (v !== 'none') { var l = pdFaceList(); if (l.indexOf(v) < 0) { l.push(v); pdKeep(); } } pdSyncFaces(); changed(); panel(); redraw(); setMsg(us.length + ' 個を ' + pvName(v) + ' に しました'); };
+}
+function pvShowUi(){ var box = document.getElementById('pdFaces'); if (!box || document.getElementById('pvShow')) return;
+  var w = document.createElement('div'); w.innerHTML = '<label style="display:block;margin-top:6px"><input type="checkbox" id="pvShow"' + (ST.pvShow ? ' checked' : '') + '> <b>面を 色で 見る</b>（画面だけ）</label><div class="pvleg">' +
+    PD_FACES.map(function(f){ return '<span><i style="background:' + PV_COL[f[0]] + '"></i>' + f[1].replace(/（.*）/, '') + '</span>'; }).join('') + '<span><i style="background:' + PV_COL.none + '"></i>面なし</span></div>';
+  box.parentNode.insertBefore(w, box.nextSibling); document.getElementById('pvShow').onchange = function(){ ST.pvShow = this.checked; redraw(); }; }
+function pvCol(e){ return ST.pvShow && PD && PD.saveMain && !pvFree(e) ? PV_COL[e.pv || 'none'] || PV_COL.none : null; }
 // ═════════ 右の 欄（道具ごと） ═════════
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function panel(){
   var H = document.getElementById('pnToolH'), B = document.getElementById('pnToolB'), t = ST.tool, h = '';
   var names = { select:'選ぶ', paste:'貼り付け', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）', move:'移動・複写', offset:'オフセット（平行に 写す）', rect:'四角', corner:'角丸め・面取り', mkpart:'🧊 図から 部材を 作る（叩き台）' };
   H.textContent = names[t] || t;
-  document.body.classList.remove('hfsel');
+  document.body.classList.remove('hfsel'); document.body.classList.remove('pvsel');
   if (t === 'move' && ST.mi && ST.mi.sc) { // 尺度（SC）
     H.textContent = '尺度（大きさを 変える）';
     var nE2 = ST.sel.size, nD2 = ST.dsel.size + (ST.selDim ? 1 : 0);
@@ -2998,7 +3020,7 @@ function panel(){
       ['dTh', 'dAl'].forEach(function(id){ var el = document.getElementById(id); el.onchange = function(){
         var v = el.value.trim() ? parseLen(el.value) : 0; if (v == null || v < 0) { alert('大きさが 読めません'); return; }
         pushUndo(); d[id === 'dTh' ? 'th' : 'al'] = v || 0; changed(); }; });
-      return;
+      pvPanel(B, [], [d]); return;
     }
     if (ST.dsel.size) {
       var ds = D.dims.filter(function(x){ return ST.dsel.has(x.id); });
@@ -3019,7 +3041,7 @@ function panel(){
       ['mTh', 'mAl'].forEach(function(id){ var el = document.getElementById(id); el.onchange = function(){
         var t = el.value.trim(), v = t === '' || t === '0' ? 0 : parseLen(t); if (v == null || v < 0) { alert('大きさが 読めません'); return; }
         pushUndo(); ds.forEach(function(d){ d[id === 'mTh' ? 'th' : 'al'] = v || 0; }); changed(); }; });
-      return;
+      pvPanel(B, D.ents.filter(function(e){ return ST.sel.has(e.id); }), ds); return;
     }
     if (ST.sel.size) {
       var sel2 = D.ents.filter(function(e){ return ST.sel.has(e.id); });
@@ -3030,7 +3052,7 @@ function panel(){
       B.innerHTML = h;
       document.getElementById('eDel').onclick = deleteSel;
       var ta = document.getElementById('tApply'); if (ta) ta.onclick = function(){ pushUndo(); sel2[0].s = document.getElementById('tTxt').value; changed(); };
-      return;
+      pvPanel(B, sel2, []); return;
     }
     B.innerHTML = '<div class="muted">' + HINTS.select + '</div>'; return;
   }
@@ -5045,7 +5067,7 @@ function pdSyncFaces(){ // 図面で かく：元に戻す あと、図に あ�
   [].forEach.call(document.querySelectorAll('#pdFaces input'), function(c){ c.checked = l.indexOf(c.dataset.f) >= 0; });
 }
 function pdFaces(){
-  var on = pdFaceList(), box = document.getElementById('pdFaces');
+  var on = pdFaceList(), box = document.getElementById('pdFaces'); pvShowUi();
   box.innerHTML = PD_FACES.map(function(f){ return '<label><input type="checkbox" data-f="' + f[0] + '"' + (on.indexOf(f[0]) >= 0 ? ' checked' : '') + (f[0] === 'front' ? ' disabled' : '') + '> ' + f[1] + '</label>'; }).join('');
   box.onchange = function(ev){ var f = ev.target.dataset.f; if (!f) return; var l = pdFaceList(), i = l.indexOf(f);
     if (ev.target.checked && i < 0) l.push(f); if (!ev.target.checked && i >= 0) l.splice(i, 1); pdKeep();

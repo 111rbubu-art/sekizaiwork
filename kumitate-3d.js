@@ -19,13 +19,14 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   controls.minDistance = 300; controls.maxDistance = 40000; controls.zoomSpeed = 0.8;
   function clip(){ var d = cam.position.distanceTo(controls.target); var n = Math.max(1, d / 200), f = Math.max(d * 30, 60000); if (Math.abs(cam.near - n) > n * 0.2 || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } }
   controls.addEventListener('change', clip);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.5));
+  var hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.5); scene.add(hemi);
   var dl = new THREE.DirectionalLight(0xffffff, 1.6); dl.position.set(800, 1500, 1200); scene.add(dl);
   var dl2 = new THREE.DirectionalLight(0xffffff, 0.45); dl2.position.set(-900, 600, -700); scene.add(dl2);
   var ground = new THREE.Mesh(new THREE.PlaneGeometry(12000, 12000), new THREE.MeshStandardMaterial({ color:0xdcdcd6, roughness:1 }));
   ground.rotation.x = -Math.PI / 2; ground.position.y = -1; scene.add(ground);
   var grid = new THREE.GridHelper(12000, 120, 0xc4c4bc, 0xcbcbc4); scene.add(grid);
   var group = new THREE.Group(); scene.add(group);
+  var jMeshes = [], JM = null;   // 砂利の 板（押して 外す ため）
   var meshes = [], alive = true, fitted = false, last = null, viewName = '3d';
   var badMat = new THREE.MeshBasicMaterial({ color:0xd92020, transparent:true, opacity:0.32, depthWrite:false, side:THREE.DoubleSide }), badLine = new THREE.LineBasicMaterial({ color:0xb42020 });
   var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a }), darkLine = new THREE.LineBasicMaterial({ color:0x9aa0a8 }), selMat = new THREE.LineBasicMaterial({ color:0xe07a1f }), hitMat = new THREE.LineBasicMaterial({ color:0xd92020 });
@@ -33,7 +34,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true; }
   new ResizeObserver(size).observe(box); size();
 
-  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; }
+  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; }
 
   // 形の ある 部材の 立体（CSG・面の ならし・かどの 線）は 重いので、形が 同じ 間は 作り直さない。
   // 選ぶ・敷地を 打つ などで update が 来ても、形の 中身（JSON）が 同じなら 前に 作った 形を 写して 色と 線だけ 付け直す
@@ -69,6 +70,10 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     mat.customProgramCacheKey = function(){ return world ? 'ishime-w' : 'ishime'; };
     return mat;
   }
+  // 光（v0.8.57 本人「光源の 位置や 強さも 変更できるように」）：L = { az:方向（度・0＝前・90＝右）, el:高さ（度）, main:日の 強さ, amb:周りの 明るさ }
+  function setLight(L){ L = L || {}; var az = (L.az != null ? +L.az : 34) * Math.PI / 180, el = (L.el != null ? +L.el : 46) * Math.PI / 180, R = 2000;
+    dl.position.set(Math.sin(az) * Math.cos(el) * R, Math.sin(el) * R, Math.cos(az) * Math.cos(el) * R); dl.intensity = L.main != null ? +L.main : 1.6;
+    dl2.position.set(-dl.position.x, 600, -dl.position.z); hemi.intensity = L.amb != null ? +L.amb : 1.5; dl2.intensity = 0.45 * hemi.intensity / 1.5; dirty = true; }
   function setTexture(fn){ texFn = fn || null; if (last) update(last.r, last.col, last.sel, last.site, false); }
   var inUse = new Set();
   function trim(){
@@ -112,8 +117,9 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     if (r.jari && r.jari.rects && r.jari.rects.length) {
       var jm = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.95, metalness:0 }), jt = 20;
       if (r.jari.src) triMat(jm, r.jari.src, 'jari', true); else jm.color.set(r.jari.color || '#d8d4cc');
+      var jOff = new THREE.MeshBasicMaterial({ color:0xd92020, transparent:true, opacity:0.28, depthWrite:false });   // 外した 所（選んで いる 間だけ 見せる）
       r.jari.rects.forEach(function(q){ var w = q.x1 - q.x0, d = q.z1 - q.z0; if (!(w > 1 && d > 1)) return;
-        var jg = new THREE.BoxGeometry(w, jt, d), mm = new THREE.Mesh(jg, jm); mm.position.set(q.x0 + w / 2, r.jari.y - jt / 2, q.z0 + d / 2); mm.userData.jari = 1; group.add(mm); });
+        var jg = new THREE.BoxGeometry(w, jt, d), mm = new THREE.Mesh(jg, q.off ? jOff : jm); mm.position.set(q.x0 + w / 2, r.jari.y - jt / 2, q.z0 + d / 2); mm.userData.jari = q.key || 1; group.add(mm); jMeshes.push(mm); });
     }
     if (site && site.W > 20 && site.D > 20) {
       var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W - 20, site.D - 20)), new THREE.LineBasicMaterial({ color:0x3355aa }));
@@ -167,6 +173,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     down = null;
     var rc = renderer.domElement.getBoundingClientRect();
     ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);
+    if (JM) { var jh = ray.intersectObjects(jMeshes.concat(meshes), false); if (jh.length && jh[0].object.userData.jari) JM(jh[0].object.userData.jari); return; }   // 砂利を 外す・戻す
     if (PM) { var inf = pmHit(e); if (inf && PM.onClick) PM.onClick(inf); return; }
     if (MS) { var mi = msHit(e); if (MS.onClick) MS.onClick(mi ? msOut(mi) : null); return; }
     var hits = ray.intersectObjects(meshes, false);
@@ -394,5 +401,5 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     ground.visible = mode !== 'off';
     gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true; dirty = true;
   }
-  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
+  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, setLight:setLight, jariMode:function(cb){ JM = cb || null; renderer.domElement.style.cursor = JM ? 'pointer' : ''; }, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
 }

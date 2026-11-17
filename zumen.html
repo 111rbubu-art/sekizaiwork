@@ -123,7 +123,8 @@ body.pddraw #pdv{pointer-events:none;background:transparent} body.pddraw .pdtop,
 body.pddraw .pdtop{position:fixed;top:0;left:0;right:0;min-height:46px;box-sizing:border-box}
 body.pddraw .pdmain{padding-top:54px} body.pddraw #pdDraw{visibility:hidden}
 body.pddraw .main{margin-right:calc(min(330px,30vw) + 12px)} body.pddraw .status,body.pddraw .cmdline{margin-right:calc(min(330px,30vw) + 12px)}
-body.pddraw .pdright{width:min(330px,30vw);background:#eef2f6}
+body.pddraw .pdright{width:min(330px,30vw);background:#eef2f6;overflow-y:auto;min-height:0;padding-bottom:8px;box-sizing:border-box}
+body.pddraw .pdright>*{flex-shrink:0} body.pddraw #pd3d{flex:0 0 220px}
 .pdseg{display:inline-flex;border:1px solid #4a5a72;border-radius:6px;overflow:hidden}
 .pdseg button{background:#26354a;color:#cbd5e1;border:0;padding:5px 10px;font-size:13px;cursor:pointer}
 .pdseg button.on{background:#ff8a3d;color:#111;font-weight:700}
@@ -396,7 +397,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.44";
+var APP_VER = "v0.9.45";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2669,17 +2670,37 @@ var MK = (function(){
 })();
 function mkStart(){ ST.mk = { step:'front', front:null, side:null, top:null, D:0, holeD:{}, name:'' }; }
 // 部材の 図：どの 面にも 印（pv）の ない 線・文字・寸法（あとから かいた もの）に、いちばん 近い 面の 印を 付ける
+// 図枠・立体の 絵・磨き ▲・断面 は どの 面にも 属さない（v0.9.45：図枠に 右側面図の 印が 付き、右側面図を 消すと 図枠も 消えた）
+function pvFree(e){ return !!(e && (e.frame || e.iso || e.mg || e.sec)); }
+function pvClean(doc){ (doc.ents || []).concat(doc.dims || []).forEach(function(e){ if (e.pv && pvFree(e)) delete e.pv; }); }
+// 面の 印の 付け直し（v0.9.45）：前の 版で 写した 線が 元の 面の 印の まま 残り、枠の 中の 正面図が「右側面図」の 印に なって いた。
+// 面の 名前（正面図 など）の 文字は その 面。外形（閉じた 線）は すぐ 下に ある 面の 名前の 面。ほかの 線・寸法は 中心が ある 外形の 面へ
+function pvFix(doc){
+  var nm = {}; PD_FACES.forEach(function(f){ nm[f[1]] = f[0]; }); var n = 0;
+  var labs = doc.ents.filter(function(e){ return e.t === 'text' && nm[e.s] && !pvFree(e); });
+  labs.forEach(function(t){ if (t.pv !== nm[t.s]) { t.pv = nm[t.s]; n++; } }); if (!labs.length) return 0;
+  var outs = doc.ents.filter(function(e){ return e.t === 'pl' && e.closed && /外形/.test(e.layer || '') && !pvFree(e); }), box = {};
+  outs.forEach(function(e){ var b = bboxOf([e]); if (!isFinite(b.x0)) return; var h = b.y1 - b.y0, w = b.x1 - b.x0, bt = null, bd = Infinity;
+    labs.forEach(function(t){ var dy = b.y0 - t.p.y; if (t.p.x < b.x0 - w * 0.05 || t.p.x > b.x1 + w * 0.05 || dy < 0 || dy > Math.max(h, w) * 0.8) return; if (dy < bd) { bd = dy; bt = t; } });
+    if (!bt) return; var k = nm[bt.s]; if (e.pv !== k) { e.pv = k; n++; } (box[k] = box[k] || []).push(b); });
+  var inK = function(c){ var r = []; Object.keys(box).forEach(function(k){ if (box[k].some(function(b){ var mx = (b.x1 - b.x0) * 0.03, my = (b.y1 - b.y0) * 0.03; return c.x >= b.x0 - mx && c.x <= b.x1 + mx && c.y >= b.y0 - my && c.y <= b.y1 + my; })) r.push(k); }); return r; };
+  doc.ents.forEach(function(e){ if (!e.pv || pvFree(e) || e.t === 'text' || outs.indexOf(e) >= 0) return; var b = bboxOf([e]); if (!isFinite(b.x0)) return;
+    var r = inK(P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2)); if (r.length === 1 && r[0] !== e.pv) { e.pv = r[0]; n++; } });
+  (doc.dims || []).forEach(function(d){ if (!d.pv || pvFree(d) || !d.a || !d.b) return; var r = inK(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2)); if (r.length === 1 && r[0] !== d.pv) { d.pv = r[0]; n++; } });
+  return n;
+}
 function pvTag(doc){
+  pvClean(doc);
   var B = {}, G = {};
-  doc.ents.forEach(function(e){ if (e.pv && e.t !== 'text') (G[e.pv] = G[e.pv] || []).push(e); });
+  doc.ents.forEach(function(e){ if (e.pv && e.t !== 'text' && !pvFree(e)) (G[e.pv] = G[e.pv] || []).push(e); });
   Object.keys(G).forEach(function(k){ B[k] = bboxOf(G[k]); }); if (!Object.keys(B).length) return;
   function best(c, lim){ var bk = null, bd = Infinity;
     Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (d < bd) { bd = d; bk = k; } });
     return bd < lim ? bk : null; }
   var title = doc.info && doc.info.name;
-  doc.ents.forEach(function(e){ if (e.pv) return; if (e.t === 'text' && title && String(e.s || '').indexOf(title) === 0) return; // 下の 題の 文字は 面に 入れない
+  doc.ents.forEach(function(e){ if (e.pv || pvFree(e)) return; if (e.t === 'text' && title && String(e.s || '').indexOf(title) === 0) return; // 下の 題の 文字は 面に 入れない
     var b = bboxOf([e]); if (!isFinite(b.x0)) return; var k = best(P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), e.t === 'text' ? 0.15 : 0.25); if (k) e.pv = k; });
-  (doc.dims || []).forEach(function(d){ if (d.pv || !d.a || !d.b) return; var k = best(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), 0.5); if (k) d.pv = k; });
+  (doc.dims || []).forEach(function(d){ if (d.pv || pvFree(d) || !d.a || !d.b) return; var k = best(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), 0.5); if (k) d.pv = k; });
 }
 // 外形が 閉じない とき：つながって いない 端を 探して その 線を 選ぶ（v0.9.42）。升目で つなげる のは 線の 太さ 分（約 0.1%）まで
 function mkOpenEnds(ents){
@@ -4537,6 +4558,7 @@ function pdDrawMode(on){
     document.body.classList.toggle('pdmaster', !!PD.master);
     UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.gaps = null; ST.stone = null;
     document.body.classList.add('pddraw'); pdHidePop(); PD.sel = null;
+    pvClean(D); pvFix(D);   // 前の 版で 図枠・立体の 絵に 付いた 面の 印を 消す・写した 線の 面の 印を 直す（v0.9.45）
     var fill0 = pdFillFaces();   // 正面図など チェックが ある のに 線が 1 本も 無い 面は 出し直す（v0.9.41）
     renderLayers(); resize(); fit(); setTool('select'); changed();
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); pdRevApply(); });   // 立体の 絵の 寸法にも 改訂（v0.9.37）
@@ -5029,13 +5051,22 @@ function pdFaces(){
     if (ev.target.checked && i < 0) l.push(f); if (!ev.target.checked && i >= 0) l.splice(i, 1); pdKeep();
     if (PD.saveMain) { // 図面で かく：その 面の 図を 足す／消す
       pushUndo();
-      if (ev.target.checked) { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); pdPutViews(0, 0, [f]);
+      if (ev.target.checked) { D.ents = D.ents.filter(function(e){ return e.pv !== f || pvFree(e); }); D.dims = D.dims.filter(function(d){ return d.pv !== f || pvFree(d); }); var nk0 = PD.noSk; PD.noSk = true; try { var o0 = pdFrontShift(); pdPutViews(o0[0], o0[1], [f]); } finally { PD.noSk = nk0; }   // 消した 面は 図に 線が 無い ので 部材の 形から（v0.9.45）
         var sf1 = skSheet(); if (sf1 && sf1.sheet) skSheetLabels(sf1.sheet.n);   // 足した 面の 名前も 大きく
         (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ skInner([f]); secDraw(); renderLayers(); changed(); redraw(); }).catch(function(){}); }   // 足した 面の 中の 線・隠れ線・中心線
-      else { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); }
+      else { D.ents = D.ents.filter(function(e){ return e.pv !== f || pvFree(e); }); D.dims = D.dims.filter(function(d){ return d.pv !== f || pvFree(d); }); }
       ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; renderLayers(); changed(); fit();
     } };
 }
+// 足す 面の 置き場所：今の 正面図の 位置に 合わせる（v0.9.45：正面図を 動かして いると 足した 面が 正面図に 重なって いた）
+function pdFrontShift(){
+  var fr = D.ents.filter(function(e){ return e.pv === 'front' && e.t !== 'text' && !pvFree(e) && !e.inner && /外形/.test(e.layer || ''); });
+  if (!fr.length || !PD.m) return [0, 0];
+  var sf = skSheet(), sb = sf ? skBox([sf]) : null, fin = sb ? fr.filter(function(e){ var b = skBox([e]); return skInBox(sb, P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2)); }) : [];
+  if (fin.length) fr = fin; else fr = [fr[0]];   // 正面図が 2 つ ある ときは 図枠の 中の 方
+  var ab = skBox(fr), L = pdLayout(Math.max(PD.m.W, PD.m.H, PD.m.D)), lb = L.vs.front.box;
+  if (!isFinite(ab.x0) || !lb) return [0, 0];
+  return [(ab.x0 + ab.x1) / 2 - (lb.x0 + lb.x1) / 2, (ab.y0 + ab.y1) / 2 - (lb.y0 + lb.y1) / 2]; }
 // 図面で かく：チェックが ある（正面図は いつも）のに 線が 1 本も 無い 面を 出し直す（v0.9.41）
 // 例：芝台後 — 保存された 図に 左側面図・背面図 だけが 残り、正面図・右側面図が 消えて いた。正面図の チェックは 外せない ので 手で 戻せなかった
 // 置き場所：残って いる 面の 図の 下（重ならない ように）。面の 図が 1 つも 無ければ 図枠の 左の 外

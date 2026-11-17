@@ -413,7 +413,15 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c
 function yen(n){ return '¥ ' + Math.round(n).toLocaleString(); }
 function f2(n){ return (Math.round(n * 100) / 100).toFixed(2); }
 
-function stoneOf(g){ if (!TANKA || !TANKA.stones || !TANKA.stones.length) return null; return TANKA.stones.filter(function(s){ return s.id === ST.stone[g]; })[0] || TANKA.stones[0]; }
+// 石種と 単価は SharePoint の 石材価格表（v0.8.57 本人「複数の データが あると 困るので 石材価格表に まとめる」）。端末にも 覚えて つながらない ときも 使う
+var SPSTONES = lsGet('kumitate.spstones');   // [{ id:'sp:<item>', item, name, hex, cost(才単価) }]
+function stoneHex(c){ c = String(c || ''); return /黒/.test(c) ? '#18191b' : /赤|ピンク|桜/.test(c) ? '#9a5a52' : /青/.test(c) ? '#4a5664' : /緑/.test(c) ? '#55604f' : /茶|さび|錆|黄|ベージュ/.test(c) ? '#b39a74' : /白/.test(c) ? '#cfcdc8' : /グレー|灰|中間/.test(c) ? '#9a9a98' : '#8a8a88'; }
+function stoneList(){ return SPSTONES && SPSTONES.length ? SPSTONES : TANKA && TANKA.stones && TANKA.stones.length ? TANKA.stones : null; }
+function stoneOf(g){ var L = stoneList(); if (!L) return null; return L.filter(function(s){ return s.id === ST.stone[g]; })[0] || L[0]; }
+// 見積に 渡す 形（石材費＝才数 × 石材価格表の 単価。金具・運搬・据付などの 設定は 前の 単価ファイルが あれば それを 使う）
+function tankaFor(){ var L = stoneList(); if (!L) return null; if (L !== SPSTONES) return TANKA; return { stones:L.map(function(x){ return { id:x.id, name:x.name, overseas:+x.cost || 0, domestic:0 }; }), estimate:TANKA && TANKA.estimate || {} }; }
+function spStonesLoad(){ return spStoneList().then(function(){ var o = JSON.stringify(SPSTONES || []); SPSTONES = SPST.map(function(x){ return { id:'sp:' + x.id, item:x.id, name:x.name, hex:stoneHex(x.color), cost:x.cost }; }); lsSet('kumitate.spstones', SPSTONES);
+  if (JSON.stringify(SPSTONES) !== o) { renderSel(); run(); ishApply(); } }).catch(function(){}); }
 function groupOf(p){ return p.kind === 'boshi' || p.cg === 'boshi' ? 'boshi' : (p.kind === 'crypt' || p.cg === 'crypt') ? 'crypt' : p.cg === 'tower' ? 'tower' : 'fence'; }
 function colorOf(k){ var p = RES.parts[k], g = groupOf(p); if (g === 'crypt') return GRAY.crypt; var s = stoneOf(g); return s && s.hex ? s.hex : GRAY[g]; }
 
@@ -465,7 +473,7 @@ var SPST = null, SPSTQ = '', SPSTI = {}, SPSTSEL = '';   // SPST＝石の 一覧
 function spStoneNorm(t){ return String(t || '').replace(/[\s　()（）・\-]/g, '').toLowerCase(); }
 function spStoneList(){
   var w = spHost(); if (!w || !w._fetchStonePriceListItems) return Promise.reject(new Error('業務アプリから 開いた ときだけ 読めます'));
-  return w._fetchStonePriceListItems().then(function(items){ SPST = items.map(function(it){ return { id:String(it.id), name:it.Title || it.name || '', color:it.color || '' }; }).filter(function(x){ return x.name; }); SPST.sort(function(a, b){ return a.name.localeCompare(b.name, 'ja'); }); return SPST; }); }
+  return w._fetchStonePriceListItems().then(function(items){ SPST = items.map(function(it){ return { id:String(it.id), name:it.Title || '', color:it.color || '', cost:it.cost != null && it.cost !== '' ? +it.cost : null }; }).filter(function(x){ return x.name; }); SPST.sort(function(a, b){ return a.name.localeCompare(b.name, 'ja'); }); return SPST; }); }
 function spToken(w){ return w.msalApp.acquireTokenSilent({ scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'], account:w.msalApp.getActiveAccount() }).then(function(r){ return r.accessToken; }); }
 var SP_WEB = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/';
 function spStoneImgs(id){
@@ -485,6 +493,7 @@ function spStonePart(g){
   var w = spHost(), s = stoneOf(g), h = '<div class="ishsp"><b>☁ 石材価格表（SharePoint）の 写真</b>';
   if (!w) return h + '<div class="muted">業務アプリ →［📐 図面］から 開くと、石材価格表の 石の 写真から 選べます</div></div>';
   if (!SPST) return h + ' <button class="lk" data-spst="load">一覧を 読む</button></div>';
+  if (!SPSTSEL && s && s.item) SPSTSEL = s.item;
   if (!SPSTSEL && s) { var n0 = spStoneNorm(s.name), hit = SPST.filter(function(x){ return spStoneNorm(x.name) === n0; })[0] || SPST.filter(function(x){ var n = spStoneNorm(x.name); return n && n0 && (n.indexOf(n0) >= 0 || n0.indexOf(n) >= 0); })[0]; if (hit) SPSTSEL = hit.id; }
   h += '<div class="row" style="border:0"><span class="k">石</span><span><select data-spstsel="1" style="max-width:170px"><option value="">（選ぶ）</option>' + SPST.map(function(x){ return '<option value="' + esc(x.id) + '"' + (x.id === SPSTSEL ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select></span></div>';
   if (SPSTSEL) { var L = SPSTI[SPSTSEL];
@@ -1470,10 +1479,10 @@ function renderAuto(){
 $('adBox').addEventListener('click', function(e){ if (e.target.id === 'bAdX') { AD = null; renderAuto(); } });
 
 function stoneSelect(g){
-  if (!TANKA || !TANKA.stones) return '<span class="muted">単価を 読むと 選べます</span>';
+  var SL = stoneList(); if (!SL) return '<span class="muted">業務アプリから 開くと 石材価格表の 石が 選べます</span>';
   var cur = stoneOf(g);
   return '<span class="sw" style="background:' + esc(cur && cur.hex || '#888') + '"></span><select data-g="' + g + '">' +
-    TANKA.stones.map(function(s){ return '<option value="' + esc(s.id) + '"' + (cur && cur.id === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select>';
+    SL.map(function(s){ return '<option value="' + esc(s.id) + '"' + (cur && cur.id === s.id ? ' selected' : '') + '>' + esc(s.name) + (s.cost == null && SL === SPSTONES ? '（単価なし）' : '') + '</option>'; }).join('') + '</select>';
 }
 // ── 外柵の セットの 範囲（fit）。直すと 端末の セットに 入る（［セットに 保存］で SharePoint へ）──
 function fenceV(){ var v = KM.variants(DATA, 'fence')[ST.sel.fence]; return v && v.set && v.set.fit ? v : null; }
@@ -2160,12 +2169,18 @@ function freeToSet(fr){
 }
 
 function renderEst(){
-  var E = KM.estimate(RES, ST, TANKA), s = E.sai, h = '<div style="font-weight:700;margin-bottom:4px">才数と 見積（その場で 変わる）</div>';
+  var TK = tankaFor(), E = KM.estimate(RES, ST, TK), s = E.sai, noSet = !!TK && TK !== TANKA && !Object.keys(TK.estimate).length, h = '<div style="font-weight:700;margin-bottom:4px">才数と 見積（その場で 変わる）</div>';
   h += '<div class="row"><span class="k">才数</span><span>石塔 ' + f2(s.tower) + '・外柵 ' + f2(s.fence) + (s.boshi ? '・墓誌 ' + f2(s.boshi) : '') + ' 才</span></div>';
   if (!E.ok) {
-    h += '<div class="muted" style="margin:6px 0">単価が まだ 入って いません。旧シミュレーターの 保存ファイル（gravestone-project.json）か 単価ファイルを 読むと 金額が 出ます</div><button class="btn g" id="bTanka">💰 単価を 読む</button>';
+    h += '<div class="muted" style="margin:6px 0">石の 単価は 石材価格表（SharePoint）から 読みます。業務アプリの［📐 図面］から 開くと 金額が 出ます</div>';
   } else {
     var t = E.tower;
+    if (noSet) {   // 石材価格表の 単価だけ：石材費だけ 出す
+      h += '<div class="row"><span class="k">石塔 石材費（' + f2(s.tower) + '才 × ' + yen(t.stU) + '）</span><span>' + yen(t.stone) + '</span></div>' + (E.fence ? '<div class="row"><span class="k">外柵 石材費（' + f2(s.fence) + '才 × ' + yen(E.fence.stU) + '）</span><span>' + yen(E.fence.stone) + '</span></div>' : '') + (E.boshi ? '<div class="row"><span class="k">墓誌 石材費</span><span>' + yen(E.boshi.stone) + '</span></div>' : '');
+      h += '<div class="row"><span>石材費 合計（税別）</span><span class="tot">' + yen(t.stone + (E.fence ? E.fence.stone : 0) + (E.boshi ? E.boshi.stone : 0)) + '</span></div><div class="muted">単価は 石材価格表から。金具・運搬・据付・彫刻などは まだ 入れて いません。</div>';
+      if (RES.errs.length) h += '<div class="err muted" style="margin-top:6px">読めない 式：' + RES.errs.slice(0, 3).map(function(x){ return esc(x.expr) + '（' + esc(x.msg) + '）'; }).join('、') + '</div>';
+      $('estBox').innerHTML = h; return;
+    }
     h += '<details><summary class="row" style="display:flex"><span>石塔 小計</span><span>' + yen(t.subtotal) + '</span></summary>' +
       '<div class="row"><span class="k">石材費（' + f2(s.tower) + '才 × ' + yen(t.stU) + '）</span><span>' + yen(t.stone) + '</span></div>' +
       '<div class="row"><span class="k">金具</span><span>' + yen(t.kin) + '</span></div><div class="row"><span class="k">運搬</span><span>' + yen(t.hakobi) + '</span></div>' +
@@ -2177,7 +2192,7 @@ function renderEst(){
         '<div class="row"><span class="k">残土処分</span><span>' + yen(f.zando) + '</span></div></details>'; }
     if (E.boshi) h += '<div class="row"><span>墓誌（石材）</span><span>' + yen(E.boshi.subtotal) + '</span></div>';
     h += '<div class="row"><span>合計（税別）</span><span class="tot">' + yen(E.total) + '</span></div>';
-    h += '<div class="muted">彫刻・耐震・コーティングは まだ 入れて いません。<button class="lk" id="bTanka">単価を 読み直す</button></div>';
+    h += '<div class="muted">彫刻・耐震・コーティングは まだ 入れて いません。</div>';
   }
   if (RES.errs.length) h += '<div class="err muted" style="margin-top:6px">読めない 式：' + RES.errs.slice(0, 3).map(function(x){ return esc(x.expr) + '（' + esc(x.msg) + '）'; }).join('、') + '</div>';
   $('estBox').innerHTML = h;
@@ -2216,7 +2231,7 @@ $('bSave').onclick = function(){
 };
 // 上の［📂 読む ▾］（2026-11-10 本人「必要な 読み込みは 上の 欄へ」）
 function ldmHtml(){
-  var h = '<button data-ld="open">📂 モデリングを 開く（.json）</button><button data-ld="set">🧱 セットを 読む（.json）</button><button data-ld="part">🏺 部材を 読む（.json）</button><button data-ld="tanka">💰 単価を 読む</button>';
+  var h = '<button data-ld="open">📂 モデリングを 開く（.json）</button><button data-ld="set">🧱 セットを 読む（.json）</button><button data-ld="part">🏺 部材を 読む（.json）</button>';
   if (spHost()) h += '<button data-ld="sp">☁️ SP の セットを 読み直す</button>';
   return h + '<div class="muted">読んだ セット・部材は 部材マスターに 入ります。部材は 読んだ あと 支点を 選んで 置きます</div>';
 }
@@ -2398,7 +2413,7 @@ migGl(); RES = calc(); renderLeft(); run();
 spLoadSets(false); if (!spHost()) fixMissing(false);
 import('./kumitate-3d.js?v=0.8.51').then(function(m){
   V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen, pickBox);
-  V3.setTexture(ishSrc); ishLoad().then(function(){ ishApply(); if (ISH.on && Object.keys(ISH.by).length) renderSel(); });
+  V3.setTexture(ishSrc); if (spHost()) spStonesLoad(); ishLoad().then(function(){ ishApply(); if (ISH.on && Object.keys(ISH.by).length) renderSel(); });
   draw();
   window.__ready = true;
 }).catch(function(e){ $('v').innerHTML = '<div class="muted" style="padding:20px">3D を 開けませんでした：' + esc(e.message) + '</div>'; window.__ready = true; });

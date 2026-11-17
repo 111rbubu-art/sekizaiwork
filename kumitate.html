@@ -100,6 +100,7 @@ select{font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:6
 .ishb{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);background:#fff;border-radius:6px;padding:2px 6px 2px 2px;font:inherit;font-size:12px;vertical-align:middle;cursor:pointer}
 .ishth{display:inline-block;border-radius:4px;background-size:cover;background-position:center;border:1px solid #0002;flex:none}
 .ishth.no{background:repeating-linear-gradient(45deg,#f2f2f2 0 6px,#e4e4e4 6px 12px);color:#888;font-size:10px;display:inline-flex;align-items:center;justify-content:center}
+.ishsp{background:#f3f7fc;border:1px solid #cfe0f2;border-radius:8px;padding:6px;margin:4px 0}
 .ishp{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0 8px}
 .ishg{display:grid;grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:6px}
 .ishc{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;border:1px solid var(--line);background:#fafafa;border-radius:8px;padding:5px 3px;font:inherit;font-size:11px;cursor:pointer;color:var(--fg)}
@@ -459,18 +460,54 @@ function ishSrc(k){ if (!ISH.on || !RES || !RES.parts[k]) return null; var g = g
   var id = ISH.by[ishKey(g)]; if (!id) return null; var url = ishUrl(id); if (!url) return null;
   return { key:id, url:url, scale:ISH.scale[id] || (/^smp:/.test(id) ? 400 : 600), dark:/kuro/.test(id) }; }
 function ishApply(){ if (V3 && V3.setTexture) V3.setTexture(ishSrc); }
+// 石材価格表（SharePoint のリスト）の 添付写真から 選ぶ（v0.8.57）。業務アプリの 窓（spHost）の ログインで 読む。選んだ 写真は 端末にも 写して オフラインでも 出す
+var SPST = null, SPSTQ = '', SPSTI = {}, SPSTSEL = '';   // SPST＝石の 一覧 [{id,name,color}]、SPSTI[id]＝添付 [{name,url(blob)}] か 'load' / 'err'
+function spStoneNorm(t){ return String(t || '').replace(/[\s　()（）・\-]/g, '').toLowerCase(); }
+function spStoneList(){
+  var w = spHost(); if (!w || !w._fetchStonePriceListItems) return Promise.reject(new Error('業務アプリから 開いた ときだけ 読めます'));
+  return w._fetchStonePriceListItems().then(function(items){ SPST = items.map(function(it){ return { id:String(it.id), name:it.Title || it.name || '', color:it.color || '' }; }).filter(function(x){ return x.name; }); SPST.sort(function(a, b){ return a.name.localeCompare(b.name, 'ja'); }); return SPST; }); }
+function spToken(w){ return w.msalApp.acquireTokenSilent({ scopes:['https://shojisekizai.sharepoint.com/AllSites.Read'], account:w.msalApp.getActiveAccount() }).then(function(r){ return r.accessToken; }); }
+var SP_WEB = 'https://shojisekizai.sharepoint.com/sites/stoneworks/_api/web/';
+function spStoneImgs(id){
+  var w = spHost(); if (!w || !w.msalApp) return; SPSTI[id] = 'load'; renderSel();
+  spToken(w).then(function(t){
+    return w.fetch(SP_WEB + "lists/getbytitle('" + encodeURIComponent('石材価格表') + "')/items(" + id + ')/AttachmentFiles', { headers:{ Authorization:'Bearer ' + t, Accept:'application/json;odata=verbose' } }).then(function(r){ return r.json(); }).then(function(d){
+      var fs = (d.d && d.d.results || []).filter(function(f){ return /\.(jpe?g|png|webp|bmp|gif)$/i.test(f.FileName); });
+      return Promise.all(fs.map(function(f){ return w.fetch(SP_WEB + "getFileByServerRelativeUrl('" + String(f.ServerRelativeUrl).replace(/'/g, "''") + "')/$value", { headers:{ Authorization:'Bearer ' + t } }).then(function(r){ if (!r.ok) throw new Error(r.status); return r.blob(); }).then(function(b){ return { name:f.FileName, url:URL.createObjectURL(b) }; }).catch(function(){ return null; }); }));
+    }); }).then(function(list){ SPSTI[id] = list.filter(Boolean); renderSel(); }).catch(function(){ SPSTI[id] = 'err'; renderSel(); });
+}
+// SP の 写真を 石目に する：長い 辺 1024 の JPEG に して 端末に 覚える
+function spStoneUse(stId, fname, url, g){ var st = (SPST || []).filter(function(x){ return x.id === stId; })[0], im = new Image();
+  im.onload = function(){ var m = Math.min(1, 1024 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * m); c.height = Math.round(im.height * m); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+    var id = 'sp:' + stId + ':' + fname; ishPut({ id:id, name:(st ? st.name : '石材') + '（' + fname.replace(/\.[^.]+$/, '') + '）', data:c.toDataURL('image/jpeg', 0.85), sp:stId }); ISH.by[ishKey(g)] = id; ISH.on = true; ishSave(); ishApply(); renderSel(); };
+  im.src = url; }
+function spStonePart(g){
+  var w = spHost(), s = stoneOf(g), h = '<div class="ishsp"><b>☁ 石材価格表（SharePoint）の 写真</b>';
+  if (!w) return h + '<div class="muted">業務アプリ →［📐 図面］から 開くと、石材価格表の 石の 写真から 選べます</div></div>';
+  if (!SPST) return h + ' <button class="lk" data-spst="load">一覧を 読む</button></div>';
+  if (!SPSTSEL && s) { var n0 = spStoneNorm(s.name), hit = SPST.filter(function(x){ return spStoneNorm(x.name) === n0; })[0] || SPST.filter(function(x){ var n = spStoneNorm(x.name); return n && n0 && (n.indexOf(n0) >= 0 || n0.indexOf(n) >= 0); })[0]; if (hit) SPSTSEL = hit.id; }
+  h += '<div class="row" style="border:0"><span class="k">石</span><span><select data-spstsel="1" style="max-width:170px"><option value="">（選ぶ）</option>' + SPST.map(function(x){ return '<option value="' + esc(x.id) + '"' + (x.id === SPSTSEL ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select></span></div>';
+  if (SPSTSEL) { var L = SPSTI[SPSTSEL];
+    if (L === undefined) { setTimeout(function(){ if (SPSTI[SPSTSEL] === undefined) spStoneImgs(SPSTSEL); }, 0); h += '<div class="muted">写真を 読んで います…</div>'; }
+    else if (L === 'load') h += '<div class="muted">写真を 読んで います…</div>';
+    else if (L === 'err') h += '<div class="err">写真を 読めませんでした</div>';
+    else if (!L.length) h += '<div class="muted">この 石には 写真が ありません（業務アプリの 石材価格表で 足せます）</div>';
+    else { h += '<div class="ishg">'; L.forEach(function(f, i){ var on = ISH.by[ishKey(g)] === 'sp:' + SPSTSEL + ':' + f.name; h += '<button class="ishc' + (on ? ' on' : '') + '" data-spuse="' + i + '"><span class="ishth" style="width:54px;height:54px;background-image:url(' + f.url + ')"></span><span>' + esc(f.name.replace(/\.[^.]+$/, '')) + '</span></button>'; }); h += '</div>'; } }
+  return h + '</div>';
+}
 function ishThumb(id, sz){ var u = id && ishUrl(id); return u ? '<span class="ishth" style="width:' + sz + 'px;height:' + sz + 'px;background-image:url(' + u + ')"></span>' : '<span class="ishth no" style="width:' + sz + 'px;height:' + sz + 'px">なし</span>'; }
 function ishRow(g){ var id = ISH.by[ishKey(g)]; return '<button class="ishb" data-ish="' + g + '" title="石目を 選ぶ">' + ishThumb(id, 22) + '<span>石目</span></button>'; }
 function ishPanel(g){
   var key = ishKey(g), cur = ISH.by[key], s = stoneOf(g);
   var h = '<div class="ishp"><div class="row" style="border:0"><b>石目（' + esc(s ? s.name : ({ tower:'石塔', fence:'外柵', boshi:'墓誌' })[g]) + '）</b><button class="lk" data-ishx="1">閉じる</button></div><div class="ishg">';
-  var cell = function(id){ return '<button class="ishc' + (cur === id ? ' on' : '') + '" data-ishset="' + esc(id) + '">' + ishThumb(id, 54) + '<span>' + esc(ishName(id)) + '</span>' + (/^img:/.test(id) ? '<i data-ishdel="' + esc(id) + '" title="消す">✕</i>' : '') + '</button>'; };
+  var cell = function(id){ return '<button class="ishc' + (cur === id ? ' on' : '') + '" data-ishset="' + esc(id) + '">' + ishThumb(id, 54) + '<span>' + esc(ishName(id)) + '</span>' + (/^(img|sp):/.test(id) ? '<i data-ishdel="' + esc(id) + '" title="消す">✕</i>' : '') + '</button>'; };
+  h = h.replace('<div class="ishg">', spStonePart(g) + '<div class="muted" style="margin:6px 0 3px">この 端末に ある 石目</div><div class="ishg">');
   h += '<button class="ishc' + (!cur ? ' on' : '') + '" data-ishset="">' + ishThumb('', 54) + '<span>石目なし</span></button>';
   Object.keys(ISHIMG).forEach(function(id){ h += cell(id); });
   Object.keys(ISH_SMP).forEach(function(n){ h += cell('smp:' + n); });
   h += '</div><button class="btn g" data-ishread="' + g + '" style="margin-top:6px">📷 石の 写真を 読む</button>';
   if (cur) h += '<div class="row"><span class="k">写真 1 枚の 幅</span><span><input class="chip" data-ishsc="' + esc(cur) + '" type="number" inputmode="numeric" value="' + (ISH.scale[cur] || (/^smp:/.test(cur) ? 400 : 600)) + '"> mm</span></div>';
-  h += '<div class="muted">' + (s ? '石種「' + esc(s.name) + '」の 部材 ぜんぶに 貼ります（ほかの お墓でも 同じ）' : '単価を 読むと 石種ごとに 覚えます') + '。写真は この 端末に 覚えます</div></div>';
+  h += '<div class="muted">' + (s ? '石種「' + esc(s.name) + '」の 部材 ぜんぶに 貼ります（ほかの お墓でも 同じ）' : '単価を 読むと 石種ごとに 覚えます') + '。選んだ 写真は この 端末にも 覚えるので、つながらない ときも 出ます</div></div>';
   return h;
 }
 // 砂利（v0.8.57 ためし）：外柵の 内側で、砂利の 高さに 部材が 無い 所を 自動で 見つけて 敷く
@@ -1710,6 +1747,7 @@ $('selBox').addEventListener('change', function(e){
   if (d.fo || d.frot != null || d.fw) { freeInput(t); return; }
   if (d.at) { var a = (ST.add || []).filter(function(x){ return x.key === SEL; })[0], va = parseFloat(t.value); if (a && isFinite(va)) { a.at[d.at] = va; DATA = build(); run(); } return; }
   if (d.sat) { var p6 = RES.parts[SEL], sl6 = p6 && slotOf(setById(p6.setId), SEL), vs = parseFloat(t.value); if (sl6 && isFinite(vs)) { sl6.at[d.sat] = vs; setsChanged(); run(); } return; }
+  if (d.spstsel) { SPSTSEL = t.value; renderSel(); return; }
   if (d.ishon) { ISH.on = t.checked; ishSave(); ishApply(); return; }
   if (d.ishsc) { var vsc = parseFloat(t.value); if (vsc > 0) { ISH.scale[d.ishsc] = vsc; ishSave(); ishApply(); } return; }
   if (d.jari) { ST.jari = ST.jari || {}; if (d.jari === 'kind') { if (t.value) ST.jari.kind = t.value; else delete ST.jari.kind; } else { var vj = parseFloat(t.value); if (isFinite(vj)) ST.jari.down = vj; } run(); renderSel(); return; }
@@ -1752,10 +1790,12 @@ $('selBox').addEventListener('input', function(e){
 $('selBox').addEventListener('click', function(e){
   var t = e.target, id = t.closest('button') ? t.closest('button').id : t.id;
   if (id === 'bAuto') { autoRun(true); return; }
-  var ib = t.closest('[data-ish],[data-ishx],[data-ishset],[data-ishread],[data-ishdel]');   // 石目（v0.8.57）
+  var ib = t.closest('[data-ish],[data-ishx],[data-ishset],[data-ishread],[data-ishdel],[data-spst],[data-spuse]');   // 石目（v0.8.57）
   if (ib) { var dd = ib.dataset;
+    if (dd.spst) { ib.textContent = '読んで います…'; spStoneList().then(function(){ renderSel(); }).catch(function(er){ alert('石材価格表を 読めませんでした\n' + (er && er.message || er)); renderSel(); }); return; }
+    if (dd.spuse != null) { var fl = SPSTI[SPSTSEL] && SPSTI[SPSTSEL][+dd.spuse]; if (fl) spStoneUse(SPSTSEL, fl.name, fl.url, ISHOPEN); return; }
     if (dd.ishdel) { e.stopPropagation(); if (confirm('「' + ishName(dd.ishdel) + '」の 写真を この 端末から 消しますか？')) { ishDel(dd.ishdel); ishApply(); renderSel(); } return; }
-    if (dd.ish) { ISHOPEN = ISHOPEN === dd.ish ? '' : dd.ish; renderSel(); return; }
+    if (dd.ish) { ISHOPEN = ISHOPEN === dd.ish ? '' : dd.ish; SPSTSEL = ''; if (ISHOPEN && !SPST && spHost()) spStoneList().then(function(){ renderSel(); }).catch(function(){}); renderSel(); return; }
     if (dd.ishx) { ISHOPEN = ''; renderSel(); return; }
     if (dd.ishread) { ISHG = dd.ishread; $('fIshime').click(); return; }
     if (dd.ishset != null) { var kk = ishKey(ISHOPEN); if (dd.ishset) ISH.by[kk] = dd.ishset; else delete ISH.by[kk]; ISH.on = true; ishSave(); ishApply(); renderSel(); return; } }

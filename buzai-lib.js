@@ -7,7 +7,7 @@
 // 組み立て（kumitate.html）と 図面（zumen.html）で 共通。Three なし・node でも 動く。
 (function(root){
   var BUNRUI = [
-    { g:'石塔の 本体', roles:['竿', '上台', '中台', '下台'] },
+    { g:'石塔の 本体', roles:['竿', '上台', '中台'] },
     { g:'石塔の 台まわり', roles:['芝台前', '芝台横', '芝台後', '拝石'] },
     { g:'供養具', roles:['水鉢', '花立', '香炉', '線香立'] },
     { g:'外柵', roles:['階段', '中仕切', '拝石台', '腰石前', '腰石横', '腰石後', '羽目', '羽目柱', '親柱', '笠石'] },
@@ -15,7 +15,7 @@
     { g:'その他', roles:['塔婆柱', '墓誌', '灯籠', '敷石', '物置台', '金具'] }
   ];
   // 名前から 役目（長い ものから。拝石台＞拝石、羽目柱＞羽目、中台横・中台後＞中台）
-  var ROLE_WORDS = [];
+  var ROLE_WORDS = [];  // 「下台」は 分類に 無い（v0.3.14・2026-11-17 本人「下台は 存在しない」）
   BUNRUI.forEach(function(b){ b.roles.forEach(function(r){ ROLE_WORDS.push(r); }); });
   ROLE_WORDS.sort(function(a, b){ return b.length - a.length; });
   var ALIAS = [[/塔婆/, '塔婆柱'], [/棹/, '竿'], [/水鉢/, '水鉢'], [/香炉/, '香炉'], [/花立/, '花立'], [/カロート|納骨/, 'カロート']];
@@ -24,7 +24,7 @@
     var n = baseName(name);
     for (var i = 0; i < ROLE_WORDS.length; i++) if (n.indexOf(ROLE_WORDS[i]) >= 0) return ROLE_WORDS[i];
     for (var j = 0; j < ALIAS.length; j++) if (ALIAS[j][0].test(n)) return ALIAS[j][1];
-    var m = /^(中台|上台|下台|芝台)/.exec(n); if (m) return m[1] === '芝台' ? '芝台横' : m[1];
+    var m = /^(中台|上台|下台|芝台)/.exec(n); if (m) return m[1] === '芝台' ? '芝台横' : m[1] === '下台' ? '中台' : m[1];  // 下台は 無い 役目（2026-11-17 本人）。前の データの「下台」は 中台に
     return '';
   }
   function groupOf(role){ for (var i = 0; i < BUNRUI.length; i++) if (BUNRUI[i].roles.indexOf(role) >= 0) return BUNRUI[i].g; return 'その他'; }

@@ -396,7 +396,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.40";
+var APP_VER = "v0.9.41";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -4507,12 +4507,14 @@ function pdDrawMode(on){
     document.body.classList.toggle('pdmaster', !!PD.master);
     UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.gaps = null; ST.stone = null;
     document.body.classList.add('pddraw'); pdHidePop(); PD.sel = null;
+    var fill0 = pdFillFaces();   // 正面図など チェックが ある のに 線が 1 本も 無い 面は 出し直す（v0.9.41）
     renderLayers(); resize(); fit(); setTool('select'); changed();
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); pdRevApply(); });   // 立体の 絵の 寸法にも 改訂（v0.9.37）
     else if (!(D.info && D.info.inn) || !(D.info && D.info.stp) || !D.ents.some(function(e){ return e.sec; })) (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ if (!(D.info && D.info.inn)) skInner(); if (!(D.info && D.info.stp)) { skStepDims(); var sf1 = skSheet(); if (sf1 && sf1.sheet) skFrame(true, sf1.sheet.paper, sf1.sheet.n); } if (!D.ents.some(function(e){ return e.sec; })) secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(){});
     else secPanel();
     if (PD.def.drawing && (PD.def.drawing.migaki || []).length && !D.ents.some(function(e){ return e.mg; })) { if (D.info && D.info.isoMap) { skMigaki(); redraw(); } else skPrep(false); }
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
+    if (fill0 && fill0.length) setTimeout(function(){ setMsg('保存された 図に ' + fill0.join('・') + ' の 線が 無かった ので、部材の 形から 出し直しました（残って いる 面の 図の 下）。位置は 動かせます'); }, 50);
   } else if (!on && PD.saveMain) {
     pvTag(D); PD.def.sketch = { ents:D.ents, dims:D.dims, layers:D.layers, info:D.info }; pdKeep();
     D = PD.saveMain.D; UNDO = PD.saveMain.U; REDO = PD.saveMain.R; PD.saveMain = null; updUndo();
@@ -5003,6 +5005,26 @@ function pdFaces(){
       else { D.ents = D.ents.filter(function(e){ return e.pv !== f; }); D.dims = D.dims.filter(function(d){ return d.pv !== f; }); }
       ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; renderLayers(); changed(); fit();
     } };
+}
+// 図面で かく：チェックが ある（正面図は いつも）のに 線が 1 本も 無い 面を 出し直す（v0.9.41）
+// 例：芝台後 — 保存された 図に 左側面図・背面図 だけが 残り、正面図・右側面図が 消えて いた。正面図の チェックは 外せない ので 手で 戻せなかった
+// 置き場所：残って いる 面の 図の 下（重ならない ように）。面の 図が 1 つも 無ければ 図枠の 左の 外
+function pdFillFaces(){
+  if (!PD || !PD.saveMain || !PD.m) return null;
+  var has = {}; D.ents.forEach(function(e){ if (e.pv && e.t !== 'text' && !e.iso && !e.frame && !e.inner) has[e.pv] = 1; });
+  var miss = pdFaceList().filter(function(k){ return !has[k]; }); if (!miss.length) return null;
+  var keepNoSk = PD.noSk; PD.noSk = true;   // かいた 図に その 面の 線は 無いので 部材の 形から
+  try {
+    var big = Math.max(PD.m.W, PD.m.H, PD.m.D), L = pdLayout(big), g = big * 0.35, mb = { x0:Infinity, x1:-Infinity, y0:Infinity, y1:-Infinity };
+    miss.forEach(function(k){ var b = L.vs[k].box, o = L.off[k]; mb.x0 = Math.min(mb.x0, b.x0 + o[0]); mb.x1 = Math.max(mb.x1, b.x1 + o[0]); mb.y0 = Math.min(mb.y0, b.y0 + o[1]); mb.y1 = Math.max(mb.y1, b.y1 + o[1]); });
+    var ex = D.ents.filter(function(e){ return e.pv && !e.iso && !e.frame; }), fx, fy;
+    if (ex.length) { var eb = skBox(ex); D.dims.forEach(function(d){ if (d.pv && !d.iso && d.a && d.b) [d.a, d.b, d.off].forEach(function(q){ if (q) { eb.y0 = Math.min(eb.y0, q.y); } }); });
+      fx = eb.x0 - mb.x0; fy = eb.y0 - g * 1.5 - mb.y1; }
+    else { var fr = skSheet(); if (fr) { var fb = skBox([fr]); fx = fb.x0 - g - mb.x1; fy = (fb.y0 + fb.y1) / 2 - (mb.y0 + mb.y1) / 2; } else { fx = 0; fy = 0; } }
+    var names = pdPutViews(fx, fy, miss);
+  } finally { PD.noSk = keepNoSk; }
+  (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ skInner(miss); renderLayers(); changed(); redraw(); }).catch(function(){});
+  return names;
 }
 // 面の 置き場所（第三角法：平面＝正面の 上・下面＝下・右側面＝右・左側面＝左・背面＝右側面の 右）
 function pdLayout(big, keys){

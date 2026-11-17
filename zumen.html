@@ -396,7 +396,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.42";
+var APP_VER = "v0.9.43";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2687,13 +2687,23 @@ function mkOpenEnds(ents){
   ents.forEach(function(e){ var sg = entSegs(e); if (!sg.length) return; sg.forEach(function(q){ segs.push({ a:q[0], b:q[1], e:e }); });
     if (e.t === 'circle' || (e.t === 'pl' && e.closed)) return;
     ends.push({ p:sg[0][0], e:e }); ends.push({ p:sg[sg.length - 1][1], e:e }); });
-  var bb = bboxOf(ents), tol = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) / 700 * 0.8, bad = [];
+  var bb = bboxOf(ents), tol = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) / 700 * 0.8, bad = []; ST.sel.clear();
   ends.forEach(function(q){ var best = Infinity;
     segs.forEach(function(s){ if (s.e === q.e && (dist(s.a, q.p) < 1e-9 || dist(s.b, q.p) < 1e-9)) return; var d = distSeg(q.p, s.a, s.b); if (d < best) best = d; });
     if (best > tol) bad.push({ p:q.p, e:q.e, gap:best }); });
+  // その 端に 触れて いるのに 正面の 線に 数えて いない 線（面の 印・画層）を 探して わけを 言う（v0.9.43）
+  var FN = {}; PD_FACES.forEach(function(f){ FN[f[0]] = f[1]; });
+  var why = function(e){ var L = layerOf(e.layer);
+    if (e.inner) return '自動で 足した 中の 線'; if (e.iso) return '立体の 絵の 線'; if (e.frame) return '図枠'; if (!L.on) return '「見る」を 外した 画層（' + e.layer + '）';
+    if (L.dash) return '点線の 画層（' + e.layer + '）'; if (/隠れ|文字|寸法|立体/.test(e.layer || '')) return '形に 使わない 画層（' + e.layer + '）';
+    if (e.pv && e.pv !== 'front') return (FN[e.pv] || e.pv) + 'の 線 として 印が 付いて いる'; return null; };
+  var reasons = [];
+  bad.forEach(function(b){ D.ents.forEach(function(e){ if (ents.indexOf(e) >= 0 || e.t === 'text') return; var sg = entSegs(e);
+    if (!sg.some(function(q){ return distSeg(b.p, q[0], q[1]) <= tol; })) return; var w = why(e); if (w && reasons.indexOf(w) < 0) { reasons.push(w); ST.sel.add(e.id); } }); });
   if (!bad.length) return '線の 端は つながって いますが、輪に なりません（線が 重なって 交差して いないか・ほかの 線が まざって いないか 見て ください）';
-  ST.sel.clear(); bad.forEach(function(b){ ST.sel.add(b.e.id); });
+  bad.forEach(function(b){ ST.sel.add(b.e.id); });
   var g = bad.filter(function(b){ return isFinite(b.gap); }).map(function(b){ return b.gap; }), gmin = g.length ? Math.min.apply(null, g) : null;
+  if (reasons.length) return 'つながって いる ように 見える 線が 正面の 形に 使われて いません：' + reasons.join('・') + '。その 線も 選んで います（橙色）。部材_外形 か 作図 の 画層の 線に して ください';
   return 'つながって いない 端が ' + bad.length + ' か所 あります' + (gmin != null ? '（いちばん 近い 線まで ' + (gmin < 1 ? gmin.toFixed(2) : gmin.toFixed(1)) + ' mm）' : '') + '。その 線を 選んで います（橙色）。端を ほかの 線の 端に 合わせて ください（端点スナップ）';
 }
 // 部材設計の［図面で かく］：図に 出した 面（e.pv）の 線を そのまま 使う。あとから かいた 線は 近い 面に 入れる
@@ -2703,6 +2713,11 @@ function mkAuto(){
   D.ents.forEach(function(e){ if (!use(e)) return; if (e.pv && G[e.pv]) G[e.pv].push(e); else if (!e.pv) loose.push(e); });
   if (!G.front.length) return null;
   var B = {}; Object.keys(G).forEach(function(k){ if (G[k].length) B[k] = bboxOf(G[k]); });
+  // ほかの 面の 印が 付いて いても、正面の 外形の 枠の 中に まるごと ある 線は 正面の 線（あとから かいた 線に 遠い 面の 印が 付く ことが ある。v0.9.43）
+  (function(){ var fb = B.front, m0 = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0) * 0.02;
+    D.ents.forEach(function(e){ if (!use(e) || !e.pv || e.pv === 'front') return; var b = bboxOf([e]);
+      if (b.x0 >= fb.x0 - m0 && b.x1 <= fb.x1 + m0 && b.y0 >= fb.y0 - m0 && b.y1 <= fb.y1 + m0) { if (G[e.pv]) G[e.pv].splice(G[e.pv].indexOf(e), 1); e.pv = 'front'; G.front.push(e); } }); })();
+  Object.keys(G).forEach(function(k){ if (G[k].length) B[k] = bboxOf(G[k]); else delete B[k]; });
   loose.forEach(function(e){ var b = bboxOf([e]), c = P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), best = null, bd = Infinity;
     Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (d < bd) { bd = d; best = k; } });
     if (best && bd < 0.25) { G[best].push(e); e.pv = best; } }); // あとから かいた 線も その 面の 印を 付ける（図に 出す ときに 使う）

@@ -396,7 +396,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.36"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.41";
+var APP_VER = "v0.9.42";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2681,6 +2681,21 @@ function pvTag(doc){
     var b = bboxOf([e]); if (!isFinite(b.x0)) return; var k = best(P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), e.t === 'text' ? 0.15 : 0.25); if (k) e.pv = k; });
   (doc.dims || []).forEach(function(d){ if (d.pv || !d.a || !d.b) return; var k = best(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), 0.5); if (k) d.pv = k; });
 }
+// 外形が 閉じない とき：つながって いない 端を 探して その 線を 選ぶ（v0.9.42）。升目で つなげる のは 線の 太さ 分（約 0.1%）まで
+function mkOpenEnds(ents){
+  var ends = [], segs = [];
+  ents.forEach(function(e){ var sg = entSegs(e); if (!sg.length) return; sg.forEach(function(q){ segs.push({ a:q[0], b:q[1], e:e }); });
+    if (e.t === 'circle' || (e.t === 'pl' && e.closed)) return;
+    ends.push({ p:sg[0][0], e:e }); ends.push({ p:sg[sg.length - 1][1], e:e }); });
+  var bb = bboxOf(ents), tol = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) / 700 * 0.8, bad = [];
+  ends.forEach(function(q){ var best = Infinity;
+    segs.forEach(function(s){ if (s.e === q.e && (dist(s.a, q.p) < 1e-9 || dist(s.b, q.p) < 1e-9)) return; var d = distSeg(q.p, s.a, s.b); if (d < best) best = d; });
+    if (best > tol) bad.push({ p:q.p, e:q.e, gap:best }); });
+  if (!bad.length) return '線の 端は つながって いますが、輪に なりません（線が 重なって 交差して いないか・ほかの 線が まざって いないか 見て ください）';
+  ST.sel.clear(); bad.forEach(function(b){ ST.sel.add(b.e.id); });
+  var g = bad.filter(function(b){ return isFinite(b.gap); }).map(function(b){ return b.gap; }), gmin = g.length ? Math.min.apply(null, g) : null;
+  return 'つながって いない 端が ' + bad.length + ' か所 あります' + (gmin != null ? '（いちばん 近い 線まで ' + (gmin < 1 ? gmin.toFixed(2) : gmin.toFixed(1)) + ' mm）' : '') + '。その 線を 選んで います（橙色）。端を ほかの 線の 端に 合わせて ください（端点スナップ）';
+}
 // 部材設計の［図面で かく］：図に 出した 面（e.pv）の 線を そのまま 使う。あとから かいた 線は 近い 面に 入れる
 function mkAuto(){
   var G = { front:[], side:[], top:[] }, loose = [];
@@ -2695,7 +2710,7 @@ function mkAuto(){
     Object.keys(B).forEach(function(k){ var r = B[k], dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), dd = Math.hypot(dx, dy) / Math.max(r.x1 - r.x0, r.y1 - r.y0, 1); if (dd < bd) { bd = dd; best = k; } });
     if (best && bd < 0.5) d.pv = best; });
   var m = { step:'done', front:null, side:null, top:null, D:0, holeD:{}, name:'', auto:true };
-  m.front = MK.face(G.front); if (!m.front) return { err:'正面の 外形が 閉じて いません。端と 端が つながって いるか 見て ください' };
+  m.front = MK.face(G.front); if (!m.front) return { err:'正面の 外形が 閉じて いません。' + mkOpenEnds(G.front) };
   if (G.side.length) m.side = MK.face(G.side); if (G.top.length) m.top = MK.face(G.top);
   mkHoleDepths(m);
   return m;
@@ -2760,7 +2775,7 @@ function mkDepthText(m){
 }
 function mkAutoApply(direct){
   var m = mkAuto(); if (!m) return false;
-  if (m.err) { setMsg(m.err); alert(m.err); return true; }
+  if (m.err) { setMsg(m.err); redraw(); alert(m.err); return true; }
   setTool('mkpart'); ST.mk = m; panel(); redraw();
   if (direct) mkBuild();
   return true;
@@ -5056,7 +5071,7 @@ function pdFromMaster(){
 function pdToMaster(after){
   if (!PD || !PD.master) return;
   if (PD.job && !PD.job.key && !confirm('この 図は モデリングの 案件の 形（' + (PD.job.diff || []).join('・') + '）です。\n部材マスターの 部材を この 形に 書き換えますか（ほかの 案件・セットにも 効きます）')) return; PD.after = typeof after === 'function' ? after : null;
-  if (PD.saveMain) { var m = mkAuto(); if (m && m.err) { alert(m.err); return; }
+  if (PD.saveMain) { var m = mkAuto(); if (m && m.err) { setMsg(m.err); redraw(); alert(m.err); return; }
     PD.skDone = null;
     if (m) { setTool('mkpart'); ST.mk = m; mkBuild(); } else if (!confirm('図に 正面の 線が ありません。形は そのまま（図だけ）で 戻しますか')) return;
     if (PD.skDone) { setMsg('立体の 絵を 描き直して います…'); PD.skDone.then(function(){ pdToMaster2(); }); return; }

@@ -47,6 +47,29 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     if (key) { cache.set(key, pg); trim(); }
     return pg;
   }
+  // ── 石目（v0.8.57）：部材に 石の 写真を 貼る。形に UV が 無いので 3 方向から 映す（triplanar）。部材の 座標で 映すので 動かしても 石目は ずれない ──
+  // texFn(鍵) → { key, url, scale(写真 1 枚の 幅 mm) } か null。砂利も 同じ しくみ（r.jari）
+  var texFn = null, texCache = new Map(), texLoader = new THREE.TextureLoader();
+  function texOf(src){
+    var t = texCache.get(src.key);
+    if (!t) { t = texLoader.load(src.url, function(){ dirty = true; }); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); texCache.set(src.key, t); }
+    return t;
+  }
+  function seedOf(k){ var h = 0; for (var i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) | 0; return new THREE.Vector2(((h & 1023) / 1024), (((h >> 10) & 1023) / 1024)); }
+  function triMat(mat, src, k, world){
+    var tex = texOf(src), sc = +src.scale > 0 ? +src.scale : 600, off = seedOf(k || '');
+    mat.onBeforeCompile = function(sh){
+      sh.uniforms.triMap = { value:tex }; sh.uniforms.triScale = { value:sc }; sh.uniforms.triOff = { value:off };
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vTriP; varying vec3 vTriN;')
+        .replace('#include <begin_vertex>', world ? '#include <begin_vertex>\nvTriP = (modelMatrix * vec4(position, 1.0)).xyz; vTriN = normal;' : '#include <begin_vertex>\nvTriP = position; vTriN = normal;');
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform sampler2D triMap; uniform float triScale; uniform vec2 triOff; varying vec3 vTriP; varying vec3 vTriN;')
+        .replace('#include <color_fragment>', '#include <color_fragment>\n{ vec3 bw = pow(abs(normalize(vTriN)), vec3(4.0)); bw /= (bw.x + bw.y + bw.z + 1e-5); vec3 q = vTriP / triScale;' +
+          ' vec3 tc = texture2D(triMap, q.zy + triOff).rgb * bw.x + texture2D(triMap, q.xz + triOff.yx).rgb * bw.y + texture2D(triMap, q.xy + triOff * 1.7).rgb * bw.z; diffuseColor.rgb *= tc; }');
+    };
+    mat.customProgramCacheKey = function(){ return world ? 'ishime-w' : 'ishime'; };
+    return mat;
+  }
+  function setTexture(fn){ texFn = fn || null; if (last) update(last.r, last.col, last.sel, last.site, false); }
   var inUse = new Set();
   function trim(){
     if (cache.size <= CACHE_MAX) return;
@@ -65,8 +88,10 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       var b = r.boxes[k], w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
       if (!(w > 0 && h > 0 && d > 0)) return;
       var bad = r.bad && r.bad[k], c0 = new THREE.Color(col(k)); var hl = r.hl && r.hl[k]; if (hl) c0 = new THREE.Color(hl); else if (bad) c0.lerp(new THREE.Color(0xd9534f), 0.85);   // 開いた 札の 部材は 選択肢の 部材名と 同じ 色（v0.8.47）   // ✕ の 部材は 赤く（v0.8.23）
-      var g = new THREE.BoxGeometry(w, h, d), dark = c0.getHSL({}).l < 0.25;
-      var sm = new THREE.MeshStandardMaterial({ color:c0, roughness:0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
+      var src = texFn ? texFn(k) : null; if (src) { var tint = hl ? new THREE.Color(hl) : bad ? new THREE.Color(0xd9534f) : null; c0 = new THREE.Color(0xffffff); if (tint) c0.lerp(tint, 0.6); }   // 石目：写真の 色を そのまま（✕・札の 部材は 色を 少し 重ねる）
+      var g = new THREE.BoxGeometry(w, h, d), dark = src ? !!(src.dark) : c0.getHSL({}).l < 0.25;
+      var sm = new THREE.MeshStandardMaterial({ color:c0, roughness:src ? 0.32 : 0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
+      if (src) triMat(sm, src, k, false);
       var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）
       var lm = on ? selMat : hit[k] || bad ? hitMat : dark ? darkLine : lineMat;
       var rot = +(r.parts[k].rot || 0) * Math.PI / 180;   // 足した 部材の 回転（箱＝回した 形を 囲む 箱）
@@ -83,6 +108,13 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       }
       if (k === sel && typeof sel === 'string') { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
+    // 砂利（v0.8.57）：外柵の 内側の 部材の 無い 所に 敷く 板。r.jari = { y:上の 高さ, rects:[{x0,z0,x1,z1}], src:{key,url,scale} }
+    if (r.jari && r.jari.rects && r.jari.rects.length) {
+      var jm = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.95, metalness:0 }), jt = 20;
+      if (r.jari.src) triMat(jm, r.jari.src, 'jari', true); else jm.color.set(r.jari.color || '#d8d4cc');
+      r.jari.rects.forEach(function(q){ var w = q.x1 - q.x0, d = q.z1 - q.z0; if (!(w > 1 && d > 1)) return;
+        var jg = new THREE.BoxGeometry(w, jt, d), mm = new THREE.Mesh(jg, jm); mm.position.set(q.x0 + w / 2, r.jari.y - jt / 2, q.z0 + d / 2); mm.userData.jari = 1; group.add(mm); });
+    }
     if (site && site.W > 20 && site.D > 20) {
       var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W - 20, site.D - 20)), new THREE.LineBasicMaterial({ color:0x3355aa }));
       ol.rotation.x = -Math.PI / 2; ol.position.y = 1; group.add(ol);
@@ -362,5 +394,5 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     ground.visible = mode !== 'off';
     gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true; dirty = true;
   }
-  return { update:update, fit:fit, setGround:setGround, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
+  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
 }

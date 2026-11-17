@@ -202,6 +202,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
     <div class="tool" data-tool="text"><b>A</b>文字</div>
     <hr>
     <div class="tool" data-tool="line"><b>╱</b>線</div>
+    <div class="tool" data-tool="circle" title="C：中心 → 半径の 位置（数字＋Enter で 半径、D で 直径）"><b>○</b>円</div>
     <div class="tool" data-tool="arc"><b>◜</b>円弧</div>
     <div class="tool" data-tool="rect"><b>▭</b>四角</div>
     <div class="tool" data-tool="hole"><b>◯</b>穴</div>
@@ -399,7 +400,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.50"></script>
 <script src="zumen-km.js?v=0.9.35"></script>
 <script>
-var APP_VER = "v0.9.50";
+var APP_VER = "v0.9.51";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1309,7 +1310,7 @@ function drawOverlay(c){
     c.fillText(fmtLen(dist(ST.meas.a, ST.meas.b)), (m1[0] + m2[0]) / 2, (m1[1] + m2[1]) / 2 - 6);
   }
   // 取った 点 → いまの 点（ゴム線・寸法の 下書き）
-  if (ST.cur && ST.pts.length && (ST.tool === 'measure' || ST.tool === 'dim' || ST.tool === 'line' || ST.tool === 'leader' || (ST.tool === 'mark' && ST.mgA) || (ST.tool === 'stretch' && ST.sw && ST.sw.phase === 'target'))) {
+  if (ST.cur && ST.pts.length && (ST.tool === 'measure' || ST.tool === 'dim' || (ST.tool === 'line' && ST.lineKind !== 'cl') || ST.tool === 'leader' || (ST.tool === 'mark' && ST.mgA) || (ST.tool === 'stretch' && ST.sw && ST.sw.phase === 'target'))) {
     var last = ST.pts[ST.pts.length - 1], cu = ST.cur;
     if (ST.tool === 'dim' && ST.pts.length === 2) {
       drawDim(c, V, { a:ST.pts[0], b:ST.pts[1], off:cu, mode:resolveDimMode(ST.pts[0], ST.pts[1], cu) }, '#7a9ad8', 1);
@@ -1685,6 +1686,7 @@ var HINTS = {
   stretch:'動かす 所を 窓で 囲む（2 か所 クリック）→ ずらす 量を 打つ か、基点→行き先を クリック',
   gap:'右の［調べる］で 石と 石の 隙間・重なりを 一覧に します',
   line:'線：始まりを クリック → 次の 点を クリック（続けて 引ける。Esc／右クリックで 終わり）',
+  circle:'円：中心を クリック → 半径の 位置を クリック（数字＋Enter で 半径、D＋数字＋Enter で 直径）',
   hole:'穴：中心を クリック → 直径を 入れる',
   leader:'引出線：矢印の 先を クリック → 文字を 置く 所を クリック → 文字を 入れる',
   mark:'磨き：▲を 置く 所を クリック → 続けて 矢印の 先を クリック（Esc／右クリック／Enter＝矢印だけ やめて ▲は 残す。もう 一度 Esc で 終わり）',
@@ -1902,8 +1904,15 @@ function onClick(p, raw, ev){
   if (cadClick(p, raw, ev)) return;
   var drawLay = BM && BM.active ? '部材' : '作図';
   if (t === 'line') {
-    if (ST.pts.length) { var a0 = ST.pts[0]; if (dist(a0, p) > 1e-6) { pushUndo(); D.ents.push({ id:SEQ++, t:'line', a:P(a0.x, a0.y), b:P(p.x, p.y), layer:drawLay, css:null, aci:256 }); layerOf(drawLay); changed(); } }
+    var clOn = ST.lineKind === 'cl';
+    if (clOn && ST.clMode === 'mark' && !ST.pts.length) { clMark(raw); return; }
+    var lLay = clOn ? clLayer() : drawLay;
+    if (ST.pts.length) { var a0 = ST.pts[0]; if (dist(a0, p) > 1e-6) { pushUndo(); D.ents.push({ id:SEQ++, t:'line', a:P(a0.x, a0.y), b:P(p.x, p.y), layer:lLay, css:null, aci:256 }); layerOf(lLay); renderLayers(); changed(); } }
     ST.pts = [P(p.x, p.y)]; redraw(); return;
+  }
+  if (t === 'circle') {
+    if (!ST.pts.length) { ST.pts = [P(p.x, p.y)]; ACAD.buf = ''; setMsg('円の 半径を 指定（クリック か 数字＋Enter。D＝直径）'); panel(); redraw(); return; }
+    circleMake(dist(ST.pts[0], p)); return;
   }
   if (t === 'hole') {
     var ds = prompt('穴の 直径（例 18・8）'); if (!ds) return; var dv = parseLen(String(ds).replace(/[φΦ]/g, '')); if (!(dv > 0)) { alert('直径が 読めません'); return; }
@@ -1945,6 +1954,24 @@ function onClick(p, raw, ev){
     ST.gapSel = best; panel(); redraw();
   }
 }
+// 中心線（一点鎖線・赤）の 画層。線の 種類で「中心線」を 選ぶと ここに 引く
+function clLayer(){ var L = layerOf('中心線'); if (L.dash !== 'dd') { L.aci = 1; L.css = '#c0392b'; L.dash = 'dd'; L.gap = false; } return '中心線'; }
+// 円・円弧を クリック → 十字の 中心線（縁から ST.clExt mm はみ出す）
+function clMark(raw){
+  var e = nearestEnt(raw, function(x){ return visible(x) && (x.t === 'circle' || x.t === 'arc'); });
+  if (!e) { setMsg('円か 円弧を クリック して ください'); return; }
+  var ex = ST.clExt > 0 ? ST.clExt : 5, L = e.r + ex, lay = clLayer(); pushUndo();
+  D.ents.push({ id:SEQ++, t:'line', a:P(e.c.x - L, e.c.y), b:P(e.c.x + L, e.c.y), layer:lay, css:null, aci:256 });
+  D.ents.push({ id:SEQ++, t:'line', a:P(e.c.x, e.c.y - L), b:P(e.c.x, e.c.y + L), layer:lay, css:null, aci:256 });
+  layerOf(lay); renderLayers(); changed(); setMsg('十字の 中心線を 入れました（円 R' + fmtMm(e.r) + '）。続けて 別の 円を クリック'); redraw();
+}
+function circleMake(r){
+  var c0 = ST.pts[0]; ST.pts = []; ACAD.buf = ''; ST.cirD = false;
+  if (!(r > 1e-6)) { setMsg('半径が 0 です'); redraw(); return; }
+  var lay = BM && BM.active ? '部材' : '作図'; pushUndo();
+  D.ents.push({ id:SEQ++, t:'circle', c:P(c0.x, c0.y), r:r, layer:lay, css:null, aci:256 }); layerOf(lay); renderLayers();
+  setMsg('円 R' + fmtMm(r) + '（φ' + fmtMm(r * 2) + '）。続けて 次の 中心を クリック'); changed(); panel(); redraw();
+}
 // 寸法が 1 つだけ（図形なし）なら いつもの 1 つ 選び（つまみ つき）に する
 function selSettle(){ if (ST.dsel.size === 1 && !ST.sel.size) { ST.selDim = ST.dsel.values().next().value; ST.dsel.clear(); ST.hotGrip = null; } }
 // ── AutoCAD と 同じ 動き（移動・複写）──
@@ -1953,11 +1980,12 @@ function selSettle(){ if (ST.dsel.size === 1 && !ST.sel.size) { ST.selDim = ST.d
 // 基点 → 2 点目（Shift／F8 で 直交）。2 点目で 数字を 打って Enter＝カーソルの 向きへ その 長さ、「x,y」「@x,y」＝ずらす 量。
 // 移動は 1 回で 終わり（選んだ ものは はずれる）。複写は 続けて 何度でも、Enter／Esc で 終わり。
 var ACAD = { buf:'', last:null };
-var ACAD_CMD = { Z:'zoom', ZOOM:'zoom', OS:'osnap', OSNAP:'osnap', SC:'scale', SCALE:'scale', SE:'osnap', DS:'osnap', M:'move', MOVE:'move', CO:'copy', CP:'copy', COPY:'copy', MI:'mirror', MIRROR:'mirror', O:'offset', OFFSET:'offset' };
+var ACAD_CMD = { L:'line', LINE:'line', C:'circle', CIRCLE:'circle', Z:'zoom', ZOOM:'zoom', OS:'osnap', OSNAP:'osnap', SC:'scale', SCALE:'scale', SE:'osnap', DS:'osnap', M:'move', MOVE:'move', CO:'copy', CP:'copy', COPY:'copy', MI:'mirror', MIRROR:'mirror', O:'offset', OFFSET:'offset' };
 function acadStart(c){
   if (c === 'zoom') { ACAD.last = c; ACAD.buf = ''; ACAD.zoom = true; setMsg('ズーム [全体(E)／窓(W)／前(P)] <リアルタイム＝ホイール>：文字を 打って Enter（W は そのまま 窓の 1 つ目の 角を クリックでも）'); ST.zw = { a:null }; return; }
   if (c === 'osnap') { ACAD.last = c; ACAD.buf = ''; openOsnap(); return; }
   if (c === 'scale') { scStart(); return; }
+  if (c === 'line' || c === 'circle') { ACAD.last = c; ACAD.buf = ''; setTool(c); panel(); redraw(); setMsg(HINTS[c]); return; }
   if (c === 'offset') { ACAD.last = c; ACAD.buf = ''; setTool('offset'); panel(); redraw(); setMsg('オフセット 距離を 指定 <' + fmtMm(ST.of.d) + '>：数字を 打って Enter（そのままで よければ 線を クリック）'); return; }
   ACAD.last = c; var keep = c === 'copy';
   if (ST.selDim) { ST.dsel.add(ST.selDim); ST.selDim = null; }
@@ -2007,6 +2035,14 @@ function acadKey(ev){
     if (ent && !ACAD.buf) { ST.of.e = null; setTool('select'); panel(); redraw(); setMsg(''); return true; }
   }
   if (ST.tool === 'move' && ST.mi && ST.mi.sc && ST.mi.phase === 'axis' && ST.pts.length === 1) return scKey(k, ent);
+  if (ST.tool === 'circle' && ST.pts.length === 1) { // 円：数字＋Enter＝半径、D で 直径（AutoCAD と 同じ）
+    var lab = function(){ return (ST.cirD ? '直径' : '半径') + '：' + ACAD.buf + '（Enter）'; };
+    if (/^[dD]$/.test(k) && !ACAD.buf) { ST.cirD = !ST.cirD; setMsg('円の ' + (ST.cirD ? '直径' : '半径') + 'を 指定（数字＋Enter）'); return true; }
+    if (/^[rR]$/.test(k) && !ACAD.buf) { ST.cirD = false; setMsg('円の 半径を 指定（数字＋Enter）'); return true; }
+    if (/^[0-9.]$/.test(k)) { ACAD.buf += k; setMsg(lab()); return true; }
+    if (k === 'Backspace') { ACAD.buf = ACAD.buf.slice(0, -1); setMsg(lab()); return true; }
+    if (ent) { if (!ACAD.buf) { ST.pts = []; setMsg('円：中心を クリック'); redraw(); return true; } var Lr = parseLen(ACAD.buf); if (!(Lr > 0)) { ACAD.buf = ''; setMsg('数字が 読めません'); return true; } circleMake(ST.cirD ? Lr / 2 : Lr); return true; }
+    return false; }
   if (ST.eg) { // グリップ：数字＋Enter＝長さ、何も 打たずに Enter／スペース＝やめる（AutoCAD と 同じ）
     if (/^[0-9.]$/.test(k)) { ACAD.buf += k; setMsg('長さ：' + ACAD.buf + '（Enter）'); return true; }
     if (k === 'Backspace') { ACAD.buf = ACAD.buf.slice(0, -1); setMsg('長さ：' + ACAD.buf); return true; }
@@ -2370,6 +2406,16 @@ function drawCadPreview(c){
         c.restore(); }); });
   }
   if (t === 'corner' && ST.cn && ST.cn.e1) { c.save(); c.strokeStyle = '#ff5a1f'; c.lineWidth = 3; c.beginPath(); pathEnt(c, V, ST.cn.e1); c.stroke(); c.restore(); }
+  if (t === 'circle' && ST.cur && ST.pts.length === 1) {
+    var cq = W2S(V, ST.pts[0]), rq = W2S(V, ST.cur), rr = dist(ST.pts[0], ST.cur);
+    c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#555'; c.lineWidth = 1; c.beginPath(); c.moveTo(cq[0], cq[1]); c.lineTo(rq[0], rq[1]); c.stroke();
+    c.setLineDash([]); c.strokeStyle = '#ff5a1f'; c.lineWidth = 2; c.beginPath(); c.arc(cq[0], cq[1], rr * V.s, 0, 2 * PI); c.stroke();
+    c.fillStyle = '#c0007a'; c.font = 'bold 13px sans-serif'; c.textAlign = 'left'; c.textBaseline = 'bottom'; c.fillText('R' + fmtMm(rr), rq[0] + 8, rq[1] - 6); c.restore();
+  }
+  if (t === 'line' && ST.lineKind === 'cl' && ST.cur && ST.pts.length === 1) {
+    var lq1 = W2S(V, ST.pts[0]), lq2 = W2S(V, ST.cur);
+    c.save(); c.setLineDash([14, 3, 2, 3]); c.strokeStyle = '#c0392b'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(lq1[0], lq1[1]); c.lineTo(lq2[0], lq2[1]); c.stroke(); c.restore();
+  }
   if (t === 'arc' && ST.cur && ST.pts.length === 2) {
     var g = ST.arcMode === 'cse' ? CX.arcC(ST.pts[0], ST.pts[1], ST.cur) : CX.arc3(ST.pts[0], ST.pts[1], ST.cur);
     if (g) drawPiece(c, { k:'A', c:g.c, r:g.r, a0:g.a0, s:sweepCCW(g.a0, g.a1) }, '#ff5a1f', 2);
@@ -2984,7 +3030,7 @@ function pvCol(e){ return ST.pvShow && PD && PD.saveMain && !pvFree(e) ? PV_COL[
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function panel(){
   var H = document.getElementById('pnToolH'), B = document.getElementById('pnToolB'), t = ST.tool, h = '';
-  var names = { select:'選ぶ', paste:'貼り付け', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）', move:'移動・複写', offset:'オフセット（平行に 写す）', rect:'四角', corner:'角丸め・面取り', mkpart:'🧊 図から 部材を 作る（叩き台）' };
+  var names = { select:'選ぶ', paste:'貼り付け', pan:'動かす', measure:'測る', dim:'寸法', text:'文字', stone:'石の 寸法を 変える', stretch:'伸ばす（ストレッチ）', gap:'隙間チェック', line:'線', circle:'円（中心・半径）', hole:'穴（円）', leader:'引出線', mark:'磨きの 印（▲）', arc:'円弧', trim:'トリム（切る）', extend:'延長（伸ばす）', mirror:'鏡像（反転）', move:'移動・複写', offset:'オフセット（平行に 写す）', rect:'四角', corner:'角丸め・面取り', mkpart:'🧊 図から 部材を 作る（叩き台）' };
   H.textContent = names[t] || t;
   document.body.classList.remove('hfsel'); document.body.classList.remove('pvsel');
   if (t === 'move' && ST.mi && ST.mi.sc) { // 尺度（SC）
@@ -3073,6 +3119,25 @@ function panel(){
       pvPanel(B, sel2, []); return;
     }
     B.innerHTML = '<div class="muted">' + HINTS.select + '</div>'; return;
+  }
+  if (t === 'line') {
+    var kd = ST.lineKind === 'cl';
+    h += '<div class="row"><label>線の 種類</label><label><input type="radio" name="lnK" value="solid"' + (kd ? '' : ' checked') + '> 実線</label> <label><input type="radio" name="lnK" value="cl"' + (kd ? ' checked' : '') + '> <span style="color:#c0392b">中心線（一点鎖線）</span></label></div>';
+    if (kd) {
+      h += '<div class="row"><label>引き方</label><label><input type="radio" name="clM" value="2p"' + (ST.clMode === 'mark' ? '' : ' checked') + '> 2 点で 引く</label> <label><input type="radio" name="clM" value="mark"' + (ST.clMode === 'mark' ? ' checked' : '') + '> 円に 十字</label></div>';
+      if (ST.clMode === 'mark') h += '<div class="row"><label>はみ出し</label><input type="text" id="clExt" class="w" value="' + fmtMm(ST.clExt > 0 ? ST.clExt : 5) + '"> mm</div><div class="muted">円・円弧の 縁を クリック → 中心に 十字の 中心線（縁から はみ出し 分 長く）。続けて 何個でも</div>';
+      else h += '<div class="muted">始まり → 次の 点を クリック（続けて 引ける。Esc／右クリックで 終わり）。画層「中心線」（赤・一点鎖線）に 入ります。円の 中心・中点に 吸い付きます</div>';
+    } else h += '<div class="muted">' + HINTS.line + '</div>';
+    B.innerHTML = h;
+    document.querySelectorAll('input[name=lnK]').forEach(function(r){ r.onchange = function(){ ST.lineKind = r.value; ST.pts = []; panel(); redraw(); }; });
+    document.querySelectorAll('input[name=clM]').forEach(function(r){ r.onchange = function(){ ST.clMode = r.value; ST.pts = []; panel(); redraw(); }; });
+    var ce = document.getElementById('clExt'); if (ce) ce.onchange = function(){ var v = parseLen(ce.value); if (v >= 0) ST.clExt = v; };
+    return;
+  }
+  if (t === 'circle') {
+    h += '<div class="muted">' + (ST.pts.length ? '半径の 位置を クリック（数字＋Enter で 半径、D を 押してから 数字＋Enter で 直径）' : '中心を クリック（端点・交点・中心に 吸い付く）') + '</div>';
+    h += '<div class="muted">続けて 次の 円が かけます。Esc で 終わり。直径を 打って 置くだけなら［◯ 穴］も 使えます</div>';
+    B.innerHTML = h; return;
   }
   if (t === 'arc') {
     h += '<div class="row"><label>かき方</label><select id="arcM"><option value="3p">3 点（始まり・通る 点・終わり）</option><option value="cse">中心 → 始まり → 終わり（左回り）</option></select></div>';
@@ -3338,14 +3403,14 @@ cv.addEventListener('pointermove', function(ev){
     else if (drag.type === 'grip' && drag.moved) { var gs = drag.k === 'off' || drag.k === 'txt' || (selDimObj() || {}).mode === 'dia' ? null : findSnap(q[0], q[1]); ST.snap = gs; setGrip(selDimObj(), drag.k, gs ? gs.p : w); VER++; redraw(); panel(); return; }
   }
   // スナップ（点を 取る 道具だけ）
-  var needSnap = ['paste', 'measure', 'dim', 'text', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt') || !!ST.eg;
+  var needSnap = ['paste', 'measure', 'dim', 'text', 'line', 'circle', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'base' || ST.sw.phase === 'target')) || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt') || !!ST.eg;
   if (ST.tool === 'select' && ST.hotGrip === 'off') redraw();
   ST.snap = needSnap && !(drag && drag.moved && drag.type !== 'pick') && !(ST.tool === 'dim' && ST.pts.length === 2) ? findSnap(q[0], q[1]) : null;
   var p = ST.snap ? ST.snap.p : w;
   if (!ST.snap) p = applyOrtho(p, ev);
   ST.cur = p; ST.curRaw = w; ST.shift = !!ev.shiftKey;
   if (ST.eg && !drag) egMove(p);
-  if (['paste', 'trim', 'extend', 'mirror', 'move', 'rect', 'offset', 'corner'].indexOf(ST.tool) >= 0 || (ST.tool === 'arc' && ST.pts.length)) redraw();
+  if (['paste', 'trim', 'extend', 'mirror', 'move', 'rect', 'offset', 'corner'].indexOf(ST.tool) >= 0 || ((ST.tool === 'arc' || ST.tool === 'circle') && ST.pts.length)) redraw();
   document.getElementById('stXY').textContent = 'X ' + fmtMm(p.x) + '  Y ' + fmtMm(p.y);
   var base = ST.pts.length ? ST.pts[ST.pts.length - 1] : null;
   document.getElementById('stRel').textContent = base ? '距離 ' + fmtLen(dist(base, p)) : '';
@@ -3376,7 +3441,7 @@ function endPtr(ev){
   }
   if (dg.type === 'pick') { var rw = S2W(q[0], q[1]), sp = findSnap(q[0], q[1]), pp = sp ? sp.p : applyOrtho(rw, ev); onClick(P(pp.x, pp.y), rw, ev); return; }
   if (dg.type === 'maybe' && !dg.moved) {
-    var raw = S2W(q[0], q[1]), sn = ['paste', 'measure', 'dim', 'text', 'stretch', 'line', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt') || ST.eg ? findSnap(q[0], q[1]) : null;
+    var raw = S2W(q[0], q[1]), sn = ['paste', 'measure', 'dim', 'text', 'stretch', 'line', 'circle', 'hole', 'leader', 'mark', 'arc', 'rect'].indexOf(ST.tool) >= 0 || (ST.mi && ST.mi.phase === 'axis') || (ST.tool === 'select' && ST.hotGrip && ST.hotGrip !== 'off' && ST.hotGrip !== 'txt') || ST.eg ? findSnap(q[0], q[1]) : null;
     if (ST.tool === 'stretch' && ST.sw && (ST.sw.phase === 'win1' || ST.sw.phase === 'win2')) sn = null;
     if (ST.tool === 'dim' && ST.pts.length === 2) sn = null;
     var p = sn ? sn.p : applyOrtho(raw, ev);
@@ -3413,7 +3478,7 @@ function showCtx(x, y){
   var busy = ST.pts.length || ST.hotGrip || ST.eg || (ST.sw && ST.sw.phase !== 'win1');
   var it = [];
   if (busy) it.push(['✕ やめる（Esc）', cancelOp], '-');
-  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['arc', '◜ 円弧'], ['rect', '▭ 四角'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['trim', '✂ トリム'], ['extend', '⟶| 延長'], ['mirror', '⇋ 鏡像'], ['move', '⇉ 移動・複写'], ['scale', '⤡ 尺度（大きさ）'], ['offset', '∥ オフセット'], ['corner', '⌒ 角丸め・面取り'], ['mkpart', '🧊 部材に する'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ if (t[0] === 'move' || t[0] === 'mirror' || t[0] === 'scale') acadStart(t[0]); else setTool(t[0]); }, false, ST.tool === t[0] && !(ST.mi && ST.mi.sc)]); });
+  [['select', '➤ 選ぶ'], ['dim', '↔ 寸法'], ['text', 'A 文字'], ['line', '╱ 線'], ['circle', '○ 円'], ['arc', '◜ 円弧'], ['rect', '▭ 四角'], ['hole', '◯ 穴'], ['leader', '↖ 引出線'], ['mark', '▲ 磨き'], ['stone', '▭ 石の 寸法'], ['trim', '✂ トリム'], ['extend', '⟶| 延長'], ['mirror', '⇋ 鏡像'], ['move', '⇉ 移動・複写'], ['scale', '⤡ 尺度（大きさ）'], ['offset', '∥ オフセット'], ['corner', '⌒ 角丸め・面取り'], ['mkpart', '🧊 部材に する'], ['stretch', '⇲ 伸ばす'], ['gap', '⚠ 隙間チェック']].forEach(function(t){ it.push([t[1], function(){ if (t[0] === 'move' || t[0] === 'mirror' || t[0] === 'scale') acadStart(t[0]); else setTool(t[0]); }, false, ST.tool === t[0] && !(ST.mi && ST.mi.sc)]); });
   if (window.PD && PD.saveMain && PD.def) { var onF = pdFaceList(), addF = PD_FACES.filter(function(f){ return onF.indexOf(f[0]) < 0; }); // 部材の 図面：展開図（面）を 足す
     if (addF.length) { it.push('-'); addF.forEach(function(f){ it.push(['＋ 展開図を 足す：' + f[1], function(){ var c = document.querySelector('#pdFaces input[data-f="' + f[0] + '"]'); if (c) { c.checked = true; c.dispatchEvent(new Event('change', { bubbles:true })); } }]); }); } }
   it.push('-', ['⤢ 全体を 見る', fit], ['↶ 元に 戻す', undo, !UNDO.length], ['↷ やり直す', redo, !REDO.length]);

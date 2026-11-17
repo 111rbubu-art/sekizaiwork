@@ -146,6 +146,11 @@
   function mhIn(p){ var m = p && p.mihon; if (!m || !m.src) return; m.key = m.key || (p.id + '@' + (m.at || Date.now())); mhPut(m.key, m.src); delete m.src; }
   function mhOut(d){ if (!d || !d.mihon) return Promise.resolve(d); return mhGet(d.mihon).then(function(src){ if (!src) return d; var e = JSON.parse(JSON.stringify(d)); e.mihon.src = src; return e; }); }
   function mhNow(m){ return m && m.key ? MHC[m.key] || '' : ''; }
-  root.BL = { BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  // セットが SharePoint に ある 中身と 同じか（v0.3.16。本人「基本的に SP に 保存する 様に したい」）
+  //   SP から 読んだ／SP に 保存した ときの 中身の 印（__spSig）を 持ち、いまの 中身と ちがえば「この 端末だけ」
+  function setSig(S){ var d = {}; Object.keys(S || {}).forEach(function(k){ if (k.indexOf('__') !== 0 && k !== 'version' && k !== 'savedAt') d[k] = S[k]; }); var t = JSON.stringify(d), h = 5381; for (var i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + t.length; }
+  function setSpMark(S){ if (S) S.__spSig = setSig(S); return S; }
+  function setUnsent(S){ return !!S && S.__spSig !== setSig(S); }
+  root.BL = { setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

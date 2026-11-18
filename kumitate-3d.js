@@ -57,10 +57,14 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     return t;
   }
   function seedOf(k){ var h = 0; for (var i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) | 0; return new THREE.Vector2(((h & 1023) / 1024), (((h >> 10) & 1023) / 1024)); }
+  // 石目の 大きさは 画像ごとに 1 つの uniform を 分けあう（つまみを 動かす 間は 作り直さず 数だけ 変える・v0.8.63）
+  var scU = new Map();
+  function scOf(key, sc){ var u = scU.get(key); if (!u) { u = { value:sc }; scU.set(key, u); } else u.value = sc; return u; }
+  function setTexScale(key, sc){ var u = scU.get(key); if (u && sc > 0) { u.value = sc; dirty = true; } }
   function triMat(mat, src, k, world){
-    var tex = texOf(src), sc = +src.scale > 0 ? +src.scale : 600, off = seedOf(k || '');
+    var tex = texOf(src), sc = +src.scale > 0 ? +src.scale : 600, off = seedOf(k || ''), su = scOf(src.key, sc);
     mat.onBeforeCompile = function(sh){
-      sh.uniforms.triMap = { value:tex }; sh.uniforms.triScale = { value:sc }; sh.uniforms.triOff = { value:off };
+      sh.uniforms.triMap = { value:tex }; sh.uniforms.triScale = su; sh.uniforms.triOff = { value:off };
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vTriP; varying vec3 vTriN;')
         .replace('#include <begin_vertex>', world ? '#include <begin_vertex>\nvTriP = (modelMatrix * vec4(position, 1.0)).xyz; vTriN = normal;' : '#include <begin_vertex>\nvTriP = position; vTriN = normal;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform sampler2D triMap; uniform float triScale; uniform vec2 triOff; varying vec3 vTriP; varying vec3 vTriN;')
@@ -71,9 +75,15 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     return mat;
   }
   // 光（v0.8.57 本人「光源の 位置や 強さも 変更できるように」）：L = { az:方向（度・0＝前・90＝右）, el:高さ（度）, main:日の 強さ, amb:周りの 明るさ }
-  function setLight(L){ L = L || {}; var az = (L.az != null ? +L.az : 34) * Math.PI / 180, el = (L.el != null ? +L.el : 46) * Math.PI / 180, R = 2000;
-    dl.position.set(Math.sin(az) * Math.cos(el) * R, Math.sin(el) * R, Math.cos(az) * Math.cos(el) * R); dl.intensity = L.main != null ? +L.main : 1.6;
-    dl2.position.set(-dl.position.x, 600, -dl.position.z); hemi.intensity = L.amb != null ? +L.amb : 1.5; dl2.intensity = 0.45 * hemi.intensity / 1.5; dirty = true; }
+  // v0.8.63（本人「光の 調整が 難しい」）：L.follow＝見る 向きに 合わせる（az は 見て いる 向きから の 角度。回しても 見て いる 面が 暗く ならない）、
+  // L.exp＝明るさ（日と 周りを まとめて 掛ける）、L.col＝日の 色
+  var LT = {};
+  function placeLight(){ var az = (LT.az != null ? +LT.az : 34) * Math.PI / 180, el = (LT.el != null ? +LT.el : 46) * Math.PI / 180, R = 2000, x, z;
+    if (LT.follow) { var v = cam.position.clone().sub(controls.target); var a0 = Math.atan2(v.x, v.z); x = Math.sin(a0 + az); z = Math.cos(a0 + az); } else { x = Math.sin(az); z = Math.cos(az); }
+    dl.position.set(x * Math.cos(el) * R, Math.sin(el) * R, z * Math.cos(el) * R); dl2.position.set(-dl.position.x, 600, -dl.position.z); }
+  function setLight(L){ LT = L || {}; var ex = LT.exp != null ? +LT.exp : 1;
+    dl.intensity = (LT.main != null ? +LT.main : 1.6) * ex; hemi.intensity = (LT.amb != null ? +LT.amb : 1.5) * ex; dl2.intensity = 0.45 * hemi.intensity / 1.5;
+    dl.color.set(LT.col || '#ffffff'); placeLight(); dirty = true; }
   function setTexture(fn){ texFn = fn || null; if (last) update(last.r, last.col, last.sel, last.site, false); }
   var inUse = new Set();
   function trim(){
@@ -327,7 +337,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   // 描くのは 変わった ときだけ（止まって いる 間は 描かない。回す・ズーム・慣性の 間と 部材・地面・大きさが 変わった とき）
   var dirty = true;
   controls.addEventListener('change', function(){ dirty = true; });
-  (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { dirty = false; renderer.render(scene, cam); } })();
+  (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { if (LT.follow) placeLight(); dirty = false; renderer.render(scene, cam); } })();
   // 3D の 中の 文字（赤い 札）。画面の 大きさで 一定
   function textSprite(txt, bg, fg){
     var c = document.createElement('canvas'), x = c.getContext('2d'), fs = 30; x.font = 'bold ' + fs + 'px sans-serif';
@@ -401,5 +411,5 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     ground.visible = mode !== 'off';
     gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true; dirty = true;
   }
-  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, setLight:setLight, jariMode:function(cb){ JM = cb || null; renderer.domElement.style.cursor = JM ? 'pointer' : ''; }, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
+  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, setTexScale:setTexScale, setLight:setLight, jariMode:function(cb){ JM = cb || null; renderer.domElement.style.cursor = JM ? 'pointer' : ''; }, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
 }

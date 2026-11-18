@@ -8242,7 +8242,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.579';
+var APP_VERSION = 'v1.9.580';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -21765,12 +21765,14 @@ function _kkRefreshAnswers(force){
   var c=_kkCfg(); if(!c.url || !c.secret) return;
   if(!force && _kkAnsMap && Date.now()-_kkAnsAt<5*60*1000){ _kkMarkListAns(); return; }
   if(_kkAnsBusy) return; _kkAnsBusy=true;
-  _kkAct('list').then(function(r){ if(r && r.ok) _kkSetAnsMap(r.items); }).catch(function(){}).then(function(){ _kkAnsBusy=false; });
+  _kkAct('list').then(function(r){ if(r && r.ok){ _kkSetAnsMap(r.items); _kkAutoImport(r.items); } }).catch(function(){}).then(function(){ _kkAnsBusy=false; });
 }
 /* アプリを 開いた ままでも 5 分ごとに 聞く（画面が 見えている ときだけ） */
 setInterval(function(){ try{ if(document.visibilityState==='visible' && currentListMode!=='kouji' && document.getElementById('list-content')) _kkRefreshAnswers(); }catch(e){} }, 5*60*1000);
 function _kkAnsChip(x){
   var t = x.result==='ok' ? ['📨 回答：承諾','#1a7a3a'] : x.result==='grave_ng' ? ['📨 回答：お墓が違う','#b3261e'] : ['📨 回答：訂正あり','#d35400'];
+  if(x.saved) return '<span class="kk-anschip" title="お客様確認（Web）の 回答（'+_gaichuEsc(_kkMDHM(x.answeredAt))+'）は 自動で 保存しました（報告書は 提出資料）。依頼・資料タブの［📨 お客様確認（Web）］を 開くと この 印は 消えます" '+
+    'style="background:'+t[1]+';color:#fff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25)">'+t[0]+'・保存済み</span>';
   return '<span class="kk-anschip" title="お客様確認（Web）に 回答が あります（'+_gaichuEsc(_kkMDHM(x.answeredAt))+'）。依頼・資料タブの［📨 お客様確認（Web）］で 見て 取り込んでください" '+
     'style="background:'+t[1]+';color:#fff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25)">'+t[0]+'</span>';
 }
@@ -21778,6 +21780,7 @@ function _kkMarkListAns(){
   if(currentListMode==='kouji') return;
   document.querySelectorAll('#list-content .card[data-item-id]').forEach(function(row){
     var id=row.getAttribute('data-item-id'), x=_kkAnsMap && _kkAnsMap['n-'+id];
+    if(!x){ var am=_kkAutoList(); Object.keys(am).forEach(function(t){ var v=am[t]; if(v.ref==='n-'+id && (!x || String(v.answeredAt)>String(x.answeredAt))) x={ result:v.result, answeredAt:v.answeredAt, saved:true }; }); }
     var ex=row.querySelector('.kk-anstag');
     if(!x){ if(ex) ex.remove(); return; }
     if(!ex){ ex=document.createElement('div'); ex.className='kk-anstag'; ex.style.cssText='padding:2px 12px 4px'; row.insertBefore(ex, row.querySelector('.card-main') || row.firstChild); }
@@ -21847,6 +21850,7 @@ function openKakunin(){
 }
 function _kkOpen(){
   var d=currentItem;
+  if(d) _kkAutoSeen(d);
   _kkBuildModal().style.display='flex';
   _kkState.pick={}; _kkState.imgs=[]; _kkState.prev=[]; _kkState.edit=null;
   _kkLoadPrev(d).then(function(l){ if(currentItem!==d) return; _kkState.prev=l; _kkFillRev(d); });
@@ -22884,48 +22888,56 @@ function _kkReport(token, btn){
     }).catch(function(e){ btn.disabled=false; btn.textContent=lbl; showSaveToast(false, '報告書を 作れませんでした：'+(e.message||e)); });
   });
 }
-function _kkImport(token, btn){
-  var d=currentItem; if(!d) return;
-  var go=function(){
-    var base=String(d['FolderPass']).replace(/\/+$/,'')+'/'+KK_SUB;
-    btn.disabled=true; var lbl=btn.textContent; var set=function(t){ btn.textContent=t; };
-    set('回答を 読んでいます…');
-    _kkAct('status',{token:token}).then(function(s){
-      if(!s || !s.ok || !s.answer) throw new Error((s && s.error) || '回答が ありません');
-      var a=s.answer, ymd=String(a.at||'').replace(/\D/g,'').substring(0,8)||_kkYmd();
-      var pre=ymd+'_'+(a.rev?'修正'+a.rev:'初回')+'_';
-      var res=a.result==='ok'?'承諾':a.result==='grave_ng'?'お墓が違う':'訂正あり';
-      var jobs=[
-        { name:pre+'回答_'+res+'.txt', get:function(){ return Promise.resolve(new Blob([_kkSummaryText(d,s)],{type:'text/plain;charset=utf-8'})); } },
-        { name:pre+'回答記録.json', get:function(){ return Promise.resolve(new Blob([JSON.stringify({case:s.case, answer:a, log:s.log}, null, 2)],{type:'application/json'})); } },
-        { name:pre+'お客様に見せた原稿', f:'proof' }
-      ];
-      (a.files||[]).forEach(function(fn){
-        var b=fn.replace(/\.\w+$/,'');
-        jobs.push({ name:pre+(b==='mark'?'原稿に印':'お客様の写真'+b.replace('photo_','')), f:b });
-      });
-      /* 報告書 PDF は 提出資料 へ（v1.9.579） */
-      jobs.push({ name:_kkReportName(a), dir:String(d['FolderPass']).replace(/\/+$/,'')+'/'+KK_REPORT_FOLDER, get:function(){ return _kkReportPdf(d, s, token, set); } });
-      var i=0;
-      return jobs.reduce(function(pr, j){
-        return pr.then(function(){
-          set('取り込み中 '+(++i)+'/'+jobs.length+' …');
-          var p=j.get ? j.get() : _kkGetFile(token, j.f);
-          return p.then(function(blob){
-            var name=j.name; if(j.f) name+=/png/.test(blob.type)?'.png':/webp/.test(blob.type)?'.webp':/heic/.test(blob.type)?'.heic':'.jpg';
-            return _kkPutSP((j.dir||base)+'/'+name, blob);
-          });
+/* 取り込みの 中身（画面なし）。手の［⬇ 取り込む］と 自動の 取り込み（v1.9.580）で 共通。
+   回答の まとめ・記録・写真は お客様確認/、報告書 PDF は 提出資料/。最後に さくらへ 取り込みずみの 印 */
+function _kkImportCore(d, token, set){
+  set=set||function(){};
+  var base=String(d['FolderPass']).replace(/\/+$/,'')+'/'+KK_SUB;
+  set('回答を 読んでいます…');
+  return _kkAct('status',{token:token}).then(function(s){
+    if(!s || !s.ok || !s.answer) throw new Error((s && s.error) || '回答が ありません');
+    var a=s.answer, ymd=String(a.at||'').replace(/\D/g,'').substring(0,8)||_kkYmd();
+    var pre=ymd+'_'+(a.rev?'修正'+a.rev:'初回')+'_';
+    var res=a.result==='ok'?'承諾':a.result==='grave_ng'?'お墓が違う':'訂正あり';
+    var jobs=[
+      { name:pre+'回答_'+res+'.txt', get:function(){ return Promise.resolve(new Blob([_kkSummaryText(d,s)],{type:'text/plain;charset=utf-8'})); } },
+      { name:pre+'回答記録.json', get:function(){ return Promise.resolve(new Blob([JSON.stringify({case:s.case, answer:a, log:s.log}, null, 2)],{type:'application/json'})); } },
+      { name:pre+'お客様に見せた原稿', f:'proof' }
+    ];
+    (a.files||[]).forEach(function(fn){
+      var b=fn.replace(/\.\w+$/,'');
+      jobs.push({ name:pre+(b==='mark'?'原稿に印':'お客様の写真'+b.replace('photo_','')), f:b });
+    });
+    /* 報告書 PDF は 提出資料 へ（v1.9.579） */
+    jobs.push({ name:_kkReportName(a), dir:String(d['FolderPass']).replace(/\/+$/,'')+'/'+KK_REPORT_FOLDER, get:function(){ return _kkReportPdf(d, s, token, set); } });
+    var i=0;
+    return jobs.reduce(function(pr, j){
+      return pr.then(function(){
+        set('取り込み中 '+(++i)+'/'+jobs.length+' …');
+        var p=j.get ? j.get() : _kkGetFile(token, j.f);
+        return p.then(function(blob){
+          var name=j.name; if(j.f) name+=/png/.test(blob.type)?'.png':/webp/.test(blob.type)?'.webp':/heic/.test(blob.type)?'.heic':'.jpg';
+          return _kkPutSP((j.dir||base)+'/'+name, blob);
         });
-      }, Promise.resolve()).then(function(){ return { s:s, n:jobs.length }; });
-    }).then(function(r){
-      showSaveToast(true, '回答を「'+KK_SUB+'」フォルダーへ '+(r.n-1)+' 件・報告書 PDF を「'+KK_REPORT_FOLDER+'」へ 取り込みました');
+      });
+    }, Promise.resolve()).then(function(){
       /* 取り込んでも すぐには 消さない。お客様が 回答と 写真を 見直せるように 残し、期限を 過ぎたら さくらで 消える（v1.9.558。本人「念のため、写真などを閲覧することを可能にしてほしい」）。
          期限は 取り込んだ 日の 30 日後と 納骨日の 7 日後の 遅い方。すぐ 消したい ときは［🗑］ */
       var ku=_kkKeepUntil(d);
       return _kkAct('imported',{token:token, keepUntil:ku}).then(function(x){
         if(!x || !x.ok) throw new Error('取り込みずみの 印を 付けられませんでした：'+((x && x.error)||''));
-        showSaveToast(true, '取り込みました。お客様は '+_kkMDw(_kkDay(ku))+' まで 回答と 写真を 見直せます');
+        return { s:s, n:jobs.length, ku:ku, res:res };
       });
+    });
+  });
+}
+function _kkImport(token, btn){
+  var d=currentItem; if(!d) return;
+  var go=function(){
+    btn.disabled=true; var lbl=btn.textContent; var set=function(t){ btn.textContent=t; };
+    _kkImportCore(d, token, set).then(function(r){
+      _kkAutoDone(token);
+      showSaveToast(true, '回答を「'+KK_SUB+'」へ '+(r.n-1)+' 件・報告書 PDF を「'+KK_REPORT_FOLDER+'」へ 取り込みました。お客様は '+_kkMDw(_kkDay(r.ku))+' まで 見直せます');
     }).then(function(){ _kkOpen(); })
       .catch(function(e){ btn.disabled=false; btn.textContent=lbl; showSaveToast(false, '取り込めませんでした：'+(e.message||e)); });
   };
@@ -22933,6 +22945,50 @@ function _kkImport(token, btn){
   if(!confirm('この案件の フォルダーが まだ ありません。作ってから 取り込みますか。\n\n'+buildNokFolderPath(d))) return;
   Promise.resolve(createNokFolder(d, { silent:true })).then(function(){ if(!d['FolderPass']) throw new Error('フォルダーが できませんでした'); go(); })
     .catch(function(e){ showSaveToast(false, '取り込めませんでした：'+((e && e.message) || e)); });
+}
+
+/* ── 回答を 自動で 取り込む（v1.9.580。本人「回答がある場合、自動で保存させることはできますか」）。
+   さくらからは SharePoint に 書けないので、アプリが 納骨リストを 出すとき（と 開いたままなら 5 分ごと）に さくらの list を 聞き、
+   まだ 取り込んで いない 回答を 1 件ずつ 裏で 取り込む（報告書 PDF は 提出資料）。フォルダーが 無い 案件は 作る。
+   自動で 取り込んだ 案件の カードには「📨 回答：承諾・保存済み」を 残し、その 案件の［📨 お客様確認（Web）］を 開くと 消える（この 端末で 覚える）。
+   しくじった ものは 30 分 あけて やり直す（印は 今までどおり 残るので 手でも 取り込める） */
+var KK_AUTO_KEY='kakuninAutoDone', _kkAutoBusy=false, _kkAutoFail={};
+function _kkAutoList(){ try{ return JSON.parse(localStorage.getItem(KK_AUTO_KEY)||'{}')||{}; }catch(e){ return {}; } }
+function _kkAutoSave(m){ try{ localStorage.setItem(KK_AUTO_KEY, JSON.stringify(m)); }catch(e){} }
+function _kkAutoDone(token){ var m=_kkAutoList(); if(m[token]){ delete m[token]; _kkAutoSave(m); } }
+function _kkAutoSeen(d){   // その 案件の お客様確認を 開いたら「保存済み」の 印を 消す
+  var ref=_kkRef(d), m=_kkAutoList(), ch=false;
+  Object.keys(m).forEach(function(t){ if(m[t].ref===ref){ delete m[t]; ch=true; } });
+  if(ch){ _kkAutoSave(m); _kkMarkListAns(); }
+}
+function _kkAutoImport(items){
+  if(_kkAutoBusy || currentListMode==='kouji' || typeof allItems==='undefined') return;
+  var todo=(items||[]).filter(function(x){
+    if(x.status!=='answered' || x.imported || !/^n-/.test(x.ref||'')) return false;
+    if(_kkAutoFail[x.token] && Date.now()-_kkAutoFail[x.token]<30*60*1000) return false;
+    return true;
+  });
+  if(!todo.length) return;
+  var find=function(ref){ var id=ref.replace(/^n-/,''); return (allItems||[]).filter(function(d){ return String(d['id']||d['ID']||'')===id; })[0]; };
+  _kkAutoBusy=true;
+  var done=[], m=_kkAutoList();
+  todo.reduce(function(pr, x){
+    return pr.then(function(){
+      var d=find(x.ref); if(!d) return;   // 一覧に 無い（完了・別の 表示）案件は 次に 出たとき
+      var ready = d['FolderPass'] ? Promise.resolve() : Promise.resolve(createNokFolder(d, { silent:true })).then(function(){ if(!d['FolderPass']) throw new Error('フォルダーが できませんでした'); });
+      return ready.then(function(){ return _kkImportCore(d, x.token); }).then(function(){
+        x.imported=new Date().toISOString();
+        m[x.token]={ ref:x.ref, result:x.result, answeredAt:x.answeredAt, at:Date.now() }; _kkAutoSave(m);
+        done.push((d['_x9867__x5ba2__x540d_']||x.graveName||'')+'（'+(KK_RES[x.result]||'')+'）');
+      }).catch(function(e){ _kkAutoFail[x.token]=Date.now(); console.warn('お客様確認の 自動取り込み', x.token, e); });
+    });
+  }, Promise.resolve()).then(function(){
+    _kkAutoBusy=false;
+    if(done.length){
+      _kkSetAnsMap(items);
+      showSaveToast(true, 'お客様確認の 回答を '+done.length+' 件 自動で 保存しました（報告書は 提出資料）：'+done.join('、'));
+    }
+  });
 }
 function _kkDelete(token){
   var row=_kkRow(token)||{};

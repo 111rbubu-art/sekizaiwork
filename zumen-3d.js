@@ -224,10 +224,14 @@ export function partGroup(m, fine, mat, lineMat){
     // arch の とき 3D は 正面の 外形の 弓形を 平らに 戻して 作り、あとで 曲げる（2D の 図は 弓形の まま）
     var fOut = v.front.out; if (BW && BW.arch > 0) fOut = fOut.map(function(q){ var a = W / 2, A = BW.arch, r = (a * a + A * A) / (2 * A), xx = Math.max(-a, Math.min(a, q[0])), sg = r - Math.sqrt(r * r - xx * xx), y0 = BW.y0 || 0;
       if (q[1] <= y0) return q; var k = sg / (H - y0); return [q[0], (q[1] - k * y0) / (1 - k)]; });
+    // bow.plan の とき 天面の 外形は 弓形を 描いた まま（2D の 平面図 どおり）→ 3D は 平らに 戻して 作り、あとで 曲げる（拝石など）
+    var tOut = v.top && v.top.out; if (BW && BW.plan && tOut) tOut = tOut.map(function(q){ var a = W / 2, rs = BW.rise, r = (a * a + rs * rs) / (2 * rs), xx = Math.max(-a, Math.min(a, q[0])), sg = r - Math.sqrt(r * r - xx * xx), bk = Math.min(BW.back || 0, Dd - 1);
+      var g = function(d){ return d + sg * Math.max(0, Math.min(1, (Dd - d) / (Dd - bk))); }, lo = 0, hi = Dd; if (q[1] <= g(0)) return [q[0], Math.min(q[1], 0)]; if (q[1] >= Dd) return q;
+      for (var k = 0; k < 40; k++) { var md = (lo + hi) / 2; if (g(md) < q[1]) lo = md; else hi = md; } return [q[0], Math.abs(lo) < 0.05 ? 0 : lo]; });
     var gF = ext(fOut, null, Dd).translate(0, 0, zf - Dd);
     var res = brush(gF);
     if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
-    if (v.top && v.top.out) { var gT = BW && v.side && v.side.out ? leanTop() : ext(v.top.out, null, H + 2 * mg); if (!gT.userData.lean) gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
+    if (v.top && v.top.out) { var gT = BW && v.side && v.side.out ? leanTop() : ext(tOut, null, H + 2 * mg); if (!gT.userData.lean) gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
     // bow の とき 天面の 形（縦の 角の R）を 側面の 前の 線に 沿って 倒す（斜めの 所の 縦の 角も R に。前ほど 大きく、後ろは そのまま）
     function leanTop(){
       var so = v.side.out, n = so.length;
@@ -237,7 +241,7 @@ export function partGroup(m, fine, mat, lineMat){
       ys = ys.filter(function(y){ return y > 0.5 && y < H - 0.5; }).sort(function(a, b){ return a - b; }).filter(function(y, i, A){ return !i || y - A[i - 1] > 2; });
       ys = [-mg].concat(ys, [H + mg]);
       ys.forEach(function(y){ var d = frontAt(Math.max(0.5, Math.min(H - 0.5, y))); fy[y] = d == null ? 0 : d; });
-      var lo = Math.min.apply(null, ys.map(function(y){ return fy[y]; })), out = v.top.out.map(function(q){ return [q[0], q[1] < 1 ? q[1] - 1 : q[1]]; });   // 前を 1 出して 側面の 前と 重ねない
+      var lo = Math.min.apply(null, ys.map(function(y){ return fy[y]; })), out = tOut.map(function(q){ return [q[0], q[1] < 1 ? q[1] - 1 : q[1]]; });   // 前を 1 出して 側面の 前と 重ねない
       var tri = [], T3 = THREE.ShapeUtils.triangulateShape(out.map(function(q){ return new THREE.Vector2(q[0], q[1]); }), []);
       function P(q, y){ var dd = q[1] + (fy[y] - lo) * Math.max(0, Math.min(1, 1 - q[1] / Dd)); return [q[0], y, zf - dd]; }
       T3.forEach(function(f){ tri.push([P(out[f[0]], ys[0]), P(out[f[1]], ys[0]), P(out[f[2]], ys[0])]); var yt = ys[ys.length - 1]; tri.push([P(out[f[0]], yt), P(out[f[2]], yt), P(out[f[1]], yt)]); });

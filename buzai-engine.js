@@ -177,7 +177,7 @@ var BZ = (function(){
       cuts:(v.side.cuts || []).map(function(h){ return { pts:keep(h.pts, b.D, Dd, b.H, H, kd, ky), x0:h.x0 * kx, x1:h.x1 * kx, taper:h.taper ? h.taper * kx : 0, apex:h.apex }; }) };
     if (v.top && (v.top.out || (v.top.holes || []).length || (v.top.cuts || []).length)) o.top = { out:v.top.out ? mp(v.top.out, X, Z) : null, holes:(v.top.holes || []).map(function(h){ return hole(h, AX, AZ, b.H, H); }),
       cuts:(v.top.cuts || []).map(function(h){ return { pts:m(h.pts, kx, kd), y0:h.y0 * ky, y1:h.y1 * ky }; }) };
-    if (v.bow && v.bow.rise > 0) o.bow = { rise:v.bow.rise * kd, back:(v.bow.back || 0) * kd, arch:(v.bow.arch || 0) * ky, y0:(v.bow.y0 || 0) * ky };
+    if (v.bow && v.bow.rise > 0) { o.bow = { rise:v.bow.rise * kd, back:(v.bow.back || 0) * kd, arch:(v.bow.arch || 0) * ky, y0:(v.bow.y0 || 0) * ky }; if (v.bow.plan) o.bow.plan = 1; }
     return o;
   }
   // 部品の 式を 数に（model）

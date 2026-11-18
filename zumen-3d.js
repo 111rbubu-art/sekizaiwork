@@ -200,12 +200,54 @@ export function partGroup(m, fine, mat, lineMat){
   function views(c, zf){
     var v = c.views, W = m.W, Dd = m.D, H = m.H, mg = Math.max(W, Dd, H) * 0.05 + 1;
     function ext(out, holes, depth){ var sh = shp(out); (holes || []).forEach(function(h){ sh.holes.push(pth(h)); }); return new THREE.ExtrudeGeometry(sh, { depth:depth, bevelEnabled:false, curveSegments:1 }); }
+    // bow（前の 弓形）：前の 面を 左右の 端ほど 後ろへ（中心は そのまま、端で rise）。奥行 back より 奥は 後ろの 面へ 向けて 0 に。
+    // 重ねて できた 形を 細かく 区切って から 曲げる ので、斜めの 前の 面も 弓形の まま 倒れる（洋型の 竿など）
+    var BW = v.bow && v.bow.rise > 0 ? v.bow : null;
+    function bowZ(x, z){ var a = W / 2, rs = BW.rise, r = (a * a + rs * rs) / (2 * rs), bk = Math.min(BW.back || 0, Dd - 1), xx = Math.max(-a, Math.min(a, x)), d = zf - z;
+      return z - (r - Math.sqrt(r * r - xx * xx)) * Math.max(0, Math.min(1, (Dd - d) / (Dd - bk))); }
+    // arch（天端の 弓形）：天面を 平らで 作って から、左右の 端ほど 下げる（中心 0・端で arch）。高さ y0 から 上へ だんだん 効く（天端・前の 上の 角の R が 弓形に 沿う）
+    function bowY(x, y){ var A = BW.arch || 0; if (!(A > 0)) return y; var a = W / 2, r = (a * a + A * A) / (2 * A), xx = Math.max(-a, Math.min(a, x)), y0 = BW.y0 || 0, yy = y - c.at.y;
+      return y - (r - Math.sqrt(r * r - xx * xx)) * Math.max(0, Math.min(1, (yy - y0) / (H - y0))); }
+    function bowWarp(g){   // 形：細かく 区切って 曲げる
+      g = new TessellateModifier(Math.max(W, H) / 24, 40).modify(g.index ? g.toNonIndexed() : g);
+      var p = g.attributes.position; for (var i = 0; i < p.count; i++) { var x = p.getX(i); p.setZ(i, bowZ(x, p.getZ(i))); p.setY(i, bowY(x, p.getY(i))); }
+      p.needsUpdate = true; return g; }
+    function bowLines(eg){   // かどの 線：曲げる 前の 形で 出して、線を 細かく 区切って から 曲げる（曲げた 形で 出すと 細かい 面の すき間で 線が 切れる）
+      var P = eg.attributes.position.array, o = [], L = Math.max(W, H) / 60;
+      for (var i = 0; i + 5 < P.length; i += 6) { var a = [P[i], P[i + 1], P[i + 2]], b = [P[i + 3], P[i + 4], P[i + 5]], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / L));
+        for (var k = 0; k < n; k++) { var t0 = k / n, t1 = (k + 1) / n, q0 = [0, 1, 2].map(function(j){ return a[j] + (b[j] - a[j]) * t0; }), q1 = [0, 1, 2].map(function(j){ return a[j] + (b[j] - a[j]) * t1; });
+          o.push(q0[0], bowY(q0[0], q0[1]), bowZ(q0[0], q0[2]), q1[0], bowY(q1[0], q1[1]), bowZ(q1[0], q1[2])); } }
+      var S = eg.userData.soft || []; for (var j = 0; j + 11 < S.length; j += 12) { S[j + 2] = bowZ(S[j], S[j + 2]); S[j + 5] = bowZ(S[j + 3], S[j + 5]); S[j + 1] = bowY(S[j], S[j + 1]); S[j + 4] = bowY(S[j + 3], S[j + 4]); }
+      var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(o, 3)); g.userData.soft = S; return g; }
     function brush(g){ var b = new Brush(g); b.updateMatrixWorld(); return b; }
     var ev = new Evaluator(); ev.attributes = ['position', 'normal']; ev.useGroups = false;
-    var gF = ext(v.front.out, null, Dd).translate(0, 0, zf - Dd);
+    // arch の とき 3D は 正面の 外形の 弓形を 平らに 戻して 作り、あとで 曲げる（2D の 図は 弓形の まま）
+    var fOut = v.front.out; if (BW && BW.arch > 0) fOut = fOut.map(function(q){ var a = W / 2, A = BW.arch, r = (a * a + A * A) / (2 * A), xx = Math.max(-a, Math.min(a, q[0])), sg = r - Math.sqrt(r * r - xx * xx), y0 = BW.y0 || 0;
+      if (q[1] <= y0) return q; var k = sg / (H - y0); return [q[0], (q[1] - k * y0) / (1 - k)]; });
+    var gF = ext(fOut, null, Dd).translate(0, 0, zf - Dd);
     var res = brush(gF);
     if (v.side && v.side.out) { var gS = ext(v.side.out, null, W + 2 * mg); gS.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -W / 2 - mg, 0, 1, 0, 0, -1, 0, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gS), INTERSECTION); }
-    if (v.top && v.top.out) { var gT = ext(v.top.out, null, H + 2 * mg); gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
+    if (v.top && v.top.out) { var gT = BW && v.side && v.side.out ? leanTop() : ext(v.top.out, null, H + 2 * mg); if (!gT.userData.lean) gT.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, -mg, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(gT), INTERSECTION); }
+    // bow の とき 天面の 形（縦の 角の R）を 側面の 前の 線に 沿って 倒す（斜めの 所の 縦の 角も R に。前ほど 大きく、後ろは そのまま）
+    function leanTop(){
+      var so = v.side.out, n = so.length;
+      function frontAt(y){ var d = Infinity; for (var i = 0; i < n; i++) { var a = so[i], b = so[(i + 1) % n]; if ((a[1] - y) * (b[1] - y) > 0 || a[1] === b[1]) continue; d = Math.min(d, a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])); }
+        return isFinite(d) ? d : null; }
+      var ys = [], fy = {}; so.forEach(function(q){ ys.push(q[1]); }); for (var k = 0; k <= 24; k++) ys.push(H * k / 24);
+      ys = ys.filter(function(y){ return y > 0.5 && y < H - 0.5; }).sort(function(a, b){ return a - b; }).filter(function(y, i, A){ return !i || y - A[i - 1] > 2; });
+      ys = [-mg].concat(ys, [H + mg]);
+      ys.forEach(function(y){ var d = frontAt(Math.max(0.5, Math.min(H - 0.5, y))); fy[y] = d == null ? 0 : d; });
+      var lo = Math.min.apply(null, ys.map(function(y){ return fy[y]; })), out = v.top.out.map(function(q){ return [q[0], q[1] < 1 ? q[1] - 1 : q[1]]; });   // 前を 1 出して 側面の 前と 重ねない
+      var tri = [], T3 = THREE.ShapeUtils.triangulateShape(out.map(function(q){ return new THREE.Vector2(q[0], q[1]); }), []);
+      function P(q, y){ var dd = q[1] + (fy[y] - lo) * Math.max(0, Math.min(1, 1 - q[1] / Dd)); return [q[0], y, zf - dd]; }
+      T3.forEach(function(f){ tri.push([P(out[f[0]], ys[0]), P(out[f[1]], ys[0]), P(out[f[2]], ys[0])]); var yt = ys[ys.length - 1]; tri.push([P(out[f[0]], yt), P(out[f[2]], yt), P(out[f[1]], yt)]); });
+      for (var r = 0; r + 1 < ys.length; r++) for (var i = 0; i < out.length; i++) { var j = (i + 1) % out.length, A = P(out[i], ys[r]), B = P(out[j], ys[r]), C = P(out[j], ys[r + 1]), D2 = P(out[i], ys[r + 1]); tri.push([A, B, C]); tri.push([A, C, D2]); }
+      // 天面の 形は 凸（角丸の 長方形）なので、面ごとに 外（中心から 離れる 向き）へ 向ける
+      var cx = 0, cy = 0, cz = 0, m3 = 0; tri.forEach(function(t){ t.forEach(function(p){ cx += p[0]; cy += p[1]; cz += p[2]; m3++; }); }); cx /= m3; cy /= m3; cz /= m3;
+      var arr = []; tri.forEach(function(t){ var a = t[0], b = t[1], c = t[2], u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+          nn = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], o = [(a[0] + b[0] + c[0]) / 3 - cx, (a[1] + b[1] + c[1]) / 3 - cy, (a[2] + b[2] + c[2]) / 3 - cz];
+        (nn[0] * o[0] + nn[1] * o[1] + nn[2] * o[2] < 0 ? [a, c, b] : t).forEach(function(p){ arr.push(p[0], p[1], p[2]); }); });
+      var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); g.computeVertexNormals(); g.userData.lean = 1; return g; }
     // 上からの 穴は その 場所の 天面から（前の 板の 奥など、天面が 低い 所の 水溜）
     function hAt(out, x){ var h = -Infinity; for (var i = 0; i < out.length; i++) { var a = out[i], b = out[(i + 1) % out.length]; if ((a[0] - x) * (b[0] - x) > 0 || a[0] === b[0]) { if (Math.abs(a[0] - x) < 1e-6) h = Math.max(h, a[1]); continue; } h = Math.max(h, a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0])); } return h; }
     (v.top && v.top.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity, d0 = Infinity, d1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); d0 = Math.min(d0, q[1]); d1 = Math.max(d1, q[1]); });
@@ -247,7 +289,9 @@ export function partGroup(m, fine, mat, lineMat){
     }
     // 天面から 見た 形で 高さ y0〜y1 を 削る（top.cuts：[x,d]。角の 欠きなど）
     (v.top && v.top.cuts || []).forEach(function(h){ var g = ext(h.pts, null, h.y1 - h.y0); g.applyMatrix4(new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, h.y0, 0, -1, 0, zf, 0, 0, 0, 1)); res = ev.evaluate(res, brush(g), SUBTRACTION); });
-    var geo = res.geometry; geo.translate(0, c.at.y, 0); geo = creased(geo, 20);   // 20°：浅い 面取り（9×4.5＝27°）は 角に 見せる
+    var geo = res.geometry; geo.translate(0, c.at.y, 0);
+    if (BW) { var eg = bowLines(featureEdges(geo, 30)); geo = creased(bowWarp(geo), 20); group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(eg, lineMat)); return; }
+    geo = creased(geo, 20);   // 20°：浅い 面取り（9×4.5＝27°）は 角に 見せる
     group.add(new THREE.Mesh(geo, mat)); group.add(new THREE.LineSegments(featureEdges(geo, 30), lineMat));
   }
 

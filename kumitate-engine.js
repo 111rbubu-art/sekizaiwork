@@ -733,6 +733,7 @@ var KM = (function(){
     var g = { tower:[], fence:[], boshi:[], crypt:[] };
     Object.keys(res.boxes).forEach(function(k){
       var p = res.parts[k], row = { key:k, name:p.name, w:p.w, h:p.h, d:p.d, sai:sai(p.w, p.d, p.h) };
+      if (p.kisei || p.role === '香炉皿') return;   // 既製品（香炉皿など）は 石の 才数に 入れない（2026-11-18）
       if (p.kind === 'boshi' || p.cg === 'boshi') g.boshi.push(row);
       else if (p.kind === 'crypt' || p.cg === 'crypt') g.crypt.push(row);
       else if (p.cg === 'tower') g.tower.push(row);

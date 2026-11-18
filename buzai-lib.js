@@ -9,7 +9,7 @@
   var BUNRUI = [
     { g:'石塔の 本体', roles:['竿', '上台', '中台'] },
     { g:'石塔の 台まわり', roles:['芝台前', '芝台横', '芝台後', '拝石'] },
-    { g:'供養具', roles:['水鉢', '花立', '香炉', '線香立'] },
+    { g:'供養具', roles:['水鉢', '花立', '香炉', '香炉皿', '線香立'] },
     { g:'外柵', roles:['階段', '中仕切', '拝石台', '腰石前', '腰石横', '腰石後', '羽目', '羽目柱', '親柱', '笠石'] },
     { g:'納骨室', roles:['カロート'] },
     { g:'その他', roles:['塔婆柱', '墓誌', '灯籠', '敷石', '物置台', '金具'] }
@@ -29,6 +29,9 @@
   }
   function groupOf(role){ for (var i = 0; i < BUNRUI.length; i++) if (BUNRUI[i].roles.indexOf(role) >= 0) return BUNRUI[i].g; return 'その他'; }
   function clone(o){ return JSON.parse(JSON.stringify(o)); }
+  // 既製品（石では ない 品：香炉皿など・2026-11-18 本人）。才数・石種・石目に 入れない
+  var KISEI_ROLES = ['香炉皿'];
+  function isKisei(p){ return !!p && (!!p.kisei || KISEI_ROLES.indexOf(p.role || roleOf(p.name)) >= 0); }
 
   // ── 左右反転（x を 反対に。側面の 穴は 左の 面 ⇔ 右の 面）──
   function flipPts(pts){ return pts.map(function(q){ var r = q.slice(); r[0] = -q[0]; return r; }).reverse(); }
@@ -151,6 +154,6 @@
   function setSig(S){ var d = {}; Object.keys(S || {}).forEach(function(k){ if (k.indexOf('__') !== 0 && k !== 'version' && k !== 'savedAt') d[k] = S[k]; }); var t = JSON.stringify(d), h = 5381; for (var i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + t.length; }
   function setSpMark(S){ if (S) S.__spSig = setSig(S); return S; }
   function setUnsent(S){ return !!S && S.__spSig !== setSig(S); }
-  root.BL = { setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  root.BL = { setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

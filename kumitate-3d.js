@@ -148,13 +148,13 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     dirty = true;
   }
   function bounds(){ var bb = new THREE.Box3(); meshes.forEach(function(m){ bb.expandByObject(m); }); if (bb.isEmpty()) bb.set(new THREE.Vector3(-800, 0, -800), new THREE.Vector3(800, 1000, 800)); return bb; }
-  function fit(name){
+  function fit(name, pad){   // pad＝まわりの 余白（mm・既定 250。基点の 窓は 部材 1 つを 大きく 出す ので 小さく）
     if (name) viewName = name;
-    var bb = bounds(), c = bb.getCenter(new THREE.Vector3()), s = bb.getSize(new THREE.Vector3()), R = Math.max(s.x, s.y, s.z) * 0.7 + 250;
+    var bb = bounds(), c = bb.getCenter(new THREE.Vector3()), s = bb.getSize(new THREE.Vector3()), R = Math.max(s.x, s.y, s.z) * 0.7 + (pad != null ? pad : 250);
     var dist = R / Math.sin(cam.fov * Math.PI / 360) * 1.05;
     var dir = viewName === 'front' ? new THREE.Vector3(0, 0.02, 1) : viewName === 'top' ? new THREE.Vector3(0, 1, 0.0001) : new THREE.Vector3(0.55, 0.5, 0.95);
     if (cam.aspect < 1) dist /= Math.max(0.55, cam.aspect);
-    controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip(); dirty = true;
+    controls.maxDistance = Math.max(40000, dist * 4); controls.minDistance = Math.max(pad != null ? 60 : 300, R * 0.35); controls.target.copy(c); cam.position.copy(c).add(dir.normalize().multiplyScalar(dist)); controls.update(); clip(); dirty = true;
   }
   // 押した 部材（動かした ときは 押した ことに しない）
   var down = null, ray = new THREE.Raycaster(), selRect = null;

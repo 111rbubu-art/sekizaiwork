@@ -274,7 +274,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 <script src="buzai-lib.js?v=0.9.50"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.61';
+var APP_VER = 'v0.8.62';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -284,12 +284,22 @@ var SETS = lsGet('kumitate.sets') || [];
 // 部材ライブラリ（buzai/1。SharePoint の 部材ライブラリ/部材 が 元。この 端末にも 覚える）。セット（buzai-set/2）は 枠と 部材の id だけ（buzai-lib.js）
 var LIB = lsGet('kumitate.lib') || {}, RSETS = [];
 var PART_DIR = '/業務アプリ/部材ライブラリ/部材';
-function libPut(p){ BL.mhIn(p); var o = LIB[p.id]; if (o && (o.version || 0) > (p.version || 0)) return false; if (o && o.thumb && !p.thumb && (o.version || 0) === (p.version || 0)) p.thumb = o.thumb; LIB[p.id] = p; return true; }
+// 中身（版・保存日・絵・元・__ の 印を 除く）
+function partBody(p){ var d = {}; Object.keys(p || {}).forEach(function(k){ if (k.indexOf('__') !== 0 && ['version', 'savedAt', 'thumb', 'sources', 'tags', 'status'].indexOf(k) < 0) d[k] = p[k]; }); return JSON.stringify(d); }
+// ファイルから 読んだ セットの 部材で 手元を 置き換える（v0.8.62。本人「読んだのに 香炉が 古い まま・見本図面も ない」＝手元の 版が 上で 捨てて いた）
+//   中身が ちがう ときだけ 手元の 版 +1 に して 置き換え、SharePoint へは 未保存（保存で 送る）。見本図面が 無い ときは 手元の ものを 残す
+var LIB_FORCE = false;
+function libForce(p){ BL.mhIn(p); var o = LIB[p.id]; if (!o) { LIB[p.id] = p; return true; }
+  Object.keys(o).forEach(function(k){ if (k.indexOf('__') !== 0 && k !== 'thumb' && p[k] == null) p[k] = o[k]; });   // ファイルに 無い もの（見本図面・加工図面の 下書き など）は 手元の ものを 残す
+  if (partBody(o) === partBody(p)) return false;
+  ['tags', 'status'].forEach(function(k){ if (o[k] != null) p[k] = o[k]; });
+  p.version = (o.version || 0) + 1; delete p.thumb; delete p.__sp; LIB[p.id] = p; return true; }
+function libPut(p){ if (LIB_FORCE) return libForce(p); BL.mhIn(p); var o = LIB[p.id]; if (o && (o.version || 0) > (p.version || 0)) return false; if (o && o.thumb && !p.thumb && (o.version || 0) === (p.version || 0)) p.thumb = o.thumb; LIB[p.id] = p; return true; }
 function libSave(){ lsSet('kumitate.lib', LIB); }
 // 前の 形の セット（部材を 丸ごと）→ 枠と 参照 ＋ 部材ライブラリ（左右で 同じ 石は 反転で 1 つ）
 // セットの ファイルに 入った 部材（parts_lib）は、この 端末に 無い・古い ときだけ 入れる（同じ 版の 手元の 直しを 消さない。v0.8.22）
 function libFill(p){ var o = LIB[p.id]; if (o && (o.version || 0) >= (p.version || 0)) return false; return libPut(p); }
-function toNewSet(S){ if (!S || BL.isNew(S)) { (S && S.parts_lib || []).forEach(libFill); if (S) delete S.parts_lib; return S; } var r = BL.split(S); r.parts.forEach(libPut); return r.set; }
+function toNewSet(S){ if (!S || BL.isNew(S)) { (S && S.parts_lib || []).forEach(LIB_FORCE ? libPut : libFill); if (S) delete S.parts_lib; return S; } var r = BL.split(S); r.parts.forEach(libPut); return r.set; }
 (function(){ var ch = false; SETS = SETS.map(function(S){ if (BL.isNew(S)) return S; ch = true; return toNewSet(S); }); if (ch) { lsSet('kumitate.sets', SETS); libSave(); } })();
 function addsOf(id){ return ((typeof ST !== 'undefined' && ST && ST.add) || []).filter(function(a){ return a.setId === id; }); }
 // 旧シミュレーターの 石塔（和型8寸・9寸・洋型）と 外柵（デザイン1・2・階段付き）は 使わない（本人）。図面から 読んだ セットだけ 出す
@@ -696,7 +706,7 @@ $('fSet').onchange = function(){
 function takeSetFile(j, keepSel){
   var m = checkSet(j); if (m) { alert(m); return false; }
   if (j) delete j.__spSig;   // ファイルの 印は 使わない（SP に ある かは SP で 決める）
-  putSet(j, keepSel); renderLeft(); run(true);
+  LIB_FORCE = true; try { putSet(j, keepSel); } finally { LIB_FORCE = false; } libSave(); renderLeft(); run(true);
   var miss = Object.keys(missingParts()).length;
   if (miss) { fixMissing(true); return true; }   // 部材が 足りない セットは SharePoint に 上げない（上げると 箱の まま 広がる）
   // 既定は SharePoint に 保存（v0.8.58。本人「基本的に SP に 保存する 様に したい、端末のみは 同期準備としては いい」）

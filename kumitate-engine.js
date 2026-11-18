@@ -255,7 +255,7 @@ var KM = (function(){
       p[k] = Object.assign({}, q, { offX:r1(b.offX + (b.w - q.w) / 2), offZ:r1(b.offZ + (b.d - q.d)) }); });
     // 大きさを 変更で 引いた 面の ぶん 位置を ずらす（st.osh = { 鍵:{ x, z } }。右だけ・前だけ 伸ばす ため。v0.8.28）
     Object.keys(st.osh || {}).forEach(function(k){ var o = st.osh[k], q = p[k]; if (!q || !o || early[k]) return;
-      p[k] = Object.assign({}, q, { offX:r1((q.offX || 0) + (+o.x || 0)), offZ:r1((q.offZ || 0) + (+o.z || 0)) }); });
+      p[k] = Object.assign({}, q, { offX:r1((q.offX || 0) + (+o.x || 0)), offY:r1((q.offY || 0) + (+o.y || 0)), offZ:r1((q.offZ || 0) + (+o.z || 0)) }); });   // y＝点で 移動の 高さ（v0.8.67）
     syncShapes(p, st);
     p = applyPos(data.knowhow || [], p, data.anchors || {}, site, data, st.sel, errs);
     var boxes = {};
@@ -276,7 +276,7 @@ var KM = (function(){
       if (sz) { n.w = sz.w; n.d = sz.d; n.h = sz.h; }
       else if (o) ['w', 'd', 'h'].forEach(function(f){ if (o[f] > 0) n[f] = o[f]; });
       if (!sz && !o && !m) return;
-      n.offX = r1((q.offX || 0) + (q.w - n.w) / 2 + (m ? +m.x || 0 : 0)); n.offZ = r1((q.offZ || 0) + (q.d - n.d) + (m ? +m.z || 0 : 0));
+      n.offX = r1((q.offX || 0) + (q.w - n.w) / 2 + (m ? +m.x || 0 : 0)); n.offZ = r1((q.offZ || 0) + (q.d - n.d) + (m ? +m.z || 0 : 0)); if (m && +m.y) n.offY = r1((q.offY || 0) + (+m.y));
       p[k] = n; if (m) done[k] = 1; });
     return done;
   }

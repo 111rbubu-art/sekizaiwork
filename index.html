@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.593';
+var APP_VERSION = 'v1.9.594';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -14733,23 +14733,76 @@ function _renderKoujiDocsCardGrid(d) {
 
 /* **提出資料**（v1.9.523。本人「工事関係で、SPの提出資料の中身を、仕様・資料タブの資料のグループにも表示させて」）。
    SharePoint の 案件フォルダー/提出資料 の中身（領収書・資料制作の PDF など）を 新しい順に。中のフォルダーは 上に。
-   押すと データタブと同じ：1 回で 見本、2 回で 開く（PDF は ビューワー）。名前の変更・削除などは［📂 フォルダーを開く］（ファイル整理）から */
-function _koujiSubPanelHtml() {
+   押すと データタブと同じ：1 回で 見本、2 回で 開く（PDF は ビューワー）。名前の変更・削除などは［📂 フォルダーを開く］（ファイル整理）から
+   v1.9.594（本人「納骨の資料に、工事関連と同じように、提出資料を表示させて。表示はデータタブと同じようにリスト、小、中、大と
+   サムネ表示できるようにして。リスト、小、中、大は工事関連も適応し、工事関連は帳票類も表示させて」）：
+   欄は _spDocsPanelHtml（工事＝提出資料・帳票類 を 横に 2 つ・納骨＝提出資料）。表示の 大きさは データタブとは 別に 覚える（docsPanelSz） */
+var _docsPanelSz = (function(){ try { var v = localStorage.getItem('docsPanelSz'); return ['list','s','m','l'].indexOf(v) >= 0 ? v : 'list'; } catch(e) { return 'list'; } })();
+var _spDocsCache = {};     // 欄の id → { folder, vs, listMode, item }（大きさを 変えたとき 読み直さずに 描き直す）
+function _docsSzBtnsHtml() {
+  var OPTS = [{sz:'list',label:'リスト'},{sz:'s',label:'小'},{sz:'m',label:'中'},{sz:'l',label:'大'}];
+  return '<span class="docs-sz-grp" style="display:inline-flex;gap:3px">' + OPTS.map(function(o) {
+    var sel = o.sz === _docsPanelSz;
+    return '<button data-docs-sz="' + o.sz + '" onclick="_setDocsPanelSz(\'' + o.sz + '\')" ' +
+      'style="padding:3px 9px;border-radius:10px;font-size:11px;cursor:pointer;font-family:inherit;' +
+      (sel ? 'background:#333;color:#fff;border:1px solid #333' : 'background:#f5f5f5;color:#555;border:1px solid #ccc') + '">' + o.label + '</button>';
+  }).join('') + '</span>';
+}
+function _setDocsPanelSz(sz) {
+  if (['list','s','m','l'].indexOf(sz) < 0) return;
+  _docsPanelSz = sz;
+  try { localStorage.setItem('docsPanelSz', sz); } catch(e) {}
+  document.querySelectorAll('[data-docs-sz]').forEach(function(btn) {
+    var sel = btn.getAttribute('data-docs-sz') === sz;
+    btn.style.background = sel ? '#333' : '#f5f5f5';
+    btn.style.color = sel ? '#fff' : '#555';
+    btn.style.borderColor = sel ? '#333' : '#ccc';
+  });
+  Object.keys(_spDocsCache).forEach(function(id) { _spDocsRender(id); });
+}
+/* 1 つの 欄（title・id・案件フォルダーの 下の 名前・ファイル整理の listMode・見出しに 大きさの ボタンを 置くか） */
+function _spDocsPanelHtml(title, elId, sub, listMode, withSz) {
   var bs = 'padding:4px 10px;background:#fff;color:#185fa5;border:1px solid #b8d4f0;border-radius:10px;cursor:pointer;font-size:11px;font-family:inherit';
-  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px;margin-bottom:14px">' +
+  var a = "'" + elId + "','" + sub + "','" + listMode + "'";
+  return '<div style="background:#fff8ee;border:1px solid #e0c890;border-radius:10px;padding:14px;min-width:0">' +
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
-      '<span style="font-size:13px;font-weight:700;color:#185fa5">📤 提出資料（SharePoint）</span>' +
-      '<button onclick="openSubmissionFolder(currentItem,\'kouji\')" style="margin-left:auto;' + bs + '">📂 フォルダーを開く</button>' +
-      '<button onclick="_koujiSubLoad()" style="' + bs + '">🔄 更新</button>' +
+      '<span style="font-size:13px;font-weight:700;color:#185fa5">' + title + '</span>' +
+      '<span style="margin-left:auto;display:inline-flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        (withSz ? _docsSzBtnsHtml() : '') +
+        '<button onclick="openSubmissionFolder(currentItem,\'' + listMode + '\',\'' + sub + '\')" style="' + bs + '">📂 フォルダーを開く</button>' +
+        '<button onclick="_spDocsLoad(' + a + ')" style="' + bs + '">🔄 更新</button>' +
+      '</span>' +
     '</div>' +
-    '<div id="kouji-sub-list" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:2px 8px;min-height:40px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
+    '<div id="' + elId + '" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:2px 8px;min-height:40px;font-size:12px;max-height:420px;overflow-y:auto">読み込み中...</div>' +
+  '</div>';
+}
+/* 工事：提出資料と 帳票類 を 横に 2 つ（狭い 画面では 縦に）。大きさの ボタンは 上に 1 組 */
+function _koujiSubPanelHtml() {
+  return '<div style="margin-bottom:14px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin:0 2px 6px;flex-wrap:wrap">' +
+      '<span style="font-size:12px;font-weight:700;color:#185fa5">表示</span>' + _docsSzBtnsHtml() +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">' +
+      _spDocsPanelHtml('📤 提出資料（SharePoint）', 'kouji-sub-list', '提出資料', 'kouji', false) +
+      _spDocsPanelHtml('📋 帳票類（SharePoint）', 'kouji-chouhyou-list', '帳票類', 'kouji', false) +
+    '</div>' +
   '</div>';
 }
 function _koujiSubLoad() {
-  var el = document.getElementById('kouji-sub-list'); if (!el) return;
+  _spDocsLoad('kouji-sub-list', '提出資料', 'kouji');
+  _spDocsLoad('kouji-chouhyou-list', '帳票類', 'kouji');
+}
+/* 納骨：提出資料（大きさの ボタンは 欄の 見出しに） */
+function _nokSubPanelHtml() {
+  return '<div style="margin-bottom:14px">' + _spDocsPanelHtml('📤 提出資料（SharePoint）', 'nok-sub-list', '提出資料', 'noukotsu', true) + '</div>';
+}
+function _nokSubLoad() { _spDocsLoad('nok-sub-list', '提出資料', 'noukotsu'); }
+
+function _spDocsLoad(elId, sub, listMode) {
+  var el = document.getElementById(elId); if (!el) return;
   var root = _getItemFolderPath(currentItem);
-  if (!root) { el.innerHTML = '<div style="color:#888;padding:8px">案件の フォルダーが まだありません</div>'; return; }
-  var folder = root.replace(/\/+$/, '') + '/提出資料';
+  if (!root) { delete _spDocsCache[elId]; el.innerHTML = '<div style="color:#888;padding:8px">案件の フォルダーが まだありません</div>'; return; }
+  var folder = root.replace(/\/+$/, '') + '/' + sub;
   var enc = folder.split('/').map(encodeURIComponent).join('/');
   var item0 = currentItem;
   el.innerHTML = '<div style="color:#888;padding:8px">読み込み中...</div>';
@@ -14763,24 +14816,42 @@ function _koujiSubLoad() {
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }).then(function(data) {
-    var box = document.getElementById('kouji-sub-list');
-    if (!box || currentItem !== item0) return;          // 待つ間に 別の案件・別のタブへ
+    if (!document.getElementById(elId) || currentItem !== item0) return;   // 待つ間に 別の案件・別のタブへ
     var vs = (data.value || []).filter(function(f) { return f.file || f.folder; });
     vs.sort(function(a, b) {
       var fa = a.folder ? 0 : 1, fb = b.folder ? 0 : 1;
       if (fa !== fb) return fa - fb;
       return String(b.lastModifiedDateTime || '').localeCompare(String(a.lastModifiedDateTime || ''));
     });
-    if (!vs.length) { box.innerHTML = '<div style="color:#888;padding:8px">提出資料の フォルダーに ファイルは まだありません</div>'; return; }
-    var z = function(n) { return (n < 10 ? '0' : '') + n; };
-    box.innerHTML = vs.map(function(f, i) {
+    vs.forEach(function(f) { if (f.file) _spRegThumb(folder + '/' + f.name, f.thumbnails); });   // 1 回押しの 見本は サムネで
+    _spDocsCache[elId] = { folder: folder, sub: sub, vs: vs, listMode: listMode, item: item0 };
+    _spDocsRender(elId);
+  }).catch(function(e) {
+    var box = document.getElementById(elId);
+    if (box) box.innerHTML = '<div style="color:#c00;padding:8px">読み込めませんでした: ' + _hakaSpecEsc((e && e.message) || String(e)) + '</div>';
+  });
+}
+function _spDocsRender(elId) {
+  var c = _spDocsCache[elId], box = document.getElementById(elId);
+  if (!c || !box || c.item !== currentItem) { if (!box) delete _spDocsCache[elId]; return; }
+  var vs = c.vs, folder = c.folder;
+  if (!vs.length) { box.innerHTML = '<div style="color:#888;padding:8px">' + _hakaSpecEsc(c.sub) + 'の フォルダーに ファイルは まだありません</div>'; return; }
+  var z = function(n) { return (n < 10 ? '0' : '') + n; };
+  var sz = _docsPanelSz;
+  var thumbOf = function(f, key) {
+    var t = f.thumbnails && f.thumbnails[0]; if (!t) return null;
+    var o = t[key] || t.medium || t.large || t.small;
+    return o && o.url;
+  };
+  var html;
+  if (sz === 'list') {
+    html = vs.map(function(f, i) {
       var t = new Date(f.lastModifiedDateTime);
       var dt = isNaN(t) ? '' : t.getFullYear() + '-' + z(t.getMonth() + 1) + '-' + z(t.getDate()) + ' ' + z(t.getHours()) + ':' + z(t.getMinutes());
       var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name), isPdf = /\.pdf$/i.test(f.name);
-      var th = f.thumbnails && f.thumbnails[0] && (f.thumbnails[0].small || f.thumbnails[0].medium);
-      if (f.file) _spRegThumb(folder + '/' + f.name, f.thumbnails);   // 1 回押しの 見本は サムネで
+      var th = thumbOf(f, 'small');
       var ic = f.folder ? '<span style="width:36px;text-align:center;font-size:18px">📁</span>'
-             : th ? '<img src="' + _hakaSpecEsc(th.url) + '" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #eee;flex-shrink:0">'
+             : th ? '<img src="' + _hakaSpecEsc(th) + '" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #eee;flex-shrink:0">'
              : '<span style="width:36px;text-align:center;font-size:18px">' + (isImg ? '🖼' : isPdf ? '📄' : '📎') + '</span>';
       return '<div data-sub="' + i + '" title="' + (f.folder ? 'ファイル整理で 開きます' : '1 回で 見本／2 回で 開く') + '" ' +
         'style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #eef3f9;cursor:pointer" ' +
@@ -14789,17 +14860,30 @@ function _koujiSubLoad() {
           (f.folder ? ' <span style="color:#888;font-size:11px">（' + ((f.folder && f.folder.childCount) || 0) + ' 件）</span>' : '') + '</span>' +
         '<span style="font-size:11px;color:#999;white-space:nowrap">' + _hakaSpecEsc(dt) + '</span></div>';
     }).join('');
-    box.querySelectorAll('[data-sub]').forEach(function(row) {
-      var f = vs[+row.getAttribute('data-sub')]; if (!f) return;
-      var fpath = folder + '/' + f.name;
-      if (f.folder) { row.addEventListener('click', function() { openSubmissionFolder(currentItem, 'kouji'); }); return; }
-      var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name);
-      row.addEventListener('click', function() { spFileClick(fpath, isImg); });
-      row.addEventListener('dblclick', function() { spFileDbl(fpath); });
-    });
-  }).catch(function(e) {
-    var box = document.getElementById('kouji-sub-list');
-    if (box) box.innerHTML = '<div style="color:#c00;padding:8px">読み込めませんでした: ' + _hakaSpecEsc((e && e.message) || String(e)) + '</div>';
+  } else {
+    /* 小・中・大：データタブと 同じ 大きさ（_PHOTO_SIZES）の 升目。サムネの 無い ファイル・フォルダーは 印で */
+    var ps = _PHOTO_SIZES[sz] || _PHOTO_SIZES.m;
+    var key = { s:'small', m:'medium', l:'large' }[sz];
+    html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(' + ps.minW + 'px,1fr));gap:6px;padding:6px 0">' +
+      vs.map(function(f, i) {
+        var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name), isPdf = /\.pdf$/i.test(f.name);
+        var th = f.folder ? null : thumbOf(f, key);
+        var im = th
+          ? '<img src="' + _hakaSpecEsc(th) + '" loading="lazy" onerror="_thumbRetry(this)" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;border:0.5px solid #e0e0e0;background:#eee;display:block">'
+          : '<div style="width:100%;aspect-ratio:1;border-radius:6px;border:0.5px solid #e0e0e0;background:' + (f.folder ? '#eef4fb' : '#f6f6f6') + ';display:flex;align-items:center;justify-content:center;font-size:' + (sz === 's' ? 22 : 34) + 'px">' +
+              (f.folder ? '📁' : isImg ? '🖼' : isPdf ? '📄' : '📎') + '</div>';
+        return '<div data-sub="' + i + '" title="' + _hakaSpecEsc(f.name) + '\n' + (f.folder ? 'ファイル整理で 開きます' : '1 回で 見本／2 回で 開く') + '" style="cursor:pointer;min-width:0">' + im +
+          '<div style="font-size:' + (sz === 's' ? 9 : 10) + 'px;color:#555;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px">' + _hakaSpecEsc(f.name) + '</div></div>';
+      }).join('') + '</div>';
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('[data-sub]').forEach(function(row) {
+    var f = vs[+row.getAttribute('data-sub')]; if (!f) return;
+    var fpath = folder + '/' + f.name;
+    if (f.folder) { row.addEventListener('click', function() { openSubmissionFolder(currentItem, c.listMode, c.sub); }); return; }
+    var isImg = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(f.name);
+    row.addEventListener('click', function() { spFileClick(fpath, isImg); });
+    row.addEventListener('dblclick', function() { spFileDbl(fpath); });
   });
 }
 
@@ -16143,6 +16227,7 @@ function _nokDocsBoxHtml() {
         '</div>' +
         '<div id="haka-choukoku-saved-list" style="background:#fff;border:1px solid #c8b8a0;border-radius:6px;padding:8px;min-height:60px;font-size:12px;max-height:280px;overflow-y:auto">読み込み中...</div>' +
       '</div>' +
+      _nokSubPanelHtml().replace('background:#fff8ee;border:1px solid #e0c890', 'background:#ffffff;border:1px solid #b8d4f0') +
       '<details style="margin:0 0 14px;border:1px solid #b8d4f0;border-radius:10px;background:#ffffff">' +
         '<summary style="cursor:pointer;padding:10px 14px;font-size:13px;font-weight:700;color:#185fa5">📄 テンプレートから資料を作る（押すと開く）</summary>' +
         '<div style="padding:0 10px 10px"><div id="nok-docs-tpl-area">' + _renderNokDocsTplListInner() + '</div></div>' +
@@ -16151,7 +16236,7 @@ function _nokDocsBoxHtml() {
   '</div>';
 }
 function _nokDocsBoxLoad() {
-  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); }, 30);
+  setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); _nokSubLoad(); }, 30);
   if (typeof loadChoukokuTemplates === 'function') {
     loadChoukokuTemplates().then(function(){
       var area = document.getElementById('nok-docs-tpl-area');
@@ -29158,7 +29243,7 @@ function openFileMgrPanel(item, listMode) {
 }
 
 // 「提出資料」ボタン: ファイル整理パネルを提出資料サブフォルダーで開く
-function openSubmissionFolder(item, listMode) {
+function openSubmissionFolder(item, listMode, subName) {   // subName：提出資料（既定）／帳票類（v1.9.594）
   var folderPass = item['Folder_Pass'] || item['FolderPass'] || '';
   if (!folderPass) { alert('フォルダーが登録されていません'); return; }
   var rootPath = folderPass.replace(/\/+$/, '');
@@ -29170,7 +29255,7 @@ function openSubmissionFolder(item, listMode) {
     _fmgr.y = 60;
   }
   _fmgr.panelLoc = 'folder';
-  _fmgr.folderCurrentPath = rootPath + '/提出資料';
+  _fmgr.folderCurrentPath = rootPath + '/' + (subName || '提出資料');
   _fmgr.folderNavStack = [rootPath]; // 「← 戻る」でフォルダールートへ戻れる
   _fmgrBuildPanel();
   _fmgrLoadPanelFiles();

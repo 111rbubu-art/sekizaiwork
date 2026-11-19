@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.594';
+var APP_VERSION = 'v1.9.595';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -30170,6 +30170,37 @@ function toggleNokSort() {
 
 function G(d,k){var M={'顧客名':'_x9867__x5ba2__x540d_','お寺':'_x304a__x5bfa_','分類':'_x5206__x985e_','フリガナ':'_x30d5__x30ea__x30ac__x30ca_','電話番号':'_x96fb__x8a71__x756a__x53f7_','顧客No':'_x9867_No','状況':'situation','郵便番号':'_x90f5__x4fbf__x756a__x53f7_','住所1':'_x4f4f__x6240_1','住所2':'_x4f4f__x6240_2','宛名':'addressee','注意事項メモ':'_x6ce8__x610f__x4e8b__x9805__x30','納骨時間':'_x7d0d__x9aa8__x6642__x9593_','納骨日':'_x7d0d__x671f__xff08__x7d0d__x9a','納骨担当':'personincharge','戒切納期':'_x6212__x5207__x7d0d__x671f_','依頼日':'RequestDate','依頼情報提供者':'Informer','請求書郵送日':'DateInvoice','入金日':'PaymentDate','領収書発行日':'ReceiptIssuanceDate','社内連絡':'InternalCommunication','納骨備考':'noukotu_kaisi_jyoutai','資料':'資料','フォルダー':'資料','未完':'_x524a__x9664_'};return d[M[k]!==undefined?M[k]:k];}
 
+/* ───── 請求の 並び（案4 段階 1-1・v1.9.595）─────
+   本人「納骨と彫刻が同じ請求…納骨の仕事が終わった後に彫刻の依頼があると入力欄が無くて困っていた」→ 案4
+   （工事関連の 石材制作業者と 同じ 形で、請求を 何件でも。少しずつ テストしながら）。
+   この段では 請求を 読む 所を 1 つに まとめる だけ。今の 請求欄（請求書郵送日・MF①・入金日・MF②・入金額・領収書発行日）を
+   ① として 返す。① の 対象（nok＝納骨・骨出し／cho＝彫刻）は 分類から。JSON の 列は まだ 読まない（段階 2 で 足す）。
+   カードの 入金の 札・彫刻の 状態・［入金待ち］は ここから 読む（出る 札は 前と 同じ） */
+function nkBillTargets(d) {
+  var b = G(d, '分類') || '';
+  var t = [];
+  if (b !== '戒切' && b !== '彫刻校正') t.push('nok');
+  if (b === '納骨戒切' || b === '戒切' || b === '彫刻校正') t.push('cho');
+  return t;
+}
+function nkBills(d) {
+  if (!d) return [];
+  return [{ no: 1, targets: nkBillTargets(d),
+            inv: G(d, '請求書郵送日') || '', mf1: d['MF_cloud_1'] || '',
+            pay: G(d, '入金日') || '', mf2: d['MF_cloud_2'] || '',
+            amt: d['PaymentValue'] || '', rcpt: G(d, '領収書発行日') || '' }];
+}
+// k（nok／cho）を 対象に した 請求。無ければ ①（それも 無ければ 空）
+function nkBillFor(d, k) {
+  var a = nkBills(d);
+  for (var i = 0; i < a.length; i++) if (a[i].targets.indexOf(k) >= 0) return a[i];
+  return a[0] || { no: 1, targets: [], inv: '', mf1: '', pay: '', mf2: '', amt: '', rcpt: '' };
+}
+// 請求済・未入金の 請求が ある か（追工は 別）
+function nkBillsUnpaid(d) {
+  return nkBills(d).some(function (b) { return !!(b.inv && !b.pay); });
+}
+
 // ===== 一覧描画 =====
 /* 一覧のカード1枚ぶんのHTMLを組み立てる。
    一覧ぜんぶを描くときも、1件だけ描き直すときも、ここを通す。
@@ -30193,8 +30224,9 @@ function _nokCardHtml(d, idx, _separators) {
     var bunrui = G(d,'分類') || '';
     var nokDate = G(d,'納骨日') || '';
     var nokTime = G(d,'納骨時間') || '';
-    var nyukinDate = G(d,'入金日') || '';
-    var seikyuDate = G(d,'請求書郵送日') || '';
+    var _billK = (bunrui !== '戒切' && bunrui !== '彫刻校正') ? 'nok' : 'cho';   // 入金の 札は この 仕事の 請求で（v1.9.595）
+    var nyukinDate = nkBillFor(d, _billK).pay;
+    var seikyuDate = nkBillFor(d, _billK).inv;
     var today = new Date();
     // 納骨日が過去かどうか判定
     // PowerApps: DateDiff(納骨日, Now(), Days) > 0 → 今日より前が完了
@@ -30218,9 +30250,9 @@ function _nokCardHtml(d, idx, _separators) {
     var bunrui2 = G(d,'分類') || '';
     if (bunrui2 === '納骨戒切' || bunrui2 === '戒切' || bunrui2 === '彫刻校正') {
       var chkCancel = /キャンセル/.test(d['Resubmission'] || '');   // SP の 選択肢の 書き方に よらず（v1.9.530）
-      var chkNyukin = d['PaymentDate'] || '';
+      var chkNyukin = nkBillFor(d, 'cho').pay;   // 彫刻の 請求（v1.9.595）
       var chkComp   = d['CompletionDate'] || '';
-      var chkSeikyu = d['DateInvoice'] || '';
+      var chkSeikyu = nkBillFor(d, 'cho').inv;
       var chkSendV  = d['SendDocuVendor'] || '';
       var chkReturn = d['ReturnDocumentsCus'] || '';
       var chkSendC  = d['SendDocumentsCustomer'] || '';
@@ -30473,7 +30505,7 @@ function renderList() {
     if (currentFilter === 'follow' && (isComplete || !d['InternalCommunication'])) return false;
     if (currentFilter === 'follow-self' && (isComplete || !d['InternalCommunication'] || !_loginSurname || !d['InternalCommunication'].includes(_loginSurname))) return false;
     // 入金待ち：本体または追加分で請求済・未入金
-    var isNyukinMachi = (d['DateInvoice'] && !d['PaymentDate']) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);
+    var isNyukinMachi = nkBillsUnpaid(d) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);   // 請求の 並び（v1.9.595）
     if (currentFilter === 'nyukin' && !isNyukinMachi) return false;
     /* 彫刻校正 だけを 出す（v1.9.571。本人「彫刻校正のみの表示にして」。追加は 不要）。完了も 出す（並びは いつもどおり） */
     if (currentFilter === 'cho' && (G(d,'分類') || '') !== '彫刻校正') return false;

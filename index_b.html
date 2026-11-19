@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.595';
+var APP_VERSION = 'v1.9.596';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -30183,12 +30183,39 @@ function nkBillTargets(d) {
   if (b === '納骨戒切' || b === '戒切' || b === '彫刻校正') t.push('cho');
   return t;
 }
+/* 段階 2（v1.9.596）：SP の 列 BillJson（複数行テキスト・書式なし）に
+   {"v":1,"first":{"targets":["nok"]},"more":[{"targets":["cho"],"inv":"YYYY-MM-DD","mf1":"","pay":"","mf2":"","amt":"","rcpt":""}]}
+   ① は いつも 今の 請求欄が 正（JSON は ① の 対象と ② 以降 だけ。SP・PowerApps で ① を 直しても 食い違わない） */
+var NK_BILL_COL = 'BillJson';
+var _nkBillColState = null;          // null＝まだ 分からない／true＝ある／false＝無い
+function nkBillsJson(d) {
+  var raw = d && d[NK_BILL_COL];
+  if (!raw) return null;
+  if (typeof raw === 'string' && /^\s*</.test(raw)) {   // リッチテキストで <div> に 包まれて 返る とき
+    var tx = document.createElement('textarea'); tx.innerHTML = raw.replace(/<[^>]+>/g, ''); raw = tx.value;
+  }
+  var o = null;
+  try { o = (typeof raw === 'string') ? JSON.parse(raw) : raw; } catch (e) { console.warn('[請求] JSON を 読めません', e && e.message); return null; }
+  if (!o || typeof o !== 'object') return null;
+  var tg = function (a) { return Array.isArray(a) ? a.filter(function (k) { return k === 'nok' || k === 'cho'; }) : null; };
+  var s10 = function (v) { return String(v == null ? '' : v).substring(0, 10); };
+  return {
+    first: { targets: (o.first && tg(o.first.targets)) || null },
+    more: (Array.isArray(o.more) ? o.more : []).filter(function (x) { return x && typeof x === 'object'; }).map(function (x) {
+      return { targets: tg(x.targets) || [], inv: s10(x.inv), mf1: String(x.mf1 || ''), pay: s10(x.pay), mf2: String(x.mf2 || ''),
+               amt: String(x.amt || ''), rcpt: s10(x.rcpt) };
+    })
+  };
+}
 function nkBills(d) {
   if (!d) return [];
-  return [{ no: 1, targets: nkBillTargets(d),
+  var j = nkBillsJson(d);
+  var out = [{ no: 1, targets: (j && j.first.targets) || nkBillTargets(d),
             inv: G(d, '請求書郵送日') || '', mf1: d['MF_cloud_1'] || '',
             pay: G(d, '入金日') || '', mf2: d['MF_cloud_2'] || '',
             amt: d['PaymentValue'] || '', rcpt: G(d, '領収書発行日') || '' }];
+  if (j) j.more.forEach(function (b, i) { out.push(Object.assign({ no: i + 2 }, b)); });
+  return out;
 }
 // k（nok／cho）を 対象に した 請求。無ければ ①（それも 無ければ 空）
 function nkBillFor(d, k) {
@@ -30199,6 +30226,157 @@ function nkBillFor(d, k) {
 // 請求済・未入金の 請求が ある か（追工は 別）
 function nkBillsUnpaid(d) {
   return nkBills(d).some(function (b) { return !!(b.inv && !b.pay); });
+}
+
+/* ───── 請求・入金の ①②…（段階 2・v1.9.596）─────
+   工事関連の 石材制作業者（kjMakersBodyHtml）と 同じ 作り。SP に BillJson が ある と 確かめた ときだけ 出す。
+   ① は 今の 請求欄（上の カード）で、ここでは 対象だけ 選ぶ。② 以降は ここに 入れる。
+   1 つの 仕事（納骨／彫刻）は どれか 1 つの 請求に だけ 入る（押すと ほかの 請求から 外れる） */
+var _nkBl = { id: null, first: null, rows: null };
+function _nkBlEsc(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function _nkBlWord(d, k) {
+  if (k === 'cho') return '彫刻';
+  var b = G(d, '分類') || '';
+  return (b.indexOf('骨出') >= 0 || b.indexOf('骨だ') >= 0) ? '骨出' : '納骨';
+}
+function _nkBlMD(v) { var m = String(v || '').match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/); return m ? (+m[2]) + '/' + (+m[3]) : ''; }
+function _nkBlState(b) { return b.pay ? ['入金済', 'tag-done'] : (b.inv ? ['入金待', 'tag-yet'] : ['請求:未', 'tag-alert']); }
+function _nkBlNo(n) { return (typeof kjNoMark === 'function') ? kjNoMark(n) : '(' + n + ')'; }
+function nkBillsSecHtml(d, itemId) {
+  if (_nkBillColState !== true || !d) return '';
+  return '<div id="nk-bills-area" style="margin:4px 8px 8px">' + nkBillsBodyHtml(d, itemId) + '</div>';
+}
+function nkBillsBodyHtml(d, itemId) {
+  var avail = nkBillTargets(d);                 // 分類で 決まる 仕事（納骨／彫刻）
+  var tagSt = function (on, k) {
+    var c = k === 'cho' ? '#6a3ea5' : '#2e7d32';
+    return 'display:inline-block;border-radius:6px;padding:1px 9px;font-size:12.5px;font-weight:700;border:1.5px solid ' + (on ? c : '#ccc') +
+      ';background:' + (on ? (k === 'cho' ? '#f3eefb' : '#eef7ee') : '#fff') + ';color:' + (on ? c : '#bbb');
+  };
+  var html = '';
+  if (!editMode) {
+    _nkBl = { id: null, first: null, rows: null };
+    var bs = nkBills(d);
+    html += '<div style="font-size:12px;color:#555;margin:2px 0 4px">請求ごとの 対象</div>';
+    bs.forEach(function (b) {
+      var st = _nkBlState(b);
+      var tg = b.targets.length ? b.targets.map(function (k) { return '<span style="' + tagSt(true, k) + '">' + _nkBlWord(d, k) + '</span>'; }).join(' ')
+                                : '<span style="color:#aaa;font-size:12px">対象 なし</span>';
+      var dt = b.no === 1 ? '<span style="font-size:12px;color:#888">（上の 請求日・入金日の 欄）</span>'
+        : '<span style="font-size:12px;color:#555">' + [b.inv ? '請求 ' + _nkBlMD(b.inv) : '', b.amt ? Number(String(b.amt).replace(/[,\s¥￥]/g, '') || 0).toLocaleString('ja-JP') + '円' : '',
+            b.pay ? '入金 ' + _nkBlMD(b.pay) : '', b.mf1 ? 'MF未収 ' + _nkBlEsc(b.mf1) : '', b.mf2 ? 'MF入金 ' + _nkBlEsc(b.mf2) : '', b.rcpt ? '領収書 ' + _nkBlMD(b.rcpt) : '']
+            .filter(Boolean).join('　') + '</span>';
+      html += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:7px 10px;margin:5px 0;border:1px solid #e3e6ea;border-radius:8px;background:#fff">' +
+        '<b style="font-size:14px;color:#1a2535">' + _nkBlNo(b.no) + '</b>' + tg +
+        '<span class="tag-pill ' + st[1] + '" style="margin-left:auto">' + st[0] + '</span>' +
+        '<span style="flex-basis:100%;height:0"></span>' + dt + '</div>';
+    });
+    if (bs.length === 1) html += '<div style="font-size:11.5px;color:#888">別に 請求する 仕事が あれば ✏️ 編集 で［＋ 請求を追加］</div>';
+    return html;
+  }
+  if (_nkBl.id !== String(itemId) || !_nkBl.rows) {
+    var j = nkBillsJson(d);
+    var _hy = function (v) { return String(v || '').replace(/\//g, '-').substring(0, 10); };
+    _nkBl = { id: String(itemId), first: ((j && j.first.targets) || nkBillTargets(d)).slice(),
+              rows: j ? j.more.map(function (b) { return { targets: b.targets.slice(), inv: _hy(b.inv), mf1: b.mf1, pay: _hy(b.pay), mf2: b.mf2, amt: b.amt, rcpt: _hy(b.rcpt) }; }) : [] };
+  }
+  var inp = 'padding:5px 7px;border:1px solid #ccd2dc;border-radius:6px;font-size:13px;font-family:inherit';
+  var tgBtns = function (ri, cur) {
+    return avail.map(function (k) {
+      return '<button type="button" onclick="_nkBlTg(' + ri + ',\'' + k + '\')" style="' + tagSt(cur.indexOf(k) >= 0, k) + ';cursor:pointer;font-family:inherit">' + _nkBlWord(d, k) + '</button>';
+    }).join(' ');
+  };
+  html += '<div style="padding:7px 10px;margin:5px 0;border:1px solid #d5dce6;border-radius:8px;background:#f8fafc;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px">' +
+    '<b style="font-size:14px">' + _nkBlNo(1) + '</b><span style="font-size:12px;color:#555">対象：</span>' + tgBtns(0, _nkBl.first) +
+    '<span style="font-size:11.5px;color:#888">日付・金額は 上の 請求日・入金日の 欄</span></div>';
+  _nkBl.rows.forEach(function (r, i) {
+    var dIn = function (k, lb) {
+      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+        '<input type="date" value="' + _nkBlEsc(r[k] || '') + '" onchange="_nkBlSet(' + i + ',\'' + k + '\',this.value)" style="' + inp + '">' +
+        '<button type="button" onclick="_nkBlToday(' + i + ',\'' + k + '\')" style="padding:4px 7px;font-size:11px;background:#1a2535;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:inherit">今日</button></span>';
+    };
+    var tIn = function (k, lb, w) {
+      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+        '<input type="text" inputmode="numeric" value="' + _nkBlEsc(r[k] || '') + '" oninput="_nkBlSet(' + i + ',\'' + k + '\',this.value)" style="' + inp + ';width:' + w + 'px"></span>';
+    };
+    html += '<div style="padding:8px 10px;margin:6px 0;border:1px solid #d5dce6;border-radius:8px;background:#fffdf3;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">' +
+      '<b style="font-size:14px">' + _nkBlNo(i + 2) + '</b><span style="font-size:12px;color:#555">対象：</span>' + tgBtns(i + 1, r.targets) +
+      '<button type="button" onclick="_nkBlDel(' + i + ')" title="この 請求を 消す" style="margin-left:auto;background:#fff;border:1px solid #c0392b;color:#c0392b;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:12px">🗑</button>' +
+      '<span style="flex-basis:100%;height:0"></span>' +
+      dIn('inv', '請求日') + tIn('mf1', 'MF未収NO', 90) + tIn('amt', '入金額', 100) +
+      '<span style="flex-basis:100%;height:0"></span>' +
+      dIn('pay', '入金日') + tIn('mf2', 'MF入金NO', 90) + dIn('rcpt', '領収書') +
+    '</div>';
+  });
+  var noFirst = !(G(d, '請求書郵送日') || (localEdits[itemId] && (localEdits[itemId]['請求書郵送日'] || localEdits[itemId]['DateInvoice'])));
+  html += '<button type="button" onclick="_nkBlAdd()" style="margin:4px 0 2px;padding:7px 14px;border-radius:8px;border:1px dashed #1a5a9a;background:#fff;color:#1a5a9a;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit">＋ 請求を追加</button>' +
+    '<div style="font-size:11px;color:#888;margin-top:2px">' +
+    (noFirst ? 'はじめの 請求は ① （上の 欄）に 入れて ください。① の 対象は 上で 変えられます。' : '別に 請求する 仕事は ② に。対象を 押すと ほかの 請求から 外れます。') +
+    (avail.indexOf('cho') < 0 ? '　彫刻は 分類を 納骨戒切 に すると 選べます。' : '') + '</div>';
+  return html;
+}
+function _nkBlRedraw() {
+  var a = document.getElementById('nk-bills-area');
+  if (a && currentItem) a.innerHTML = nkBillsBodyHtml(currentItem, currentItem['id']);
+}
+function _nkBlTg(ri, k) {
+  if (!_nkBl.rows) return;
+  var lists = [_nkBl.first].concat(_nkBl.rows.map(function (r) { return r.targets; }));
+  var cur = lists[ri]; if (!cur) return;
+  var on = cur.indexOf(k) >= 0;
+  lists.forEach(function (l) { var x = l.indexOf(k); if (x >= 0) l.splice(x, 1); });   // 1 つの 仕事は 1 つの 請求に だけ
+  if (!on) cur.push(k);
+  _nkBlRedraw(); _nkBlPush();
+}
+function _nkBlSet(i, k, v) {
+  if (!_nkBl.rows || !_nkBl.rows[i]) return;
+  _nkBl.rows[i][k] = String(v == null ? '' : v);
+  _nkBlPush();
+}
+function _nkBlToday(i, k) {
+  var t = new Date();
+  _nkBlSet(i, k, t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'));
+  _nkBlRedraw();
+}
+function _nkBlAdd() {
+  if (!_nkBl.rows || !currentItem) return;
+  var d = currentItem, id = String(d['id']);
+  if (!(G(d, '請求書郵送日') || (localEdits[id] && (localEdits[id]['請求書郵送日'] || localEdits[id]['DateInvoice'])))) {
+    alert('はじめの 請求は ① （上の 請求日の 欄）に 入れて ください。\n① の 対象（納骨／彫刻）は ここで 変えられます。');
+    return;
+  }
+  /* まだ どの 請求にも 入って いない 仕事が あれば 対象に（無ければ 空で 足して 押して 選ぶ） */
+  var used = [].concat(_nkBl.first); _nkBl.rows.forEach(function (r) { used = used.concat(r.targets); });
+  var free = nkBillTargets(d).filter(function (k) { return used.indexOf(k) < 0; });
+  /* 空きが 無く ① が 納骨＋彫刻 なら、彫刻を ② へ（納骨の あとに 彫刻を 別に 請求する いちばん 多い 形） */
+  if (!free.length && _nkBl.first.length > 1 && _nkBl.first.indexOf('cho') >= 0) { _nkBl.first.splice(_nkBl.first.indexOf('cho'), 1); free = ['cho']; }
+  _nkBl.rows.push({ targets: free, inv: '', mf1: '', pay: '', mf2: '', amt: '', rcpt: '' });
+  _nkBlRedraw(); _nkBlPush();
+}
+function _nkBlDel(i) {
+  if (!_nkBl.rows || !_nkBl.rows[i]) return;
+  var r = _nkBl.rows[i];
+  if ((r.inv || r.pay || r.amt || r.mf1 || r.mf2 || r.rcpt) && !confirm(_nkBlNo(i + 2) + ' の 請求を 消します。よろしいですか？（保存するまで SP は 変わりません）')) return;
+  /* 消した 請求の 対象は ① に 戻す */
+  r.targets.forEach(function (k) { if (_nkBl.first.indexOf(k) < 0) _nkBl.first.push(k); });
+  _nkBl.rows.splice(i, 1);
+  _nkBlRedraw(); _nkBlPush();
+}
+// 並びを 編集中の 値（localEdits）に 入れる。① の 対象が 分類の まま で ② が 無ければ 列は 空（＝今までと 同じ）
+function _nkBlPush() {
+  var d = currentItem, id = _nkBl.id;
+  if (!d || !id || String(d['id']) !== id) return;
+  var def = nkBillTargets(d);
+  var sameDef = _nkBl.first.length === def.length && def.every(function (k) { return _nkBl.first.indexOf(k) >= 0; });
+  var json = '';
+  if (_nkBl.rows.length || !sameDef) {
+    json = JSON.stringify({ v: 1, first: { targets: _nkBl.first.slice() },
+      more: _nkBl.rows.map(function (r) { return { targets: r.targets.slice(), inv: r.inv || '', mf1: String(r.mf1 || '').trim(), pay: r.pay || '',
+                                                    mf2: String(r.mf2 || '').trim(), amt: String(r.amt || '').replace(/[,\s¥￥]/g, ''), rcpt: r.rcpt || '' }; }) });
+  }
+  if (json !== String(d[NK_BILL_COL] || '')) setEdit(id, NK_BILL_COL, json || null);
+  else if (localEdits[id]) delete localEdits[id][NK_BILL_COL];
+  try { saveEditsToStorage(); } catch (e) {}
 }
 
 // ===== 一覧描画 =====
@@ -30409,7 +30587,7 @@ var _LIST_ORDER_FIELDS = {
           'DateInvoice_tui','PaymentDate_tui','Temples','Customers','Title','category'],
   noukotsu: ['_x524a__x9664_','check','InternalCommunication','DateInvoice','PaymentDate',
              'DateInvoice_tui','PaymentDate_tui','_x9867__x5ba2__x540d_','Title','_x304a__x5bfa_',
-             '_x7d0d__x671f__xff08__x7d0d__x9a','IssueDate_tui','Estimate_tui',
+             '_x7d0d__x671f__xff08__x7d0d__x9a','IssueDate_tui','Estimate_tui','BillJson',
              // 納骨は表示名のまま保存に渡ることがあるので、そちらも見る
              '顧客名','お寺','納骨日','未完','請求書郵送日','入金日','社内連絡']
 };
@@ -31410,6 +31588,8 @@ function loadSPFieldChoices() {
   .then(function(results) {
     // 工事関連に 手配先の JSON の 列（MakerJson）が あるか（v1.9.532。段階 2 の 欄を 出すか）
     try { _kjMakerColState = ((results[1] && results[1].value) || []).some(function(c){ return c && c.name === KJ_MAKER_COL; }); } catch(e){}
+    // 納骨リストに 請求の 並びの 列（BillJson）が あるか（v1.9.596。段階 2 の 欄を 出すか）
+    try { _nkBillColState = ((results[0] && results[0].value) || []).some(function(c){ return c && c.name === NK_BILL_COL; }); } catch(e){}
     // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）。リストごとにも 持つ（v1.9.530）
     results.forEach(function(data, li) {
       var byL = FIELD_CHOICES_BY_LIST[li === 0 ? 'noukotsu' : 'kouji'];
@@ -33973,6 +34153,7 @@ function showTab(i, d) {
       '<div class="sec"><span class="sec-hdr bg5" style="display:flex;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap">請求・入金' + _mfBtnsHtml() + '</span>' +
       nkgBar('t3b') +
       nkgCanvas('t3b',NK_T3B_CARDS,d,itemId) +
+      nkBillsSecHtml(d, itemId) +   // ②③…の 請求（v1.9.596。SP に BillJson が ある ときだけ）
       '</div>';
     bindEditInputs(itemId);
     initNkChkCards(d);

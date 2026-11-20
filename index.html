@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.625';
+var APP_VERSION = 'v1.9.626';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -26747,8 +26747,9 @@ function renderFolderContents(items, currentPath, token) {
       img.onerror = function(){ _thumbRetry(this); };
       img.src = thumbUrl;
       var largeUrl = (f.thumbnails[0].large && f.thumbnails[0].large.url) ? f.thumbnails[0].large.url : thumbUrl;
+      _spRegThumb(filePath, f.thumbnails);   // ⇐ ⇒ の 並び（v1.9.626）
       img.addEventListener('click', function(){
-        _onFolderThumbClick(largeUrl, f.name);
+        _onFolderThumbClick(largeUrl, f.name, filePath);
       });
       img.addEventListener('dblclick', function(){
         if (_folderThumbClickTimer) { clearTimeout(_folderThumbClickTimer); _folderThumbClickTimer = null; }
@@ -27682,36 +27683,157 @@ function applyImgZoom(imgEl) {
   });
 }
 
-function _previewFolderThumbLarge(url, fileName) {
+/* サムネの 拡大表示（1 回 押し）。v1.9.626 本人「⇒をつけて次の写真をサムネ表示する様にし、原寸ボタンも付けて」
+   ・fpath が 分かる ときは 同じ 一覧（同じ フォルダー）の 前／次へ［⇐］［⇒］・キーボードの ←／→ でも 送る
+   ・［原寸］：原本を 取って 縮めずに 出す（はみ出す 分は ドラッグ／スクロールで 見る）。もう 1 度 押すと 全体表示に 戻る
+     原寸の まま ⇐⇒ で 送ると 次も 原寸。写真でない もの（PDF など）は［📄 開く］で いつもの ビューワー */
+var _ftvOrigCache = {};   // fpath → 原本の blob URL（同じ 窓で 行き来しても 取り直さない）
+function _ftvOrigUrl(fpath) {
+  if (_ftvOrigCache[fpath]) return Promise.resolve(_ftvOrigCache[fpath]);
+  return getToken().then(function(resp) {
+    var encoded = fpath.split('/').map(encodeURIComponent).join('/');
+    return fetch('https://graph.microsoft.com/v1.0/drives/' + DRIVE_ID + '/root:' + encoded + ':/content',
+      { headers: { Authorization: 'Bearer ' + resp.accessToken } });
+  }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
+  .then(function(b) { var u = URL.createObjectURL(b); _ftvOrigCache[fpath] = u; return u; });
+}
+function _previewFolderThumbLarge(url, fileName, fpath) {
   var old = document.getElementById('folder-thumb-viewer');
-  if (old) old.remove();
+  if (old) { if (old._ftvClose) old._ftvClose(); else old.remove(); }
+  var list = [], idx = -1;
+  if (fpath) {
+    var dir = fpath.substring(0, fpath.lastIndexOf('/'));
+    list = (_spDirOrder[dir] || []).filter(function(p){ return !!_spThumbMap[p]; });
+    idx = list.indexOf(fpath);
+    if (idx < 0) { list = [fpath]; idx = 0; }
+  }
+  var orig = false;   // 原寸で 見て いるか
   var viewer = document.createElement('div');
   viewer.id = 'folder-thumb-viewer';
   viewer.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center';
+  function close() { document.removeEventListener('keydown', onKey, true); viewer.remove(); }
+  viewer._ftvClose = close;
+  var btnCss = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.35);color:#fff;cursor:pointer;font-family:inherit';
   var closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
-  closeBtn.style.cssText = 'position:absolute;top:12px;right:12px;background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:24px;width:36px;height:36px;border-radius:50%;cursor:pointer;z-index:1';
-  closeBtn.addEventListener('click', function(){ viewer.remove(); });
+  closeBtn.title = '閉じる（Esc）';
+  closeBtn.style.cssText = 'position:absolute;top:12px;right:12px;background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:24px;width:36px;height:36px;border-radius:50%;cursor:pointer;z-index:2';
+  closeBtn.addEventListener('click', close);
   viewer.appendChild(closeBtn);
+  var origBtn = null;
+  if (fpath) {
+    origBtn = document.createElement('button');
+    origBtn.style.cssText = 'position:absolute;top:14px;right:60px;z-index:2;font-size:13px;padding:7px 14px;border-radius:16px;font-weight:600;' + btnCss;
+    origBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      var p = list[idx];
+      if (!/\.(jpe?g|png|gif|webp|bmp)$/i.test(p)) { close(); spFileDbl(p); return; }   // PDF など は いつもの 開き方
+      orig = !orig; show();
+    });
+    viewer.appendChild(origBtn);
+  }
   var nameLabel = document.createElement('div');
-  nameLabel.style.cssText = 'color:#fff;font-size:12px;margin-bottom:8px;opacity:0.7';
-  nameLabel.textContent = fileName + '（サムネ）';
+  nameLabel.style.cssText = 'color:#fff;font-size:12px;margin-bottom:8px;opacity:0.8;max-width:80vw;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
   viewer.appendChild(nameLabel);
-  var img = document.createElement('img');
-  img.src = url;
-  img.style.cssText = 'max-width:90vw;max-height:80vh;object-fit:contain;border-radius:4px;background:#fff';
-  viewer.appendChild(img);
-  applyImgZoom(img); // ピンチ／ホイールで拡大（他のビューアーと同じ操作感）
+  var stage = document.createElement('div');
+  viewer.appendChild(stage);
   var hint = document.createElement('div');
   hint.style.cssText = 'color:#aaa;font-size:11px;margin-top:8px';
-  hint.textContent = 'ピンチで拡大／画面外をタップで閉じる';
   viewer.appendChild(hint);
+  function navBtn(txt, side, d) {
+    var b = document.createElement('button');
+    b.textContent = txt;
+    b.title = d < 0 ? '前の写真（←）' : '次の写真（→）';
+    b.style.cssText = 'position:absolute;top:50%;' + side + ':12px;transform:translateY(-50%);z-index:2;width:52px;height:72px;border-radius:10px;font-size:30px;line-height:1;' + btnCss;
+    b.addEventListener('click', function(e){ e.stopPropagation(); go(d); });
+    viewer.appendChild(b);
+    return b;
+  }
+  var prevBtn = null, nextBtn = null;
+  if (list.length > 1) { prevBtn = navBtn('⇐', 'left', -1); nextBtn = navBtn('⇒', 'right', 1); }
+  function go(d) {
+    if (list.length < 2) return;
+    idx = (idx + d + list.length) % list.length;
+    show();
+  }
+  var seq = 0;
+  function show() {
+    var my = ++seq;
+    var p = fpath ? list[idx] : null;
+    var name = p ? p.split('/').pop() : fileName;
+    var isImgP = p && /\.(jpe?g|png|gif|webp|bmp)$/i.test(p);
+    if (!isImgP) orig = false;
+    var cnt = list.length > 1 ? '　' + (idx + 1) + ' / ' + list.length : '';
+    nameLabel.textContent = name + (orig ? '（原寸）' : '（サムネ）') + cnt;
+    if (origBtn) {
+      origBtn.textContent = !isImgP ? '📄 開く' : (orig ? '⤢ 全体表示' : '🔍 原寸');
+      origBtn.title = !isImgP ? '原本を ビューワーで 開く' : (orig ? '画面に 収めて 表示' : '縮めずに 元の 大きさで 表示（原本を 読み込みます）');
+      origBtn.style.background = orig ? '#2a6aa8' : 'rgba(255,255,255,0.2)';
+    }
+    stage.innerHTML = '';
+    var img = document.createElement('img');
+    if (!orig) {
+      stage.style.cssText = '';
+      img.src = p ? (_spThumbMap[p] || url) : url;
+      img.style.cssText = 'max-width:' + (list.length > 1 ? '82vw' : '90vw') + ';max-height:80vh;object-fit:contain;border-radius:4px;background:#fff;display:block';
+      stage.appendChild(img);
+      applyImgZoom(img); // ピンチ／ホイールで拡大（他のビューアーと同じ操作感）
+      hint.textContent = (list.length > 1 ? '⇐ ⇒（← →キー）で 前後の 写真／' : '') + 'ピンチで拡大／画面外をタップで閉じる';
+      return;
+    }
+    /* 原寸：スクロールできる 枠の 中に 縮めずに 置く */
+    stage.style.cssText = 'width:' + (list.length > 1 ? '82vw' : '92vw') + ';height:80vh;overflow:auto;background:#222;border-radius:4px;cursor:grab;-webkit-overflow-scrolling:touch';
+    var msg = document.createElement('div');
+    msg.style.cssText = 'color:#ccc;font-size:12px;padding:20px;text-align:center';
+    msg.textContent = '原本を 読み込み中...';
+    stage.appendChild(msg);
+    hint.textContent = 'ドラッグ／スクロールで 動かす' + (list.length > 1 ? '・⇐ ⇒ で 前後（原寸の まま）' : '');
+    _ftvOrigUrl(p).then(function(u) {
+      if (my !== seq) return;
+      img.onload = function(){
+        if (my !== seq) return;
+        stage.innerHTML = '';
+        img.style.cssText = 'display:block;max-width:none;max-height:none;width:' + img.naturalWidth + 'px;height:' + img.naturalHeight + 'px;margin:auto';
+        stage.appendChild(img);
+        nameLabel.textContent = name + '（原寸 ' + img.naturalWidth + '×' + img.naturalHeight + '）' + cnt;
+        // まん中から 見せる
+        stage.scrollLeft = Math.max(0, (img.naturalWidth - stage.clientWidth) / 2);
+        stage.scrollTop = Math.max(0, (img.naturalHeight - stage.clientHeight) / 2);
+      };
+      img.onerror = function(){ if (my === seq) msg.textContent = 'この 形式は 原寸で 表示 できません（ダブルクリックで 開いてください）'; };
+      img.src = u;
+    }).catch(function(e){ if (my === seq) msg.textContent = '原本の 読み込みに 失敗しました（' + e.message + '）'; });
+  }
+  /* 原寸の 枠を マウスで つかんで 動かす */
+  var dg = null;
+  stage.addEventListener('mousedown', function(e){
+    if (!orig) return;
+    dg = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop };
+    stage.style.cursor = 'grabbing'; e.preventDefault();
+  });
+  document.addEventListener('mousemove', function mv(e){
+    if (!document.body.contains(viewer)) { document.removeEventListener('mousemove', mv); return; }
+    if (!dg) return;
+    stage.scrollLeft = dg.l - (e.clientX - dg.x); stage.scrollTop = dg.t - (e.clientY - dg.y);
+  });
+  document.addEventListener('mouseup', function up(){
+    if (!document.body.contains(viewer)) { document.removeEventListener('mouseup', up); return; }
+    if (dg) { dg = null; stage.style.cursor = 'grab'; }
+  });
+  function onKey(e) {
+    if (!document.body.contains(viewer)) { document.removeEventListener('keydown', onKey, true); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === 'ArrowRight' && list.length > 1) { e.preventDefault(); e.stopPropagation(); go(1); }
+    else if (e.key === 'ArrowLeft' && list.length > 1) { e.preventDefault(); e.stopPropagation(); go(-1); }
+  }
+  document.addEventListener('keydown', onKey, true);
   document.body.appendChild(viewer);
-  viewer.addEventListener('click', function(e){ if (e.target === viewer) viewer.remove(); });
+  show();
+  viewer.addEventListener('click', function(e){ if (e.target === viewer) close(); });
 }
 
 var _folderThumbClickTimer = null;
-function _onFolderThumbClick(largeUrl, fileName) {
+function _onFolderThumbClick(largeUrl, fileName, fpath) {
   if (_folderThumbClickTimer) {
     clearTimeout(_folderThumbClickTimer);
     _folderThumbClickTimer = null;
@@ -27719,7 +27841,7 @@ function _onFolderThumbClick(largeUrl, fileName) {
   }
   _folderThumbClickTimer = setTimeout(function(){
     _folderThumbClickTimer = null;
-    _previewFolderThumbLarge(largeUrl, fileName);
+    _previewFolderThumbLarge(largeUrl, fileName, fpath);
   }, 250);
 }
 
@@ -27735,9 +27857,20 @@ function _spThumbLargeUrl(thumbs) {
   var t = thumbs[0];
   return (t.large && t.large.url) || (t.medium && t.medium.url) || (t.small && t.small.url) || '';
 }
+/* フォルダーごとの 並び（拡大表示の ⇐ ⇒ 用。v1.9.626）。一覧を 描く ときは 1 回の 流れで 続けて 登録されるので、
+   流れが 変わったら（setTimeout 0 の あと）その フォルダーの 並びを 作り直す。消した ファイルが 残らない */
+var _spDirOrder = {}, _spDirFresh = {};
 function _spRegThumb(fpath, thumbs) {
   var u = _spThumbLargeUrl(thumbs);
-  if (u) _spThumbMap[fpath] = u;
+  if (u) {
+    _spThumbMap[fpath] = u;
+    var dir = fpath.substring(0, fpath.lastIndexOf('/'));
+    if (!_spDirFresh[dir]) {
+      _spDirOrder[dir] = []; _spDirFresh[dir] = true;
+      setTimeout(function(){ delete _spDirFresh[dir]; }, 0);
+    }
+    if (_spDirOrder[dir].indexOf(fpath) < 0) _spDirOrder[dir].push(fpath);
+  }
   return u;
 }
 function spFileClick(fpath, isImg) {
@@ -27747,7 +27880,7 @@ function spFileClick(fpath, isImg) {
     var tu = _spThumbMap[fpath];
     // 画像でなくても、SharePointが見本の絵を作ってくれる形式（PDF・Word・Excel など）は
     // シングルクリックで中身を確かめられるようにする。原本を開くのはダブルクリック。
-    if (tu) { _previewFolderThumbLarge(tu, fpath.split('/').pop()); return; }
+    if (tu) { _previewFolderThumbLarge(tu, fpath.split('/').pop(), fpath); return; }
     if (isImg) { previewFolderImage(fpath); return; }  // 画像なのに見本が無いときだけ原本を出す
     if (/\.pdf$/i.test(fpath)) { _pdfOpenView(fpath); return; }  // 見本の無い PDF は ビューワーで（別ウインドウ。v1.9.516）
     openFolderFile(fpath);                             // 見本を作れない形式はそのまま開く

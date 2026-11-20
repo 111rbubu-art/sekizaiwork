@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.606';
+var APP_VERSION = 'v1.9.607';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -30553,6 +30553,55 @@ function _nkBlMove() {
     showTab(3, currentItem);
   });
 }
+/* 追加分の 請求・入金を 請求の 並びへ 移す（v1.9.607。本人「追加分も移すボタンを追加して」）。
+   追加分の 欄（DateInvoice_tui など）の 値で 対象＝追加 の 請求を 1 つ 足し、その場で SP に 保存。追加分の 欄は 消さない（使わなく なる） */
+var _NK_TUI_COLS = { inv: 'DateInvoice_tui', mf1: 'MF_cloud_3', pay: 'PaymentDate_tui', mf2: 'MF_cloud_4', rcpt: 'ReceiptIssuance_tui' };
+function _nkTuiOldHas(d) {
+  return !!d && Object.keys(_NK_TUI_COLS).some(function (k) { var v = d[_NK_TUI_COLS[k]]; return v != null && String(v).trim() !== ''; });
+}
+function _nkTuiMove() {
+  var d = currentItem; if (!d) return;
+  if (_nkBillColState !== true) { alert('SP に BillJson の 列が ありません'); return; }
+  if (nkTuiBill(d)) { alert('追加分は もう 請求の 並びに 入っています'); return; }
+  var id = String(d['id']), le = localEdits[id] || {};
+  var g = function (k) { var f = _NK_TUI_COLS[k]; var v = Object.prototype.hasOwnProperty.call(le, f) ? le[f] : d[f]; return v == null ? '' : String(v); };
+  var dd = function (v) { return String(v || '').substring(0, 10).replace(/\//g, '-'); };
+  var amt = g('pay') ? String(d['tui_ContractMoney'] == null ? '' : d['tui_ContractMoney']).replace(/[,\s¥￥]/g, '') : '';
+  var md = function (v) { return _nkBlMD(v) || '—'; };
+  /* 今の 並び（編集中の 直しが あれば それ）に 足す */
+  var raw = Object.prototype.hasOwnProperty.call(le, NK_BILL_COL) ? le[NK_BILL_COL] : d[NK_BILL_COL];
+  var j = raw ? nkBillsJson({ BillJson: raw }) : null;
+  var no = (j ? j.more.length : 0) + 2;
+  var msg = '追加分の 請求・入金を ' + _nkBlNo(no) + '（対象＝追加）へ 移して、SP に 保存します。\n\n' +
+    '請求日 ' + md(g('inv')) + '／MF未収NO ' + (g('mf1') || '—') + '\n' +
+    '入金日 ' + md(g('pay')) + '／MF入金NO ' + (g('mf2') || '—') + '／入金額 ' + (_nkBlYen(amt) || '—') + (amt ? '（追加分_契約金額）' : '') + '\n' +
+    '領収書 ' + md(g('rcpt')) + '\n\n' +
+    '追加分の 欄は 消さずに 残します（受付票や PowerApps の ため）。';
+  if (!confirm(msg)) return;
+  var first;
+  if (j) {
+    var f = j.first; first = { targets: (f.targets || nkBillTargets(d)).slice() };
+    if (f.pays && f.pays.length) first.pays = f.pays;
+    if (f.rest) first.rest = true;
+    if (f.moved) { first.moved = true; ['inv', 'mf1', 'pay', 'mf2', 'amt', 'rcpt'].forEach(function (k) { first[k] = f[k] || ''; }); }
+  } else first = { targets: nkBillTargets(d) };
+  first.targets = first.targets.filter(function (k) { return k !== 'tui'; });
+  var more = (j ? j.more : []).map(function (b) { b.targets = b.targets.filter(function (k) { return k !== 'tui'; }); return b; });
+  more.push({ targets: ['tui'], inv: dd(g('inv')), mf1: g('mf1').trim(), pay: dd(g('pay')), mf2: g('mf2').trim(), amt: amt, rcpt: dd(g('rcpt')) });
+  var json = JSON.stringify({ v: 1, first: first, more: more });
+  var edits = {}; edits[NK_BILL_COL] = json;
+  saveEditsToSP(d, edits, '納骨・戒切', function (ok, msg2, savedBody) {
+    showSaveToast(ok, ok ? '追加分を BillJson へ 移しました' : msg2);
+    if (!ok) return;
+    var upd = savedBody || {}; upd[NK_BILL_COL] = json;
+    [d, currentItem].forEach(function (x) { if (x) Object.assign(x, upd); });
+    if (Array.isArray(allItems)) { var ai = allItems.findIndex(function (x) { return String(x['id']) === id; }); if (ai >= 0) Object.assign(allItems[ai], upd); }
+    if (localEdits[id]) { delete localEdits[id][NK_BILL_COL]; try { saveEditsToStorage(); } catch (e) {} }
+    _nkBl = { id: null, first: null, rows: null };
+    try { refreshListCardFor(d, [NK_BILL_COL]); } catch (e) {}
+    showTab(6, currentItem);
+  });
+}
 function _nkBl1Today(btn) {
   var el = btn.previousElementSibling; if (!el) return;
   var t = new Date();
@@ -34483,7 +34532,10 @@ function showTab(i, d) {
       '<div class="sec"><span class="sec-hdr bg2" style="display:flex;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap">請求・入金' + _mfBtnsHtml(true) + '</span>' +
       (function () {   // 追加分を 請求に 合わせて いれば ここは 出さない（v1.9.605）
         var tb = nkTuiBill(d);
-        if (!tb) return nkgBar('t5b') + nkgCanvas('t5b',NK_T5B_CARDS,d,itemId);
+        if (!tb) return (_nkBillColState === true && _nkTuiOldHas(d)
+            ? '<div style="margin:6px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#888">追加分の 請求・入金を 納骨の［請求・入金］の 並びへ 移せます' +
+              '<button type="button" onclick="_nkTuiMove()" style="margin-left:auto;padding:4px 10px;border-radius:6px;border:1px solid #1a5a9a;background:#fff;color:#1a5a9a;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">→ BillJson へ 移す（保存）</button></div>'
+            : '') + nkgBar('t5b') + nkgCanvas('t5b',NK_T5B_CARDS,d,itemId);
         var st = _nkBlState(tb);
         return '<div style="margin:6px 8px;padding:8px 10px;border:1px solid #e3e6ea;border-radius:8px;background:#fff;font-size:12.5px;color:#444">' +
           '追加分の 請求・入金は 納骨の［請求・入金］の <b>' + _nkBlNo(tb.no) + '</b> に 合わせて 入っています（' + st[0] + '）。' +

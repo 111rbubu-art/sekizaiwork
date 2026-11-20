@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.598';
+var APP_VERSION = 'v1.9.599';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8728,15 +8728,28 @@ function openReceiptHtml(d) {
     } else if (bunrui.indexOf('戒切') >= 0 || bunrui.indexOf('彫刻') >= 0){
       note1 = '彫刻費用として';       lbl1 = '彫刻';
     }
+    var _vs = [{ key: 'main', label: lbl1, amount: num(d['PaymentValue']), date: ymd(G(d, '入金日')), note: note1 }];
+    /* 請求を 分けて いる（BillJson が ある）ときは ①②… ごとに 領収書（v1.9.599。分けて いなければ 前と 同じ） */
+    if (nkBillsJson(d)) {
+      var _hone = (bunrui.indexOf('骨出') >= 0 || bunrui.indexOf('骨だ') >= 0);
+      var _bl = function (t) {
+        var n = t.indexOf('nok') >= 0, c = t.indexOf('cho') >= 0;
+        if (n && c) return _hone ? ['お骨出し＋彫刻', 'お骨出し・彫刻費用として'] : ['納骨＋彫刻', '納骨・彫刻費用として'];
+        if (n) return _hone ? ['お骨出し', 'お骨出し作業代として'] : ['納骨', '納骨作業代として'];
+        if (c) return ['彫刻', '彫刻費用として'];
+        return [lbl1, note1];
+      };
+      _vs = nkBills(d).map(function (b) {
+        var l = _bl(b.targets);
+        return { key: b.no === 1 ? 'main' : 'b' + b.no, label: _nkBlNo(b.no) + ' ' + l[0], amount: num(b.amt), date: ymd(b.pay), note: l[1] };
+      });
+    }
+    _vs.push({ key: 'tui',  label: '追加分',     amount: num(d['tui_ContractMoney']),
+          date: ymd(d['PaymentDate_tui']), note: '墓石修繕工事代として' });
     data = {
       mode: 'noukotsu',
       name: G(d, '顧客名') || d['Customers'] || '',
-      variants: [
-        { key: 'main', label: lbl1, amount: num(d['PaymentValue']),
-          date: ymd(G(d, '入金日')), note: note1 },
-        { key: 'tui',  label: '追加分',     amount: num(d['tui_ContractMoney']),
-          date: ymd(d['PaymentDate_tui']), note: '墓石修繕工事代として' }
-      ]
+      variants: _vs
     };
   }
   sessionStorage.setItem('receiptData', JSON.stringify(data));
@@ -10942,10 +10955,19 @@ function openCustRegModal(d, mode) {
   var no       = mode==='kouji' ? (d['no']||'') : (d['_x9867_No']||'');
   var category = mode==='kouji' ? (d['category']||'') : (d['_x5206__x985e_']||'');
   var payDate  = (d['PaymentDate']||'').substring(0,10);
+  /* 請求を 分けて いる 納骨・戒切は 金額を 足し、入金日は いちばん 新しい 日（v1.9.599。分けて いなければ 前と 同じ） */
+  var _crmBillSum = null;
+  if (mode !== 'kouji' && nkBillsJson(d)) {
+    _crmBillSum = 0;
+    nkBills(d).forEach(function (b) {
+      var n = Number(String(b.amt || '').replace(/[,\s¥￥]/g, '')); if (isFinite(n)) _crmBillSum += n;
+      var p = String(b.pay || '').substring(0, 10).replace(/\//g, '-'); if (p > payDate.replace(/\//g, '-')) payDate = p;
+    });
+  }
   var payDateWareki = toWareki(payDate);
   // 工事履歴用：依頼主=Customers、決済金額=InvoiceAmount
   var iraisha  = mode==='kouji' ? (d['Customers']||'') : (d['_x9867__x5ba2__x540d_']||'');
-  var rawAmt    = mode==='kouji' ? d['InvoiceAmount'] : d['PaymentValue'];
+  var rawAmt    = mode==='kouji' ? d['InvoiceAmount'] : (_crmBillSum != null ? (_crmBillSum || '') : d['PaymentValue']);
   var moneyDisp = rawAmt ? Number(rawAmt).toLocaleString('ja-JP') : '―';
   var moneySave = rawAmt ? String(parseFloat((Number(rawAmt)/1000).toFixed(2))) : '';
   var money     = moneyDisp;

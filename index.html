@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.629';
+var APP_VERSION = 'v1.9.630';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -17776,6 +17776,27 @@ var NOUKOTSU_BIND_FIELDS = [
   {key:'MF_cloud_2',label:'MF②'},
   {key:'PaymentValue',label:'契約金額'},
   {key:'receipt',label:'領収書日'},
+  // 請求の 並び（BillJson）から 差し込む（v1.9.626。本人「古いやり方は今後使用しないので、Billjsonの中を貼り付けられるように」）。
+  // キーは 差し込みの とき だけ 作る 仮の 名前（_nkTplBillVals）。納骨＝対象に 納骨（骨出し）を 含む 請求、彫刻・追加も 同じ
+  {key:'_tplBill_nok_inv',label:'納骨_請求日'},
+  {key:'_tplBill_nok_mf1',label:'納骨_MF未収'},
+  {key:'_tplBill_nok_pay',label:'納骨_入金日'},
+  {key:'_tplBill_nok_mf2',label:'納骨_MF入金'},
+  {key:'_tplBill_nok_amt',label:'納骨_入金額'},
+  {key:'_tplBill_nok_rcpt',label:'納骨_領収書日'},
+  {key:'_tplBill_cho_inv',label:'彫刻_請求日'},
+  {key:'_tplBill_cho_mf1',label:'彫刻_MF未収'},
+  {key:'_tplBill_cho_pay',label:'彫刻_入金日'},
+  {key:'_tplBill_cho_mf2',label:'彫刻_MF入金'},
+  {key:'_tplBill_cho_amt',label:'彫刻_入金額'},
+  {key:'_tplBill_cho_rcpt',label:'彫刻_領収書日'},
+  {key:'_tplBill_tui_inv',label:'追加_請求日'},
+  {key:'_tplBill_tui_mf1',label:'追加_MF未収'},
+  {key:'_tplBill_tui_pay',label:'追加_入金日'},
+  {key:'_tplBill_tui_mf2',label:'追加_MF入金'},
+  {key:'_tplBill_tui_amt',label:'追加_入金額'},
+  {key:'_tplBill_tui_rcpt',label:'追加_領収書日'},
+  {key:'_tplBill_list',label:'請求一覧'},
   {key:'GotManuscript',label:'原稿受取日'},
   {key:'DateFinalProofreading',label:'校正完了日'},
   {key:'SendDocumentsCustomer',label:'資料郵送日'},
@@ -19577,6 +19598,30 @@ function _openDocWindow() {
   return w;
 }
 
+/* テンプレートの 差し込みに 請求の 並び（BillJson）を 出す（v1.9.626）。日付は 2026/10/01、金額は 数字（{{…|円}} で 円 付き） */
+function _nkTplBillVals(d) {
+  var out = {}, bills = [];
+  try { bills = nkBills(d); } catch (e) { return out; }
+  var ds = function (v) { return String(v || '').substring(0, 10).replace(/-/g, '/'); };
+  var NM = { nok: '納骨', cho: '彫刻', tui: '追加' };
+  ['nok', 'cho', 'tui'].forEach(function (k) {
+    var b = null;
+    for (var i = 0; i < bills.length; i++) if (bills[i].targets.indexOf(k) >= 0) { b = bills[i]; break; }
+    out['_tplBill_' + k + '_inv'] = b ? ds(b.inv) : '';
+    out['_tplBill_' + k + '_mf1'] = b ? String(b.mf1 || '') : '';
+    out['_tplBill_' + k + '_pay'] = b ? ds(b.pay || b.payLast) : '';
+    out['_tplBill_' + k + '_mf2'] = b ? (b.payList || []).map(function (x) { return String(x.mf2 || ''); }).filter(Boolean).join('・') : '';
+    out['_tplBill_' + k + '_amt'] = b ? String(b.amt || '') : '';
+    out['_tplBill_' + k + '_rcpt'] = b ? ds(b.rcpt) : '';
+  });
+  out['_tplBill_list'] = bills.filter(function (b) { return b.inv || b.pay || b.amt; }).map(function (b) {
+    var a = Number(String(b.amt || '').replace(/[,\s¥￥]/g, ''));
+    return '請求' + String.fromCharCode(0x2460 + b.no - 1) + ' ' + b.targets.map(function (k) { return NM[k]; }).join('・') +
+      (b.inv ? '　請求 ' + ds(b.inv) : '') + (b.pay || b.payLast ? '　入金 ' + ds(b.pay || b.payLast) : '') +
+      (b.amt && isFinite(a) ? '　¥' + a.toLocaleString() : '') + (b.rest ? '（残りあり）' : '');
+  }).join('\n');
+  return out;
+}
 function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spData, _win, folderFiles) {
   var w = _win || _openDocWindow();
   if (!w) { showSaveToast(false, 'ポップアップがブロックされました'); return; }
@@ -19588,6 +19633,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   imageDataUrls = imageDataUrls || [];
   boxAssignments = boxAssignments || [];
   spData = spData || {};
+  if (Object.keys(spData).length && (currentListMode === 'noukotsu' || NK_BILL_COL in spData)) spData = Object.assign({}, spData, _nkTplBillVals(spData));   // 請求の 並びを 差し込みに（v1.9.626）
 
   var esc = function(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   var orientation  = (tpl && tpl.orientation) ? tpl.orientation : 'portrait';

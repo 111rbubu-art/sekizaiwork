@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.646';
+var APP_VERSION = 'v1.9.647';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22617,6 +22617,11 @@ function _kkRenderNew(d, ec){
         '<div id="kk-cal" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px"></div>'+
         '<div style="font-size:11px;color:#6b7280;margin-top:6px">店の電話：'+_gaichuEsc(_kkShop().tel)+'（'+_gaichuEsc(_kkShop().hours)+'）</div>';
     })()+
+    '<div style="margin-top:12px;padding:8px 10px;border:1px solid #bfe0c8;background:#f3fbf5;border-radius:10px">'+
+      '<label style="display:flex;align-items:flex-start;gap:6px;font-size:12.5px;color:#1c1f26;cursor:pointer"><input type="checkbox" id="kk-yuu"'+(_kkYuOn()?' checked':'')+' onchange="_kkYuSet(this.checked)" style="margin-top:2px">'+
+        '<span>📮 郵送用の 確認資料も 作る<br><span style="font-size:11px;color:#6b7280">資料制作の テンプレート「<b id="kk-yu-tpl">'+_gaichuEsc(_kkYuTplName())+'</b>」<a href="#" onclick="_kkYuTplAsk();return false" style="color:#1a5a9a;margin-left:2px">変える</a> に お墓の 写真・確認資料・この ページの QR を 入れて、作成資料に 保存します（あとで 直せます）</span></span></label>'+
+      '<button onclick="_kkYuOnly(this)" style="margin-top:6px;'+_KK_BTN+'#1a7a3a;background:#fff;color:#1a7a3a;font-weight:700">📮 郵送用だけ 作る（Web の ページは 作らない・QR なし）</button>'+
+    '</div>'+
     '<button id="kk-create" onclick="_kkPreview(this)" style="width:100%;margin-top:12px;font-size:14px;font-weight:700;padding:12px;background:'+(ec?'#b45309':'#2f6f8f')+';color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit">👁 プレビューで 確かめる（まだ 作りません）</button>'+
     '<div id="kk-msg" style="font-size:12px;margin-top:6px;color:#6b7280"></div>'+
   '</div>';
@@ -23152,6 +23157,7 @@ function _kkCreateNow(btn){
     sendKeys.forEach(function(k){ fd.append(k, files[k], k+(/png/.test(files[k].type)?'.png':'.jpg')); });
     return _kkPost(fd).catch(function(e){ e.kkTotal=total; throw e; });
   };
+  var yuEl=document.getElementById('kk-yuu'), yuOn=!!(yuEl && yuEl.checked);   /* 郵送用の 確認資料も 作る（v1.9.647） */
   btn.disabled=true; btn.style.opacity='.7';
   say('さくらの 受信の 上限を 確かめています…');
   _kkLimits().then(function(lim){
@@ -23181,6 +23187,12 @@ function _kkCreateNow(btn){
     if(E){ _kkState.edit=null; _kkState.pick={}; _kkRenderNew(d); _kkGuess(); _kkRenderPicks(); }
     else _kkState.rows.unshift({ token:r.token, ref:cs.ref, rev:cs.rev, status:'open', created:'', expires:r.expires, log:[] });
     _kkShowShare(r.token, r.url, r.expires);
+    if(yuOn){
+      var tk=E?E.token:r.token;
+      showSaveToast(null, '郵送用の 確認資料を 作っています…');
+      _kkYuMake(d, { view:P.view, rev:cs.rev, url:(E?'':r.url)||_kkPageUrl(tk) }).then(_kkYuDone)
+        .catch(function(e){ showSaveToast(false, '郵送用の 確認資料を 作れませんでした：'+(e.message||e)); });
+    }
     _kkLoadRows(d).then(function(rows){ if(currentItem!==d) return; _kkState.rows=rows; _kkRenderRows(rows); });
   }).catch(function(e){ btn.disabled=false; btn.style.opacity='1'; say('作れませんでした：'+(e.message||e), true); });
 }
@@ -23363,6 +23375,165 @@ function _kkSpExists(path){
     var enc=path.split('/').map(encodeURIComponent).join('/');
     return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+'?$select=name',{headers:{Authorization:'Bearer '+resp.accessToken}});
   }).then(function(r){ if(r.ok) return true; if(r.status===404) return false; throw new Error('SharePoint を 確かめられません（'+r.status+'）'); });
+}
+/* ── 郵送用の 確認資料（v1.9.647。本人「納骨リストでこのような資料を作って郵送にてお客様に確認して頂いている。お客様確認のWebでの作業を行うと、
+   自動的に作れるようにしてほしい」→ 案 PNG →「Jsonファイルで保存すると編集できるのでいい」「Web の QR コード入れてください」「テンプレート名は確認資料」）。
+   資料制作の テンプレート（既定「確認資料」。名前は［⚙］で 変えられる）の 名前付きの 箱に お墓の 写真・確認資料（拓本＋原稿）・QR を 入れ、
+   保存済資料（案件フォルダー/工事仕様/作成資料/〜.json）として 保存する。資料制作の［編集］（保存済資料）で 開いて 直し・印刷・PDF 保存が できる。
+   箱の 名前：「QR」→ QR コード、「彫刻」「校正」「原稿」「確認」「拓本」→ 確認資料、「墓」「写真」→ お墓の 写真。
+   QR の 箱が 無い テンプレートでは 1 枚目の 下（横 6 割の あたり）に 置く（あとで 動かせる。テンプレートに「QR」の 箱を 作れば その 場所に 入る）。
+   修正 1 回目 以降は 1 枚目の 右上に「修正N」。文字の 差し込み（{{施主名}} など）は 開く ときに 案件から 入る（資料制作と 同じ） */
+var KK_YU_TPL = '確認資料';
+function _kkYuOn(){ return _kkCfg().yuusou !== false; }
+function _kkYuSet(on){ var c=_kkCfg(); c.yuusou=!!on; _kkSaveCfg(c); }
+function _kkYuTplName(){ return _kkCfg().yuTpl || KK_YU_TPL; }
+function _kkYuTplAsk(){
+  var n=prompt('郵送用の 確認資料に 使う 資料制作の テンプレートの 名前', _kkYuTplName()); if(n===null) return;
+  var c=_kkCfg(); n=n.trim(); if(n && n!==KK_YU_TPL) c.yuTpl=n; else delete c.yuTpl; _kkSaveCfg(c);
+  var el=document.getElementById('kk-yu-tpl'); if(el) el.textContent=_kkYuTplName();
+}
+function _kkYuBoxKind(n){
+  n=String(n||'');
+  if(/QR/i.test(n)) return 'qr';
+  if(/彫刻|校正|原稿|確認|拓本/.test(n)) return 'proof';
+  if(/墓|写真/.test(n)) return 'grave';
+  return '';
+}
+function _kkYuLoadTpl(){
+  var want=_kkYuTplName();
+  var G='https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:';
+  var enc=function(p){ return p.split('/').map(encodeURIComponent).join('/'); };
+  return getToken().then(function(resp){
+    var h={ headers:{ Authorization:'Bearer '+resp.accessToken }, cache:'no-store' };
+    return _fetchRetry(G+enc(CHOUKOKU_TPL_FOLDER)+':/children?$select=name,file&$top=999', h, 3).then(function(r){
+      if(!r.ok) throw new Error('テンプレートの 一覧を 読めません（'+r.status+'）'); return r.json();
+    }).then(function(j){
+      var names=(j.value||[]).filter(function(f){ return f.file && /\.json$/i.test(f.name); }).map(function(f){ return f.name.replace(/\.json$/i,''); });
+      var hit=names.filter(function(n){ return n===want; })[0] || names.filter(function(n){ return n.split('__').pop().trim()===want; })[0];
+      if(!hit) throw new Error('資料制作の テンプレート「'+want+'」が 見つかりません');
+      return _fetchRetry(G+enc(CHOUKOKU_TPL_FOLDER+'/'+hit+'.json')+':/content?nocache='+Date.now(), h, 3).then(function(r){
+        if(!r.ok) throw new Error('テンプレートを 読めません（'+r.status+'）'); return r.json();
+      });
+    });
+  });
+}
+/* 画像 → JPEG の dataURL（長い 辺 maxSide まで。白い 下地） */
+function _kkYuImg(blob, maxSide){
+  return _kkLoadImg(blob).then(function(o){
+    var im=o.img, sc=Math.min(1, maxSide/Math.max(im.naturalWidth||1, im.naturalHeight||1));
+    var cv=document.createElement('canvas'); cv.width=Math.round(im.naturalWidth*sc); cv.height=Math.round(im.naturalHeight*sc);
+    var x=cv.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,cv.width,cv.height); x.drawImage(im,0,0,cv.width,cv.height);
+    URL.revokeObjectURL(o.url);
+    return cv.toDataURL('image/jpeg', 0.85);
+  });
+}
+function _kkYuQr(url){
+  return _kkLoadQr().then(function(){
+    var tmp=document.createElement('div'); tmp.style.cssText='position:fixed;left:-9999px;top:0'; document.body.appendChild(tmp);
+    new QRCode(tmp, { text:url, width:480, height:480, correctLevel:QRCode.CorrectLevel.M });
+    var src=tmp.querySelector('canvas'), c=document.createElement('canvas'); c.width=528; c.height=528;
+    var x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,528,528); x.drawImage(src,24,24,480,480);
+    tmp.remove();
+    return c.toDataURL('image/png');
+  });
+}
+/* テンプレートに 画像を 入れた 保存済資料の 中身（資料制作の［途中保存］と 同じ 形） */
+function _kkYuBuild(tpl, imgs, o){
+  var doc=JSON.parse(JSON.stringify(tpl||{}));
+  var pages=(Array.isArray(doc.pages) && doc.pages.length) ? doc.pages : [{ elements: doc.elements||[] }];
+  var orient=doc.orientation||'portrait', ps=(doc._meta && doc._meta.pageSize) || doc.pageSize || 'A3';
+  var land=orient==='landscape', W=land?(ps==='A4'?297:420):(ps==='A4'?210:297), H=land?(ps==='A4'?210:297):(ps==='A4'?297:420);
+  var used={};
+  pages.forEach(function(pg){ (pg.elements||[]).forEach(function(e){
+    if(e.type!=='image' || !e.boxName) return;
+    var k=_kkYuBoxKind(e.boxName);
+    if(k && imgs[k]){ e.src=imgs[k]; used[k]=true; }
+  }); });
+  var p0=pages[0]; p0.elements=p0.elements||[];
+  if(imgs.qr && !used.qr){
+    /* いまの 確認資料では 下の「返却の お願い」と 店の 名前の 間が あいている（横 6 割の あたり） */
+    var s=Math.round(W*0.085), qx=Math.round(W*0.6-s/2), qy=H-s-Math.round(H*0.01);
+    p0.elements.push({ type:'image', x:qx, y:qy, w:s, h:s, src:imgs.qr, boxName:'QR' });
+    p0.elements.push({ type:'text', x:qx+s+1, y:qy+2, w:Math.round(W*0.07), h:s-4, text:'スマホでも ご回答 いただけます', fontSize:6, bold:false, align:'left' });
+  }
+  if(o.rev>0) p0.elements.push({ type:'text', x:W-32, y:4, w:26, h:9, text:'修正'+o.rev, html:'<span style="color:#b3261e">修正'+o.rev+'</span>', fontSize:13, bold:true, align:'center' });
+  return { data:{ version:1, name:o.name, orientation:orient, pageSize:ps, pages:pages, kakunin:{ rev:o.rev, url:o.url||'', at:new Date().toISOString() } },
+           miss:['grave','proof'].filter(function(k){ return imgs[k] && !used[k]; }) };
+}
+/* 作成資料/ に 保存。同じ 名前が あれば _2・_3 …（上書きしない） */
+function _kkYuSave(d, data){
+  var root=_getItemFolderPath(d);
+  if(!root) return Promise.reject(new Error('案件の フォルダーが ありません'));
+  var dir=root+'/工事仕様/作成資料', base=String(data.name).replace(/[\\\/:\*\?"<>\|]/g,'_');
+  return getToken().then(function(resp){
+    var token=resp.accessToken;
+    return _ensureSubfolder(root, '工事仕様', token).then(function(){ return _ensureSubfolder(root+'/工事仕様', '作成資料', token); }).then(function(){
+      var tryName=function(i){
+        var nm=i>1 ? base+'_'+i : base;
+        return _kkSpExists(dir+'/'+nm+'.json').then(function(ex){ return ex && i<20 ? tryName(i+1) : nm; });
+      };
+      return tryName(1);
+    }).then(function(nm){
+      data.name=nm;
+      var enc=(dir+'/'+nm+'.json').split('/').map(encodeURIComponent).join('/');
+      return fetch('https://graph.microsoft.com/v1.0/drives/'+DRIVE_ID+'/root:'+enc+':/content', { method:'PUT', headers:{ Authorization:'Bearer '+token, 'Content-Type':'application/json' }, body:JSON.stringify(data) })
+        .then(function(r){ if(!r.ok) throw new Error('保存できません（'+r.status+'）'); return { name:nm, fname:nm+'.json' }; });
+    });
+  });
+}
+/* o：{ view:{grave?,proof}, rev, url? }。view は プレビューと 同じ 画像（店の 印を 焼き込んだ もの） */
+function _kkYuMake(d, o){
+  var dt=new Date(), ymd=dt.getFullYear()+('0'+(dt.getMonth()+1)).slice(-2)+('0'+dt.getDate()).slice(-2);
+  var haka=d['_x304a__x5893__x306e__x540d__x7f']||'', work=d['ConstructionContents']||d['category']||d['_x5206__x985e_']||'';
+  var name=ymd+'_'+_kkYuTplName()+'_'+(o.rev?'修正'+o.rev:'初回')+(haka?'__'+haka+'家':'')+(work?'__'+work:'');
+  return Promise.all([
+    _kkYuLoadTpl(),
+    o.view.grave ? _kkYuImg(o.view.grave, 1600) : null,
+    _kkYuImg(o.view.proof, 2400),
+    o.url ? _kkYuQr(o.url).catch(function(){ return null; }) : null
+  ]).then(function(r){
+    var b=_kkYuBuild(r[0], { grave:r[1], proof:r[2], qr:r[3] }, { name:name, rev:o.rev||0, url:o.url });
+    return _kkYuSave(d, b.data).then(function(s){ s.miss=b.miss; s.qr=!!r[3]; s.wantQr=!!o.url; return s; });
+  });
+}
+/* できた ことを 知らせ、［開く］で 資料制作の 画面（保存済資料の［編集］と 同じ）。押した 時に 開くので 止められない */
+function _kkYuDone(s){
+  var old=document.getElementById('kk-yu-done'); if(old) old.remove();
+  var m=document.createElement('div'); m.id='kk-yu-done';
+  m.style.cssText='position:fixed;inset:0;z-index:10040;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+  var E=_gaichuEsc, nm={ grave:'お墓の 写真', proof:'確認資料' };
+  m.innerHTML='<div style="background:#fff;border-radius:14px;max-width:460px;width:100%;box-shadow:0 12px 48px rgba(20,22,28,.34);overflow:hidden;font-family:inherit">'+
+    '<div style="padding:16px 18px 6px;font-size:15px;font-weight:700;color:#1a7a3a">📮 郵送用の 確認資料を 作りました</div>'+
+    '<div style="padding:0 18px 4px;font-size:12.5px;color:#4a5160;line-height:1.6">📄 '+E(s.name)+'<br><span style="font-size:11px;color:#8a94a6">工事仕様／作成資料 フォルダー（資料制作の 保存済資料）</span>'+
+      (s.miss.length?'<div style="color:#b45309;margin-top:4px">テンプレートに '+s.miss.map(function(k){ return nm[k]; }).join('・')+' の 箱が 見つかりませんでした。開いて 入れてください。</div>':'')+
+      (s.wantQr && !s.qr?'<div style="color:#b45309;margin-top:4px">QR コードを 作れませんでした（ネットに つながっているか）。</div>':'')+
+    '</div>'+
+    '<div style="padding:10px 18px 4px;font-size:13.5px;color:#1c1f26">開いて 確かめますか？（直す・印刷・PDF 保存が できます）</div>'+
+    '<div style="padding:12px 18px 16px;display:flex;gap:8px;justify-content:flex-end">'+
+      '<button data-x="no" style="font-size:13px;padding:10px 18px;border-radius:10px;border:none;background:#f2f3f5;color:#4a5160;cursor:pointer;font-family:inherit">あとで</button>'+
+      '<button data-x="open" style="font-size:13px;font-weight:700;padding:10px 22px;border-radius:10px;border:none;background:#1a5a9a;color:#fff;cursor:pointer;font-family:inherit">はい（開く）</button>'+
+    '</div></div>';
+  m.addEventListener('click', function(e){
+    var b=e.target.closest('button');
+    if(e.target===m || (b && b.getAttribute('data-x')==='no')){ m.remove(); return; }
+    if(b && b.getAttribute('data-x')==='open'){ m.remove(); _choukokuOpenSaved(s.fname); }
+  });
+  document.body.appendChild(m);
+}
+/* ［📮 郵送用だけ 作る］：Web の ページは 作らない（QR なし） */
+function _kkYuOnly(btn){
+  var d=currentItem; if(!d) return;
+  var msg=document.getElementById('kk-msg');
+  var say=function(t, err){ if(msg){ msg.style.color=err?'#b3261e':'#4a5160'; msg.textContent=t; } };
+  if(!_kkState.pick.proof){ say('③ 確認資料（拓本＋原稿の JPEG）を 選んでください。', true); return; }
+  var keys=['grave','proof'].filter(function(k){ return _kkState.pick[k]; });
+  btn.disabled=true; btn.style.opacity='.7';
+  var done=function(){ btn.disabled=false; btn.style.opacity='1'; };
+  _kkViewFiles(keys, say).then(function(view){
+    say('郵送用の 確認資料を 作っています…');
+    return _kkYuMake(d, { view:view, rev:parseInt(document.getElementById('kk-rev').value,10)||0 });
+  }).then(function(s){ done(); say(''); _kkYuDone(s); })
+    .catch(function(e){ done(); say('郵送用の 確認資料を 作れませんでした：'+(e.message||e), true); });
 }
 /* ── 回答報告書 PDF（v1.9.579。本人「回答結果をPDFで保存…承諾いただけなかった場合も出力して一目でわかる報告書を自動で」「提出資料というフォルダーに保存」）。
    さくらの status（case・answer・log）と getfile の 画像から A4 の 報告書を 作り、案件フォルダーの 提出資料 に 保存する。

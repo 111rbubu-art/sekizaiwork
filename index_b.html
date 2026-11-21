@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.642';
+var APP_VERSION = 'v1.9.643';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -33587,13 +33587,11 @@ function _choVendorLabel(d) { return _choWho(d).artKou ? '業者へ資料郵送�
    ［＋ 再提出］で その 回を FileJson の kakuninLog（[{send, res, at}]）へ 移して 2 つの 欄を 空に する（すぐ SP に 保存）。
    回数は アプリで 数える（SP の 選択肢は 再提出①② の まま）。履歴は 押して 直す・消す */
 var _choRhEdit = -1;
-document.addEventListener('change', function (e) { _choRsBtnSync(e); });
-document.addEventListener('input', function (e) { _choRsBtnSync(e); });
-function _choRsBtnSync(e) {
+/* 資料結果で 再提出を 選ぶと 確かめて、その 回を 履歴へ 移し 次の 回を 入れられる ように（v1.9.643。本人「ラベルではなく再提出を選ぶと、メッセージが出てOKし、再提出の入力ができるようになる」） */
+document.addEventListener('change', function (e) {
   var t = e && e.target; if (!t || !t.getAttribute || t.getAttribute('data-field') !== 'Resubmission' || !t.closest || !t.closest('#cho-flow')) return;
-  var on = /再提出/.test(t.value || '');
-  document.querySelectorAll('#cho-flow .cho-rs-btn').forEach(function (b) { b.style.display = on ? 'block' : 'none'; });
-}
+  if (/再提出/.test(t.value || '')) { var id = t.getAttribute('data-id'); setTimeout(function () { _choResubAdd(id); }, 0); }
+});
 function _choResubLog(d) { var o = _choFj(d); return Array.isArray(o.kakuninLog) ? o.kakuninLog : []; }
 function _choCircled(n) { return (n >= 1 && n <= 20) ? String.fromCharCode(0x2460 + n - 1) : '(' + n + ')'; }
 function _choResubResTxt(res, n) { return /再提出/.test(res || '') ? '再提出' + _choCircled(n) : (res || '－'); }
@@ -33609,7 +33607,8 @@ function _choResubStripHtml(d, itemId) {
         '<button onclick="_choResubFix(\'' + itemId + '\',' + i + ',\'del\')" style="background:#c62828;color:#fff">消す</button>' +
         '<button onclick="_choRhEdit=-1;_choResubStripSync()">やめる</button></span>';
     }
-    return '<span class="cho-rh-n">' + (i + 1) + '回目</span><button class="cho-rh" title="押すと 直す・消す" onclick="_choRhEdit=' + i + ';_choResubStripSync()">郵送 <b>' + (_gaichuMD(x.send) || '－') + '</b> → <b style="color:#c25e00">' + _esc(_choResubResTxt(x.res, i + 1)) + '</b></button>';
+    return '<span class="cho-rh-n">' + (i + 1) + '回目</span><span style="display:inline-flex"><button class="cho-rh" title="押すと 直す" onclick="_choRhEdit=' + i + ';_choResubStripSync()" style="border-radius:6px 0 0 6px">郵送 <b>' + (_gaichuMD(x.send) || '－') + '</b> → <b style="color:#c25e00">' + _esc(_choResubResTxt(x.res, i + 1)) + '</b></button>' +
+      '<button class="cho-rh" title="この 回を 消す（入力の まちがい）" onclick="_choResubFix(\'' + itemId + '\',' + i + ',\'del\')" style="border-radius:0 6px 6px 0;border-left:none;color:#c62828;font-weight:700;padding:3px 7px">✕</button></span>';
   }).join('');
   return '<div id="cho-rh" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:5px;align-items:center">' + h + '</div>';
 }
@@ -33644,7 +33643,7 @@ function _choResubAdd(itemId) {
   var res = getEdit(itemId, 'Resubmission', d['Resubmission'] || '') || '';
   if (!/再提出/.test(res)) { showSaveToast(false, '資料結果が 再提出の ときだけ 使えます'); return; }
   var log = _choResubLog(d), n = log.length + 1;
-  if (!confirm(n + '回目（郵送 ' + (send || '未入力') + '・' + _choResubResTxt(res, n) + '）を 履歴に 移して、確認資料郵送日と 資料結果を 空に します。\n' + (n + 1) + '回目を 入れられます（すぐ SharePoint に 保存します）。')) return;
+  if (!confirm('再提出に します。\n\n' + n + '回目（郵送 ' + (send || '未入力') + '・' + _choResubResTxt(res, n) + '）を 履歴に 残して、確認資料郵送日と 資料結果を 空に し、' + (n + 1) + '回目を 入れられる ように します。\n（すぐ SharePoint に 保存します。まちがえたら 履歴の ✕ で 消せます）')) return;
   var o = _choFj(d); o.kakuninLog = log.concat([{ send: send, res: res, at: new Date().toISOString() }]);
   _choFjPatch(d, o, { SendDocumentsCustomer: null, Resubmission: null }).then(function () {
     if (localEdits[itemId]) { delete localEdits[itemId]['SendDocumentsCustomer']; delete localEdits[itemId]['Resubmission']; try { saveEditsToStorage(); } catch (e) {} }
@@ -33657,16 +33656,21 @@ function _choResubAdd(itemId) {
 function _choResubFix(itemId, i, act) {
   var d = currentItem; if (!d || String(d['id']) !== String(itemId)) return;
   var log = _choResubLog(d).slice(); if (!log[i]) return;
+  var extra = null;
   if (act === 'del') {
-    if (!confirm((i + 1) + '回目（郵送 ' + (log[i].send || '－') + '・' + _choResubResTxt(log[i].res, i + 1) + '）を 履歴から 消します。よろしいですか？')) return;
+    /* いちばん 後の 回で 今の 欄が 空なら（再提出を まちがえて 選んだ とき）郵送日を 今の 欄に 戻す（v1.9.643 本人「入力を間違うこともあるので消せるようにして」） */
+    var back = (i === log.length - 1) && !(getEdit(itemId, 'SendDocumentsCustomer', d['SendDocumentsCustomer'] || '')) && !(getEdit(itemId, 'Resubmission', d['Resubmission'] || ''));
+    if (!confirm((i + 1) + '回目（郵送 ' + (log[i].send || '－') + '・' + _choResubResTxt(log[i].res, i + 1) + '）を 履歴から 消します。' + (back && log[i].send ? '\n郵送日 ' + log[i].send + ' は 今の 欄に 戻します（資料結果は 空）。' : '') + '\nよろしいですか？')) return;
+    if (back) { extra = { SendDocumentsCustomer: log[i].send || null, Resubmission: null }; if (localEdits[itemId]) { delete localEdits[itemId]['SendDocumentsCustomer']; delete localEdits[itemId]['Resubmission']; } }
     log.splice(i, 1);
   } else {
     var dt = document.getElementById('cho-rh-date'), rs = document.getElementById('cho-rh-res');
     log[i] = { send: dt && dt.value ? formatDateForSave('SendDocumentsCustomer', dt.value) : '', res: rs ? rs.value : log[i].res, at: log[i].at, fixed: new Date().toISOString() };
   }
   var o = _choFj(d); o.kakuninLog = log;
-  _choFjPatch(d, o).then(function () {
+  _choFjPatch(d, o, extra).then(function () {
     _choRhEdit = -1; _choRedraw();
+    if (extra) { try { refreshListCardFor(d, ['SendDocumentsCustomer', 'Resubmission']); } catch (e) {} }
     showSaveToast(true, act === 'del' ? '履歴から 消しました' : '履歴を 直しました');
   }).catch(function (e) { showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e)); });
 }
@@ -33676,7 +33680,7 @@ function _choResubFix(itemId, i, act) {
 function _choFlowHtml(d, itemId) {
   var w = _choWho(d);
   var cx = /キャンセル/.test(d['Resubmission'] || '');
-  var _rlog = _choResubLog(d), _rnd = _rlog.length ? '（' + (_rlog.length + 1) + '回目）' : '';   /* 再提出の 回（v1.9.641） */
+  var _rlog = _choResubLog(d), _rnd = _rlog.length ? _choCircled(_rlog.length + 1) : '';   /* 欄の 幅に 収まる よう ②③（v1.9.643） */   /* 再提出の 回（v1.9.641） */
   var seq = [
     { k: 'GotManuscript', l: '原稿受取', date: true, row: 'k' },
     { k: 'SendDocuVendor', l: _choVendorLabel(d), date: true, row: 'k', ren: !w.artKou },
@@ -33701,10 +33705,6 @@ function _choFlowHtml(d, itemId) {
       if (gw && w.cho && w.cho === gw)
         extra += '<button class="cho-pub-btn" onclick="_choPubRenraku(\'' + itemId + '\')" title="外注ポータルに 彫刻を 公開して、彫刻予定 連絡日を 今日に する" style="padding:3px 8px;font-size:11px;font-weight:700;background:#8a5a2b;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:inherit;white-space:nowrap">🌐 ポータル公開</button>';
       extra += '</div>';
-    }
-    if (c.k === 'Resubmission' && !cx) {   /* ［＋ 再提出］は 資料結果の 欄の すぐ下（v1.9.642 本人「再提出のボタンの位置が微妙」）。選び直すと すぐ 出る／消える */
-      var _rsOn = /再提出/.test(getEdit(itemId, 'Resubmission', d['Resubmission'] || '') || '');
-      extra = '<button class="cho-rs-btn" onclick="_choResubAdd(\'' + itemId + '\')" title="この 回を 履歴に 移して、次の 回の 確認資料郵送日・資料結果を 入れる" style="display:' + (_rsOn ? 'block' : 'none') + ';width:100%;margin:4px 0 0;padding:4px 6px;font-size:11.5px;font-weight:700;background:#d35400;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:inherit;white-space:nowrap">＋ 再提出（' + (_rlog.length + 2) + '回目を 入れる）</button>';
     }
     var bd = nx ? '2px solid #e67e22' : (c.ren ? '2px solid ' + _choWhoColor(w.cho) : '1px solid #d5dae2');
     return '<div class="cho-f' + (done ? ' cho-done' : '') + (nx ? ' cho-next' : '') + '" style="min-width:' + (c.ren ? '210px;width:auto' : '0') + ';border:' + bd + ';border-radius:7px;padding:2px 4px 4px;background:' + (nx ? '#fff8ee' : '#fff') + ';position:relative">' +

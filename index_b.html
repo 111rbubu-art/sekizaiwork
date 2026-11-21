@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.640';
+var APP_VERSION = 'v1.9.641';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -22276,7 +22276,8 @@ function _kkRenderRows(rows){
 function _kkRow(token){ return (_kkState.rows||[]).filter(function(x){ return x.token===token; })[0]; }
 
 /* ── 新しく作る ── */
-function _kkRevFromSP(d){ var r=String(d['Resubmission']||''); return /再提出②/.test(r) ? 2 : /再提出①/.test(r) ? 1 : 0; }
+function _kkRevFromSP(d){ var r=String(d['Resubmission']||''), h=(typeof _choResubLog==='function') ? _choResubLog(d).length : 0;   /* 履歴の 回も 数える（v1.9.641） */
+  return h ? h + (/再提出/.test(r) ? 1 : 0) : (/再提出②/.test(r) ? 2 : /再提出①/.test(r) ? 1 : 0); }
 /* 原稿の 版を 自動で（v1.9.543。本人「原稿の版は、自動で入れる事はできますか？ 手動でも訂正できるように」）
    いちばん 大きいものを 使う：
    ・前に 取り込んだ 回答（案件フォルダー「お客様確認」の YYYYMMDD_初回／修正N_回答_承諾・訂正あり.txt）… 訂正なら 次の 版
@@ -33581,24 +33582,107 @@ function _choGomuShanai(w) {
 }
 /* 業者へ資料郵送日 の 欄の 名前（校正が アート 以外なら 彫刻予定 連絡日） */
 function _choVendorLabel(d) { return _choWho(d).artKou ? '業者へ資料郵送日' : '彫刻予定 連絡日'; }
+/* お客様確認の 再提出を 何回でも（v1.9.641。本人「お客様確認で再提出の場合、確認資料郵送日と資料結果が複数追加で入力できるようにできますか」）。
+   SP の 確認資料郵送日（SendDocumentsCustomer）・資料結果（Resubmission）は いつも いちばん 新しい 回。
+   ［＋ 再提出］で その 回を FileJson の kakuninLog（[{send, res, at}]）へ 移して 2 つの 欄を 空に する（すぐ SP に 保存）。
+   回数は アプリで 数える（SP の 選択肢は 再提出①② の まま）。履歴は 押して 直す・消す */
+var _choRhEdit = -1;
+function _choResubLog(d) { var o = _choFj(d); return Array.isArray(o.kakuninLog) ? o.kakuninLog : []; }
+function _choCircled(n) { return (n >= 1 && n <= 20) ? String.fromCharCode(0x2460 + n - 1) : '(' + n + ')'; }
+function _choResubResTxt(res, n) { return /再提出/.test(res || '') ? '再提出' + _choCircled(n) : (res || '－'); }
+function _choResubStripHtml(d, itemId) {
+  var log = _choResubLog(d); if (!log.length) return '';
+  var h = log.map(function (x, i) {
+    if (i === _choRhEdit) {
+      var chs = (_fieldChoices('Resubmission') || ['再提出①', '再提出②']).slice();
+      if (x.res && chs.indexOf(x.res) < 0) chs.unshift(x.res);
+      return '<span class="cho-rh-n">' + (i + 1) + '回目</span><span class="cho-rh cho-rh-ed">郵送 <input type="date" id="cho-rh-date" value="' + parseDateToISO(x.send || '') + '"> → ' +
+        '<select id="cho-rh-res">' + chs.map(function (c) { return '<option' + (c === x.res ? ' selected' : '') + '>' + _esc(c) + '</option>'; }).join('') + '</select> ' +
+        '<button onclick="_choResubFix(\'' + itemId + '\',' + i + ',\'save\')" style="background:#2e7d32;color:#fff">保存</button>' +
+        '<button onclick="_choResubFix(\'' + itemId + '\',' + i + ',\'del\')" style="background:#c62828;color:#fff">消す</button>' +
+        '<button onclick="_choRhEdit=-1;_choResubStripSync()">やめる</button></span>';
+    }
+    return '<span class="cho-rh-n">' + (i + 1) + '回目</span><button class="cho-rh" title="押すと 直す・消す" onclick="_choRhEdit=' + i + ';_choResubStripSync()">郵送 <b>' + (_gaichuMD(x.send) || '－') + '</b> → <b style="color:#c25e00">' + _esc(_choResubResTxt(x.res, i + 1)) + '</b></button>';
+  }).join('');
+  return '<div id="cho-rh" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:5px;align-items:center">' + h + '</div>';
+}
+function _choResubStripSync() {
+  var el = document.getElementById('cho-rh'), d = currentItem; if (!el || !d) return;
+  var t = document.createElement('div'); t.innerHTML = _choResubStripHtml(d, d['id']);
+  if (t.firstChild) el.innerHTML = t.firstChild.innerHTML;
+}
+/* 詳細を 描き直す（編集中の 入力は localEdits に 残るので 消えない） */
+function _choRedraw() {
+  var b = document.getElementById('det-body'), sc = b ? b.scrollTop : 0, wy = window.scrollY;
+  try { showTab(currentTab, currentItem); } catch (e) {}
+  b = document.getElementById('det-body'); if (b) b.scrollTop = sc; window.scrollTo(0, wy);
+}
+function _choFjPatch(d, o, extra) {
+  var body = { FileJson: JSON.stringify(o) }; for (var k in (extra || {})) body[k] = extra[k];
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  return getToken().then(function (resp) {
+    return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/3ae4bd1d-47b8-4300-aab5-6b828aa0e480/items/' + d['id'] + '/fields',
+      { method: 'PATCH', headers: { Authorization: 'Bearer ' + resp.accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }).then(function (r) {
+    if (!r.ok) return r.text().then(function (t) { throw new Error(r.status + ': ' + t.substring(0, 160)); });
+    d['FileJson'] = body.FileJson;
+    for (var k in (extra || {})) d[k] = extra[k] == null ? '' : extra[k];
+    if (Array.isArray(allItems)) { var ai = allItems.findIndex(function (x) { return String(x['id']) === String(d['id']); }); if (ai >= 0 && allItems[ai] !== d) for (var k2 in body) allItems[ai][k2] = d[k2]; }
+  });
+}
+/* ［＋ 再提出］：いまの 回を 履歴へ 移し、確認資料郵送日・資料結果を 空に */
+function _choResubAdd(itemId) {
+  var d = currentItem; if (!d || String(d['id']) !== String(itemId)) return;
+  var send = getEdit(itemId, 'SendDocumentsCustomer', d['SendDocumentsCustomer'] || '') || '';
+  var res = getEdit(itemId, 'Resubmission', d['Resubmission'] || '') || '';
+  if (!/再提出/.test(res)) { showSaveToast(false, '資料結果が 再提出の ときだけ 使えます'); return; }
+  var log = _choResubLog(d), n = log.length + 1;
+  if (!confirm(n + '回目（郵送 ' + (send || '未入力') + '・' + _choResubResTxt(res, n) + '）を 履歴に 移して、確認資料郵送日と 資料結果を 空に します。\n' + (n + 1) + '回目を 入れられます（すぐ SharePoint に 保存します）。')) return;
+  var o = _choFj(d); o.kakuninLog = log.concat([{ send: send, res: res, at: new Date().toISOString() }]);
+  _choFjPatch(d, o, { SendDocumentsCustomer: null, Resubmission: null }).then(function () {
+    if (localEdits[itemId]) { delete localEdits[itemId]['SendDocumentsCustomer']; delete localEdits[itemId]['Resubmission']; try { saveEditsToStorage(); } catch (e) {} }
+    _choRhEdit = -1; _choRedraw();
+    showSaveToast(true, n + '回目を 履歴に 移しました。' + (n + 1) + '回目の 確認資料郵送日を 入れて ください');
+    try { refreshListCardFor(d, ['SendDocumentsCustomer', 'Resubmission']); } catch (e) {}
+  }).catch(function (e) { showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e)); });
+}
+/* 履歴の 回を 直す・消す */
+function _choResubFix(itemId, i, act) {
+  var d = currentItem; if (!d || String(d['id']) !== String(itemId)) return;
+  var log = _choResubLog(d).slice(); if (!log[i]) return;
+  if (act === 'del') {
+    if (!confirm((i + 1) + '回目（郵送 ' + (log[i].send || '－') + '・' + _choResubResTxt(log[i].res, i + 1) + '）を 履歴から 消します。よろしいですか？')) return;
+    log.splice(i, 1);
+  } else {
+    var dt = document.getElementById('cho-rh-date'), rs = document.getElementById('cho-rh-res');
+    log[i] = { send: dt && dt.value ? formatDateForSave('SendDocumentsCustomer', dt.value) : '', res: rs ? rs.value : log[i].res, at: log[i].at, fixed: new Date().toISOString() };
+  }
+  var o = _choFj(d); o.kakuninLog = log;
+  _choFjPatch(d, o).then(function () {
+    _choRhEdit = -1; _choRedraw();
+    showSaveToast(true, act === 'del' ? '履歴から 消しました' : '履歴を 直しました');
+  }).catch(function (e) { showSaveToast(false, '保存できませんでした: ' + ((e && e.message) || e)); });
+}
 /* 彫刻進捗の 欄を 流れの 順に 4 段（担当・校正・お客様確認・彫刻）で 出す（v1.9.633）。
    本人「こちらを整理してほしい」「6の予定の連絡は早めに」「確認資料は社内とお客様のやり取りなので別の方が良い」「今日のボタンはつけて」。
    番号は 入れる 順、次に 入れる 欄は 橙の 枠、済んだ 欄は ✓ で 薄く。前の［⇅ 並替］［↺ リセット］は 無し */
 function _choFlowHtml(d, itemId) {
   var w = _choWho(d);
   var cx = /キャンセル/.test(d['Resubmission'] || '');
+  var _rlog = _choResubLog(d), _rnd = _rlog.length ? '（' + (_rlog.length + 1) + '回目）' : '';   /* 再提出の 回（v1.9.641） */
   var seq = [
     { k: 'GotManuscript', l: '原稿受取', date: true, row: 'k' },
     { k: 'SendDocuVendor', l: _choVendorLabel(d), date: true, row: 'k', ren: !w.artKou },
     { k: 'DateFinalProofreading', l: '校正完了日', date: true, row: 'k' },
-    { k: 'SendDocumentsCustomer', l: '確認資料郵送日', date: true, row: 'o' },
-    { k: 'Resubmission', l: '資料結果', date: false, row: 'o' },
+    { k: 'SendDocumentsCustomer', l: '確認資料郵送日' + _rnd, date: true, row: 'o' },
+    { k: 'Resubmission', l: '資料結果' + _rnd, date: false, row: 'o' },
     { k: 'ReturnDocumentsCus', l: '彫刻内容承了日', date: true, row: 'o' },
     { k: 'RequestedWork', l: '彫刻作業依頼（ゴム完）', date: true, row: 'c' },
     { k: 'CompletionDate', l: '彫刻完了日', date: true, row: 'c' }
   ];
   var nextK = '';
-  if (!cx) for (var i = 0; i < seq.length; i++) { if (!(d[seq[i].k] || '')) { nextK = seq[i].k; break; } }
+  /* 再提出の ときは 次は［＋ 再提出］（橙の 枠は 出さない・v1.9.641） */
+  if (!cx && !/再提出/.test(d['Resubmission'] || '')) for (var i = 0; i < seq.length; i++) { if (!(d[seq[i].k] || '')) { nextK = seq[i].k; break; } }
   var cell = function (c, n) {
     var v = c.gkey ? G(d, c.gkey) : (d[c.k] || '');
     var done = !!v && n, nx = (c.k === nextK);
@@ -33625,14 +33709,21 @@ function _choFlowHtml(d, itemId) {
     '.cho-lane{width:62px;flex-shrink:0;border-radius:7px;color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.3;padding:2px}' +
     '.cho-cells{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start}.cho-f{width:210px;box-sizing:border-box}' +   /* 決まった 幅（v1.9.634 本人「全幅で分割されているから、入力欄が広すぎ」） */
     '.cho-f .fi{margin:0}.cho-done{opacity:.72}' +
+    '.cho-rh-n{font-size:10.5px;font-weight:700;color:#fff;background:#78909c;border-radius:9px;padding:1px 7px}' +
+    '.cho-rh{font-size:12px;color:#455a64;background:#f1f3f5;border:1px solid #d5dae2;border-radius:6px;padding:3px 9px;cursor:pointer;font-family:inherit}' +
+    '.cho-rh-ed{cursor:default;display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}.cho-rh-ed input,.cho-rh-ed select{font-size:12px;font-family:inherit}' +
+    '.cho-rh-ed button{font-size:11.5px;padding:2px 8px;border:1px solid #c5ccd6;border-radius:5px;cursor:pointer;font-family:inherit}' +
     /* 項目名を 濃く 大きく（v1.9.634 本人「項目が背景との色で読みづらい」）。前は 10px の 青字に 薄い 青の 地 */
     '#cho-flow .fi label,#cho-flow .edit-label{font-size:12px;font-weight:700;color:#1a2535;background:#dde3ea}' +
     '@media (max-width:640px){.cho-f{width:calc(50% - 3px)}.cho-lane{width:44px;font-size:11px}}</style>';
   setTimeout(function () { try { _choPubBtnSync(); } catch (e) {} }, 0);
+  /* ［＋ 再提出］は 資料結果が 再提出の とき（編集中の 選択も 見る） */
+  var _rsBtn = (!cx && /再提出/.test(getEdit(itemId, 'Resubmission', d['Resubmission'] || '') || ''))
+    ? '<div style="display:flex;align-items:center"><button onclick="_choResubAdd(\'' + itemId + '\')" title="この 回を 履歴に 移して、次の 回の 確認資料郵送日・資料結果を 入れる" style="padding:7px 12px;font-size:12.5px;font-weight:700;background:#d35400;color:#fff;border:none;border-radius:7px;cursor:pointer;font-family:inherit;white-space:nowrap">＋ 再提出（' + (_rlog.length + 2) + '回目を 入れる）</button></div>' : '';
   return css + '<div id="cho-flow">' +
     row(lane('担当', '#546e7a'), cell({ k: 'Editor0', l: '校正彫刻担当', date: false }, 0) + cell({ k: 'ManuscriptContributor', l: '原稿提供者', date: false }, 0) + cell({ k: '_x6212__x5207__x7d0d__x671f_', gkey: '戒切納期', l: '戒切納期', date: true }, 0)) +
     row(lane('校正<br>' + (w.kou || ''), _choWhoColor(w.kou)), cellsOf('k')) +
-    row(lane('お客様<br>確認', '#2e7d32'), cellsOf('o')) +
+    row(lane('お客様<br>確認', '#2e7d32'), _choResubStripHtml(d, itemId) + cellsOf('o') + _rsBtn) +
     row(lane('彫刻<br>' + (w.cho || ''), _choWhoColor(w.cho)), cellsOf('c')) +
     '</div>';
 }

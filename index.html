@@ -8260,7 +8260,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.643';
+var APP_VERSION = 'v1.9.644';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -8710,6 +8710,12 @@ function openReceiptHtml(d) {
           date: ymd(d['PaymentDate']), note: '墓石工事代として' }
       ]
     };
+    /* 分割の 入金は 入金ごとに 1 枚（v1.9.644。納骨と 同じ） */
+    var _kb = kjBill(d);
+    if (_kb.split) data.variants = _kb.payList.map(function (x, pi) {
+      return { key: pi === 0 ? 'main' : 'p' + (pi + 1), label: '工事代金 ' + (pi + 1) + '回目', amount: num(x.amt), date: ymd(x.pay), note: '墓石工事代として' };
+    });
+    else if (_kb.payList[0] && _kb.payList[0].amt !== '' && num(_kb.payList[0].amt) !== num(d['InvoiceAmount'])) data.variants[0].amount = num(_kb.payList[0].amt);
   } else {
     /* **但し書きは 分類で変える**（v1.9.439。本人の指示
        「納骨のみなら 納骨作業代として、納骨と彫刻なら 納骨・彫刻費用として、
@@ -10970,7 +10976,7 @@ function openCustRegModal(d, mode) {
   var temple   = mode==='kouji' ? (d['Temples']||'') : (d['_x304a__x5bfa_']||'');
   var no       = mode==='kouji' ? (d['no']||'') : (d['_x9867_No']||'');
   var category = mode==='kouji' ? (d['category']||'') : (d['_x5206__x985e_']||'');
-  var payDate  = (d['PaymentDate']||'').substring(0,10);
+  var payDate  = mode==='kouji' ? String(kjBill(d).payLast||'').substring(0,10) : (d['PaymentDate']||'').substring(0,10);   // 工事の 分割は いちばん 新しい 入金日（v1.9.644）
   /* 請求を 分けて いる 納骨・戒切は 金額を 足し、入金日は いちばん 新しい 日（v1.9.599。分けて いなければ 前と 同じ） */
   var _crmBillSum = null;
   if (mode !== 'kouji' && nkBillsJson(d)) {
@@ -13513,6 +13519,7 @@ function _koujiCardHtml(d, _kidx, _koujiCatSeps) {
     var endInfo  = d['endinfo'] || '';
 
     // ステータスタグ
+    var _kjB = kjBill(d);   // 分割の 入金を まとめて 読む（v1.9.644）
     var statusTag = '';
     if (endInfo === '完了') {
       statusTag = '<span class="tag-pill tag-done">完了</span>';
@@ -13524,9 +13531,11 @@ function _koujiCardHtml(d, _kidx, _koujiCatSeps) {
       statusTag = '<span class="tag-pill tag-blue">参考見積</span>';
     } else if (endInfo === '音信不通' || endInfo === '3カ月以上　返事なし') {
       statusTag = '<span class="tag-pill tag-alert">音信不通</span>';
-    } else if (d['PaymentDate'] && !d['ConstructionCompletionDate']) {
+    } else if (_kjB.partial) {   // 分割の とちゅう（v1.9.644）
+      statusTag = '<span class="tag-pill tag-yet">一部入金</span>';
+    } else if (_kjB.pay && !d['ConstructionCompletionDate']) {
       statusTag = '<span class="tag-pill tag-outline-orange">前払済</span>';
-    } else if (d['PaymentDate']) {
+    } else if (_kjB.pay) {
       statusTag = '<span class="tag-pill tag-done">入金済</span>';
     } else if (d['billing']) {
       statusTag = '<span class="tag-pill tag-yet">請求中</span>';
@@ -13546,7 +13555,7 @@ function _koujiCardHtml(d, _kidx, _koujiCatSeps) {
     var koujiNaiyou = d['ConstructionContents'] || '';
     var naiyouTag = koujiNaiyou ? '<span class="tag-pill tag-purple">' + koujiNaiyou.substring(0,12) + (koujiNaiyou.length>12?'…':'') + '</span>' : '';
     var billingDate = (d['billing'] || '').substring(0, 10);
-    var payDate2 = (d['PaymentDate'] || '').substring(0, 10);
+    var payDate2 = String(_kjB.payLast || '').substring(0, 10) + (_kjB.partial ? '（一部）' : '');   // 分割なら いちばん 新しい 入金（v1.9.644）
 
     var kakeName = d['HakaName'] ? d['HakaName'] + '家' : '';
 
@@ -13838,6 +13847,159 @@ function _kjMkPush(){
   try { saveEditsToStorage(); } catch(e){}
 }
 
+/* ───── 工事関連の 分割の 入金（v1.9.644。本人「工事関連の方で、入金を納骨と同じように分割支払い対応してほしい」）─────
+   納骨の 請求①と 同じ 3 行（請求／入金／領収書）。1 回目の 入金日・MF入金NO は これまでの 列（PaymentDate・MF_cloud_2）の まま。
+   工事関連の SP に 作った 列 BillJson（複数行テキスト・書式なし）に
+   {"v":1,"first":{"amt":"500000","pays":[{"pay":"YYYY-MM-DD","mf2":"","amt":""}],"rest":true}}
+   amt＝1 回目の 入金額（空なら 請求金額）・pays＝2 回目 以降・rest＝残りあり（分割の とちゅう）。
+   列が あると 確かめた ときだけ 新しい 欄。列が 空の 案件は これまでと 同じ（移す 必要なし） */
+var KJ_BILL_COL = 'BillJson';
+var _kjBillColState = null;          // null＝まだ 分からない／true＝ある／false＝無い
+function kjBillOn() { return _kjBillColState === true; }
+function kjBillJson(d) {
+  var raw = d && d[KJ_BILL_COL];
+  if (!raw) return null;
+  if (typeof raw === 'string' && /^\s*</.test(raw)) { var tx = document.createElement('textarea'); tx.innerHTML = raw.replace(/<[^>]+>/g, ''); raw = tx.value; }
+  var o = null;
+  try { o = (typeof raw === 'string') ? JSON.parse(raw) : raw; } catch (e) { console.warn('[工事 入金] JSON を 読めません', e && e.message); return null; }
+  if (!o || typeof o !== 'object') return null;
+  var f = (o.first && typeof o.first === 'object') ? o.first : {};
+  var s10 = function (v) { return String(v == null ? '' : v).substring(0, 10); };
+  return { amt: String(f.amt == null ? '' : f.amt), rest: !!f.rest,
+    pays: (Array.isArray(f.pays) ? f.pays : []).filter(function (x) { return x && typeof x === 'object'; })
+      .map(function (x) { return { pay: s10(x.pay), mf2: String(x.mf2 || ''), amt: String(x.amt || '') }; }) };
+}
+/* 工事関連の 請求・入金を まとめて 読む。pay＝入金が 終わった 日（残りあり の 間は 空）、payLast＝いちばん 新しい 入金日、
+   paid＝入金額の 合計、partial＝一部入金（残りあり で 入金が 1 回 以上） */
+function kjBill(d) {
+  var n = function (v) { var x = Number(String(v == null ? '' : v).replace(/[,\s¥￥]/g, '')); return isFinite(x) ? x : 0; };
+  var j = kjBillJson(d) || { amt: '', rest: false, pays: [] };
+  var p1 = String((d && d['PaymentDate']) || '').substring(0, 10);
+  var a1 = j.amt !== '' ? j.amt : ((!j.pays.length && !j.rest && p1) ? String((d && d['InvoiceAmount']) || '') : '');
+  var list = [{ pay: p1, mf2: String((d && d['MF_cloud_2']) || ''), amt: a1 }].concat(j.pays)
+    .filter(function (x) { return x.pay || x.mf2 || (x.amt !== '' && x.amt != null); });
+  var last = '';
+  list.forEach(function (x) { var t = String(x.pay || '').replace(/\//g, '-'); if (t > last.replace(/\//g, '-')) last = x.pay; });
+  var paid = 0; list.forEach(function (x) { paid += n(x.amt); });
+  var hasPay = list.some(function (x) { return x.pay; });
+  return { payList: list, payLast: last, paid: paid, rest: j.rest, partial: !!(j.rest && hasPay),
+           pay: j.rest ? '' : (last || p1), invAmt: n(d && d['InvoiceAmount']), split: j.pays.length > 0 };
+}
+
+var _kjBl = { id: null, f: null };
+function kjBillSecHtml(d, itemId) {
+  var esc = _nkBlEsc;
+  var grp = function (t, c, bg, body) {
+    return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:5px 8px;margin:5px 0;border-radius:6px;background:' + bg + ';border-left:4px solid ' + c + '">' +
+      '<b style="min-width:52px;font-size:12.5px;color:' + c + '">' + t + '</b>' + body + '</div>';
+  };
+  var br = '<span style="flex-basis:100%;height:0"></span>';
+  var nth = function (k) { return '<span style="font-size:11.5px;color:#1e8449;font-weight:700;min-width:52px">' + k + ' 回目</span>'; };
+  if (!editMode) {
+    _kjBl = { id: null, f: null };
+    var b = kjBill(d);
+    var ymdS = function (v) { var m = String(v || '').match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/); return m ? m[1] + '/' + (+m[2]) + '/' + (+m[3]) : ''; };
+    var vBox = function (lb, v, w) {
+      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+        '<span style="display:inline-block;min-width:' + w + 'px;padding:5px 8px;border:1px solid #e3e6ea;border-radius:6px;background:#fff;font-size:13px;color:' + (v ? '#1a2535' : '#bbb') + '">' + (v ? esc(v) : '—') + '</span></span>';
+    };
+    var pl = b.payList, p0 = pl[0] || {};
+    var payBody = vBox('入金日', ymdS(p0.pay), 92) + vBox('MF入金NO', String(p0.mf2 || ''), 70) + vBox('入金額', _nkBlYen(p0.amt), 90);
+    pl.slice(1).forEach(function (x, pi) {
+      payBody += br + nth(pi + 2) + vBox('入金日', ymdS(x.pay), 92) + vBox('MF入金NO', String(x.mf2 || ''), 70) + vBox('入金額', _nkBlYen(x.amt), 90);
+    });
+    if (pl.length > 1 || b.rest) {
+      var left = b.invAmt ? b.invAmt - b.paid : 0;
+      payBody += br + '<span style="font-size:12px;color:#555">合計 <b>' + _nkBlYen(String(b.paid)) + '</b>' +
+        (b.invAmt && left !== 0 ? '　残り <b>' + _nkBlYen(String(left)) + '</b>' : '') + '</span>';
+    }
+    if (b.rest) payBody += '<span style="font-size:12px;color:#c0392b;font-weight:600">残りあり（分割の とちゅう）</span>';
+    return grp('請求', '#1a5a9a', '#eef3fb', vBox('請求日', ymdS(d['billing']), 92) + vBox('MF未収NO', String(d['MF_cloud_1'] || ''), 70) +
+                                             vBox('請求金額', _nkBlYen(d['InvoiceAmount']), 100)) +
+           grp('入金', '#1e8449', '#eef8f0', payBody) +
+           grp('領収書', '#8a5a00', '#fbf4e6', vBox('発行日', ymdS(d['receipt']), 92));
+  }
+  if (_kjBl.id !== String(itemId) || !_kjBl.f) {
+    var j = kjBillJson(d);
+    var _hy = function (v) { return String(v || '').replace(/\//g, '-').substring(0, 10); };
+    _kjBl = { id: String(itemId), f: { amt: j ? j.amt : '', rest: !!(j && j.rest),
+              pays: (j ? j.pays : []).map(function (x) { return { pay: _hy(x.pay), mf2: x.mf2, amt: x.amt }; }) } };
+  }
+  var inp = 'padding:5px 7px;border:1px solid #ccd2dc;border-radius:6px;font-size:13px;font-family:inherit';
+  var todayBtn = function (oc) { return '<button type="button" onclick="' + oc + '" style="padding:4px 7px;font-size:11px;background:#1a2535;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:inherit">今日</button>'; };
+  /* これまでの 列は data-id／data-field の 欄（保存は bindEditInputs → localEdits の まま） */
+  var le = localEdits[itemId] || {};
+  var cv = function (k, dflt) { return Object.prototype.hasOwnProperty.call(le, k) ? (le[k] == null ? '' : String(le[k])) : (dflt == null ? '' : String(dflt)); };
+  var fD = function (field, lb) {
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+      '<input type="date" data-id="' + esc(itemId) + '" data-field="' + field + '" value="' + esc(cv(field, d[field]).substring(0, 10).replace(/\//g, '-')) + '" style="' + inp + '">' +
+      todayBtn('_nkBl1Today(this)') + '</span>';
+  };
+  var fT = function (field, lb, w) {
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">' + lb +
+      '<input type="text" inputmode="numeric" data-id="' + esc(itemId) + '" data-field="' + field + '" value="' + esc(cv(field, d[field])) + '" style="' + inp + ';width:' + w + 'px"></span>';
+  };
+  var f = _kjBl.f;
+  var payBodyE = fD('PaymentDate', '入金日') + fT('MF_cloud_2', 'MF入金NO', 90) +
+    '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">入金額<input type="text" inputmode="numeric" value="' + esc(f.amt || '') +
+      '" placeholder="1 回なら 空で 可" oninput="_kjBlSet(\'amt\',this.value)" style="' + inp + ';width:100px"></span>';
+  f.pays.forEach(function (x, pi) {
+    payBodyE += br + nth(pi + 2) +
+      '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">入金日<input type="date" value="' + esc(x.pay || '') +
+        '" onchange="_kjBlPaySet(' + pi + ',\'pay\',this.value)" style="' + inp + '">' + todayBtn('_kjBlPayToday(' + pi + ')') + '</span>' +
+      '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">MF入金NO<input type="text" inputmode="numeric" value="' + esc(x.mf2 || '') +
+        '" oninput="_kjBlPaySet(' + pi + ',\'mf2\',this.value)" style="' + inp + ';width:90px"></span>' +
+      '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#555">入金額<input type="text" inputmode="numeric" value="' + esc(x.amt || '') +
+        '" oninput="_kjBlPaySet(' + pi + ',\'amt\',this.value)" style="' + inp + ';width:100px"></span>' +
+      '<button type="button" onclick="_kjBlPayDel(' + pi + ')" title="この 入金を 消す" style="background:#fff;border:1px solid #c0392b;color:#c0392b;border-radius:6px;padding:3px 7px;cursor:pointer;font-size:11px">🗑</button>';
+  });
+  payBodyE += br +
+    '<button type="button" onclick="_kjBlPayAdd()" style="padding:4px 10px;border-radius:6px;border:1px dashed #1e8449;background:#fff;color:#1e8449;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">＋ 入金を追加（分割）</button>' +
+    '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#555"><input type="checkbox"' + (f.rest ? ' checked' : '') +
+      ' onchange="_kjBlSet(\'rest\',this.checked)" style="width:16px;height:16px"> 残りあり（分割の とちゅう）</label>';
+  return grp('請求', '#1a5a9a', '#eef3fb', fD('billing', '請求日') + fT('MF_cloud_1', 'MF未収NO', 90) + fT('InvoiceAmount', '請求金額', 110)) +
+         grp('入金', '#1e8449', '#eef8f0', payBodyE) +
+         grp('領収書', '#8a5a00', '#fbf4e6', fD('receipt', '発行日'));
+}
+function _kjBlRedraw() {
+  var a = document.getElementById('kj-bills-area');
+  if (a && currentItem) { a.innerHTML = kjBillSecHtml(currentItem, currentItem['id']); _nkBlBind(a, String(currentItem['id'])); }   // 納骨と 同じ つなぎ方
+}
+function _kjBlSet(k, v) { if (!_kjBl.f) return; _kjBl.f[k] = (k === 'rest') ? !!v : String(v == null ? '' : v); _kjBlPush(); }
+function _kjBlPayAdd() { if (!_kjBl.f) return; _kjBl.f.pays.push({ pay: '', mf2: '', amt: '' }); _kjBlRedraw(); _kjBlPush(); }
+function _kjBlPaySet(pi, k, v) { if (!_kjBl.f || !_kjBl.f.pays[pi]) return; _kjBl.f.pays[pi][k] = String(v == null ? '' : v); _kjBlPush(); }
+function _kjBlPayToday(pi) {
+  var t = new Date();
+  _kjBlPaySet(pi, 'pay', t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'));
+  _kjBlRedraw();
+}
+function _kjBlPayDel(pi) {
+  if (!_kjBl.f || !_kjBl.f.pays[pi]) return;
+  var x = _kjBl.f.pays[pi];
+  if ((x.pay || x.amt || x.mf2) && !confirm((pi + 2) + ' 回目の 入金を 消します。よろしいですか？（保存するまで SP は 変わりません）')) return;
+  _kjBl.f.pays.splice(pi, 1); _kjBlRedraw(); _kjBlPush();
+}
+// 編集中の 値（localEdits）に 入れる。入金額・分割・残りあり が どれも 無ければ 列は 空（＝これまでと 同じ）
+function _kjBlPush() {
+  var d = currentItem, id = _kjBl.id;
+  if (!d || !id || String(d['id']) !== id || !_kjBl.f) return;
+  var f = _kjBl.f;
+  var cl = function (v) { return String(v || '').replace(/[,\s¥￥]/g, ''); };
+  var ps = f.pays.map(function (x) { return { pay: x.pay || '', mf2: String(x.mf2 || '').trim(), amt: cl(x.amt) }; })
+    .filter(function (x) { return x.pay || x.mf2 || x.amt; });
+  var json = '';
+  if (cl(f.amt) || ps.length || f.rest) {
+    var first = {};
+    if (cl(f.amt)) first.amt = cl(f.amt);
+    if (ps.length) first.pays = ps;
+    if (f.rest) first.rest = true;
+    json = JSON.stringify({ v: 1, first: first });
+  }
+  if (json !== String(d[KJ_BILL_COL] || '')) setEdit(id, KJ_BILL_COL, json || null);
+  else if (localEdits[id]) delete localEdits[id][KJ_BILL_COL];
+  try { saveEditsToStorage(); } catch (e) {}
+}
+
 function renderKoujiList(filter) {
   if (document.getElementById('srch')) document.getElementById('srch').placeholder = '顧客名・〇〇家墓で検索...';   // v1.9.528
   var q  = (document.getElementById('srch') && document.getElementById('srch').value) || '';
@@ -13849,7 +14011,7 @@ function renderKoujiList(filter) {
     if (filter === 'follow' && (isComplete || !d['InternalCommunication'])) return false;
     if (filter === 'follow-self' && (isComplete || !d['InternalCommunication'] || !_loginSurname || !d['InternalCommunication'].includes(_loginSurname))) return false;
     if (filter === 'nyukin') {
-      var isNyukin = (d['billing'] && !d['PaymentDate']) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);
+      var isNyukin = (d['billing'] && !kjBill(d).pay) || (d['DateInvoice_tui'] && !d['PaymentDate_tui']);   // 一部入金も 入る（v1.9.644）
       if (!isNyukin || isComplete) return false;
     }
     // お寺フィルター
@@ -14268,12 +14430,14 @@ function showKoujiTab(i, d) {
       nkgBar('kj1b') + nkgCanvas('kj1b', KOUJI_T1B_CARDS, d, itemId) +
       '</div>' +
       '<div class="sec"><span class="sec-hdr bg5" style="display:flex;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap">請求・入金' + _mfBtnsHtml() + '</span>' +
-      nkgBar('kj1c') + nkgCanvas('kj1c', KOUJI_T1C_CARDS, d, itemId) +
+      (kjBillOn()   // 分割の 入金（v1.9.644）：SP に BillJson が あれば 納骨と 同じ 3 行
+        ? '<div id="kj-bills-area" style="margin-top:6px">' + kjBillSecHtml(d, itemId) + '</div>'
+        : nkgBar('kj1c') + nkgCanvas('kj1c', KOUJI_T1C_CARDS, d, itemId)) +
       '</div>';
     if (editMode) bindEditInputs(itemId);
     nkgInit('kj1a', KOUJI_T1A_CARDS);
     nkgInit('kj1b', KOUJI_T1B_CARDS);
-    nkgInit('kj1c', KOUJI_T1C_CARDS);
+    if (!kjBillOn()) nkgInit('kj1c', KOUJI_T1C_CARDS);
 
   } else if (i === 2) {
     // 工事仕様タブ（HakaSpec JSON + 写真・図面）
@@ -29047,7 +29211,9 @@ function _koujiStatusLabel(d) {
   if (endInfo === '延期、保留') return '保留';
   if (endInfo === '参考見積') return '参考見積';
   if (endInfo === '音信不通' || endInfo === '3カ月以上　返事なし') return '音信不通';
-  if (d['PaymentDate']) return '入金済';
+  var _kb = kjBill(d);   // 分割の 入金（v1.9.644）
+  if (_kb.partial) return '一部入金';
+  if (_kb.pay) return '入金済';
   if (d['billing']) return '請求中';
   if (d['ConstructionCompletionDate']) return '工完・請求待';
   if (d['ConstructionStartDate']) return '工事中';
@@ -31346,7 +31512,7 @@ function _nokCardHtml(d, idx, _separators) {
 
 // 並び順・グループ・絞り込みが変わりうる項目
 var _LIST_ORDER_FIELDS = {
-  kouji: ['endinfo','InternalCommunication','billing','PaymentDate',
+  kouji: ['endinfo','InternalCommunication','billing','PaymentDate','BillJson',
           'DateInvoice_tui','PaymentDate_tui','Temples','Customers','Title','category'],
   noukotsu: ['_x524a__x9664_','check','InternalCommunication','DateInvoice','PaymentDate',
              'DateInvoice_tui','PaymentDate_tui','_x9867__x5ba2__x540d_','Title','_x304a__x5bfa_',
@@ -32369,6 +32535,8 @@ function loadSPFieldChoices() {
   .then(function(results) {
     // 工事関連に 手配先の JSON の 列（MakerJson）が あるか（v1.9.532。段階 2 の 欄を 出すか）
     try { _kjMakerColState = ((results[1] && results[1].value) || []).some(function(c){ return c && c.name === KJ_MAKER_COL; }); } catch(e){}
+    // 工事関連に 分割の 入金の 列（BillJson）が あるか（v1.9.644）
+    try { _kjBillColState = ((results[1] && results[1].value) || []).some(function(c){ return c && c.name === KJ_BILL_COL; }); } catch(e){}
     // 納骨リストに 請求の 並びの 列（BillJson）が あるか（v1.9.596。段階 2 の 欄を 出すか）
     try { _nkBillColState = ((results[0] && results[0].value) || []).some(function(c){ return c && c.name === NK_BILL_COL; }); } catch(e){}
     // 両リストの選択肢をマージ（工事関連で上書きしない＝先勝ち）。リストごとにも 持つ（v1.9.530）

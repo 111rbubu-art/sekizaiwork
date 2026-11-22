@@ -642,11 +642,13 @@ var KM = (function(){
       if (c[k] < R.min) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.min + ' から（' + r1(R.min - c[k]) + ' mm 足りない）');
       if (c[k] > R.max) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.max + ' まで（' + r1(c[k] - R.max) + ' mm 長い）'); });
     var b0 = {}, b1 = {};   // セットの 座標（左・前・下）での 箱：図面の まま／いま
+    var sw = swapFit(fs, F, v, st, p), swOn = !!sw;
     Object.keys(v.parts || {}).forEach(function(k){
       var q = p[k], o = v.parts[k]; if (!q || !q.setAt) return;
       var fl = F.parts[k] || {}, a = q.setAt, x = a.x, y = a.y, z = a.z, w = q.w, d = q.d, h = q.h;
       b0[k] = { x0:a.x, x1:a.x + o.w, y0:a.y, y1:a.y + o.h, z0:a.z, z1:a.z + o.d };
-      if (dW || dD || dH) {
+      if (swOn) { var s = sw.of(k, { x:x, z:z, w:w, d:d }); x = s.x; z = s.z; w = s.w; d = s.d; }
+      if (dW || dD || dH || swOn) {
         var mv = fitMove(F, fs.size, k, { x:a.x, y:a.y, z:a.z, w:q.w, d:q.d });
         if (fl.w) w += dW; else x += dW * mv.fx;
         if (fl.d) d += dD; else z += dD * mv.fz;
@@ -658,7 +660,7 @@ var KM = (function(){
     // 外柵が 狭く なって 部材 どうしが 新しく ぶつかる（図面では ぶつからない）＝✕ と 何 mm（カロートと 腰石 など。位置を 調整する）
     var ks = Object.keys(b1);
     function ov(A, B){ return { x:Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0), y:Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0), z:Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) }; }
-    if (dW || dD || dH) for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
+    if (dW || dD || dH || swOn) for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var o1 = ov(b1[ks[i]], b1[ks[j]]); if (!(o1.x > 0.5 && o1.y > 0.5 && o1.z > 0.5)) continue;
       var o0 = ov(b0[ks[i]], b0[ks[j]]); if (o0.x > 0.5 && o0.y > 0.5 && o0.z > 0.5) continue;
       ng.push(p[ks[i]].name + ' と ' + p[ks[j]].name + ' が ぶつかる（' + (o1.x <= o1.z ? '横 ' + r1(o1.x) : '奥行 ' + r1(o1.z)) + ' mm。位置を 調整）');
@@ -671,6 +673,30 @@ var KM = (function(){
     return { id:fs.id, W:c.W, D:c.D, H:c.H, dW:dW, dD:dD, dH:dH };
   }
 
+  // ── 外柵の 外の 輪郭の 石を 差し替えて 厚さ（伸びない 向き）が 変わった とき、外柵の 寸法は そのまま 内側で 合わせる（v0.8.71）──
+  //   本人「腰石の後ろを 奥行の 大きい ものに 変えたら 設置寸法から 出る」：前は 外柵の 自動が 差し替える 前の 厚さで 計算し、
+  //   あとで 差し替えの 厚さが 入って 外へ 出て いた。輪郭の 面は 動かさず 内側へ 厚く し、間の 石は 伸びる 石が 縮む／寄せた 側に ついて 動く
+  //   セットの 座標（左・前 が 0）。lo＝左・前 の 輪郭の 石、hi＝右・後ろ の 輪郭の 石が 厚く なった ぶん
+  function swapFit(fs, F, v, st, p){
+    var AX = [{ A:'x', s:'w', S:'W', an:'ax' }, { A:'z', s:'d', S:'D', an:'az' }], g = {}, any = false;
+    AX.forEach(function(X){ g[X.A] = { lo:0, hi:0, loE:0, hiE:fs.size[X.S], loK:null, hiK:null }; });
+    Object.keys(v.parts || {}).forEach(function(k){ var q = p[k], o = v.parts[k], sh = st.shapes && st.shapes[k], sz = sh && shapeSize(sh), a = q && q.setAt;
+      if (!q || !a || !sz || (q.setId || '') !== (sh.__set || '')) return;
+      var fl = F.parts[k] || {};
+      AX.forEach(function(X){ if (fl[X.s]) return; var sd = r1(sz[X.s] - o[X.s]); if (Math.abs(sd) <= 0.5) return; var G = g[X.A];
+        if (a[X.A] <= 1) { G.lo = sd; G.loE = a[X.A] + o[X.s]; G.loK = k; any = true; }
+        else if (a[X.A] + o[X.s] >= fs.size[X.S] - 1) { G.hi = sd; G.hiE = a[X.A]; G.hiK = k; any = true; } }); });
+    if (!any) return null;
+    return { of:function(k, c){ var o = v.parts[k], a = p[k].setAt, fl = F.parts[k] || {}, n = { x:c.x, z:c.z, w:c.w, d:c.d };
+      AX.forEach(function(X){ var G = g[X.A], u = X.A, sz = X.s; if (!G.lo && !G.hi) return;
+        if (k === G.loK) { n[sz] = r1(n[sz] + G.lo); return; }   // 輪郭の 面（左・前）は そのまま 内へ 厚く
+        if (k === G.hiK) { n[u] = r1(n[u] - G.hi); n[sz] = r1(n[sz] + G.hi); return; }   // 輪郭の 面（右・後ろ）は そのまま 内へ 厚く
+        if (a[u] < G.loE - 1 || a[u] + o[sz] > G.hiE + 1) return;   // 間に ない 石（輪郭の 石と 並ぶ 石）は そのまま
+        if (fl[sz]) { n[u] = r1(n[u] + G.lo); n[sz] = r1(n[sz] - G.lo - G.hi); return; }   // 伸びる 石が 縮む
+        var an = fl[X.an], f = an === 'R' || an === 'B' ? 1 : an === 'C' ? 0.5 : 0;   // 寄せた 側に ついて 動く
+        n[u] = r1(n[u] + G.lo * (1 - f) - G.hi * f); });
+      return n; } };
+  }
   // セットの 部材の 形（buzai/1）を 箱の 大きさに 合わせる（幅・奥行・高さ → params W・D・H）
   function syncShapes(p, st){
     Object.keys(p).forEach(function(k){

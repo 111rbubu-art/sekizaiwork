@@ -8277,7 +8277,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.671';
+var APP_VERSION = 'v1.9.672';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -28542,6 +28542,130 @@ function _ftvOrigUrl(fpath) {
   }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
   .then(function(b) { var u = URL.createObjectURL(b); _ftvOrigCache[fpath] = u; return u; });
 }
+/* 原寸の 別ウィンドウ（v1.9.672）。1 つの 窓を 使い回す（名前 'ftv-orig'）。
+   写真は この 画面で Graph（認証つき）から 取った blob を 見せるので、SharePoint の サインインは 要らない。
+   別ウィンドウの 中：［⇐］［⇒］（← → キー）で 前後・［⤢ 全体表示／🔍 原寸］の 切り替え・ドラッグ／スクロール・Esc で 閉じる。
+   タブレット・スマホでは 新しい タブで 開く */
+var _ftvOrigWin = null;
+function _ftvOpenOrigWin(api) {
+  var w = null;
+  try {
+    var sw = screen.availWidth || 1280, sh = screen.availHeight || 800;
+    var ww = Math.round(sw * 0.85), wh = Math.round(sh * 0.85);
+    w = window.open('', 'ftv-orig', 'width=' + ww + ',height=' + wh + ',left=' + Math.round((sw - ww) / 2) + ',top=' + Math.round((sh - wh) / 2) + ',resizable=yes,scrollbars=yes');
+  } catch (e) { w = null; }
+  if (!w) return false;
+  _ftvOrigWin = w;
+  var d = w.document;
+  /* 押す たびに 中身を 書き直す（前の 画面の 読み直し後でも 古い 仕掛けが 残らない） */
+  {
+    d.open();
+    d.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>原寸</title><style>' +
+      'html,body{margin:0;height:100%;background:#1b1b1b;color:#eee;font-family:"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;overflow:hidden}' +
+      '#ftvo-bar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#2b2b2b;border-bottom:1px solid #444;box-sizing:border-box;z-index:2}' +
+      '#ftvo-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+      '#ftvo-bar button{background:#3a3a3a;border:1px solid #666;color:#fff;border-radius:16px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}' +
+      '#ftvo-bar button.nav{font-size:18px;padding:3px 14px}' +
+      '#ftvo-bar button.on{background:#2a6aa8;border-color:#5b9bd5}' +
+      '#ftvo-stage{position:fixed;top:46px;left:0;right:0;bottom:0;overflow:auto;cursor:grab;-webkit-overflow-scrolling:touch}' +
+      '#ftvo-stage img{display:block;margin:auto}' +
+      '#ftvo-msg{padding:30px;text-align:center;color:#bbb;font-size:13px}' +
+      '</style></head><body><div id="ftvo-bar"><button class="nav" id="ftvo-prev" title="前の写真（←）">⇐</button>' +
+      '<button class="nav" id="ftvo-next" title="次の写真（→）">⇒</button><div id="ftvo-name"></div>' +
+      '<button id="ftvo-fit"></button><button id="ftvo-close" title="閉じる（Esc）">✕ 閉じる</button></div>' +
+      '<div id="ftvo-stage"><div id="ftvo-msg">原本を 読み込み中...</div></div></body></html>');
+    d.close();
+  }
+  w._ftvApi = api;
+  w._ftvFit = false;
+  {
+    var stage = d.getElementById('ftvo-stage');
+    d.getElementById('ftvo-prev').addEventListener('click', function(){ if (w._ftvApi) w._ftvApi.go(-1); });
+    d.getElementById('ftvo-next').addEventListener('click', function(){ if (w._ftvApi) w._ftvApi.go(1); });
+    d.getElementById('ftvo-close').addEventListener('click', function(){ w.close(); });
+    d.getElementById('ftvo-fit').addEventListener('click', function(){ w._ftvFit = !w._ftvFit; _ftvOrigWinLayout(w, true); });
+    d.addEventListener('keydown', function(e){
+      if (e.key === 'Escape') { e.preventDefault(); w.close(); }
+      else if (e.key === 'ArrowRight' && w._ftvApi) { e.preventDefault(); w._ftvApi.go(1); }
+      else if (e.key === 'ArrowLeft' && w._ftvApi) { e.preventDefault(); w._ftvApi.go(-1); }
+    });
+    w.onresize = function(){ if (w._ftvFit) _ftvOrigWinLayout(w, false); };
+    var dg = null;
+    stage.addEventListener('mousedown', function(e){
+      if (w._ftvFit) return;
+      dg = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop };
+      stage.style.cursor = 'grabbing'; e.preventDefault();
+    });
+    d.addEventListener('mousemove', function(e){
+      if (!dg) return;
+      stage.scrollLeft = dg.l - (e.clientX - dg.x); stage.scrollTop = dg.t - (e.clientY - dg.y);
+    });
+    d.addEventListener('mouseup', function(){ if (dg) { dg = null; stage.style.cursor = w._ftvFit ? 'default' : 'grab'; } });
+  }
+  _ftvOrigWinFollow(api);
+  try { w.focus(); } catch (e) {}
+  return true;
+}
+/* 別ウィンドウが 開いて いれば、今の 写真を 出す */
+function _ftvOrigWinFollow(api) {
+  var w = _ftvOrigWin;
+  if (!w || w.closed || w._ftvApi !== api) return;
+  var d = w.document, p = api.cur();
+  if (!p) return;
+  var name = p.split('/').pop(), pos = api.pos();
+  var stage = d.getElementById('ftvo-stage'), nm = d.getElementById('ftvo-name');
+  var many = api.list.length > 1;
+  d.getElementById('ftvo-prev').style.display = many ? '' : 'none';
+  d.getElementById('ftvo-next').style.display = many ? '' : 'none';
+  d.title = name + '（原寸）';
+  nm.textContent = name + (pos ? '　' + pos : '');
+  var my = (w._ftvSeq = (w._ftvSeq || 0) + 1);
+  if (!/\.(jpe?g|png|gif|webp|bmp)$/i.test(p)) {
+    stage.innerHTML = '<div id="ftvo-msg">写真では ないので 原寸では 出せません（元の 画面で ダブルクリックで 開いてください）</div>';
+    d.getElementById('ftvo-fit').style.display = 'none';
+    return;
+  }
+  d.getElementById('ftvo-fit').style.display = '';
+  stage.innerHTML = '<div id="ftvo-msg">原本を 読み込み中...</div>';
+  _ftvOrigUrl(p).then(function(u){
+    if (w.closed || w._ftvSeq !== my) return;
+    var img = d.createElement('img');
+    img.onload = function(){
+      if (w.closed || w._ftvSeq !== my) return;
+      stage.innerHTML = '';
+      stage.appendChild(img);
+      nm.textContent = name + '（原寸 ' + img.naturalWidth + '×' + img.naturalHeight + '）' + (pos ? '　' + pos : '');
+      _ftvOrigWinLayout(w, true);
+    };
+    img.onerror = function(){ if (w._ftvSeq === my) stage.innerHTML = '<div id="ftvo-msg">この 形式は 原寸で 表示 できません</div>'; };
+    img.src = u;
+  }).catch(function(e){
+    if (!w.closed && w._ftvSeq === my) stage.innerHTML = '<div id="ftvo-msg">原本の 読み込みに 失敗しました（' + e.message + '）</div>';
+  });
+}
+/* 原寸（縮めない・まん中から）／全体表示（窓に 収める）の 並べ方 */
+function _ftvOrigWinLayout(w, center) {
+  var d = w.document, stage = d.getElementById('ftvo-stage'), img = stage.querySelector('img'), fb = d.getElementById('ftvo-fit');
+  fb.textContent = w._ftvFit ? '🔍 原寸' : '⤢ 全体表示';
+  fb.title = w._ftvFit ? '縮めずに 元の 大きさで 表示' : '窓に 収めて 表示';
+  fb.className = w._ftvFit ? '' : 'on';
+  if (!img) return;
+  if (w._ftvFit) {
+    var r = Math.min(1, stage.clientWidth / img.naturalWidth, stage.clientHeight / img.naturalHeight);
+    img.style.width = Math.floor(img.naturalWidth * r) + 'px'; img.style.height = Math.floor(img.naturalHeight * r) + 'px';
+    img.style.marginTop = Math.max(0, Math.floor((stage.clientHeight - img.naturalHeight * r) / 2)) + 'px';
+    stage.style.cursor = 'default';
+  } else {
+    img.style.width = img.naturalWidth + 'px'; img.style.height = img.naturalHeight + 'px';
+    img.style.marginTop = Math.max(0, Math.floor((stage.clientHeight - img.naturalHeight) / 2)) + 'px';
+    stage.style.cursor = 'grab';
+    if (center) {
+      stage.scrollLeft = Math.max(0, (img.naturalWidth - stage.clientWidth) / 2);
+      stage.scrollTop = Math.max(0, (img.naturalHeight - stage.clientHeight) / 2);
+    }
+  }
+}
 function _previewFolderThumbLarge(url, fileName, fpath) {
   var old = document.getElementById('folder-thumb-viewer');
   if (old) { if (old._ftvClose) old._ftvClose(); else old.remove(); }
@@ -28575,7 +28699,12 @@ function _previewFolderThumbLarge(url, fileName, fpath) {
       e.stopPropagation();
       var p = list[idx];
       if (!/\.(jpe?g|png|gif|webp|bmp)$/i.test(p)) { close(); spFileDbl(p); return; }   // PDF など は いつもの 開き方
-      orig = !orig; show();
+      if (orig) { orig = false; show(); return; }   // 窓の 中の 原寸（ポップアップが 止められた ときの 逃げ道）から 戻る
+      /* 原寸は 別ウィンドウで（v1.9.672 本人「写真を原寸で開く場合は、別ウィンドウにして」）。
+         押した その 場で 開く（あとで 開くと ポップアップ止めに かかる）。止められたら 前の とおり この 窓の 中で 原寸 */
+      if (_ftvOpenOrigWin(origApi)) return;
+      showSaveToast(false, 'ポップアップが ブロックされたので この 画面の 中で 原寸を 出します（ブラウザで このサイトの ポップアップを 許可すると 別ウィンドウで 開きます）');
+      orig = true; show();
     });
     corner.appendChild(origBtn);
   }
@@ -28610,8 +28739,16 @@ function _previewFolderThumbLarge(url, fileName, fpath) {
   function go(d) {
     if (list.length < 2) return;
     idx = (idx + d + list.length) % list.length;
-    show();
+    if (document.body.contains(viewer)) show();
+    _ftvOrigWinFollow(origApi);   // 別ウィンドウの 原寸も 同じ 写真へ
   }
+  /* 別ウィンドウの 原寸から 使う 窓口（並び・今の 番号・送り） */
+  var origApi = {
+    list: list,
+    cur: function(){ return list[idx]; },
+    pos: function(){ return list.length > 1 ? (idx + 1) + ' / ' + list.length : ''; },
+    go: go
+  };
   var seq = 0;
   function show() {
     var my = ++seq;
@@ -28623,7 +28760,7 @@ function _previewFolderThumbLarge(url, fileName, fpath) {
     nameLabel.textContent = name + (orig ? '（原寸）' : '（サムネ）') + cnt;
     if (origBtn) {
       origBtn.textContent = !isImgP ? '📄 開く' : (orig ? '⤢ 全体表示' : '🔍 原寸');
-      origBtn.title = !isImgP ? '原本を ビューワーで 開く' : (orig ? '画面に 収めて 表示' : '縮めずに 元の 大きさで 表示（原本を 読み込みます）');
+      origBtn.title = !isImgP ? '原本を ビューワーで 開く' : (orig ? '画面に 収めて 表示' : '縮めずに 元の 大きさで 別ウィンドウに 表示（原本を 読み込みます）');
       origBtn.style.background = orig ? '#2a6aa8' : 'rgba(0,0,0,0.55)';
     }
     stage.innerHTML = '';

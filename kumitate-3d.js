@@ -155,7 +155,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
         group.add(m); meshes.push(m);
         var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lm); e.position.copy(m.position); e.rotation.y = rot; group.add(e);
       }
-      if (k === sel && typeof sel === 'string') { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
+      if (k === sel && typeof sel === 'string' && !(r.parts[k].role === '金具' || (shp && shp.bolts && shp.bolts.length))) { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
     // アンカーの ボルト（v0.8.78）：金具の 根元から 石の 中へ 深さ ぶん。当たる 石が 無い・端に 近いは 赤、ほかは 濃い 灰
     (r.anc || []).forEach(function(a){ var L = a.depth + 10, rr = Math.max(a.dia / 2, 3), cg = new THREE.CylinderGeometry(rr, rr, L, 12);

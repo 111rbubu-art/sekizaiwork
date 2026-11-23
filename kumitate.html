@@ -29,6 +29,10 @@ button{font:inherit;cursor:pointer}
 .c{flex:1;position:relative;min-width:0}
 #v{position:absolute;inset:0}
 #skPins{position:absolute;left:0;top:0;width:0;height:0;z-index:6}
+/* 直し方の 矢印（部材の 上に じかに。v0.8.81 本人「部材に 直接 矢印の マークを 付けて、移動や 寸法変更と 出る 様に」） */
+#skArw{position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:visible}
+#skArw g.ar{pointer-events:auto;cursor:pointer}
+#skArw g.ar:hover .chip rect{fill:#fff4ea}
 #dimPins{position:absolute;left:0;top:0;width:0;height:0;z-index:5}
 #dimPins .dpin{position:absolute;transform:translate(-50%,-50%)}
 #dimPins button{background:#1f3a5f;color:#fff;border:0;border-radius:6px;padding:2px 8px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
@@ -269,6 +273,7 @@ input.kmn{width:110px;text-align:left}
 <div class="main">
   <div class="c">
     <div id="v"></div>
+    <svg id="skArw"></svg>
     <div id="skPins"></div>
     <div id="dimPins"></div>
     <div id="pmBar"></div>
@@ -307,7 +312,7 @@ input.kmn{width:110px;text-align:left}
 <script src="buzai-lib.js?v=0.9.50"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.80';
+var APP_VER = 'v0.8.81';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -1081,7 +1086,7 @@ function skOpts(s){
   function tryIt(k, t, fn){ var S = JSON.parse(JSON.stringify(ST)); if (fn(S) === false) return; var r = calcOn(S);
     var left = r.sk.some(function(x){ return x.key === s.key; });
     var nw = r.ng.concat(r.hits.map(function(x){ return x.nameA + ' と ' + x.nameB + ' が 重なる（横 ' + x.ox + '・高さ ' + x.oy + '・奥行 ' + x.oz + '）'; })).filter(function(m){ return now.indexOf(m) < 0; });
-    if (!left) o.push({ k:k, t:t, S:S, nw:nw }); }
+    if (!left) o.push({ k:k, t:t, S:S, nw:nw, nb:k && r.boxes[k] ? Object.assign({}, r.boxes[k]) : null }); }
   // 部材ごと（部材の 順）に「N 移動」「N 伸ばす」。向きは 絵で わかるので 書かない（v0.8.33 本人）
   if (s.o) { var k0 = s.a, m0 = szMode(k0), c0 = RES.parts[k0][dm], sg0 = s.f[1] === '1' ? 1 : -1;
     if (m0 !== 'free') tryIt(k0, s.g + ' 移動', function(S){ return moveStone(S, k0, m0, A, -sg0 * s.g); });
@@ -1126,14 +1131,94 @@ function pinOpts(key){
     return '<div class="gopt sko">' + o.map(function(x, i){ if (/^両方/.test(x.t)) return ''; var dh = x.h - g.haiseki, dn = x.n - g.naka, nm = [], t = [];
       if (Math.abs(dh) > 0.5) { nm.push(hlName(g.hk, '拝石')); t.push(W(dh)); } if (Math.abs(dn) > 0.5) { nm.push(hlName(g.nk, '中仕切')); t.push(W(dn)); }
       return '<div class="skr"><span class="skn">' + nm.join('・') + '</span><button data-gi="' + i + '"' + (x.ng ? ' disabled' : '') + '>' + esc(t.join('・')) + (x.ng ? ' <span class="err">開口部 ' + x.open + '</span>' : ' <span style="color:#1d7a3a">✓</span>') + '</button></div>'; }).join('') + '</div>'; }
-  var e = skOf(key); return e ? skOptsHtml(e) : '';
+  var e = skOf(key); if (!e) return ''; var o = skOpts(e);
+  if (!o.length) return skOptsHtml(e);
+  // 部材の 直し方は 3D の 部材の 上に 矢印で（skArw）。部材の ない 案（目地を まとめて など）だけ ここに
+  var h = ''; o.forEach(function(x, i){ if (x.k && arwOk(x)) return;
+    h += '<div class="skr"><span class="skn">' + (x.k ? hlName(x.k, RES.parts[x.k].name) : '') + '</span><button data-sko="' + esc(e.key) + '" data-oi="' + i + '"' + (x.nw.length ? ' title="' + esc(x.nw.join('\n')) + '"' : '') + '>' + esc(x.t) +
+      (x.nw.length ? ' <span class="err">⚠ ほか ' + x.nw.length + '</span>' : ' <span style="color:#1d7a3a">✓</span>') + '</button></div>'; });
+  return h ? '<div class="gopt sko">' + h + '</div>' : '';
 }
+// ── 直し方の 矢印（v0.8.81）──
+//   移動＝部材の 上の 面の 真ん中に 太い 矢印（動く 向き）。縮める／伸ばす＝動く 面と 新しい 面の 間を 赤の 斜線、矢印は 動く 面の 側だけ・反対は 線（▶｜─）
+//   色＝部材の 色（hlMap）、縁は 白＋紺で 太く。札に「40 移動 ✓／⚠1」。乗せると 直した 形を 点線で、押すと 直る
+var ARW = [], ARWH = -1, SVGN = 'http://www.w3.org/2000/svg';
+function arwKind(x){ var s = skOf(SKOPEN), A = s && s.A, o = RES.boxes[x.k], n = x.nb; if (!A || !o || !n) return null;
+  var d0 = n[A + '0'] - o[A + '0'], d1 = n[A + '1'] - o[A + '1'];
+  if (Math.abs(d0) < 0.5 && Math.abs(d1) < 0.5) return null;
+  if (Math.abs(d0 - d1) < 0.5) return { m:1, A:A, d:d0 };
+  var f = Math.abs(d1) > Math.abs(d0) ? A + '1' : A + '0'; return { m:0, A:A, f:f, F:o[f], Fn:n[f], shr:(n[A + '1'] - n[A + '0']) < (o[A + '1'] - o[A + '0']) }; }
+function arwOk(x){ return !!(x.k && arwKind(x)); }
+function svgEl(t, a, par){ var e = document.createElementNS(SVGN, t); for (var k in a) e.setAttribute(k, a[k]); if (par) par.appendChild(e); return e; }
+function renderArw(){
+  var sv = $('skArw'); sv.innerHTML = ''; ARW = []; ARWH = -1;
+  if (!SKOPEN || /^gap/.test(SKOPEN) || !RES) return; var s = skOf(SKOPEN); if (!s) return;
+  if (!sv.querySelector('defs')) svgEl('defs', {}, sv).innerHTML = '<pattern id="arwHat" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="9" height="9" fill="rgba(255,255,255,.5)"/><line x1="0" y1="0" x2="0" y2="9" stroke="#c62828" stroke-width="4"/></pattern><pattern id="arwHatG" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="9" height="9" fill="rgba(255,255,255,.5)"/><line x1="0" y1="0" x2="0" y2="9" stroke="#1d7a3a" stroke-width="4"/></pattern>';
+  var hm = hlMap() || {}, gh = svgEl('g', { 'class':'gh' }, sv), cnt = {};
+  skOpts(s).forEach(function(x, i){ var K = x.k && arwKind(x); if (!K) return; var col = hm[x.k] || '#1f6fd1', n = cnt[x.k] = (cnt[x.k] || 0) + 1;
+    var g = svgEl('g', { 'class':'ar', 'data-sko':s.key, 'data-oi':i }, sv), it = { x:x, K:K, g:g, col:col, slot:n, el:{} };
+    if (x.nw.length) svgEl('title', {}, g).textContent = x.nw.join('\n');
+    if (K.m) { it.el.o = svgEl('path', { fill:'none', stroke:'#1b2440', 'stroke-width':10, 'stroke-linejoin':'round' }, g); it.el.f = svgEl('path', { fill:col, stroke:'#fff', 'stroke-width':5, 'stroke-linejoin':'round' }, g); }
+    else { it.el.h = svgEl('polygon', { fill:K.shr ? 'url(#arwHat)' : 'url(#arwHatG)', stroke:K.shr ? '#c62828' : '#1d7a3a', 'stroke-width':1.5 }, g);   /* 赤＝削る・緑＝足す */ it.el.nf = svgEl('line', { stroke:'#fff', 'stroke-width':3, 'stroke-dasharray':'8 5' }, g);
+      ['a', 'l'].forEach(function(q){ it.el[q + 'o'] = svgEl('line', { stroke:'#1b2440', 'stroke-width':16, 'stroke-linecap':'round' }, g); it.el[q + 'w'] = svgEl('line', { stroke:'#fff', 'stroke-width':11, 'stroke-linecap':'round' }, g); it.el[q + 'c'] = svgEl('line', { stroke:col, 'stroke-width':5, 'stroke-linecap':'round' }, g); });
+      it.el.ho = svgEl('polygon', { fill:'none', stroke:'#1b2440', 'stroke-width':9, 'stroke-linejoin':'round' }, g); it.el.hf = svgEl('polygon', { fill:col, stroke:'#fff', 'stroke-width':4, 'stroke-linejoin':'round' }, g);
+      it.el.bo = svgEl('line', { stroke:'#1b2440', 'stroke-width':9, 'stroke-linecap':'round' }, g); it.el.bw = svgEl('line', { stroke:'#fff', 'stroke-width':3, 'stroke-linecap':'round' }, g); }
+    var cg = svgEl('g', { 'class':'chip' }, g); it.el.cg = cg;
+    var r = svgEl('rect', { rx:13, height:26, fill:'#fff', stroke:col, 'stroke-width':2.5 }, cg), tx = svgEl('text', { 'font-size':13, 'font-weight':700, fill:'#222', y:18, x:11 }, cg);
+    tx.textContent = x.t + ' '; var mk = svgEl('tspan', { fill:x.nw.length ? '#c77700' : '#1d7a3a' }, tx); mk.textContent = x.nw.length ? '⚠' + x.nw.length : '✓';
+    r.setAttribute('width', Math.ceil(tx.getComputedTextLength ? tx.getComputedTextLength() : 80) + 22); it.cw = +r.getAttribute('width');
+    g.addEventListener('mouseenter', function(){ ARWH = ARW.indexOf(it); }); g.addEventListener('mouseleave', function(){ if (ARW[ARWH] === it) ARWH = -1; });
+    ARW.push(it); });
+  // 札は いちばん 上に（ほかの 矢印に 隠れない）
+  var top = svgEl('g', {}, sv); ARW.forEach(function(it){ var w = svgEl('g', { 'class':'ar', 'data-sko':it.g.dataset.sko, 'data-oi':it.g.dataset.oi }, top); w.appendChild(it.el.cg);
+    w.addEventListener('mouseenter', function(){ ARWH = ARW.indexOf(it); }); w.addEventListener('mouseleave', function(){ if (ARW[ARWH] === it) ARWH = -1; }); });
+  ARW.gh = gh; placeArw();
+}
+function placeArw(){
+  var sv = $('skArw'); if (!ARW.length || !V3 || !V3.project) return; var pr = sv.getBoundingClientRect();
+  function P(o){ var q = V3.project(o); return [q.x - pr.left, q.y - pr.top]; }
+  function W(A, a, O, b, Y, c){ var o = {}; o[A] = a; o[O] = b; o[Y] = c; return o; }
+  function ln(e, a, b){ e.setAttribute('x1', a[0]); e.setAttribute('y1', a[1]); e.setAttribute('x2', b[0]); e.setAttribute('y2', b[1]); }
+  function pts(L){ return L.map(function(p){ return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' '); }
+  var used = [];
+  ARW.forEach(function(it){ var K = it.K, b = RES.boxes[it.x.k]; if (!b) return; var A = K.A, Y = A === 'y' ? 'z' : 'y', O = ['x', 'y', 'z'].filter(function(a){ return a !== A && a !== Y; })[0];
+    var yv = b[Y + '1'], ol = it.slot > 1 ? 0.72 : 0.3, ov = b[O + '0'] + (b[O + '1'] - b[O + '0']) * ol, cx, cy;
+    if (K.m) { var ac = (b[A + '0'] + b[A + '1']) / 2, c0 = P(W(A, ac, O, ov, Y, yv)), c1 = P(W(A, ac + (K.d > 0 ? 60 : -60), O, ov, Y, yv)), dx = c1[0] - c0[0], dy = c1[1] - c0[1], dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl, nx = -uy, ny = ux;
+      var L = 76, w = 11, hw = 23, hl = 28, T = function(a, c){ return [c0[0] + ux * a + nx * c, c0[1] + uy * a + ny * c]; };
+      var d = 'M' + [T(-L / 2, -w), T(L / 2 - hl, -w), T(L / 2 - hl, -hw), T(L / 2, 0), T(L / 2 - hl, hw), T(L / 2 - hl, w), T(-L / 2, w)].map(function(p){ return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' L') + ' Z';
+      it.el.o.setAttribute('d', d); it.el.f.setAttribute('d', d); cx = c0[0] + ux * (L / 2 + 6) + (nx < 0 ? nx : -nx) * 34; cy = c0[1] + uy * (L / 2 + 6) - Math.abs(ny) * 34 - 10; }
+    else { var F = K.F, Fn = K.Fn, sg = (K.f[1] === '1') === K.shr ? -1 : 1;   // sg＝面が 動く 向き
+      var vis = Math.abs(Fn - F) < 12 ? F + sg * 12 : Fn;
+      it.el.h.setAttribute('points', pts([P(W(A, F, O, b[O + '0'], Y, yv)), P(W(A, vis, O, b[O + '0'], Y, yv)), P(W(A, vis, O, b[O + '1'], Y, yv)), P(W(A, F, O, b[O + '1'], Y, yv))]));
+      ln(it.el.nf, P(W(A, vis, O, b[O + '0'], Y, yv)), P(W(A, vis, O, b[O + '1'], Y, yv)));
+      var sz = b[A + '1'] - b[A + '0'], ins = Math.max(Math.abs(Fn - F) + 25, Math.min(sz * 0.35, 160)), inw = K.f[1] === '1' ? -1 : 1;   // inw＝部材の 内へ
+      var pF = P(W(A, K.shr ? F : vis, O, ov, Y, yv)), pm = P(W(A, F + inw * ins, O, ov, Y, yv)), pE = P(W(A, F + inw * Math.min(sz * 0.85, ins * 2), O, ov, Y, yv));
+      var tip, from, bar = pm, lfrom;
+      if (K.shr) { from = pF; tip = pm; lfrom = pE; } else { from = pm; tip = pF; lfrom = pE; }
+      var dx = tip[0] - from[0], dy = tip[1] - from[1], dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl, nx = -uy, ny = ux;
+      if (dl < 40) { var ex = 40 - dl; if (K.shr) from = [from[0] - ux * ex, from[1] - uy * ex]; else tip = [tip[0] + ux * ex, tip[1] + uy * ex]; }
+      var t2 = K.shr ? [tip[0] - ux * 5, tip[1] - uy * 5] : tip, bs = [t2[0] - ux * 20, t2[1] - uy * 20];
+      ['ao', 'aw', 'ac'].forEach(function(q){ ln(it.el[q], from, bs); });
+      ['lo', 'lw', 'lc'].forEach(function(q){ ln(it.el[q], lfrom, bar); });
+      var hp = pts([t2, [bs[0] + nx * 14, bs[1] + ny * 14], [bs[0] - nx * 14, bs[1] - ny * 14]]); it.el.ho.setAttribute('points', hp); it.el.hf.setAttribute('points', hp);
+      var b0 = [bar[0] + nx * 17, bar[1] + ny * 17], b1 = [bar[0] - nx * 17, bar[1] - ny * 17]; ln(it.el.bo, b0, b1); ln(it.el.bw, b0, b1);
+      cx = Math.min(from[0], lfrom[0], tip[0]) - it.cw - 8; cy = (from[1] + lfrom[1]) / 2 - 13; if (cx < 4) { cx = Math.max(from[0], lfrom[0], tip[0]) + 10; } }
+    for (var t = 0; t < 8 && used.some(function(u){ return cx < u[0] + u[2] + 4 && u[0] < cx + it.cw + 4 && cy < u[1] + 30 && u[1] < cy + 30; }); t++) cy += 30;   // 札どうしが 重なる ときは 下へ
+    used.push([cx, cy, it.cw]); it.el.cg.setAttribute('transform', 'translate(' + cx.toFixed(1) + ',' + cy.toFixed(1) + ')'); });
+  // 乗せた 矢印＝直した あとの 箱を 点線で
+  var gh = ARW.gh, h = ARW[ARWH]; if (!gh) return; gh.innerHTML = ''; if (!h || !h.x.nb) return; var n = h.x.nb, E = [];
+  [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]].forEach(function(c, i, L){ var d = L[(i + 1) % 4]; E.push([c, d]); E.push([[c[0], 1, c[2]], [d[0], 1, d[2]]]); E.push([c, [c[0], 1, c[2]]]); });
+  function Q(c){ return P({ x:c[0] ? n.x1 : n.x0, y:c[1] ? n.y1 : n.y0, z:c[2] ? n.z1 : n.z0 }); }
+  E.forEach(function(e){ var a = Q(e[0]), b = Q(e[1]); svgEl('line', { x1:a[0], y1:a[1], x2:b[0], y2:b[1], stroke:'#1b2440', 'stroke-width':4, 'stroke-linecap':'round', opacity:.5 }, gh); svgEl('line', { x1:a[0], y1:a[1], x2:b[0], y2:b[1], stroke:h.col, 'stroke-width':2.5, 'stroke-dasharray':'7 5' }, gh); });
+}
+$('skArw').addEventListener('click', function(e){ var g = e.target.closest('g.ar'); if (g) skApply(g.dataset.sko, g.dataset.oi); });
+$('skArw').addEventListener('pointerdown', function(e){ if (e.target.closest('g.ar')) e.stopPropagation(); });
 function renderPins(){
   var bx = $('skPins'); PINS = RES ? probs().zones.filter(function(z){ return z.pin; }) : [];
   if (SKOPEN && !PINS.some(function(z){ return z.pin === SKOPEN; }) && !skOf(SKOPEN)) SKOPEN = null;
   bx.innerHTML = PINS.map(function(z){ var op = SKOPEN === z.pin;
     return '<div class="pin' + (op ? ' op' : '') + '"' + (op ? ' style="z-index:2"' : '') + '><div class="ld"></div><div class="dot"></div><div class="pb"><button class="lb" data-skk="' + esc(z.pin) + '">' + esc(z.label) + (op ? ' ▴' : ' ▾') + '</button>' + (op ? pinOpts(z.pin) : '') + '</div></div>'; }).join('');
-  placePins();
+  placePins(); renderArw();
 }
 function placePins(){
   if (!V3 || !V3.project) return; var pins = $('skPins').children; if (!pins.length) return;
@@ -1152,7 +1237,7 @@ function placeSzBox(){
   x = Math.max(rc.left + 8, Math.min(x, rc.right - w - 8)); y = Math.max(rc.top + 8, Math.min(y, rc.bottom - h - 8));
   bx.classList.add('near'); bx.style.left = (x - pr.left) + 'px'; bx.style.top = (y - pr.top) + 'px';
 }
-(function pinLoop(){ requestAnimationFrame(pinLoop); placePins(); placeDimPins(); placeSzBox(); })();
+(function pinLoop(){ requestAnimationFrame(pinLoop); placePins(); placeArw(); placeDimPins(); placeSzBox(); })();
 $('skPins').addEventListener('click', function(e){ if (skClick(e)) { renderPins(); return; }
   var b = e.target.closest('button'); if (b && b.dataset.gi != null) { var g = gapOf(), o = g && gapOpts(g)[+b.dataset.gi]; if (!o || o.ng) return; undoPush(); setHman(o.h, o.n); SKOPEN = null; alertOff(); run(); } });
 $('skPins').addEventListener('pointerdown', function(e){ e.stopPropagation(); });

@@ -95,7 +95,7 @@ button{font:inherit;cursor:pointer}input,select{font:inherit}
 <script src="buzai-lib.js?v=0.9.50"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
 <script>
-var APP_VER = 'v0.3.27';
+var APP_VER = 'v0.3.28';
 // 部材マスター：部材ライブラリ（buzai/1）の 一覧・名前や 役目の 直し・複製・新しく・保存（版と 履歴）。
 // 形と 図面は 図面アプリ（zumen.html#pd）で 直し、ここへ 戻す。加工図面の 見本は zumen.html#km（この 部材 だけ）。
 // 部材は この 端末（kumitate.lib・組み立てと 同じ）と SharePoint（/業務アプリ/部材ライブラリ/部材/<id>.json、履歴/<id>_v<n>.json）
@@ -284,6 +284,7 @@ function partHtml(p){
       '<div class="muted">大きさは セットの 枠に 書いて あります。面取り・ハショリは mm の まま、穴は 加工図面の 寸法の 付け方（端から 寸法＝📌 守る）で 動きます</div>';
     if ((p.merged || []).length) h += '<div class="sec">まとめた 部材</div><div class="lst">' + p.merged.map(function(m){ return '<div><span>' + esc(m.name || m.id) + '　<span class="muted">' + esc(m.id) + '　' + esc((m.size || []).join('×')) + '　' + esc((m.at || '').slice(0, 10)) + '</span></span><a href="#" data-unmerge="' + esc(m.id) + '">戻す</a></div>'; }).join('') + '</div>';
   }
+  if (r === '金具' || (p.bolts || []).length) h += boltHtml(p);
   h += '<div class="sec">見本図面 <span class="muted" style="font-weight:400">（1 枚・紙の 図面の スクショ）</span></div>' + mhHtml(p);
   var hasFr = !!(p.sketch && (p.sketch.ents || []).some(function(e){ return e.frame; }));
   h += '<div class="sec">加工図面</div><div class="box">' + (hasFr ? '<b style="color:var(--ok)">✓ ［✎ 加工図面］の 図面 1 枚が 加工図面です（図枠の 中）</b><br><span class="muted">形も 加工図面も その 画面で 直し、印刷・PDF・DXF も その 画面の 右の 欄から</span>' :
@@ -329,7 +330,35 @@ function changes(p){ if (!p.__dirty) return []; var b = p.__base; if (!b) return
   if (J(p.components) !== J(b.components) || J(p.params) !== J(b.params)) out.push('形');
   if (J(p.sketch) !== J(b.sketch) || J(p.drawing) !== J(b.drawing)) out.push('加工図面');
   if (J(p.mihon && p.mihon.key) !== J(b.mihon && b.mihon.key)) out.push('見本図面');
+  if (J(p.bolts) !== J(b.bolts)) out.push('ボルト');
   return out.length ? out : ['中身']; }
+// ── 金具の ボルト（v0.3.28・2026-11-24 本人「金具に ボルトを 登録、その 位置に 石の 穴。穴は φ8 深さ 55、変えられる ように」）──
+// p.bolts＝[{ id, name, p:[x（左右 中心 0）, y（下から）, d（前から 奥へ）], n:[x,y,z]（向き・z＝前が ＋）, dia, depth }]
+// モデリングで 金具を 置くと、ボルトの 向きの 先に ある 石に 穴（kumitate-engine.js anchorHoles）
+var BDIR = [['左へ', [-1, 0, 0]], ['右へ', [1, 0, 0]], ['下へ', [0, -1, 0]], ['上へ', [0, 1, 0]], ['奥へ', [0, 0, -1]], ['前へ', [0, 0, 1]]], BTSEL = 0;
+function bdirIx(n){ for (var i = 0; i < BDIR.length; i++) if (BDIR[i][1].join() === (n || []).join()) return i; return 2; }
+function boltPics(p){ var c = (p.components || [])[0], v = c && c.shape && c.shape.views, W = pv(p, 'W'), D = pv(p, 'D'), H = pv(p, 'H'); if (!(W > 0 && D > 0 && H > 0)) return '';
+  var bl = p.bolts || [], S = 150 / Math.max(W, H, D), pad = 14;
+  function pic(kind){ var w = (kind === 'front' ? W : D) * S, hh = H * S, out = kind === 'front' ? (v && v.front && v.front.out) : (v && v.side && v.side.out), ox = kind === 'front' ? W / 2 : 0;
+    var pts = (out || (kind === 'front' ? [[-W / 2, 0], [W / 2, 0], [W / 2, H], [-W / 2, H]] : [[0, 0], [D, 0], [D, H], [0, H]])).map(function(q){ return ((q[0] + ox) * S + pad).toFixed(1) + ',' + ((H - q[1]) * S + pad).toFixed(1); }).join(' ');
+    var g = '<svg class="btpic" data-btv="' + kind + '" data-s="' + S + '" data-pad="' + pad + '" data-h="' + H + '" data-ox="' + ox + '" width="' + (w + pad * 2) + '" height="' + (hh + pad * 2) + '" style="background:#fff;border:1px solid #d6dbe3;border-radius:6px;cursor:crosshair;margin-right:8px"><polygon points="' + pts + '" fill="#e4e7eb" stroke="#555"/>';
+    bl.forEach(function(b, i){ var q = b.p || [0, 0, 0], X = ((kind === 'front' ? q[0] + ox : q[2]) * S + pad), Y = (H - q[1]) * S + pad, n = b.n || [0, -1, 0], dx = kind === 'front' ? n[0] : -n[2], dy = -n[1];
+      g += '<line x1="' + X + '" y1="' + Y + '" x2="' + (X + dx * 26) + '" y2="' + (Y + dy * 26) + '" stroke="#c0392b" stroke-width="3"/><circle cx="' + X + '" cy="' + Y + '" r="' + (i === BTSEL ? 6 : 4.5) + '" fill="' + (i === BTSEL ? '#c0392b' : '#fff') + '" stroke="#c0392b" stroke-width="2"/><text x="' + (X + 7) + '" y="' + (Y - 6) + '" font-size="11" fill="#c0392b">' + (i + 1) + '</text>'; });
+    return g + '<text x="4" y="11" font-size="10" fill="#666">' + (kind === 'front' ? '正面' : '右側面（左が 前）') + '</text></svg>'; }
+  return '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;margin:4px 0">' + pic('front') + pic('side') + '</div>'; }
+function boltHtml(p){ var bl = p.bolts || []; if (BTSEL >= bl.length) BTSEL = 0;
+  var h = '<div class="sec">🔩 ボルト <span class="muted" style="font-weight:400">（モデリングで 置くと、向きの 先の 石に 穴）</span></div>' + boltPics(p);
+  if (bl.length) h += '<div class="muted">図を 押すと 選んだ ボルト（●）が その 位置へ</div><div style="overflow-x:auto"><table class="cmp" style="margin-top:4px;font-size:12px"><tr><th></th><td><b>左右</b></td><td><b>高さ</b></td><td><b>前から</b></td><td><b>向き</b></td><td><b>穴径 φ</b></td><td><b>深さ</b></td><td></td></tr>' + bl.map(function(b, i){ var q = b.p || [0, 0, 0], inp = function(f, v){ return '<input data-bt="' + i + '" data-bf="' + f + '" type="number" inputmode="decimal" value="' + v + '" style="width:46px;padding:2px 3px">'; };
+    return '<tr' + (i === BTSEL ? ' style="background:#fff3f1"' : '') + '><th style="font-weight:400"><a href="#" data-btsel="' + i + '">' + esc(b.name || 'ボルト ' + (i + 1)) + '</a></th><td>' + inp('x', q[0]) + '</td><td>' + inp('y', q[1]) + '</td><td>' + inp('d', q[2]) + '</td><td><select data-bt="' + i + '" data-bf="n" style="padding:2px">' + BDIR.map(function(o, j){ return '<option value="' + j + '"' + (j === bdirIx(b.n) ? ' selected' : '') + '>' + o[0] + '</option>'; }).join('') + '</select></td><td>' + inp('dia', b.dia) + '</td><td>' + inp('depth', b.depth) + '</td><td><a href="#" data-btdel="' + i + '" style="color:#c0392b">✕</a></td></tr>'; }).join('') + '</table></div>';
+  return h + '<div><button class="btn" id="bBtAdd">＋ ボルトを 足す</button><span class="muted"> 左右＝真ん中 0（右が ＋）・高さ＝下から・前から＝前の 面から 奥へ（mm）</span></div>'; }
+function boltSet(p, i, f, v){ var b = (p.bolts || [])[i]; if (!b) return; touch(p); b.p = (b.p || [0, 0, 0]).slice();
+  if (f === 'n') b.n = BDIR[+v][1].slice(); else if (f === 'x') b.p[0] = +v || 0; else if (f === 'y') b.p[1] = +v || 0; else if (f === 'd') b.p[2] = +v || 0; else if (f === 'dia') b.dia = +v > 0 ? +v : 8; else if (f === 'depth') b.depth = +v > 0 ? +v : 55;
+  libSave(); render(); }
+function boltAdd(p){ touch(p); p.bolts = (p.bolts || []).slice(); var W = pv(p, 'W'), D = pv(p, 'D'), H = pv(p, 'H'), n = p.bolts.length + 1;
+  p.bolts.push({ id:'b' + n + '_' + Date.now().toString(36).slice(-4), name:'ボルト ' + n, p:[-Math.round(W / 2), Math.round(H / 2), Math.round(D / 2)], n:[-1, 0, 0], dia:8, depth:55 }); BTSEL = p.bolts.length - 1; libSave(); render(); }
+function boltPick(p, svg, e){ var b = (p.bolts || [])[BTSEL]; if (!b) return; var rc = svg.getBoundingClientRect(), S = +svg.dataset.s, pad = +svg.dataset.pad, H = +svg.dataset.h, ox = +svg.dataset.ox;
+  var X = (e.clientX - rc.left - pad) / S, Y = H - (e.clientY - rc.top - pad) / S, r = function(v){ return Math.round(v * 2) / 2; };
+  touch(p); b.p = (b.p || [0, 0, 0]).slice(); if (svg.dataset.btv === 'front') b.p[0] = r(X - ox); else b.p[2] = r(X); b.p[1] = r(Y); libSave(); render(); }
 // ── 同じ 役目の 部材と くらべる（セットの 部材を 入れ替える とき、v0.3.5。大きさ違いを まとめる v0.3.9）──
 // 枠の 大きさ：まとめた 部材は 枠に 大きさ（sl.size）が ある。無ければ 部材の 大きさ
 function slotSize(sl, p){ var z = sl && sl.size; return z && z.W > 0 ? [Math.round(z.W), Math.round(z.D), Math.round(z.H)] : sizeOf(p); }
@@ -511,6 +540,7 @@ onPane('change', function(e){ var t = e.target, p = LIB[CUR.sel]; if (!p) return
     else if (f === 'status') { if (t.value === 'draft') p.status = 'draft'; else delete p.status; }
     else p[f] = t.value;
     libSave(); render(); return; }
+  if (t.dataset.bt != null) { boltSet(p, +t.dataset.bt, t.dataset.bf, t.value); return; }
   if (t.dataset.om || t.dataset.ot) { touch(p); p.drawing = p.drawing || {}; var o = p.drawing.out = p.drawing.out || {};
     if (t.dataset.om) o.mode = t.dataset.om; else o.top = t.checked; libSave(); render(); }
 });
@@ -523,6 +553,10 @@ onPane('click', function(e){ var t = e.target, id = t.id, p = LIB[CUR.sel]; if (
   if (id === 'bUp') { UPID = p.id; $('fOpen').click(); return; }
   if (id === 'bDl') { mhOut(pure(p)).then(function(d){ var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type:'application/json' })); a.download = p.id + '.json'; a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000); }); return; }
   if (id === 'bMhPaste') { mhClip(p); return; }
+  if (id === 'bBtAdd') { boltAdd(p); return; }
+  var bs = t.closest('[data-btsel]'); if (bs) { e.preventDefault(); BTSEL = +bs.dataset.btsel; render(); return; }
+  var bd = t.closest('[data-btdel]'); if (bd) { e.preventDefault(); if (!confirm('この ボルトを 外しますか')) return; touch(p); p.bolts = (p.bolts || []).slice(); p.bolts.splice(+bd.dataset.btdel, 1); libSave(); render(); return; }
+  var bv = t.closest('svg.btpic'); if (bv) { boltPick(p, bv, e); return; }
   if (id === 'bMhFile') { $('fImg').click(); return; }
   if (id === 'bMhDel') { if (!confirm('見本図面を 外します（［💾 保存］まで は 取り消せます）')) return; touch(p); delete p.mihon; libSave(); render(); return; }
   if (t.closest('#mhPic')) { mhGet(p.mihon).then(function(src){ if (!src) return; $('mhBig').querySelector('img').src = src; $('mhBig').style.display = 'flex'; }); return; }

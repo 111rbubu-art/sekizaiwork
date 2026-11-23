@@ -144,13 +144,23 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       var shp = r.parts[k].shape, pg = null;
       if (shp && window.BZ) { try { var pr = shapeProto(shp); inUse.add(pr); pg = pr.clone(); pg.traverse(function(o){ if (o.isMesh) o.material = sm; else if (o.isLine) o.material = lm; }); } catch (err) { pg = null; } }
       if (pg) { // 形の ある 部材：底面の 中心に 置く。押せる ように 中の 面に 鍵を つける
-        g.dispose(); pg.position.set(b.x0 + w / 2, b.y0, b.z0 + d / 2); pg.rotation.y = rot; pg.traverse(function(o){ if (o.isMesh) { o.userData.key = k; meshes.push(o); } }); group.add(pg);
+        g.dispose(); pg.traverse(function(o){ if (o.isMesh) { o.userData.key = k; meshes.push(o); } });
+        var tl = r.parts[k].tilt || 0, rl = r.parts[k].roll || 0;
+        if (tl || rl) {   // 倒した・裏返した 部材（v0.8.78）：形の 真ん中を 回して、囲む 箱の 真ん中に 置く
+          var H0 = window.BZ && shp.params && shp.params.H ? +(shp.params.H.value != null ? shp.params.H.value : shp.params.H.default) : h;
+          var gR = new THREE.Group(), gT = new THREE.Group(), gY = new THREE.Group(); pg.position.set(0, -H0 / 2, 0); gR.add(pg); gR.rotation.z = rl * Math.PI / 2; gT.add(gR); gT.rotation.x = tl * Math.PI / 2; gY.add(gT);
+          gY.position.set(b.x0 + w / 2, b.y0 + h / 2, b.z0 + d / 2); gY.rotation.y = rot; group.add(gY);
+        } else { pg.position.set(b.x0 + w / 2, b.y0, b.z0 + d / 2); pg.rotation.y = rot; group.add(pg); }
       } else {
         group.add(m); meshes.push(m);
         var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lm); e.position.copy(m.position); e.rotation.y = rot; group.add(e);
       }
       if (k === sel && typeof sel === 'string') { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
+    // アンカーの ボルト（v0.8.78）：金具の 根元から 石の 中へ 深さ ぶん。当たる 石が 無い・端に 近いは 赤、ほかは 濃い 灰
+    (r.anc || []).forEach(function(a){ var L = a.depth + 10, rr = Math.max(a.dia / 2, 3), cg = new THREE.CylinderGeometry(rr, rr, L, 12);
+      var dv = new THREE.Vector3(a.dir[0], a.dir[1], a.dir[2]), cm = new THREE.Mesh(cg, new THREE.MeshBasicMaterial({ color:a.hit && !a.warn ? 0x8a1c1c : 0xe03030, depthTest:false, transparent:true, opacity:0.85 }));
+      cm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dv); cm.position.set(a.p[0], a.p[1], a.p[2]).add(dv.clone().multiplyScalar(L / 2 - 10)); cm.renderOrder = 5; group.add(cm); });
     tagsBuild(r, sel);
     // 砂利（v0.8.57）：外柵の 内側の 部材の 無い 所に 敷く 板。r.jari = { y:上の 高さ, rects:[{x0,z0,x1,z1}], src:{key,url,scale} }
     if (r.jari && r.jari.rects && r.jari.rects.length) {

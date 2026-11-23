@@ -705,7 +705,7 @@ var KM = (function(){
     base.forEach(function(k){ zmax = Math.max(zmax, res.boxes[k].z1); });
     res.free = {};
     free.forEach(function(fr){
-      var sz = freeSize(fr), w = sz.w, h = sz.h, d = sz.d, rot = +fr.rot || 0, C = null, o = fr.off || {}, msg = '';
+      var sz = oriSize(freeSize(fr), fr), w = sz.w, h = sz.h, d = sz.d, rot = +fr.rot || 0, C = null, o = fr.off || {}, msg = '';
       var tp = (fr.tgt && fr.tgt.pts || []).filter(function(q){ return q && q.key && res.boxes[q.key]; });
       if (fr.tgt && fr.tgt.pts && fr.tgt.pts.length && tp.length < fr.tgt.pts.length) msg = '相手の 部材が 無く なった（' + fr.name + '）→ 支点を 選び直して ください';
       if (!msg && tp.length && fr.self && fr.self.length) {
@@ -719,12 +719,89 @@ var KM = (function(){
       var a = rot * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a)), ex = (c * w + s * d) / 2, ez = (s * w + c * d) / 2;
       res.boxes[fr.key] = { x0:r1(C.x - ex), y0:r1(C.y), z0:r1(C.z - ez), x1:r1(C.x + ex), y1:r1(C.y + h), z1:r1(C.z + ez) };
       var cat = fr.cat && fr.cat.kind ? fr.cat : null, CG = { tower:'tower', fence:'fence', boshi:'boshi', toba:'fence', crypt:'crypt' }, cg = cat ? CG[cat.kind] || 'tower' : fr.cg || 'tower';   // 部材構成で 移した 分類（石塔・外柵…）
-      res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:cat ? cat.kind : 'free', tgroup:cat && cat.group || '', cg:cg, grp:cg, role:fr.role || '', w:w, d:d, h:h, rot:rot,
+      res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:cat ? cat.kind : 'free', tgroup:cat && cat.group || '', cg:cg, grp:cg, role:fr.role || '', w:w, d:d, h:h, rot:rot, tilt:(+fr.tilt || 0) & 3, roll:(+fr.roll || 0) & 3,
         shape:fr.shape || null, partId:fr.shape && fr.shape.id || '', kakou:fr.shape && fr.shape.kakou || '', free:true, placed:!!(tp.length && !msg && fr.self && fr.self.length), visible:true };
       res.free[fr.key] = fr;
     });
+    anchorHoles(res);
     res.hits = interferences(res.parts, res.boxes);
     return res;
+  }
+  // ── 向き（2026-11-24 本人「L 金具を 回して 角に 置けるように」）：roll＝前から 見て 90° ずつ（裏返す＝2）、tilt＝横に 倒す 90° ずつ（前へ）、そのあと rot（上から）
+  //   部材の 中の 点 → roll（Z 軸）→ tilt（X 軸）→ rot（Y 軸）。箱の 大きさは 倒した 後の 形を 囲む 箱
+  function oriSize(sz, fr){ var t = (+fr.tilt || 0) & 3, r = (+fr.roll || 0) & 3, w = sz.w, h = sz.h, d = sz.d, x;
+    if (r & 1) { x = w; w = h; h = x; } if (t & 1) { x = h; h = d; d = x; } return { w:w, h:h, d:d }; }
+  function q90(v, n, ax){ var a = v.slice(); for (var i = 0; i < (n & 3); i++) { var b = a.slice();
+      if (ax === 'z') { b[0] = -a[1]; b[1] = a[0]; } else { b[1] = -a[2]; b[2] = a[1]; } a = b; } return a; }
+  // 部材の 中の 点（x＝左右 中心 0・y＝下 0・z＝前が ＋、中心 0）→ 世界
+  function oriPt(p, b, v){ var q = q90(q90([v[0], v[1] - p.h0 / 2, v[2]], p.roll, 'z'), p.tilt, 'x'), r = rotY(q[0], q[2], p.rot);
+    return [(b.x0 + b.x1) / 2 + r.x, b.y0 + (b.y1 - b.y0) / 2 + q[1], (b.z0 + b.z1) / 2 + r.z]; }
+  function oriDir(p, v){ var q = q90(q90(v, p.roll, 'z'), p.tilt, 'x'), r = rotY(q[0], q[2], p.rot); return [r.x, q[1], r.z]; }
+
+  // ── アンカーの 穴（2026-11-24 本人「アンカーの 穴付き 金具を 部材に して、置くと 石の 穴が 決まる」）──
+  // 金具の 部材（buzai/1）に bolts：[{ id, name, p:[x, y, d]（x＝左右 中心 0・y＝下から・d＝前から 奥へ）, n:[x,y,z]（ボルトの 向き・z＝前が ＋）, dia, depth }]
+  // 置いた 金具の ボルトの 根元（金具の 外の 面）から 向きの 先に ある 石（すき間 ANC_GAP 以内）に 穴を 開ける。
+  // 穴は この 案件の 形（res.parts[k].shape の 写し）にだけ 入れ、マスターは 変えない。動かすと 作り直す（ついて 動く）
+  var ANC_GAP = 20, ANC_EDGE = 10;
+  function circ(cx, cy, r){ var o = []; for (var i = 0; i < 24; i++) { var a = i / 24 * Math.PI * 2; o.push([r1(cx + r * Math.cos(a)), r1(cy + r * Math.sin(a))]); } return o; }
+  function anchorHoles(res){
+    res.anc = []; var add = {};
+    Object.keys(res.parts).forEach(function(fk){
+      var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !fp.free) return;
+      var D0 = pv(sh, 'D'), H0 = pv(sh, 'H'); if (!(D0 > 0 && H0 > 0)) return;
+      var P = { h0:H0, roll:fp.roll || 0, tilt:fp.tilt || 0, rot:fp.rot || 0 };
+      bl.forEach(function(bt, bi){
+        var bp = bt.p || [0, 0, 0], n = bt.n || [0, -1, 0], dia = +bt.dia || 8, dep = +bt.depth || 55, nm = bt.name || ('ボルト ' + (bi + 1));
+        var W0 = oriPt(P, fb, [+bp[0] || 0, +bp[1] || 0, D0 / 2 - (+bp[2] || 0)]), dv = oriDir(P, n), ax = 0;
+        for (var i = 1; i < 3; i++) if (Math.abs(dv[i]) > Math.abs(dv[ax])) ax = i;
+        var sg = dv[ax] < 0 ? -1 : 1, row = { key:fk, bolt:bi, name:nm, dia:dia, depth:dep, p:W0, dir:[ax === 0 ? sg : 0, ax === 1 ? sg : 0, ax === 2 ? sg : 0], hit:null, warn:'' };
+        if (Math.abs(dv[ax]) < 0.99) { row.warn = '斜めの ボルトは まだ 穴に できません'; res.anc.push(row); return; }
+        var best = null, lo = ['x0', 'y0', 'z0'], hi = ['x1', 'y1', 'z1'];
+        Object.keys(res.boxes).forEach(function(k){
+          if (k === fk) return; var q = res.parts[k], b = res.boxes[k]; if (!q || !b || q.free && q.shape && q.shape.bolts || BL_KISEI(q)) return;
+          if (q.rot && Math.abs(q.rot % 90) > 0.01) return;
+          var face = sg < 0 ? b[hi[ax]] : b[lo[ax]], gap = sg < 0 ? W0[ax] - face : face - W0[ax];
+          if (gap < -2 || gap > ANC_GAP) return;
+          for (var j = 0; j < 3; j++) if (j !== ax && (W0[j] < b[lo[j]] - 0.01 || W0[j] > b[hi[j]] + 0.01)) return;
+          if (!best || gap < best.gap) best = { k:k, gap:gap, face:face };
+        });
+        if (!best) { row.warn = '当たる 石が ありません'; res.anc.push(row); return; }
+        var E = W0.slice(); E[ax] = best.face;
+        var hk = best.k, b = res.boxes[hk], th = b[hi[ax]] - b[lo[ax]], ed = Infinity;
+        for (var j2 = 0; j2 < 3; j2++) if (j2 !== ax) ed = Math.min(ed, E[j2] - b[lo[j2]], b[hi[j2]] - E[j2]);
+        row.hit = hk; row.hitName = res.parts[hk].name; row.gap = r1(best.gap);
+        if (ed - dia / 2 < ANC_EDGE) row.warn = '石の 端に 近い（' + r1(ed) + ' mm）';
+        if (dep >= th - 5) row.warn = (row.warn ? row.warn + '・' : '') + '深さが 石の 厚み（' + r1(th) + '）に 近い';
+        (add[hk] = add[hk] || []).push({ E:E, dir:row.dir, dia:dia, depth:dep, name:nm, from:fp.name });
+        res.anc.push(row);
+      });
+    });
+    Object.keys(add).forEach(function(k){ var q = res.parts[k]; if (!q.shape) q.shape = boxShape(q); else q.shape = JSON.parse(JSON.stringify(q.shape));
+      var ok = 0; add[k].forEach(function(a){ if (putHole(q, res.boxes[k], a)) ok++; });
+      q.shape.__anc = add[k].map(function(a){ return { name:a.name, from:a.from, dia:a.dia, depth:a.depth }; }); q.anc = ok; });
+  }
+  function BL_KISEI(q){ var BL = typeof window !== 'undefined' && window.BL; return BL && BL.isKisei ? BL.isKisei(q) : !!q.kisei; }
+  // 形の 無い 石（箱）は 箱の 形（views）を 作って 穴を 入れる
+  function boxShape(q){ var W = q.w, D = q.d, H = q.h;
+    return { schema:'buzai/1', id:q.partId || '', name:q.name, dims:{}, drawing:{ dims:[] }, params:{ W:{ name:'幅', value:W, default:W }, D:{ name:'奥行', value:D, default:D }, H:{ name:'高さ', value:H, default:H } },
+      components:[{ id:'body', name:q.name, shape:{ type:'views', views:{ base:{ W:W, D:D, H:H }, front:{ out:[[-W / 2, 0], [W / 2, 0], [W / 2, H], [-W / 2, H]] } } }, at:{ y:0, front:0 } }] }; }
+  // 世界の 穴（入口 E・向き dir）→ 石の 図の 座標（正面 [x,y]・側面 [d,y]・天面 [x,d]）。図は 元の 大きさ（views.base）の 座標で 持つ（端から mm で 守る fit L）
+  function putHole(q, b, a){
+    var sh = q.shape, c = (sh.components || [])[0]; if (!c || !c.shape) return false;
+    if (c.shape.type === 'box' && sh.components.length === 1) { var W1 = pv(sh, 'W'), H1 = pv(sh, 'H'), D1 = pv(sh, 'D'); c.shape = { type:'views', views:{ base:{ W:W1, D:D1, H:H1 }, front:{ out:[[-W1 / 2, 0], [W1 / 2, 0], [W1 / 2, H1], [-W1 / 2, H1]] } } }; }
+    var v = c.shape.views; if (c.shape.type !== 'views' || !v || !v.front) return false;
+    var W = pv(sh, 'W'), D = pv(sh, 'D'), H = pv(sh, 'H'); if (!(W > 0 && D > 0 && H > 0)) return false;
+    var bs = v.base || { W:W, D:D, H:H }, rot = +q.rot || 0;
+    var cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, L = rotY(a.E[0] - cx, a.E[2] - cz, -rot), Ld = rotY(a.dir[0], a.dir[2], -rot);
+    var x = L.x, y = a.E[1] - b.y0 - (+(c.at && c.at.y) || 0), dd = D / 2 - L.z, dn = [Math.round(Ld.x), Math.round(a.dir[1]), Math.round(Ld.z)];
+    var xb = x + W / 2 - bs.W / 2, r = a.dia / 2, fit = { x:'L', y:'L' }, hole;
+    if (dn[1] < 0) { v.top = v.top || {}; (v.top.holes = v.top.holes || []).push(hole = { pts:circ(xb, dd, r), depth:a.depth, fit:fit, anc:1 }); }
+    else if (dn[1] > 0) { v.top = v.top || {}; var kx = W / bs.W, kd = D / bs.D, ky = H / bs.H; (v.top.cuts = v.top.cuts || []).push(hole = { pts:circ(x, dd, r).map(function(p){ return [p[0] / kx, p[1] / kd]; }), y0:0, y1:a.depth / ky, anc:1 }); }
+    else if (dn[2] < 0) { (v.front.holes = v.front.holes || []).push(hole = { pts:circ(xb, y, r), depth:a.depth, fit:fit, anc:1 }); }
+    else if (dn[2] > 0) { (v.front.holes = v.front.holes || []).push(hole = { pts:circ(xb, y, r), depth:a.depth, from:'back', fit:fit, anc:1 }); }
+    else if (dn[0] !== 0) { if (!v.side || !v.side.out) { v.side = v.side || {}; v.side.out = [[0, 0], [bs.D, 0], [bs.D, bs.H], [0, bs.H]]; }
+      (v.side.holes = v.side.holes || []).push(hole = { pts:circ(dd, y, r), depth:a.depth, from:dn[0] > 0 ? 'left' : 'right', fit:fit, anc:1 }); }
+    return !!hole;
   }
 
   // ── 才数と 見積（単価が 無ければ 才数だけ）──
@@ -865,6 +942,6 @@ var KM = (function(){
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, fixJoints:fixJoints, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
-    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, placeFree:placeFree, frameOf:frameOf, framePt:framePt, rotY:rotY, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
+    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, placeFree:placeFree, anchorHoles:anchorHoles, oriSize:oriSize, oriPt:oriPt, frameOf:frameOf, framePt:framePt, rotY:rotY, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

@@ -303,11 +303,11 @@ input.kmn{width:110px;text-align:left}
 <input type="file" id="fIshime" accept="image/*" hidden>
 <script src="buzai-engine.js?v=0.9.52"></script>
 <script src="kumitate-data.js"></script>
-<script src="kumitate-engine.js?v=0.8.67"></script>
+<script src="kumitate-engine.js?v=0.8.78"></script>
 <script src="buzai-lib.js?v=0.9.50"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.77';
+var APP_VER = 'v0.8.78';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -385,14 +385,17 @@ var SEL = null, RES = null, V3 = null;
 var MSEL = {}, MSELO = null;
 ST.free = ST.free || [];
 // 計算：組み立てエンジン ＋ 足した 部材（支点で 置く）
-function calc(){ mvClean(ST); return calcOn(ST); }
+function calc(){ mvClean(ST); boltSync(ST); return calcOn(ST); }
+// 置いた 金具の ボルト（穴径・深さ・位置）は 部材マスターの 今の 値に 合わせる（v0.8.78。本人「φ8 深さ 55、変えられる ように」）
+function boltSync(S){ (S.free || []).forEach(function(f){ var L = f.shape && f.shape.id && LIB[f.shape.id]; if (L && L.bolts && JSON.stringify(L.bolts) !== JSON.stringify(f.shape.bolts)) f.shape.bolts = JSON.parse(JSON.stringify(L.bolts)); }); }
 // 前の 版（〜v0.8.34）で 引く 間に 何倍も 足された 外柵の 面の ずれ（例 2112 mm）を 消す
 //   v0.8.70：消すのは 伸ばした（両面の ずれが ちがう）ぶんが 500 を 越える とき だけ。石を そのまま 動かした（両面が 同じ）ずれは 何 mm でも 残す
 //   （本人「塔婆柱の 基点を 使った 移動が できない」＝点で 移動で 後ろへ 906 動かすと z0・z1 が 消され 前後だけ 戻って いた）
 function mvClean(S){ Object.keys(S.mv || {}).forEach(function(k){ var m = S.mv[k];
   Object.keys(m).forEach(function(f){ if (!isFinite(+m[f])) delete m[f]; });
   ['x', 'z'].forEach(function(A){ var a = +m[A + '0'] || 0, b = +m[A + '1'] || 0; if (Math.abs(a - b) > 500) { delete m[A + '0']; delete m[A + '1']; } }); }); }
-function calcOn(S){ var r = KM.placeFree(KM.compute(DATA, S), S.free); skAdd(r, S); return r; }
+function calcOn(S){ var r = KM.placeFree(KM.compute(DATA, S), S.free); skAdd(r, S); ancNg(r); return r; }
+function ancNg(r){ (r.anc || []).forEach(function(a){ if (a.warn) r.ng = (r.ng || []).concat([(r.parts[a.key] ? r.parts[a.key].name : '金具') + ' の ' + a.name + '：' + a.warn]); }); }
 // ── 目地より 広い 隙間（v0.8.29 本人「設定した 目地以上に 隙間が 空く 場合、アラートを 出して」）──
 // 手で 変える 前（大きさ・位置・自動処理を 抜いた 形）で 目地 以下で 向き合って いた 石の 組が、いま 目地より 広く 空いて いたら ✕。
 // 外柵の 石どうしは 目地の ✕（jointCheck）が 見る
@@ -833,7 +836,7 @@ function selSet(ks, add){
 function viewRes(){
   var b = {}; Object.keys(RES.boxes).forEach(function(k){ if (!ST.hide[k]) b[k] = RES.boxes[k]; });
   var pb = probs();
-  return { parts:RES.parts, boxes:b, hits:RES.hits.filter(function(h){ return !ST.hide[h.a] && !ST.hide[h.b]; }), bad:pb.bad, hl:hlMap(), zones:pb.zones.map(function(z){ return z.pin ? Object.assign({}, z, { label:'' }) : z; }), jari:jariView() };
+  return { parts:RES.parts, boxes:b, hits:RES.hits.filter(function(h){ return !ST.hide[h.a] && !ST.hide[h.b]; }), bad:pb.bad, hl:hlMap(), zones:pb.zones.map(function(z){ return z.pin ? Object.assign({}, z, { label:'' }) : z; }), jari:jariView(), anc:(RES.anc || []).filter(function(a){ return !ST.hide[a.key]; }) };
 }
 function sel3d(){
   if (multiSel()) { var o0 = {}; selKeys().forEach(function(k){ o0[k] = 1; }); return o0; }
@@ -1912,6 +1915,7 @@ function partHtml(){
     if (pr || pt) h += '<div class="row"><span class="k">加工・既製品</span><span style="text-align:right">' + pr + (pt ? '<br>' + pt : '') + '</span></div>';
     h += '<div class="row"><button class="lk" id="bZumen">🧊 図面アプリで 形を 直す</button><button class="lk" id="bUnshape">箱に 戻す</button></div>';
   } else if (p.shape) h += '<div class="row"><span class="k">形</span><span>図面から（' + esc(p.shape.id || p.shape.name || '') + '）</span></div>';
+  h += ancStoneHtml(SEL);
   h += partFitHtml(SEL);
   if (p.added) h += addedHtml(p);
   h += swapHtml(p);
@@ -2371,11 +2375,18 @@ function msTreeClick(t, id){
 $('bMeas').onclick = msToggle;
 $('msBar').addEventListener('click', function(e){ var b = e.target.closest('[data-ms]'); if (!b) return; if (b.dataset.ms === 'end') msEnd(); else if (b.dataset.ms === 'redo') { MSR.a = null; msDraw(); msBar(); } });
 
+// ── アンカーの 穴（v0.8.78・2026-11-24 本人「L 金具を 部材に、ボルトの 位置で 石に 穴」）：計算は KM.anchorHoles（engine）。RES.anc＝ボルトごとの 答え
+function ancFreeHtml(k){ var A = (RES.anc || []).filter(function(a){ return a.key === k; }); if (!A.length) return '';
+  return '<div class="box" style="margin-top:8px"><b>🔩 ボルト → 石の 穴</b>' + A.map(function(a){ return '<div class="row"><span>' + esc(a.name) + '</span><span style="text-align:right">' + (a.hit ? esc(a.hitName) + ' に φ' + a.dia + ' 深 ' + a.depth : '<span class="err">' + esc(a.warn) + '</span>') + (a.hit && a.warn ? '<br><span class="err">' + esc(a.warn) + '</span>' : '') + '</span></div>'; }).join('') +
+    '<div class="muted">金具か 石を 動かすと 穴も ついて 動きます。穴径・深さは 部材マスターの 金具で 変えます</div></div>'; }
+function ancStoneHtml(k){ var A = (RES.anc || []).filter(function(a){ return a.hit === k; }); if (!A.length) return '';
+  return '<div class="row"><span class="k">アンカーの 穴</span><span style="text-align:right">' + A.map(function(a){ return 'φ' + a.dia + ' 深 ' + a.depth + '（' + esc(RES.parts[a.key] ? RES.parts[a.key].name : '') + '）'; }).join('<br>') + '</span></div>'; }
 // ── 右の 欄：足した 部材 ──
 function freeHtml(){
   var p = RES.parts[SEL], fr = freeOf(SEL), g = groupOf(p), o = fr.off || {}, h = '';
   h += '<h3>' + esc(p.name) + ' <span class="muted">足した 部材' + (p.role ? '（' + esc(p.role) + '）' : '') + '</span></h3>';
-  h += '<div class="row"><span class="k" style="white-space:nowrap">幅×奥行×高さ</span><span style="white-space:nowrap">' + ['w', 'd', 'h'].map(function(f){ return '<input class="chip l" style="width:60px" data-fw="' + f + '" type="number" inputmode="numeric" value="' + Math.round(p[f]) + '">'; }).join(' ') + '</span></div>';
+  var tilted = (p.tilt & 1) || (p.roll & 1);   // 倒した 部材は 大きさを 数で 変えない（箱の 向きと 形の 向きが ちがう）
+  h += '<div class="row"><span class="k" style="white-space:nowrap">幅×奥行×高さ</span><span style="white-space:nowrap">' + (tilted ? Math.round(p.w) + ' × ' + Math.round(p.d) + ' × ' + Math.round(p.h) : ['w', 'd', 'h'].map(function(f){ return '<input class="chip l" style="width:60px" data-fw="' + f + '" type="number" inputmode="numeric" value="' + Math.round(p[f]) + '">'; }).join(' ')) + '</span></div>';
   if (BL.isKisei(p)) h += '<div class="row"><span class="k">種類</span><span>既製品' + (fr.shape && fr.shape.material ? '（' + esc(fr.shape.material) + '）' : '') + (fr.shape && fr.shape.hinban ? '・品番 ' + esc(fr.shape.hinban) : '') + '<br><span class="muted">石の 才数・石種に 入れない</span></span></div>';   // 香炉皿など（2026-11-18）
   else {
   h += '<div class="row"><span class="k">才数</span><span>' + f2(KM.sai(p.w, p.d, p.h)) + ' 才</span></div>';
@@ -2392,6 +2403,8 @@ function freeHtml(){
   h += '<div style="margin-top:8px;font-weight:700">オフセット（mm）</div>';
   [['x', '左右', '＋右'], ['z', '前後', '＋奥'], ['y', '高さ', '＋上']].forEach(function(a){ h += '<div class="row"><span class="k">' + a[1] + '</span><span><input class="chip" style="width:70px" data-fo="' + a[0] + '" type="number" inputmode="decimal" value="' + (+o[a[0]] || 0) + '"> <span class="muted">' + a[2] + '</span></span></div>'; });
   h += '<div class="row"><span class="k">回転</span><span><input class="chip" style="width:70px" data-frot="1" type="number" inputmode="decimal" value="' + (+fr.rot || 0) + '"> ° <span class="muted">上から 見て 左回り・支点が 中心</span></span></div>';
+  h += '<div class="row" style="flex-wrap:wrap;gap:4px;justify-content:flex-start"><button class="lk" id="bFrR90" title="上から 見て 90° 回す">⟲ 上から 90°</button><button class="lk" id="bFrTilt" title="前へ 90° 倒す">⤵ 横に 倒す 90°</button><button class="lk" id="bFrFlip" title="前から 見て 180° 回す（上下を 逆に）">⇋ 裏返す</button>' + ((fr.tilt & 3) || (fr.roll & 3) ? '<button class="lk" id="bFrOri0">向きを 戻す</button>' : '') + '</div>';
+  h += ancFreeHtml(SEL);
   if (p.placed) h += '<div class="muted" style="margin-top:4px">相手（' + esc(tgtNames(fr)) + '）が 動くと いっしょに 動きます。高さ・横の 最初の 数字は 目地（上 ' + ((ST.joint || {}).v != null ? ST.joint.v : 5) + '・横 ' + ((ST.joint || {}).h != null ? ST.joint.h : 6) + '）</div>';
   h += '</div>';
   var cs = canToSet(fr);
@@ -2415,6 +2428,10 @@ function freeClick(t, id){
     if (dep.length) alert('この 部材を 相手に して いた ' + dep.map(function(f){ return f.name; }).join('・') + ' は 支点を 選び直して ください'); return true; }
   if (id === 'bFrCopy') { var n = addFree(fr.shape && fr.shape.id, fr); if (n) startPick(n.key, 'tgt', { fresh:true }); return true; }
   if (id === 'bFrSet') { freeToSet(fr); return true; }
+  if (id === 'bFrR90') { fr.rot = (((+fr.rot || 0) + 90) % 360 + 360) % 360; run(); return true; }
+  if (id === 'bFrTilt') { fr.tilt = ((+fr.tilt || 0) + 1) & 3; run(); return true; }
+  if (id === 'bFrFlip') { fr.roll = ((+fr.roll || 0) + 2) & 3; run(); return true; }
+  if (id === 'bFrOri0') { fr.tilt = 0; fr.roll = 0; run(); return true; }
   return false;
 }
 // セットに 入れる：相手が 1 つの セットの 部材だけ・回して いない とき。置き場所は 相手の 枠からの ずれ（セットの 左・下・前 から mm）
@@ -2422,7 +2439,7 @@ function canToSet(fr){
   var tp = fr.tgt && fr.tgt.pts || [], sid = tp.length && RES.parts[tp[0].key] && RES.parts[tp[0].key].setId, S = sid && setById(sid);
   if (!tp.length) return { ok:false, why:'置いた あと、相手が セットの 部材なら その セットに 入れられます' };
   if (!S || !tp.every(function(q){ return RES.parts[q.key] && RES.parts[q.key].setId === sid; })) return { ok:false, why:'相手が セットの 部材の ときだけ セットに 入れられます' };
-  if (+fr.rot) return { ok:false, why:'回した 部材は セットに 入れられません（回転 0 の とき）' };
+  if (+fr.rot || (fr.tilt & 3) || (fr.roll & 3)) return { ok:false, why:'回した・倒した 部材は セットに 入れられません（回転 0 の とき）' };
   if (!fr.shape || !LIB[fr.shape.id]) return { ok:false, why:'部材マスターに 無い 部材は セットに 入れられません' };
   return { ok:true, S:S };
 }
@@ -2794,6 +2811,7 @@ function openKakou(k){
   // 案件で 大きさ・左右が 変わった 部材は、3D と 同じ 形（q.shape）で 加工図面を 開く。前の 図（sketch）は 元の 大きさなので 外し、今の 形から かき直させる
   // （2026-11-11 本人「部材と 加工図面が 同じで ない」「水鉢と 同じように 拝石も」＝部品詳細図でなく 水鉢と 同じ 加工図面の 画面で）
   var jd = jobDiff(k).filter(function(t){ return !lkN[t.split(' ')[0]]; });   // 鍵の 寸法の ちがいは 形を 変えない（前の 図の まま 開く）
+  if (q.shape && q.shape.__anc && q.shape.__anc.length) jd.push('アンカーの 穴 ' + q.shape.__anc.length);   // 金具の ボルトの 穴（v0.8.78）は この 案件の 形に だけ ある → 今の 形から かき直す
   if (jd.length && q.shape) { var dj = JSON.parse(JSON.stringify(q.shape)); delete dj.__from; delete dj.thumb; delete dj.sketch; if (!dj.id) dj.id = q.partId;
     lk.forEach(function(x){ if (dj.params && dj.params[x.ax]) { dj.params[x.ax].value = x.lock; dj.lock = dj.lock || {}; dj.lock[x.ax] = x.lock; } });
     dj.__job = { key:k, diff:jd, name:jobName(), lock:lockInfo }; dj.__master = 1; lsSet('zumen.part', dj); if (!skGo('kakou', '#pd' + Date.now())) window.open('zumen.html#pd' + Date.now(), 'zumen'); return; }
@@ -2826,7 +2844,7 @@ if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
 spLoadSets(false); if (!spHost()) fixMissing(false);
-import('./kumitate-3d.js?v=0.8.77').then(function(m){
+import('./kumitate-3d.js?v=0.8.78').then(function(m){
   K3M = m; V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen, pickBox);
   V3.setTexture(ishSrc); V3.setLight(lightOf()); lookSet(LOOK); if (spHost()) spStonesLoad(); ishLoad().then(function(){ ishApply(); if (ISH.on && Object.keys(ISH.by).length) renderSel(); });
   draw();

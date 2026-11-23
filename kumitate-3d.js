@@ -85,6 +85,33 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     dl.intensity = (LT.main != null ? +LT.main : 1.6) * ex; hemi.intensity = (LT.amb != null ? +LT.amb : 1.5) * ex; dl2.intensity = 0.45 * hemi.intensity / 1.5;
     dl.color.set(LT.col || '#ffffff'); placeLight(); dirty = true; }
   function setTexture(fn){ texFn = fn || null; if (last) update(last.r, last.col, last.sel, last.site, false); }
+  // 見た目（v0.8.74 本人「石の テクスチャ ON・ソリッド・線のみ（隠れて いる 部材も 選べる）」）：'tex'｜'solid'｜'line'
+  var MODE = 'tex';
+  function setMode(m){ MODE = m === 'solid' || m === 'line' ? m : 'tex'; if (last) update(last.r, last.col, last.sel, last.site, false); else tagsBuild(null); }
+  // 線のみ の ときの 部材名の 札（本人「隠れた 部材は 選びにくい。部材名を 出して 押したら 選べるように」）。押す＝選ぶ・右クリック＝メニュー・ダブルクリック＝加工図面
+  var tagL = document.createElement('div'); tagL.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:3';
+  if (getComputedStyle(box).position === 'static') box.style.position = 'relative';
+  box.appendChild(tagL);
+  var tagSt = document.createElement('style'); tagSt.textContent = '.k3tag{position:absolute;pointer-events:auto;cursor:pointer;font-size:12px;line-height:1;padding:3px 7px;border-radius:10px;background:#ffffffe6;border:1px solid #64748b;color:#1e293b;white-space:nowrap;transform:translate(-50%,-50%);user-select:none;font-family:inherit}' +
+    '.k3tag:hover{background:#fff3e0;border-color:#e07a1f;z-index:2}.k3tag.on{background:#e07a1f;border-color:#e07a1f;color:#fff;font-weight:700;z-index:3}';
+  document.head.appendChild(tagSt);
+  var tags = [];
+  function tagsBuild(r, sel){ tagL.textContent = ''; tags = []; if (MODE !== 'line' || !r) return;
+    Object.keys(r.boxes).forEach(function(k){ var b = r.boxes[k], p = r.parts[k]; if (!p || !(b.x1 > b.x0)) return;
+      var el = document.createElement('div'), on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; el.className = 'k3tag' + (on ? ' on' : ''); el.textContent = p.name || k; el.title = (p.name || k) + '（押すと 選ぶ）';
+      el.addEventListener('pointerdown', function(e){ e.stopPropagation(); });
+      el.addEventListener('click', function(e){ e.stopPropagation(); if (onPick) onPick(k, e); });
+      el.addEventListener('dblclick', function(e){ e.stopPropagation(); if (onDbl) onDbl(k); });
+      el.addEventListener('contextmenu', function(e){ e.preventDefault(); e.stopPropagation(); if (onCtx) onCtx(k, e.clientX, e.clientY); });
+      tagL.appendChild(el); tags.push({ k:k, el:el, p:new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2), on:on }); });
+    tagsPlace(); }
+  // 札の 置き場：部材の 真ん中。重なる ときは 下へ ずらす（選んだ 札は 動かさない）
+  function tagsPlace(){ if (!tags.length) return; var rc = { width:box.clientWidth, height:box.clientHeight }, put = [];
+    tags.map(function(t){ var v = t.p.clone().project(cam); return { t:t, x:(v.x + 1) / 2 * rc.width, y:(1 - v.y) / 2 * rc.height, out:v.z > 1 }; })
+      .sort(function(a, b){ return (b.t.on - a.t.on) || (a.y - b.y); })
+      .forEach(function(q){ var el = q.t.el; if (q.out) { el.style.display = 'none'; return; } el.style.display = ''; var w = el.offsetWidth || 60, h = (el.offsetHeight || 18) + 2, y = q.y;
+        for (var i = 0; i < 12; i++) { var hit = put.filter(function(o){ return Math.abs(o.x - q.x) < (o.w + w) / 2 && Math.abs(o.y - y) < h; })[0]; if (!hit) break; y = hit.y + h; }
+        put.push({ x:q.x, y:y, w:w }); el.style.left = q.x + 'px'; el.style.top = y + 'px'; }); }
   var inUse = new Set();
   function trim(){
     if (cache.size <= CACHE_MAX) return;
@@ -103,12 +130,13 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       var b = r.boxes[k], w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
       if (!(w > 0 && h > 0 && d > 0)) return;
       var bad = r.bad && r.bad[k], c0 = new THREE.Color(col(k)); var hl = r.hl && r.hl[k]; if (hl) c0 = new THREE.Color(hl); else if (bad) c0.lerp(new THREE.Color(0xd9534f), 0.85);   // 開いた 札の 部材は 選択肢の 部材名と 同じ 色（v0.8.47）   // ✕ の 部材は 赤く（v0.8.23）
-      var src = texFn ? texFn(k) : null; if (src) { var tint = hl ? new THREE.Color(hl) : bad ? new THREE.Color(0xd9534f) : null; c0 = new THREE.Color(0xffffff); if (tint) c0.lerp(tint, 0.6); }   // 石目：写真の 色を そのまま（✕・札の 部材は 色を 少し 重ねる）
+      var src = texFn && MODE === 'tex' ? texFn(k) : null; if (src) { var tint = hl ? new THREE.Color(hl) : bad ? new THREE.Color(0xd9534f) : null; c0 = new THREE.Color(0xffffff); if (tint) c0.lerp(tint, 0.6); }   // 石目：写真の 色を そのまま（✕・札の 部材は 色を 少し 重ねる）
       var g = new THREE.BoxGeometry(w, h, d), dark = src ? !!(src.dark) : c0.getHSL({}).l < 0.25;
       var sm = new THREE.MeshStandardMaterial({ color:c0, roughness:src ? 0.32 : 0.4, metalness:0.05, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1, side:THREE.DoubleSide });
       if (src) triMat(sm, src, k, false);
+      if (MODE === 'line') { sm.colorWrite = false; sm.depthWrite = false; }   // 面は 描かない（奥の 線も 見える）。押す ための 面は 残す
       var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）
-      var lm = on ? selMat : hit[k] || bad ? hitMat : dark ? darkLine : lineMat;
+      var lm = on ? selMat : hit[k] || bad ? hitMat : dark && MODE !== 'line' ? darkLine : lineMat;
       var rot = +(r.parts[k].rot || 0) * Math.PI / 180;   // 足した 部材の 回転（箱＝回した 形を 囲む 箱）
       if (rot) { g.dispose(); g = new THREE.BoxGeometry(r.parts[k].w, h, r.parts[k].d); }
       var m = new THREE.Mesh(g, sm);
@@ -123,6 +151,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       }
       if (k === sel && typeof sel === 'string') { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
     });
+    tagsBuild(r, sel);
     // 砂利（v0.8.57）：外柵の 内側の 部材の 無い 所に 敷く 板。r.jari = { y:上の 高さ, rects:[{x0,z0,x1,z1}], src:{key,url,scale} }
     if (r.jari && r.jari.rects && r.jari.rects.length) {
       var jm = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.95, metalness:0 }), jt = 20;
@@ -337,7 +366,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   // 描くのは 変わった ときだけ（止まって いる 間は 描かない。回す・ズーム・慣性の 間と 部材・地面・大きさが 変わった とき）
   var dirty = true;
   controls.addEventListener('change', function(){ dirty = true; });
-  (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { if (LT.follow) placeLight(); dirty = false; renderer.render(scene, cam); } })();
+  (function loop(){ if (!alive) return; requestAnimationFrame(loop); if (controls.update()) dirty = true; if (dirty) { if (LT.follow) placeLight(); dirty = false; renderer.render(scene, cam); if (tags.length) tagsPlace(); } })();
   // 3D の 中の 文字（赤い 札）。画面の 大きさで 一定
   function textSprite(txt, bg, fg){
     var c = document.createElement('canvas'), x = c.getContext('2d'), fs = 30; x.font = 'bold ' + fs + 'px sans-serif';
@@ -411,5 +440,5 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     ground.visible = mode !== 'off';
     gm.transparent = mode === 'half'; gm.opacity = mode === 'half' ? 0.35 : 1; gm.depthWrite = mode !== 'half'; gm.needsUpdate = true; dirty = true;
   }
-  return { update:update, fit:fit, setGround:setGround, setTexture:setTexture, setTexScale:setTexScale, setLight:setLight, jariMode:function(cb){ JM = cb || null; renderer.domElement.style.cursor = JM ? 'pointer' : ''; }, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
+  return { update:update, setMode:setMode, mode:function(){ return MODE; }, fit:fit, setGround:setGround, setTexture:setTexture, setTexScale:setTexScale, setLight:setLight, jariMode:function(cb){ JM = cb || null; renderer.domElement.style.cursor = JM ? 'pointer' : ''; }, pickMode:pickMode, setMarks:setMarks, measureMode:measureMode, setMeasures:setMeasures, sizeMode:sizeMode, dragging:function(){ return !!szDrag; }, project:function(p){ var rc = renderer.domElement.getBoundingClientRect(), q = scr(new THREE.Vector3(p.x, p.y, p.z), rc); return { x:rc.left + q.x, y:rc.top + q.y }; }, png:function(){ renderer.render(scene, cam); return renderer.domElement.toDataURL('image/png'); }, dispose:function(){ alive = false; clear(); cache.forEach(function(pg){ pg.traverse(function(o){ if (o.geometry) o.geometry.dispose(); }); }); cache.clear(); renderer.dispose(); } };
 }

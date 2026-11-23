@@ -769,7 +769,7 @@ var KM = (function(){
         var E = W0.slice(); E[ax] = best.face;
         var hk = best.k, b = res.boxes[hk], th = b[hi[ax]] - b[lo[ax]], ed = Infinity;
         for (var j2 = 0; j2 < 3; j2++) if (j2 !== ax) ed = Math.min(ed, E[j2] - b[lo[j2]], b[hi[j2]] - E[j2]);
-        row.hit = hk; row.hitName = res.parts[hk].name; row.gap = r1(best.gap);
+        row.hit = hk; row.hitName = res.parts[hk].name; row.gap = r1(best.gap); row.E = E;   // E＝石の 面の 穴の 中心（測定の 点 v0.8.84）
         if (ed - dia / 2 < ANC_EDGE) row.warn = '石の 端に 近い（' + r1(ed) + ' mm）';
         if (dep >= th - 5) row.warn = (row.warn ? row.warn + '・' : '') + '深さが 石の 厚み（' + r1(th) + '）に 近い';
         (add[hk] = add[hk] || []).push({ E:E, dir:row.dir, dia:dia, depth:dep, name:nm, from:fp.name });

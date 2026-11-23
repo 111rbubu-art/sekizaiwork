@@ -27,14 +27,14 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   var grid = new THREE.GridHelper(12000, 120, 0xc4c4bc, 0xcbcbc4); scene.add(grid);
   var group = new THREE.Group(); scene.add(group);
   var jMeshes = [], JM = null;   // 砂利の 板（押して 外す ため）
-  var meshes = [], alive = true, fitted = false, last = null, viewName = '3d';
+  var meshes = [], ancMeshes = [], alive = true, fitted = false, last = null, viewName = '3d';
   var badMat = new THREE.MeshBasicMaterial({ color:0xd92020, transparent:true, opacity:0.32, depthWrite:false, side:THREE.DoubleSide }), badLine = new THREE.LineBasicMaterial({ color:0xb42020 });
   var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a }), darkLine = new THREE.LineBasicMaterial({ color:0x9aa0a8 }), selMat = new THREE.LineBasicMaterial({ color:0xe07a1f }), selDash = new THREE.LineDashedMaterial({ color:0xe07a1f, dashSize:14, gapSize:10 }), hitMat = new THREE.LineBasicMaterial({ color:0xd92020 });
 
   function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true; }
   new ResizeObserver(size).observe(box); size();
 
-  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, selDash, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; }
+  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, selDash, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; ancMeshes = []; }
 
   // 形の ある 部材の 立体（CSG・面の ならし・かどの 線）は 重いので、形が 同じ 間は 作り直さない。
   // 選ぶ・敷地を 打つ などで update が 来ても、形の 中身（JSON）が 同じなら 前に 作った 形を 写して 色と 線だけ 付け直す
@@ -160,7 +160,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     // アンカーの ボルト（v0.8.78）：金具の 根元から 石の 中へ 深さ ぶん。当たる 石が 無い・端に 近いは 赤、ほかは 濃い 灰
     (r.anc || []).forEach(function(a){ var L = a.depth + 10, rr = Math.max(a.dia / 2, 3), cg = new THREE.CylinderGeometry(rr, rr, L, 12);
       var dv = new THREE.Vector3(a.dir[0], a.dir[1], a.dir[2]), cm = new THREE.Mesh(cg, new THREE.MeshBasicMaterial({ color:a.hit && !a.warn ? 0x8a1c1c : 0xe03030, depthTest:false, transparent:true, opacity:0.85 }));
-      cm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dv); cm.position.set(a.p[0], a.p[1], a.p[2]).add(dv.clone().multiplyScalar(L / 2 - 10)); cm.renderOrder = 5; group.add(cm); });
+      cm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dv); cm.position.set(a.p[0], a.p[1], a.p[2]).add(dv.clone().multiplyScalar(L / 2 - 10)); cm.renderOrder = 5; cm.userData.anc = a; group.add(cm); ancMeshes.push(cm); });
     tagsBuild(r, sel);
     // 砂利（v0.8.57）：外柵の 内側の 部材の 無い 所に 敷く 板。r.jari = { y:上の 高さ, rects:[{x0,z0,x1,z1}], src:{key,url,scale} }
     if (r.jari && r.jari.rects && r.jari.rects.length) {
@@ -320,6 +320,9 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   function msHit(e){
     var rc = renderer.domElement.getBoundingClientRect(), mx = e.clientX - rc.left, my = e.clientY - rc.top;
     ray.setFromCamera(new THREE.Vector2(mx / rc.width * 2 - 1, -(my / rc.height) * 2 + 1), cam);
+    // ボルト（金具の ネジ）を 押すと 穴の 中心（石の 面の 所。当たる 石が 無ければ ボルトの 根元）を 点に（v0.8.84 本人「測定モードで ネジを 選択すると 穴中心を 測定点に」）
+    var ah = ancMeshes.length ? ray.intersectObjects(ancMeshes, false)[0] : null;
+    if (ah) { var A = ah.object.userData.anc, c = A.E || A.p, hp = new THREE.Vector3(c[0], c[1], c[2]); return { t:'pt', p:hp, n:new THREE.Vector3(-A.dir[0], -A.dir[1], -A.dir[2]), key:A.key, hole:A.name || 'ボルト', reg:{ verts:[hp], tris:[], w:[] } }; }
     var hs = ray.intersectObjects(meshes, false), h = hs[0]; if (!h || h.faceIndex == null) return null;
     var ck = h.object.uuid + ':' + h.faceIndex, reg = msLast && msLast.ck === ck ? msLast.reg : faceRegion(h.object, h.faceIndex); if (!reg) return null;
     msLast = { ck:ck, reg:reg };
@@ -328,7 +331,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     var n = reg.n.clone(); if (n.dot(ray.ray.direction) > 0) n.negate();   // 見て いる 側を 外向きに（裏の 面を 押した とき）
     return { t:best ? 'pt' : 'face', p:best ? best.clone() : h.point.clone(), n:n, key:h.object.userData.key, reg:reg };
   }
-  function msOut(i){ return { t:i.t, p:{ x:i.p.x, y:i.p.y, z:i.p.z }, n:[i.n.x, i.n.y, i.n.z], key:i.key }; }
+  function msOut(i){ var o = { t:i.t, p:{ x:i.p.x, y:i.p.y, z:i.p.z }, n:[i.n.x, i.n.y, i.n.z], key:i.key }; if (i.hole) o.hole = i.hole; return o; }
   function clearDeep(G){ while (G.children.length) { var o = G.children.pop(); o.traverse(function(c){ if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }); } }
   function faceMesh(reg, color, op){
     var a = []; reg.tris.forEach(function(i){ for (var j = 0; j < 9; j++) a.push(reg.w[i * 9 + j] + reg.n.getComponent(j % 3) * 0.6); });

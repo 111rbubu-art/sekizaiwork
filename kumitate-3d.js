@@ -29,12 +29,12 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   var jMeshes = [], JM = null;   // 砂利の 板（押して 外す ため）
   var meshes = [], alive = true, fitted = false, last = null, viewName = '3d';
   var badMat = new THREE.MeshBasicMaterial({ color:0xd92020, transparent:true, opacity:0.32, depthWrite:false, side:THREE.DoubleSide }), badLine = new THREE.LineBasicMaterial({ color:0xb42020 });
-  var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a }), darkLine = new THREE.LineBasicMaterial({ color:0x9aa0a8 }), selMat = new THREE.LineBasicMaterial({ color:0xe07a1f }), hitMat = new THREE.LineBasicMaterial({ color:0xd92020 });
+  var lineMat = new THREE.LineBasicMaterial({ color:0x1a1a1a }), darkLine = new THREE.LineBasicMaterial({ color:0x9aa0a8 }), selMat = new THREE.LineBasicMaterial({ color:0xe07a1f }), selDash = new THREE.LineDashedMaterial({ color:0xe07a1f, dashSize:14, gapSize:10 }), hitMat = new THREE.LineBasicMaterial({ color:0xd92020 });
 
   function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true; }
   new ResizeObserver(size).observe(box); size();
 
-  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; }
+  function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, selDash, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; }
 
   // 形の ある 部材の 立体（CSG・面の ならし・かどの 線）は 重いので、形が 同じ 間は 作り直さない。
   // 選ぶ・敷地を 打つ などで update が 来ても、形の 中身（JSON）が 同じなら 前に 作った 形を 写して 色と 線だけ 付け直す
@@ -155,7 +155,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
         group.add(m); meshes.push(m);
         var e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lm); e.position.copy(m.position); e.rotation.y = rot; group.add(e);
       }
-      if (k === sel && typeof sel === 'string' && !(r.parts[k].role === '金具' || (shp && shp.bolts && shp.bolts.length))) { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selMat); e2.position.copy(m.position); group.add(e2); }
+      if (k === sel && typeof sel === 'string' && !(r.parts[k].role === '金具' || (shp && shp.bolts && shp.bolts.length))) { var e2 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 14, h + 14, d + 14)), selDash); e2.computeLineDistances(); e2.position.copy(m.position); group.add(e2); }   // 選んだ 印の 外の 枠（各面 7 mm 外）は 破線、石の 線は 実線（v0.8.85 本人「二重の 線を 実線と 破線に」）
     });
     // アンカーの ボルト（v0.8.78）：金具の 根元から 石の 中へ 深さ ぶん。当たる 石が 無い・端に 近いは 赤、ほかは 濃い 灰
     (r.anc || []).forEach(function(a){ var L = a.depth + 10, rr = Math.max(a.dia / 2, 3), cg = new THREE.CylinderGeometry(rr, rr, L, 12);

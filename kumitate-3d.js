@@ -161,8 +161,9 @@ export function create(box, onPick, onDbl, onCtx, onBox){
         var jg = new THREE.BoxGeometry(w, jt, d), mm = new THREE.Mesh(jg, q.off ? jOff : jm); mm.position.set(q.x0 + w / 2, r.jari.y - jt / 2, q.z0 + d / 2); mm.userData.jari = q.key || 1; group.add(mm); jMeshes.push(mm); });
     }
     if (site && site.W > 20 && site.D > 20) {
-      var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W - 20, site.D - 20)), new THREE.LineBasicMaterial({ color:0x3355aa }));
-      ol.rotation.x = -Math.PI / 2; ol.position.y = 1; group.add(ol);
+      // 設置寸法 ちょうどに 描く（v0.8.77 本人「青の 線が 敷地では？ 部材が はみ出て 見える」。前は 各辺 10 mm 内側＝W−20・D−20 で、外柵の 外の 面が 線より 外に 見えて いた）
+      var ol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(site.W, site.D)), new THREE.LineBasicMaterial({ color:0x3355aa }));
+      ol.rotation.x = -Math.PI / 2; ol.position.y = 2; ol.renderOrder = 2; group.add(ol);
     }
     // 合わない 所（拝石が 中仕切に かかる 長さ・開口部 など）：赤い 半透明の 箱と 文字（v0.8.23）
     (r.zones || []).forEach(function(z){

@@ -209,16 +209,52 @@ function kmSheetUse(g, S){ S = S || kmSheetInfo(g); if (!S) return null; if (!S.
 // 保存した 加工図面（図枠）を モデリングの 大きさに：面の 図は skStretch（近い 端からの mm の まま）、立体の 絵・寸法・▲は 今の 形で かき直す（加工図面の 画面と 同じ）
 function kmStretchSheet(g, S){ var k = g.ks[0], p = kmPart(k); if (!S.wdh || typeof skStretch !== 'function') return null;
   var to = [g.w, g.d, g.h].map(function(v, i){ var d = S.diff.filter(function(x){ return x.ax === KM_AX[i][0]; })[0]; return d && d.lock ? d.sheet : +v; });
-  var sk = JSON.parse(JSON.stringify(S.sk)); skStretch(sk, S.wdh, to);
-  var mp = sk.info && sk.info.isoMap, had = sk.ents.some(function(e){ return e.iso && !e.mg; });
+  var sk = JSON.parse(JSON.stringify(S.sk)), mp = sk.info && sk.info.isoMap, had = sk.ents.some(function(e){ return e.iso && !e.mg; });
+  var mk = mp && had && KM2.geo[k] ? kmMgPick(sk) : [];   // 手で 置いた 磨きの ▲・矢印（立体の 絵の 上）は skStretch で 動かさず、あとで 面に 合わせて 動かす
+  skStretch(sk, S.wdh, to); mk.forEach(function(e){ sk.ents.push(e); });
   sk.ents = sk.ents.filter(function(e){ return !e.iso && !e.mg; }); sk.dims = (sk.dims || []).filter(function(d){ return !d.iso; });
   if (mp && had && KM2.geo[k]) { var r = kmHlr([kmItem(k, false)], 'iso', 1, 1), M = function(q){ return P(mp.ox + q[0] - r.u0, mp.oy + q[1] - r.v0); };
     var mp2 = { ox:mp.ox, oy:mp.oy, u0:r.u0, v0:r.v0 }; sk.info.isoMap = mp2;
     r.vis.forEach(function(sg){ sk.ents.push({ t:'line', a:M(sg.a), b:M(sg.b), layer:'立体の 絵', css:null, aci:256, iso:1 }); });
     isoDimsOf(to[0], to[1], to[2], function(q){ var z = KPJ.iso(q); return M(z); }).forEach(function(d){ sk.dims.push(d); });
-    var dr = p.shape && p.shape.drawing, fs = (dr && dr.migaki) || []; if (fs.length) mgEntsOf(fs, to[0], to[1], to[2], mp2, S.n).forEach(function(e){ sk.ents.push(e); }); }
+    var dr = p.shape && p.shape.drawing, fs = (dr && dr.migaki) || []; if (fs.length) mgEntsOf(fs, to[0], to[1], to[2], mp2, S.n).forEach(function(e){ sk.ents.push(e); });
+    kmMgFollow(mk, mp, S.wdh, mp2, to); }
   var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0];
   return { fr:fr, sk:sk, paper:S.paper, n:S.n, wdh:to, diff:[], from:S.from, ver:S.ver, stretched:S }; }
+// 手で 置いた 磨きの ▲・矢印（［▲ 磨き］・画層 磨き・自動の e.mg では ない）の うち 立体の 絵の 上の もの を sk から 抜き出す（v0.9.65）
+//   2026-11-25 本人「寸法を 変更したら 磨きの 矢印が ズレた」：立体の 絵は 今の 大きさで かき直すのに、手の ▲・矢印は
+//   skStretch で 正面図などの 面の きまりで 動いて（または 動かずに）面から 外れて いた
+function kmMgPick(sk){ var ib = { x0:Infinity, y0:Infinity, x1:-Infinity, y1:-Infinity };
+  sk.ents.forEach(function(e){ if (!e.iso || e.mg) return; entPts(e).forEach(function(q){ ib.x0 = Math.min(ib.x0, q.x); ib.x1 = Math.max(ib.x1, q.x); ib.y0 = Math.min(ib.y0, q.y); ib.y1 = Math.max(ib.y1, q.y); }); });
+  if (!isFinite(ib.x0)) return []; var m = Math.max(ib.x1 - ib.x0, ib.y1 - ib.y0) * 0.35;
+  var inB = function(q){ return q.x >= ib.x0 - m && q.x <= ib.x1 + m && q.y >= ib.y0 - m && q.y <= ib.y1 + m; };
+  var out = [], rest = [];
+  sk.ents.forEach(function(e){ var ok = !e.mg && !e.iso && !e.frame && e.layer === '磨き' && (e.t === 'line' || (e.t === 'text' && /▲/.test(e.s || ''))) && entPts(e).some(inB);
+    (ok ? out : rest).push(e); });
+  sk.ents = rest; return out; }
+// 抜き出した ▲・矢印を 新しい 立体の 絵に：矢印の 先（▲だけ なら ▲）が さす 面（上・正面・左）の 上の 点を 割合で 新しい 大きさへ。▲・矢じりは 先と 同じ だけ 動かす
+function kmMgFollow(L, mp0, f, mp1, t){ if (!L.length || !mp0 || !mp1) return;
+  var X = KPJ.iso([1, 0, 0]), Y = KPJ.iso([0, 1, 0]), Z = KPJ.iso([0, 0, 1]), d2 = function(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); };
+  var to2 = function(q, mp){ var z = KPJ.iso(q); return P(mp.ox + z[0] - mp.u0, mp.oy + z[1] - mp.v0); };
+  var A = [X, Y, Z], AX = { top:[1, 0, 2], front:[2, 0, 1], left:[0, 2, 1] };   // [固定の 軸, 解く 軸 2 つ]
+  var map = function(c){ var W = f[0], Dd = f[1], H = f[2], lo = [-W / 2, 0, -Dd / 2], hi = [W / 2, H, Dd / 2], best = null;
+    var u = c.x - mp0.ox + mp0.u0, v = c.y - mp0.oy + mp0.v0;   // 立体の 絵の もとの 座標
+    Object.keys(AX).forEach(function(k){ var a = AX[k], fv = k === 'left' ? lo[0] : hi[a[0]], F = A[a[0]], P1 = A[a[1]], P2 = A[a[2]];
+      var ru = u - F[0] * fv, rv = v - F[1] * fv, det = P1[0] * P2[1] - P2[0] * P1[1]; if (Math.abs(det) < 1e-9) return;
+      var s1 = (ru * P2[1] - P2[0] * rv) / det, s2 = (P1[0] * rv - ru * P1[1]) / det, q = [0, 0, 0]; q[a[0]] = fv; q[a[1]] = s1; q[a[2]] = s2;
+      var out = 0; [a[1], a[2]].forEach(function(i){ out += Math.max(lo[i] - q[i], 0, q[i] - hi[i]); q[i] = Math.min(hi[i], Math.max(lo[i], q[i])); });
+      if (!best || out < best.out) best = { q:q, out:out }; });
+    if (!best) return c; var q = best.q.map(function(x, i){ var r = (x - lo[i]) / ((hi[i] - lo[i]) || 1); var sz = t[[0, 2, 1][i]]; return i === 1 ? r * sz : (r - 0.5) * sz; });   // t＝[幅, 奥行, 高さ]・立体の 軸＝[幅, 高さ, 奥行]
+    var n0 = to2(best.q, mp0), n1 = to2(q, mp1); return P(c.x + n1.x - n0.x, c.y + n1.y - n0.y); };   // 面から 少し 外れて いても その 分は そのまま
+  var lines = L.filter(function(e){ return e.t === 'line'; }), tris = L.filter(function(e){ return e.t === 'text'; }), used = new Set();
+  var mv = function(es, c){ var c2 = map(c), dx = c2.x - c.x, dy = c2.y - c.y; es.forEach(function(e){ used.add(e); if (e.t === 'line') { e.a = P(e.a.x + dx, e.a.y + dy); e.b = P(e.b.x + dx, e.b.y + dy); } else e.p = P(e.p.x + dx, e.p.y + dy); }); };
+  // 矢じり（a＝先）が 2 本 ある 線＝軸。軸の a に いちばん 近い ▲
+  lines.forEach(function(sh){ if (used.has(sh)) return; var hs = lines.filter(function(h){ return h !== sh && !used.has(h) && d2(h.a, sh.b) < 1e-3; }); if (!hs.length) return;
+    var tr = null, bd = Infinity; tris.forEach(function(x){ if (used.has(x)) return; var d = d2(x.p, sh.a); if (d < bd && d < (x.h || 1) * 3) { bd = d; tr = x; } });
+    mv([sh].concat(hs, tr ? [tr] : []), P(sh.b.x, sh.b.y)); });
+  tris.forEach(function(x){ if (!used.has(x)) mv([x], P(x.p.x, x.p.y)); });
+  lines.forEach(function(e){ if (!used.has(e)) mv([e], P((e.a.x + e.b.x) / 2, (e.a.y + e.b.y) / 2)); });
+}
 // 図枠の 図が モデリングの 大きさと ちがう ときは、保存した 加工図面を もとに 今の 大きさに 合わせて 使う（v0.9.59）。右の 欄と 知らせで 分かる ように
 function kmSheetOf(g){ return kmSheetUse(g); }
 function kmDiffTxt(S){ return S.diff.map(function(d){ return d.n + ' ' + kmR(d.sheet) + '（モデリング ' + kmR(d.model) + '）' + (d.lock ? '🔒' : ''); }).join('・'); }

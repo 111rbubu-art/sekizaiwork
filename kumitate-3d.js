@@ -34,6 +34,8 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   function size(){ var w = box.clientWidth || 300, h = box.clientHeight || 300; renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px'; cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true; }
   new ResizeObserver(size).observe(box); size();
 
+  // 線のみ の 線の 色：ソリッドの 色の まま。明るい 色（黄・既製品の 灰 など）は 白い 地で 見える ように 少し 濃く
+  function colLine(c){ var q = c.getHSL({}), cc = c.clone(); if (q.l > 0.5) cc.setHSL(q.h, q.s, 0.5); return new THREE.LineBasicMaterial({ color:cc }); }
   function clear(){ wtMap = new WeakMap(); var keep = [lineMat, darkLine, selMat, selDash, hitMat, badMat, badLine]; while (group.children.length) { group.children.pop().traverse(function(c){ if (c.geometry && !c.geometry.userData.cached) c.geometry.dispose(); if (c.material && keep.indexOf(c.material) < 0) c.material.dispose(); }); } meshes = []; jMeshes = []; ancMeshes = []; }
 
   // 形の ある 部材の 立体（CSG・面の ならし・かどの 線）は 重いので、形が 同じ 間は 作り直さない。
@@ -136,7 +138,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       if (src) triMat(sm, src, k, false);
       if (MODE === 'line') { sm.colorWrite = false; sm.depthWrite = false; }   // 面は 描かない（奥の 線も 見える）。押す ための 面は 残す
       var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）
-      var lm = on ? selMat : hit[k] || bad ? hitMat : dark && MODE !== 'line' ? darkLine : lineMat;
+      var lm = on ? selMat : hit[k] || bad ? hitMat : MODE === 'line' ? colLine(c0) : dark ? darkLine : lineMat;   // 線のみ＝ソリッドと 同じ 色の 線（v0.8.88）
       var rot = +(r.parts[k].rot || 0) * Math.PI / 180;   // 足した 部材の 回転（箱＝回した 形を 囲む 箱）
       if (rot) { g.dispose(); g = new THREE.BoxGeometry(r.parts[k].w, h, r.parts[k].d); }
       var m = new THREE.Mesh(g, sm);

@@ -416,6 +416,8 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     });
     // 部材の 寸法（幅・奥行・高さ）：寸法線と 札。変えて いる 寸法は 橙（v0.8.24 本人「寸法を 変更する とき 部材の 寸法を 表示させて」）
     (SZ.dims || []).forEach(function(d){
+      // 矢印の 先の 札（移動した 距離。v0.8.95）：面の 中心 から 外向きに 矢印の 長さ 少し 先
+      if (d.tip) { var st = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); st.center.set(0.5, 0.5); st.position.set(d.a.x + d.tip[0] * L * 1.3, d.a.y + d.tip[1] * L * 1.3, d.a.z + d.tip[2] * L * 1.3); szG.add(st); return; }
       var col = d.hot ? 0xe07a1f : 0x1f3a5f, lm = new THREE.LineBasicMaterial({ color:col, depthTest:false }), A = new THREE.Vector3(d.a.x, d.a.y, d.a.z), B = new THREE.Vector3(d.b.x, d.b.y, d.b.z);
       var pts = [A, B], t = d.t ? new THREE.Vector3(d.t[0], d.t[1], d.t[2]).multiplyScalar(L * 0.18) : null;
       if (t) pts.push(A.clone().sub(t), A.clone().add(t), B.clone().sub(t), B.clone().add(t));

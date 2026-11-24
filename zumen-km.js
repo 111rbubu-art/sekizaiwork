@@ -24,7 +24,7 @@ function kC(o, x, y, r, vid, opt){ opt = opt || {}; o.ents.push({ id:SEQ++, t:'c
 function kPl(o, pts, vid, hid){ o.ents.push({ id:SEQ++, t:'pl', v:pts.map(function(q){ return { x:q[0], y:kY(q[1]), b:0 }; }), closed:true, layer:hid ? '隠れ線' : '部材', css:null, aci:256, auto:true, vid:vid || null }); }
 // 寸法：a,b＝紙の 点（y 下）、n＝外向き（y 下）、d＝離す mm、k＝縮尺の 分母（値＝紙の 長さ×k）
 function kD(o, a, b, n, d, k, aid, vid, opt){ opt = opt || {};
-  var A = P(a[0], kY(a[1])), B = P(b[0], kY(b[1])), mode = Math.abs(a[1] - b[1]) < 1e-6 ? 'h' : Math.abs(a[0] - b[0]) < 1e-6 ? 'v' : 'a';
+  var A = P(a[0], kY(a[1])), B = P(b[0], kY(b[1])), mode = opt.mode || (Math.abs(a[1] - b[1]) < 1e-6 ? 'h' : Math.abs(a[0] - b[0]) < 1e-6 ? 'v' : 'a');   // opt.mode：中心線の 端から はかる 寸法は 横／縦を 決めて（v0.9.57）
   var off = P((a[0] + b[0]) / 2 + n[0] * d, kY((a[1] + b[1]) / 2 + n[1] * d));
   var dm = { id:SEQ++, a:A, b:B, off:off, mode:mode, fmt:null, text:opt.text || null, th:opt.h || 2.3, al:2, k:k, auto:true, layer:'寸法', aid:aid || null, vid:vid || null, dec:opt.dec || 0 };
   o.dims.push(dm); return dm; }
@@ -254,6 +254,14 @@ function kmSimple(k){ var om = kmOut(k).mode; if (om === 'iso') return true; if 
   if (!v) return KM2.geo[k].tris.length / 9 <= 12;
   var r4 = function(q){ return !q || (q.out && q.out.length === 4); };
   return r4(v.front) && r4(v.side) && r4(v.top) && !(v.front.holes || []).length && !(v.side && ((v.side.holes || []).length || (v.side.cuts || []).length)) && !(v.top && ((v.top.holes || []).length || (v.top.cuts || []).length)); }
+// 正面の 穴の 位置の 寸法の 段の 数（見当）：nL＝左に 置く 高さの 段（左右で 高さが 違う とき）、nX＝上の 横の 段（端から 並べる とき）
+var KM_HRG = function(){ return (S.fmt === 'both2' ? 2 : 1) * 1.9 * 1.6 + 1.2; };   // 段の 間（紙の mm）
+function kmHoleRows(v){ var ys = { l:[], r:[] }, xs = { l:[], r:[] };
+  ((v.front && v.front.holes) || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); });
+    var sd = (x0 + x1) / 2 < 0 ? 'l' : 'r', y = Math.round((y0 + y1) / 2 * 10) / 10, x = Math.round((x0 + x1) / 2 * 10) / 10; if (ys[sd].indexOf(y) < 0) ys[sd].push(y); if (xs[sd].indexOf(x) < 0) xs[sd].push(x); });
+  ys.l.sort(); ys.r.sort();
+  var nL = !ys.l.length ? 0 : !ys.r.length || ys.l.join() !== ys.r.join() ? ys.l.length : 0;   // 左右で 同じ 高さなら 右に 1 つ（左は 置かない）
+  return { nL:nL, nX:Math.max(xs.l.length, xs.r.length) }; }
 function kmDetail(o, pg, g, X, B){
   var k = g.ks[0], p = kmPart(k), it = [kmItem(k, false)], T = g.type, W = g.w, D2 = g.d, H = g.h;
   kL(o, [X, 33], [X + 140.5, 33], null, false, '枠');
@@ -283,9 +291,10 @@ function kmDetail(o, pg, g, X, B){
   var needTop = !!(kmOut(k).top || (v.top && (((v.top.holes || []).length) || ((v.top.cuts || []).length))) || (v.side && (v.side.cuts || []).length));
   var rot = needTop && D2 > 2.5 * W;
   var area = { x0:X + 4, x1:X + 138, y0:106, y1:186 }, needW = W + D2 + (hasL ? D2 : 0), needH = H + (needTop ? (rot ? W : D2) : 0);
-  var m = kmPick(needW, needH, (area.x1 - area.x0) - 34 - (hasL ? 12 : 0), (area.y1 - area.y0) - 22), t = 1 / m;
+  var HR = kmHoleRows(v), xL = HR.nL ? HR.nL * KM_HRG() + 1 : 0;   // 左に 穴の 高さの 寸法を 置く ぶん 空ける（全体の 高さは その 外）
+  var m = kmPick(needW, needH, (area.x1 - area.x0) - 34 - (hasL ? 12 : 0) - xL, (area.y1 - area.y0) - 22), t = 1 / m;
   var rf = kmHlr(it, 'front', t), rr = kmHlr(it, 'right', t), rt = needTop ? kmHlr(it, rot ? 'topR' : 'top', t) : null, rl = hasL ? kmHlr(it, 'left', t) : null;
-  var gap = 12, fx = area.x0 + 12 + (hasL ? D2 * t + gap : 0), fyb = area.y1 - 12;
+  var gap = 12, fx = area.x0 + 12 + xL + (hasL ? D2 * t + gap : 0), fyb = area.y1 - 12;
   var Mf = function(q){ return [fx + W / 2 * t + q[0], fyb - q[1]]; }, Mr = function(q){ return [fx + W * t + gap + D2 / 2 * t + q[0], fyb - q[1]]; };
   var Mt = function(q){ return [fx + W / 2 * t + q[0], fyb - H * t - gap - D2 * t / 2 - q[1]]; }, MtR = function(q){ return [fx + W * t + gap + D2 / 2 * t + q[0], fyb - H * t - gap - W * t / 2 - q[1]]; };
   var Ml = function(q){ return [fx - gap - D2 / 2 * t + q[0], fyb - q[1]]; };
@@ -301,22 +310,50 @@ function kmDetail(o, pg, g, X, B){
     var hs = holes.filter(function(h){ return h.view === vw; }), feat = {};
     hs.forEach(function(h){ var c = MM([h.u * t, h.y * t]); feat[h.id] = c;
       [['lb', -1, -1], ['rb', 1, -1], ['lt', -1, 1], ['rt', 1, 1]].forEach(function(cc){ feat[h.id + cc[0]] = MM([(h.u + cc[1] * h.phi / 2) * t, (h.y + cc[2] * h.hh / 2) * t]); });
-      if (h.phi * t < 1.1) kC(o, c[0], c[1], 0.55, vid, { hid:h.far }); else kPl(o, h.pts.map(function(q){ return MM([q[0] * t, q[1] * t]); }), vid, h.far); });
+      // 小さい 穴（紙で 径 2mm 未満）は 円で（点線に すると 崩れて 見える ので 実線）。大きい 穴は 形の まま・向こう 側は 点線
+      if (Math.max(h.phi, h.hh) * t < 2) kC(o, c[0], c[1], Math.max(h.phi * t / 2, 0.5), vid); else kPl(o, h.pts.map(function(q){ return MM([q[0] * t, q[1] * t]); }), vid, h.far); });
+    // 穴の 中心線（一点鎖線の 十字。穴から 2mm はみ出す）。位置の 寸法は この 中心線の 端から はかる（v0.9.57 本人「中心線を 使って 寸法線を」）
+    var cl = {}; hs.forEach(function(h){ var c = feat[h.id], e = Math.max(h.phi, h.hh) * t / 2 + 2; cl[h.id] = e;
+      kL(o, [c[0] - e, c[1]], [c[0] + e, c[1]], vid, false, '中心線'); kL(o, [c[0], c[1] - e], [c[0], c[1] + e], vid, false, '中心線'); });
     kView(o, vid, m, [MM([-L / 2 * t, (vw === 'top' ? -Hh / 2 : 0) * t]), MM([L / 2 * t, (vw === 'top' ? Hh / 2 : Hh) * t])], feat); pg.regions.push(kmRegion(o, vid));
-    var yb = vw === 'top' ? -Hh / 2 : 0, yt = vw === 'top' ? Hh / 2 : Hh;
+    var yb = vw === 'top' ? -Hh / 2 : 0, yt = vw === 'top' ? Hh / 2 : Hh, sideL = vw === 'front' && HR.nL > 0, rg = KM_HRG();
     kD(o, MM([-L / 2 * t, yb * t]), MM([L / 2 * t, yb * t]), [0, 1], 4, m, vid + '/w', vid, { h:2.2 });
-    if (vw === 'front') kD(o, MM([-L / 2 * t, 0]), MM([-L / 2 * t, Hh * t]), [-1, 0], 4, m, vid + '/h', vid, { h:2.2 });
+    if (vw === 'front') kD(o, MM([-L / 2 * t, 0]), MM([-L / 2 * t, Hh * t]), [-1, 0], sideL ? 4 + xL : 4, m, vid + '/h', vid, { h:2.2 });
     if (vw === 'top') kD(o, MM([L / 2 * t, yb * t]), MM([L / 2 * t, yt * t]), [1, 0], 4, m, vid + '/d', vid, { h:2.2 });
     if (!hs.length) return;
-    // 穴の 位置：上の 端に 横の 連なり、右に 高さ
-    var us = []; hs.forEach(function(h){ var u = Math.round(h.u * 10) / 10; if (us.indexOf(u) < 0) us.push(u); }); us.sort(function(a, b){ return a - b; });
-    var ch = [-L / 2].concat(us, [L / 2]);
-    for (var q = 0; q < ch.length - 1; q++) { if (ch[q + 1] - ch[q] < 0.5) continue; kD(o, MM([ch[q] * t, yt * t]), MM([ch[q + 1] * t, yt * t]), [0, -1], 3.5, m, vid + '/hx/' + q, vid, { h:1.9, dec:1 }); }
-    if (vw !== 'top') { var ys = []; hs.forEach(function(h){ var yy = Math.round(h.y); if (ys.indexOf(yy) < 0) ys.push(yy); }); ys.sort(function(a, b){ return a - b; }); var prev = 0;
-      ys.forEach(function(yy, i){ kD(o, MM([L / 2 * t, prev * t]), MM([L / 2 * t, yy * t]), [1, 0], 3, m, vid + '/hy/' + i, vid, { h:1.9 }); prev = yy; }); }
+    // 文字が 間に 入らない とき：端の 間は 外へ・中の 間は 広い 隣へ（tx）
+    var twOf = function(dm){ var ln = String(dimGeom(dm).text.s).split('\n'); return Math.max.apply(null, ln.map(function(x){ var w = 0; for (var i = 0; i < x.length; i++) w += x.charCodeAt(i) < 256 ? 0.55 : 1; return w; })) * dm.th + dm.th * 0.6; };
+    var fits = function(dm, L0){ return L0 >= twOf(dm) + dm.th * 0.6; };
+    var shove = function(dm, L0, sg){ dm.tx = sg * (L0 / 2 + twOf(dm) / 2 + dm.th * 0.3); };
+    // 中心線の 端（寸法の 補助線は ここから）：縦の 中心線の 上の 端・横の 中心線の 左／右の 端
+    var clTop = function(h){ var c = feat[h.id]; return [c[0], c[1] - cl[h.id]]; }, clSide = function(h, sg){ var c = feat[h.id]; return [c[0] + sg * cl[h.id], c[1]]; };
+    var r1 = function(x){ return Math.round(x * 10) / 10; }, topY = MM([0, yt * t])[1], botY = MM([0, yb * t])[1], lx = MM([-L / 2 * t, 0])[0], rx = MM([L / 2 * t, 0])[0];
+    // 穴の 位置（横）：上に 左の 端 → 中心線 → … → 右の 端 の 連なり。文字が 入らない 間が あれば、左 半分の 穴は 左の 端から・右 半分は 右の 端から（段を 重ねる）
+    var us = []; hs.forEach(function(h){ var u = r1(h.u), x = us.filter(function(x){ return Math.abs(x.u - u) < 0.05; })[0]; if (!x) us.push({ u:u, h:h }); else if (h.y > x.h.y) x.h = h; });
+    us.sort(function(a, b){ return a.u - b.u; });
+    var hxRow = function(i){ return topY - 3.5 - i * rg; }, ptX = [[-L / 2, [lx, topY]]].concat(us.map(function(x){ return [x.u, clTop(x.h)]; }), [[L / 2, [rx, topY]]]), rowsX = 1;
+    var chainX = ptX.slice(0, -1).map(function(q, i){ var A = q, B2 = ptX[i + 1]; if ((B2[0] - A[0]) * m < 0.5) return null; var dm = kD(o, A[1], B2[1], [0, -1], 0, m, vid + '/hx/' + i, vid, { h:1.9, dec:1, mode:'h' }); o.dims.pop(); dm.off = P(dm.off.x, kY(hxRow(0))); dm._L = (B2[0] - A[0]) * t; return dm; }).filter(Boolean);
+    if (chainX.every(function(dm){ return fits(dm, dm._L); }) || us.length < 2) chainX.forEach(function(dm, i){ if (!fits(dm, dm._L)) shove(dm, dm._L, i === 0 ? -1 : 1); delete dm._L; o.dims.push(dm); });
+    else { var lft = us.filter(function(x){ return x.u < 0; }), rgt = us.filter(function(x){ return x.u >= 0; }).reverse();
+      [[lft, -1, lx], [rgt, 1, rx]].forEach(function(sd){ sd[0].forEach(function(x, i){ var L0 = Math.abs(x.u - sd[1] * L / 2) * t, dm = kD(o, [sd[2], topY], clTop(x.h), [0, -1], 0, m, vid + '/hx' + (sd[1] < 0 ? 'L/' : 'R/') + i, vid, { h:1.9, dec:1, mode:'h' });
+        dm.off = P(dm.off.x, kY(hxRow(i))); if (!fits(dm, L0)) shove(dm, L0, sd[1]); }); rowsX = Math.max(rowsX, sd[0].length); }); }
+    // 穴の 位置（縦）：下の 端 → 中心線 → … の 連なり（入らなければ 下の 端から 段を 重ねる）。正面で 左右の 高さが 違えば 左 半分の 穴は 左に。同じなら 右に 1 つ
+    if (vw !== 'top') {
+      var ysOf = function(list, sg){ var ys = []; list.forEach(function(h){ var yy = r1(h.y), x = ys.filter(function(x){ return Math.abs(x.y - yy) < 0.05; })[0]; if (!x) ys.push({ y:yy, h:h }); else if (sg * (h.u - x.h.u) > 0) x.h = h; }); return ys.sort(function(a, b){ return a.y - b.y; }); };
+      var sides = [];
+      if (sideL) { var hl = hs.filter(function(h){ return h.u < 0; }), hr = hs.filter(function(h){ return h.u >= 0; }); sides.push([-1, ysOf(hl, -1)]); if (hr.length) sides.push([1, ysOf(hr, 1)]); }
+      else sides.push([1, ysOf(hs, 1)]);
+      sides.forEach(function(sd){ var sg = sd[0], ys = sd[1], ex = sg < 0 ? lx : rx, row = function(i){ return ex + sg * (3 + i * rg); };
+        var pts = [[0, [ex, botY]]].concat(ys.map(function(x){ return [x.y, clSide(x.h, sg)]; }));
+        var ch = pts.slice(0, -1).map(function(q, i){ var B2 = pts[i + 1]; if ((B2[0] - q[0]) * m < 0.5) return null; var dm = kD(o, q[1], B2[1], [sg, 0], 0, m, vid + (sg < 0 ? '/hyL/' : '/hy/') + i, vid, { h:1.9, mode:'v' }); o.dims.pop(); dm.off = P(row(0), dm.off.y); dm._L = (B2[0] - q[0]) * t; return dm; }).filter(Boolean);
+        if (ch.every(function(dm){ return fits(dm, dm._L); }) || ys.length < 2) ch.forEach(function(dm, i){ if (!fits(dm, dm._L)) shove(dm, dm._L, i === ch.length - 1 ? 1 : -1); delete dm._L; o.dims.push(dm); });
+        else ys.forEach(function(x, i){ var L0 = x.y * t, dm = kD(o, [ex, botY], clSide(x.h, sg), [sg, 0], 0, m, vid + (sg < 0 ? '/hyL' : '/hyB') + '/' + i, vid, { h:1.9, mode:'v' }); dm.off = P(row(i), dm.off.y); if (!fits(dm, L0)) shove(dm, L0, 1); });
+      });
+    }
     var grp = {}; hs.forEach(function(h){ var key = Math.round(h.phi) + 'x' + Math.round(h.hh) + 'd' + h.depth + h.from; (grp[key] = grp[key] || []).push(h); });
-    Object.keys(grp).forEach(function(key, gi){ var g2 = grp[key], h0 = g2[0], c = MM([h0.u * t, h0.y * t]), top = MM([0, yt * t])[1], lp = [c[0] + 4, top - 8 - gi * 3.6];
-      var txt = (Math.abs(h0.phi - h0.hh) < 1 && h0.pts.length <= 40 ? 'Φ' + Math.round(h0.phi) : '穴 ' + Math.round(h0.phi) + '×' + Math.round(h0.hh)) + ' 深' + h0.depth + ' ×' + g2.length + '（' + h0.from + '）';
+    Object.keys(grp).forEach(function(key, gi){ var g2 = grp[key], h0 = g2[0], c = MM([h0.u * t, h0.y * t]), top = MM([0, yt * t])[1], lp = [c[0] + 4, hxRow(rowsX - 1) - rg - 2.5 - gi * 3.6];
+      // 穴の 大きさ・深さは mm（ほかの 寸法は 尺寸も 書く ので まぎれない ように「mm」を 付ける。v0.9.57 本人）
+      var txt = (Math.abs(h0.phi - h0.hh) < 1 && h0.pts.length <= 40 ? 'Φ' + Math.round(h0.phi) + 'mm' : '穴 ' + Math.round(h0.phi) + '×' + Math.round(h0.hh) + 'mm') + ' 深' + h0.depth + 'mm ×' + g2.length + '（' + h0.from + '）';
       kL(o, c, lp, vid, false, '文字'); kL(o, lp, [lp[0] + txt.length * 1.75, lp[1]], vid, false, '文字'); kT(o, lp[0] + 0.5, lp[1] - 0.7, txt, 1.9, { vid:vid, aid:vid + '/hole/' + key }); });
   });
   var lb = function(txt, q, vid){ kT(o, q[0], q[1], txt, 2, { ha:1, vid:vid, aid:vid + '/name' }); };
@@ -506,7 +543,7 @@ function kmEnter(again){
     toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 5000);
   }).catch(function(e){ alert('図面を 作れませんでした：' + (e && e.message || e)); });
 }
-function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; }
+function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; if (!L['中心線']) L['中心線'] = { name:'中心線', aci:1, css:'#c0392b', on:true, gap:false, dash:'dd' }; }
 // 右の 欄（組み立てから 作った ページ）
 function kmPanel(el){
   var pg = BM.pages[BM.cur], tpl = kmTpl(), h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';

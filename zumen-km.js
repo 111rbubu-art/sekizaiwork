@@ -226,9 +226,45 @@ function kmR(v){ return String(Math.round(+v * 10) / 10); }
 // 図枠の 寸法の 矢印・文字の ずらしを 紙の 大きさに（図面で 直すと 同じ 見え方）。設定の「矢印の 長さ」は 図面の 単位なので 縮尺で 割る
 // （2026-11-24 設定の 矢印 16 が 紙の 16mm に なり、図枠の ページだけ 矢印が 大きく なって いた）
 function kmDimPaper(n2, d, s, th){ n2.al = d.al > 0 ? d.al * s : S.arrow > 0 ? S.arrow * s : th; if (d.tx) n2.tx = d.tx * s; }
+// 保存した 加工図面（図枠）に モデリングの アンカーの 穴（L金具の ボルト・anc:1）を 足す（v0.9.63）
+//   2026-11-25 本人「穴加工の 位置ずれは 直ったが 今回は 消えた」：v0.9.59 で 保存した 加工図面を 使う ように なり、
+//   マスターの 図（穴なし）だけ 描いて 案件で 開いた アンカーの 穴が 出なく なって いた。面の 外形（pv）に 合わせて 円・中心線・位置の 寸法・書き込みを 足す
+function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.shape || !sk0) return sk0;
+  var v = kmViews(p, g.w, g.d, g.h), W = +g.w, D = +g.d, H = +g.h, FR = { front:'前から', back:'背面から' };
+  var L = []; ((v.front && v.front.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'front', h:h, from:h.from === 'back' ? '背面から' : '前から' }); });
+  ((v.side && v.side.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'side', h:h, from:h.from === 'left' ? '左の 面から' : '右の 面から' }); });
+  ((v.top && v.top.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'top', h:h, from:'上から' }); });
+  if (!L.length) return sk0;
+  var sk = JSON.parse(JSON.stringify(sk0)), bbOf = function(pv){ var b = null;
+    sk.ents.forEach(function(e){ if (e.pv !== pv || e.t !== 'pl' || !e.v || e.frame) return; var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      e.v.forEach(function(q){ x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); });
+      if (!b || (x1 - x0) * (y1 - y0) > (b.x1 - b.x0) * (b.y1 - b.y0)) b = { x0:x0, x1:x1, y0:y0, y1:y1 }; }); return b; };
+  var EXT = { front:[W, H], side:[D, H], top:[W, D] }, OX = { front:W / 2, side:0, top:W / 2 }, grp = {};
+  L.forEach(function(a){ var b = bbOf(a.pv); if (!b) return; var e = EXT[a.pv], kx = (b.x1 - b.x0) / e[0], ky = (b.y1 - b.y0) / e[1];
+    var xs = a.h.pts.map(function(q){ return q[0]; }), ys = a.h.pts.map(function(q){ return q[1]; }), cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, cy = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
+    var r = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2, c = { x:b.x0 + (cx + OX[a.pv]) * kx, y:b.y0 + cy * ky };
+    if (sk.ents.some(function(q){ return q.t === 'circle' && q.c && Math.hypot(q.c.x - c.x, q.c.y - c.y) < 1 && Math.abs(q.r - r * kx) < 1; })) return;   // 保存した 図に もう ある
+    var G = grp[a.pv] = grp[a.pv] || { b:b, cs:[], txt:{} }; G.cs.push(c);
+    var tt = 'Φ' + kmR(r * 2) + 'mm 深' + kmR(a.h.depth) + 'mm'; G.txt[tt + '|' + a.from] = (G.txt[tt + '|' + a.from] || 0) + 1;
+    sk.ents.push({ id:SEQ++, t:'circle', c:{ x:c.x, y:c.y }, r:r * kx, layer:'部材_外形', css:null, aci:256, pv:a.pv, anc:1 });
+    var ex = Math.max(r * kx * 2.2, 2.2 * n);
+    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x - ex, y:c.y }, b:{ x:c.x + ex, y:c.y }, layer:'中心線', css:null, aci:256, pv:a.pv, anc:1 });
+    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x, y:c.y - ex }, b:{ x:c.x, y:c.y + ex }, layer:'中心線', css:null, aci:256, pv:a.pv, anc:1 }); });
+  Object.keys(grp).forEach(function(pv){ var G = grp[pv], b = G.b, st = 7 * n, mid = (b.x0 + b.x1) / 2, r1 = function(x){ return Math.round(x * 10) / 10; };
+    // 横の 位置：左 半分は 左の 端から・右 半分は 右の 端から（近い 端からの mm）。高さ：右の 外に 下から
+    var ux = G.cs.map(function(c){ return r1(c.x); }).filter(function(x, i, A){ return A.indexOf(x) === i; }).sort(function(a, c){ return a - c; });
+    var iL = 0, iR = 0; ux.forEach(function(x){ var left = x <= mid, i = left ? iL++ : iR++, e = left ? b.x0 : b.x1;
+      if (Math.abs(x - e) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+    var uy = G.cs.map(function(c){ return r1(c.y); }).filter(function(y, i, A){ return A.indexOf(y) === i; }).sort(function(a, c){ return a - c; });
+    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+    var c0 = G.cs.slice().sort(function(a, c){ return a.x - c.x; })[0], ty = b.y1 + st * (Math.max(iL, iR) + 1.6), j = 0;
+    Object.keys(G.txt).forEach(function(key){ var q = key.split('|'), s = q[0] + ' ×' + G.txt[key] + '（' + q[1] + '）', p = { x:Math.max(b.x0, c0.x - 4 * n), y:ty + j * 4 * n };
+      sk.ents.push({ id:SEQ++, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });
+      sk.ents.push({ id:SEQ++, t:'text', p:p, h:2.4 * n, rot:0, s:s, ha:0, va:0, layer:'文字', css:null, aci:256, pv:pv, anc:1 }); j++; }); });
+  return sk; }
 // 図枠を 縮尺 そのままで ページに（X＝紙の 左。半分なら 0 か 148.5）。表題欄は 組み立ての 件名・石種で
 function kmSheetPut(o, pg, g, X, B){
-  var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = S0.sk, n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';
+  var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = kmAncSheet(S0.sk, g, S0.n), n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';
   var fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity; fr.v.forEach(function(q){ fx0 = Math.min(fx0, q.x); fx1 = Math.max(fx1, q.x); fy0 = Math.min(fy0, q.y); fy1 = Math.max(fy1, q.y); });
   var M = function(q){ return P(X + (q.x - fx0) * s, kY((fy1 - q.y) * s)); };
   var inF = function(q){ return q.x >= fx0 - 1e-6 && q.x <= fx1 + 1e-6 && q.y >= fy0 - 1e-6 && q.y <= fy1 + 1e-6; };

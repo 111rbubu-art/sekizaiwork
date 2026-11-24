@@ -645,9 +645,10 @@ var KM = (function(){
     ['W', 'D', 'H'].forEach(function(k){ var R = F[k];
       if (c[k] < R.min) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.min + ' から（' + r1(R.min - c[k]) + ' mm 足りない）');
       if (c[k] > R.max) ng.push(v.label + '：' + LB[k] + ' ' + c[k] + ' は ' + R.max + ' まで（' + r1(c[k] - R.max) + ' mm 長い）'); });
-    var b0 = {}, b1 = {};   // セットの 座標（左・前・下）での 箱：図面の まま／いま
+    var b0 = {}, b1 = {}, kana = [];   // セットの 座標（左・前・下）での 箱：図面の まま／いま
     Object.keys(v.parts || {}).forEach(function(k){
       var q = p[k], o = v.parts[k]; if (!q || !q.setAt) return;
+      if (kanaQ(q)) { kana.push(k); return; }   // 金具は 石を 動かした あとに 付く 石に ついて 動かす（v0.8.102）
       var fl = F.parts[k] || {}, a = q.setAt, x = a.x, y = a.y, z = a.z, w = q.w, d = q.d, h = q.h;
       b0[k] = { x0:a.x, x1:a.x + o.w, y0:a.y, y1:a.y + o.h, z0:a.z, z1:a.z + o.d };
       if (dW || dD || dH) {
@@ -659,6 +660,29 @@ var KM = (function(){
       }
       b1[k] = { x0:x, x1:x + w, y0:y, y1:y + h, z0:z, z1:z + d };
     });
+    // ── 金具（2026-11-24 本人「設置寸法を 変えると L 字金具が ずれて エラー」）──
+    // 前は 金具も 石と 同じに 自分の 位置で 動き方（左・中・右）を 決めて いた ので、角の 金具は「中」で 動かず、外へ 動く 腰石横から 離れた。
+    // いまは 向き（左右・前後・高さ）ごとに、その 向きで 接して いる 石（図面の ままの 箱で 20 mm 以内）の 面と 同じ だけ 動く。
+    // 接する 石が 無い 向きは、ほかの 向きで 付いて いる 石の 動きに ならう（それも 無ければ 前の 動き方）
+    var AX = [['x', 'w', 'fx'], ['y', 'h', 'y'], ['z', 'd', 'fz']], b0k = {};
+    function ovl(A, B, X){ return Math.min(A[X + '1'], B[X + '1']) - Math.max(A[X + '0'], B[X + '0']); }
+    kana.forEach(function(k){
+      var q = p[k], o = v.parts[k], a = q.setAt, B = { x0:a.x, x1:a.x + o.w, y0:a.y, y1:a.y + o.h, z0:a.z, z1:a.z + o.d }, dl = {}, any = null;
+      AX.forEach(function(e){ var X = e[0], best = null;
+        Object.keys(b0).forEach(function(s){ var S0 = b0[s], S1 = b1[s];
+          if (!AX.every(function(e2){ return e2[0] === X || ovl(B, S0, e2[0]) > -0.5; })) return;
+          [[X + '1', X + '0'], [X + '0', X + '1']].forEach(function(f){   // 石の 面 f[0] に 金具の 面 f[1] が 向かい合う
+            var gap = f[0].charAt(1) === '1' ? B[f[1]] - S0[f[0]] : S0[f[0]] - B[f[1]];
+            if (gap < -0.5 || gap > 20) return; if (!best || gap < best.gap) best = { gap:gap, s:s, d:S1[f[0]] - S0[f[0]] }; }); });
+        if (best) { dl[X] = best.d; if (!any) any = best.s; } });
+      var mv = fitMove(F, fs.size, k, { x:a.x, y:a.y, z:a.z, w:o.w, d:o.d }), x = a.x, y = a.y, z = a.z;
+      if (dl.x != null) x += dl.x; else if (any) x += b1[any].x0 - b0[any].x0 + ((b1[any].x1 - b1[any].x0) - (b0[any].x1 - b0[any].x0)) * ((x - b0[any].x0) / Math.max(1, b0[any].x1 - b0[any].x0)); else x += dW * mv.fx;
+      if (dl.z != null) z += dl.z; else if (any) z += b1[any].z0 - b0[any].z0 + ((b1[any].z1 - b1[any].z0) - (b0[any].z1 - b0[any].z0)) * ((z - b0[any].z0) / Math.max(1, b0[any].z1 - b0[any].z0)); else z += dD * mv.fz;
+      if (dl.y != null) y += dl.y; else if (any) y += b1[any].y0 - b0[any].y0; else if (mv.y) y += dH;
+      if (dW || dD || dH) p[k] = Object.assign({}, q, { offX:r1(x - c.W / 2), offY:r1(y), offZ:r1(c.D / 2 - (z + q.d)) });
+      b1[k] = { x0:x, x1:x + q.w, y0:y, y1:y + q.h, z0:z, z1:z + q.d }; b0k[k] = B;
+    });
+    Object.keys(b0k).forEach(function(k){ b0[k] = b0k[k]; });
     // 外柵が 狭く なって 部材 どうしが 新しく ぶつかる（図面では ぶつからない）＝✕ と 何 mm（カロートと 腰石 など。位置を 調整する）
     var ks = Object.keys(b1), hitP = [];
     function ov(A, B){ return { x:Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0), y:Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0), z:Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) }; }
@@ -770,7 +794,31 @@ var KM = (function(){
   // 穴は この 案件の 形（res.parts[k].shape の 写し）にだけ 入れ、マスターは 変えない。動かすと 作り直す（ついて 動く）
   var ANC_GAP = 20, ANC_EDGE = 10;
   function circ(cx, cy, r){ var o = []; for (var i = 0; i < 24; i++) { var a = i / 24 * Math.PI * 2; o.push([r1(cx + r * Math.cos(a)), r1(cy + r * Math.sin(a))]); } return o; }
+  // 金具を ボルトの 向きに 石まで 寄せる（すき間 0）。前の 目地 6 の まま セットに 入った 金具・設置寸法で 少し 離れた 金具も 石に じかに（v0.8.102）
+  function snapKana(res){
+    Object.keys(res.parts).forEach(function(fk){
+      var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !(fp.free || fp.setId)) return;
+      var D0 = pv(sh, 'D'), H0 = pv(sh, 'H'); if (!(D0 > 0 && H0 > 0)) return;
+      var P = { h0:H0, roll:fp.roll || 0, tilt:fp.tilt || 0, rot:fp.rot || 0 }, sh3 = [null, null, null], lo = ['x0', 'y0', 'z0'], hi = ['x1', 'y1', 'z1'];
+      bl.forEach(function(bt){
+        var bp = bt.p || [0, 0, 0], W0 = oriPt(P, fb, [+bp[0] || 0, +bp[1] || 0, D0 / 2 - (+bp[2] || 0)]), dv = oriDir(P, bt.n || [0, -1, 0]), ax = 0;
+        for (var i = 1; i < 3; i++) if (Math.abs(dv[i]) > Math.abs(dv[ax])) ax = i;
+        if (Math.abs(dv[ax]) < 0.99) return; var sg = dv[ax] < 0 ? -1 : 1, best = null;
+        Object.keys(res.boxes).forEach(function(k){
+          if (k === fk) return; var q = res.parts[k], b = res.boxes[k]; if (!q || !b || q.shape && q.shape.bolts && q.shape.bolts.length || BL_KISEI(q)) return;
+          if (q.rot && Math.abs(q.rot % 90) > 0.01) return;
+          var face = sg < 0 ? b[hi[ax]] : b[lo[ax]], gap = sg < 0 ? W0[ax] - face : face - W0[ax];
+          if (gap < -2 || gap > ANC_GAP) return;
+          for (var j = 0; j < 3; j++) if (j !== ax && (W0[j] < b[lo[j]] - 0.01 || W0[j] > b[hi[j]] + 0.01)) return;
+          if (!best || gap < best) best = gap; });
+        if (best != null && best > 0.5 && (sh3[ax] == null || Math.abs(best) < Math.abs(sh3[ax] / sg))) sh3[ax] = sg * best; });
+      var nb = Object.assign({}, fb), ch = 0;
+      sh3.forEach(function(d, i){ if (d == null) return; nb[lo[i]] = r1(nb[lo[i]] + d); nb[hi[i]] = r1(nb[hi[i]] + d); ch = 1; });
+      if (ch) { res.boxes[fk] = nb; (res.snapK = res.snapK || {})[fk] = sh3; }
+    });
+  }
   function anchorHoles(res){
+    snapKana(res);
     res.anc = []; var add = {};
     Object.keys(res.parts).forEach(function(fk){
       var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !(fp.free || fp.setId)) return;   // セットに 入れた 金具も 穴を 開ける（v0.8.94 本人「穴が 消えました」）

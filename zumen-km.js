@@ -199,13 +199,27 @@ function kmSheetInfo(g){ var p = kmPart(g.ks[0]), sk = p && p.shape && p.shape.s
   if (z) KM_AX.forEach(function(a, i){ if (Math.abs(+m[i] - z[i]) > 0.5) diff.push({ ax:a[0], n:a[1], sheet:z[i], model:+m[i], lock:+lk[a[0]] > 0 && Math.abs(+lk[a[0]] - z[i]) < 0.5 }); });
   return { fr:fr, sk:sk, paper:fr.sheet.paper === 'A4h' ? 'A4h' : 'A4', n:fr.sheet.n, wdh:z, diff:diff, ver:p.shape.version || 0,
     from:p.shape.__from === 'job' ? 'job' : 'master' }; }
-// 大きさ違いでも 使う か：鍵の ちがい だけ なら 使う。ほかは 本人が［保存した 加工図面を 使う］を 押した 部材 だけ（KMED.useSheet）
+// 大きさ違いの とき：鍵の ちがい だけ なら そのまま 使う。ほかは 保存した 加工図面を もとに モデリングの 大きさに 合わせた 図（kmStretchSheet）を 使う
+// 本人が［↩ 自動の 図に 戻す］を 押した 部材（KMED.useSheet＝'auto'）は 使わない（今の 大きさで 部品詳細図）
+// （2026-11-24 本人「150 が マスターで 登録した 情報で、それを ベースに して 寸法変更して 図面化する 様に 設計した はず。150 の 部材図面を ベースに して 135 の 図面を」）
 function kmSheetUse(g, S){ S = S || kmSheetInfo(g); if (!S) return null; if (!S.diff.length) return S;
   if (S.diff.every(function(d){ return d.lock; })) return S;
-  var u = KMED && KMED.useSheet && KMED.useSheet[g.type]; if (u === 'auto') return null; return u === 'sheet' ? S : null; }
-// 図枠の 図が モデリングの 大きさと ちがう（大きさ違いで 使った・差し替えて 縮めた 等）なら そのままは 使わない
-// → 今の 大きさで 部品詳細図を かき、右の 欄と ページの 名前に ⚠ を 出す（2026-11-24 腰石後 1515×150×330 の 図が 1200×168×300 の ページに 出て いた）
-// 本人が［保存した 加工図面を 使う］を 押せば 使う（その ときは ページに 赤で 大きさ違いを 書く。2026-11-24 塔婆柱 150×150 の 図が 150×135 で 出なかった）
+  var u = KMED && KMED.useSheet && KMED.useSheet[g.type]; if (u === 'auto') return null;
+  var C = KM2.sheetCache = KM2.sheetCache || {}; if (!C[g.type]) C[g.type] = kmStretchSheet(g, S) || 'x'; return C[g.type] === 'x' ? null : C[g.type]; }
+// 保存した 加工図面（図枠）を モデリングの 大きさに：面の 図は skStretch（近い 端からの mm の まま）、立体の 絵・寸法・▲は 今の 形で かき直す（加工図面の 画面と 同じ）
+function kmStretchSheet(g, S){ var k = g.ks[0], p = kmPart(k); if (!S.wdh || typeof skStretch !== 'function') return null;
+  var to = [g.w, g.d, g.h].map(function(v, i){ var d = S.diff.filter(function(x){ return x.ax === KM_AX[i][0]; })[0]; return d && d.lock ? d.sheet : +v; });
+  var sk = JSON.parse(JSON.stringify(S.sk)); skStretch(sk, S.wdh, to);
+  var mp = sk.info && sk.info.isoMap, had = sk.ents.some(function(e){ return e.iso && !e.mg; });
+  sk.ents = sk.ents.filter(function(e){ return !e.iso && !e.mg; }); sk.dims = (sk.dims || []).filter(function(d){ return !d.iso; });
+  if (mp && had && KM2.geo[k]) { var r = kmHlr([kmItem(k, false)], 'iso', 1, 1), M = function(q){ return P(mp.ox + q[0] - r.u0, mp.oy + q[1] - r.v0); };
+    var mp2 = { ox:mp.ox, oy:mp.oy, u0:r.u0, v0:r.v0 }; sk.info.isoMap = mp2;
+    r.vis.forEach(function(sg){ sk.ents.push({ t:'line', a:M(sg.a), b:M(sg.b), layer:'立体の 絵', css:null, aci:256, iso:1 }); });
+    isoDimsOf(to[0], to[1], to[2], function(q){ var z = KPJ.iso(q); return M(z); }).forEach(function(d){ sk.dims.push(d); });
+    var dr = p.shape && p.shape.drawing, fs = (dr && dr.migaki) || []; if (fs.length) mgEntsOf(fs, to[0], to[1], to[2], mp2, S.n).forEach(function(e){ sk.ents.push(e); }); }
+  var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0];
+  return { fr:fr, sk:sk, paper:S.paper, n:S.n, wdh:to, diff:[], from:S.from, ver:S.ver, stretched:S }; }
+// 図枠の 図が モデリングの 大きさと ちがう ときは、保存した 加工図面を もとに 今の 大きさに 合わせて 使う（v0.9.59）。右の 欄と 知らせで 分かる ように
 function kmSheetOf(g){ return kmSheetUse(g); }
 function kmDiffTxt(S){ return S.diff.map(function(d){ return d.n + ' ' + kmR(d.sheet) + '（モデリング ' + kmR(d.model) + '）' + (d.lock ? '🔒' : ''); }).join('・'); }
 function kmR(v){ return String(Math.round(+v * 10) / 10); }
@@ -499,7 +513,7 @@ function kmSaveEd(){ if (!KMED || !KM2) return; KMED.payT = KM2.pay.t; kmLs('zum
 // ── ページの 一覧・作り直し ──
 function kmPagesDef(){
   var one = KM2.pay.only === 'detail';
-  KM2.sheetDiff = [];   // 保存した 加工図面が 大きさ違いの 部材（右の 欄・ページの 名前に ⚠）   // 部材マスターの［📄 加工図面］：この 部材の 部品詳細図 だけ
+  KM2.sheetDiff = []; KM2.sheetCache = {};   // 保存した 加工図面が 大きさ違いの 部材（右の 欄・ページの 名前に ⚠）   // 部材マスターの［📄 加工図面］：この 部材の 部品詳細図 だけ
   var L = one ? [] : [{ key:'site/iso', gen:'siteIso', title:'配置図 斜め' }, { key:'site/3v', gen:'site3', title:'配置図 三面' }];
   KM2.bundles.forEach(function(B){
     if (!one) { L.push({ key:B.id + '/table', gen:'table', title:B.title + ' 部品寸法表', B:B });
@@ -508,7 +522,7 @@ function kmPagesDef(){
     var plain = [], half = [], full = [];
     B.groups.forEach(function(g){ var S = kmSheetInfo(g), sh = kmSheetUse(g, S); (sh ? (sh.paper === 'A4h' ? half : full) : plain).push(g);
       if (S && S.diff.length && !S.diff.every(function(d){ return d.lock; })) KM2.sheetDiff.push({ type:g.type, no:g.no, name:g.name, g:g, S:S, used:!!sh }); });
-    var warn = function(gs){ return gs.some(function(g){ return KM2.sheetDiff.some(function(x){ return x.type === g.type; }); }) ? '⚠ ' : ''; };
+    var warn = function(gs){ return gs.some(function(g){ return KM2.sheetDiff.some(function(x){ return x.type === g.type && !x.used; }); }) ? '⚠ ' : ''; };
   var put = function(list, step, sheet){ for (var i = 0; i < list.length; i += step) { var gs = list.slice(i, i + step); L.push({ key:B.id + '/detail/' + gs.map(function(g){ return g.type; }).join('+'), gen:'detail', title:warn(gs) + B.title + ' 詳細 ' + gs.map(function(g){ return g.no; }).join('・'), B:B, groups:gs, sheet:sheet }); } };
     put(plain, 2, false); put(half, 2, true); put(full, 1, true);
   });
@@ -567,7 +581,7 @@ function kmEnter(again){
     kmBuildAll(); kmSaveEd();
     document.body.classList.add('bmode'); document.body.classList.add('kmmode');
     bmShow(Math.min(keep, BM.pages.length - 1), true);
-    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）' + (KM2.sheetDiff && KM2.sheetDiff.length ? '。⚠ 保存した 加工図面と 大きさが ちがう 部材 ' + KM2.sheetDiff.length + ' 件（ページの ⚠・右の 欄）' : ''), 6000);
+    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）' + (KM2.sheetDiff && KM2.sheetDiff.length ? '。保存した 加工図面と 大きさが ちがう 部材 ' + KM2.sheetDiff.length + ' 件（加工図面を もとに 今の 大きさに 合わせた。右の 欄）' : ''), 6000);
   }).catch(function(e){ alert('図面を 作れませんでした：' + (e && e.message || e)); });
 }
 function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; if (!L['中心線']) L['中心線'] = { name:'中心線', aci:1, css:'#c0392b', on:true, gap:false, dash:'dd' }; }
@@ -581,12 +595,12 @@ function kmPanel(el){
   var types = (pg.groups || []).map(function(g){ return g.type; });
   // 保存した 加工図面が モデリングと 大きさ違い（v0.9.59）：何が ちがうかと 使う／使わないの ボタン
   (KM2.sheetDiff || []).filter(function(x){ return types.indexOf(x.type) >= 0; }).forEach(function(x){ var S = x.S;
-    h += '<div style="border:2px solid #d00;border-radius:6px;padding:6px 8px;margin:6px 0;background:#fff5f5;color:#900">'
-      + '<b>⚠ ' + esc(x.no + '. ' + x.name) + '：保存した 加工図面と 大きさが ちがいます</b><br>'
+    h += '<div style="border:2px solid ' + (x.used ? '#b45309' : '#d00') + ';border-radius:6px;padding:6px 8px;margin:6px 0;background:' + (x.used ? '#fffbeb' : '#fff5f5') + ';color:' + (x.used ? '#78350f' : '#900') + '">'
+      + '<b>' + (x.used ? '↔ ' : '⚠ ') + esc(x.no + '. ' + x.name) + '：保存した 加工図面と 大きさが ちがいます</b><br>'
       + '加工図面（' + (S.from === 'job' ? 'この 墓に 保存' : 'マスター部材' + (S.ver ? '・版 ' + S.ver : '')) + '）は ' + esc(S.wdh.map(kmR).join('×')) + '、モデリングは ' + esc([x.g.w, x.g.d, x.g.h].map(kmR).join('×')) + '<br>'
       + 'ちがう 所：' + esc(kmDiffTxt(S)) + '<br>'
-      + (x.used ? '今は <b>保存した 加工図面</b>を 使って います（ページに 赤で 大きさ違いを 書いて います）' : '今は <b>モデリングの 大きさで 自動の 図</b>です（保存した 加工図面は 使って いません）')
-      + '<div class="row" style="margin-top:4px"><button class="b2' + (x.used ? '' : ' pr') + '" data-kmuse="' + esc(x.type) + '" data-v="' + (x.used ? 'auto' : 'sheet') + '">' + (x.used ? '↩ 自動の 図に 戻す' : '📄 保存した 加工図面を 使う') + '</button></div></div>'; });
+      + (x.used ? '今は <b>保存した 加工図面を もとに モデリングの 大きさに 合わせた 図</b>です（穴・鍵の 寸法は 近い 端からの mm の まま。立体の 絵・▲は 今の 形で かき直し）' : '今は <b>モデリングの 大きさで 自動の 図</b>です（保存した 加工図面は 使って いません）')
+      + '<div class="row" style="margin-top:4px"><button class="b2' + (x.used ? '' : ' pr') + '" data-kmuse="' + esc(x.type) + '" data-v="' + (x.used ? 'auto' : 'sheet') + '">' + (x.used ? '↩ 自動の 図に 戻す' : '📄 保存した 加工図面を もとに する') + '</button></div></div>'; });
   if (types.length) { h += '<div class="row"><button class="b2" id="kmTplSave">📌 この ページの 部材の 直しを ひな形に</button></div>';
     var on = types.filter(function(t){ return tpl[t]; }); if (on.length) h += '<div class="muted">ひな形 あり：' + on.map(function(t){ return esc(t.split('/').pop()); }).join('・') + '　<a href="#" id="kmTplDel">ひな形を 消す</a></div>'; }
   h += '<div class="row"><button class="b2" id="kmClr">この ページの 直しを 消す（自動に 戻す）</button></div>';

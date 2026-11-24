@@ -1128,3 +1128,4 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - まとめて 移動・金具・点で 移動（ptMoveSet → mvBy）も 同じ SZ.off なので 同じ 札。となりと 目地で 吸い付くのは 今まで どおり（矢印が 近い ときの 薄い 緑も そのまま）
 - テスト（Playwright・和型8寸パッカー＋外柵 1515×1705）：香炉 右へ 引く 12→32・押す 後ろ 3・上 2 → 3 つの 札。香炉＋水鉢 まとめて 前へ 30 →「前へ 30 mm」。PNG /mnt/project-files/sekkei/idou-kyori/
 - ブランチ claude/idou-kyori・main は 本人の OK 待ち
+- 追記（同じ 日）本人「矢印で 方向は わかるので 右へや 後ろへは 不要」→ 札は「12 mm」だけ

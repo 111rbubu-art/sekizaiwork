@@ -38,9 +38,11 @@ function kDrawR(o, r, M, vid, hid){ if (hid) r.hid.forEach(function(g){ kL(o, M(
 function kPlace(r, cx, cy){ var mu = (r.u0 + r.u1) / 2, mv = (r.v0 + r.v1) / 2; return function(q){ return [cx + q[0] - mu, cy - (q[1] - mv)]; }; }
 
 // ── 部材の 組（束・左右 同じ 石は 1 行）──
+function kmIsKana(p){ return !!p && (p.role === '金具' || !!(p.shape && p.shape.bolts && p.shape.bolts.length)); }
 function kmBundles(pay){
   var bySet = {}, order = [];
-  pay.parts.forEach(function(p){ var sid = p.setId || p.grp; if (!bySet[sid]) { bySet[sid] = []; order.push(sid); } bySet[sid].push(p); });
+  // 金具（役目 金具・ボルトの ある 部材）は 部品寸法表・加工指示図・部品詳細図に 出さない（2026-11-24 本人「金具の 図面化は 不要」）。配置図・3D には 残す
+  pay.parts.forEach(function(p){ if (pay.only !== 'detail' && kmIsKana(p)) return;   /* 部材マスターから 金具 1 つを 開く ときは 出す */ var sid = p.setId || p.grp; if (!bySet[sid]) { bySet[sid] = []; order.push(sid); } bySet[sid].push(p); });
   var out = [];
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
   order.forEach(function(sid){ var ps = bySet[sid], cnt = {};

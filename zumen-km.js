@@ -77,7 +77,7 @@ function kmItem(k, world){ var p = kmPart(k), g = KM2.geo[k], b = p.box; return 
 function kmFrame(o, pg, title, kind){
   var R = function(x0, y0, x1, y1, w){ kL(o, [x0, y0], [x1, y0], null, false, '枠'); kL(o, [x1, y0], [x1, y1], null, false, '枠'); kL(o, [x1, y1], [x0, y1], null, false, '枠'); kL(o, [x0, y1], [x0, y0], null, false, '枠'); };
   R(8, 8, 289, 202); kL(o, [8, 15], [289, 15], null, false, '枠');
-  kT(o, 10, 13, title, 3.4, { layer:'枠', aid:pg.key + '/title' }); kT(o, 287, 13, (pg.no || 0) + ' / ' + (pg.tot || 0), 3, { ha:2, layer:'枠' });
+  kT(o, 10, 13, title, 3.4, { layer:'枠', aid:pg.key + '/title' }); kT(o, 287, 13, pg.skip ? '対象外' : (pg.no || 0) + ' / ' + (pg.tot || 0), 3, { ha:2, layer:'枠' });
   R(150, 190, 289, 202); [175, 230, 250].forEach(function(x){ kL(o, [x, 190], [x, 202], null, false, '枠'); }); kL(o, [150, 196], [289, 196], null, false, '枠');
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay;
   kT(o, 152, 194.4, '件名', 2.2, { layer:'枠' }); kT(o, 177, 194.4, info.name || pay.name || '', 2.4, { layer:'枠', aid:pg.key + '/ken' });
@@ -318,7 +318,7 @@ function kmSheetPut(o, pg, g, X, B){
   (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
     var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
-  var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:(pg.no || 0) + ' / ' + (pg.tot || 0),
+  var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:pg.skip ? '対象外' : (pg.no || 0) + ' / ' + (pg.tot || 0),
     sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + (B.stone || ''), sub2:g.kakou || '',
     ken:info.name || pay.name || '', zu:'加工図面（' + B.title + '）', scale:'1/' + n, date:pay.date || '' };
   var dc = sheetDeco(S0.paper, inf);
@@ -613,11 +613,27 @@ function kmRegen(pg){
 function kmBuildAll(){
   var defs = kmPagesDef();
   BM.pages = defs.map(function(d, i){ return { key:d.key, gen:d.gen, title:d.title, kind:'km', B:d.B, groups:d.groups, sheet:d.sheet, no:i + 1, tot:defs.length, N:1, doc:bmNewDoc() }; });
+  kmNumber();
   BM.pages.forEach(function(pg){ kmRegen(pg); });
   KM2.lost = []; BM.pages.forEach(function(pg){ KM2.lost = KM2.lost.concat(pg.lost || []); });
   // 図が どこにも 無い 手の 直し
   var have = {}; BM.pages.forEach(function(pg){ Object.keys(pg.vw).forEach(function(v){ have[v] = 1; }); have['pg:' + pg.key] = 1; });
   Object.keys(KMED.man).forEach(function(k){ if (!have[k] && KMED.man[k].length) KM2.lost.push({ pg:k, what:'手で 足した もの ' + KMED.man[k].length + ' 個（図が 無い）' }); });
+}
+
+// ── 対象外の ページ（v0.9.64・本人「石塔は 再利用し、土留だけ 作る ときに 使う」）──
+// 対象外の ページは PDF・印刷に 出さない。ページ番号（n / 全）は 出す ページ だけで 数える。
+// 覚える 所：KMED.skip[件名][ページの 鍵]（件名＝モデリングの 名前。ほかの お墓に 写らない）→ 端末（zumen.kmEdit）と 作業ファイル・自動保存（BM.main.kmEdit）
+function kmSkipMap(){ if (!KMED) return {}; KMED.skip = KMED.skip || {}; var nm = (KM2 && KM2.pay && KM2.pay.name) || ''; return KMED.skip[nm] || {}; }
+function kmNumber(){ var m = kmSkipMap(), n = 0, only = KM2 && KM2.pay && KM2.pay.only === 'detail';
+  BM.pages.forEach(function(pg){ pg.skip = !only && !!m[pg.key]; });
+  var tot = BM.pages.filter(function(pg){ return !pg.skip; }).length;
+  BM.pages.forEach(function(pg){ pg.no = pg.skip ? 0 : ++n; pg.tot = tot; }); }
+function kmSetSkip(keys, on){
+  if (!KMED || !KM2) return; KMED.skip = KMED.skip || {}; var nm = KM2.pay.name || '', m = KMED.skip[nm] = KMED.skip[nm] || {};
+  keys.forEach(function(k){ if (on) m[k] = 1; else delete m[k]; }); if (!Object.keys(m).length) delete KMED.skip[nm];
+  BM.pages.forEach(kmHarvest); kmNumber(); BM.pages.forEach(function(pg){ kmRegen(pg); });   // 番号が 変わる ので 全部の ページを 作り直す（手の 直しは 当て直し）
+  kmSaveEd(); D = BM.pages[BM.cur].doc; VER++; changed(); bmPages(); bmPanel(); redraw();
 }
 
 // ── 入口：組み立てから ──

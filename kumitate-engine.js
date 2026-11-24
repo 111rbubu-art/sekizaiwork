@@ -291,6 +291,7 @@ var KM = (function(){
       parts[q.key] = { name:q.name, no:String(q.no), grp:S.kind, w:q.w, h:q.h, d:q.d, visible:true, parent:null,
         offX:r1(q.at.x - W / 2), offY:q.at.y, offZ:r1(Dd / 2 - (q.at.z + q.d)), shape:q.part || null, finish:q.finish || '', setId:S.id, setAt:{ x:q.at.x, y:q.at.y || 0, z:q.at.z },
         role:q.role || '', partId:q.partId || (q.part && q.part.id) || '', mirror:!!q.mirror, stone:q.stone || '', kakou:q.kakou || '', added:!!q.added, kumi:q.kumi || '', kname:q.kumi && S.kname ? S.kname[q.kumi] || '' : '' };
+      if (q.rot || q.tilt || q.roll) Object.assign(parts[q.key], { rot:+q.rot || 0, tilt:+q.tilt || 0, roll:+q.roll || 0, ow:q.ow, od:q.od });   // 回した・倒した 金具（v0.8.100）
     });
     return { label:S.name, colorGroup:S.kind === 'fence' ? 'fence' : 'tower', parts:parts, set:{ id:S.id, stretch:S.stretch || null, version:S.version || 0, size:S.size, place:S.place || null, fit:S.kind === 'fence' ? normFit(S) : null } };
   }
@@ -689,6 +690,7 @@ var KM = (function(){
   function syncShapes(p, st){
     Object.keys(p).forEach(function(k){
       var q = p[k], def = q.shape; if (!def || (st.shapes && st.shapes[k]) || !def.params) return;
+      if (q.rot || q.tilt || q.roll) return;   // 向けた 部材：箱は 向けた 形を 囲む 箱 なので 形の 幅・奥行・高さに 入れない（v0.8.100）
       var cur = shapeSize(def); if (cur && cur.w === q.w && cur.d === q.d && cur.h === q.h) return;
       var nd = clone(def); [['W', 'w'], ['D', 'd'], ['H', 'h']].forEach(function(a){ if (nd.params[a[0]]) nd.params[a[0]].value = q[a[1]]; });
       p[k] = Object.assign({}, q, { shape:nd });
@@ -707,7 +709,7 @@ var KM = (function(){
   function rotY(x, z, deg){ var a = (deg || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return { x:x * c + z * s, z:-x * s + z * c }; }
   function frameOf(res, k){
     var b = res.boxes[k], p = res.parts[k]; if (!b || !p) return null;
-    var rot = +p.rot || 0, w = rot ? p.w : b.x1 - b.x0, d = rot ? p.d : b.z1 - b.z0;
+    var rot = +p.rot || 0, w = rot ? p.ow || p.w : b.x1 - b.x0, d = rot ? p.od || p.d : b.z1 - b.z0;   // ow・od＝セットに 入れた 回した 金具の 回す 前（v0.8.100）
     return { cx:(b.x0 + b.x1) / 2, y0:b.y0, cz:(b.z0 + b.z1) / 2, w:w, h:b.y1 - b.y0, d:d, rot:rot };
   }
   function framePt(F, f){ var x = (f[0] - 0.5) * F.w, z = (f[2] - 0.5) * F.d, r = rotY(x, z, F.rot); return { x:F.cx + r.x, y:F.y0 + f[1] * F.h, z:F.cz + r.z }; }

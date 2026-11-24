@@ -313,11 +313,11 @@ input.kmn{width:110px;text-align:left}
 <input type="file" id="fIshime" accept="image/*" hidden>
 <script src="buzai-engine.js?v=0.9.52"></script>
 <script src="kumitate-data.js"></script>
-<script src="kumitate-engine.js?v=0.8.99"></script>
-<script src="buzai-lib.js?v=0.9.51"></script>
+<script src="kumitate-engine.js?v=0.8.100"></script>
+<script src="buzai-lib.js?v=0.9.52"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.99';
+var APP_VER = 'v0.8.100';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -2609,7 +2609,7 @@ function canToSet(fr){
   var tp = fr.tgt && fr.tgt.pts || [], sid = tp.length && RES.parts[tp[0].key] && RES.parts[tp[0].key].setId, S = sid && setById(sid);
   if (!tp.length) return { ok:false, why:'置いた あと、相手が セットの 部材なら その セットに 入れられます' };
   if (!S || !tp.every(function(q){ return RES.parts[q.key] && RES.parts[q.key].setId === sid; })) return { ok:false, why:'相手が セットの 部材の ときだけ セットに 入れられます' };
-  if (+fr.rot || (fr.tilt & 3) || (fr.roll & 3)) return { ok:false, why:'回した・倒した 部材は セットに 入れられません（回転 0 の とき）' };
+  if (Math.abs((+fr.rot || 0) % 90) > 0.01) return { ok:false, why:'斜めに 回した 部材（90° 単位で ない）は セットに 入れられません' };   // 90° 単位の 回転・倒す・裏返すは 向き（sl.ori）で 入る（v0.8.100）
   if (!fr.shape || !LIB[fr.shape.id]) return { ok:false, why:'部材マスターに 無い 部材は セットに 入れられません' };
   return { ok:true, S:S };
 }
@@ -2626,9 +2626,11 @@ function freeToSet(fr, quiet){
   var c = best.split(',').map(Number);
   while (slotOf(S, 'add_' + n) || (ST.add || []).some(function(a){ return a.key === 'add_' + n; })) n++;
   var r1 = function(x){ return Math.round(x * 10) / 10; };
-  var at = { x:r1(bF.x0 - c[0]), y:r1(bF.y0 - c[1]), z:r1(c[2] - p.d - bF.z0) };
+  var at = { x:r1(bF.x0 - c[0]), y:r1(bF.y0 - c[1]), z:r1(c[2] - bF.z1) };   // 箱の 奥行（回した 金具は p.d と ちがう）
   if (!quiet && !confirm('セット「' + S.name + '」に ' + fr.name + ' を 入れますか？\n次から この セットを 選ぶと 最初から 入ります')) return false;
-  var sl = { key:'add_' + n, no:'', name:fr.name, role:fr.role || '', part:{ id:fr.shape.id, version:LIB[fr.shape.id].version || 0 }, at:at, w:p.w, d:p.d, h:p.h, added:true };
+  var sl = { key:'add_' + n, no:'', name:fr.name, role:fr.role || '', part:{ id:fr.shape.id, version:LIB[fr.shape.id].version || 0 }, at:at, w:r1(bF.x1 - bF.x0), d:r1(bF.z1 - bF.z0), h:r1(bF.y1 - bF.y0), added:true };
+  var rt = (Math.round(+fr.rot || 0) % 360 + 360) % 360, ti = (+fr.tilt || 0) & 3, ro = (+fr.roll || 0) & 3;
+  if (rt || ti || ro) sl.ori = { rot:rt, tilt:ti, roll:ro };   // 向き（v0.8.100 本人「L 金具が 2 個しか 保存できて いない」＝回した 金具が 入らずに 残って いた）
   S.slots.push(sl); ST.free = ST.free.filter(function(f){ return f !== fr; }); SEL = sl.key; setsChanged(); renderLeft(); run();
   if (quiet) return true;
   alert('セット「' + S.name + '」に 入れました。' + (spHost() ? '［☁️ セットに 保存］で SharePoint へ' : ''));
@@ -2704,6 +2706,8 @@ function seBoxHtml(S){
   if (big) h += '<div class="row"><span class="k">セットの 大きさ</span><span>' + z.W0 + '×' + z.D0 + ' → <b>' + z.W + '×' + z.D + '</b></span></div>';
   if (kn) h += '<div class="row"><span class="k">グループの 名前</span><span>' + esc(Object.keys(seKname(S)).map(function(c){ return seKname(S)[c]; }).join('・') || '（色の 名前）') + '</span></div>';
   FRs.forEach(function(fr){ h += '<div style="padding:4px 0;border-bottom:1px solid #eee"><b style="color:#1d7a3a">＋ ' + esc(fr.name) + '</b> <span>足した 部材（セットに 入ります）</span></div>'; });
+  (ST.free || []).forEach(function(fr){ if (FRs.indexOf(fr) >= 0) return; var c = canToSet(fr);   // 入らない 足した 部材は わけを 出す（だまって 残さない。v0.8.100）
+    h += '<div style="padding:4px 0;border-bottom:1px solid #eee"><b style="color:#b42020">✕ ' + esc(fr.name) + '</b> <span class="muted">入りません：' + esc(c.ok ? 'ほかの セットの 部材に 付いて います' : c.why) + '</span></div>'; });
   if (!mv.length && !big && !kn && !FRs.length) h += '<div class="muted">変えた 石は ありません</div>';
   mv.forEach(function(x){ var ok = !x.bad.length;
     h += '<div style="padding:4px 0;border-bottom:1px solid #eee"><b style="color:' + (ok ? '#1d7a3a' : '#b42020') + '">' + (ok ? '✓ ' : '✕ ') + esc(x.sl.name || x.k) + '</b> <span>' + esc(seWords(x)) + '</span>';
@@ -3033,7 +3037,7 @@ if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
 spLoadSets(false); if (!spHost()) fixMissing(false);
-import('./kumitate-3d.js?v=0.8.95').then(function(m){
+import('./kumitate-3d.js?v=0.8.100').then(function(m){
   K3M = m; V3 = m.create($('v'), pick, SKP ? function(k){ if (k) openKakou(k); } : null, ctxOpen, pickBox);
   V3.setTexture(ishSrc); V3.setLight(lightOf()); lookSet(LOOK); if (spHost()) spStonesLoad(); ishLoad().then(function(){ ishApply(); if (ISH.on && Object.keys(ISH.by).length) renderSel(); });
   draw();

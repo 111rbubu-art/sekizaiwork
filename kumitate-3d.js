@@ -140,7 +140,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
       var on = sel && typeof sel === 'object' ? !!sel[k] : k === sel; // sel＝1 つの 鍵 か、{鍵:1}（外柵 ぜんぶ など）
       var lm = on ? selMat : hit[k] || bad ? hitMat : MODE === 'line' ? colLine(c0) : dark ? darkLine : lineMat;   // 線のみ＝ソリッドと 同じ 色の 線（v0.8.88）
       var rot = +(r.parts[k].rot || 0) * Math.PI / 180;   // 足した 部材の 回転（箱＝回した 形を 囲む 箱）
-      if (rot) { g.dispose(); g = new THREE.BoxGeometry(r.parts[k].w, h, r.parts[k].d); }
+      if (rot) { g.dispose(); g = new THREE.BoxGeometry(r.parts[k].ow || r.parts[k].w, h, r.parts[k].od || r.parts[k].d); }
       var m = new THREE.Mesh(g, sm);
       m.position.set(b.x0 + w / 2, b.y0 + h / 2, b.z0 + d / 2); m.rotation.y = rot; m.userData.key = k;
       var shp = r.parts[k].shape, pg = null;
@@ -252,7 +252,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
   function clearG(G){ while (G.children.length) { var o = G.children.pop(); o.geometry.dispose(); o.material.dispose(); } }
   // 部材の 箱の 座標（回す 前）：底面の 中心が 原点
   function frame(k){ var r = last && last.r, b = r && r.boxes[k], p = r && r.parts[k]; if (!b) return null; var rot = +(p.rot || 0);
-    return { c:new THREE.Vector3((b.x0 + b.x1) / 2, b.y0, (b.z0 + b.z1) / 2), w:rot ? p.w : b.x1 - b.x0, h:b.y1 - b.y0, d:rot ? p.d : b.z1 - b.z0, rot:rot * Math.PI / 180 }; }
+    return { c:new THREE.Vector3((b.x0 + b.x1) / 2, b.y0, (b.z0 + b.z1) / 2), w:rot ? p.ow || p.w : b.x1 - b.x0, h:b.y1 - b.y0, d:rot ? p.od || p.d : b.z1 - b.z0, rot:rot * Math.PI / 180 }; }
   function toWorld(F, f){ var v = new THREE.Vector3((f[0] - 0.5) * F.w, f[1] * F.h, (f[2] - 0.5) * F.d); v.applyAxisAngle(new THREE.Vector3(0, 1, 0), F.rot); return v.add(F.c); }
   function scr(v, rc){ var q = v.clone().project(cam); return { x:(q.x + 1) / 2 * rc.width, y:(1 - q.y) / 2 * rc.height }; }
   function pmHit(e){

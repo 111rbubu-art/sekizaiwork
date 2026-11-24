@@ -129,6 +129,7 @@
     (S.slots || []).concat(adds || []).forEach(function(sl){
       var p = sl.part && lib[sl.part.id], q = { key:sl.key, no:sl.no, name:sl.name, at:clone(sl.at || { x:0, y:0, z:0 }), w:sl.w, d:sl.d, h:sl.h, finish:sl.finish || '', kakou:sl.kakou || '', role:sl.role || '', partId:sl.part ? sl.part.id : '', mirror:!!sl.mirror, added:!!sl.added };
       if (sl.stone) q.stone = sl.stone;
+      if (sl.kumi) q.kumi = sl.kumi;   // 色の グループ（'tower'・'fence'・'boshi'・'crypt' か 色 '#rrggbb'）
       if (p) { var d = sl.mirror ? mirror(p) : clone(p); delete d.thumb; q.part = d;
         var pv = function(k){ var x = d.params && d.params[k]; return x ? +(x.value != null ? x.value : x.default) : null; };
         if (pv('W') > 0) { q.w = pv('W'); q.d = pv('D'); q.h = pv('H'); }
@@ -154,6 +155,9 @@
   function setSig(S){ var d = {}; Object.keys(S || {}).forEach(function(k){ if (k.indexOf('__') !== 0 && k !== 'version' && k !== 'savedAt') d[k] = S[k]; }); var t = JSON.stringify(d), h = 5381; for (var i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + t.length; }
   function setSpMark(S){ if (S) S.__spSig = setSig(S); return S; }
   function setUnsent(S){ return !!S && S.__spSig !== setSig(S); }
-  root.BL = { setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  // 色の グループ（モデリングの ソリッドの 色＝グループ。セットの 枠 slot.kumi、名前は セットの kname{ 色: 名前 }）
+  var KPAL = [['#3b6fd8', '青'], ['#2fa36b', '緑'], ['#8a5cc8', '紫'], ['#e08a2a', '橙'], ['#d94848', '赤'], ['#e6c23a', '黄'], ['#36a7c9', '水色'], ['#c95c9a', '桃'], ['#8b5a2b', '茶'], ['#7a8a99', '灰'], ['#1f3f8a', '紺'], ['#9bbf3a', '黄緑']];
+  var KBASE = [{ id:'tower', col:'#3b6fd8', name:'石塔' }, { id:'fence', col:'#2fa36b', name:'外柵' }, { id:'boshi', col:'#8a5cc8', name:'墓誌' }];
+  root.BL = { KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

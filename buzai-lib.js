@@ -32,6 +32,9 @@
   // 既製品（石では ない 品：香炉皿など・2026-11-18 本人）。才数・石種・石目に 入れない
   var KISEI_ROLES = ['香炉皿'];
   function isKisei(p){ return !!p && (!!p.kisei || KISEI_ROLES.indexOf(p.role || roleOf(p.name)) >= 0); }
+  // 金具（L 金具・アンカーなど。石では ない）。足した 金具・セットに 入った 金具（役目・ボルトが 抜けた 枠）・回した 金具でも 同じ 答えに なる ように
+  // 役目／形の 役目・分類／ボルト／名前（部材・形）の どれかで 見る。モデリングの 目地・図面化（部品寸法表・加工指示図・部品詳細図）・才数で 共通（2026-11-24 本人「金具は 石材では ないので 図面化しないで」）
+  function isKana(q){ var s = q && q.shape; return !!q && (!!q.kana || q.role === '金具' || !!(s && ((s.bolts && s.bolts.length) || s.role === '金具' || s.category === '金具')) || /金具/.test(q.name || '') || /金具/.test(s && s.name || '')); }
 
   // ── 左右反転（x を 反対に。側面の 穴は 左の 面 ⇔ 右の 面）──
   function flipPts(pts){ return pts.map(function(q){ var r = q.slice(); r[0] = -q[0]; return r; }).reverse(); }
@@ -164,6 +167,6 @@
   // 色の グループ（モデリングの ソリッドの 色＝グループ。セットの 枠 slot.kumi、名前は セットの kname{ 色: 名前 }）
   var KPAL = [['#3b6fd8', '青'], ['#2fa36b', '緑'], ['#8a5cc8', '紫'], ['#e08a2a', '橙'], ['#d94848', '赤'], ['#e6c23a', '黄'], ['#36a7c9', '水色'], ['#c95c9a', '桃'], ['#8b5a2b', '茶'], ['#7a8a99', '灰'], ['#1f3f8a', '紺'], ['#9bbf3a', '黄緑']];
   var KBASE = [{ id:'tower', col:'#3b6fd8', name:'石塔' }, { id:'fence', col:'#2fa36b', name:'外柵' }, { id:'boshi', col:'#8a5cc8', name:'墓誌' }];
-  root.BL = { KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  root.BL = { KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, isKana:isKana, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

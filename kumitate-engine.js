@@ -384,7 +384,7 @@ var KM = (function(){
   // 塔婆柱・塔婆立は 下の 面の 接着で 固定。横（左右・前後）の 目地は 見ない（v0.8.46 本人「下面は 有効、それ以外の 側面の 目地 6 mm は 対象外」）
   function tobaQ(q){ return !!q && /塔婆/.test(q.name || ''); }
   // 金具（L 金具など）は 目地の 対象外（石に じかに 付ける）。セットに 入れた 金具も（v0.8.94 本人「金具には 目地は 関係ありません」）
-  function kanaQ(q){ var s = q && q.shape; return !!q && (q.role === '金具' || !!(s && ((s.bolts && s.bolts.length) || s.role === '金具' || s.category === '金具')) || /金具/.test(q.name || '') || /金具/.test(s && s.name || '')); }   // 役目・ボルトが 抜けた 枠でも 名前で（v0.8.96）
+  function kanaQ(q){ var BL = typeof window !== 'undefined' && window.BL; if (BL && BL.isKana) return BL.isKana(q); var s = q && q.shape; return !!q && (!!q.kana || q.role === '金具' || !!(s && ((s.bolts && s.bolts.length) || s.role === '金具' || s.category === '金具')) || /金具/.test(q.name || '') || /金具/.test(s && s.name || '')); }   // 判定は buzai-lib.js の BL.isKana に 1 つ（v0.8.101）
   function ovl(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
   function jointCheck(data, st, p, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return [];
@@ -838,6 +838,7 @@ var KM = (function(){
     Object.keys(res.boxes).forEach(function(k){
       var p = res.parts[k], row = { key:k, name:p.name, w:p.w, h:p.h, d:p.d, sai:sai(p.w, p.d, p.h) };
       if (p.kisei || p.role === '香炉皿') return;   // 既製品（香炉皿など）は 石の 才数に 入れない（2026-11-18）
+      if (kanaQ(p)) return;   // 金具（足した・セットに 入った・回した どれでも）も 才数に 入れない（v0.8.101 本人「金具は 石材では ない」）
       if (p.kind === 'boshi' || p.cg === 'boshi') g.boshi.push(row);
       else if (p.kind === 'crypt' || p.cg === 'crypt') g.crypt.push(row);
       else if (p.cg === 'tower') g.tower.push(row);

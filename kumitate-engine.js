@@ -382,6 +382,8 @@ var KM = (function(){
     B[k] = { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }); return B; }
   // 塔婆柱・塔婆立は 下の 面の 接着で 固定。横（左右・前後）の 目地は 見ない（v0.8.46 本人「下面は 有効、それ以外の 側面の 目地 6 mm は 対象外」）
   function tobaQ(q){ return !!q && /塔婆/.test(q.name || ''); }
+  // 金具（L 金具など）は 目地の 対象外（石に じかに 付ける）。セットに 入れた 金具も（v0.8.94 本人「金具には 目地は 関係ありません」）
+  function kanaQ(q){ return !!q && (q.role === '金具' || !!(q.shape && q.shape.bolts && q.shape.bolts.length)); }
   function ovl(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
   function jointCheck(data, st, p, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return [];
@@ -389,7 +391,7 @@ var KM = (function(){
     for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var a = B[ks[i]], b = B[ks[j]], ox = ovl(a, b, 'x'), oy = ovl(a, b, 'y'), oz = ovl(a, b, 'z'), na = p[ks[i]].name, nb = p[ks[j]].name;
       if (ox > 0.5 && oy > 0.5 && oz > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'hit' }); ng.push(na + ' と ' + nb + ' が 重なる（' + (ox <= oz ? '横 ' + r1(ox) : '奥行 ' + r1(oz)) + ' mm）'); continue; }
-      if (oy <= 1 || tobaQ(p[ks[i]]) || tobaQ(p[ks[j]])) continue;
+      if (oy <= 1 || tobaQ(p[ks[i]]) || tobaQ(p[ks[j]]) || kanaQ(p[ks[i]]) || kanaQ(p[ks[j]])) continue;   // 金具は 重なりだけ 見る
       ['x', 'z'].forEach(function(A){ var O = A === 'x' ? 'z' : 'x'; if (ovl(a, b, O) <= 1) return;
         var g = a[A + '0'] < b[A + '0'] ? b[A + '0'] - a[A + '1'] : a[A + '0'] - b[A + '1']; g = r1(g);
         if (g >= -0.5 && g < T + 50 && Math.abs(g - J.h) > 0.5) { out.push({ a:ks[i], b:ks[j], kind:'gap', g:g });
@@ -412,8 +414,8 @@ var KM = (function(){
     if (!q.length) ks.forEach(function(k){ if (anc[k]) { done[k] = 1; q.push(k); } });
     function nb(k, A, side){ // side：'0'＝小さい 側の 石、'1'＝大きい 側
       var a = B[k], O = A === 'x' ? 'z' : 'x';
-      if (tobaQ(p[k])) return [];
-      return ks.filter(function(o){ if (o === k || tobaQ(p[o])) return false; var b = B[o]; if (ovl(a, b, 'y') <= 1 || ovl(a, b, O) <= 1) return false;
+      if (tobaQ(p[k]) || kanaQ(p[k])) return [];
+      return ks.filter(function(o){ if (o === k || tobaQ(p[o]) || kanaQ(p[o])) return false; var b = B[o]; if (ovl(a, b, 'y') <= 1 || ovl(a, b, O) <= 1) return false;
         var g = side === '0' ? a[A + '0'] - b[A + '1'] : b[A + '0'] - a[A + '1']; return g > -Math.min(a[A + '1'] - a[A + '0'], b[A + '1'] - b[A + '0']) && g < T; }); }
     while (q.length) {
       var k = q.shift();
@@ -444,7 +446,7 @@ var KM = (function(){
   //   内側の 石の 面を 動かす（両方 内側なら その 向きに 長い ほう）。図面の 目地が 6 なら 6 の ままで 何も 変わらない
   function jointFence(data, st, p, notes){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return;
-    var J = jointOf(st), T = 20, man = manualOf(st), ks = Object.keys(f.parts || {}).filter(function(k){ return p[k] && p[k].visible !== false; });
+    var J = jointOf(st), T = 20, man = manualOf(st), ks = Object.keys(f.parts || {}).filter(function(k){ return p[k] && p[k].visible !== false && !kanaQ(p[k]); });
     if (ks.length < 2) return;
     function bx(k){ var q = p[k]; return { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }
     function ov(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
@@ -712,7 +714,7 @@ var KM = (function(){
   function meanF(pts){ var s = [0, 0, 0]; pts.forEach(function(q){ for (var i = 0; i < 3; i++) s[i] += +q.f[i] || 0; }); return s.map(function(v){ return v / pts.length; }); }
   function freeSize(fr){ return shapeSize(fr.shape) || { w:+fr.w || 300, d:+fr.d || 300, h:+fr.h || 300 }; }
   function placeFree(res, free){
-    free = free || []; if (!free.length) return res;
+    free = free || []; if (!free.length) { anchorHoles(res); return res; }   // セットに 入れた 金具の 穴（足した 部材が 0 でも。v0.8.94）
     var zmax = 0, n0 = 0, base = Object.keys(res.boxes);
     base.forEach(function(k){ zmax = Math.max(zmax, res.boxes[k].z1); });
     res.free = {};
@@ -759,7 +761,7 @@ var KM = (function(){
   function anchorHoles(res){
     res.anc = []; var add = {};
     Object.keys(res.parts).forEach(function(fk){
-      var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !fp.free) return;
+      var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !(fp.free || fp.setId)) return;   // セットに 入れた 金具も 穴を 開ける（v0.8.94 本人「穴が 消えました」）
       var D0 = pv(sh, 'D'), H0 = pv(sh, 'H'); if (!(D0 > 0 && H0 > 0)) return;
       var P = { h0:H0, roll:fp.roll || 0, tilt:fp.tilt || 0, rot:fp.rot || 0 };
       bl.forEach(function(bt, bi){
@@ -770,7 +772,7 @@ var KM = (function(){
         if (Math.abs(dv[ax]) < 0.99) { row.warn = '斜めの ボルトは まだ 穴に できません'; res.anc.push(row); return; }
         var best = null, lo = ['x0', 'y0', 'z0'], hi = ['x1', 'y1', 'z1'];
         Object.keys(res.boxes).forEach(function(k){
-          if (k === fk) return; var q = res.parts[k], b = res.boxes[k]; if (!q || !b || q.free && q.shape && q.shape.bolts || BL_KISEI(q)) return;
+          if (k === fk) return; var q = res.parts[k], b = res.boxes[k]; if (!q || !b || q.shape && q.shape.bolts && q.shape.bolts.length || BL_KISEI(q)) return;
           if (q.rot && Math.abs(q.rot % 90) > 0.01) return;
           var face = sg < 0 ? b[hi[ax]] : b[lo[ax]], gap = sg < 0 ? W0[ax] - face : face - W0[ax];
           if (gap < -2 || gap > ANC_GAP) return;

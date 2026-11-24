@@ -8277,7 +8277,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.677';
+var APP_VERSION = 'v1.9.678';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -14886,13 +14886,20 @@ function renderHakaSpecTab(d) {
   /* 資料（青）と 工事仕様（茶）を 色で分ける（v1.9.482。本人「工事仕様と資料が同じような色なので、判別しやすくして」） */
   docsTop = docsTop.replace(/#fff8ee/g, '#ffffff').replace(/#e0c890/g, '#b8d4f0').replace('background:#fffdf8', 'background:#ffffff')
                    .replace('color:#5a3a00">📄 テンプレート', 'color:#185fa5">📄 テンプレート').replace('color:#5a3a00">📂 保存済資料', 'color:#185fa5">📂 保存済資料');
+  /* 描き直しで 位置が 飛ばないように（v1.9.678）：スクロールの 位置と テンプレートの 開き を 残し、
+     あとから 読み込む 資料の 一覧で 高さが 変わっても しばらく 下の 工事仕様の 位置を 合わせる */
+  var _hsPrevDet = document.getElementById('kouji-spec-tpl-det');
+  var _hsKeep = _hsPrevDet ? { st: b.scrollTop, open: _hsPrevDet.open } : null;
+  var _hsSpecBox0 = _hsKeep && document.getElementById('hs-spec-box');
+  if (_hsKeep && _hsSpecBox0) _hsKeep.top = _hsSpecBox0.getBoundingClientRect().top;
   b.innerHTML =
     '<div style="background:#eaf3fc;border:2px solid #9cc3ea;border-radius:12px;padding:8px 10px 2px;margin-bottom:16px">' +
       '<div style="font-size:15px;font-weight:700;color:#185fa5;margin:2px 4px 6px">📑 資料</div>' + docsTop +
     '</div>' +
-    '<div style="background:#fbf5ea;border:2px solid #d8bf95;border-radius:12px;padding:4px 10px 10px">' +
+    '<div id="hs-spec-box" style="background:#fbf5ea;border:2px solid #d8bf95;border-radius:12px;padding:4px 10px 10px">' +
       headerHtml.replace('background:#fff;display:flex', 'background:#fbf5ea;display:flex') + renderHakaSpecBasicForm(spec, d) +
     '</div>';
+  if (_hsKeep) _hakaSpecKeepPos(b, _hsKeep);
   setTimeout(function(){ if (typeof _choukokuLoadSaved === 'function') _choukokuLoadSaved(); _koujiSubLoad(); }, 30);
   if (typeof loadChoukokuTemplates === 'function') {
     loadChoukokuTemplates().then(function(){
@@ -14900,6 +14907,29 @@ function renderHakaSpecTab(d) {
       if (area && currentItem) area.innerHTML = _renderKoujiDocsTplListInner();
     });
   }
+}
+
+var _hakaSpecKeepTimer = null;
+function _hakaSpecKeepPos(b, keep) {
+  var det = document.getElementById('kouji-spec-tpl-det');
+  if (det && keep.open) det.open = true;
+  b.scrollTop = keep.st;
+  if (keep.top == null) return;
+  /* 人が 動かしたら（ホイール・指・つまみ・キー・ほかからの スクロール）すぐ やめる */
+  var t0 = Date.now(), stop = false, last = b.scrollTop;
+  function onUser() { stop = true; }
+  ['wheel','touchstart','mousedown','keydown'].forEach(function(ev){ b.addEventListener(ev, onUser, { once:true, passive:true }); });
+  if (_hakaSpecKeepTimer) clearTimeout(_hakaSpecKeepTimer);
+  (function fix() {
+    if (stop || Date.now() - t0 > 2500) return;
+    if (Math.abs(b.scrollTop - last) >= 2) return;
+    var box = document.getElementById('hs-spec-box');
+    if (!box || !document.getElementById('kouji-spec-tpl-det')) return;
+    var dy = box.getBoundingClientRect().top - keep.top;
+    if (Math.abs(dy) >= 1) b.scrollTop += dy;
+    last = b.scrollTop;
+    _hakaSpecKeepTimer = setTimeout(fix, 60);
+  })();
 }
 
 function switchHakaSpecSubtab(name) {
@@ -16792,7 +16822,26 @@ function cycleHakaSpecStatus(cat, key) {
     _hakaSpecData[cat]._status[key] = next;
   }
   _hakaSpecDirty = true;
-  if (currentItem) renderHakaSpecTab(currentItem);
+  _hakaSpecRerenderCat(cat);
+}
+
+/* ［確定］［最新］などを押すと 画面が 飛ぶ を 直す（v1.9.678。本人「工事仕様で確定や最新のボタンを押すと画面がスクロールします」）。
+   前は 仕様・資料 ぜんぶを 描き直して いたので、上の 資料の 一覧が 読み込みの あいだ 短くなり 位置が 動いた。
+   その 分類の 枠だけを 描き直す。見つからなければ 前と 同じく ぜんぶ */
+function _hakaSpecRerenderCat(cat) {
+  if (!currentItem) return;
+  var el = null;
+  document.querySelectorAll('#det-body [data-hs-cat]').forEach(function(x){ if (x.getAttribute('data-hs-cat') === cat) el = x; });
+  if (!el) { renderHakaSpecTab(currentItem); return; }
+  var spec = _hakaSpecData || {};
+  var cats = _hakaSpecActiveCats(spec, currentItem);
+  var body = document.getElementById('det-body');
+  var st = body ? body.scrollTop : 0;
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderHakaSpecCategoryBlock(cat, spec[cat] || {}, cat === cats[0]);
+  if (tmp.firstChild) el.parentNode.replaceChild(tmp.firstChild, el);
+  if (body && body.scrollTop !== st) body.scrollTop = st;
+  _refreshHakaSpecSaveBtn();
 }
 
 // ----- ファイル単位ステータス（写真・図面タブ） -----
@@ -16863,7 +16912,7 @@ function toggleHakaSpecGroupExcluded(cat, groupLabel, checked) {
   else delete _hakaSpecData._groupExcluded[key];
   if (Object.keys(_hakaSpecData._groupExcluded).length === 0) delete _hakaSpecData._groupExcluded;
   _hakaSpecDirty = true;
-  if (currentItem) renderHakaSpecTab(currentItem);
+  _hakaSpecRerenderCat(cat);
 }
 
 function renderHakaSpecBasicForm(spec, d) {
@@ -16898,8 +16947,20 @@ function renderHakaSpecBasicForm(spec, d) {
     blocksHtml + addBtn;
 }
 
+/* 分類（ジャンル）ごとの 色（v1.9.678。本人「墓新規と撤去など違うジャンルが同じデザインなので、入力ミスが起こります。色を変えて」）。
+   main＝見出しの 帯・区分の 札の 色、bg＝枠の 中の 薄い 色、line＝枠の 線と 小見出しの 左線 */
+var HAKA_SPEC_CAT_THEME = {
+  '墓新規':          { main:'#5a3a00', bg:'#fffaf2', line:'#c8a878', sub:'#fdf3e3', subc:'#7a5a30' },
+  '撤去':            { main:'#a8322d', bg:'#fff5f4', line:'#e2a19c', sub:'#fde8e6', subc:'#8a2a25' },
+  '修繕':            { main:'#2d6a3e', bg:'#f3faf4', line:'#9bc9a6', sub:'#e3f3e7', subc:'#2d5a37' },
+  '納骨（お骨出し）': { main:'#6a4a9a', bg:'#f8f5fd', line:'#bba6dc', sub:'#efe8f8', subc:'#5a3f84' },
+  '_other':          { main:'#2f5a8a', bg:'#f4f8fc', line:'#a3bfdc', sub:'#e5eef8', subc:'#2f5078' }
+};
+function _hakaSpecCatTheme(cat) { return HAKA_SPEC_CAT_THEME[cat] || HAKA_SPEC_CAT_THEME._other; }
+
 function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
   var fields = HAKA_SPEC_CATEGORY_FIELDS[cat];
+  var th = _hakaSpecCatTheme(cat);
   if (!fields) {
     return '<div class="sec"><span class="sec-hdr" style="background:#999;color:#fff">' + cat + '（定義なし）</span>' +
            '<div style="padding:10px;color:#888;font-size:12px">この分類の項目定義がありません。</div></div>';
@@ -17021,8 +17082,8 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
     var blockFlex = hasWide ? 'flex:1 1 100%;' : 'flex:0 1 auto;';
     var html = '<div style="display:flex;align-items:stretch;gap:5px;' + blockFlex + 'min-width:0;padding:1px 0">';
     if (label !== null) {
-      html += '<span style="background:#fdf7ed;border-left:2px solid #c8a878;padding:5px 7px;' +
-              'font-size:11px;font-weight:600;color:#7a5a30;border-radius:0 4px 4px 0;' +
+      html += '<span style="background:' + th.sub + ';border-left:2px solid ' + th.line + ';padding:5px 7px;' +
+              'font-size:11px;font-weight:600;color:' + th.subc + ';border-radius:0 4px 4px 0;' +
               'flex-shrink:0;display:flex;align-items:center;' +
               'word-break:keep-all;line-height:1.3">' + label + '</span>';
     }
@@ -17082,7 +17143,7 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
           '<input type="checkbox"' + (gExcl ? ' checked' : '') + ' onchange="toggleHakaSpecGroupExcluded(\'' + _hakaSpecJsStr(cat) + '\',\'' + _hakaSpecJsStr(gLabel) + '\',this.checked)">' +
           '対象外</label>';
         bodyHtml += '<div style="margin:8px 0 0;display:flex;align-items:center">' +
-          '<span style="display:inline-block;padding:5px 12px;background:' + (gExcl ? '#aaa' : '#7a5a30') + ';color:#fff;border-radius:5px;font-size:12.5px;font-weight:700;letter-spacing:.04em;box-shadow:0 1px 2px rgba(0,0,0,0.08)">' + gLabel + '</span>' +
+          '<span style="display:inline-block;padding:5px 12px;background:' + (gExcl ? '#aaa' : th.main) + ';color:#fff;border-radius:5px;font-size:12.5px;font-weight:700;letter-spacing:.04em;box-shadow:0 1px 2px rgba(0,0,0,0.08)">' + gLabel + '</span>' +
           excBox + '</div>';
         if (gExcl) {
           bodyHtml += '<div style="padding:4px 12px 6px;color:#aaa;font-size:11px;font-style:italic">（対象外）</div>';
@@ -17114,8 +17175,8 @@ function renderHakaSpecCategoryBlock(cat, catData, isPrimary) {
       '<button onclick="kjNokGcalDelete()" style="padding:3px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:12px;cursor:pointer;font-size:11px;font-family:inherit">🗑 カレンダーから削除</button>'
     : '';
   if (gcalBtnKj && !isPrimary) removeBtn = removeBtn.replace('margin-left:auto;', '');
-  return '<div class="sec">' +
-    '<span class="sec-hdr" style="background:#5a3a00;color:#fff;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+  return '<div class="sec" data-hs-cat="' + _hakaSpecEsc(cat) + '" style="background:' + th.bg + ';border:2px solid ' + th.line + ';border-left:6px solid ' + th.main + '">' +
+    '<span class="sec-hdr" style="background:' + th.main + ';color:#fff;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:700">' +
       '<span>🪦 ' + cat + '</span>' + emptyBadge + tekkyoBtn + gcalBtnKj + removeBtn +
     '</span>' +
     '<div style="padding:8px 6px">' + bodyHtml + '</div>' +
@@ -17147,7 +17208,7 @@ function updateHakaSpecField(cat, key, val) {
       rerender = true;
     }
   }
-  if (rerender && currentItem) renderHakaSpecTab(currentItem);
+  if (rerender) _hakaSpecRerenderCat(cat);
 }
 
 function updateHakaSpecDim(cat, key, dimKey, val) {

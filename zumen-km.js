@@ -184,8 +184,19 @@ function kmPgDetail(o, pg){
   kmFrame(o, pg, '【部品詳細図】　' + B.title, '部品詳細図');
 }
 // 部材の 図枠（部材マスターの 図面で 直す＝加工図面 1 枚）：{ fr, paper, n }。図枠が 無い・前の 範囲の 枠だけ なら null
+// 図枠の 図を かいた ときの 大きさ（幅・奥行・高さ）：inf.wdh（v0.9.57〜）か、前の 図は 上の 欄の「1515×150×330 mm」から
+function kmSheetWdh(fr){ var inf = fr.sheet.inf || {}; if (inf.wdh && inf.wdh.length === 3) return inf.wdh;
+  var m = /^\s*(\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)\s*mm/.exec(inf.sub1 || ''); return m ? [+m[1], +m[2], +m[3]] : null; }
+function kmSizeDiff(g, z){ return !!z && [g.w, g.d, g.h].some(function(v, i){ return Math.abs(+v - z[i]) > 0.5; }); }
+// 図枠の 図が モデリングの 大きさと ちがう（大きさ違いで 使った・差し替えて 縮めた 等）なら 使わない
+// → 今の 大きさで 部品詳細図を かく（2026-11-24 腰石後 1515×150×330 の 図が 1200×168×300 の ページに 出て いた）
 function kmSheetOf(g){ var p = kmPart(g.ks[0]), sk = p && p.shape && p.shape.sketch; if (!sk || !sk.ents) return null;
-  var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0]; return fr ? { fr:fr, sk:sk, paper:fr.sheet.paper === 'A4h' ? 'A4h' : 'A4', n:fr.sheet.n } : null; }
+  var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0]; if (!fr) return null;
+  if (kmSizeDiff(g, kmSheetWdh(fr))) return null;
+  return { fr:fr, sk:sk, paper:fr.sheet.paper === 'A4h' ? 'A4h' : 'A4', n:fr.sheet.n }; }
+// 図枠の 寸法の 矢印・文字の ずらしを 紙の 大きさに（図面で 直すと 同じ 見え方）。設定の「矢印の 長さ」は 図面の 単位なので 縮尺で 割る
+// （2026-11-24 設定の 矢印 16 が 紙の 16mm に なり、図枠の ページだけ 矢印が 大きく なって いた）
+function kmDimPaper(n2, d, s, th){ n2.al = d.al > 0 ? d.al * s : S.arrow > 0 ? S.arrow * s : th; if (d.tx) n2.tx = d.tx * s; }
 // 図枠を 縮尺 そのままで ページに（X＝紙の 左。半分なら 0 か 148.5）。表題欄は 組み立ての 件名・石種で
 function kmSheetPut(o, pg, g, X, B){
   var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = S0.sk, n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';
@@ -201,7 +212,7 @@ function kmSheetPut(o, pg, g, X, B){
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
     o.ents.push(n2); });
   (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
   var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:(pg.no || 0) + ' / ' + (pg.tot || 0),
     sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + (B.stone || ''), sub2:g.kakou || '',
@@ -213,9 +224,10 @@ function kmSheetPut(o, pg, g, X, B){
   kView(o, vid, n, [[X + dc.area.x0, dc.area.y0], [X + dc.area.x1, dc.area.y1]], {}); pg.regions.push(kmRegion(o, vid));
 }
 // （前の 形）部材の 図面に 加工図面の 範囲（e.frame）が あれば、その 枠の 中を そのまま 縮めて 入れる
-function kmSketch(o, pg, p, X, T){
+function kmSketch(o, pg, p, X, T, g){
   var sk = p && p.shape && p.shape.sketch; if (!sk || !sk.ents) return false;
   var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl'; })[0]; if (!fr) return false;
+  if (g && fr.sheet && kmSizeDiff(g, kmSheetWdh(fr))) return false;   // 図の 大きさが ちがう → 今の 大きさで かく
   var fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity; fr.v.forEach(function(q){ fx0 = Math.min(fx0, q.x); fx1 = Math.max(fx1, q.x); fy0 = Math.min(fy0, q.y); fy1 = Math.max(fy1, q.y); });
   var area = { x0:X + 3, x1:X + 137.5, y0:36, y1:184 }, n = kmPick(fx1 - fx0, fy1 - fy0, area.x1 - area.x0, area.y1 - area.y0), s = 1 / n;
   var ox = (area.x0 + area.x1) / 2 - (fx1 - fx0) * s / 2, oy = (area.y0 + area.y1) / 2 - (fy1 - fy0) * s / 2;   // 紙（y 下）
@@ -230,7 +242,7 @@ function kmSketch(o, pg, p, X, T){
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
     o.ents.push(n2); });
   (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = 2.3; n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = 2.3; kmDimPaper(n2, d, s, 2.3); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var c = [M(P(fx0, fy0)), M(P(fx1, fy1))];
   kView(o, vid, n, [[c[0].x, kY(c[0].y)], [c[1].x, kY(c[1].y)]], {}); pg.regions.push(kmRegion(o, vid));
   kT(o, X + 136, 186, '1/' + n, 2.2, { ha:2, aid:vid + '/scale' });
@@ -250,7 +262,7 @@ function kmDetail(o, pg, g, X, B){
   kT(o, X + 2, 27.4, W + '×' + D2 + '×' + H + ' mm', 2.4);
   kT(o, X + 2, 31.6, g.sai.toFixed(3) + ' × ' + g.ks.length + '本 = ' + (g.sai * g.ks.length).toFixed(3) + ' 才', 2.4);
   if (g.kakou) { kT(o, X + 60, 23.2, g.kakou.slice(0, 34), 2.1, { aid:T + '/h/kakou1' }); if (g.kakou.length > 34) kT(o, X + 60, 27.4, g.kakou.slice(34, 68), 2.1, { aid:T + '/h/kakou2' }); }
-  if (kmSketch(o, pg, p, X, T)) return;
+  if (kmSketch(o, pg, p, X, T, g)) return;
   var simple = kmSimple(k);
   // 斜め（寸法つき）
   var ia = simple ? { x0:X + 6, x1:X + 134, y0:40, y1:184 } : { x0:X + 6, x1:X + 134, y0:38, y1:100 };

@@ -383,7 +383,7 @@ var KM = (function(){
   // 塔婆柱・塔婆立は 下の 面の 接着で 固定。横（左右・前後）の 目地は 見ない（v0.8.46 本人「下面は 有効、それ以外の 側面の 目地 6 mm は 対象外」）
   function tobaQ(q){ return !!q && /塔婆/.test(q.name || ''); }
   // 金具（L 金具など）は 目地の 対象外（石に じかに 付ける）。セットに 入れた 金具も（v0.8.94 本人「金具には 目地は 関係ありません」）
-  function kanaQ(q){ return !!q && (q.role === '金具' || !!(q.shape && q.shape.bolts && q.shape.bolts.length)); }
+  function kanaQ(q){ var s = q && q.shape; return !!q && (q.role === '金具' || !!(s && ((s.bolts && s.bolts.length) || s.role === '金具' || s.category === '金具')) || /金具/.test(q.name || '') || /金具/.test(s && s.name || '')); }   // 役目・ボルトが 抜けた 枠でも 名前で（v0.8.96）
   function ovl(a, b, A){ return Math.min(a[A + '1'], b[A + '1']) - Math.max(a[A + '0'], b[A + '0']); }
   function jointCheck(data, st, p, ng){
     var f = (data.partsData.FENCE_VARIANTS || {})[st.sel.fence]; if (!f || !f.set) return [];

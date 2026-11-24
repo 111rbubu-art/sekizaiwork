@@ -8277,7 +8277,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.675';
+var APP_VERSION = 'v1.9.676';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -11933,6 +11933,7 @@ function openUketsuke(d, mode) {
     // フィールドマッピング用データ埋め込み（全フィールドをコピー）
     var safeD = {};
     Object.keys(d).forEach(function(k){var v=d[k];if(v!=null&&typeof v!=='object')safeD[k]=v;});
+    try { Object.assign(safeD, kjLegacyVals(d)); } catch(e){}   // 手配先①②は MakerJson から（v1.9.676）
     var encodedData = encodeURIComponent(JSON.stringify(safeD));
 
     var koujiBodyHTML =
@@ -13708,7 +13709,8 @@ function kjMakersFromCols(d){
    ['Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2','PickUp2']].forEach(function(k, i){
     var m = { no: i + 1, name: String(d[k[0]] || '').trim(), item: '', draw: _kjD10(d[k[1]]).trim(), order: _kjD10(d[k[2]]).trim(),
               deliv: _kjD10(d[k[3]]).trim(), pickup: (d[k[4]] === true || d[k[4]] === 'true'), memo: '' };
-    if (m.name || m.draw || m.order || m.deliv || m.pickup) out.push(m);
+    /* 手配先も 日付も 空なら 出さない（引取済の 列の SP の 既定値が「はい」で、空の 行が「済」に なって いた。v1.9.676） */
+    if (m.name || m.draw || m.order || m.deliv) out.push(m);
   });
   return out;
 }
@@ -13732,6 +13734,57 @@ function kjMakers(d){
   if (!d) return [];
   return kjMakersFromJson(d) || kjMakersFromCols(d);
 }
+/* 古い 列（手配先①②…引取済①②）の 名前で 値を 返す（v1.9.676。本人「MakerJson にまとめたい」「SP の不要な列は消したい」）
+   保存は MakerJson だけ。差し込み（{{仕入先①}} など）・受付票の 欄は これまでの 列の 名前で 読むので、ここで MakerJson から 作る */
+function kjLegacyVals(d){
+  var o = {}, a = kjMakers(d);
+  KJ_MK_COLS.forEach(function(k, i){
+    var m = a[i] || {};
+    o[k[0]] = m.name || ''; o[k[1]] = m.draw || ''; o[k[2]] = m.order || ''; o[k[3]] = m.deliv || ''; o[k[4]] = !!m.pickup;
+  });
+  return o;
+}
+/* 古い 列に だけ 入っている 案件を MakerJson に 移す（設定 › デバッグ の ボタン。1 回 押せば よい。v1.9.676）
+   MakerJson が 空で、手配先か 日付が 入っている 案件だけ。古い 列は 書きかえない（消す 前の 控え） */
+function kjMigrateMakersToJson(){
+  var out = document.getElementById('kj-mk-migrate-msg');
+  var say = function(t){ if (out){ out.style.display = ''; out.textContent = t; } };
+  if (_kjMakerColState === false){ say('SP の 工事関連に MakerJson の 列が ありません'); return; }
+  var siteId = 'shojisekizai.sharepoint.com,c99bde29-d526-4356-9835-91d935ef69dc,68843c66-a8c6-40d6-8ea5-02505dc86c03';
+  var token = '', all = [];
+  say('工事関連を 読んでいます…');
+  var page = function(url){
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } }).then(function(r){ return r.json(); }).then(function(j){
+      (j.value || []).forEach(function(i){ var f = i.fields || {}; f.id = i.id; all.push(f); });
+      say('工事関連を 読んでいます… ' + all.length + ' 件');
+      return j['@odata.nextLink'] ? page(j['@odata.nextLink']) : null;
+    });
+  };
+  getToken().then(function(resp){
+    token = resp.accessToken;
+    return page('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/items?$expand=fields&$top=999');
+  }).then(function(){
+    var todo = all.filter(function(f){ return !kjMakersFromJson(f) && kjMakersFromCols(f).length; });
+    if (!todo.length){ say('全 ' + all.length + ' 件を 見ました。移す 案件は ありません（古い 列は SP から 消して 大丈夫です）'); return; }
+    if (!confirm('工事関連 ' + all.length + ' 件の うち ' + todo.length + ' 件の 手配先を MakerJson に 移します。よろしいですか？（古い 列は そのまま 残します）')){ say('やめました'); return; }
+    var ok = 0, ng = [];
+    var next = function(i){
+      if (i >= todo.length){
+        say('移しました：' + ok + ' 件' + (ng.length ? '／失敗 ' + ng.length + ' 件（ID ' + ng.join(', ') + '）。もう 一度 押すと 失敗した 分だけ やり直します' : '。古い 列は SP から 消して 大丈夫です'));
+        return Promise.resolve();
+      }
+      var f = todo[i];
+      var rows = kjMakersFromCols(f).map(function(m){ return { name: m.name, item: '', draw: m.draw, order: m.order, deliv: m.deliv, pickup: !!m.pickup }; });
+      var body = {}; body[KJ_MAKER_COL] = JSON.stringify(rows);
+      say('移しています… ' + (i + 1) + ' / ' + todo.length);
+      return fetch('https://graph.microsoft.com/v1.0/sites/' + siteId + '/lists/' + KOUJI_LIST_ID + '/items/' + f.id + '/fields',
+        { method: 'PATCH', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function(r){ if (r.ok) ok++; else ng.push(f.id); }, function(){ ng.push(f.id); })
+        .then(function(){ return next(i + 1); });
+    };
+    return next(0);
+  }).catch(function(e){ say('読めませんでした：' + (e && e.message || e)); });
+}
 // n 番目（1 から）の 手配先。無ければ null
 function kjMakerSlot(d, n){
   var a = kjMakers(d);
@@ -13754,7 +13807,7 @@ function kjMakerStatus(m){
    保存は JSON の 列（MakerJson）に 並びを、**はじめの 2 社は これまでの 列（手配先①②…引取済①②）にも 写す**（もどせるように・ほかの 画面の ため）。
    SP に MakerJson の 列が あると 確かめられた ときだけ 出す（起動時の 列の 読み込み。確かめられない ときは これまでの ①② の 欄） */
 var _kjMakerColState = null;          // null＝まだ 分からない／true＝ある／false＝無い
-function kjMakerEditorOn(){ return _kjMakerColState === true; }
+function kjMakerEditorOn(){ return _kjMakerColState !== false; }   // v1.9.676：分からない ときも 新しい 欄（古い 列は 消す ため）
 var _kjMk = { id: null, rows: null };
 var KJ_MK_COLS = [['Creator','DrawingCompleted','OrderingMaterials','MaterialDelivery','PickUp1'],
                   ['Creator2','DrawingCompleted2','OrderingMaterials2','MaterialDelivery2','PickUp2']];
@@ -13872,19 +13925,7 @@ function _kjMkPush(){
   var json = rows.length ? JSON.stringify(rows) : '';
   if (json !== String(d[KJ_MAKER_COL] || '')) put(KJ_MAKER_COL, json || null);
   else if (localEdits[id]) delete localEdits[id][KJ_MAKER_COL];
-  KJ_MK_COLS.forEach(function(k, i){
-    var r = rows[i] || { name: '', draw: '', order: '', deliv: '', pickup: false };
-    var vals = [r.name, r.draw, r.order, r.deliv];
-    for (var j = 0; j < 4; j++){
-      var cur = (j === 0) ? String(d[k[j]] || '').trim() : _kjD10(d[k[j]]).replace(/\//g, '-');
-      var nv = vals[j] || '';
-      if (nv === cur){ if (localEdits[id]) delete localEdits[id][k[j]]; continue; }
-      put(k[j], nv ? (j === 0 ? nv : formatDateForSave(k[j], nv)) : null);
-    }
-    var curP = (d[k[4]] === true || d[k[4]] === 'true');
-    if (curP === !!r.pickup){ if (localEdits[id]) delete localEdits[id][k[4]]; }
-    else put(k[4], r.pickup ? 'true' : 'false');
-  });
+  /* 古い 列（手配先①②…引取済①②）には もう 写さない（v1.9.676。MakerJson だけ。古い 列は SP から 消せる） */
   try { saveEditsToStorage(); } catch(e){}
 }
 
@@ -19858,6 +19899,7 @@ function openChoukokuDocWindow(tpl, fnames, imageDataUrls, boxAssignments, spDat
   boxAssignments = boxAssignments || [];
   spData = spData || {};
   if (Object.keys(spData).length && (currentListMode === 'noukotsu' || NK_BILL_COL in spData)) spData = Object.assign({}, spData, _nkTplBillVals(spData));   // 請求の 並びを 差し込みに（v1.9.626）
+  if (Object.keys(spData).length && currentListMode !== 'noukotsu') { try { spData = Object.assign({}, spData, kjLegacyVals(spData)); } catch(e){} }   // 手配先①②は MakerJson から（v1.9.676）
 
   var esc = function(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   var orientation  = (tpl && tpl.orientation) ? tpl.orientation : 'portrait';
@@ -23686,6 +23728,7 @@ function _kkYuFill(t, asHtml){
   /* 資料制作の 差し込みと 同じ 決まり（依頼明細などの JSON は 表の 形に・請求の 並び _nkTplBillVals も）（v1.9.675。本人「ここがおかしいです」＝JSON が そのまま 出ていた） */
   var d0=currentItem||{}, d=d0;
   if(currentListMode==='noukotsu' || (typeof NK_BILL_COL!=='undefined' && NK_BILL_COL in d0)){ try{ d=Object.assign({}, d0, _nkTplBillVals(d0)); }catch(e){} }
+  if(currentListMode!=='noukotsu'){ try{ d=Object.assign({}, d, kjLegacyVals(d0)); }catch(e){} }   // 手配先①②は MakerJson から（v1.9.676）
   var F=(currentListMode==='noukotsu'?NOUKOTSU_BIND_FIELDS.concat(CHOUKOKU_BIND_FIELDS):CHOUKOKU_BIND_FIELDS.concat(NOUKOTSU_BIND_FIELDS)), M={};
   F.forEach(function(f){ if(!M[f.label]) M[f.label]=f; });
   var money=function(n,fmt){ var s=n.toLocaleString(); return fmt==='数値'?s:fmt==='円'?s+' 円':'¥'+s; };
@@ -37725,6 +37768,10 @@ function openImageViewer(imgs, startIdx) {
         <button onclick="checkUnusedSpFields()" title="SharePointにあるがアプリで使っていない項目を検出" style="padding:9px 14px;background:#7a5a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;text-align:left">
           🔍 項目チェック（未使用フィールドの検出）
         </button>
+        <button onclick="kjMigrateMakersToJson()" title="手配先①②・引取済①② などの 古い 列に だけ 入っている 案件を MakerJson に 移す" style="padding:9px 14px;background:#1e8449;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;text-align:left">
+          📦 手配先を MakerJson に 移す（古い 列を 消す 前に 1 回）
+        </button>
+        <div id="kj-mk-migrate-msg" style="display:none;font-size:12px;background:#f5f5f5;border-radius:6px;padding:8px 12px;white-space:pre-wrap"></div>
       </div>
       <div id="debug-field-result" style="margin-top:10px;display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">

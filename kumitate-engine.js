@@ -718,14 +718,24 @@ var KM = (function(){
     var zmax = 0, n0 = 0, base = Object.keys(res.boxes);
     base.forEach(function(k){ zmax = Math.max(zmax, res.boxes[k].z1); });
     res.free = {};
-    free.forEach(function(fr){
+    free.forEach(function(fr, fi){
       var sz = oriSize(freeSize(fr), fr), w = sz.w, h = sz.h, d = sz.d, rot = +fr.rot || 0, C = null, o = fr.off || {}, msg = '';
       var tp = (fr.tgt && fr.tgt.pts || []).filter(function(q){ return q && q.key && res.boxes[q.key]; });
-      if (fr.tgt && fr.tgt.pts && fr.tgt.pts.length && tp.length < fr.tgt.pts.length) msg = '相手の 部材が 無く なった（' + fr.name + '）→ 支点を 選び直して ください';
-      if (!msg && tp.length && fr.self && fr.self.length) {
+      // 相手の 部材が 無く なった（消した・セットを 替えた など）：前は 墓所の 前に 並べて 動かせ なかった（部材構成に「→（無い 部材）」）。
+      //   v0.8.98：最後に 置いた 置く 先の 点（fr.lastT・世界の 座標）に 止めて、移動の 矢印（off）で 動かせる ように。lastT が 無い 古い データは 今の 並べた 場所に 止める
+      var miss = !!(fr.tgt && fr.tgt.pts && fr.tgt.pts.length && tp.length < fr.tgt.pts.length), hasSelf = !!(fr.self && fr.self.length);
+      var f = hasSelf ? meanF(fr.self) : [0.5, 0, 0.5], r = rotY((f[0] - 0.5) * w, (f[2] - 0.5) * d, rot);
+      if (!miss && tp.length && hasSelf) {
         var T = { x:0, y:0, z:0 }; tp.forEach(function(q){ var P = framePt(frameOf(res, q.key), q.f); T.x += P.x / tp.length; T.y += P.y / tp.length; T.z += P.z / tp.length; });
-        var f = meanF(fr.self), sx = (f[0] - 0.5) * w, sz2 = (f[2] - 0.5) * d, r = rotY(sx, sz2, rot);
+        fr.lastT = { x:r1(T.x), y:r1(T.y), z:r1(T.z) };
         C = { x:T.x + (+o.x || 0) - r.x, y:T.y + (+o.y || 0) - f[1] * h, z:T.z - (+o.z || 0) - r.z };
+      } else if (miss && hasSelf) {
+        var L = fr.lastT;
+        if (!L || !isFinite(+L.x) || !isFinite(+L.y) || !isFinite(+L.z)) {   // 古い データ：墓所の 前の 並べた 場所を 置く 先に する
+          var R = { x:fi * 500, y:0, z:zmax + 400 + d / 2 };   // 並びの 順（ほかの 部材と 重ならない ように 足した 順の 場所）
+          L = fr.lastT = { x:r1(R.x - (+o.x || 0) + r.x), y:r1(R.y - (+o.y || 0) + f[1] * h), z:r1(R.z + (+o.z || 0) + r.z) };
+        }
+        C = { x:+L.x + (+o.x || 0) - r.x, y:+L.y + (+o.y || 0) - f[1] * h, z:+L.z - (+o.z || 0) - r.z };
       } else {   // まだ 置いて いない：墓所の 前に 並べる
         C = { x:n0 * 500, y:0, z:zmax + 400 + d / 2 }; n0++;
       }
@@ -734,7 +744,7 @@ var KM = (function(){
       res.boxes[fr.key] = { x0:r1(C.x - ex), y0:r1(C.y), z0:r1(C.z - ez), x1:r1(C.x + ex), y1:r1(C.y + h), z1:r1(C.z + ez) };
       var cat = fr.cat && fr.cat.kind ? fr.cat : null, CG = { tower:'tower', fence:'fence', boshi:'boshi', toba:'fence', crypt:'crypt' }, cg = cat ? CG[cat.kind] || 'tower' : fr.cg || 'tower';   // 部材構成で 移した 分類（石塔・外柵…）
       res.parts[fr.key] = { name:fr.name || (fr.shape && fr.shape.name) || '部材', kind:cat ? cat.kind : 'free', tgroup:cat && cat.group || '', cg:cg, grp:cg, role:fr.role || '', w:w, d:d, h:h, rot:rot, tilt:(+fr.tilt || 0) & 3, roll:(+fr.roll || 0) & 3,
-        shape:fr.shape || null, partId:fr.shape && fr.shape.id || '', kakou:fr.shape && fr.shape.kakou || '', free:true, placed:!!(tp.length && !msg && fr.self && fr.self.length), visible:true };
+        shape:fr.shape || null, partId:fr.shape && fr.shape.id || '', kakou:fr.shape && fr.shape.kakou || '', free:true, placed:!!(hasSelf && (tp.length || miss)), lost:miss, visible:true };
       res.free[fr.key] = fr;
     });
     anchorHoles(res);

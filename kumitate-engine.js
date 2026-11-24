@@ -230,6 +230,7 @@ var KM = (function(){
     stretchSets(data, st, p, notes);
     var ff = fitFence(data, st, p, ng);
     var chg = []; fenceManual(data, st, p); var kdy = karotoRule(data, st, p, chg); jointFence(data, st, p, chg);
+    fitHitNg(ff, p, ng);
     placeOnSet(data, st, p, ff, kdy);
     var early = preTower(st, p);
     var gaps = haisekiRule(data, st, p, chg, ng), gl = glPlan(data, st, ff, p, ng, chg), dy = gl && gl.bury > 0 ? gl.bury : 0;
@@ -656,19 +657,30 @@ var KM = (function(){
       b1[k] = { x0:x, x1:x + w, y0:y, y1:y + h, z0:z, z1:z + d };
     });
     // 外柵が 狭く なって 部材 どうしが 新しく ぶつかる（図面では ぶつからない）＝✕ と 何 mm（カロートと 腰石 など。位置を 調整する）
-    var ks = Object.keys(b1);
+    var ks = Object.keys(b1), hitP = [];
     function ov(A, B){ return { x:Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0), y:Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0), z:Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) }; }
     if (dW || dD || dH) for (var i = 0; i < ks.length; i++) for (var j = i + 1; j < ks.length; j++) {
       var o1 = ov(b1[ks[i]], b1[ks[j]]); if (!(o1.x > 0.5 && o1.y > 0.5 && o1.z > 0.5)) continue;
       var o0 = ov(b0[ks[i]], b0[ks[j]]); if (o0.x > 0.5 && o0.y > 0.5 && o0.z > 0.5) continue;
-      ng.push(p[ks[i]].name + ' と ' + p[ks[j]].name + ' が ぶつかる（' + (o1.x <= o1.z ? '横 ' + r1(o1.x) : '奥行 ' + r1(o1.z)) + ' mm。位置を 調整）');
+      hitP.push([ks[i], ks[j]]);
     }
     Object.keys(v.parts || {}).forEach(function(k){ var q = p[k], fl = F.parts[k]; if (!q || !fl) return;
       ['w', 'd', 'h'].forEach(function(f){
         if (fl.max[f] != null && q[f] > fl.max[f]) ng.push(q.name + '：' + FL[f] + ' ' + q[f] + ' は ' + fl.max[f] + ' まで（' + r1(q[f] - fl.max[f]) + ' mm 長い）');
         if (fl.min[f] != null && q[f] < fl.min[f]) ng.push(q.name + '：' + FL[f] + ' ' + q[f] + ' は ' + fl.min[f] + ' から（' + r1(fl.min[f] - q[f]) + ' mm 足りない）');
       }); });
-    return { id:fs.id, W:c.W, D:c.D, H:c.H, dW:dW, dD:dD, dH:dH };
+    return { id:fs.id, W:c.W, D:c.D, H:c.H, dW:dW, dD:dD, dH:dH, hitP:hitP };
+  }
+
+  // 外柵を 合わせて ぶつかった 組（fitFence の hitP）を、手で 動かした 位置（st.mv・st.over）と 目地の きまりの あとで 見直す。
+  // まだ ぶつかって いる 組だけ ✕。前は 手で 動かす 前の 位置で 見て いて、敷石を 10 寄せて 目地 6 に しても「横 4 mm ぶつかる」と 出た（v0.8.90）
+  function fitHitNg(ff, p, ng){
+    if (!ff || !ff.hitP || !ff.hitP.length) return;
+    function bx(q){ return { x0:q.offX || 0, x1:(q.offX || 0) + q.w, y0:q.offY || 0, y1:(q.offY || 0) + q.h, z0:q.offZ || 0, z1:(q.offZ || 0) + q.d }; }
+    function ov(A, B, X){ return Math.min(A[X + '1'], B[X + '1']) - Math.max(A[X + '0'], B[X + '0']); }
+    ff.hitP.forEach(function(pr){ var P = p[pr[0]], Q = p[pr[1]]; if (!P || !Q || P.visible === false || Q.visible === false) return;
+      var a = bx(P), b = bx(Q), ox = ov(a, b, 'x'), oy = ov(a, b, 'y'), oz = ov(a, b, 'z'); if (!(ox > 0.5 && oy > 0.5 && oz > 0.5)) return;
+      ng.push(P.name + ' と ' + Q.name + ' が ぶつかる（' + (ox <= oz ? '横 ' + r1(ox) : '奥行 ' + r1(oz)) + ' mm。位置を 調整）'); });
   }
 
   // セットの 部材の 形（buzai/1）を 箱の 大きさに 合わせる（幅・奥行・高さ → params W・D・H）

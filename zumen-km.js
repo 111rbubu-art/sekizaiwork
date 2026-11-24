@@ -250,6 +250,12 @@ function kmSketch(o, pg, p, X, T, g){
   kT(o, X + 136, 186, '1/' + n, 2.2, { ha:2, aid:vid + '/scale' });
   return true;
 }
+// 部材の 図（views）を 今の 大きさに（v0.9.61 2026-11-24 本人「図面化した 腰石後の 穴位置が ずれて いる」）
+//   views の 座標は 部材を 作った ときの 大きさ（base）。差し替えた 1515 の 腰石後を 1220 で 使うと、アンカーの 穴（端から mm で 入れる）が
+//   base の 座標の まま 1220 の 石に 描かれ (1515−1220)/2＝147.5 左へ ずれて いた。3D と 同じ BZ.scaleViews で 合わせる（穴は fit の 端から mm）
+function kmViews(p, W, D, H){ var v = (p && p.shape && p.shape.components && p.shape.components[0] && p.shape.components[0].shape && p.shape.components[0].shape.views) || {}, b = v.base;
+  if (!b || !v.front || !window.BZ || !BZ.scaleViews || (Math.abs(b.W - W) < 0.01 && Math.abs(b.D - D) < 0.01 && Math.abs(b.H - H) < 0.01)) return v;
+  try { return BZ.scaleViews(v, W, D, H); } catch (e) { return v; } }
 // 部材の「加工図面に 出す もの」（部材マスター：drawing.out.mode＝auto・iso・full、top＝天面図も）
 function kmOut(k){ var p = kmPart(k); return (p && p.shape && p.shape.drawing && p.shape.drawing.out) || {}; }
 function kmSimple(k){ var om = kmOut(k).mode; if (om === 'iso') return true; if (om === 'full') return false; var p = kmPart(k), v = p.shape && p.shape.components && p.shape.components[0] && p.shape.components[0].shape && p.shape.components[0].shape.views;
@@ -289,7 +295,7 @@ function kmDetail(o, pg, g, X, B){
   kT(o, X + 136, simple ? 186 : 102, '1/' + n, 2.2, { ha:2, aid:vI + '/scale' });
   if (simple) return;
   // 三面（正面・右側面・平面。左の 面から の 穴が あれば 左側面も）
-  var v = (p.shape.components[0].shape.views) || {}, hasL = ((v.side && v.side.holes) || []).some(function(h){ return h.from === 'left'; });
+  var v = kmViews(p, W, D2, H), hasL = ((v.side && v.side.holes) || []).some(function(h){ return h.from === 'left'; });
   var needTop = !!(kmOut(k).top || (v.top && (((v.top.holes || []).length) || ((v.top.cuts || []).length))) || (v.side && (v.side.cuts || []).length));
   var rot = needTop && D2 > 2.5 * W;
   var area = { x0:X + 4, x1:X + 138, y0:106, y1:186 }, needW = W + D2 + (hasL ? D2 : 0), needH = H + (needTop ? (rot ? W : D2) : 0);

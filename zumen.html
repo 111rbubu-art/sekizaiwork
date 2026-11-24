@@ -2796,6 +2796,30 @@ function pvTag(doc){
     var b = bboxOf([e]); if (!isFinite(b.x0)) return; var k = best(P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), e.t === 'text' ? 0.15 : 0.25); if (k) e.pv = k; });
   (doc.dims || []).forEach(function(d){ if (d.pv || pvFree(d) || !d.a || !d.b) return; var k = best(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), 0.5); if (k) d.pv = k; });
 }
+// 加工図面（図）の 大きさを 変える（v0.9.59。本人「150 の 部材図面を ベースに して 135 の 図面を」）
+// from／to＝[幅, 奥行, 高さ]。面ごと（正面＝幅×高さ・側面＝奥行×高さ・平面＝幅×奥行）に、図の まん中より 右（上）の 点を ちがい だけ ずらす
+// ＝端からの 寸法（穴の 位置・鍵の 寸法）は 近い 端からの mm の まま、全体の 寸法は 新しい 大きさ。小さな 物（穴・文字）は 形を 変えずに 動かす
+// 立体の 絵・▲（e.iso・e.mg）と 図枠は さわらない（作り直す）。面の 印（pv）が 無い 手で 足した 物は いちばん 近い 面に 付けて 動かす
+function skStretch(doc, from, to){
+  var dd = [to[0] - from[0], to[1] - from[1], to[2] - from[2]]; if (dd.every(function(v){ return Math.abs(v) < 0.05; })) return false;
+  var AX = { front:[0, 2], back:[0, 2], side:[1, 2], left:[1, 2], top:[0, 1], bottom:[0, 1] }, G = {}, V = {};
+  doc.ents.forEach(function(e){ if (e.pv && AX[e.pv] && e.t !== 'text' && !pvFree(e)) (G[e.pv] = G[e.pv] || []).push(e); });
+  Object.keys(G).forEach(function(k){ var b = bboxOf(G[k]); if (!isFinite(b.x0)) return; V[k] = { b:b, mx:(b.x0 + b.x1) / 2, my:(b.y0 + b.y1) / 2, dx:dd[AX[k][0]], dy:dd[AX[k][1]], w:b.x1 - b.x0, h:b.y1 - b.y0 }; });
+  if (!Object.keys(V).length) return false;
+  var near = function(c){ var bk = null, bd = Infinity; Object.keys(V).forEach(function(k){ var r = V[k].b, dx = Math.max(r.x0 - c.x, 0, c.x - r.x1), dy = Math.max(r.y0 - c.y, 0, c.y - r.y1), d = Math.hypot(dx, dy) / Math.max(V[k].w, V[k].h, 1); if (d < bd) { bd = d; bk = k; } }); return bd < 0.6 ? V[bk] : null; };
+  var fp = function(v, q){ return P(q.x + (q.x > v.mx + 1e-6 ? v.dx : 0), q.y + (q.y > v.my + 1e-6 ? v.dy : 0)); };
+  var pts = function(e){ return e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; };
+  var moved = 0;
+  doc.ents.forEach(function(e){ if (e.frame || pvFree(e)) return; var ps = pts(e); if (!ps.length) return;
+    var b = bboxOf([e]), c = P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), v = V[e.pv] || near(c); if (!v) return; moved++;
+    var small = e.t === 'text' || e.t === 'circle' || e.t === 'arc' || ((b.x1 - b.x0) < v.w * 0.35 && (b.y1 - b.y0) < v.h * 0.35);
+    if (small) { var c2 = fp(v, c), ox = c2.x - c.x, oy = c2.y - c.y; if (!ox && !oy) return; var sh = function(q){ return P(q.x + ox, q.y + oy); };
+      if (e.t === 'line') { e.a = sh(e.a); e.b = sh(e.b); } else if (e.t === 'pl') e.v = e.v.map(function(q){ var r = sh(q); return { x:r.x, y:r.y, b:q.b || 0 }; }); else if (e.t === 'text') e.p = sh(e.p); else if (e.c) e.c = sh(e.c); return; }
+    if (e.t === 'line') { e.a = fp(v, e.a); e.b = fp(v, e.b); } else if (e.t === 'pl') e.v = e.v.map(function(q){ var r = fp(v, q); return { x:r.x, y:r.y, b:q.b || 0 }; }); else if (e.c) e.c = fp(v, e.c); });
+  (doc.dims || []).forEach(function(d){ if (d.iso || d.frame || !d.a || !d.b) return; var v = V[d.pv] || near(P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2)); if (!v) return; moved++;
+    d.a = fp(v, d.a); d.b = fp(v, d.b); if (d.off) d.off = fp(v, d.off); });
+  return moved > 0;
+}
 // 外形が 閉じない とき：つながって いない 端を 探して その 線を 選ぶ（v0.9.42）。升目で つなげる のは 線の 太さ 分（約 0.1%）まで
 function mkOpenEnds(ents){
   var ends = [], segs = [];
@@ -4799,13 +4823,18 @@ function skIso(){
     D.info = D.info || {}; D.info.isoMap = { ox:ox, oy:oy, u0:r.u0, v0:r.v0 };
     r.vis.forEach(function(sg){ D.ents.push({ id:SEQ++, t:'line', a:M(sg.a), b:M(sg.b), layer:SK_ISO, css:null, aci:256, iso:1 }); });
     var W = PD.m.W, Dd = PD.m.D, H = PD.m.H, ip = function(q){ var z = KPJ.iso(q); return M(z); };
-    var off = Math.max(W, Dd, H) * 0.12, u = function(a, b){ var L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return P((b.x - a.x) / L, (b.y - a.y) / L); };
-    var nz = u(ip([0, 0, 0]), ip([0, 0, 100])), nx = u(ip([0, 0, 0]), ip([-100, 0, 0]));
-    var dm = function(a, b, n, id){ D.dims.push({ id:SEQ++, a:a, b:b, off:P((a.x + b.x) / 2 + n.x * off, (a.y + b.y) / 2 + n.y * off), mode:'a', fmt:null, text:null, layer:'寸法', iso:1, isoKey:id }); };
-    dm(ip([-W / 2, 0, Dd / 2]), ip([W / 2, 0, Dd / 2]), P(nz.x, nz.y), 'W');
-    dm(ip([-W / 2, 0, -Dd / 2]), ip([-W / 2, 0, Dd / 2]), P(nx.x, nx.y), 'D');
-    dm(ip([W / 2, 0, Dd / 2]), ip([W / 2, H, Dd / 2]), P(-nx.x, -nx.y), 'H');
+    isoDimsOf(W, Dd, H, ip).forEach(function(d){ d.id = SEQ++; D.dims.push(d); });
   });
+}
+// 立体の 絵の 幅・奥行・高さの 寸法（ip＝3D の 点 → 図の 点）。skIso と 図面に する（kmStretchSheet）で 同じ
+function isoDimsOf(W, Dd, H, ip){
+  var off = Math.max(W, Dd, H) * 0.12, u = function(a, b){ var L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return P((b.x - a.x) / L, (b.y - a.y) / L); };
+  var nz = u(ip([0, 0, 0]), ip([0, 0, 100])), nx = u(ip([0, 0, 0]), ip([-100, 0, 0])), out = [];
+  var dm = function(a, b, n, id){ out.push({ a:a, b:b, off:P((a.x + b.x) / 2 + n.x * off, (a.y + b.y) / 2 + n.y * off), mode:'a', fmt:null, text:null, layer:'寸法', iso:1, isoKey:id }); };
+  dm(ip([-W / 2, 0, Dd / 2]), ip([W / 2, 0, Dd / 2]), P(nz.x, nz.y), 'W');
+  dm(ip([-W / 2, 0, -Dd / 2]), ip([-W / 2, 0, Dd / 2]), P(nx.x, nx.y), 'D');
+  dm(ip([W / 2, 0, Dd / 2]), ip([W / 2, H, Dd / 2]), P(-nx.x, -nx.y), 'H');
+  return out;
 }
 // ── 図枠（加工図面 1 枚）：図面で 直すの 図 そのものに 紙の 枠と 表題欄。枠の 中＝印刷・PDF・DXF、外＝出さない ──
 // 枠＝e.frame の 四角（紙の 縁）・e.sheet＝{ paper:'A4'|'A4h'（A4 横の 半分）, n：縮尺 1/n, inf：表題欄の 写し }
@@ -4877,10 +4906,14 @@ var MG_FACES = [['top', '上'], ['front', '正面'], ['left', '左'], ['right', 
 function skMigaki(){
   D.ents = D.ents.filter(function(e){ return !e.mg; });
   var dr = PD && PD.def && PD.def.drawing, fs = (dr && dr.migaki) || [], mp = D.info && D.info.isoMap; if (!fs.length || !mp || !PD.m) return;
-  var sf = skSheet(), n = sf && sf.sheet ? sf.sheet.n : (PD.nEst || 10), W = PD.m.W, Dd = PD.m.D, H = PD.m.H;
-  var ip = function(q){ var z = KPJ.iso(q); return P(mp.ox + z[0] - mp.u0, mp.oy + z[1] - mp.v0); };
+  var sf = skSheet(), n = sf && sf.sheet ? sf.sheet.n : (PD.nEst || 10);
   var LM = layerOf('磨き'); LM.aci = 7; LM.css = '#000'; LM.gap = false;
-  var push = function(e){ e.id = SEQ++; e.mg = 1; e.iso = 1; e.css = null; e.aci = 256; e.layer = '磨き'; D.ents.push(e); };
+  mgEntsOf(fs, PD.m.W, PD.m.D, PD.m.H, mp, n).forEach(function(e){ e.id = SEQ++; D.ents.push(e); });
+}
+// 磨きの ▲・矢印（fs＝面の 名前、mp＝立体の 絵の 置き場 isoMap、n＝縮尺）。skMigaki と 図面に する（kmStretchSheet）で 同じ
+function mgEntsOf(fs, W, Dd, H, mp, n){
+  var out = [], ip = function(q){ var z = KPJ.iso(q); return P(mp.ox + z[0] - mp.u0, mp.oy + z[1] - mp.v0); };
+  var push = function(e){ e.mg = 1; e.iso = 1; e.css = null; e.aci = 256; e.layer = '磨き'; out.push(e); };
   var tri = function(c){ push({ t:'text', p:P(c.x, c.y - 1.6 * n), h:3.2 * n, rot:0, s:'▲', ha:1, va:0, wf:1 }); };
   var x0 = -W / 2, x1 = W / 2, z0 = -Dd / 2, z1 = Dd / 2;
   // 面の まん中（見える 面）・見えない 面は さす 辺（見える 面との 境）と 向き
@@ -4894,6 +4927,7 @@ function skMigaki(){
     push({ t:'line', a:st, b:tip });
     [0.35, -0.35].forEach(function(da){ push({ t:'line', a:tip, b:P(tip.x + Math.cos(an + da) * ah, tip.y + Math.sin(an + da) * ah) }); });
     tri(P(st.x + ux * 3 * n, st.y + uy * 3 * n)); push = push0; });
+  return out;
 }
 // 自動の ▲（drawing.migaki）を 消したら その 面を 外す（また 出て こない ように）
 function mgDelFaces(gone){ var dr = PD && PD.def && PD.def.drawing; if (!dr || !dr.migaki) return; var fs = {};

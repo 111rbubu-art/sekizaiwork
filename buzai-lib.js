@@ -40,7 +40,7 @@
   function flipPts(pts){ return pts.map(function(q){ var r = q.slice(); r[0] = -q[0]; return r; }).reverse(); }
   function flipView(v, side){
     if (!v) return v; var o = clone(v);
-    if (!side) { if (o.out) o.out = flipPts(o.out); (o.holes || []).forEach(function(h){ if (h.pts) h.pts = flipPts(h.pts); if (h.x != null) h.x = -h.x; if (h.fit && h.fit.x) h.fit.x = h.fit.x === 'L' ? 'R' : 'L'; }); (o.cuts || []).forEach(function(c){ if (c.pts) c.pts = flipPts(c.pts); }); }
+    if (!side) { if (o.out) o.out = flipPts(o.out); (o.holes || []).forEach(function(h){ if (h.pts) h.pts = flipPts(h.pts); if (h.x != null) h.x = -h.x; if (h.fit && (h.fit.x === 'L' || h.fit.x === 'R')) h.fit.x = h.fit.x === 'L' ? 'R' : 'L'; }); (o.cuts || []).forEach(function(c){ if (c.pts) c.pts = flipPts(c.pts); }); }
     else (o.holes || []).forEach(function(h){ if (h.from === 'left') h.from = 'right'; else if (h.from === 'right') h.from = 'left'; });
     return o;
   }

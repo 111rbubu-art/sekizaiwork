@@ -144,12 +144,12 @@ var BZ = (function(){
     return out; }
   function ratioMap(a0, a1, b0, b1){ var L = a1 - a0; return L > 0 ? function(v){ return b0 + (v - a0) * (b1 - b0) / L; } : function(v){ return v; }; }
   function depthMap(dep, a, b){ if (!(dep > 0)) return dep; if (dep >= a - 0.5) return b; return Math.min(dep, b); }
-  // 穴を 1 軸で 動かす：fit 'L'＝下（左・前）の 端から mm／'R'＝上（右・奥）の 端から mm／無し＝比率。大きい 穴は 点ごとに 近い 端から
+  // 穴を 1 軸で 動かす：fit 'L'＝下（左・前）の 端から mm／'R'＝上（右・奥）の 端から mm／'C'＝中心線から mm（左右対称の 穴は 鏡像の まま・v0.9.61）／無し＝比率。大きい 穴は 点ごとに 近い 端から
   function holeAxis(pts, i, a0, a1, b0, b1, fit){
     var vs = pts.map(function(q){ return q[i]; }), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs), c = (lo + hi) / 2;
     if (Math.abs((b1 - b0) - (a1 - a0)) < 1e-9 && Math.abs(b0 - a0) < 1e-9) return function(v){ return v; };
     if (hi - lo > (a1 - a0) * 0.5) { var mid = (a0 + a1) / 2; return function(v){ return v < mid ? v - a0 + b0 : v - a1 + b1; }; }
-    var c1 = fit === 'L' ? c - a0 + b0 : fit === 'R' ? c - a1 + b1 : ratioMap(a0, a1, b0, b1)(c);
+    var c1 = fit === 'L' ? c - a0 + b0 : fit === 'R' ? c - a1 + b1 : fit === 'C' ? c - (a0 + a1) / 2 + (b0 + b1) / 2 : ratioMap(a0, a1, b0, b1)(c);
     return function(v){ return v + (c1 - c); };
   }
   function scaleViews(v, W, Dd, H){

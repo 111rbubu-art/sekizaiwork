@@ -417,7 +417,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.67"></script>
 <script src="zumen-km.js?v=0.9.64"></script>
 <script>
-var APP_VER = "v0.9.71";
+var APP_VER = "v0.9.72";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1042,12 +1042,17 @@ function entPts(e, forBox){
   return [];
 }
 // 文字の 四隅（揃え・行数・回転を 入れる）
-function textBox(e){
+// 文字の 文字の 向きでの 範囲（x0・x1・y0・y1、上が ＋）。当たり判定（hitEnt）も これを 使う（v0.9.72）
+function textLocal(e){
   var w = textWidth(e), n = String(e.s).split('\n').length, lh = e.h * 1.6;
   var x0 = e.ha === 1 ? -w / 2 : e.ha === 2 ? -w : 0, y1, y0;
   if (e.va === 3) { y1 = 0; y0 = -e.h - (n - 1) * lh - e.h * 0.3; }
   else if (e.va === 2) { y1 = e.h / 2 + (n - 1) * lh / 2; y0 = -y1 - e.h * 0.3; }
   else { y1 = e.h + (n - 1) * lh; y0 = -e.h * 0.3; }
+  return { x0:x0, x1:x0 + w, y0:y0, y1:y1 };
+}
+function textBox(e){
+  var b = textLocal(e), x0 = b.x0, w = b.x1 - b.x0, y0 = b.y0, y1 = b.y1;
   var c = Math.cos(e.rot), sn = Math.sin(e.rot);
   return [[x0, y0], [x0 + w, y0], [x0 + w, y1], [x0, y1]].map(function(q){ return P(e.p.x + q[0] * c - q[1] * sn, e.p.y + q[0] * sn + q[1] * c); });
 }
@@ -1093,9 +1098,9 @@ function distSeg(p, a, b){
 function nearOnSeg(p, a, b){ var ab = sub(b, a), l2 = dot(ab, ab); if (l2 < 1e-18) return a; var t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2)); return addp(a, mulp(ab, t)); }
 function hitEnt(e, p, tol){
   if (e.t === 'text') {
-    var c = Math.cos(-e.rot), s = Math.sin(-e.rot), d = sub(p, e.p), lx = d.x * c - d.y * s, ly = d.x * s + d.y * c;
-    var w = textWidth(e), x0 = e.ha === 1 ? -w / 2 : e.ha === 2 ? -w : 0, lines = String(e.s).split('\n').length;
-    return lx > x0 - tol && lx < x0 + w + tol && ly > -e.h * 1.6 * lines - tol && ly < e.h * 1.2 + tol;
+    // 描く ときと 同じ 範囲（字は 基線の 上・2 行は 上へ 積む）。前は 基線の 下を 見て いて、2 行の 寸法（65／(2.1)）の 上の 行が 押せなかった（v0.9.72）
+    var c = Math.cos(-e.rot), s = Math.sin(-e.rot), d = sub(p, e.p), lx = d.x * c - d.y * s, ly = d.x * s + d.y * c, b = textLocal(e);
+    return lx > b.x0 - tol && lx < b.x1 + tol && ly > b.y0 - tol && ly < b.y1 + tol;
   }
   if (e.t === 'circle') return Math.abs(dist(p, e.c) - e.r) < tol;
   if (e.t === 'arc') { if (Math.abs(dist(p, e.c) - e.r) > tol) return false; var a = Math.atan2(p.y - e.c.y, p.x - e.c.x); return sweepCCW(e.a0, a) <= sweepCCW(e.a0, e.a1) + tol / e.r; }
@@ -1926,13 +1931,13 @@ function drawEntGrips(c){
   if (ST.eg && ST.eg.cur) { var h1 = W2S(V, ST.eg.base), h2 = W2S(V, ST.eg.cur);
     c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#e0301e'; c.lineWidth = 1; c.beginPath(); c.moveTo(h1[0], h1[1]); c.lineTo(h2[0], h2[1]); c.stroke(); c.restore(); }
 }
+// 寸法を 探す：数字（文字）の 上を 先に 見る → 寸法線・補助線・矢印（v0.9.72）
 function hitDim(p){
-  var tol = 6 / V.s;
-  for (var i = D.dims.length - 1; i >= 0; i--) {
-    var d = D.dims[i], g = dimGeom(d);
-    if (hitEnt(g.text, p, tol)) return d;
-    for (var k = 0; k < g.lines.length; k++) if (distSeg(p, g.lines[k][0], g.lines[k][1]) < tol) return d;
-  }
+  var tol = 6 / V.s, gs = [], i, k;
+  for (i = D.dims.length - 1; i >= 0; i--) { var d = D.dims[i]; if (d.layer && !layerOf(d.layer).on) continue; var g = dimGeom(d); gs.push([d, g]); if (hitEnt(g.text, p, tol)) return d; }
+  for (i = 0; i < gs.length; i++) { var g2 = gs[i][1];
+    for (k = 0; k < g2.lines.length; k++) if (distSeg(p, g2.lines[k][0], g2.lines[k][1]) < tol) return gs[i][0];
+    for (k = 0; k < g2.arrows.length; k++) { var t = arrowTri(g2.arrows[k], g2.al, g2.at); if (distSeg(p, t[0], t[1]) < tol || distSeg(p, t[0], t[2]) < tol) return gs[i][0]; } }
   return null;
 }
 function onClick(p, raw, ev){

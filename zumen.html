@@ -411,12 +411,12 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 </div></div>
 <div id="printArea"></div>
 
-<script src="buzai-engine.js?v=0.9.62"></script>
+<script src="buzai-engine.js?v=0.9.67"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
-<script src="buzai-lib.js?v=0.9.62"></script>
+<script src="buzai-lib.js?v=0.9.67"></script>
 <script src="zumen-km.js?v=0.9.64"></script>
 <script>
-var APP_VER = "v0.9.66";
+var APP_VER = "v0.9.67";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -2832,6 +2832,7 @@ function skStretch(doc, from, to){
     var nr = function(a, b){ return Math.abs(a - b) <= t; };
     [[0, 1], [1, 0]].forEach(function(k){ if (hEnd != null) return; var pe = A[k[0]], ph = A[k[1]];
       if (nr(pe, mid) && !nr(ph, mid) && d.fit !== 'edge') hEnd = ph;
+      else if (nr(pe, 2 * mid - ph) && !nr(ph, mid) && d.fit !== 'edge' && !nr(ph, e0) && !nr(ph, e1)) hEnd = ph;   // 中心線で 鏡像の 穴と 穴の 間（v0.9.65）
       else if (d.fit === 'center' && (nr(pe, e0) || nr(pe, e1)) && !nr(ph, e0) && !nr(ph, e1) && !nr(ph, mid)) hEnd = ph; });
     if (hEnd == null) return;
     var grab = function(u){ var G0 = smallGroups(v), lo = Infinity, hi = -Infinity, n = 0;
@@ -3019,10 +3020,14 @@ function mkSet(skip){
 // 穴と 外形の 端を 結ぶ 寸法が あれば その 端から mm の まま（📌 守る）。寸法を 押して［↔ 比率］に できる（d.fit='ratio'）。寸法が 無い 穴は 比率
 // 中心線から 穴へ の 寸法（または 寸法を 押して［⊕ 中心線から］d.fit='center'）＝中心線から mm の まま。左右対称の 相手も 中心線から（鏡像・v0.9.61 塔婆柱）
 // 面の 穴（図の 線から）。側面の 穴は 自動の 中の 線（e.inner）で かかれて 図の 線からは 読めない ので、部材の 側面の 穴を 図の 位置に 写す（v0.9.61）
-function mkFaceHoles(m, z){ var F = m && m[z]; if (!F || !F.bb) return []; if (F.holes && F.holes.length) return F.holes;
-  var SV = z === 'side' && secViews(); if (!SV || !SV.side || !(SV.side.holes || []).length || !SV.base || !(SV.base.D > 0) || !(SV.base.H > 0)) return [];
+// 図に 穴の 印（円・十字）を かき足すと その 1 つ だけ 穴に 読まれて ほかの 穴が 消えて いた（v0.9.65）→ 側面は 部材の 穴＋図だけに ある 穴
+function mkFaceHoles(m, z){ var F = m && m[z]; if (!F || !F.bb) return []; var drawn = F.holes || [];
+  var SV = z === 'side' && secViews(); if (!SV || !SV.side || !(SV.side.holes || []).length || !SV.base || !(SV.base.D > 0) || !(SV.base.H > 0)) return drawn;
   var bb = F.bb, kx = (bb.x1 - bb.x0) / SV.base.D, ky = (bb.y1 - bb.y0) / SV.base.H;
-  return SV.side.holes.filter(function(h){ return h.pts && h.pts.length; }).map(function(h){ return h.pts.map(function(q){ return P(bb.x0 + q[0] * kx, bb.y0 + q[1] * ky); }); }); }
+  var out = SV.side.holes.filter(function(h){ return h.pts && h.pts.length; }).map(function(h){ return h.pts.map(function(q){ return P(bb.x0 + q[0] * kx, bb.y0 + q[1] * ky); }); });
+  var cen = function(pg){ var xs = pg.map(function(p){ return p.x; }), ys = pg.map(function(p){ return p.y; }); return P((Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2); }, cs = out.map(cen);
+  drawn.forEach(function(pg){ var c = cen(pg); if (!cs.some(function(q){ return Math.hypot(q.x - c.x, q.y - c.y) < 3; })) out.push(pg); });
+  return out; }
 function holeFitDims(m){
   var out = { fit:{}, dims:{} }; if (!m || !m.front) return out;
   function near(a, b, L){ return Math.abs(a - b) <= Math.max(0.8, L * 0.004); }
@@ -3040,7 +3045,8 @@ function holeFitDims(m){
         var hc = hs[1], mid = (e0 + e1) / 2; if (near(hc, mid, L)) return;
         [[0, 1], [1, 0]].forEach(function(k){ if (side) return; var pe = A[k[0]], ph = A[k[1]]; if (!hs.some(function(v){ return near(v, ph, L); })) return;
           if (near(pe, e0, L) && !near(ph, e0, L) && hc < mid) side = 'L'; else if (near(pe, e1, L) && !near(ph, e1, L) && hc > mid) side = 'R';
-          else if (near(pe, mid, L) && !near(ph, mid, L)) side = 'C'; });   // 中心線から 穴へ の 寸法
+          else if (near(pe, mid, L) && !near(ph, mid, L)) side = 'C';   // 中心線から 穴へ の 寸法
+          else if (near(pe, 2 * mid - hc, L) && !near(hc, mid, L)) side = 'C'; });   // 中心線で 鏡像の 穴と 穴の 間の 寸法（65）＝ 間を 保って 真ん中に（v0.9.65）
         if (!side) return;
         var base = side, pr = side === 'C' ? 2 : 1;
         if (d.fit === 'center') { side = 'C'; pr = 3; } else if (d.fit === 'edge' && side === 'C') { side = hc < mid ? 'L' : 'R'; pr = 3; }

@@ -231,25 +231,28 @@ function kmDimPaper(n2, d, s, th){ n2.al = d.al > 0 ? d.al * s : S.arrow > 0 ? S
 //   マスターの 図（穴なし）だけ 描いて 案件で 開いた アンカーの 穴が 出なく なって いた。面の 外形（pv）に 合わせて 円・中心線・位置の 寸法・書き込みを 足す
 function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.shape || !sk0) return sk0;
   var v = kmViews(p, g.w, g.d, g.h), W = +g.w, D = +g.d, H = +g.h, FR = { front:'前から', back:'背面から' };
-  var L = []; ((v.front && v.front.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'front', h:h, from:h.from === 'back' ? '背面から' : '前から' }); });
-  ((v.side && v.side.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'side', h:h, from:h.from === 'left' ? '左の 面から' : '右の 面から' }); });
-  ((v.top && v.top.holes) || []).forEach(function(h){ if (h.anc) L.push({ pv:'top', h:h, from:'上から' }); });
+  // 面の 候補：穴の 開く 面を 先に（背面から の 穴は 背面図）、無ければ 反対の 面に 隠れ線で（v0.9.64 本人「腰石前の 加工図面に 穴が 出ない」＝背面図と 右側面図だけの 図）
+  var L = []; ((v.front && v.front.holes) || []).forEach(function(h){ if (!h.anc) return; var bk = h.from === 'back'; L.push({ pvs:bk ? ['back', 'front'] : ['front', 'back'], h:h, from:bk ? '背面から' : '前から' }); });
+  ((v.side && v.side.holes) || []).forEach(function(h){ if (!h.anc) return; var lf = h.from === 'left'; L.push({ pvs:lf ? ['left', 'side'] : ['side', 'left'], h:h, from:lf ? '左の 面から' : '右の 面から' }); });
+  ((v.top && v.top.holes) || []).forEach(function(h){ if (h.anc) L.push({ pvs:['top'], h:h, from:'上から' }); });
   if (!L.length) return sk0;
   var sk = JSON.parse(JSON.stringify(sk0)), bbOf = function(pv){ var b = null;
     sk.ents.forEach(function(e){ if (e.pv !== pv || e.t !== 'pl' || !e.v || e.frame) return; var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
       e.v.forEach(function(q){ x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); });
       if (!b || (x1 - x0) * (y1 - y0) > (b.x1 - b.x0) * (b.y1 - b.y0)) b = { x0:x0, x1:x1, y0:y0, y1:y1 }; }); return b; };
-  var EXT = { front:[W, H], side:[D, H], top:[W, D] }, OX = { front:W / 2, side:0, top:W / 2 }, grp = {};
-  L.forEach(function(a){ var b = bbOf(a.pv); if (!b) return; var e = EXT[a.pv], kx = (b.x1 - b.x0) / e[0], ky = (b.y1 - b.y0) / e[1];
+  // 面ごとの 大きさ・x の 原点・左右の 向き（背面図・左側面図は 左右が 逆）
+  var EXT = { front:[W, H], back:[W, H], side:[D, H], left:[D, H], top:[W, D] }, OX = { front:W / 2, back:W / 2, side:0, left:0, top:W / 2 }, MIR = { back:1, left:1 }, grp = {};
+  L.forEach(function(a){ var pv = null, b = null; a.pvs.some(function(q){ var bb = bbOf(q); if (bb) { pv = q; b = bb; } return !!bb; }); if (!b) return;
+    var hid = pv !== a.pvs[0], e = EXT[pv], kx = (b.x1 - b.x0) / e[0], ky = (b.y1 - b.y0) / e[1];
     var xs = a.h.pts.map(function(q){ return q[0]; }), ys = a.h.pts.map(function(q){ return q[1]; }), cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, cy = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
-    var r = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2, c = { x:b.x0 + (cx + OX[a.pv]) * kx, y:b.y0 + cy * ky };
+    var r = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2, u = (cx + OX[pv]) * kx, c = { x:MIR[pv] ? b.x1 - u : b.x0 + u, y:b.y0 + cy * ky };
     if (sk.ents.some(function(q){ return q.t === 'circle' && q.c && Math.hypot(q.c.x - c.x, q.c.y - c.y) < 1 && Math.abs(q.r - r * kx) < 1; })) return;   // 保存した 図に もう ある
-    var G = grp[a.pv] = grp[a.pv] || { b:b, cs:[], txt:{} }; G.cs.push(c);
+    var G = grp[pv] = grp[pv] || { b:b, cs:[], txt:{} }; G.cs.push(c);
     var tt = 'Φ' + kmR(r * 2) + 'mm 深' + kmR(a.h.depth) + 'mm'; G.txt[tt + '|' + a.from] = (G.txt[tt + '|' + a.from] || 0) + 1;
-    sk.ents.push({ id:SEQ++, t:'circle', c:{ x:c.x, y:c.y }, r:r * kx, layer:'部材_外形', css:null, aci:256, pv:a.pv, anc:1 });
+    sk.ents.push({ id:SEQ++, t:'circle', c:{ x:c.x, y:c.y }, r:r * kx, layer:hid ? '隠れ線' : '部材_外形', css:null, aci:256, pv:pv, anc:1 });
     var ex = Math.max(r * kx * 2.2, 2.2 * n);
-    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x - ex, y:c.y }, b:{ x:c.x + ex, y:c.y }, layer:'中心線', css:null, aci:256, pv:a.pv, anc:1 });
-    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x, y:c.y - ex }, b:{ x:c.x, y:c.y + ex }, layer:'中心線', css:null, aci:256, pv:a.pv, anc:1 }); });
+    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x - ex, y:c.y }, b:{ x:c.x + ex, y:c.y }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 });
+    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x, y:c.y - ex }, b:{ x:c.x, y:c.y + ex }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 }); });
   Object.keys(grp).forEach(function(pv){ var G = grp[pv], b = G.b, st = 7 * n, mid = (b.x0 + b.x1) / 2, r1 = function(x){ return Math.round(x * 10) / 10; };
     // 横の 位置：左 半分は 左の 端から・右 半分は 右の 端から（近い 端からの mm）。高さ：右の 外に 下から
     var ux = G.cs.map(function(c){ return r1(c.x); }).filter(function(x, i, A){ return A.indexOf(x) === i; }).sort(function(a, c){ return a - c; });

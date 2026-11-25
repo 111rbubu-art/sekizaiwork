@@ -684,7 +684,7 @@ function kmBoxGeo(w, h, d){ var x = w / 2, z = d / 2, V = [[-x, 0, -z], [x, 0, -
   return { tris:tris, edges:edges }; }
 function kmEnter(again){
   var pay = kmLoadPay();
-  if (!pay) { alert('モデリングの 画面で［📐 図面に する］を 押して ください'); return; }
+  if (!pay) { alert(SKP ? 'モデリングに 部材が ありません（部材を 置いて から この タブを 押して ください）' : 'モデリングの 画面で［📐 図面に する］を 押して ください'); return; }
   toastMsg('モデリングの 形から 図面を 作って います…', 8000);
   kmPrepare(pay).then(function(geo){
     var keep = KM2 && BM && BM.active && BM.km ? BM.cur : 0;

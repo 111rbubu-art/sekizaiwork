@@ -62,11 +62,11 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f6f7f9;font-family:"H
 <div id="main">
   <div id="empty"><div><b>加工図面</b>は 次の どれかで 開きます。<br>
     ・モデリングの 3D で 部材を <b>右クリック</b> →［📄 加工図面］<br>
-    ・モデリングの［📐 図面に する］で 配置図・部品寸法表・詳細図の 束<br>
+    ・この タブを 押すと モデリングの 今の 形から 配置図・部品寸法表・詳細図の 束（部材が 無い ときは 出ません）<br>
     <small>マスター部材の 加工図面は 右の 橙の「マスター」タブで 開きます</small></div></div>
 </div>
 <script>
-var SHELL_VER = 'v0.4.1';
+var SHELL_VER = 'v0.4.3';
 // 各 タブの 画面（はじめて 開く ときに 読む）。図面と 加工図面は zumen.html を 2 つ（自動保存の 鍵を 分けて ある）
 var PAGES = { kumi:'kumitate.html?sk=kumi', zumen:'zumen.html?sk=zumen', kakou:'zumen.html?sk=kakou', mkakou:'zumen.html?sk=mkakou', buzai:'buzai.html?sk=buzai' };
 var NAMES = { kumi:'モデリング', zumen:'図面', kakou:'加工図面', mkakou:'マスターの 加工図面', buzai:'部材マスター' };
@@ -101,6 +101,7 @@ var SK = {
     if (t === 'sedit') BZ_ON = false;
     if (t === 'kakou' && /^#(pd|km)/.test(hash || '')) KAKOU_ON = true;
     if (t === 'mkakou') mkTab();
+    if (!hash && (t === 'zumen' || t === 'kakou')) zmFreshTab(t);   // ポカヨケ（v0.4.2）：モデルが 変わって いたら 開く ときに 作り直す
     var f = FR[t];
     if (!f) frame(t, hash);
     else if (hash) { try { f.contentWindow.location.hash = hash; } catch (e) { f.src = PAGES[t] + hash; } }
@@ -128,10 +129,29 @@ var SK = {
   kakouState: function(on, nm, tab){ if (tab === 'mkakou') { mkTab(nm); return; } KAKOU_ON = !!on; show(); },
   // 組み立ての［📐 図面に する］：配置図・部品寸法表・詳細図の 束は 加工図面タブ、展開図は 図面タブ（こちらを 見せる）
   // quiet（v0.4.1）：モデリングで データを 読み込んだ とき。見て いる タブは そのまま、図面・加工図面タブを 裏で 作る
-  zumenize: function(t, quiet){ KAKOU_ON = true; var f = FR.kakou; if (!f) frame('kakou', '#km' + t); else { try { f.contentWindow.location.hash = '#km' + t; } catch (e) { f.src = PAGES.kakou + '#km' + t; } }
+  zumenize: function(t, quiet, sig){ KAKOU_ON = true; if (sig) { ZSIG.kakou = sig; ZSIG.zumen = sig; } var f = FR.kakou; if (!f) frame('kakou', '#km' + t); else { try { f.contentWindow.location.hash = '#km' + t; } catch (e) { f.src = PAGES.kakou + '#km' + t; } }
     if (!quiet) { SK.go('zumen', '#tk' + t); return; }
     var z = FR.zumen; if (!z) frame('zumen', '#tk' + t); else { try { z.contentWindow.location.hash = '#tk' + t; } catch (e) { z.src = PAGES.zumen + '#tk' + t; } } show(); }
 };
+// ポカヨケ（v0.4.2 本人「モデルは 変えて 図面も 変更したと 勘違いする 可能性が ある」→ 案1＋案3）
+//   ZSIG＝その タブの 図を 作った ときの モデルの 印。タブを 開く とき・PDF／印刷／DXF の 前に 今の モデルと くらべる
+//   作り直すのは その タブが モデルから 作った 図を 見せて いる とき だけ（加工図面＝束 #km・PD なし／図面＝展開図 #tk）。部材の 加工図面（#pd）や 開いた DXF は さわらない
+var ZSIG = {};
+function zmTabOk(t){ var f = FR[t]; if (!f || !f.__ok) return false; try { var w = f.contentWindow, h = w.location.hash;
+  if (t === 'kakou') return /^#km/.test(h) && !w.PD && !!(w.BM && w.BM.active && w.BM.km);
+  return /^#tk/.test(h) && !(w.BM && w.BM.active) && !!(w.D && w.D.ents && w.D.ents.some(function(e){ return e.tk; })); } catch (e) { return false; } }
+function zmKumiWin(){ var f = FR.kumi; try { return f && f.__ok ? f.contentWindow : null; } catch (e) { return null; } }
+// タブを 押したら 図面化（v0.4.3 本人「図面に する ボタンは 必要？ 加工図面の ラベルを クリックで 図面化すれば」）：
+//   ［📐 図面に する］を 外し、まだ 作って いない（ZSIG なし・タブが 空）ときも ここで 作る。部材の 加工図面（#pd）・開いた DXF は さわらない
+function zmIdle(t){ var f = FR[t]; if (!f) return true; if (!f.__ok) return false; try { var w = f.contentWindow, h = w.location.hash;
+  if (t === 'kakou') return !w.PD && !/^#pd/.test(h) && (/^#km/.test(h) || !(w.BM && w.BM.active));
+  return !(w.BM && w.BM.active) && !(w.D && w.D.ents && w.D.ents.some(function(e){ return !e.tk; })); } catch (e) { return false; } }
+function zmFreshTab(t){ if (!(zmTabOk(t) || zmIdle(t))) return false; var w = zmKumiWin(); if (!w || !w.zmFresh) return false;
+  var r = null; try { r = w.zmFresh(zmTabOk(t) ? ZSIG[t] || '' : ''); } catch (e) {} if (!r) return false;
+  ZSIG[t] = r.sig; if (t === 'kakou') KAKOU_ON = true; var hh = (t === 'kakou' ? '#km' : '#tk') + r.t, f = FR[t];
+  if (!f) { frame(t, hh); return true; } try { f.contentWindow.location.hash = hh; } catch (e) { f.src = PAGES[t] + hh; } return true; }
+SK.staleOf = function(t){ if (!ZSIG[t] || !zmTabOk(t)) return false; var w = zmKumiWin(); if (!w || !w.zmSigNow) return false; var s = ''; try { s = w.zmSigNow(); } catch (e) {} return !!s && s !== ZSIG[t]; };
+SK.refreshTab = function(t){ return zmFreshTab(t); };
 // マスターの 加工図面タブ（使う ときだけ 出す。✕ で 閉じると 隠れる）v0.4.0
 function mkTab(nm){ var b = $('mtabs').querySelector('[data-t="mkakou"]');
   if (!b) { b = document.createElement('button'); b.dataset.t = 'mkakou'; b.title = 'マスター部材の 加工図面（保存は 部材マスターへ。お墓の 加工図面とは 別）'; $('mtabs').appendChild(b); }

@@ -231,7 +231,7 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     var hits = ray.intersectObjects(meshes, false);
     if (onPick) onPick(hits.length ? hits[0].object.userData.key : null, e);
   });
-  // ダブルクリック＝その 部材の 加工図面（タブの 枠の 中だけ）
+  // ダブルクリック＝onDbl（モデリングは v0.8.103 から 渡さない＝何も しない）
   if (onDbl) renderer.domElement.addEventListener('dblclick', function(e){ if (PM || MS || e.button !== 0) return;
     var rc = renderer.domElement.getBoundingClientRect();
     ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);

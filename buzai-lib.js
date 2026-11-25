@@ -138,7 +138,7 @@
         if (pv('W') > 0) { q.w = pv('W'); q.d = pv('D'); q.h = pv('H'); }
         // 大きさ違いを まとめた 部材：セットの 枠の 大きさ（sl.size）で 使う。形の 中は 部材の 決まりで 伸びる（buzai-engine の scaleViews）
         var zs = sl.size; if (zs && zs.W > 0 && zs.D > 0 && zs.H > 0) { q.w = +zs.W; q.d = +zs.D; q.h = +zs.H; ['W', 'D', 'H'].forEach(function(k){ if (d.params && d.params[k]) d.params[k].value = +zs[k]; if (d.lock && d.lock[k] > 0) d.lock[k] = +zs[k]; }); q.size = { W:+zs.W, D:+zs.D, H:+zs.H }; }
-        if (!q.finish) q.finish = d.finish || ''; if (!q.kakou) q.kakou = d.kakou || '';
+        if (!q.finish) q.finish = d.finish || ''; if (d.kakou) q.kakou = d.kakou;   // 書き込みは マスターの 部材が 先（2026-11-25 本人「A」：セットの「×4」より 部材の「×8,左右対称」。穴は φ20 を 打つ 回数で 数える）
         // 向き（回した・倒した 金具。v0.8.100 本人「L 金具が 2 個しか 保存できて いない」）：sl.ori＝{ rot（上から 90° 単位）, tilt, roll }。
         //   箱（q.w・q.d・q.h）は 向けた あとの 形を 囲む 箱、ow・od は 上から 回す 前の 幅・奥行（3D と 支点が 使う）
         var o = sl.ori; if (o && (+o.rot || (o.tilt & 3) || (o.roll & 3))) { var t = (+o.tilt || 0) & 3, r = (+o.roll || 0) & 3, w = q.w, h = q.h, dd = q.d, x;

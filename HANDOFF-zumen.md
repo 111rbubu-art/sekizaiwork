@@ -1310,3 +1310,4 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 直し：zumen-km.js kmMgPick（立体の 絵の 近くの 手の ▲・矢印を skStretch の 前に 抜く）＋ kmMgFollow（矢印の 先が さす 面＝上・正面・左 を 前の isoMap で 3D に 戻し、割合で 新しい 大きさへ → 新しい isoMap。▲・矢じりは 先と 同じ だけ 動かす。▲だけ なら ▲の 位置で）。
 - 原因 2：sheetDeco の 上の 欄（sub1）は 1 行で 文字数で 切って いた（全角で 数えて いたので 早く 切れる）。直し：sheetWrap（半角 0.55・全角 1.0 で 幅を 見て 空白で 折り返す）。書き込み（sub2）も 折り返し、6 行まで。行が 増えた 分 area を 下げる。
 - テスト：node で kmMgFollow（1515×150×330 → 1240×120×300 で 上の 面の 30% の 点 → 新しい 上の 面の 30% の 点に ぴったり）・sheetWrap。PNG＝/mnt/project-files/sekkei/migaki-zure/。v0.9.64 は claude/taishougai。
+- 追加（同じ v0.9.65）：加工図面の 書き込み（kakou）は マスターの 部材を 先に（buzai-lib.js。前は セットの 枠の 書き込みが 先で、塔婆柱が「深45 ×4」に なって いた。本人「×8,左右対称 が 正しい。φ20 の 穴加工を 8 回＝打つ 回数で 数える」）。セットの 枠の 書き込みは 部材が 空の ときだけ。buzai-lib.js の ?v を 0.9.65 に。

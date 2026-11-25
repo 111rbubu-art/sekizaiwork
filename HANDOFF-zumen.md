@@ -67,7 +67,7 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
   - 前から ある：`fileExistsInFolderPassFromTekkyo`・`uploadPdfToFolderPassFromTekkyo`・`uploadJsonToFolderPassFromTekkyo`
   - v1.9.569 で 足した：`listItemsInFolderPassFromTekkyo`（ファイルと 下の フォルダー）・`downloadBinaryFromFolderPassFromTekkyo`（ArrayBuffer）・`uploadBlobToFolderPassFromTekkyo`（DXF など）
 - 図面アプリ：上に［📁 件名］の 札と［☁️ 案件の ファイル］（案件の フォルダーを 下の フォルダーへ たどり、DXF・DWG・`.mgx`・`.zumen.json` を 開く）。件名は 空なら 案件から 入れる（`ensureTitle`）
-- 保存先は 毎回 聞く（`chooseDest`）：作業 ファイル・DXF＝案件の フォルダー直下、**PDF＝案件の `提出資料`**（見積書と 同じ）／このパソコン
+- 保存先は 毎回 聞く（`chooseDest`）：作業 ファイル・DXF・PDF＝案件の `工事仕様/図面`（v0.9.66 から。前は 直下と 提出資料）／このパソコン
 - **PDF**：jsPDF（cdnjs 2.5.1、使う ときだけ 読む）で 本物の PDF ファイル。図面＝［🖨 印刷・PDF］の 窓の［📄 PDF で 保存］（紙・縮尺・白黒を 選ぶ）、部材図＝上の［📄 PDF］（全ページ A4）。ファイル名＝件名_図面／部材図_年月日.pdf。メールに 付けて 製作会社へ（本人）
 - 自動保存は 案件ごと（違う 案件の 前の 作業は 出さない）
 - これから（案）：石種・送り先を 案件から、外注ポータルで 送る

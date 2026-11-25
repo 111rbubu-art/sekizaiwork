@@ -416,7 +416,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.67"></script>
 <script src="zumen-km.js?v=0.9.64"></script>
 <script>
-var APP_VER = "v0.9.68";
+var APP_VER = "v0.9.69";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1735,7 +1735,7 @@ function redo(){ if (!REDO.length) return; UNDO.push(snapshot()); restore(REDO.p
 function updUndo(){ document.getElementById('bUndo').disabled = !UNDO.length; document.getElementById('bRedo').disabled = !REDO.length; }
 var _asT = 0;
 function changed(){
-  VER++; redraw(); panel();
+  VER++; if (PD && PD.saveMain) try { skPartCL(); } catch (e) {} redraw(); panel();
   if (BM && BM.active) bmTouch();
   if (BM && BM.active && BM.km && KMED) { clearTimeout(_kmH); _kmH = setTimeout(function(){ if (BM && BM.active && BM.km) kmHarvest(BM.pages[BM.cur]); }, 700); }
   clearTimeout(_asT); _asT = setTimeout(function(){ try { localStorage.setItem(ZAS, JSON.stringify({ D:PD && PD.saveMain ? PD.saveMain.D : BM && BM.active ? BM.main : D, file:FILE_NAME, t:Date.now(), folder:FROM && FROM.folderPass || '' })); } catch (e) {} }, 800);
@@ -5060,12 +5060,24 @@ function skSheetDxf(){ var f = skSheet(); if (!f || !f.sheet) { alert('図枠が
 // 例：水鉢の 前の 板の 縁、下面図の 下の 逃げ、上からの 穴（正面図では 点線）。図から 部材に 反映（mkAuto）は この 線を 使わない
 var SK_IN = '部材_中の線', SK_HV = { front:'front', side:'right', top:'top', back:'back', left:'left', bottom:'bottom' };
 // 保存した 図は 中の 線を 作り直さない ので、穴の 中心線（skCenters）が 1 本も 無い 面にだけ 足す（v0.9.65 本人「加工図面に 穴の 中心線が 出ない」）
+// 部材の 中心線（一点鎖線・pcl）：⊕（中心線から の 寸法）が ある 面にだけ 自動で 引く。⊕ が 無く なれば 消す（v0.9.69 本人「四角の 部材には 中心線は 不要だが、ルール作りの 為 中心線を 引いた 方が 良い」）
+function skPartCL(){
+  if (!PD || !PD.saveMain) return; var hf = holeFitNow(); if (!hf) return;
+  var want = {}, PV = { f:'front', s:'side', t:'top' }, ch = 0;
+  Object.keys(hf.dims).forEach(function(id){ var x = hf.dims[id]; if (x.kind !== 'hole' || !x.on || x.pair || (x.eff || x.side) !== 'C') return; var pv = PV[String(x.k).charAt(0)]; if (pv) (want[pv] = want[pv] || {})[x.ax] = 1; });
+  D.ents = D.ents.filter(function(e){ if (!e.pcl) return true; if (want[e.pv] && want[e.pv][e.pcl]) return true; ch++; return false; });
+  Object.keys(want).forEach(function(pv){ var ol = D.ents.filter(function(e){ return e.pv === pv && e.layer === '部材_外形' && !e.iso; }); if (!ol.length) return;
+    var b = skBox(ol), ex = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.04 + 5, mx = (b.x0 + b.x1) / 2, my = (b.y0 + b.y1) / 2;
+    Object.keys(want[pv]).forEach(function(ax){ if (D.ents.some(function(e){ return e.pcl === ax && e.pv === pv; })) return;
+      D.ents.push(ax === 'x' ? { id:SEQ++, t:'line', a:P(mx, b.y0 - ex), b:P(mx, b.y1 + ex), layer:SK_CL, css:null, aci:256, pv:pv, pcl:'x' } : { id:SEQ++, t:'line', a:P(b.x0 - ex, my), b:P(b.x1 + ex, my), layer:SK_CL, css:null, aci:256, pv:pv, pcl:'y' }); ch++; }); });
+  if (ch) { var LC = layerOf(SK_CL); LC.aci = 1; LC.css = '#c0392b'; LC.dash = 'dd'; LC.gap = false; VER++; }
+  return ch; }
 function skCentersFill(){
   if (!PD || !PD.saveMain || !PD.m) return; var n = 0;
   Object.keys(SK_HV).forEach(function(v){ if (D.ents.some(function(e){ return e.pv === v && e.layer === SK_CL && e.inner; })) return;
     var ol = D.ents.filter(function(e){ return e.pv === v && e.layer === '部材_外形' && !e.iso; }); if (!ol.length) return; var sb = skBox(ol);
     skCenters(v).forEach(function(q){ D.ents.push({ id:SEQ++, t:'line', a:P(sb.x0 + q[0], sb.y0 + q[1]), b:P(sb.x0 + q[2], sb.y0 + q[3]), layer:SK_CL, css:null, aci:256, inner:1, pv:v }); n++; }); });
-  if (n) { renderLayers(); changed(); redraw(); } }
+  if (n || skPartCL()) { renderLayers(); changed(); redraw(); } }
 function skInner(only){
   if (!PD || !PD.saveMain || !PD.m || !PD.mod) return;
   var g = PD.mod.partGeo(PD.m); if (!g || !g.tris.length) return; g.tan = kmTan(g.tris);

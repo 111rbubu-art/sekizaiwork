@@ -8277,7 +8277,7 @@ function _gcalUpdateBtn(hasEvent) {
   if (delBtn) delBtn.style.display = hasEvent ? '' : 'none';
 }
 
-var APP_VERSION = 'v1.9.677';
+var APP_VERSION = 'v1.9.679';
 
 // サムネイル読込失敗時に自動リトライ（japanwest1-mediap.svc.ms の ERR_CONNECTION_RESET 対策）
 // TIF/HEIC等の変換が必要なフォーマットはサーバ側のレンダリングに時間がかかるため
@@ -26666,6 +26666,7 @@ function _pvaBake() {
     return pis.reduce(function (pr, pi) {
       return pr.then(function () { return pv.pdf.getPage(pi); }).then(function (pg) {
         var vp = pg.getViewport({ scale: 1 }), v = pg.view, W = v[2] - v[0], H = v[3] - v[1];
+        _pvaFlattenAnnots(doc, pi, vp);   // 前からの 注釈（Acrobat の 四角・スタンプ 等）を 先に 中身へ（v1.9.679）
         return _pvaBakeImgs(doc, pg, vp, pi, emb).then(function () { return { pg: pg, vp: vp, v: v, W: W, H: H }; });
       }).then(function (P) {
         var pg = P.pg, vp = P.vp, v = P.v, W = P.W, H = P.H;
@@ -26798,6 +26799,63 @@ function _pvaDropSetup(ov) {
       _pvaImgAdd(e.dataTransfer.files, +d.getAttribute('data-pi'), (e.clientX - r.left) / pv.zoom, (e.clientY - r.top) / pv.zoom);
     } else _pvaImgAdd(e.dataTransfer.files, pv.cur || 1);
   });
+}
+/* ───── **前からの 注釈を 書き込みの 下へ**（v1.9.679。本人「上書き保存すると、張り付いている画像が前に出てしまう」）─────
+   PDF の 注釈（Acrobat で 貼った 四角・スタンプの 画像・文字の 枠 など）は、ページの 中身より 必ず 上に 描かれる。
+   書き込み（写真・線・文字）は ページの 中身に 焼くので、保存すると 前からの 注釈が 上に来て 写真や 図を 隠していた。
+   → 書き込みと 重なる 注釈は、見た目（AP）を 先に ページの 中身へ 描いて 注釈から 外す（＝書き込みより 下になる）。
+   付箋・リンク・入力欄・見えない 注釈・見た目（AP）の 無い 注釈は さわらない。 */
+var _PVA_FLAT_SKIP = { Text: 1, Popup: 1, Link: 1, Widget: 1, FileAttachment: 1, Sound: 1, Movie: 1, Screen: 1, RichMedia: 1, '3D': 1 };
+function _pvaItemBox(it) {
+  var a = 0;
+  if (it.t === 'line' || it.t === 'arrow') { a = (it.w || 2) * 3; return [Math.min(it.x1, it.x2) - a, Math.min(it.y1, it.y2) - a, Math.max(it.x1, it.x2) + a, Math.max(it.y1, it.y2) + a]; }
+  if (it.t === 'marker') { a = (it.w || 10) / 2; var xs = it.pts.map(function (p) { return p[0]; }), ys = it.pts.map(function (p) { return p[1]; });
+    return [Math.min.apply(null, xs) - a, Math.min.apply(null, ys) - a, Math.max.apply(null, xs) + a, Math.max.apply(null, ys) + a]; }
+  if (it.t === 'text') { var ls = String(it.txt || '').split('\n'), n = Math.max.apply(null, ls.map(function (l) { return l.length; }).concat([1]));
+    return [it.x, it.y, it.x + n * it.s * 1.1, it.y + ls.length * it.s * 1.25]; }
+  a = (it.lw || 0); return [Math.min(it.x, it.x + it.w) - a, Math.min(it.y, it.y + it.h) - a, Math.max(it.x, it.x + it.w) + a, Math.max(it.y, it.y + it.h) + a];
+}
+function _pvaFlattenAnnots(doc, pi, vp) {
+  var pv = _PV, L = PDFLib, N = function (k) { return L.PDFName.of(k); };
+  var page = doc.getPage(pi - 1), ctx = doc.context, annots = page.node.Annots(); if (!annots || !annots.size()) return 0;
+  /* 書き込みの 囲み（PDF の 座標） */
+  var boxes = (pv.ann[pi] || []).map(function (it) {
+    var b = _pvaItemBox(it), q0 = vp.convertToPdfPoint(b[0], b[1]), q1 = vp.convertToPdfPoint(b[2], b[3]);
+    return [Math.min(q0[0], q1[0]), Math.min(q0[1], q1[1]), Math.max(q0[0], q1[0]), Math.max(q0[1], q1[1])];
+  });
+  var num = function (o) { return o && o.asNumber ? o.asNumber() : 0; };
+  var keep = [], n = 0;
+  for (var i = 0; i < annots.size(); i++) {
+    var ref = annots.get(i), a = ctx.lookup(ref), ok = false;
+    try {
+      if (!(a instanceof L.PDFDict)) throw 0;
+      var st = a.lookup(N('Subtype')), sub = st ? String(st.toString()).replace(/^\//, '') : '';
+      var F = num(a.lookup(N('F')));
+      var R = a.lookup(N('Rect')), AP = a.lookup(N('AP'));
+      if (_PVA_FLAT_SKIP[sub] || (F & (1 | 2 | 32)) || !(R instanceof L.PDFArray) || !(AP instanceof L.PDFDict)) throw 0;
+      var r = R.asArray().map(num), rx0 = Math.min(r[0], r[2]), ry0 = Math.min(r[1], r[3]), rx1 = Math.max(r[0], r[2]), ry1 = Math.max(r[1], r[3]);
+      if (!boxes.some(function (b) { return b[0] < rx1 && b[2] > rx0 && b[1] < ry1 && b[3] > ry0; })) throw 0;   // 書き込みと 重ならない
+      var nRef = AP.get(N('N')), nObj = ctx.lookup(nRef);
+      if (nObj instanceof L.PDFDict && !(nObj instanceof L.PDFStream)) {   // 状態ごとの 見た目 → /AS
+        var as = a.lookup(N('AS')); nRef = as ? nObj.get(as) : null; nObj = nRef ? ctx.lookup(nRef) : null;
+      }
+      if (!(nRef instanceof L.PDFRef) || !(nObj instanceof L.PDFStream)) throw 0;
+      var sd = nObj.dict, bb = sd.lookup(N('BBox')); if (!(bb instanceof L.PDFArray)) throw 0;
+      var B = bb.asArray().map(num), Mo = sd.lookup(N('Matrix')), M = Mo instanceof L.PDFArray ? Mo.asArray().map(num) : [1, 0, 0, 1, 0, 0];
+      var cs = [[B[0], B[1]], [B[2], B[1]], [B[0], B[3]], [B[2], B[3]]].map(function (p) { return [M[0] * p[0] + M[2] * p[1] + M[4], M[1] * p[0] + M[3] * p[1] + M[5]]; });
+      var bx0 = Math.min.apply(null, cs.map(function (p) { return p[0]; })), bx1 = Math.max.apply(null, cs.map(function (p) { return p[0]; }));
+      var by0 = Math.min.apply(null, cs.map(function (p) { return p[1]; })), by1 = Math.max.apply(null, cs.map(function (p) { return p[1]; }));
+      if (!(bx1 - bx0 > 0) || !(by1 - by0 > 0)) throw 0;
+      if (!sd.get(N('Subtype'))) sd.set(N('Subtype'), N('Form'));
+      var sx = (rx1 - rx0) / (bx1 - bx0), sy = (ry1 - ry0) / (by1 - by0);
+      var xo = page.node.newXObject('PvaAnn', nRef);
+      page.pushOperators(L.pushGraphicsState(), L.concatTransformationMatrix(sx, 0, 0, sy, rx0 - bx0 * sx, ry0 - by0 * sy), L.drawObject(xo), L.popGraphicsState());
+      ok = true; n++;
+    } catch (e) { if (e !== 0) console.warn('注釈を 中身に できませんでした', e); }
+    if (!ok) keep.push(ref);
+  }
+  if (n) { if (keep.length) page.node.set(N('Annots'), ctx.obj(keep)); else page.node.delete(N('Annots')); }
+  return n;
 }
 /* 保存：このページの 写真を PDF に入れる。ビューワーの座標の 左下・右下・左上を PDF の座標にして、大きさと 回しを出す */
 function _pvaBakeImgs(doc, pg, vp, pi, emb) {

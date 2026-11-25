@@ -494,6 +494,9 @@ function kmApply(pg, o){
     pg.regions.forEach(function(r){ if (r.vid === vid) { r.x0 += mv[0]; r.x1 += mv[0]; r.y0 += mv[1]; r.y1 += mv[1]; } }); });
   // 自動の 寸法・文字の 直し（基準は 直す 前：手の 直しを 読む ときに 比べる）
   pg.base = {};
+  // 右欄の 文字の 高さ・矢印（紙の mm・全ページ）：基準より 前に 当てる → 1 本ずつ 手で 変えた ものは その あと 上書き（v0.9.83）
+  var gth = S.kmTh > 0 ? S.kmTh : 0, gal = S.kmArrow > 0 ? S.kmArrow : gth, gat = S.kmAt || '';
+  if (gth || gal || gat) o.dims.forEach(function(d){ if (gth) d.th = gth; if (gal) d.al = gal; if (gat) d.at = gat; });
   o.dims.forEach(function(d){ if (!d.aid) return; pg.base[d.aid] = { vid:d.vid, a:kCp(d.a), b:kCp(d.b), off:kCp(d.off), text:d.text, th:d.th, al:d.al, at:d.at, fmt:d.fmt, dec:d.dec, tx:d.tx };
     var ov = ovOf(d.aid); if (!ov) return; if (ov.hide) { d._hide = 1; return; }
     // 文字の ずらし（tx）：前は 基準に tx が 無く、紙に 縮める 前の 値（図面の mm）が 手の 直しとして 残って いた → 縮めた 値の 縮尺 倍・同じ 値は 直しで ない（2026-11-25 本人「35 の 寸法が 再現されない」）

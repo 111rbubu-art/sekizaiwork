@@ -4858,6 +4858,7 @@ function pdDrawMode(on){
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); pdRevApply(); });   // 立体の 絵の 寸法にも 改訂（v0.9.37）
     else if (!(D.info && D.info.inn) || !(D.info && D.info.stp) || !D.ents.some(function(e){ return e.sec; })) (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ if (!(D.info && D.info.inn)) skInner(); if (!(D.info && D.info.stp)) { skStepDims(); var sf1 = skSheet(); if (sf1 && sf1.sheet) skFrame(true, sf1.sheet.paper, sf1.sheet.n); } if (!D.ents.some(function(e){ return e.sec; })) secDraw(); secPanel(); renderLayers(); changed(); redraw(); }).catch(function(){});
     else secPanel();
+    skCentersFill();   // 前に 保存した 図で 穴の 中心線が 無い 面に 足す（v0.9.65）
     if (PD.def.drawing && (PD.def.drawing.migaki || []).length && D.ents.some(function(e){ return e.mg && !e.mgf; }) && D.info && D.info.isoMap) skMigaki();   // 前の 版の ▲に 面の 印を 付ける（同じ 位置に 出し直す）
     if (PD.def.drawing && (PD.def.drawing.migaki || []).length && !D.ents.some(function(e){ return e.mg; })) { if (D.info && D.info.isoMap) { skMigaki(); redraw(); } else skPrep(false); }
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
@@ -5058,6 +5059,13 @@ function skSheetDxf(){ var f = skSheet(); if (!f || !f.sheet) { alert('図枠が
 // 面の 図の 中の 線（3D から 隠れ線 計算）：外形・穴（図の 線）に 無い 線を 足す。見える 線＝部材_中の線、見えない＝部材_隠れ線（点線）
 // 例：水鉢の 前の 板の 縁、下面図の 下の 逃げ、上からの 穴（正面図では 点線）。図から 部材に 反映（mkAuto）は この 線を 使わない
 var SK_IN = '部材_中の線', SK_HV = { front:'front', side:'right', top:'top', back:'back', left:'left', bottom:'bottom' };
+// 保存した 図は 中の 線を 作り直さない ので、穴の 中心線（skCenters）が 1 本も 無い 面にだけ 足す（v0.9.65 本人「加工図面に 穴の 中心線が 出ない」）
+function skCentersFill(){
+  if (!PD || !PD.saveMain || !PD.m) return; var n = 0;
+  Object.keys(SK_HV).forEach(function(v){ if (D.ents.some(function(e){ return e.pv === v && e.layer === SK_CL && e.inner; })) return;
+    var ol = D.ents.filter(function(e){ return e.pv === v && e.layer === '部材_外形' && !e.iso; }); if (!ol.length) return; var sb = skBox(ol);
+    skCenters(v).forEach(function(q){ D.ents.push({ id:SEQ++, t:'line', a:P(sb.x0 + q[0], sb.y0 + q[1]), b:P(sb.x0 + q[2], sb.y0 + q[3]), layer:SK_CL, css:null, aci:256, inner:1, pv:v }); n++; }); });
+  if (n) { renderLayers(); changed(); redraw(); } }
 function skInner(only){
   if (!PD || !PD.saveMain || !PD.m || !PD.mod) return;
   var g = PD.mod.partGeo(PD.m); if (!g || !g.tris.length) return; g.tan = kmTan(g.tris);
@@ -5121,6 +5129,13 @@ function skCenters(v){
     if (FX[v] && (v === 'front' || v === 'back')) cross(H, FX[v], function(y){ return y; });
     else if (FX[v]) H.c.forEach(function(q){ var a = DY[v](0), b = DY[v](h.depth); axisV(FX[v](q[0]), Math.min(a, b), Math.max(a, b)); });
     else if (DX[v]) { var a = DX[v](0), b = DX[v](h.depth); axisH(H.c[0][1], Math.min(a, b), Math.max(a, b)); } });
+  // 横の 面（右・左の 面）の 穴（塔婆柱の 塔婆立ての 穴）：側面図・左側面図は 十字、正面・背面は 穴の 軸（v0.9.65 本人「穴の 中心線が 出ない」）
+  ((vv.side && vv.side.holes) || []).forEach(function(h){ if (!h.pts || h.pts.length < 3) return; var b = { x0:Infinity, x1:-Infinity, y0:Infinity, y1:-Infinity };
+    h.pts.forEach(function(q){ b.x0 = Math.min(b.x0, q[0]); b.x1 = Math.max(b.x1, q[0]); b.y0 = Math.min(b.y0, q[1]); b.y1 = Math.max(b.y1, q[1]); });
+    var cd = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, dep = h.depth > 0 ? Math.min(h.depth, W) : W, rt = h.from !== 'left';
+    var e2 = Math.min(ex, 5);   // はみ出しは 5 mm まで（高い 部材で 長く なり 隣の 穴・中心に かからない ように）
+    if (DX[v]) { var xa = DX[v](b.x0), xb = DX[v](b.x1), xc = DX[v](cd); out.push([Math.min(xa, xb) - e2, cy, Math.max(xa, xb) + e2, cy]); out.push([xc, b.y0 - e2, xc, b.y1 + e2]); }
+    else if (v === 'front' || v === 'back') { var r0 = rt ? W - dep : 0, r1 = rt ? W : dep; if (v === 'back') { var t0 = W - r1; r1 = W - r0; r0 = t0; } out.push([Math.max(r0 - e2, 0), cy, Math.min(r1 + e2, W), cy]); } });
   var tops = skTopHoles();
   tops.filter(function(t){ return t.bot; }).forEach(function(t){ var H = cen(t.pts); if (!H) return;
     if (DY[v]) cross(H, FX[v], DY[v]); else if (FX[v]) H.c.forEach(function(q){ axisV(FX[v](q[0]), 0, t.top); }); else if (DX[v]) H.c.map(function(q){ return q[1]; }).filter(function(d, j, a){ return a.indexOf(d) === j; }).forEach(function(d){ axisV(DX[v](d), 0, t.top); }); });

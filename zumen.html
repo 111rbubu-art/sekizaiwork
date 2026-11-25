@@ -417,7 +417,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.76"></script>
 <script src="zumen-km.js?v=0.9.76"></script>
 <script>
-var APP_VER = "v0.9.76";
+var APP_VER = "v0.9.77";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1141,6 +1141,23 @@ function dimDiaTo(d, w){ var c = P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), r 
   var u = P((w.x - c.x) / L, (w.y - c.y) / L); d.a = P(c.x - u.x * r, c.y - u.y * r); d.b = P(c.x + u.x * r, c.y + u.y * r); d.off = c;
   var rot = Math.atan2(u.y, u.x); if (rot > PI / 2 + 1e-6) rot -= PI; if (rot <= -PI / 2 + 1e-6) rot += PI; var e = P(Math.cos(rot), Math.sin(rot));
   d.tx = L > r * 1.02 ? dot(sub(w, c), e) : 0; }
+// 穴の 中心（円の 中心・中心線の 十字）：寸法の 補助線を ここまで 伸ばす（v0.9.77）。図が 変わるまで 覚えて おく
+var _hcK = null, _hcL = [];
+function holeCtrs(){
+  var k = VER + '|' + D.ents.length; if (_hcK === k && _hcL.D === D) return _hcL; var L = [], hs = [], vs = [];
+  D.ents.forEach(function(e){ if (e.t === 'circle' && e.c && e.r > 0 && !e.frame) L.push({ p:e.c, pv:e.pv });
+    if (e.t === 'line' && e.a && e.b && !e.pcl && /中心線/.test(e.layer || '')) { var dx = Math.abs(e.b.x - e.a.x), dy = Math.abs(e.b.y - e.a.y);
+      if (dy < 1e-6 && dx > 1e-6) hs.push(e); else if (dx < 1e-6 && dy > 1e-6) vs.push(e); } });
+  hs.forEach(function(h){ var x0 = Math.min(h.a.x, h.b.x), x1 = Math.max(h.a.x, h.b.x), y = h.a.y;
+    vs.forEach(function(v){ if ((h.pv || '') !== (v.pv || '')) return; var y0 = Math.min(v.a.y, v.b.y), y1 = Math.max(v.a.y, v.b.y), x = v.a.x;
+      if (x > x0 && x < x1 && y > y0 && y < y1 && Math.abs(x - (x0 + x1) / 2) < (x1 - x0) * 0.25 && Math.abs(y - (y0 + y1) / 2) < (y1 - y0) * 0.25) L.push({ p:P(x, y), pv:h.pv }); }); });   // 十字の 真ん中だけ（近い 2 つの 穴の 線どうしの 交わりは 穴では ない）
+  _hcK = k; _hcL = L; L.D = D; return L; }
+// 寸法の 測る 点 p から 補助線の 向き（n）に 沿って 寸法線と 反対 側に ある 穴の 中心（いちばん 近い もの）
+function dimHoleEnd(d, p, u, n, s, th){
+  if (typeof D === 'undefined' || !D || !D.ents) return null; var tol = Math.max(th * 0.05, 1e-3), best = null, bd = Infinity;
+  holeCtrs().forEach(function(c){ if (d.pv && c.pv && c.pv !== d.pv) return; var q = sub(c.p, p);
+    if (Math.abs(dot(q, u)) > tol) return; var t = -dot(q, n) * s; if (t < -tol) return; if (t < bd) { bd = t; best = c.p; } });
+  return best ? addp(p, mulp(n, -s * Math.max(bd, 0))) : null; }
 function dimGeom(d){
   var th = d.th > 0 ? d.th : textH(), a = d.a, b = d.b, o = d.off, u;
   if (d.mode === 'rad' || d.mode === 'hole') return dimGeomRad(d, th);
@@ -1154,8 +1171,10 @@ function dimGeom(d){
   var gap = th * 0.4, over = th * 0.6, al = d.al > 0 ? d.al : S.arrow > 0 ? S.arrow : th;
   var lines = [], arrows = [];
   var sa = da >= 0 ? 1 : -1, sb = db >= 0 ? 1 : -1;
-  if (Math.abs(da) > gap) lines.push([addp(a, mulp(n, sa * gap)), addp(A2, mulp(n, sa * over))]);
-  if (Math.abs(db) > gap) lines.push([addp(b, mulp(n, sb * gap)), addp(B2, mulp(n, sb * over))]);
+  // 穴の 位置の 寸法：補助線は 穴の 中心（中心線の 十字）まで 引く（v0.9.77 本人「穴への 寸法線は 中心線まで」）
+  var ca = d.mode === 'dia' ? null : dimHoleEnd(d, a, u, n, sa, th), cb = d.mode === 'dia' ? null : dimHoleEnd(d, b, u, n, sb, th);
+  if (ca) lines.push([ca, addp(A2, mulp(n, sa * over))]); else if (Math.abs(da) > gap) lines.push([addp(a, mulp(n, sa * gap)), addp(A2, mulp(n, sa * over))]);
+  if (cb) lines.push([cb, addp(B2, mulp(n, sb * over))]); else if (Math.abs(db) > gap) lines.push([addp(b, mulp(n, sb * gap)), addp(B2, mulp(n, sb * over))]);
   var L2 = dist(A2, B2);
   if (L2 > 1e-9) {
     var w = mulp(sub(A2, B2), 1 / L2); // B2→A2

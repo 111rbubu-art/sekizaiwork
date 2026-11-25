@@ -417,7 +417,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.9.76"></script>
 <script src="zumen-km.js?v=0.9.76"></script>
 <script>
-var APP_VER = "v0.9.76";
+var APP_VER = "v0.9.77";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : 'zumen.autosave';   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -1141,6 +1141,25 @@ function dimDiaTo(d, w){ var c = P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2), r 
   var u = P((w.x - c.x) / L, (w.y - c.y) / L); d.a = P(c.x - u.x * r, c.y - u.y * r); d.b = P(c.x + u.x * r, c.y + u.y * r); d.off = c;
   var rot = Math.atan2(u.y, u.x); if (rot > PI / 2 + 1e-6) rot -= PI; if (rot <= -PI / 2 + 1e-6) rot += PI; var e = P(Math.cos(rot), Math.sin(rot));
   d.tx = L > r * 1.02 ? dot(sub(w, c), e) : 0; }
+// 中心線（一点鎖線）の 線分と 円の 中心（補助線を 中心線まで 引く ため。v0.9.77 本人「穴への 寸法線は、中心線まで つけないと いけません」）
+var DCL = { v:-1, d:null, n:-1, L:[], C:[] };
+function dimClList(){ if (DCL.v === VER && DCL.d === D && DCL.n === D.ents.length) return DCL; var L = [], C = [];
+  D.ents.forEach(function(e){ if (!visible(e)) return;
+    if (e.t === 'line' && /中心|CENTER/i.test(e.layer || '')) L.push(e);
+    else if (e.t === 'circle') C.push(e); });
+  DCL = { v:VER, d:D, n:D.ents.length, L:L, C:C }; return DCL; }
+// 点 p から 寸法線の 向き（n×sg）に 引く 補助線の 出だし（p からの 距離）。同じ 軸の 上に 中心線が あれば その 端（寸法線に 近い 方）、
+// p が 円（穴）の 中心なら 0（すき間なし）。どちらでも なければ null（今まで どおり すき間を あける）
+function dimClStart(p, n, sg, th, d){ var Q = dimClList(), tol = Math.max(th * 0.05, 1e-6), best = null, u = mulp(n, sg);
+  var same = function(e){ return !(d && ((d.pv && e.pv && d.pv !== e.pv) || (d.vid && e.vid && d.vid !== e.vid))); };   // ほかの 面の 中心線は 見ない（第三角法で 同じ 軸に 並ぶ）
+  Q.L.forEach(function(e){ if (!same(e)) return; var v = sub(e.b, e.a), L = Math.hypot(v.x, v.y); if (L < 1e-9) return; v = mulp(v, 1 / L);
+    if (Math.abs(crs(v, n)) > 1e-3) return;   // 補助線と 同じ 向きの 中心線 だけ
+    if (Math.abs(crs(sub(p, e.a), v)) > tol) return;   // 同じ 軸の 上
+    var t1 = dot(sub(e.a, p), u), t2 = dot(sub(e.b, p), u), lo = Math.min(t1, t2), hi = Math.max(t1, t2); if (lo > tol) return;   // 中心線が p より 寸法線 側に 離れて いる ものは 見ない
+    if (best == null || hi > best) best = hi; });
+  if (best != null) return best;
+  if (Q.C.some(function(e){ return same(e) && dist(e.c, p) <= tol; })) return 0;
+  return null; }
 function dimGeom(d){
   var th = d.th > 0 ? d.th : textH(), a = d.a, b = d.b, o = d.off, u;
   if (d.mode === 'rad' || d.mode === 'hole') return dimGeomRad(d, th);
@@ -1154,8 +1173,11 @@ function dimGeom(d){
   var gap = th * 0.4, over = th * 0.6, al = d.al > 0 ? d.al : S.arrow > 0 ? S.arrow : th;
   var lines = [], arrows = [];
   var sa = da >= 0 ? 1 : -1, sb = db >= 0 ? 1 : -1;
-  if (Math.abs(da) > gap) lines.push([addp(a, mulp(n, sa * gap)), addp(A2, mulp(n, sa * over))]);
-  if (Math.abs(db) > gap) lines.push([addp(b, mulp(n, sb * gap)), addp(B2, mulp(n, sb * over))]);
+  // 穴の 中心線が 補助線の 上に あれば、補助線は 中心線の 端から（すき間なし）。点が 外形の 端でも 穴の 中心でも 中心線に つなぐ（v0.9.77）
+  var ca = d.mode === 'dia' ? null : dimClStart(a, n, sa, th, d), cb = d.mode === 'dia' ? null : dimClStart(b, n, sb, th, d);
+  var s0a = ca != null ? ca : gap, s0b = cb != null ? cb : gap;
+  if (Math.abs(da) > s0a + (ca != null ? 1e-6 : 0)) lines.push([addp(a, mulp(n, sa * s0a)), addp(A2, mulp(n, sa * over))]);
+  if (Math.abs(db) > s0b + (cb != null ? 1e-6 : 0)) lines.push([addp(b, mulp(n, sb * s0b)), addp(B2, mulp(n, sb * over))]);
   var L2 = dist(A2, B2);
   if (L2 > 1e-9) {
     var w = mulp(sub(A2, B2), 1 / L2); // B2→A2
@@ -5780,7 +5802,7 @@ function pdHoleDims(v, bb){
   var hs = v === 'front' ? (vv.front.holes || []) : v === 'side' ? ((vv.side && vv.side.holes) || []) : v === 'top' ? ((vv.top && vv.top.holes) || []).concat(tc.filter(function(h){ return h.y1 >= H0 - 1e-6 && h.y0 > 1e-6; }).map(function(h){ return { pts:h.pts, depth:H0 - h.y0 }; }))
     : v === 'bottom' ? tc.filter(function(h){ return h.y0 <= 1e-6; }).map(function(h){ return { pts:h.pts.map(function(q){ return [q[0], -q[1]]; }), depth:h.y1 >= H0 - 1e-6 ? 0 : h.y1, thru:h.y1 >= H0 - 1e-6 }; }) : [];
   var y0 = c.at && c.at.y || 0; if (!hs.length) return out;
-  var g = Math.max(Math.max(PD.m.W, PD.m.H, PD.m.D) * 0.1, (PD.nEst || 5) * 9), r1 = function(x){ return Math.round(x * 10) / 10; }, cxs = [], cys = [], top = bb.y1;   // 1 段＝紙で 約 9mm
+  var g = Math.max(Math.max(PD.m.W, PD.m.H, PD.m.D) * 0.1, (PD.nEst || 5) * 9), r1 = function(x){ return Math.round(x * 10) / 10; }, cxs = [], cys = [], cps = [], top = bb.y1;   // 1 段＝紙で 約 9mm
   var sh = hs.filter(function(h){ return !h.nige; }).map(function(h){ var pts = v === 'top' || v === 'bottom' ? h.pts : h.pts.map(function(q){ return [q[0], q[1] + y0]; }); return { h:h, s:holeShape(pts) }; }).filter(function(x){ return x.s; });
   sh.forEach(function(x, i){ var r0 = x.s.arcs.length && !x.s.lines ? Math.round(x.s.arcs[0].r * 10) + '/' + x.s.arcs.length : null; if (r0 && sh.slice(0, i).some(function(y){ return y.s.arcs.length && !y.s.lines && Math.round(y.s.arcs[0].r * 10) + '/' + y.s.arcs.length === r0; })) x.s.dup = 1; });
   sh.forEach(function(x, i){ var S = x.s, b = S.bb, k = i % 2;
@@ -5789,18 +5811,21 @@ function pdHoleDims(v, bb){
       if (!x.s.dup) { if (a.r * 2 * (S.arcs.length > 1 ? S.arcs.length * 0.75 : 1) > tw * 1.1) out.dims.push({ a:[a.c[0] - a.r, a.c[1]], b:[a.c[0] + a.r, a.c[1]], off:[a.c[0], a.c[1]], mode:'dia', text:'φ<>' + (S.arcs.length > 1 ? ' ×' + S.arcs.length : '') });   // 穴の 中を 通る
         else { var u = Math.SQRT1_2, tt = 'φ<>' + (S.arcs.length > 1 ? ' ×' + S.arcs.length : '') + (x.h.depth ? ' 深 ' + r1(x.h.depth) : x.h.thru ? ' 貫通' : ''), th0 = (PD.nEst || 5) * 3.5, hw0 = (tt.length + 3) * th0 * 0.45 + th0 * 0.3;
           out.dims.push({ a:[a.c[0] - a.r * u, a.c[1] - a.r * u], b:[a.c[0] + a.r * u, a.c[1] + a.r * u], off:[a.c[0], a.c[1]], mode:'dia', text:tt, tx:a.r + hw0 + th0 * 0.3 }); x.small = 1; } }   // 小さい 穴は 斜めに 外へ（深さも 一緒に）
-      S.arcs.forEach(function(o){ cxs.push(o.c[0]); cys.push(o.c[1]); });
+      S.arcs.forEach(function(o){ cxs.push(o.c[0]); cys.push(o.c[1]); cps.push(o.c); });
     } else { // 長穴・四角：大きさは 書き込み（幅×高さ）、真ん中の 位置は 寸法
-      cxs.push((b.x0 + b.x1) / 2); cys.push((b.y0 + b.y1) / 2); }
+      cxs.push((b.x0 + b.x1) / 2); cys.push((b.y0 + b.y1) / 2); cps.push([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]); }
     var sz = S.arcs.length && !S.lines ? '' : r1(b.x1 - b.x0) + '×' + r1(b.y1 - b.y0) + '　';
     if ((x.h.depth || sz) && !x.small && !(x.s.dup && S.arcs.length && !S.lines && sh.some(function(y){ return y.small; }))) out.notes.push({ p:[(b.x0 + b.x1) / 2, b.y0 - g * 0.12], s:sz + (x.h.depth ? '深 ' + r1(x.h.depth) : '') + (x.h.from === 'back' ? '（後から）' : '') });
   });
   // 中心の 位置：左の 端から（上に）・下（平面図は 前）から（右に）
   var ux = cxs.map(r1).filter(function(x, i, a){ return a.indexOf(x) === i; }).sort(function(a, b){ return a - b; });
   var st2 = S.fmt === 'both2' ? Math.max(g * 0.75, (PD.nEst || 5) * 3.5 * 2.9) : g * 0.75, sv2 = S.fmt === 'both2' ? Math.max(g * 0.9, (PD.nEst || 5) * 3.5 * 2.9) : g * 0.9;   // 2 行の 表記は 段の 間を 広く
-  ux.forEach(function(x, i){ if (x - bb.x0 > 0.5) out.dims.push({ a:[bb.x0, top], b:[x, top], off:[(bb.x0 + x) / 2, top + g * 0.8 + i * st2], mode:'h' }); });
+  // 穴の 側の 点は 穴の 中心（補助線を 中心線まで・v0.9.77 本人「穴への 寸法線は、中心線まで つけないと いけません」）。同じ 列の 穴は 寸法に 近い ほう（上・右）
+  var hcY = function(x){ var y = -Infinity; cps.forEach(function(c){ if (r1(c[0]) === x) y = Math.max(y, c[1]); }); return isFinite(y) ? y : top; };
+  var hcX = function(yv){ var x = -Infinity; cps.forEach(function(c){ if (r1(c[1]) === yv) x = Math.max(x, c[0]); }); return isFinite(x) ? x : bb.x1; };
+  ux.forEach(function(x, i){ if (x - bb.x0 > 0.5) out.dims.push({ a:[bb.x0, top], b:[x, hcY(x)], off:[(bb.x0 + x) / 2, top + g * 0.8 + i * st2], mode:'h' }); });
   var uy = cys.map(r1).filter(function(y, i, a){ return a.indexOf(y) === i; }).sort(function(a, b){ return a - b; });
-  uy.forEach(function(y, i){ out.dims.push({ a:[bb.x1, bb.y0], b:[bb.x1, y], off:[bb.x1 + g * 0.8 + i * sv2, (bb.y0 + y) / 2], mode:'v' }); });
+  uy.forEach(function(y, i){ out.dims.push({ a:[bb.x1, bb.y0], b:[hcX(y), y], off:[bb.x1 + g * 0.8 + i * sv2, (bb.y0 + y) / 2], mode:'v' }); });
   return out;
 }
 // 外形の 角の R（半径の 寸法）：出っ張った 角だけ、同じ 半径は 1 つ（右上を 先に）。引出線は 角から 外へ

@@ -292,10 +292,13 @@ function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.sha
   Object.keys(grp).forEach(function(pv){ var G = grp[pv], b = G.b, st = 7 * n, mid = (b.x0 + b.x1) / 2, r1 = function(x){ return Math.round(x * 10) / 10; };
     // 横の 位置：左 半分は 左の 端から・右 半分は 右の 端から（近い 端からの mm）。高さ：右の 外に 下から
     var ux = G.cs.map(function(c){ return r1(c.x); }).filter(function(x, i, A){ return A.indexOf(x) === i; }).sort(function(a, c){ return a - c; });
+    // 穴の 側の 点は 穴の 中心（補助線は 中心線まで・v0.9.77）。同じ 列なら 寸法に 近い 穴（上・右）
+    var hcY = function(x){ var y = -Infinity; G.cs.forEach(function(c){ if (r1(c.x) === x) y = Math.max(y, c.y); }); return isFinite(y) ? y : b.y1; };
+    var hcX = function(y){ var x = -Infinity; G.cs.forEach(function(c){ if (r1(c.y) === y) x = Math.max(x, c.x); }); return isFinite(x) ? x : b.x1; };
     var iL = 0, iR = 0; ux.forEach(function(x){ var left = x <= mid, i = left ? iL++ : iR++, e = left ? b.x0 : b.x1;
-      if (Math.abs(x - e) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+      if (Math.abs(x - e) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:hcY(x) }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
     var uy = G.cs.map(function(c){ return r1(c.y); }).filter(function(y, i, A){ return A.indexOf(y) === i; }).sort(function(a, c){ return a - c; });
-    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:hcX(y), y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
     var c0 = G.cs.slice().sort(function(a, c){ return a.x - c.x; })[0], ty = b.y1 + st * (Math.max(iL, iR) + 1.6), j = 0;
     Object.keys(G.txt).forEach(function(key){ var q = key.split('|'), s = q[0] + ' ×' + G.txt[key] + '（' + q[1] + '）', p = { x:Math.max(b.x0, c0.x - 4 * n), y:ty + j * 4 * n };
       sk.ents.push({ id:SEQ++, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });

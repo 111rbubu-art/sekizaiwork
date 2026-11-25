@@ -453,8 +453,10 @@ function kmApply(pg, o){
     pg.regions.forEach(function(r){ if (r.vid === vid) { r.x0 += mv[0]; r.x1 += mv[0]; r.y0 += mv[1]; r.y1 += mv[1]; } }); });
   // 自動の 寸法・文字の 直し（基準は 直す 前：手の 直しを 読む ときに 比べる）
   pg.base = {};
-  o.dims.forEach(function(d){ if (!d.aid) return; pg.base[d.aid] = { vid:d.vid, a:kCp(d.a), b:kCp(d.b), off:kCp(d.off), text:d.text, th:d.th, al:d.al, at:d.at, fmt:d.fmt, dec:d.dec };
+  o.dims.forEach(function(d){ if (!d.aid) return; pg.base[d.aid] = { vid:d.vid, a:kCp(d.a), b:kCp(d.b), off:kCp(d.off), text:d.text, th:d.th, al:d.al, at:d.at, fmt:d.fmt, dec:d.dec, tx:d.tx };
     var ov = ovOf(d.aid); if (!ov) return; if (ov.hide) { d._hide = 1; return; }
+    // 文字の ずらし（tx）：前は 基準に tx が 無く、紙に 縮める 前の 値（図面の mm）が 手の 直しとして 残って いた → 縮めた 値の 縮尺 倍・同じ 値は 直しで ない（2026-11-25 本人「35 の 寸法が 再現されない」）
+    if (ov.tx != null && d.tx && (Math.abs(ov.tx - d.tx * (d.k || 1)) < 0.05 || Math.abs(ov.tx - d.tx) < 0.005)) { ov = Object.assign({}, ov); delete ov.tx; }
     if (ov.doff) d.off = P(d.off.x + ov.doff[0], d.off.y + ov.doff[1]); if (ov.da) d.a = P(d.a.x + ov.da[0], d.a.y + ov.da[1]); if (ov.db) d.b = P(d.b.x + ov.db[0], d.b.y + ov.db[1]);
     KM_DF.forEach(function(f){ if (ov[f] !== undefined) d[f] = ov[f]; }); });
   o.dims = o.dims.filter(function(d){ return !d._hide; });

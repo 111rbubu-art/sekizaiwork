@@ -318,7 +318,7 @@ input.kmn{width:110px;text-align:left}
 <script src="buzai-lib.js?v=0.9.76"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.107';
+var APP_VER = 'v0.8.108';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 function lsSet(k, v){ var t = JSON.stringify(v); try { localStorage.setItem(k, t); } catch (e) {} if (typeof STK !== 'undefined' && k === STK) caseMark(t); }
@@ -2875,9 +2875,9 @@ function caseLoad(){
   .then(function(dir){ if (!dir) { caseMark(); return; }
     return w.downloadJsonFromFolderPassFromTekkyo(dir, CASE_FN).then(function(txt){ var j = JSON.parse(txt); if (!j || j.schema !== 'kumitate/1') { caseMark(); return; }
       var fs = strSig(JSON.stringify(j)), loc = lsGet(STK) ? JSON.stringify(ST) : '';
-      if (loc && (strSig(loc) === fs || !caseUnsaved(loc))) { caseMark(); return; }
-      if (loc && caseUnsaved(loc) && !confirm('この PC に、案件の 図面ファイルへ まだ 保存して いない 変更が あります。\n\n［OK］案件の 図面ファイルを 開く（この PC の 変更は 消えます）\n［キャンセル］この PC の 変更の まま 続ける（あとで［💾 保存］）')) { caseMark(); return; }
-      applyState(j); lsSet(CASE_SIGK, strSig(JSON.stringify(ST))); lsSet(STK, ST); busy('☁️ 案件の 図面ファイルを 開きました', 'ok', 4000); }); })
+      if (loc && (strSig(loc) === fs || !caseUnsaved(loc))) { caseMark(); zmAfterLoad(); return; }
+      if (loc && caseUnsaved(loc) && !confirm('この PC に、案件の 図面ファイルへ まだ 保存して いない 変更が あります。\n\n［OK］案件の 図面ファイルを 開く（この PC の 変更は 消えます）\n［キャンセル］この PC の 変更の まま 続ける（あとで［💾 保存］）')) { caseMark(); zmAfterLoad(); return; }
+      applyState(j); lsSet(CASE_SIGK, strSig(JSON.stringify(ST))); lsSet(STK, ST); busy('☁️ 案件の 図面ファイルを 開きました（図面・加工図面も 作りました）', 'ok', 4000); zmAfterLoad(); }); })
     .catch(function(e){ caseMark(); busy('案件の 図面ファイルを 読めませんでした：' + (e && e.message || e), 'ng', 8000); });
 }
 // ［📂 読む ▾ › ☁️ 案件から 開く］（v0.8.105 本人「読むも SP の 案件から 読み込めるように」）：案件フォルダー直下の .json を 並べて 選ぶ
@@ -2899,7 +2899,7 @@ function caseOpen(fn){
     if (!j || j.schema !== 'kumitate/1') { alert('モデリングの ファイル（kumitate/1）では ありません：' + fn); return; }
     if (caseUnsaved() && !confirm('今の 変更は まだ 案件の 図面ファイルに 保存して いません。\n［OK］で ' + fn + ' を 開きます（今の 変更は 消えます）')) return;
     applyState(j); lsSet(STK, ST); if (fn === CASE_FN) lsSet(CASE_SIGK, strSig(JSON.stringify(ST))); caseMark();
-    busy('☁️ 案件から 開きました：' + fn + (fn === CASE_FN ? '' : '（［💾 保存］で ' + CASE_FN + ' に なります）'), 'ok', 5000); })
+    busy('☁️ 案件から 開きました：' + fn + (fn === CASE_FN ? '' : '（［💾 保存］で ' + CASE_FN + ' に なります）'), 'ok', 5000); zmAfterLoad(); })
     .catch(function(e){ busy(''); alert('案件から 読めませんでした\n' + (e && e.message || e)); });
 }
 $('bSave').onclick = function(){
@@ -2974,7 +2974,7 @@ function setThumbs(m, ids, size){
 $('fOpen').onchange = function(){
   var f = this.files[0]; this.value = ''; if (!f) return;
   readJson(f, function(j){
-    if (j.schema === 'kumitate/1') { applyState(j); return; }
+    if (j.schema === 'kumitate/1') { applyState(j); zmAfterLoad(); return; }
     if (j.partsData || j.stoneMaster) { var dt = new DataTransfer(); dt.items.add(f); $('fTanka').files = dt.files; $('fTanka').onchange(); return; }
     alert('モデリングの ファイル（kumitate_….json）では ありません');
   });
@@ -3009,16 +3009,20 @@ $('bCopy').onclick = function(){
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, fall); else fall();
 };
 // 図面に する：今の 形（部材ごとの 箱・形・石種・加工）を 図面アプリへ（localStorage 'kumitate.zumen'、kmz/1）
-$('bZm').onclick = function(){
+$('bZm').onclick = function(){ zmMake(false); };
+// 図面化（v0.8.108）：quiet＝データを 読み込んだ とき。タブは モデリングの まま、図面タブ（展開図）と 加工図面タブ（束）を 裏で 作る
+// （2026-11-25 本人「データを 読み込んだなら、表示させないと」＝墓石設計.kumitate.json を 読んでも 図面・部材図面が 出なかった）
+function zmMake(quiet){
   RES = calc();
   var gap = (RES.gaps || []).filter(function(g){ return g.id === 'naka'; })[0], parts = [];
   Object.keys(RES.boxes).forEach(function(k){ var e = zmPart(k); if (e) parts.push(e); });
-  if (!parts.length) { alert('部材が ありません'); return; }
+  if (!parts.length) { if (!quiet) alert('部材が ありません'); return; }
   var pay = zmPay(parts); pay.open = gap ? gap.open : null;
   try { localStorage.setItem('kumitate.zumen', JSON.stringify(pay)); } catch (e) { alert('図面へ 渡せませんでした（ブラウザの 保存が いっぱい？）'); return; }
-  if (SKP && SKP.zumenize) { SKP.zumenize(pay.t); return; }   // 枠の 中：束（配置図・部品図）は 加工図面タブ、展開図は 図面タブ
-  window.open('zumen.html#km' + pay.t, 'zumen');
-};
+  if (SKP && SKP.zumenize) { SKP.zumenize(pay.t, quiet); return; }   // 枠の 中：束（配置図・部品図）は 加工図面タブ、展開図は 図面タブ
+  if (!quiet) window.open('zumen.html#km' + pay.t, 'zumen');
+}
+function zmAfterLoad(){ if (SETEDIT || !SKP || !SKP.zumenize) return; setTimeout(function(){ try { zmMake(true); } catch (e) {} }, 300); }
 function zmPay(parts){ var d = new Date(); return { schema:'kmz/1', t:Date.now(), name:ST.name || '', date:d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2),
     site:ST.site || {}, joint:ST.joint || {}, open:null, gl:RES.gl || null, parts:parts }; }
 // 図面へ 渡す 部材 1 つ（いま 3D に ある 形・箱・石種・加工）

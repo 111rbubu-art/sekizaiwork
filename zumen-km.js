@@ -46,12 +46,14 @@ function kmBundles(pay){
   var out = [];
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
   order.forEach(function(sid){ var ps = bySet[sid], cnt = {};
-    ps.forEach(function(p){ var s = p.stone || ''; cnt[s] = (cnt[s] || 0) + 1; });
+    // 分ける 鍵＝skey（モデリングの グループ「紺：G654 深山」）、図に 出す 石種＝stone（「G654 深山」だけ・v0.9.82）。古い 渡しは skey が 無いので stone
+    var skOf = function(p){ return p.skey != null ? p.skey : (p.stone || ''); };
+    ps.forEach(function(p){ var s = skOf(p); cnt[s] = (cnt[s] || 0) + 1; });
     var stones = Object.keys(cnt).sort(function(a, b){ return cnt[b] - cnt[a]; });
-    stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return (p.stone || '') === st; });
+    stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return skOf(p) === st; });
       var names = []; pp.forEach(function(p){ var b = kmBase(p.name); if (names.indexOf(b) < 0) names.push(b); });
       var title = si === 0 ? (ps[0].setName || (ps[0].grp === 'fence' ? '外柵' : '石塔')) : names.join('・');
-      var B = { id:sid + '|' + (st || '-'), title:title, stone:st, parts:pp, groups:[] }, seen = {};
+      var B = { id:sid + '|' + (st || '-'), title:title, stone:pp[0].skey != null ? (pp[0].stone || '') : st, parts:pp, groups:[] }, seen = {};
       pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h;
         if (seen[key]) { seen[key].ks.push(p.k); return; }
         var g = { name:nm, ks:[p.k], w:p.w, d:p.d, h:p.h, fin:p.fin || '', kakou:(p.kakou || '') === '左右対称' ? '' : (p.kakou || ''), old:(p.setId || p.grp) + '/' + String(p.key || p.k).replace(/_[LR]$/, '') };

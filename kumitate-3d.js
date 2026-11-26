@@ -417,7 +417,8 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     // 部材の 寸法（幅・奥行・高さ）：寸法線と 札。変えて いる 寸法は 橙（v0.8.24 本人「寸法を 変更する とき 部材の 寸法を 表示させて」）
     (SZ.dims || []).forEach(function(d){
       // 矢印の 先の 札（移動した 距離。v0.8.95）：面の 中心 から 外向きに 矢印の 長さ 少し 先
-      if (d.tip) { var st = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); st.center.set(0.5, 0.5); st.position.set(d.a.x + d.tip[0] * L * 1.3, d.a.y + d.tip[1] * L * 1.3, d.a.z + d.tip[2] * L * 1.3); szG.add(st); return; }
+      if (d.tip) { var st = textSprite(d.text, d.hot ? '#e07a1f' : '#1f3a5f'); st.center.set(0.5, 0.5); st.userData.tipAx = d.ax || null;   // 札を 押すと 数を 打てる（v0.8.109）
+        st.position.set(d.a.x + d.tip[0] * L * 1.3, d.a.y + d.tip[1] * L * 1.3, d.a.z + d.tip[2] * L * 1.3); szG.add(st); return; }
       var col = d.hot ? 0xe07a1f : 0x1f3a5f, lm = new THREE.LineBasicMaterial({ color:col, depthTest:false }), A = new THREE.Vector3(d.a.x, d.a.y, d.a.z), B = new THREE.Vector3(d.b.x, d.b.y, d.b.z);
       var pts = [A, B], t = d.t ? new THREE.Vector3(d.t[0], d.t[1], d.t[2]).multiplyScalar(L * 0.18) : null;
       if (t) pts.push(A.clone().sub(t), A.clone().add(t), B.clone().sub(t), B.clone().add(t));
@@ -431,25 +432,33 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);
     var hs = ray.intersectObjects(szG.children, true).filter(function(h){ return h.object.userData.ok; }); return hs.length ? hs[0].object.userData.face : null;
   }
+  // 移動した 距離の 札（矢印の 先）に 当たったか：軸（'x'｜'y'｜'z'）を 返す
+  function tipHit(e){
+    if (!SZ || !SZ.onTip) return null; var rc = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2((e.clientX - rc.left) / rc.width * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1), cam);
+    var sp = szG.children.filter(function(o){ return o.isSprite && o.userData.tipAx; }), hs = ray.intersectObjects(sp, false); return hs.length ? hs[0].object.userData.tipAx : null;
+  }
   renderer.domElement.addEventListener('pointerdown', function(e){
-    if (!SZ || e.button !== 0) return; var id = szHit(e); if (!id) return;
+    if (!SZ || e.button !== 0) return;
+    var ta = tipHit(e); if (ta) { SZ.onTip(ta, e.clientX, e.clientY); e.stopImmediatePropagation(); e.preventDefault(); return; }
+    var id = szHit(e); if (!id) return;
     var f = SZ.faces.filter(function(x){ return x.id === id; })[0], rc = renderer.domElement.getBoundingClientRect();
     var a = scr(new THREE.Vector3(f.p.x, f.p.y, f.p.z), rc), b = scr(new THREE.Vector3(f.p.x + f.n[0] * 100, f.p.y + f.n[1] * 100, f.p.z + f.n[2] * 100), rc);
     var dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1;
-    szDrag = { id:id, x:e.clientX, y:e.clientY, ux:dx / l, uy:dy / l, per:l / 100, moved:false };   // per＝1 mm の 画面の 長さ
+    szDrag = { id:id, x:e.clientX, y:e.clientY, ux:dx / l, uy:dy / l, per:l / 100 * (e.shiftKey ? 10 : 1), moved:false, fine:!!e.shiftKey };   // per＝1 mm の 画面の 長さ。Shift＝0.1 mm 刻みで 10 倍 ゆっくり（v0.8.109）
     renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation(); e.preventDefault();
   }, true);
   renderer.domElement.addEventListener('pointermove', function(e){
     if (!SZ) return;
-    if (!szDrag) { if (!e.buttons) renderer.domElement.style.cursor = szHit(e) ? 'grab' : ''; return; }
+    if (!szDrag) { if (!e.buttons) renderer.domElement.style.cursor = szHit(e) ? 'grab' : tipHit(e) ? 'text' : ''; return; }
     var mx = e.clientX - szDrag.x, my = e.clientY - szDrag.y; if (!szDrag.moved && Math.hypot(mx, my) < 4) return;
     szDrag.moved = true; renderer.domElement.style.cursor = 'grabbing';
-    SZ.onDrag(szDrag.id, (mx * szDrag.ux + my * szDrag.uy) / szDrag.per, false);
+    SZ.onDrag(szDrag.id, (mx * szDrag.ux + my * szDrag.uy) / szDrag.per, false, '', szDrag.fine);
   });
   renderer.domElement.addEventListener('pointerup', function(e){
     if (!szDrag) return; var d = szDrag; szDrag = null; renderer.domElement.style.cursor = '';
     var mx = e.clientX - d.x, my = e.clientY - d.y;
-    if (SZ) SZ.onDrag(d.id, d.moved ? (mx * d.ux + my * d.uy) / d.per : 0, true, d.moved ? '' : 'click');
+    if (SZ) SZ.onDrag(d.id, d.moved ? (mx * d.ux + my * d.uy) / d.per : 0, true, d.moved ? '' : 'click', d.fine);
     e.stopImmediatePropagation(); down = null;
   }, true);
   // 地面の 見え方：''＝ふつう｜'half'＝半透明（GL の 下も 見える）｜'off'＝出さない（格子は のこす）

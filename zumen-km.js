@@ -18,7 +18,7 @@ function kmPick(w, h, bw, bh, min){ for (var i = 0; i < KM_SC.length; i++) { var
 function kY(y){ return 210 - y; }
 function kCp(q){ return q ? P(q.x, q.y) : q; } // 基準は 写しで 持つ（移動は 点を その まま 書き換える）
 function kOut(pg){ return { ents:[], dims:[], pg:pg }; }
-function kL(o, a, b, vid, hid, lay){ o.ents.push({ id:SEQ++, t:'line', a:P(a[0], kY(a[1])), b:P(b[0], kY(b[1])), layer:lay || (hid ? '隠れ線' : '部材'), css:null, aci:256, auto:true, vid:vid || null }); }
+function kL(o, a, b, vid, hid, lay, opt){ var e = { id:SEQ++, t:'line', a:P(a[0], kY(a[1])), b:P(b[0], kY(b[1])), layer:lay || (hid ? '隠れ線' : '部材'), css:null, aci:256, auto:true, vid:vid || null }; if (opt && opt.aid) { e.aid = opt.aid; if (opt.fol) e.fol = opt.fol; } o.ents.push(e); }
 function kT(o, x, y, s, h, opt){ opt = opt || {}; var e = { id:SEQ++, t:'text', p:P(x, kY(y)), h:h || 2.5, rot:opt.rot || 0, s:String(s), ha:opt.ha || 0, va:opt.va || 0, wf:1, layer:opt.layer || '文字', css:null, aci:256, auto:true, vid:opt.vid || null, aid:opt.aid || null }; o.ents.push(e); return e; }
 function kC(o, x, y, r, vid, opt){ opt = opt || {}; o.ents.push({ id:SEQ++, t:'circle', c:P(x, kY(y)), r:r, layer:opt.hid ? '隠れ線' : opt.layer || '部材', css:null, aci:256, auto:true, vid:vid || null }); }
 function kPl(o, pts, vid, hid){ o.ents.push({ id:SEQ++, t:'pl', v:pts.map(function(q){ return { x:q[0], y:kY(q[1]), b:0 }; }), closed:true, layer:hid ? '隠れ線' : '部材', css:null, aci:256, auto:true, vid:vid || null }); }
@@ -341,10 +341,11 @@ function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.sha
     if (sk.ents.some(function(q){ return q.t === 'circle' && q.c && Math.hypot(q.c.x - c.x, q.c.y - c.y) < 1 && Math.abs(q.r - r * kx) < 1; })) return;   // 保存した 図に もう ある
     var G = grp[pv] = grp[pv] || { b:b, cs:[], txt:{} }; G.cs.push(c);
     var tt = 'Φ' + kmR(r * 2) + 'mm 深' + kmR(a.h.depth) + 'mm'; G.txt[tt + '|' + a.from] = (G.txt[tt + '|' + a.from] || 0) + 1;
-    sk.ents.push({ id:SEQ++, t:'circle', c:{ x:c.x, y:c.y }, r:r * kx, layer:hid ? '隠れ線' : '部材_外形', css:null, aci:256, pv:pv, anc:1 });
+    var hk = 'anc/' + pv + '/h' + ai;   // 線・円にも 名前（v0.9.99：手で 直した 線を 覚える）
+    sk.ents.push({ id:SEQ++, ak:hk + '/c', t:'circle', c:{ x:c.x, y:c.y }, r:r * kx, layer:hid ? '隠れ線' : '部材_外形', css:null, aci:256, pv:pv, anc:1 });
     var ex = Math.max(r * kx * 2.2, 2.2 * n);
-    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x - ex, y:c.y }, b:{ x:c.x + ex, y:c.y }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 });
-    sk.ents.push({ id:SEQ++, t:'line', a:{ x:c.x, y:c.y - ex }, b:{ x:c.x, y:c.y + ex }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 }); });
+    sk.ents.push({ id:SEQ++, ak:hk + '/cx', t:'line', a:{ x:c.x - ex, y:c.y }, b:{ x:c.x + ex, y:c.y }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 });
+    sk.ents.push({ id:SEQ++, ak:hk + '/cy', t:'line', a:{ x:c.x, y:c.y - ex }, b:{ x:c.x, y:c.y + ex }, layer:'中心線', css:null, aci:256, pv:pv, anc:1 }); });
   Object.keys(grp).forEach(function(pv){ var G = grp[pv], b = G.b, st = 7 * n, mid = (b.x0 + b.x1) / 2, r1 = function(x){ return Math.round(x * 10) / 10; };
     // 横の 位置：左 半分は 左の 端から・右 半分は 右の 端から（近い 端からの mm）。高さ：右の 外に 下から
     var ux = G.cs.map(function(c){ return r1(c.x); }).filter(function(x, i, A){ return A.indexOf(x) === i; }).sort(function(a, c){ return a - c; });
@@ -357,7 +358,8 @@ function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.sha
     [LL, LR, LV].forEach(function(A){ if (A.length > 1) A.forEach(function(q){ kmAncTx(q[0], q[1], q[2], sk.ds, n); }); });
     var c0 = G.cs.slice().sort(function(a, c){ return a.x - c.x; })[0], ty = b.y1 + st * (Math.max(iL, iR) + 1.6), j = 0;
     Object.keys(G.txt).forEach(function(key){ var q = key.split('|'), s = q[0] + ' ×' + G.txt[key] + '（' + q[1] + '）', p = { x:Math.max(b.x0, c0.x - 4 * n), y:ty + j * 4 * n };
-      sk.ents.push({ id:SEQ++, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });
+      // 引出線：文字（ak …/t j）を 動かすと 文字側の 端が ついて 行く（lt・v0.9.99 本人「この 線を 直したのに 保存して 開くと 元に 戻る」）
+      sk.ents.push({ id:SEQ++, ak:'anc/' + pv + '/ld' + j, lt:'anc/' + pv + '/t' + j, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });
       sk.ents.push({ id:SEQ++, ak:'anc/' + pv + '/t' + j, t:'text', p:p, h:2.4 * n, rot:0, s:s, ha:0, va:0, layer:'文字', css:null, aci:256, pv:pv, anc:1 }); j++; }); });
   return sk; }
 // 穴の 位置の 寸法の 文字が 矢印の 間に 入らない とき、文字を 横（寸法線に 沿って）の 外へ ずらす（v0.9.91）
@@ -368,6 +370,8 @@ function kmAncTx(d, L, i, ds, n){ var th = ds && ds.th > 0 ? ds.th : 3.5 * n, f 
   if (len >= tw + th * 1.6) return d;   // 矢印の 間に 入る
   var sg = L > 0 ? 1 : -1, out = i % 2 === 0 ? -sg : sg;   // 端の 外＝穴と 反対の 向き
   d.tx = out * (len / 2 + tw / 2 + th * 0.6); return d; }
+// 図枠の 図の 線・円の 名前（v0.9.99）：作った 線（ak）か 保存した 図の 線の id。立体の 絵（作り直す たびに 変わる）・磨きの 印は 名前なし
+function kmEntAid(vid, e, i){ if (e.t === 'text') return vid + '/t' + (e.ak || (e.id != null ? e.id : i)); if (e.ak) return vid + '/g' + e.ak; if (e.iso || e.mg || e.inner || e.sec || e.id == null) return null; return vid + '/g' + e.id; }
 // 図枠を 縮尺 そのままで ページに（X＝紙の 左。半分なら 0 か 148.5）。表題欄は 組み立ての 件名・石種で
 function kmSheetPut(o, pg, g, X, B){
   var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = kmAncSheet(S0.sk, g, S0.n), n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';
@@ -377,7 +381,7 @@ function kmSheetPut(o, pg, g, X, B){
   var lay = sk.layers || {}, hidL = function(nm){ var L = lay[nm]; return L && L.on === false; };
   sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
     var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.ak || (e.id != null ? e.id : i)) : null; delete n2.ak; delete n2.pv; delete n2.iso; delete n2.frame;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = kmEntAid(vid, e, i); if (e.lt) n2.fol = { aid:vid + '/t' + e.lt, f:'b' }; delete n2.ak; delete n2.lt; delete n2.pv; delete n2.iso; delete n2.frame;
     if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
     else if (e.t === 'text') { n2.p = M(e.p); n2.h = (e.h || 3.5) * s; } else { n2.c = M(e.c); n2.r = e.r * s; }
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
@@ -410,7 +414,7 @@ function kmSketch(o, pg, p, X, T, g){
   var lay = sk.layers || {}, hidL = function(n){ var L = lay[n]; return L && L.on === false; };
   sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
     var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.ak || (e.id != null ? e.id : i)) : null; delete n2.ak; delete n2.pv; delete n2.iso; delete n2.frame;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = kmEntAid(vid, e, i); if (e.lt) n2.fol = { aid:vid + '/t' + e.lt, f:'b' }; delete n2.ak; delete n2.lt; delete n2.pv; delete n2.iso; delete n2.frame;
     if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
     else if (e.t === 'text') { n2.p = M(e.p); n2.h = Math.max(2.2, (e.h || 3.5) * s); } else { n2.c = M(e.c); n2.r = e.r * s; }
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
@@ -533,7 +537,8 @@ function kmDetail(o, pg, g, X, B){
     Object.keys(grp).forEach(function(key, gi){ var g2 = grp[key], h0 = g2[0], c = MM([h0.u * t, h0.y * t]), top = MM([0, yt * t])[1], lp = [c[0] + 4, hxRow(rowsX - 1) - rg - 2.5 - gi * 3.6];
       // 穴の 大きさ・深さは mm（ほかの 寸法は 尺寸も 書く ので まぎれない ように「mm」を 付ける。v0.9.57 本人）
       var txt = (Math.abs(h0.phi - h0.hh) < 1 && h0.pts.length <= 40 ? 'Φ' + Math.round(h0.phi) + 'mm' : '穴 ' + Math.round(h0.phi) + '×' + Math.round(h0.hh) + 'mm') + ' 深' + h0.depth + 'mm ×' + g2.length + '（' + h0.from + '）';
-      kL(o, c, lp, vid, false, '文字'); kL(o, lp, [lp[0] + txt.length * 1.75, lp[1]], vid, false, '文字'); kT(o, lp[0] + 0.5, lp[1] - 0.7, txt, 1.9, { vid:vid, aid:vid + '/hole/' + key }); });
+      var ta = vid + '/hole/' + key;   // 引出線にも 名前・文字を 動かすと ついて 行く（v0.9.99）
+      kL(o, c, lp, vid, false, '文字', { aid:ta + '/l1', fol:{ aid:ta, f:'b' } }); kL(o, lp, [lp[0] + txt.length * 1.75, lp[1]], vid, false, '文字', { aid:ta + '/l2', fol:{ aid:ta, f:'ab' } }); kT(o, lp[0] + 0.5, lp[1] - 0.7, txt, 1.9, { vid:vid, aid:ta }); });
   });
   var lb = function(txt, q, vid){ kT(o, q[0], q[1], txt, 2, { ha:1, vid:vid, aid:vid + '/name' }); };
   lb('正面', [Mf([0, 0])[0], fyb + 9], T + '/front'); lb('右側面', [Mr([0, 0])[0], fyb + 9], T + '/right'); if (rl) lb('左側面', [Ml([0, 0])[0], fyb + 9], T + '/left');
@@ -562,8 +567,17 @@ function kmApply(pg, o){
     if (ov.doff) d.off = P(d.off.x + ov.doff[0], d.off.y + ov.doff[1]); if (ov.da) d.a = P(d.a.x + ov.da[0], d.a.y + ov.da[1]); if (ov.db) d.b = P(d.b.x + ov.db[0], d.b.y + ov.db[1]);
     KM_DF.forEach(function(f){ if (ov[f] !== undefined) d[f] = ov[f]; }); });
   o.dims = o.dims.filter(function(d){ return !d._hide; });
-  o.ents.forEach(function(e){ if (!e.aid) return; pg.base[e.aid] = { vid:e.vid, p:kCp(e.p), s:e.s, h:e.h }; var ov = ovOf(e.aid); if (!ov) return; if (ov.hide) { e._hide = 1; return; }
-    if (ov.dp) e.p = P(e.p.x + ov.dp[0], e.p.y + ov.dp[1]); if (ov.s !== undefined) e.s = ov.s; if (ov.h) e.h = ov.h; });
+  var tdp = {};
+  o.ents.forEach(function(e){ if (!e.aid || e.t !== 'text') return; pg.base[e.aid] = { vid:e.vid, p:kCp(e.p), s:e.s, h:e.h }; var ov = ovOf(e.aid); if (!ov) return; if (ov.hide) { e._hide = 1; return; }
+    if (ov.dp) { e.p = P(e.p.x + ov.dp[0], e.p.y + ov.dp[1]); tdp[e.aid] = ov.dp; } if (ov.s !== undefined) e.s = ov.s; if (ov.h) e.h = ov.h; });
+  // 線・円・折れ線（v0.9.99 本人「この 選んだ 線を 変更したのに 保存して 開くと 元に 戻る」＝自動の 線は 直しを 覚えて いなかった）
+  //   引出線（fol）は 先に 文字の ずらしに ついて 行かせ、それを 基準に する（手の 直しは その 上の ずれ）
+  o.ents.forEach(function(e){ if (!e.aid || e.t === 'text') return;
+    var a0 = kCp(e.a), b0 = kCp(e.b), fd = e.fol && tdp[e.fol.aid]; if (fd) { if (e.b) e.b = P(e.b.x + fd[0], e.b.y + fd[1]); if (e.fol.f === 'ab' && e.a) e.a = P(e.a.x + fd[0], e.a.y + fd[1]); }
+    pg.base[e.aid] = { vid:e.vid, g:1, a:kCp(e.a), b:kCp(e.b), c:kCp(e.c), r:e.r, v:e.v ? e.v.map(function(q){ return [q.x, q.y]; }) : null, fol:e.fol || null, a0:a0, b0:b0 };
+    var ov = ovOf(e.aid); if (!ov) return; pg.base[e.aid].oa = ov.da || null; pg.base[e.aid].ob = ov.db || null; if (ov.hide) { e._hide = 1; return; }
+    if (ov.da && e.a) e.a = P(e.a.x + ov.da[0], e.a.y + ov.da[1]); if (ov.db && e.b) e.b = P(e.b.x + ov.db[0], e.b.y + ov.db[1]); if (ov.dc && e.c) e.c = P(e.c.x + ov.dc[0], e.c.y + ov.dc[1]);
+    if (ov.r != null && e.r != null) e.r = ov.r; if (ov.dv && e.v && ov.dv.length === e.v.length) e.v = e.v.map(function(q, i){ return { x:q.x + ov.dv[i][0], y:q.y + ov.dv[i][1], b:q.b || 0 }; }); });
   o.ents = o.ents.filter(function(e){ return !e._hide; });
   // 付け先が 無い 直し（この ページの 図の 名前で 始まるのに 作った 中に 無い もの）
   Object.keys(KMED.ov).forEach(function(aid){ var vid = Object.keys(pg.vw).filter(function(v){ return aid.indexOf(v + '/') === 0; })[0]; if (vid && !pg.base[aid]) lost.push({ aid:aid, pg:pg.key, what:'自動の 寸法・文字の 直し' }); });
@@ -620,15 +634,25 @@ function kmHarvest(pg){
     var dd = best.split(',').map(function(v){ return +v / 20; }), old = KMED.vm[vid] || [0, 0]; KMED.vm[vid] = [old[0] + dd[0], old[1] + dd[1]]; vmove[vid] = dd; });
   // 図ごと 動かした ぶんは 基準も 動かす（いっしょに 動いた 寸法・文字は 直し なし、残した ものは その 場所を 覚える）
   Object.keys(pg.base).forEach(function(aid){ var b = pg.base[aid], mv = b.vid && vmove[b.vid]; if (!mv) return; var sh = function(q){ return q ? P(q.x + mv[0], q.y + mv[1]) : q; };
-    pg.base[aid] = Object.assign({}, b, { a:sh(b.a), b:sh(b.b), off:sh(b.off), p:sh(b.p) }); });
+    pg.base[aid] = Object.assign({}, b, { a:sh(b.a), b:sh(b.b), off:sh(b.off), p:sh(b.p), c:sh(b.c), a0:sh(b.a0), b0:sh(b.b0), v:b.v ? b.v.map(function(q){ return [q[0] + mv[0], q[1] + mv[1]]; }) : b.v }); });
   var sub = function(q, b){ return [q.x - b.x, q.y - b.y]; }, nz = function(v){ return Math.hypot(v[0], v[1]) > 0.02; };
-  var seenAid = {};
+  var seenAid = {}, tdpNow = {};
+  doc.ents.forEach(function(e){ var b = e.auto && e.aid && e.t === 'text' && pg.base[e.aid]; if (b && b.p && e.p) tdpNow[e.aid] = sub(e.p, b.p); });
   doc.dims.forEach(function(d){ if (!d.auto || !d.aid || !pg.base[d.aid]) return; seenAid[d.aid] = 1; var b = pg.base[d.aid], ov = {};
     var doff = sub(d.off, b.off), da = sub(d.a, b.a), db = sub(d.b, b.b);
     if (nz(doff)) ov.doff = doff; if (nz(da)) ov.da = da; if (nz(db)) ov.db = db;
     KM_DF.forEach(function(f){ if ((d[f] == null ? null : d[f]) !== (b[f] == null ? null : b[f])) ov[f] = d[f]; });
     if (Object.keys(ov).length) KMED.ov[d.aid] = ov; else delete KMED.ov[d.aid]; });
   doc.ents.forEach(function(e){ if (!e.auto || !e.aid || !pg.base[e.aid]) return; seenAid[e.aid] = 1; var b = pg.base[e.aid], ov = {};
+    if (b.g) { // 線・円・折れ線（v0.9.99）。引出線は 今の 文字の ずらしに ついて 行った 所を 基準に（ついて 行く 分は 直しに 入れない）
+      var ra = b.a, rb = b.b; if (b.fol) { var fd = tdpNow[b.fol.aid] || [0, 0], shf = function(q){ return q ? P(q.x + fd[0], q.y + fd[1]) : q; }; rb = shf(b.b0); ra = b.fol.f === 'ab' ? shf(b.a0) : b.a0; }
+      //   さわって いない 端（当てた 所の まま）は 前の 直しの まま（文字だけ 動かした ときに 線を 戻した と 見ない）
+      var same = function(q, base, o){ if (!q || !base) return false; var x = base.x + (o ? o[0] : 0), y = base.y + (o ? o[1] : 0); return Math.abs(q.x - x) < 0.02 && Math.abs(q.y - y) < 0.02; };
+      if (b.fol && same(e.a, b.a, b.oa)) { if (b.oa) ov.da = b.oa; } else if (e.a && ra) { var da2 = sub(e.a, ra); if (nz(da2)) ov.da = da2; }
+      if (b.fol && same(e.b, b.b, b.ob)) { if (b.ob) ov.db = b.ob; } else if (e.b && rb) { var db2 = sub(e.b, rb); if (nz(db2)) ov.db = db2; }
+      if (e.c && b.c) { var dc2 = sub(e.c, b.c); if (nz(dc2)) ov.dc = dc2; } if (e.r != null && b.r != null && Math.abs(e.r - b.r) > 0.01) ov.r = e.r;
+      if (e.v && b.v && e.v.length === b.v.length) { var dv = e.v.map(function(q, i){ return [q.x - b.v[i][0], q.y - b.v[i][1]]; }); if (dv.some(nz)) ov.dv = dv; }
+      if (Object.keys(ov).length) KMED.ov[e.aid] = ov; else delete KMED.ov[e.aid]; return; }
     var dp = sub(e.p, b.p); if (nz(dp)) ov.dp = dp; if (e.s !== b.s) ov.s = e.s; if (e.h !== b.h) ov.h = e.h;
     if (Object.keys(ov).length) KMED.ov[e.aid] = ov; else delete KMED.ov[e.aid]; });
   Object.keys(pg.base).forEach(function(aid){ if (!seenAid[aid]) KMED.ov[aid] = { hide:1 }; });

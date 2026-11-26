@@ -1421,3 +1421,4 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 変えた 所：部材の 図（sketch）に 書き方 ds（fmt・mmDec・shakuPrec・th・arrow・arrowType）を 入れて 保存（skDoc）。図を 開くと ds を その 画面に 使い（保存しない）、閉じると 元に 戻す。束の ページ（zumen-km.js kmDsApply：kmSheetPut・kmSketch）は ds を 寸法に（1 本ずつ 決めた もの・穴の 寸法の 表記は そのまま）。ds の 無い 前の 図は 今までどおり → マスターを 1 度［マスター部材に 保存］し直すと 入る
 - 版：v0.9.90 は claude/zumen-shutsuryoku-3 が 使用 → v0.9.91。main に 出す とき 3 行目も
 - テスト：Playwright（土留 腰石前 1220 → マスタータブ 設定 1 行で 図枠を 作り 保存 → 加工図面タブ 設定 改行あり・1240 で 束）。前＝改行あり、後＝「1240（40.9）」1 行。PNG＝project-files sekkei/master-sunpou-kakikata/
+- 同じ v0.9.91 に 追加：本人「2 つの 穴で 10mm 位置が 違う（151・161）。自動で 横に ずらせないか」（見本＝151 は 端の 外、161 は 穴の 外）。kmAncSheet（束で 足す アンカーの 穴の 位置の 寸法）：端に 近い 穴を 1 段目に（右 半分も 右の 端から 数える）・同じ 側に 2 本 以上 あれば 矢印の 間に 入らない 文字を kmAncTx で 横へ（偶数の 段は 端の 外・奇数の 段は 穴の 外、d.tx）。1 本 だけ なら そのまま。PNG＝project-files sekkei/sunpou-kasanari/v0.9.91_穴の寸法を横へ_前後.png

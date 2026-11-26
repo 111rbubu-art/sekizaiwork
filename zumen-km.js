@@ -334,15 +334,26 @@ function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.sha
   Object.keys(grp).forEach(function(pv){ var G = grp[pv], b = G.b, st = 7 * n, mid = (b.x0 + b.x1) / 2, r1 = function(x){ return Math.round(x * 10) / 10; };
     // 横の 位置：左 半分は 左の 端から・右 半分は 右の 端から（近い 端からの mm）。高さ：右の 外に 下から
     var ux = G.cs.map(function(c){ return r1(c.x); }).filter(function(x, i, A){ return A.indexOf(x) === i; }).sort(function(a, c){ return a - c; });
-    var iL = 0, iR = 0; ux.forEach(function(x){ var left = x <= mid, i = left ? iL++ : iR++, e = left ? b.x0 : b.x1;
-      if (Math.abs(x - e) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+    // 端に 近い 穴から 1 段目（右 半分は 右の 端から 数える）。同じ 側に 2 本 以上 あれば、入らない 文字を 横へ（kmAncTx）
+    var iL = 0, iR = 0, LL = [], LR = [], LV = [];
+    ux.filter(function(x){ return x <= mid; }).concat(ux.filter(function(x){ return x > mid; }).reverse()).forEach(function(x){ var left = x <= mid, i = left ? iL++ : iR++, e = left ? b.x0 : b.x1;
+      if (Math.abs(x - e) > 0.5) { var d = { id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); (left ? LL : LR).push([d, x - e, i]); } });
     var uy = G.cs.map(function(c){ return r1(c.y); }).filter(function(y, i, A){ return A.indexOf(y) === i; }).sort(function(a, c){ return a - c; });
-    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) sk.dims.push({ id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }); });
+    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) { var d = { id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); LV.push([d, y - b.y0, i]); } });
+    [LL, LR, LV].forEach(function(A){ if (A.length > 1) A.forEach(function(q){ kmAncTx(q[0], q[1], q[2], sk.ds, n); }); });
     var c0 = G.cs.slice().sort(function(a, c){ return a.x - c.x; })[0], ty = b.y1 + st * (Math.max(iL, iR) + 1.6), j = 0;
     Object.keys(G.txt).forEach(function(key){ var q = key.split('|'), s = q[0] + ' ×' + G.txt[key] + '（' + q[1] + '）', p = { x:Math.max(b.x0, c0.x - 4 * n), y:ty + j * 4 * n };
       sk.ents.push({ id:SEQ++, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });
       sk.ents.push({ id:SEQ++, t:'text', p:p, h:2.4 * n, rot:0, s:s, ha:0, va:0, layer:'文字', css:null, aci:256, pv:pv, anc:1 }); j++; }); });
   return sk; }
+// 穴の 位置の 寸法の 文字が 矢印の 間に 入らない とき、文字を 横（寸法線に 沿って）の 外へ ずらす（v0.9.91）
+//   2026-11-26 本人「2 つの 穴で 10mm 位置が 違う（151・161）。この 様に 自動で 横に ずらせないか」（見本：151 は 端の 外＝左、161 は 穴の 外＝右）
+//   L＝端から 穴（＋は 右・上）、i＝段（端に 近い 方から 0,1,…）。偶数の 段は 端の 外へ、奇数の 段は 穴の 外へ。寸法線は 文字の 下まで 伸びる（dimGeom）
+function kmAncTx(d, L, i, ds, n){ var th = ds && ds.th > 0 ? ds.th : 3.5 * n, f = (ds && ds.fmt) || S.fmt, len = Math.abs(L);
+  var s = typeof fmtLen === 'function' ? String(fmtLen(len, f)) : String(Math.round(len)), tw = Math.max.apply(null, s.split('\n').map(function(x){ var w = 0; for (var j = 0; j < x.length; j++) w += x.charCodeAt(j) < 256 ? 0.55 : 1; return w; })) * th;
+  if (len >= tw + th * 1.6) return d;   // 矢印の 間に 入る
+  var sg = L > 0 ? 1 : -1, out = i % 2 === 0 ? -sg : sg;   // 端の 外＝穴と 反対の 向き
+  d.tx = out * (len / 2 + tw / 2 + th * 0.6); return d; }
 // 図枠を 縮尺 そのままで ページに（X＝紙の 左。半分なら 0 か 148.5）。表題欄は 組み立ての 件名・石種で
 function kmSheetPut(o, pg, g, X, B){
   var S0 = kmSheetOf(g); if (!S0) return; var fr = S0.fr, sk = kmAncSheet(S0.sk, g, S0.n), n = S0.n, s = 1 / n, k = g.ks[0], p = kmPart(k), T = g.type, vid = T + '/sk';

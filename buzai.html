@@ -100,7 +100,7 @@ html.sef .skb{display:none}.kbox.sef{border:2px solid #e07a1f;background:#fff8ef
 <script src="buzai-lib.js?v=0.9.76"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
 <script>
-var APP_VER = 'v0.3.32';
+var APP_VER = 'v0.3.33';
 // 部材マスター：部材ライブラリ（buzai/1）の 一覧・名前や 役目の 直し・複製・新しく・保存（版と 履歴）。
 // 形と 図面は 図面アプリ（zumen.html#pd）で 直し、ここへ 戻す。加工図面の 見本は zumen.html#km（この 部材 だけ）。
 // 部材は この 端末（kumitate.lib・組み立てと 同じ）と SharePoint（/業務アプリ/部材ライブラリ/部材/<id>.json、履歴/<id>_v<n>.json）
@@ -618,9 +618,16 @@ $('nOk').onclick = function(){ var role = $('nRole').value, name = $('nName').va
 function openZumen(hash){ if (skGo(/^#km/.test(hash) ? 'zumen' : 'mkakou', hash)) return;   // ［✎ 図面で 直す］は マスターの 加工図面タブへ（v0.3.32） try { var o = window.opener; if (o && !o.closed && o.pdFromMaster) { o.location.hash = hash; o.focus(); return; } } catch (e) {}
   var w = window.open('zumen.html' + hash, 'zumen'); if (!w) alert('図面アプリを 開けませんでした（ポップアップを 許可して ください）'); }
 function editInZumen(p){ var d = pure(p); d.__master = 1; if (unsent(p)) d.__nosp = 1; lsSet('zumen.part', d); openZumen('#pd' + Date.now()); }
-window.bmTake = function(def){ if (!def || !def.id) return; var sig = JSON.stringify(def.components) + JSON.stringify(def.sketch || '') + JSON.stringify(def.lock || ''); if (sig === window.__lastSig) return; window.__lastSig = sig; var p = LIB[def.id]; delete def.__master;
+// 返り値＝保存の 結果の Promise（{ ok, sp, ver, name } ／{ same } ／{ err }）。図面の ボタンの 横に 出す（v0.3.33。本人「押しても 反応しないので 動いている ことが 分かるように」）
+// 同じ 中身が 2 度 来た とき（直接＋storage の 知らせ）は 1 度だけ 保存して 同じ 結果を 返す。前が 失敗なら やり直す
+window.bmTake = function(def){ if (!def || !def.id) return Promise.resolve({ err:'部材の 中身が ありません' }); var sig = JSON.stringify(def.components) + JSON.stringify(def.sketch || '') + JSON.stringify(def.lock || '');
+  if (sig === window.__lastSig && window.__lastP) { var lp = window.__lastP; if (!lp.__done) return lp;   // 保存中：同じ 結果を 待つ
+    return lp.then(function(r){ if (r && r.err) { window.__lastSig = null; window.__lastP = null; return bmTake(def); } return r && r.ok ? Object.assign({}, r, { same:1 }) : r; }); }
+  window.__lastSig = sig; var p = LIB[def.id]; delete def.__master;
   var n = Object.assign({}, p || {}, def); if (p) { touch(p); n.__base = p.__base; } n.__dirty = 1; delete n.thumb; THQ[def.id] = 0; n.version = p ? p.version || 0 : def.version || 0;
-  LIB[def.id] = n; libSave(); CUR.sel = def.id; render(); savePart(n, true); };
+  LIB[def.id] = n; libSave(); CUR.sel = def.id; render();
+  var pr = Promise.resolve().then(function(){ return savePart(n, true, true); }).then(function(r){ return r || { err:'保存が 止まりました' }; }, function(e){ return { err:(e && e.message) || String(e) }; });
+  pr.then(function(){ pr.__done = 1; }); window.__lastP = pr; return pr; };
 window.addEventListener('storage', function(e){
   if (e.key === 'zumen.part') { var z = lsGet('zumen.part'); if (z && z.__master && z.__back && z.__back !== window.__lastBack) { window.__lastBack = z.__back; delete z.__back; bmTake(z); } }
   if (e.key === 'kumitate.sets') { SETS = lsGet('kumitate.sets') || []; render(); }
@@ -634,18 +641,19 @@ function sheetInZumen(p){ var s = sizeOf(p) || [300, 300, 300], W = s[0], D = s[
       w:W, d:D, h:H, box:{ x0:-W / 2, x1:W / 2, y0:0, y1:H, z0:-D / 2, z1:D / 2 }, shape:d }] };
   lsSet('kumitate.zumen', pay); openZumen('#km' + pay.t); }
 // ── 保存（版を 1 つ 上げる・ひな形も 部材に 入れる）──
-function savePart(p, auto){
+function savePart(p, auto, quiet){
   var d = pure(p), tpl = (lsGet('zumen.kmTpl') || {})[p.id]; delete d.thumb;
   if (tpl) { d.drawing = d.drawing || {}; d.drawing.tpl = tpl; }
   d.version = (p.version || 0) + 1; d.savedAt = new Date().toISOString(); var w = spHost();
-  return mhOut(d).then(function(d2){ return savePart2(p, d, JSON.stringify(d2), w, auto); });
+  return mhOut(d).then(function(d2){ return savePart2(p, d, JSON.stringify(d2), w, auto, quiet); });
 }
-function savePart2(p, d, txt, w, auto){
-  var done = function(){ var n = Object.assign(d, { thumb:p.thumb }); n.__sp = w ? d.version : 0; LIB[p.id] = n; libSave(); HIST[p.id] = null; render(); if (w) busy('✓ SharePoint に 保存しました：' + (d.name || d.id) + '（版 ' + d.version + '）', 'ok', 5000); else busy('⚠ この 端末だけに 保存しました：' + (d.name || d.id) + '（版 ' + d.version + '）。SharePoint には まだ ありません', 'warn', 9000); };
-  if (!w) { if (!auto && !confirm('SharePoint と つながって いません。この 端末だけに 保存します（版 ' + d.version + '）。\n業務アプリ →［📐 図面］→［🧊 部材設計］→［🗂 部材マスター］で 開くと SharePoint に 保存します')) return; done(); return; }
+function savePart2(p, d, txt, w, auto, quiet){
+  var done = function(){ var n = Object.assign(d, { thumb:p.thumb }); n.__sp = w ? d.version : 0; LIB[p.id] = n; libSave(); HIST[p.id] = null; render(); if (w) busy('✓ SharePoint に 保存しました：' + (d.name || d.id) + '（版 ' + d.version + '）', 'ok', 5000); else busy('⚠ この 端末だけに 保存しました：' + (d.name || d.id) + '（版 ' + d.version + '）。SharePoint には まだ ありません', 'warn', 9000);
+    return { ok:1, sp:!!w, ver:d.version, name:d.name || d.id }; };
+  if (!w) { if (!auto && !confirm('SharePoint と つながって いません。この 端末だけに 保存します（版 ' + d.version + '）。\n業務アプリ →［📐 図面］→［🧊 部材設計］→［🗂 部材マスター］で 開くと SharePoint に 保存します')) return { cancel:1 }; return done(); }
   busy('☁️ SharePoint に 保存中…');
   return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', PART_DIR).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', PART_DIR + '/履歴'); })
-    .then(done).catch(function(e){ busy(''); alert('SharePoint に 保存 できませんでした\n' + (e && e.message || e)); });
+    .then(done).catch(function(e){ busy(''); var m = (e && e.message) || String(e); if (!quiet) alert('SharePoint に 保存 できませんでした\n' + m); return { err:'SharePoint に 保存 できませんでした（' + m + '）' }; });
 }
 // 部材に 付いた ひな形を 図面アプリの ひな形へ（無い とき・部材の ほうが 新しい とき）
 function tplToZumen(p){ if (!p.drawing || !p.drawing.tpl) return; var t = lsGet('zumen.kmTpl') || {}; if (!t[p.id] || (p.__dirty ? false : true)) { t[p.id] = p.drawing.tpl; lsSet('zumen.kmTpl', t); } }

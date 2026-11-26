@@ -59,7 +59,7 @@ function kmBundles(pay){
       var title = si === 0 ? gk + (gn[gk] > 1 ? ' ' + gn[gk] : '') : names.join('・');
       var p0 = pp[0], lbl = p0.skey != null ? p0.skey : (p0.stone || '');
       var B = { id:sid + '|' + (st || '-'), sid:sid, lbl:lbl, title:title, stone:p0.skey != null ? (p0.stone || '') : (p0.stone || ''), parts:pp, groups:[] }, seen = {};
-      pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h;
+      pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h + '|' + (p.fin || '');   /* 磨きが ちがえば 別の 行（v0.9.104・モデリングで 部材ごとに 磨きを 変える） */
         if (seen[key]) { seen[key].ks.push(p.k); return; }
         var g = { name:nm, ks:[p.k], w:p.w, d:p.d, h:p.h, fin:p.fin || '', kakou:(p.kakou || '') === '左右対称' ? '' : (p.kakou || ''), old:(p.setId || p.grp) + '/' + String(p.key || p.k).replace(/_[LR]$/, '') };
         // 図の 名前（直し・ひな形の 付け先）は 部材の id（v0.9.3〜。同じ 部材なら どの セット・案件でも 同じ ひな形）。部材が 無い 箱は 前の とおり セット/枠

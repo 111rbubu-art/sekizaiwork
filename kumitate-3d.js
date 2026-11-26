@@ -445,20 +445,22 @@ export function create(box, onPick, onDbl, onCtx, onBox){
     var f = SZ.faces.filter(function(x){ return x.id === id; })[0], rc = renderer.domElement.getBoundingClientRect();
     var a = scr(new THREE.Vector3(f.p.x, f.p.y, f.p.z), rc), b = scr(new THREE.Vector3(f.p.x + f.n[0] * 100, f.p.y + f.n[1] * 100, f.p.z + f.n[2] * 100), rc);
     var dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1;
-    szDrag = { id:id, x:e.clientX, y:e.clientY, ux:dx / l, uy:dy / l, per:l / 100 * (e.shiftKey ? 10 : 1), moved:false, fine:!!e.shiftKey };   // per＝1 mm の 画面の 長さ。Shift＝0.1 mm 刻みで 10 倍 ゆっくり（v0.8.109）
+    szDrag = { id:id, x:e.clientX, y:e.clientY, lx:e.clientX, ly:e.clientY, mm:0, ux:dx / l, uy:dy / l, per:l / 100, moved:false };   // per＝1 mm の 画面の 長さ。mm＝引いた 量の 足し算（Shift を 押して いる 間は 1/10。v0.8.111 本人「シフトで マウスの 感度を 下げる」）
     renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation(); e.preventDefault();
   }, true);
+  // 前の 位置からの 動きを 足す。Shift＝感度 1/10（途中で 押しても 離しても その 時から 効く）
+  function szAcc(d, e){ var mx = e.clientX - d.lx, my = e.clientY - d.ly; d.lx = e.clientX; d.ly = e.clientY; d.mm += (mx * d.ux + my * d.uy) / d.per * (e.shiftKey ? 0.1 : 1); }
   renderer.domElement.addEventListener('pointermove', function(e){
     if (!SZ) return;
     if (!szDrag) { if (!e.buttons) renderer.domElement.style.cursor = szHit(e) ? 'grab' : tipHit(e) ? 'text' : ''; return; }
     var mx = e.clientX - szDrag.x, my = e.clientY - szDrag.y; if (!szDrag.moved && Math.hypot(mx, my) < 4) return;
-    szDrag.moved = true; renderer.domElement.style.cursor = 'grabbing';
-    SZ.onDrag(szDrag.id, (mx * szDrag.ux + my * szDrag.uy) / szDrag.per, false, '', szDrag.fine);
+    szDrag.moved = true; renderer.domElement.style.cursor = 'grabbing'; szAcc(szDrag, e);
+    SZ.onDrag(szDrag.id, szDrag.mm, false);
   });
   renderer.domElement.addEventListener('pointerup', function(e){
     if (!szDrag) return; var d = szDrag; szDrag = null; renderer.domElement.style.cursor = '';
-    var mx = e.clientX - d.x, my = e.clientY - d.y;
-    if (SZ) SZ.onDrag(d.id, d.moved ? (mx * d.ux + my * d.uy) / d.per : 0, true, d.moved ? '' : 'click', d.fine);
+    if (d.moved) szAcc(d, e);
+    if (SZ) SZ.onDrag(d.id, d.moved ? d.mm : 0, true, d.moved ? '' : 'click');
     e.stopImmediatePropagation(); down = null;
   }, true);
   // 地面の 見え方：''＝ふつう｜'half'＝半透明（GL の 下も 見える）｜'off'＝出さない（格子は のこす）

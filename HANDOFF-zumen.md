@@ -1367,3 +1367,9 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 変えた 所：kumitate-engine.js anchorHoles の 前に stripAnc（石の 形の anc:1 の 穴を 外し、外した 穴は shape.__ancOld に）。kmJobTake・openKakou で __ancOld を 持ち込まない。zumen-km.js kmAncSheet：__ancOld を 今と 同じ 写し方で 図に 置き、今の 穴と 重ならない 円・中心線・位置の 寸法（横＝中心の x と 面の 端、縦＝中心の y と 端）を 消す
 - まだ：保存図に 手で 書いた 穴の 書き込み（Φ8 深55 ×n）の 数は 直さない
 - テスト：node で 保存した 形（穴 x −289）→ 金具を 動かす → 穴 1 つ（211）だけ（前は 2 つ）。zumen.html で kmAncSheet：前の 円・寸法が 消え、新しい 円・寸法が 入る
+
+### モデリング v0.8.111（2026-11-26）Shift は 引く ときの 感度を 下げる だけ
+- 本人「矢印を クリックして 移動、シフトを 押すと マウスの 感度を 下げる イメージで 微調整。シフトでは 0.1mm 単位で 動かさなくて いい」。
+- v0.8.109 の Shift＋押す 0.1 mm・Shift＋引く 0.1 mm 刻みを やめた。押す＝1 mm（Shift でも 同じ）。引く＝1 mm 刻み・目地への 吸い付き あり、Shift を 押して いる 間は 感度 1/10（引いた 量を 前の 位置から 足して いく ので、引く 途中で Shift を 押しても 離しても その 時から 効く）。kumitate-3d.js szAcc。
+- 0.1 mm は 移動距離の 札に 数を 打つ（v0.8.109 の まま）。
+- テスト：香炉 x1 を 60px 引く＝276 mm・Shift で 60px＝28 mm（整数）・30px 引いて から Shift で 30px＝152 mm。

@@ -46,12 +46,14 @@ function kmBundles(pay){
   var out = [];
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
   order.forEach(function(sid){ var ps = bySet[sid], cnt = {};
-    ps.forEach(function(p){ var s = p.stone || ''; cnt[s] = (cnt[s] || 0) + 1; });
+    // 分ける 鍵＝skey（モデリングの グループ「紺：G654 深山」）、図に 出す 石種＝stone（「G654 深山」だけ・v0.9.82）。古い 渡しは skey が 無いので stone
+    var skOf = function(p){ return p.skey != null ? p.skey : (p.stone || ''); };
+    ps.forEach(function(p){ var s = skOf(p); cnt[s] = (cnt[s] || 0) + 1; });
     var stones = Object.keys(cnt).sort(function(a, b){ return cnt[b] - cnt[a]; });
-    stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return (p.stone || '') === st; });
+    stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return skOf(p) === st; });
       var names = []; pp.forEach(function(p){ var b = kmBase(p.name); if (names.indexOf(b) < 0) names.push(b); });
       var title = si === 0 ? (ps[0].setName || (ps[0].grp === 'fence' ? '外柵' : '石塔')) : names.join('・');
-      var B = { id:sid + '|' + (st || '-'), title:title, stone:st, parts:pp, groups:[] }, seen = {};
+      var B = { id:sid + '|' + (st || '-'), title:title, stone:pp[0].skey != null ? (pp[0].stone || '') : st, parts:pp, groups:[] }, seen = {};
       pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h;
         if (seen[key]) { seen[key].ks.push(p.k); return; }
         var g = { name:nm, ks:[p.k], w:p.w, d:p.d, h:p.h, fin:p.fin || '', kakou:(p.kakou || '') === '左右対称' ? '' : (p.kakou || ''), old:(p.setId || p.grp) + '/' + String(p.key || p.k).replace(/_[LR]$/, '') };
@@ -147,26 +149,30 @@ function kmPgSite3(o, pg){
   if (J.h != null) notes.push('目地　横・奥行 ' + J.h + '／高さ ' + J.v);
   if (pay.open != null) notes.push('納骨室の 開口部 ' + Math.round(pay.open) + '（' + (J.open || 270) + ' 以上）');
   notes.push('寸法は 目地を 引いた 製作寸法（mm）');
-  var st = {}; KM2.bundles.forEach(function(B){ if (B.stone) st[B.title] = B.stone; }); var sl = Object.keys(st).map(function(t){ return t + ' ' + st[t]; }); if (sl.length) notes.push('石種　' + sl.join('／'));
+  var st = {}; KM2.bundles.forEach(function(B){ if (B.stone) st[B.title] = kmStoneName(B.stone); }); var sl = Object.keys(st).map(function(t){ return t + ' ' + st[t]; }); if (sl.length) notes.push('石種　' + sl.join('／'));
   kT(o, nx, ny, '注記', 3, { aid:'site/notes/h' }); notes.forEach(function(t, i){ kT(o, nx, ny + 5.5 * (i + 1), '・' + t, 2.5, { aid:'site/notes/' + i }); });
   kmFrame(o, pg, '配置図　平面・正面・右側面', '配置図（三面）'); kT(o, 12, 186, '縮尺 1/' + n, 2.6, { aid:pg.key + '/scale' });
 }
 function kmRegion(o, vid){ var v = o.pg.vw[vid], m = 12; return { x0:v.bb.x0 - m, x1:v.bb.x1 + m, y0:v.bb.y0 - m, y1:v.bb.y1 + m, k:v.k, vid:vid }; }
+// 部品寸法表（v0.9.86 本人：得意先・発注先・右の 表・才数の 説明は 不要／幅・奥行・高さは mm（寸）／石種は 石種名だけ）
+function kmSunTxt(v){ if (typeof fmtLen === 'function') return fmtLen(+v, 'both'); return String(v); }
+function kmFitW(s, h){ var w = 0; for (var i = 0; i < s.length; i++) w += /[ -~]/.test(s[i]) ? 0.6 : 1; return w * h; }   // 文字の 幅の 見込み（mm）
+// 欄の 幅 w に 収める：文字を 小さく（h → 最小 hmin）、それでも 入らなければ 後ろを …
+function kmFit(s, w, h, hmin){ s = String(s == null ? '' : s); while (h > hmin && kmFitW(s, h) > w) h = Math.round((h - 0.1) * 10) / 10;
+  if (kmFitW(s, h) > w) { while (s.length > 1 && kmFitW(s + '…', h) > w) s = s.slice(0, -1); s += '…'; } return { s:s, h:h }; }
+function kmStoneName(s){ return String(s || '').replace(/^[^：]*：/, ''); }   // 古い 渡し（「紺：G654 深山」）でも 石種名だけ
 function kmPgTable(o, pg){
-  var B = pg.B; kmFrame(o, pg, '部品寸法表　' + B.title, '部品寸法表');
-  kT(o, 12, 22, '図面名　' + B.title, 2.8); kT(o, 110, 22, '石種　' + (B.stone || '（未定）'), 2.8);
-  var tot = B.groups.reduce(function(a, g){ return a + g.sai * g.ks.length; }, 0); kT(o, 205, 22, '総才数　' + tot.toFixed(3), 2.8, { ha:2 });
-  var cols = [['NO', 9], ['部品名称', 28], ['幅', 13], ['奥行', 13], ['高さ', 13], ['単位', 9], ['数量', 9], ['才数', 15], ['磨き', 26], ['加工明細', 70]], y = 26, rh = 6.2, X0 = 12;
-  function row(v, head){ var x = X0; cols.forEach(function(c, i){ var left = i === 1 || i >= 8, s = String(v[i] == null ? '' : v[i]); if (i === 9 && s.length > 30) s = s.slice(0, 29) + '…';
-    kT(o, left ? x + 1 : x + c[1] - 1, y + rh - 1.8, s, i === 9 ? 2.1 : 2.5, { ha:left ? 0 : 2, layer:'枠' }); x += c[1]; }); kL(o, [X0, y], [x, y], null, false, '枠'); y += rh; }
+  var B = pg.B, stone = kmStoneName(B.stone); kmFrame(o, pg, '部品寸法表　' + B.title, '部品寸法表');
+  kT(o, 12, 22, '図面名　' + B.title, 2.8); kT(o, 110, 22, '石種　' + (stone || '（未定）'), 2.8);
+  var tot = B.groups.reduce(function(a, g){ return a + g.sai * g.ks.length; }, 0); kT(o, 287, 22, '総才数　' + tot.toFixed(3), 2.8, { ha:2 });
+  var cols = [['NO', 8], ['部品名称', 30], ['幅 mm（寸）', 24], ['奥行 mm（寸）', 24], ['高さ mm（寸）', 24], ['数量', 9], ['才数', 14], ['磨き', 40]], y = 26, rh = 6.2, X0 = 12, XE = 287;
+  cols.push(['加工明細', XE - X0 - cols.reduce(function(a, c){ return a + c[1]; }, 0)]);
+  function row(v, head){ var x = X0; cols.forEach(function(c, i){ var left = i === 1 || i >= 7, h0 = head ? 2.4 : i === 8 ? 2.2 : 2.5, f = kmFit(v[i], c[1] - 2, h0, head ? 1.8 : 1.7);
+    kT(o, left ? x + 1 : x + c[1] - 1, y + rh - 1.8, f.s, f.h, { ha:left ? 0 : 2, layer:'枠' }); x += c[1]; }); kL(o, [X0, y], [x, y], null, false, '枠'); y += rh; }
   row(cols.map(function(c){ return c[0]; }), 1);
-  for (var i = 0; i < 20; i++) { var g = B.groups[i]; row(g ? [g.no, g.name, g.w, g.d, g.h, 'mm', g.ks.length, (g.sai * g.ks.length).toFixed(3), g.fin.replace('（底以外）', ''), (g.sym ? '左右対称 ' : '') + g.kakou] : [i + 1]); }
-  var xe = X0 + cols.reduce(function(a, c){ return a + c[1]; }, 0), xx = X0; kL(o, [X0, y], [xe, y], null, false, '枠');
-  cols.forEach(function(c){ kL(o, [xx, 26], [xx, y], null, false, '枠'); xx += c[1]; }); kL(o, [xe, 26], [xe, y], null, false, '枠');
-  var rx = 225, ry = 26; [['図面枚数', ''], ['数量', '1 基'], ['作成日', KM2.pay.date || ''], ['得意先', ''], ['石種', B.stone || ''], ['発注先', ''], ['納期', ''], ['備考', '']].forEach(function(q){
-    kL(o, [rx, ry], [287, ry], null, false, '枠'); kL(o, [rx, ry + 9], [287, ry + 9], null, false, '枠'); kL(o, [rx, ry], [rx, ry + 9], null, false, '枠'); kL(o, [287, ry], [287, ry + 9], null, false, '枠'); kL(o, [rx + 20, ry], [rx + 20, ry + 9], null, false, '枠');
-    kT(o, rx + 1.5, ry + 6, q[0], 2.4, { layer:'枠' }); kT(o, rx + 22, ry + 6, q[1], 2.4, { layer:'枠', aid:pg.key + '/info/' + q[0] }); ry += 9; });
-  kT(o, 12, 186, '才数＝(幅÷303.03)×(奥行÷303.03)×(高さ÷303.03)。寸法は 目地を 引いた 製作寸法', 2.2);
+  for (var i = 0; i < 20; i++) { var g = B.groups[i]; row(g ? [g.no, g.name, kmSunTxt(g.w), kmSunTxt(g.d), kmSunTxt(g.h), g.ks.length, (g.sai * g.ks.length).toFixed(3), g.fin.replace('（底以外）', ''), (g.sym ? '左右対称 ' : '') + g.kakou] : [i + 1]); }
+  var xx = X0; kL(o, [X0, y], [XE, y], null, false, '枠');
+  cols.forEach(function(c){ kL(o, [xx, 26], [xx, y], null, false, '枠'); xx += c[1]; }); kL(o, [XE, 26], [XE, y], null, false, '枠');
 }
 function kmPgIndex(o, pg){
   var B = pg.B, items = B.parts.map(function(p){ return kmItem(p.k, true); });
@@ -347,7 +353,7 @@ function kmSheetPut(o, pg, g, X, B){
     var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
   var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:pg.skip ? '対象外' : (pg.no || 0) + ' / ' + (pg.tot || 0),
-    sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + (B.stone || ''), sub2:g.kakou || '',
+    sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + kmStoneName(B.stone), sub2:g.kakou || '',
     ken:info.name || pay.name || '', zu:'加工図面（' + B.title + '）', scale:'1/' + n, date:pay.date || '' };
   var dc = sheetDeco(S0.paper, inf);
   dc.lines.forEach(function(l){ kL(o, [X + l[0], l[1]], [X + l[2], l[3]], null, false, '枠'); });
@@ -407,7 +413,7 @@ function kmDetail(o, pg, g, X, B){
   var k = g.ks[0], p = kmPart(k), it = [kmItem(k, false)], T = g.type, W = g.w, D2 = g.d, H = g.h;
   kL(o, [X, 33], [X + 140.5, 33], null, false, '枠');
   kT(o, X + 2, 19, g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), 2.8, { aid:T + '/h/name' });
-  kT(o, X + 2, 23.2, (g.fin || '') + '　　' + (B.stone || '（石種）'), 2.4, { aid:T + '/h/fin' });
+  kT(o, X + 2, 23.2, (g.fin || '') + '　　' + (kmStoneName(B.stone) || '（石種）'), 2.4, { aid:T + '/h/fin' });
   kT(o, X + 2, 27.4, W + '×' + D2 + '×' + H + ' mm', 2.4);
   kT(o, X + 2, 31.6, g.sai.toFixed(3) + ' × ' + g.ks.length + '本 = ' + (g.sai * g.ks.length).toFixed(3) + ' 才', 2.4);
   if (g.kakou) { kT(o, X + 60, 23.2, g.kakou.slice(0, 34), 2.1, { aid:T + '/h/kakou1' }); if (g.kakou.length > 34) kT(o, X + 60, 27.4, g.kakou.slice(34, 68), 2.1, { aid:T + '/h/kakou2' }); }

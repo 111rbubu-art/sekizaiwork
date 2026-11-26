@@ -42,7 +42,7 @@ function kPlace(r, cx, cy){ var mu = (r.u0 + r.u1) / 2, mv = (r.v0 + r.v1) / 2; 
 function kmIsKana(p){ return !!p && (!!p.kana || (typeof BL !== 'undefined' && BL.isKana ? BL.isKana(p) : p.role === '金具')); }
 function kmBundles(pay){
   var bySet = {}, order = [];
-  pay.parts.forEach(function(p){ if (pay.only !== 'detail' && kmIsKana(p)) return;   /* 部材マスターから 金具 1 つを 開く ときは 出す */ var sid = p.setId || p.grp; if (!bySet[sid]) { bySet[sid] = []; order.push(sid); } bySet[sid].push(p); });
+  pay.parts.forEach(function(p){ if (pay.only !== 'detail' && (kmIsKana(p) || p.nozu)) return;   /* nozu＝モデリングで「加工図面へ 出力しない」（もう ある 石・v0.8.115） */   /* 部材マスターから 金具 1 つを 開く ときは 出す */ var sid = p.setId || p.grp; if (!bySet[sid]) { bySet[sid] = []; order.push(sid); } bySet[sid].push(p); });
   var out = [];
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
   order.forEach(function(sid){ var ps = bySet[sid], cnt = {};

@@ -896,6 +896,7 @@ var KM = (function(){
     Object.keys(res.boxes).forEach(function(k){
       var p = res.parts[k], row = { key:k, name:p.name, w:p.w, h:p.h, d:p.d, sai:sai(p.w, p.d, p.h) };
       if (p.kisei || p.role === '香炉皿') return;   // 既製品（香炉皿など）は 石の 才数に 入れない（2026-11-18）
+      if (p.noZu) return;   // 加工図面へ 出力しない 部材（もう ある 石・修繕。v0.8.115）は 才数・見積に 入れない
       if (kanaQ(p)) return;   // 金具（足した・セットに 入った・回した どれでも）も 才数に 入れない（v0.8.101 本人「金具は 石材では ない」）
       if (p.kind === 'boshi' || p.cg === 'boshi') g.boshi.push(row);
       else if (p.kind === 'crypt' || p.cg === 'crypt') g.crypt.push(row);

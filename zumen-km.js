@@ -237,11 +237,12 @@ function kmStretchSheet(g, S){ var k = g.ks[0], p = kmPart(k); if (!S.wdh || typ
   var sk = JSON.parse(JSON.stringify(S.sk)), mp = sk.info && sk.info.isoMap, had = sk.ents.some(function(e){ return e.iso && !e.mg; });
   var mk = mp && had && KM2.geo[k] ? kmMgPick(sk) : [];   // 手で 置いた 磨きの ▲・矢印（立体の 絵の 上）は skStretch で 動かさず、あとで 面に 合わせて 動かす
   skStretch(sk, S.wdh, to); mk.forEach(function(e){ sk.ents.push(e); });
+  var oldD = (sk.dims || []).filter(function(d){ return d.iso; });   // 手で 動かした 立体の 絵の 寸法の 位置を 残す（v0.9.96）
   sk.ents = sk.ents.filter(function(e){ return !e.iso && !e.mg; }); sk.dims = (sk.dims || []).filter(function(d){ return !d.iso; });
   if (mp && had && KM2.geo[k]) { var r = kmHlr([kmItem(k, false)], 'iso', 1, 1), M = function(q){ return P(mp.ox + q[0] - r.u0, mp.oy + q[1] - r.v0); };
     var mp2 = { ox:mp.ox, oy:mp.oy, u0:r.u0, v0:r.v0 }; sk.info.isoMap = mp2;
     r.vis.forEach(function(sg){ sk.ents.push({ t:'line', a:M(sg.a), b:M(sg.b), layer:'立体の 絵', css:null, aci:256, iso:1 }); });
-    isoDimsOf(to[0], to[1], to[2], function(q){ var z = KPJ.iso(q); return M(z); }).forEach(function(d){ sk.dims.push(d); });
+    isoDimsKeep(oldD, isoDimsOf(to[0], to[1], to[2], function(q){ var z = KPJ.iso(q); return M(z); })).forEach(function(d){ sk.dims.push(d); });
     var dr = p.shape && p.shape.drawing, fs = (dr && dr.migaki) || []; if (fs.length) mgEntsOf(fs, to[0], to[1], to[2], mp2, S.n).forEach(function(e){ sk.ents.push(e); });
     kmMgFollow(mk, mp, S.wdh, mp2, to); }
   var fr = sk.ents.filter(function(e){ return e.frame && e.t === 'pl' && e.sheet; })[0];

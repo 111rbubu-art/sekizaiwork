@@ -444,9 +444,9 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-engine.js?v=0.9.67"></script>
 <script src="zumen-hlr.js?v=0.9.22"></script>
 <script src="buzai-lib.js?v=0.9.76"></script>
-<script src="zumen-km.js?v=0.9.95"></script>
+<script src="zumen-km.js?v=0.9.96"></script>
 <script>
-var APP_VER = "v0.9.95";
+var APP_VER = "v0.9.96";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : SK_TAB === 'mkakou' ? 'zumen.autosave.mkakou' : 'zumen.autosave';   // v0.9.79 マスターの 加工図面タブも 別の 鍵   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -5005,6 +5005,7 @@ function skIso(){
   return (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(mod){
     skLayers();
     var old = D.ents.filter(function(e){ return e.iso; }), ob = old.length ? skBox(old) : null;
+    var oldD = D.dims.filter(function(d){ return d.iso; });
     D.ents = D.ents.filter(function(e){ return !e.iso; }); D.dims = D.dims.filter(function(d){ return !d.iso; });
     var g = mod.partGeo(PD.m); if (!g || !g.tris.length) return; g.tan = kmTan(g.tris);
     var it = [{ tris:g.tris, edges:g.edges, soft:g.soft, tan:g.tan, off:[0, 0, 0] }], r = kmHlr(it, 'iso', 1, 1);
@@ -5014,9 +5015,20 @@ function skIso(){
     D.info = D.info || {}; D.info.isoMap = { ox:ox, oy:oy, u0:r.u0, v0:r.v0 };
     r.vis.forEach(function(sg){ D.ents.push({ id:SEQ++, t:'line', a:M(sg.a), b:M(sg.b), layer:SK_ISO, css:null, aci:256, iso:1 }); });
     var W = PD.m.W, Dd = PD.m.D, H = PD.m.H, ip = function(q){ var z = KPJ.iso(q); return M(z); };
-    isoDimsOf(W, Dd, H, ip).forEach(function(d){ d.id = SEQ++; D.dims.push(d); });
+    isoDimsKeep(oldD, isoDimsOf(W, Dd, H, ip)).forEach(function(d){ d.id = SEQ++; D.dims.push(d); });
   });
 }
+// 立体の 絵の 寸法を かき直す とき、手で 動かした 位置・書き方は 残す（v0.9.96。本人「寸法線が かぶるので 手で 直して マスター部材に 保存すると 元に 戻る」）
+//   isoKey（W/D/H）で 前の 寸法と 合わせ、線の 中点から 寸法線（off）までの ずれ を そのまま 使う。
+//   d.o0＝作った ときの ずれ。前の ずれが o0 と 同じ（手で さわって いない）なら 新しい 既定の 位置の まま
+function isoDimsKeep(oldD, nd){
+  var mid = function(d){ return P((d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2); }, by = {};
+  (oldD || []).forEach(function(d){ if (d.isoKey && d.a && d.b && d.off) by[d.isoKey] = d; });
+  nd.forEach(function(d){ var m = mid(d); d.o0 = P(d.off.x - m.x, d.off.y - m.y); var o = by[d.isoKey]; if (!o) return;
+    var om = mid(o), v = P(o.off.x - om.x, o.off.y - om.y), moved = !o.o0 || Math.hypot(v.x - o.o0.x, v.y - o.o0.y) > 0.01;
+    Object.keys(o).forEach(function(k){ if (['a', 'b', 'off', 'id', 'iso', 'isoKey', 'o0', 'layer', 'mode'].indexOf(k) < 0) d[k] = o[k]; });
+    if (moved) { d.off = P(m.x + v.x, m.y + v.y); d.o0 = o.o0 || null; } });
+  return nd; }
 // 立体の 絵の 幅・奥行・高さの 寸法（ip＝3D の 点 → 図の 点）。skIso と 図面に する（kmStretchSheet）で 同じ
 function isoDimsOf(W, Dd, H, ip){
   var off = Math.max(W, Dd, H) * 0.12, u = function(a, b){ var L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return P((b.x - a.x) / L, (b.y - a.y) / L); };
@@ -5493,8 +5505,9 @@ function pdApplyViews(v, W, Dd, H){
   var d = PD.def; d.params = d.params || {};
   [['W', '幅', W], ['D', '奥行', Dd], ['H', '高さ', H]].forEach(function(x){ d.params[x[0]] = { name:x[1], default:x[2], value:x[2] }; });
   d.dims = {}; d.components = [{ id:'body', name:d.name, shape:{ type:'views', views:v }, at:{ y:0, front:0 } }];
-  var keepViews = d.drawing && d.drawing.views, keepSec = d.drawing && d.drawing.secX;
-  d.drawing = { dims:[{ view:'front', dir:'h', pos:'bottom', chain:['W'] }, { view:'front', dir:'v', pos:'left', chain:['H'] }, { view:'side', dir:'h', pos:'bottom', chain:['D'] }], views:keepViews || ['front', 'side'] }; if (typeof keepSec === 'number') d.drawing.secX = keepSec;
+  var od = d.drawing || {};   // 磨き（migaki）・天面の 自動（topAuto）・断面の 位置（secX）・図に 出す 面（views）は 残す（v0.9.96：前は 磨きが 消え、立体の 絵の ▲が 保存で 消えて いた）
+  d.drawing = {}; Object.keys(od).forEach(function(k){ if (k !== 'dims') d.drawing[k] = od[k]; });
+  d.drawing.dims = [{ view:'front', dir:'h', pos:'bottom', chain:['W'] }, { view:'front', dir:'v', pos:'left', chain:['H'] }, { view:'side', dir:'h', pos:'bottom', chain:['D'] }]; if (!d.drawing.views) d.drawing.views = ['front', 'side'];
   d.sketch = skDoc();
   pdKeep(); pdRender(); if (PD.viewer) PD.viewer.refit();
   PD.skDone = skPrep(false).then(function(){ if (PD && PD.saveMain) { d.sketch = skDoc(); pdKeep(); } });

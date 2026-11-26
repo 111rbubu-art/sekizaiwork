@@ -1455,4 +1455,5 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - kumitate.html：部材を 選ぶと 右の 欄の 中身（partHtml・freeHtml・multiHtml）を 動かせる 小窓 #pfWin（#pfBox）に 出す。右の 欄は 設計仕様。帯を 引いて 動かす（位置は kumitate.pfpos）・✕／Esc で 閉じる。イベントは selOn で #selBox と #pfBox の 両方に
 - 小窓の 上に［📄 出力する／🚫 出力しない］（複数 選択で まとめて）。お墓ごと ST.noZu＝{ 部材:1 }（kumitate.json に 入る・セットを 直す 画面では 出さない）。Ctrl+Z で 戻る（szSnap に noZu）
 - 出力しない：RES.parts[k].noZu（nzMark）→ engine saiGroups で 才数・見積から 外す。zmPart に nozu:1 → zumen-km kmBundles で 金具と 同じく 部品寸法表・加工指示図・部品詳細図・総才数から 外す。配置図・3D には 残す。部材構成と 部材の 一覧に「図面なし」
+- 本人「左側の 部材一覧から 選んでも 変更できるように」→ 部材構成の 行（部材・分類・セット・墓所）の 目の 横に 📄／🚫（nzIcon・data-nzt）。押すと その 行の 部材 ぜんぶを 切り替え（一部だけ＝📄 薄め）
 - テスト（Playwright）：和型8寸 高級型＋外柵 1515×1705。竿・上台・中台を 出力しない → 石塔 才数 11.60→4.34・束から 3 つ 消える・配置図は そのまま・Ctrl+Z で 戻る

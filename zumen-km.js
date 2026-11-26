@@ -353,7 +353,7 @@ function kmSheetPut(o, pg, g, X, B){
     var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
   var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:pg.skip ? '対象外' : (pg.no || 0) + ' / ' + (pg.tot || 0),
-    sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + kmStoneName(B.stone), sub2:g.kakou || '',
+    sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + kmStoneName(B.stone), sub2:g.kakou || '',
     ken:info.name || pay.name || '', zu:'加工図面（' + B.title + '）', scale:'1/' + n, date:pay.date || '' };
   var dc = sheetDeco(S0.paper, inf);
   dc.lines.forEach(function(l){ kL(o, [X + l[0], l[1]], [X + l[2], l[3]], null, false, '枠'); });
@@ -413,7 +413,7 @@ function kmDetail(o, pg, g, X, B){
   var k = g.ks[0], p = kmPart(k), it = [kmItem(k, false)], T = g.type, W = g.w, D2 = g.d, H = g.h;
   kL(o, [X, 33], [X + 140.5, 33], null, false, '枠');
   kT(o, X + 2, 19, g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), 2.8, { aid:T + '/h/name' });
-  kT(o, X + 2, 23.2, (g.fin || '') + '　　' + (kmStoneName(B.stone) || '（石種）'), 2.4, { aid:T + '/h/fin' });
+  kT(o, X + 2, 23.2, kmStoneName(B.stone) || '（石種）', 2.4, { aid:T + '/h/fin' });
   kT(o, X + 2, 27.4, W + '×' + D2 + '×' + H + ' mm', 2.4);
   kT(o, X + 2, 31.6, g.sai.toFixed(3) + ' × ' + g.ks.length + '本 = ' + (g.sai * g.ks.length).toFixed(3) + ' 才', 2.4);
   if (g.kakou) { kT(o, X + 60, 23.2, g.kakou.slice(0, 34), 2.1, { aid:T + '/h/kakou1' }); if (g.kakou.length > 34) kT(o, X + 60, 27.4, g.kakou.slice(34, 68), 2.1, { aid:T + '/h/kakou2' }); }

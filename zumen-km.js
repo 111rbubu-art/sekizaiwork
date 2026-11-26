@@ -637,7 +637,7 @@ function kmMoveSet(es, ds){ if (!(BM && BM.active && BM.km)) return { e:[], d:[]
   D.ents.forEach(function(e){ if (e.vid && vs.indexOf(e.vid) >= 0 && !inE.has(e)) { ex.e.push(e); ST.sel.add(e.id); } });
   D.dims.forEach(function(d){ if (d.vid && vs.indexOf(d.vid) >= 0 && !inD.has(d)) { ex.d.push(d); ST.dsel.add(d.id); } });
   return ex; }
-function kmSaveEd(){ if (!KMED || !KM2) return; KMED.payT = KM2.pay.t; kmLs('zumen.kmEdit', KMED); if (BM && BM.main) BM.main.kmEdit = KMED; }
+function kmSaveEd(){ if (!KMED || !KM2) return; KMED.payT = KM2.pay.t; kmLs('zumen.kmEdit', KMED); if (BM && BM.main) BM.main.kmEdit = KMED; if (typeof zcPush === 'function') try { zcPush(); } catch (e) {} }   // v0.9.92 モデリングにも
 
 // ── ページの 一覧・作り直し ──
 function kmPagesDef(){
@@ -713,6 +713,7 @@ function kmEnter(again){
   kmPrepare(pay).then(function(geo){
     var keep = KM2 && BM && BM.active && BM.km ? BM.cur : 0;
     if (KM2 && BM && BM.active && BM.km) BM.pages.forEach(kmHarvest);
+    if (typeof zcKmed === 'function') zcKmed();   // v0.9.92 この お墓の モデリングに 入って いる 手の 直し
     KMED = KMED || (BM && BM.main && BM.main.kmEdit) || (D && D.kmEdit) || kmLs('zumen.kmEdit') || {}; ['ov', 'vm', 'man', 'revs'].forEach(function(f){ KMED[f] = KMED[f] || {}; });
     if (!KMED.v) { // v0.8.7 の まちがい：図を 動かすと いっしょに 動かした 寸法が「その 場に 残す」と 覚えられて いた → 消す
       Object.keys(KMED.ov).forEach(function(aid){ var o = KMED.ov[aid], vid = Object.keys(KMED.vm).filter(function(v){ return aid.indexOf(v + '/') === 0; })[0]; if (!vid) return; var m = KMED.vm[vid];

@@ -1,6 +1,6 @@
 # 石の 図面（zumen.html）引継ぎ ― 社内アプリ開発へ 移す ための まとめ
 
-zumen.html = v0.9.91（2026-11-26・モデリング（旧 組み立て）v0.8.115・部材マスター v0.3.32・枠 v0.4.4）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
+zumen.html = v0.9.92（2026-11-26・モデリング（旧 組み立て）v0.8.117・部材マスター v0.3.32・枠 v0.4.4）。**末尾の「版ごとの 記録」が いちばん新しい**。くわしい 版ごとの 中身は `HANDOFF.md` の 末尾（2026-11-02〜）にも ある。
 
 ---
 
@@ -1422,3 +1422,13 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 版：v0.9.90 は claude/zumen-shutsuryoku-3 が 使用 → v0.9.91。main に 出す とき 3 行目も
 - テスト：Playwright（土留 腰石前 1220 → マスタータブ 設定 1 行で 図枠を 作り 保存 → 加工図面タブ 設定 改行あり・1240 で 束）。前＝改行あり、後＝「1240（40.9）」1 行。PNG＝project-files sekkei/master-sunpou-kakikata/
 - 同じ v0.9.91 に 追加：本人「2 つの 穴で 10mm 位置が 違う（151・161）。自動で 横に ずらせないか」（見本＝151 は 端の 外、161 は 穴の 外）。kmAncSheet（束で 足す アンカーの 穴の 位置の 寸法）：端に 近い 穴を 1 段目に（右 半分も 右の 端から 数える）・同じ 側に 2 本 以上 あれば 矢印の 間に 入らない 文字を kmAncTx で 横へ（偶数の 段は 端の 外・奇数の 段は 穴の 外、d.tx）。1 本 だけ なら そのまま。PNG＝project-files sekkei/sunpou-kasanari/v0.9.91_穴の寸法を横へ_前後.png
+
+### v0.9.92（2026-11-26）エクスポート ▾ と［💾 モデリングに 保存］・モデリング v0.8.117
+- 本人「作業を 保存は モデリングから 加工図面を 出力して いる 場合、モデリングの データに 加工図面が あるので、別ファイルに なると 管理が 複雑」「DXF や PNG、PDF は エクスポートに まとめて 数種類から 選べるように」「加工図面タブと 図面タブも 同様に」
+- 見立て：［📁 作業を 保存］は .zumen.json（D と S）を 別に 保存して いた。加工図面の［💾 この お墓に 保存］は ST.shapes（墓石設計.kumitate.json）に 入るが、束の 手の 直し KMED（ov・vm・man・revs・skip）は 端末の zumen.kmEdit（お墓ごとで ない）と 作業ファイルだけ。展開図（図面タブ）の 手の 直しも 端末の 自動保存と 作業ファイルだけ
+- 変えた 所（図面）：上の 帯の DXF・PDF・PNG を［📤 エクスポート ▾］（#bExp・#expm）に。元の ボタン（bBmPdf・bDxf・bPng）は .expsrc で 隠して 残し、メニューから click()（ポカヨケの 確かめは そのまま）。PDF＝束は bBmPdf、ふつうは bPrint の 窓。印刷は 別ボタン（束＝全部 印刷・ふつう＝🖨 印刷）
+- 枠の 図面・加工図面タブ（ZC_ON）：［📁 作業を 保存］を 隠し［💾 モデリングに 保存］（#bKmSave）。直す たびに zcPush（加工図面＝kmSaveEd から KMED、図面＝自動保存の 時に 展開図の D）→ モデリングの zmEdPut。ボタンは zmCaseSave（モデリングの［💾 保存］と 同じ）。未保存は ●（zmCaseState・3 秒ごと）
+- お墓の 見分け：モデリングの zmCaseId（案件 folderPass or local ＋ ZM_REV＝読み込み 回数）。図面側は ZC_ID に 持ち、ちがう ときは 読み直す（zcKmed・zcTk）。ちがう id の zmEdPut は 断る。前の 端末だけの zumen.kmEdit は 初めの 1 回だけ 引き継ぐ（KMED.case が 違えば 使わない）。展開図を 作った だけ（ZC_TKGEN）では 渡さない
+- 前の .zumen.json を 枠の 中で 開く：束の 作業（D.kmEdit）・展開図（tk）なら「モデリングに 移しますか」→ zmEdMove（入れて ZM_REV++・zmMake(true)）。キャンセルで 前の とおり 開く。単体の 図面アプリ（枠の 外）は 今までの まま［作業を 保存］
+- モデリング：ST.zmEd・ST.zmTk。新しい 案件で kumitate.state を 使う ときは この 2 つを 消す（ほかの お墓の 直しを 持って こない）。applyState で ZM_REV++
+- テスト：Playwright（芝台横 1 個）。直し → ST.zmEd、展開図に 線 → ST.zmTk、別の 中身を applyState → 両タブ 読み直し、古い id の put は false、.zumen.json（kmEdit）を 移す → 加工図面タブに 入る、単体は［作業を 保存］・PDF で 印刷の 窓。PNG＝project-files sekkei/sagyou-hozon/

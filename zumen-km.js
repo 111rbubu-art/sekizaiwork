@@ -47,13 +47,16 @@ function kmBundles(pay){
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
   order.forEach(function(sid){ var ps = bySet[sid], cnt = {};
     // 分ける 鍵＝skey（モデリングの グループ「紺：G654 深山」）、図に 出す 石種＝stone（「G654 深山」だけ・v0.9.82）。古い 渡しは skey が 無いので stone
-    var skOf = function(p){ return p.skey != null ? p.skey : (p.stone || ''); };
+    // v0.9.95：分ける 鍵は グループ（p.kumi＝モデリングの 色の グループの id）。前は「紺：G654 深山」で、石種を 変えると ページの 名前が 変わり
+    //   ページに 付いた 手の 直し（部品寸法表・加工指示図・ページに 置いた 寸法・△・対象外）が 外れて いた（2026-11-26 本人「石材を 変えて 更新したら 直した 寸法線が 全部 元に」）
+    var skOf = function(p){ return p.kumi ? '#' + p.kumi : p.skey != null ? p.skey : (p.stone || ''); };
     ps.forEach(function(p){ var s = skOf(p); cnt[s] = (cnt[s] || 0) + 1; });
     var stones = Object.keys(cnt).sort(function(a, b){ return cnt[b] - cnt[a]; });
     stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return skOf(p) === st; });
       var names = []; pp.forEach(function(p){ var b = kmBase(p.name); if (names.indexOf(b) < 0) names.push(b); });
       var title = si === 0 ? (ps[0].setName || (ps[0].grp === 'fence' ? '外柵' : '石塔')) : names.join('・');
-      var B = { id:sid + '|' + (st || '-'), title:title, stone:pp[0].skey != null ? (pp[0].stone || '') : st, parts:pp, groups:[] }, seen = {};
+      var p0 = pp[0], lbl = p0.skey != null ? p0.skey : (p0.stone || '');
+      var B = { id:sid + '|' + (st || '-'), sid:sid, lbl:lbl, title:title, stone:p0.skey != null ? (p0.stone || '') : (p0.stone || ''), parts:pp, groups:[] }, seen = {};
       pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h;
         if (seen[key]) { seen[key].ks.push(p.k); return; }
         var g = { name:nm, ks:[p.k], w:p.w, d:p.d, h:p.h, fin:p.fin || '', kakou:(p.kakou || '') === '左右対称' ? '' : (p.kakou || ''), old:(p.setId || p.grp) + '/' + String(p.key || p.k).replace(/_[LR]$/, '') };
@@ -65,6 +68,17 @@ function kmBundles(pay){
   return out;
 }
 // 前の 付け先（セット/枠）で 覚えた 直し・ひな形を 部材の id へ 移す（ページの 名前に 入って いる ものも）。差し替えて いても 移し先は セットの 既定の 部材
+// 前の ページの 名前（セット|紺：G654 深山）で 覚えた 直しを 今の 名前（セット|#グループ）へ 移す（v0.9.95）
+//   石種を 変えた あとの 古い 名前（紺：インド黒 など、同じ グループ名で 石種 だけ ちがう）も、今 その 名前の 束が 無ければ 移す（外れて いた 直しを 戻す）
+function kmMigBid(bundles){ if (!KMED) return; var txt = JSON.stringify(KMED), now = {}, maps = [];
+  bundles.forEach(function(B){ now[B.sid + '|' + B.lbl] = 1; });
+  var esc = function(x){ return x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); };
+  bundles.forEach(function(B){ if (!B.sid || B.id === B.sid + '|' + B.lbl) return; var kn = String(B.lbl).split('：')[0], re = new RegExp(esc(B.sid + '|') + '([^/"]*)/', 'g'), m, seen = {};
+    while ((m = re.exec(txt))) { var L = m[1]; if (seen[L] || '#' === L.charAt(0)) continue; seen[L] = 1;
+      if (L === B.lbl || (L.indexOf('：') > 0 && L.split('：')[0] === kn && !now[B.sid + '|' + L])) maps.push([B.sid + '|' + L + '/', B.id + '/']); } });
+  if (!maps.length) return;
+  maps.forEach(function(q){ txt = txt.split(q[0]).join(q[1]); });
+  var o = JSON.parse(txt); Object.keys(o).forEach(function(k){ KMED[k] = o[k]; }); }
 function kmMigType(bundles){
   var pairs = []; bundles.forEach(function(B){ B.groups.forEach(function(g){ if (g.old !== g.mig) pairs.push([g.old, g.mig]); }); }); if (!pairs.length) return;
   var mv = function(txt){ pairs.forEach(function(q){ var o = q[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); txt = txt.replace(new RegExp('(["+:/])' + o + '(?=[/+"#])', 'g'), function(m, a){ return a + q[1]; }); }); return txt; };
@@ -337,14 +351,14 @@ function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.sha
     // 端に 近い 穴から 1 段目（右 半分は 右の 端から 数える）。同じ 側に 2 本 以上 あれば、入らない 文字を 横へ（kmAncTx）
     var iL = 0, iR = 0, LL = [], LR = [], LV = [];
     ux.filter(function(x){ return x <= mid; }).concat(ux.filter(function(x){ return x > mid; }).reverse()).forEach(function(x){ var left = x <= mid, i = left ? iL++ : iR++, e = left ? b.x0 : b.x1;
-      if (Math.abs(x - e) > 0.5) { var d = { id:SEQ++, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); (left ? LL : LR).push([d, x - e, i]); } });
+      if (Math.abs(x - e) > 0.5) { var d = { id:SEQ++, isoKey:'anc/' + pv + '/' + (left ? 'L' : 'R') + i, a:{ x:e, y:b.y1 }, b:{ x:x, y:b.y1 }, off:{ x:(e + x) / 2, y:b.y1 + st * (1 + i) }, mode:'h', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); (left ? LL : LR).push([d, x - e, i]); } });
     var uy = G.cs.map(function(c){ return r1(c.y); }).filter(function(y, i, A){ return A.indexOf(y) === i; }).sort(function(a, c){ return a - c; });
-    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) { var d = { id:SEQ++, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); LV.push([d, y - b.y0, i]); } });
+    uy.forEach(function(y, i){ if (Math.abs(y - b.y0) > 0.5) { var d = { id:SEQ++, isoKey:'anc/' + pv + '/V' + i, a:{ x:b.x1, y:b.y0 }, b:{ x:b.x1, y:y }, off:{ x:b.x1 + st * (1 + i), y:(b.y0 + y) / 2 }, mode:'v', fmt:null, text:null, layer:'寸法', pv:pv, anc:1 }; sk.dims.push(d); LV.push([d, y - b.y0, i]); } });
     [LL, LR, LV].forEach(function(A){ if (A.length > 1) A.forEach(function(q){ kmAncTx(q[0], q[1], q[2], sk.ds, n); }); });
     var c0 = G.cs.slice().sort(function(a, c){ return a.x - c.x; })[0], ty = b.y1 + st * (Math.max(iL, iR) + 1.6), j = 0;
     Object.keys(G.txt).forEach(function(key){ var q = key.split('|'), s = q[0] + ' ×' + G.txt[key] + '（' + q[1] + '）', p = { x:Math.max(b.x0, c0.x - 4 * n), y:ty + j * 4 * n };
       sk.ents.push({ id:SEQ++, t:'line', a:{ x:c0.x, y:c0.y }, b:{ x:p.x + 2 * n, y:p.y - 0.8 * n }, layer:'寸法', css:null, aci:256, pv:pv, anc:1 });
-      sk.ents.push({ id:SEQ++, t:'text', p:p, h:2.4 * n, rot:0, s:s, ha:0, va:0, layer:'文字', css:null, aci:256, pv:pv, anc:1 }); j++; }); });
+      sk.ents.push({ id:SEQ++, ak:'anc/' + pv + '/t' + j, t:'text', p:p, h:2.4 * n, rot:0, s:s, ha:0, va:0, layer:'文字', css:null, aci:256, pv:pv, anc:1 }); j++; }); });
   return sk; }
 // 穴の 位置の 寸法の 文字が 矢印の 間に 入らない とき、文字を 横（寸法線に 沿って）の 外へ ずらす（v0.9.91）
 //   2026-11-26 本人「2 つの 穴で 10mm 位置が 違う（151・161）。この 様に 自動で 横に ずらせないか」（見本：151 は 端の 外＝左、161 は 穴の 外＝右）
@@ -363,7 +377,7 @@ function kmSheetPut(o, pg, g, X, B){
   var lay = sk.layers || {}, hidL = function(nm){ var L = lay[nm]; return L && L.on === false; };
   sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
     var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.id != null ? e.id : i) : null; delete n2.pv; delete n2.iso; delete n2.frame;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.ak || (e.id != null ? e.id : i)) : null; delete n2.ak; delete n2.pv; delete n2.iso; delete n2.frame;
     if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
     else if (e.t === 'text') { n2.p = M(e.p); n2.h = (e.h || 3.5) * s; } else { n2.c = M(e.c); n2.r = e.r * s; }
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
@@ -396,7 +410,7 @@ function kmSketch(o, pg, p, X, T, g){
   var lay = sk.layers || {}, hidL = function(n){ var L = lay[n]; return L && L.on === false; };
   sk.ents.forEach(function(e, i){ if (e.frame || hidL(e.layer)) return;
     var pts = e.t === 'line' ? [e.a, e.b] : e.t === 'pl' ? e.v : e.t === 'text' ? [e.p] : e.c ? [e.c] : []; if (!pts.length || !pts.every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.id != null ? e.id : i) : null; delete n2.pv; delete n2.iso; delete n2.frame;
+    var n2 = JSON.parse(JSON.stringify(e)); n2.id = SEQ++; n2.auto = true; n2.vid = vid; n2.aid = e.t === 'text' ? vid + '/t' + (e.ak || (e.id != null ? e.id : i)) : null; delete n2.ak; delete n2.pv; delete n2.iso; delete n2.frame;
     if (e.t === 'line') { n2.a = M(e.a); n2.b = M(e.b); } else if (e.t === 'pl') n2.v = e.v.map(function(q){ var m = M(q); return { x:m.x, y:m.y, b:q.b || 0 }; });
     else if (e.t === 'text') { n2.p = M(e.p); n2.h = Math.max(2.2, (e.h || 3.5) * s); } else { n2.c = M(e.c); n2.r = e.r * s; }
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
@@ -671,6 +685,9 @@ function kmBuildAll(){
   // 図が どこにも 無い 手の 直し
   var have = {}; BM.pages.forEach(function(pg){ Object.keys(pg.vw).forEach(function(v){ have[v] = 1; }); have['pg:' + pg.key] = 1; });
   Object.keys(KMED.man).forEach(function(k){ if (!have[k] && KMED.man[k].length) KM2.lost.push({ pg:k, what:'手で 足した もの ' + KMED.man[k].length + ' 個（図が 無い）' }); });
+  // 自動の 寸法・文字の 直しで どの ページにも 当たらない もの（v0.9.95：前は 黙って 外れて いた。ページの 名前が 変わった とき など）
+  var inB = {}, got = {}; BM.pages.forEach(function(pg){ Object.keys(pg.base || {}).forEach(function(a){ inB[a] = 1; }); }); KM2.lost.forEach(function(q){ if (q.aid) got[q.aid] = 1; });
+  Object.keys(KMED.ov).forEach(function(a){ if (!inB[a] && !got[a]) KM2.lost.push({ aid:a, pg:'', what:KMED.ov[a].hide ? '消した 寸法・文字' : '自動の 寸法・文字の 直し' }); });
 }
 
 // ── 対象外の ページ（v0.9.64・本人「石塔は 再利用し、土留だけ 作る ときに 使う」）──
@@ -720,14 +737,14 @@ function kmEnter(again){
         var bad = function(q){ return !q || (Math.abs(q[0] + m[0]) < 0.6 && Math.abs(q[1] + m[1]) < 0.6); };
         if ((o.doff || o.dp) && bad(o.doff) && bad(o.da) && bad(o.db) && bad(o.dp)) { ['doff', 'da', 'db', 'dp'].forEach(function(f){ delete o[f]; }); if (!Object.keys(o).length) delete KMED.ov[aid]; } });
       KMED.v = 2; }
-    KM2 = { pay:pay, geo:geo }; KM2.bundles = kmBundles(pay); kmMigType(KM2.bundles);
+    KM2 = { pay:pay, geo:geo }; KM2.bundles = kmBundles(pay); kmMigType(KM2.bundles); kmMigBid(KM2.bundles);
     if (!(BM && BM.active)) { BM = { main:D, layers:null, pages:null, cur:0, active:true, km:true }; }
     BM.km = true; bmSetupLayers(); kmLayers();
     if (!BM.main.info) BM.main.info = {}; if (!BM.main.info.name && pay.name) BM.main.info.name = pay.name;
     kmBuildAll(); kmSaveEd();
     document.body.classList.add('bmode'); document.body.classList.add('kmmode');
     bmShow(Math.min(keep, BM.pages.length - 1), true);
-    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。付け先が 無い 直し ' + KM2.lost.length + ' 件' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 6000);
+    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。当て直せなかった 直し ' + KM2.lost.length + ' 件（上の 一覧）' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 6000);
   }).catch(function(e){ alert('図面を 作れませんでした：' + (e && e.message || e)); });
 }
 function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; if (!L['中心線']) L['中心線'] = { name:'中心線', aci:1, css:'#c0392b', on:true, gap:false, dash:'dd' }; }
@@ -737,12 +754,26 @@ function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { 
 function kmPendOf(pg){ var P = (KM2 && KM2.pay && KM2.pay.pending) || []; if (!P.length || !pg) return [];
   if (/^site\//.test(pg.key)) return P; var ks = {}; (pg.groups || (pg.B && pg.B.groups) || []).forEach(function(g){ (g.ks || []).forEach(function(k){ ks[k] = 1; }); });
   return P.filter(function(x){ return ks[x.k]; }); }
-function kmPendBan(){ var el = document.getElementById('kmPend'); if (!el) return; var pg = BM && BM.active && BM.km && BM.pages && BM.pages[BM.cur], P = pg ? kmPendOf(pg) : [];
-  if (!P.length || !SKP || !SKP.zmAccept) { el.className = ''; el.innerHTML = ''; return; }
-  var all = (KM2.pay.pending || []).length, h = P.map(function(x){ return '<div class="r"><b>🔄 ' + esc(x.name) + '：' + (x.kind === 'master' ? 'マスターが 変わりました' : 'モデルが 変わりました') + ' <small>（' + esc(x.s) + '）</small></b>'
+// 当て直せなかった 手の 直しの 名前（どの 部材・ページか）
+function kmLostName(q){ var a = String(q.aid || q.pg || ''), nm = '';
+  (KM2.bundles || []).forEach(function(B){ B.groups.forEach(function(g){ if (!nm && (a.indexOf(g.type + '/') === 0 || a.indexOf('/' + g.type) >= 0)) nm = g.no + '. ' + g.name; }); });
+  if (!nm) BM.pages.forEach(function(pg){ if (!nm && (a.indexOf(pg.key + '/') === 0 || a === pg.key || a === 'pg:' + pg.key)) nm = pg.title; });
+  if (!nm) { var m = /\|([^/]*)\/(table|index|detail)/.exec(a); nm = m ? '前の ページ「' + m[1] + ' ' + ({ table:'部品寸法表', index:'加工指示図', detail:'詳細' })[m[2]] + '」' : a.split('/')[0]; }
+  return nm; }
+function kmLostBan(){ var L = (KM2 && KM2.lost) || []; if (!L.length || KM2.lostAck) return '';
+  var by = {}; L.forEach(function(q){ var n = kmLostName(q), k = n + '｜' + q.what; by[k] = (by[k] || 0) + 1; });
+  var ks = Object.keys(by), h = '<div class="r"><b>⚠ 当て直せなかった 手の 直し ' + L.length + ' 件（消して いません。図の 形が 変わった 所など）</b><button data-lost="ok">閉じる</button><button data-lost="del" title="この 直しを 捨てる（戻せません）">捨てる</button></div>';
+  h += '<div style="font-weight:600;font-size:12px;padding:0 4px 2px">' + ks.slice(0, 8).map(function(k){ var q = k.split('｜'); return '・' + esc(q[0]) + '：' + esc(q[1]) + (by[k] > 1 ? ' ×' + by[k] : ''); }).join('<br>') + (ks.length > 8 ? '<br>…ほか ' + (ks.length - 8) : '') + '</div>';
+  return h; }
+function kmLostDrop(){ KM2.lost.forEach(function(q){ if (q.aid) delete KMED.ov[q.aid]; else if (q.pg && KMED.man[q.pg] && !q.m) delete KMED.man[q.pg]; else if (q.m) Object.keys(KMED.man).forEach(function(k){ KMED.man[k] = KMED.man[k].filter(function(x){ return x !== q.m; }); }); }); KM2.lost = []; kmSaveEd(); }
+function kmPendBan(){ var el = document.getElementById('kmPend'); if (!el) return; var pg = BM && BM.active && BM.km && BM.pages && BM.pages[BM.cur], P = pg ? kmPendOf(pg) : [], LB = pg ? kmLostBan() : '';
+  if ((!P.length || !SKP || !SKP.zmAccept) && !LB) { el.className = ''; el.innerHTML = ''; return; }
+  if (!P.length || !SKP || !SKP.zmAccept) P = [];
+  var all = (KM2.pay.pending || []).length, h = LB + P.map(function(x){ return '<div class="r"><b>🔄 ' + esc(x.name) + '：' + (x.kind === 'master' ? 'マスターが 変わりました' : 'モデルが 変わりました') + ' <small>（' + esc(x.s) + '）</small></b>'
     + '<button class="go" data-pa="' + esc(x.k) + '">更新する</button><button data-pk="' + esc(x.k) + '">このまま</button></div>'; }).join('');
-  if (all > 1) h += '<div class="r"><b></b><button class="go" data-pa="*">全部 更新する（' + all + '）</button></div>';
+  if (P.length && all > 1) h += '<div class="r"><b></b><button class="go" data-pa="*">全部 更新する（' + all + '）</button></div>';
   el.innerHTML = h; el.className = 'on';
+  [].forEach.call(el.querySelectorAll('[data-lost]'), function(b){ b.onclick = function(){ if (b.dataset.lost === 'del') { if (!confirm('当て直せなかった 手の 直し ' + KM2.lost.length + ' 件を 捨てます（戻せません）')) return; kmLostDrop(); } else KM2.lostAck = 1; kmPendBan(); bmPanel(); }; });
   [].forEach.call(el.querySelectorAll('[data-pa]'), function(b){ b.onclick = function(){ var k = b.dataset.pa; SKP.zmAccept(k === '*' ? null : [k], false); }; });
   [].forEach.call(el.querySelectorAll('[data-pk]'), function(b){ b.onclick = function(){ SKP.zmAccept([b.dataset.pk], true); }; }); }
 function kmPanel(el){
@@ -763,7 +794,7 @@ function kmPanel(el){
     var on = types.filter(function(t){ return tpl[t]; }); if (on.length) h += '<div class="muted">ひな形 あり：' + on.map(function(t){ return esc(t.split('/').pop()); }).join('・') + '　<a href="#" id="kmTplDel">ひな形を 消す</a></div>'; }
   h += '<div class="row"><button class="b2" id="kmClr">この ページの 直しを 消す（自動に 戻す）</button></div>';
   var rv = KMED.revs[pg.key] || []; if (rv.length) h += '<div class="muted">修正：' + rv.map(function(q){ return '△' + q.n + ' ' + esc(q.s); }).join('／') + '</div>';
-  if (KM2.lost && KM2.lost.length) h += '<div class="muted" style="color:#c03">付け先が 無い 直し ' + KM2.lost.length + ' 件：' + KM2.lost.slice(0, 6).map(function(q){ return esc(q.what) + '（' + esc(String(q.aid || q.pg)) + '）'; }).join('、') + '　<a href="#" id="kmLostClr">捨てる</a></div>';
+  if (KM2.lost && KM2.lost.length) h += '<div class="muted" style="color:#c03">当て直せなかった 直し ' + KM2.lost.length + ' 件：' + KM2.lost.slice(0, 6).map(function(q){ return esc(kmLostName(q)) + ' ' + esc(q.what); }).join('、') + '　<a href="#" id="kmLostClr">捨てる</a></div>';
   h += '</div>';
   el.innerHTML = h;
   document.getElementById('kmRe').onclick = function(){ if (fromPd) kmBackToPd(); else kmEnter(true); };
@@ -779,7 +810,7 @@ function kmPanel(el){
       Object.keys(KMED.vm).forEach(function(v){ if (v.indexOf(t + '/') === 0) e.vm[v] = KMED.vm[v]; }); Object.keys(KMED.man).forEach(function(v){ if (v.indexOf(t + '/') === 0) e.man[v] = KMED.man[v]; }); T[t] = e; });
     kmLs('zumen.kmTpl', T); toastMsg('ひな形に 覚えました（ほかの 案件の 同じ 部材にも 使います）', 4000); bmPanel(); };
   var td = document.getElementById('kmTplDel'); if (td) td.onclick = function(ev){ ev.preventDefault(); var T = kmTpl(); types.forEach(function(t){ delete T[t]; }); kmLs('zumen.kmTpl', T); bmPanel(); };
-  var lc = document.getElementById('kmLostClr'); if (lc) lc.onclick = function(ev){ ev.preventDefault(); KM2.lost.forEach(function(q){ if (q.aid) delete KMED.ov[q.aid]; else if (q.pg && KMED.man[q.pg] && !q.m) delete KMED.man[q.pg]; else if (q.m) Object.keys(KMED.man).forEach(function(k){ KMED.man[k] = KMED.man[k].filter(function(x){ return x !== q.m; }); }); }); KM2.lost = []; kmSaveEd(); bmPanel(); };
+  var lc = document.getElementById('kmLostClr'); if (lc) lc.onclick = function(ev){ ev.preventDefault(); kmLostDrop(); kmPendBan(); bmPanel(); };
 }
 // 修正の △：置いた 所に △n、表題欄の 上に 番号・日付・内容
 function kmRevAt(p){

@@ -176,7 +176,7 @@ function kmFit(s, w, h, hmin){ s = String(s == null ? '' : s); while (h > hmin &
   if (kmFitW(s, h) > w) { while (s.length > 1 && kmFitW(s + '…', h) > w) s = s.slice(0, -1); s += '…'; } return { s:s, h:h }; }
 function kmStoneName(s){ return String(s || '').replace(/^[^：]*：/, ''); }   // 古い 渡し（「紺：G654 深山」）でも 石種名だけ
 function kmPgTable(o, pg){
-  var B = pg.B, stone = kmStoneName(B.stone); kmFrame(o, pg, '部品寸法表　' + B.title, '部品寸法表');
+  var B = pg.B, stone = kmStoneName(B.stone); kmFrame(o, pg, '部品寸法表', '部品寸法表');   // 題に セット名・部材名を 出さない（v0.9.100 本人「土留 1220×900 石塔婆は 不要」）
   kT(o, 12, 22, '石種　' + (stone || '（未定）'), 2.8);   // 図面名（＝セット名）は 出さない（v0.9.97 本人「図面名は 不要」）
   var tot = B.groups.reduce(function(a, g){ return a + g.sai * g.ks.length; }, 0); kT(o, 287, 22, '総才数　' + tot.toFixed(3), 2.8, { ha:2 });
   var cols = [['NO', 8], ['部品名称', 30], ['幅 mm（寸）', 24], ['奥行 mm（寸）', 24], ['高さ mm（寸）', 24], ['数量', 9], ['才数', 14], ['磨き', 40]], y = 26, rh = 6.2, X0 = 12, XE = 287;

@@ -273,6 +273,14 @@ function kmR(v){ return String(Math.round(+v * 10) / 10); }
 // 図枠の 寸法の 矢印・文字の ずらしを 紙の 大きさに（図面で 直すと 同じ 見え方）。設定の「矢印の 長さ」は 図面の 単位なので 縮尺で 割る
 // （2026-11-24 設定の 矢印 16 が 紙の 16mm に なり、図枠の ページだけ 矢印が 大きく なって いた）
 function kmDimPaper(n2, d, s, th){ n2.al = d.al > 0 ? d.al * s : S.arrow > 0 ? S.arrow * s : th; if (d.tx) n2.tx = d.tx * s; }
+// 部材の 図に 保存した 寸法の 書き方（sk.ds：表記・mm の 小数・文字の 高さ・矢印。v0.9.91）を 束の ページの 寸法に。1 本ずつ 決めた ものは そのまま
+//   （2026-11-26 本人「マスターの 寸法の 書き方が 反映されない」：束は 加工図面タブの 設定で かいて いた）。ds の 無い 前の 図は 今までどおり
+function kmDsApply(n2, d, s, ds){ if (!ds) return;
+  if (!d.fmt && ds.fmt && d.mode !== 'hole') n2.fmt = ds.fmt;
+  if (d.dp == null && ds.mmDec != null) n2.dp = +ds.mmDec;
+  if (!(d.th > 0) && ds.th > 0) n2.th = ds.th * s;
+  if (!(d.al > 0)) n2.al = ds.arrow > 0 ? ds.arrow * s : n2.th;
+  if (!d.at && ds.arrowType) n2.at = ds.arrowType; }
 // 保存した 加工図面（図枠）に モデリングの アンカーの 穴（L金具の ボルト・anc:1）を 足す（v0.9.63）
 //   2026-11-25 本人「穴加工の 位置ずれは 直ったが 今回は 消えた」：v0.9.59 で 保存した 加工図面を 使う ように なり、
 //   マスターの 図（穴なし）だけ 描いて 案件で 開いた アンカーの 穴が 出なく なって いた。面の 外形（pv）に 合わせて 円・中心線・位置の 寸法・書き込みを 足す
@@ -350,7 +358,7 @@ function kmSheetPut(o, pg, g, X, B){
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
     o.ents.push(n2); });
   (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = d.th > 0 ? d.th * s : 3.5; kmDimPaper(n2, d, s, n2.th); kmDsApply(n2, d, s, sk.ds); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var info = (BM && BM.main && BM.main.info) || {}, pay = KM2.pay, nb = g.ks.length;
   var inf = { title:'【加工図面】　' + g.no + '.　' + g.name + (g.sym ? '（左右対称・図は ' + (/_R$/.test(p.key || '') ? '右' : '左') + '）' : ''), ver:pg.skip ? '対象外' : (pg.no || 0) + ' / ' + (pg.tot || 0),
     sub1:g.w + '×' + g.d + '×' + g.h + ' mm　' + g.sai.toFixed(3) + ' × ' + nb + '本 = ' + (g.sai * nb).toFixed(3) + ' 才　' + (g.fin || '') + '　' + kmStoneName(B.stone), sub2:g.kakou || '',
@@ -383,7 +391,7 @@ function kmSketch(o, pg, p, X, T, g){
     if (/隠れ/.test(e.layer || '')) n2.layer = '隠れ線'; else if (n2.layer !== '文字' && e.t !== 'text' && !/寸法|中心/.test(e.layer || '')) n2.layer = '部材';
     o.ents.push(n2); });
   (sk.dims || []).forEach(function(d, i){ if (![d.a, d.b].every(inF)) return;
-    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = 2.3; kmDimPaper(n2, d, s, 2.3); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
+    var n2 = JSON.parse(JSON.stringify(d)); n2.id = SEQ++; n2.a = M(d.a); n2.b = M(d.b); n2.off = M(d.off); n2.k = (d.k || 1) * n; n2.th = 2.3; kmDimPaper(n2, d, s, 2.3); kmDsApply(n2, d, s, sk.ds); n2.auto = true; n2.vid = vid; n2.aid = vid + '/d' + (d.isoKey || (d.id != null ? d.id : i)); n2.layer = '寸法'; o.dims.push(n2); });
   var c = [M(P(fx0, fy0)), M(P(fx1, fy1))];
   kView(o, vid, n, [[c[0].x, kY(c[0].y)], [c[1].x, kY(c[1].y)]], {}); pg.regions.push(kmRegion(o, vid));
   kT(o, X + 136, 186, '1/' + n, 2.2, { ha:2, aid:vid + '/scale' });

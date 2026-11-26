@@ -1414,3 +1414,10 @@ dim : {id,a,b,off,mode:'h'|'v'|'a'|'r',ang, fmt, text（<> が 値）, th（文�
 - 見立て：v0.9.82 で 作る 所（kmSheetPut の sub1）は 石種名だけに したが、墓ごと・マスターに 保存した 図枠の 写し（sheet.inf.sub1）に 前の 文字が 残り、開くと それが かかれて いた。はみ出しは sheetWrap が 全角を 文字の 高さ 1.0 と 見て いた（drawText は 1.25 倍の 大きさで かく）
 - 変えた 所：sheetSub1()（先頭の 外寸「W×D×H mm」・「色：」を 外す）を sheetDeco で 使う＝束・保存図・マスター保存図・PDF・DXF の 全部に 効く。sub1 の 中身は 前の まま（外寸は kmSheetWdh が 読む）。skSheetInfo の 石種の グループ名も 外す。kmDetail（2 枚 並べの 詳細）の 外寸の 行も 外した。sheetWrap の 幅を 全角 1.25・半角 0.7 に
 - テスト：Playwright で 古い 写し（外寸・桃： 入り）の A4 半分の 図枠 → 前は 右端 はみ出し、後は「0.609 × 2本 = 1.219 才　1面磨き（上）　G654 深山」。PNG＝/mnt/project-files/sekkei/midashi-migaki/
+
+### v0.9.91（2026-11-26）マスターで 決めた 寸法の 書き方を モデリングの 加工図面にも（ブランチ claude/master-sunpou-kakikata・main は 本人の OK 待ち）
+- 本人：「マスターの 寸法の 書き方が 反映されません」（マスター 腰石前 版3 は「1220（40.3）」1 行、モデリングの 束は「1240／(40.9)」改行あり）
+- 見立て：寸法の 表記・mm の 小数・文字の 高さ・矢印は ブラウザ 全体の 設定（S・zumen.settings）で、図には 入って いない。マスターの 加工図面タブと 加工図面タブは 別の 画面（それぞれ 開いた ときの 設定の まま・後で 変えた 方が 残る）。束は 加工図面タブの 設定で かいて いた
+- 変えた 所：部材の 図（sketch）に 書き方 ds（fmt・mmDec・shakuPrec・th・arrow・arrowType）を 入れて 保存（skDoc）。図を 開くと ds を その 画面に 使い（保存しない）、閉じると 元に 戻す。束の ページ（zumen-km.js kmDsApply：kmSheetPut・kmSketch）は ds を 寸法に（1 本ずつ 決めた もの・穴の 寸法の 表記は そのまま）。ds の 無い 前の 図は 今までどおり → マスターを 1 度［マスター部材に 保存］し直すと 入る
+- 版：v0.9.90 は claude/zumen-shutsuryoku-3 が 使用 → v0.9.91。main に 出す とき 3 行目も
+- テスト：Playwright（土留 腰石前 1220 → マスタータブ 設定 1 行で 図枠を 作り 保存 → 加工図面タブ 設定 改行あり・1240 で 束）。前＝改行あり、後＝「1240（40.9）」1 行。PNG＝project-files sekkei/master-sunpou-kakikata/

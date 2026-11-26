@@ -41,7 +41,7 @@ function kPlace(r, cx, cy){ var mu = (r.u0 + r.u1) / 2, mv = (r.v0 + r.v1) / 2; 
 // 金具（石では ない）は 部品寸法表・加工指示図・部品詳細図・総才数に 出さない（配置図・3D には 残す）。判定は buzai-lib.js の BL.isKana（モデリングと 同じ）。kana＝モデリングで 付けた 印
 function kmIsKana(p){ return !!p && (!!p.kana || (typeof BL !== 'undefined' && BL.isKana ? BL.isKana(p) : p.role === '金具')); }
 function kmBundles(pay){
-  var bySet = {}, order = [];
+  var bySet = {}, order = []; kmBundles.gnum = {};
   pay.parts.forEach(function(p){ if (pay.only !== 'detail' && (kmIsKana(p) || p.nozu)) return;   /* nozu＝モデリングで「加工図面へ 出力しない」（もう ある 石・v0.8.120） */   /* 部材マスターから 金具 1 つを 開く ときは 出す */ var sid = p.setId || p.grp; if (!bySet[sid]) { bySet[sid] = []; order.push(sid); } bySet[sid].push(p); });
   var out = [];
   order.sort(function(a, b){ var ga = bySet[a][0].grp === 'fence' ? 0 : 1, gb = bySet[b][0].grp === 'fence' ? 0 : 1; return ga - gb; });
@@ -54,7 +54,9 @@ function kmBundles(pay){
     var stones = Object.keys(cnt).sort(function(a, b){ return cnt[b] - cnt[a]; });
     stones.forEach(function(st, si){ var pp = ps.filter(function(p){ return skOf(p) === st; });
       var names = []; pp.forEach(function(p){ var b = kmBase(p.name); if (names.indexOf(b) < 0) names.push(b); });
-      var title = si === 0 ? (ps[0].setName || (ps[0].grp === 'fence' ? '外柵' : '石塔')) : names.join('・');
+      // 束の 名前に セット名（セットファイルの 名前）は 使わない（v0.9.100 本人「基本的に セットファイル名を 使う 事は 無いように」）。外柵／石塔、同じ 種類が 2 つ目なら 番号
+      var gk = ps[0].grp === 'fence' ? '外柵' : '石塔', gn = (kmBundles.gnum = kmBundles.gnum || {}); if (si === 0) gn[gk] = (gn[gk] || 0) + 1;
+      var title = si === 0 ? gk + (gn[gk] > 1 ? ' ' + gn[gk] : '') : names.join('・');
       var p0 = pp[0], lbl = p0.skey != null ? p0.skey : (p0.stone || '');
       var B = { id:sid + '|' + (st || '-'), sid:sid, lbl:lbl, title:title, stone:p0.skey != null ? (p0.stone || '') : (p0.stone || ''), parts:pp, groups:[] }, seen = {};
       pp.forEach(function(p){ var nm = kmBase(p.name), key = nm + '|' + p.w + 'x' + p.d + 'x' + p.h;

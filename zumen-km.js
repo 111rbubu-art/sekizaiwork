@@ -713,6 +713,19 @@ function kmEnter(again){
 }
 function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; if (!L['中心線']) L['中心線'] = { name:'中心線', aci:1, css:'#c0392b', on:true, gap:false, dash:'dd' }; }
 // 右の 欄（組み立てから 作った ページ）
+// ── マスター・モデルが 変わった 部材（v0.9.88 本人「自動で 変更せず ラベルを 付けて、更新するか どうかを 決めさせて」）──
+// モデリングが 前の 中身の まま 渡し、変わった 部材を pay.pending＝[{ k, name, no, kind:'master'|'model', s }] に 載せる
+function kmPendOf(pg){ var P = (KM2 && KM2.pay && KM2.pay.pending) || []; if (!P.length || !pg) return [];
+  if (/^site\//.test(pg.key)) return P; var ks = {}; (pg.groups || (pg.B && pg.B.groups) || []).forEach(function(g){ (g.ks || []).forEach(function(k){ ks[k] = 1; }); });
+  return P.filter(function(x){ return ks[x.k]; }); }
+function kmPendBan(){ var el = document.getElementById('kmPend'); if (!el) return; var pg = BM && BM.active && BM.km && BM.pages && BM.pages[BM.cur], P = pg ? kmPendOf(pg) : [];
+  if (!P.length || !SKP || !SKP.zmAccept) { el.className = ''; el.innerHTML = ''; return; }
+  var all = (KM2.pay.pending || []).length, h = P.map(function(x){ return '<div class="r"><b>🔄 ' + esc(x.name) + '：' + (x.kind === 'master' ? 'マスターが 変わりました' : 'モデルが 変わりました') + ' <small>（' + esc(x.s) + '）</small></b>'
+    + '<button class="go" data-pa="' + esc(x.k) + '">更新する</button><button data-pk="' + esc(x.k) + '">このまま</button></div>'; }).join('');
+  if (all > 1) h += '<div class="r"><b></b><button class="go" data-pa="*">全部 更新する（' + all + '）</button></div>';
+  el.innerHTML = h; el.className = 'on';
+  [].forEach.call(el.querySelectorAll('[data-pa]'), function(b){ b.onclick = function(){ var k = b.dataset.pa; SKP.zmAccept(k === '*' ? null : [k], false); }; });
+  [].forEach.call(el.querySelectorAll('[data-pk]'), function(b){ b.onclick = function(){ SKP.zmAccept([b.dataset.pk], true); }; }); }
 function kmPanel(el){
   var pg = BM.pages[BM.cur], tpl = kmTpl(), h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';
   h += '<div class="muted">モデリングの 形から 作った ページです。寸法・文字・図は 手で 動かす・直す・消す・足すが できます。<b>直した 所は 覚えて</b>、モデリングを 変えて 作り直しても 当て直します。</div>';
@@ -725,6 +738,8 @@ function kmPanel(el){
   (KM2.sheetDiff || []).filter(function(x){ return types.indexOf(x.type) >= 0; }).forEach(function(x){ var S = x.S, src = S.from === 'job' ? 'この 墓の 加工図面' : 'マスターの 加工図面' + (S.ver ? '（版 ' + S.ver + '）' : ''), sz = [x.g.w, x.g.d, x.g.h].map(kmR).join('×');
     h += '<div class="muted" style="margin:6px 0">' + esc(x.no + '. ' + x.name) + '：' + (x.used ? esc(src) + 'を ' + esc(sz) + ' に 合わせて かいて います' : esc(sz) + ' の 自動の 図です')
       + ' <button class="b2" style="padding:1px 6px;font-size:11px" data-kmuse="' + esc(x.type) + '" data-v="' + (x.used ? 'auto' : 'sheet') + '">' + (x.used ? '自動の 図に する' : esc(src) + 'を もとに する') + '</button></div>'; });
+  if (SKP && SKP.openMaster && !fromPd) { var seen = {}; (pg.groups || []).forEach(function(g){ var k = g.ks && g.ks[0]; if (!k || seen[g.type]) return; seen[g.type] = 1;   // マスターの 加工図面を 橙の 別タブで（v0.9.88 本人「マスターで 直す ことも あるので 別タブで」）
+      h += '<div class="row"><button class="b2" data-kmmst="' + esc(k) + '" title="部材マスターに 登録した この 部材の 加工図面を 橙の［✏ 加工図面］タブで 開く（直して 保存すると マスターが 変わる）">📄 ' + esc(g.no + '. ' + g.name) + '：マスターの 加工図面を 開く</button></div>'; }); }
   if (types.length) { h += '<div class="row"><button class="b2" id="kmTplSave">📌 この ページの 部材の 直しを ひな形に</button></div>';
     var on = types.filter(function(t){ return tpl[t]; }); if (on.length) h += '<div class="muted">ひな形 あり：' + on.map(function(t){ return esc(t.split('/').pop()); }).join('・') + '　<a href="#" id="kmTplDel">ひな形を 消す</a></div>'; }
   h += '<div class="row"><button class="b2" id="kmClr">この ページの 直しを 消す（自動に 戻す）</button></div>';
@@ -734,6 +749,7 @@ function kmPanel(el){
   el.innerHTML = h;
   document.getElementById('kmRe').onclick = function(){ if (fromPd) kmBackToPd(); else kmEnter(true); };
   document.getElementById('kmRev').onclick = function(){ setTool('rev'); };
+  [].forEach.call(el.querySelectorAll('[data-kmmst]'), function(b){ b.onclick = function(){ if (!SKP.openMaster(b.dataset.kmmst)) alert('モデリングが 見つかりません'); }; });
   [].forEach.call(el.querySelectorAll('[data-kmuse]'), function(b){ b.onclick = function(){ kmUseMap()[b.dataset.kmuse] = b.dataset.v; kmSaveEd(); kmEnter(true); }; });
   document.getElementById('kmClr').onclick = function(){ if (!confirm('この ページの 手の 直し（動かした・消した・足した もの）を 消して 自動に 戻します')) return;
     Object.keys(pg.vw).forEach(function(v){ delete KMED.vm[v]; delete KMED.man[v]; Object.keys(KMED.ov).forEach(function(a){ if (a.indexOf(v + '/') === 0) delete KMED.ov[a]; }); });

@@ -716,6 +716,7 @@ function kmBuildAll(){
   // 自動の 寸法・文字の 直しで どの ページにも 当たらない もの（v0.9.95：前は 黙って 外れて いた。ページの 名前が 変わった とき など）
   var inB = {}, got = {}; BM.pages.forEach(function(pg){ Object.keys(pg.base || {}).forEach(function(a){ inB[a] = 1; }); }); KM2.lost.forEach(function(q){ if (q.aid) got[q.aid] = 1; });
   Object.keys(KMED.ov).forEach(function(a){ if (!inB[a] && !got[a]) KM2.lost.push({ aid:a, pg:'', what:KMED.ov[a].hide ? '消した 寸法・文字' : '自動の 寸法・文字の 直し' }); });
+  if (KM2.lost.length) kmLostDrop();   // v0.9.107 本人「よく わからない」→ 当て直せなかった 直しは 出さずに 捨てる（直しは マスターで）
 }
 
 // ── 対象外の ページ（v0.9.64・本人「石塔は 再利用し、土留だけ 作る ときに 使う」）──
@@ -772,7 +773,7 @@ function kmEnter(again){
     kmBuildAll(); kmSaveEd();
     document.body.classList.add('bmode'); document.body.classList.add('kmmode');
     bmShow(Math.min(keep, BM.pages.length - 1), true);
-    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + (KM2.lost.length ? '。当て直せなかった 直し ' + KM2.lost.length + ' 件（上の 一覧）' : '') : '図面を 作りました（' + BM.pages.length + ' ページ）', 6000);
+    toastMsg(again ? 'モデリングの 今の 形で 作り直しました（手の 直しは 当て直し）' + '' : '図面を 作りました（' + BM.pages.length + ' ページ）', 6000);
   }).catch(function(e){ alert('図面を 作れませんでした：' + (e && e.message || e)); });
 }
 function kmLayers(){ var L = BM.layers; if (!L['隠れ線']) L['隠れ線'] = { name:'隠れ線', aci:8, css:'#666', on:true, gap:false, dash:true }; if (!L['中心線']) L['中心線'] = { name:'中心線', aci:1, css:'#c0392b', on:true, gap:false, dash:'dd' }; }
@@ -788,7 +789,7 @@ function kmLostName(q){ var a = String(q.aid || q.pg || ''), nm = '';
   if (!nm) BM.pages.forEach(function(pg){ if (!nm && (a.indexOf(pg.key + '/') === 0 || a === pg.key || a === 'pg:' + pg.key)) nm = pg.title; });
   if (!nm) { var m = /\|([^/]*)\/(table|index|detail)/.exec(a); nm = m ? '前の ページ「' + m[1] + ' ' + ({ table:'部品寸法表', index:'加工指示図', detail:'詳細' })[m[2]] + '」' : a.split('/')[0]; }
   return nm; }
-function kmLostBan(){ var L = (KM2 && KM2.lost) || []; if (!L.length || KM2.lostAck) return '';
+function kmLostBan(){ var L = (KM2 && KM2.lost) || []; if (!L.length || KM2.lostAck || true) return '';   // v0.9.107 出さない（kmBuildAll で 捨てる）
   var by = {}; L.forEach(function(q){ var n = kmLostName(q), k = n + '｜' + q.what; by[k] = (by[k] || 0) + 1; });
   var ks = Object.keys(by), h = '<div class="r"><b>⚠ 当て直せなかった 手の 直し ' + L.length + ' 件（消して いません。図の 形が 変わった 所など）</b><button data-lost="ok">閉じる</button><button data-lost="del" title="この 直しを 捨てる（戻せません）">捨てる</button></div>';
   h += '<div style="font-weight:600;font-size:12px;padding:0 4px 2px">' + ks.slice(0, 8).map(function(k){ var q = k.split('｜'); return '・' + esc(q[0]) + '：' + esc(q[1]) + (by[k] > 1 ? ' ×' + by[k] : ''); }).join('<br>') + (ks.length > 8 ? '<br>…ほか ' + (ks.length - 8) : '') + '</div>';
@@ -805,45 +806,42 @@ function kmPendBan(){ var el = document.getElementById('kmPend'); if (!el) retur
   [].forEach.call(el.querySelectorAll('[data-pa]'), function(b){ b.onclick = function(){ var k = b.dataset.pa; SKP.zmAccept(k === '*' ? null : [k], false); }; });
   [].forEach.call(el.querySelectorAll('[data-pk]'), function(b){ b.onclick = function(){ SKP.zmAccept([b.dataset.pk], true); }; }); }
 function kmPanel(el){
-  var pg = BM.pages[BM.cur], tpl = kmTpl(), h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';
-  h += '<div class="muted">モデリングの 形から 作った ページです。寸法・文字・図は 手で 動かす・直す・消す・足すが できます。<b>直した 所は 覚えて</b>、モデリングを 変えて 作り直しても 当て直します。</div>';
-  var fromPd = KM2.pay && KM2.pay.master;
-  h += fromPd ? '<div class="row"><button class="b2 pr" id="kmRe">✎ 図面で 直すに 戻る</button></div><div class="muted">この 加工図面は 部材の 図面の 枠の 中です。形・寸法・注記は 図面で 直す ほうで 直して ください</div>' : '<div class="row"><button class="b2" id="kmRe">🔄 モデリングの 今の 形で 作り直す</button></div>';
-  h += '<div class="row"><button class="b2" id="kmRev">△ 修正の 印を 置く</button></div>';
-  var types = (pg.groups || []).map(function(g){ return g.type; });
-  // ひな形から 描き直す（v0.9.106 本人「加工図面に ひな型 再描写ボタンを」）：この ページの 手の 直し・部材の ひな形・自動の 図に した 印を 外し、
-  //   マスター（保存した）加工図面から 描き直す（2026-11-26 塔婆柱の 立体の 絵の 寸法が マスターの 位置に ならない＝前の 手の 直しが 上に 足される 見立て）
-  if (!fromPd && types.length) h += '<div class="row"><button class="b2" id="kmHina" title="この ページの 手の 直し・ひな形を 外して、マスターの 加工図面から 描き直す">🔄 ひな形から 描き直す</button></div>';
-  // 保存した 加工図面が モデリングと 大きさ違い（v0.9.59）：何が ちがうかと 使う／使わないの ボタン
-  // v0.9.81 本人「日本語の 意味が 分からない。マスターに 対して 寸法変更して 図面化は 普通の ことなので、エラーの 様な 表示は 不要」→ 赤・橙の 枠を やめ、小さな 案内 1 行と ボタン
-  (KM2.sheetDiff || []).filter(function(x){ return types.indexOf(x.type) >= 0; }).forEach(function(x){ var S = x.S, src = S.from === 'job' ? 'この 墓の 加工図面' : 'マスターの 加工図面' + (S.ver ? '（版 ' + S.ver + '）' : ''), sz = [x.g.w, x.g.d, x.g.h].map(kmR).join('×');
-    h += '<div class="muted" style="margin:6px 0">' + esc(x.no + '. ' + x.name) + '：' + (x.used ? esc(src) + 'を ' + esc(sz) + ' に 合わせて かいて います' : esc(sz) + ' の 自動の 図です')
-      + ' <button class="b2" style="padding:1px 6px;font-size:11px" data-kmuse="' + esc(x.type) + '" data-v="' + (x.used ? 'auto' : 'sheet') + '">' + (x.used ? '自動の 図に する' : esc(src) + 'を もとに する') + '</button></div>'; });
-  if (SKP && SKP.openMaster && !fromPd) { var seen = {}; (pg.groups || []).forEach(function(g){ var k = g.ks && g.ks[0]; if (!k || seen[g.type]) return; seen[g.type] = 1;   // マスターの 加工図面を 橙の 別タブで（v0.9.88 本人「マスターで 直す ことも あるので 別タブで」）
-      h += '<div class="row"><button class="b2" data-kmmst="' + esc(k) + '" title="部材マスターに 登録した この 部材の 加工図面を 橙の［✏ 加工図面］タブで 開く（直して 保存すると マスターが 変わる）">📄 ' + esc(g.no + '. ' + g.name) + '：マスターの 加工図面を 開く</button></div>'; }); }
-  if (types.length) { h += '<div class="row"><button class="b2" id="kmTplSave">📌 この ページの 部材の 直しを ひな形に</button></div>';
-    var on = types.filter(function(t){ return tpl[t]; }); if (on.length) h += '<div class="muted">ひな形 あり：' + on.map(function(t){ return esc(t.split('/').pop()); }).join('・') + '　<a href="#" id="kmTplDel">ひな形を 消す</a></div>'; }
-  h += '<div class="row"><button class="b2" id="kmClr">この ページの 直しを 消す（自動に 戻す）</button></div>';
+  // v0.9.107 本人「見づらい。不要な 物も あるので 整理」→ 案 4：部材ごとの 行（名前・大きさ・もとの 図の 札・📄 マスターを 開く・↺ 修正リセット）と △ 修正の 印 だけ。
+  //   外した もの：説明文・作り直す（タブで 自動）・自動の 図に する（自動は マスター図が 無い ときだけ）・ひな形（直しは マスターで）・ページの 直しを 消す・当て直せなかった 直しの 一覧（自動で 捨てる）
+  var pg = BM.pages[BM.cur], tpl = kmTpl(), U = kmUseMap(), fromPd = KM2.pay && KM2.pay.master, h = '<h3>' + esc(pg.title) + '</h3><div class="bd">';
+  if (fromPd) h += '<div class="row"><button class="b2 pr" id="kmRe">✎ 図面で 直すに 戻る</button></div>';
+  var seen = {}, gs = (pg.groups || []).filter(function(g){ if (seen[g.type]) return false; seen[g.type] = 1; return true; });
+  if (gs.length) { h += '<div class="kmlbl">部材</div>';
+    gs.forEach(function(g){ var S = kmSheetInfo(g), use = S && kmSheetUse(g, S), tag = use ? (S.from === 'job' ? 'この 墓の 図' : 'マスター' + (S.ver ? ' 版' + S.ver : '')) : '自動',
+        tip = use ? (S.from === 'job' ? 'この お墓に 保存した 加工図面を もとに かいて います' : 'マスターの 加工図面を この 大きさに 合わせて かいて います') : (S ? 'マスターの 加工図面が 使えない ため 自動の 図' : 'マスターの 加工図面が 無い ため 自動の 図'),
+        k = g.ks && g.ks[0], ed = kmPartEd(pg, g.type);
+      h += '<div class="kmpt"><div class="kmpt1"><div class="kmnm"><b>' + esc(g.no + '. ' + g.name) + '</b><small>' + esc([g.w, g.d, g.h].map(kmR).join('×')) + '</small></div>'
+        + '<span class="kmtag' + (use ? '' : ' a') + '" title="' + esc(tip) + '">' + esc(tag) + '</span>'
+        + (k && SKP && SKP.openMaster && !fromPd ? '<button class="kmic" data-kmmst="' + esc(k) + '" title="マスターの 加工図面を 橙の［✏ 加工図面］タブで 開く（直して 保存すると マスターが 変わる）">📄</button>' : '') + '</div>'
+        + '<div class="kmpt2"><button class="kmrs" data-kmrs="' + esc(g.type) + '"' + (ed ? '' : ' disabled') + ' title="この 部材の 手の 直しを 外して、' + (use ? 'マスターの 図' : '自動の 図') + 'に 戻す">↺ 修正リセット</button>' + (ed ? '' : '<small>直し なし</small>') + '</div></div>'; }); }
+  h += '<div class="row" style="margin-top:8px"><button class="b2" id="kmRev" style="width:100%">△ 修正の 印を 置く</button></div>';
   var rv = KMED.revs[pg.key] || []; if (rv.length) h += '<div class="muted">修正：' + rv.map(function(q){ return '△' + q.n + ' ' + esc(q.s); }).join('／') + '</div>';
-  if (KM2.lost && KM2.lost.length) h += '<div class="muted" style="color:#c03">当て直せなかった 直し ' + KM2.lost.length + ' 件：' + KM2.lost.slice(0, 6).map(function(q){ return esc(kmLostName(q)) + ' ' + esc(q.what); }).join('、') + '　<a href="#" id="kmLostClr">捨てる</a></div>';
   h += '</div>';
   el.innerHTML = h;
-  document.getElementById('kmRe').onclick = function(){ if (fromPd) kmBackToPd(); else kmEnter(true); };
+  var re = document.getElementById('kmRe'); if (re) re.onclick = function(){ kmBackToPd(); };
   document.getElementById('kmRev').onclick = function(){ setTool('rev'); };
   [].forEach.call(el.querySelectorAll('[data-kmmst]'), function(b){ b.onclick = function(){ if (!SKP.openMaster(b.dataset.kmmst)) alert('モデリングが 見つかりません'); }; });
-  [].forEach.call(el.querySelectorAll('[data-kmuse]'), function(b){ b.onclick = function(){ kmUseMap()[b.dataset.kmuse] = b.dataset.v; kmSaveEd(); kmEnter(true); }; });
-  var hb = document.getElementById('kmHina'); if (hb) hb.onclick = function(){ kmHinaRedraw(pg, types); };
-  document.getElementById('kmClr').onclick = function(){ if (!confirm('この ページの 手の 直し（動かした・消した・足した もの）を 消して 自動に 戻します')) return;
-    Object.keys(pg.vw).forEach(function(v){ delete KMED.vm[v]; delete KMED.man[v]; Object.keys(KMED.ov).forEach(function(a){ if (a.indexOf(v + '/') === 0) delete KMED.ov[a]; }); });
-    delete KMED.man['pg:' + pg.key]; Object.keys(KMED.ov).forEach(function(a){ if (a.indexOf(pg.key + '/') === 0) delete KMED.ov[a]; });
-    pushUndo(); kmRegen(pg); D = pg.doc; kmSaveEd(); changed(); bmPages(); bmPanel(); };
-  var ts = document.getElementById('kmTplSave'); if (ts) ts.onclick = function(){ kmHarvest(pg); var T = kmTpl();
-    types.forEach(function(t){ var e = { ov:{}, vm:{}, man:{} }; Object.keys(KMED.ov).forEach(function(a){ if (a.indexOf(t + '/') === 0) e.ov[a] = KMED.ov[a]; });
-      Object.keys(KMED.vm).forEach(function(v){ if (v.indexOf(t + '/') === 0) e.vm[v] = KMED.vm[v]; }); Object.keys(KMED.man).forEach(function(v){ if (v.indexOf(t + '/') === 0) e.man[v] = KMED.man[v]; }); T[t] = e; });
-    kmLs('zumen.kmTpl', T); toastMsg('ひな形に 覚えました（ほかの 案件の 同じ 部材にも 使います）', 4000); bmPanel(); };
-  var td = document.getElementById('kmTplDel'); if (td) td.onclick = function(ev){ ev.preventDefault(); var T = kmTpl(); types.forEach(function(t){ delete T[t]; }); kmLs('zumen.kmTpl', T); bmPanel(); };
-  var lc = document.getElementById('kmLostClr'); if (lc) lc.onclick = function(ev){ ev.preventDefault(); kmLostDrop(); kmPendBan(); bmPanel(); };
+  [].forEach.call(el.querySelectorAll('[data-kmrs]'), function(b){ b.onclick = function(){ var g = gs.filter(function(x){ return x.type === b.dataset.kmrs; })[0]; kmResetPart(pg, b.dataset.kmrs, g ? g.no + '. ' + g.name : ''); }; });
 }
+// 部材の 手の 直しが あるか（その 部材の 図＝vid が「型/」で 始まる・ひな形・自動の 図に した 印）
+// 直しを 拾った あと（changed の 0.7 秒 あと）に ボタンの 押せる／押せないを 合わせる
+function kmRsSync(){ [].forEach.call(document.querySelectorAll('[data-kmrs]'), function(b){ var on = kmPartEd(null, b.dataset.kmrs); b.disabled = !on; var sm = b.nextElementSibling; if (on && sm) sm.remove(); else if (!on && !sm) { sm = document.createElement('small'); sm.textContent = '直し なし'; b.parentNode.appendChild(sm); } }); }
+function kmPartEd(pg, t){ var T = kmTpl(), U = kmUseMap(), pre = t + '/', any = function(o){ return Object.keys(o || {}).some(function(a){ return a.indexOf(pre) === 0 && !(Array.isArray(o[a]) && !o[a].length); }); };
+  return any(KMED.ov) || any(KMED.vm) || any(KMED.man) || !!T[t] || U[t] === 'auto'; }
+// 修正リセット（v0.9.107）：その 部材の 手の 直し（ov・vm・man）・ひな形・自動の 図に した 印を 外して 描き直す（v0.9.106 ひな形から 描き直す を 部材ごとに）
+function kmResetPart(pg, t, nm){
+  if (!confirm((nm ? nm + '：' : '') + 'この 部材の 手の 直し（動かした・消した・足した もの）を 外して、もとの 図に 戻します。\n（すぐ あとなら［元に 戻す］で 戻せます）')) return;
+  var T = kmTpl(), U = kmUseMap(), pre = t + '/';
+  KM2.hinaBak = { ed:JSON.parse(JSON.stringify(KMED)), tpl:JSON.parse(JSON.stringify(T)), use:JSON.parse(JSON.stringify(U)), key:pg.key, msg:(nm || '部材') + 'の 修正を リセット しました' };
+  ['ov', 'vm', 'man'].forEach(function(f){ Object.keys(KMED[f]).forEach(function(a){ if (a.indexOf(pre) === 0) delete KMED[f][a]; }); });
+  delete T[t]; delete U[t]; kmLs('zumen.kmTpl', T);
+  kmRegen(pg);   // 直しの ない 図に して から（kmEnter の 拾い直しで 外した 直しが 戻らない ように）
+  KM2.sheetCache = {}; kmSaveEd(); kmEnter(true); kmHinaBan(); }
 // ひな形から 描き直す（v0.9.106）：手の 直し（ov・vm・man）・部材の ひな形（zumen.kmTpl）・［自動の 図に する］の 印を 外し、束を 作り直す。
 //   前の 状態は KM2.hinaBak に 残し、上の 案内の［元に 戻す］で 戻せる
 function kmHinaRedraw(pg, types){
@@ -858,7 +856,7 @@ function kmHinaRedraw(pg, types){
   toastMsg('ひな形から 描き直しました', 3000); kmHinaBan(); }
 function kmHinaBan(){ var B = KM2.hinaBak; if (!B) return; var el = document.getElementById('kmHinaBack'); if (el) el.remove();
   el = document.createElement('div'); el.id = 'kmHinaBack'; el.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#1e293b;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;z-index:50;box-shadow:0 2px 8px #0005';
-  el.innerHTML = 'ひな形から 描き直しました　<button style="margin-left:8px;background:#fff;color:#1e293b;border:0;border-radius:4px;padding:3px 10px;font-weight:700;cursor:pointer">元に 戻す</button><button style="margin-left:4px;background:transparent;color:#fff;border:0;cursor:pointer">✕</button>'; document.body.appendChild(el);
+  el.innerHTML = esc(B.msg || 'ひな形から 描き直しました') + '　<button style="margin-left:8px;background:#fff;color:#1e293b;border:0;border-radius:4px;padding:3px 10px;font-weight:700;cursor:pointer">元に 戻す</button><button style="margin-left:4px;background:transparent;color:#fff;border:0;cursor:pointer">✕</button>'; document.body.appendChild(el);
   var bs = el.querySelectorAll('button');
   bs[0].onclick = function(){ KMED = B.ed; kmLs('zumen.kmTpl', B.tpl); var U = kmUseMap(); Object.keys(U).forEach(function(k){ delete U[k]; }); Object.assign(U, B.use); KM2.hinaBak = null; el.remove(); KM2.sheetCache = {}; kmSaveEd(); KM_NOHV = 1; kmEnter(true); toastMsg('元に 戻しました', 2500); };
   bs[1].onclick = function(){ KM2.hinaBak = null; el.remove(); };

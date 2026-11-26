@@ -817,8 +817,18 @@ var KM = (function(){
       if (ch) { res.boxes[fk] = nb; (res.snapK = res.snapK || {})[fk] = sh3; }
     });
   }
+  // 前の 位置の アンカーの 穴（anc:1）を 外す（v0.8.110・2026-11-26 本人「金具の 位置を 変えたのに 加工図面が 変わらない」）。
+  //   ［〇〇家の 墓に 保存］で 穴の 入った 形が ST.shapes に 残り、金具を 動かすと 前の 穴＋新しい 穴に なって いた。穴は 毎回 今の 金具から 作り直す
+  //   外した 穴は shape.__ancOld（面ごと）に 残す：保存した 加工図面（sketch）に かかれた 前の 穴を 図面化で 消す ため（zumen-km.js kmAncSheet）
+  function stripAnc(sh){ var c = sh && (sh.components || [])[0], v = c && c.shape && c.shape.views, n = 0, old = {}; if (!v) return 0; delete sh.__ancOld;
+    ['front', 'side', 'top'].forEach(function(f){ var o = v[f]; if (!o) return; ['holes', 'cuts'].forEach(function(t){ if (!o[t]) return; var a = o[t].filter(function(h){ return !h.anc; });
+      if (t === 'holes') o[t].forEach(function(h){ if (h.anc) (old[f] = old[f] || []).push(h); });
+      n += o[t].length - a.length; o[t] = a; }); });
+    if (n) sh.__ancOld = old; return n; }
   function anchorHoles(res){
     snapKana(res);
+    Object.keys(res.parts).forEach(function(k){ var q = res.parts[k], sh = q && q.shape; if (!sh || sh.bolts && sh.bolts.length || !JSON.stringify(sh.components || []).match(/"anc":1/)) return;
+      q.shape = JSON.parse(JSON.stringify(sh)); q.ancOld = stripAnc(q.shape); delete q.shape.__anc; q.anc = 0; });
     res.anc = []; var add = {};
     Object.keys(res.parts).forEach(function(fk){
       var fp = res.parts[fk], sh = fp.shape, bl = sh && sh.bolts, fb = res.boxes[fk]; if (!bl || !bl.length || !fb || !(fp.free || fp.setId)) return;   // セットに 入れた 金具も 穴を 開ける（v0.8.94 本人「穴が 消えました」）
@@ -1018,6 +1028,6 @@ var KM = (function(){
   }
 
   return { SHAKU:SHAKU, sai:sai, shapeSize:shapeSize, glOf:glOf, fixJoints:fixJoints, evalExpr:evalExpr, formula:formula, KINDS:KINDS, variants:variants, gather:gather, pos:pos,
-    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, placeFree:placeFree, anchorHoles:anchorHoles, oriSize:oriSize, oriPt:oriPt, frameOf:frameOf, framePt:framePt, rotY:rotY, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
+    applyDim:applyDim, applyPos:applyPos, addSets:addSets, normFit:normFit, fitMove:fitMove, fitCur:fitCur, setSelId:setSelId, setToVariant:setToVariant, interferences:interferences, compute:compute, placeFree:placeFree, anchorHoles:anchorHoles, stripAnc:stripAnc, oriSize:oriSize, oriPt:oriPt, frameOf:frameOf, framePt:framePt, rotY:rotY, autoDesign:autoDesign, saiGroups:saiGroups, estimate:estimate, newState:newState };
 })();
 if (typeof module !== 'undefined') module.exports = KM;

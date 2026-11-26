@@ -271,22 +271,45 @@ function kmDimPaper(n2, d, s, th){ n2.al = d.al > 0 ? d.al * s : S.arrow > 0 ? S
 //   2026-11-25 本人「穴加工の 位置ずれは 直ったが 今回は 消えた」：v0.9.59 で 保存した 加工図面を 使う ように なり、
 //   マスターの 図（穴なし）だけ 描いて 案件で 開いた アンカーの 穴が 出なく なって いた。面の 外形（pv）に 合わせて 円・中心線・位置の 寸法・書き込みを 足す
 function kmAncSheet(sk0, g, n){ var k = g.ks[0], p = kmPart(k); if (!p || !p.shape || !sk0) return sk0;
-  var v = kmViews(p, g.w, g.d, g.h), W = +g.w, D = +g.d, H = +g.h, FR = { front:'前から', back:'背面から' };
+  var W = +g.w, D = +g.d, H = +g.h;
   // 面の 候補：穴の 開く 面を 先に（背面から の 穴は 背面図）、無ければ 反対の 面に 隠れ線で（v0.9.64 本人「腰石前の 加工図面に 穴が 出ない」＝背面図と 右側面図だけの 図）
-  var L = []; ((v.front && v.front.holes) || []).forEach(function(h){ if (!h.anc) return; var bk = h.from === 'back'; L.push({ pvs:bk ? ['back', 'front'] : ['front', 'back'], h:h, from:bk ? '背面から' : '前から' }); });
-  ((v.side && v.side.holes) || []).forEach(function(h){ if (!h.anc) return; var lf = h.from === 'left'; L.push({ pvs:lf ? ['left', 'side'] : ['side', 'left'], h:h, from:lf ? '左の 面から' : '右の 面から' }); });
-  ((v.top && v.top.holes) || []).forEach(function(h){ if (h.anc) L.push({ pvs:['top'], h:h, from:'上から' }); });
-  if (!L.length) return sk0;
+  var listOf = function(v){ var L = []; ((v.front && v.front.holes) || []).forEach(function(h){ if (!h.anc) return; var bk = h.from === 'back'; L.push({ pvs:bk ? ['back', 'front'] : ['front', 'back'], h:h, from:bk ? '背面から' : '前から' }); });
+    ((v.side && v.side.holes) || []).forEach(function(h){ if (!h.anc) return; var lf = h.from === 'left'; L.push({ pvs:lf ? ['left', 'side'] : ['side', 'left'], h:h, from:lf ? '左の 面から' : '右の 面から' }); });
+    ((v.top && v.top.holes) || []).forEach(function(h){ if (h.anc) L.push({ pvs:['top'], h:h, from:'上から' }); }); return L; };
+  var L = listOf(kmViews(p, g.w, g.d, g.h));
+  // 前の 位置の 穴（v0.9.84）：［〇〇家の 墓に 保存］した 図に かかれた 穴。金具を 動かした あと も 残って いた（2026-11-26 本人「金具の 位置を 変えたのに 加工図面が 変わらない」）
+  //   モデリングが 外した 前の 穴（shape.__ancOld）を 同じ 写し方で 図に 置き、今の 穴と 重ならない ものは 円・中心線・位置の 寸法を 消す
+  var Lo = [], AO = p.shape.__ancOld; if (AO) { var ps = JSON.parse(JSON.stringify(p.shape)), vv = ps.components && ps.components[0] && ps.components[0].shape && ps.components[0].shape.views;
+    if (vv) { ['front', 'side', 'top'].forEach(function(f){ if (!AO[f] || !AO[f].length) return; vv[f] = vv[f] || {}; vv[f].holes = AO[f].map(function(h){ return Object.assign({}, h, { anc:1 }); }); });
+      ['front', 'side', 'top'].forEach(function(f){ if (vv[f] && !AO[f]) vv[f].holes = []; });
+      Lo = listOf(kmViews({ shape:ps }, g.w, g.d, g.h)); } }
+  if (!L.length && !Lo.length) return sk0;
   var sk = JSON.parse(JSON.stringify(sk0)), bbOf = function(pv){ var b = null;
     sk.ents.forEach(function(e){ if (e.pv !== pv || e.t !== 'pl' || !e.v || e.frame) return; var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
       e.v.forEach(function(q){ x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); });
       if (!b || (x1 - x0) * (y1 - y0) > (b.x1 - b.x0) * (b.y1 - b.y0)) b = { x0:x0, x1:x1, y0:y0, y1:y1 }; }); return b; };
   // 面ごとの 大きさ・x の 原点・左右の 向き（背面図・左側面図は 左右が 逆）
   var EXT = { front:[W, H], back:[W, H], side:[D, H], left:[D, H], top:[W, D] }, OX = { front:W / 2, back:W / 2, side:0, left:0, top:W / 2 }, MIR = { back:1, left:1 }, grp = {};
-  L.forEach(function(a){ var pv = null, b = null; a.pvs.some(function(q){ var bb = bbOf(q); if (bb) { pv = q; b = bb; } return !!bb; }); if (!b) return;
-    var hid = pv !== a.pvs[0], e = EXT[pv], kx = (b.x1 - b.x0) / e[0], ky = (b.y1 - b.y0) / e[1];
+  var place = function(a){ var pv = null, b = null; a.pvs.some(function(q){ var bb = bbOf(q); if (bb) { pv = q; b = bb; } return !!bb; }); if (!b) return null;
+    var e = EXT[pv], kx = (b.x1 - b.x0) / e[0], ky = (b.y1 - b.y0) / e[1];
     var xs = a.h.pts.map(function(q){ return q[0]; }), ys = a.h.pts.map(function(q){ return q[1]; }), cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, cy = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
-    var r = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2, u = (cx + OX[pv]) * kx, c = { x:MIR[pv] ? b.x1 - u : b.x0 + u, y:b.y0 + cy * ky };
+    var r = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2, u = (cx + OX[pv]) * kx;
+    return { pv:pv, b:b, kx:kx, r:r, hid:pv !== a.pvs[0], c:{ x:MIR[pv] ? b.x1 - u : b.x0 + u, y:b.y0 + cy * ky } }; };
+  var near = function(a, b, t){ return Math.abs(a - b) < (t || 0.5); };
+  var now = L.map(place).filter(Boolean);
+  Lo.map(place).forEach(function(o){ if (!o || now.some(function(m){ return m.pv === o.pv && near(m.c.x, o.c.x) && near(m.c.y, o.c.y); })) return;
+    var c = o.c, R = o.r * o.kx, b = o.b;
+    sk.ents = sk.ents.filter(function(e){
+      if (e.t === 'circle' && e.c && Math.hypot(e.c.x - c.x, e.c.y - c.y) < 1 && Math.abs(e.r - R) < 1) return false;
+      if (e.t === 'line' && /中心/.test(e.layer || '') && e.a && e.b && Math.hypot((e.a.x + e.b.x) / 2 - c.x, (e.a.y + e.b.y) / 2 - c.y) < 1 && Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y) < Math.max(R * 8, 30)) return false;
+      return true; });
+    // 位置の 寸法：片方が 穴の 中心の 線（横は x・縦は y）、もう 片方が 面の 端
+    sk.dims = (sk.dims || []).filter(function(d){ if (!d.a || !d.b) return true;
+      var hx = function(p, q){ return near(p.x, c.x) && (near(q.x, b.x0) || near(q.x, b.x1)); }, vy = function(p, q){ return near(p.y, c.y) && (near(q.y, b.y0) || near(q.y, b.y1)); };
+      if (d.mode === 'h' && (hx(d.a, d.b) || hx(d.b, d.a))) return false;
+      if (d.mode === 'v' && (vy(d.a, d.b) || vy(d.b, d.a))) return false;
+      return true; }); });
+  L.forEach(function(a, ai){ var o = place(a); if (!o) return; var pv = o.pv, b = o.b, kx = o.kx, r = o.r, hid = o.hid, c = o.c;
     if (sk.ents.some(function(q){ return q.t === 'circle' && q.c && Math.hypot(q.c.x - c.x, q.c.y - c.y) < 1 && Math.abs(q.r - r * kx) < 1; })) return;   // 保存した 図に もう ある
     var G = grp[pv] = grp[pv] || { b:b, cs:[], txt:{} }; G.cs.push(c);
     var tt = 'Φ' + kmR(r * 2) + 'mm 深' + kmR(a.h.depth) + 'mm'; G.txt[tt + '|' + a.from] = (G.txt[tt + '|' + a.from] || 0) + 1;

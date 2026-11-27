@@ -356,8 +356,26 @@ function ktNokDate(v) {
 }
 function ktNokNames(v) {
   return String(v || '').split(/[、,，・･\/／\s　&＆+＋]+/).map(function (x) {
-    return x.replace(/(様|さん|氏)$/, '').trim();
+    return x.replace(/[（(][^）)]*[）)]/g, '').replace(/(様|さん|氏)$/, '').trim();
   }).filter(Boolean);
+}
+/* 工事関連の行（HakaSpec の JSON）から、納骨リストと同じ形の行を作る（v0.10.5）。
+   工事仕様で「納骨（お骨出し）」を選んでいて、日付のある分だけ。区分の お骨出し は 骨出し に そろえる。 */
+function ktNokFromKouji(rows) {
+  var C = KT_NOKOTSU, out = [];
+  (rows || []).forEach(function (f) {
+    var raw = f[C.koujiSpec];
+    if (!raw || typeof raw !== 'string') return;
+    var sp; try { sp = JSON.parse(raw) || {}; } catch (e) { return; }
+    var k = sp[C.koujiKey];
+    if (!k || !k['日付'] || (sp.categories || []).indexOf(C.koujiKey) < 0) return;
+    var kind = String(k['区分'] || '納骨').trim();
+    if (kind === 'お骨出し') kind = '骨出し';
+    var o = { _src: '工事関連' };
+    o[C.fKind] = kind; o[C.fDate] = k['日付']; o[C.fPerson] = k['担当者'] || '';
+    out.push(o);
+  });
+  return out;
 }
 function ktNokotsuCount(items, employees, payRows, from, to, holidays) {
   var C = KT_NOKOTSU, byEmp = {}, skipped = [];
@@ -376,7 +394,9 @@ function ktNokotsuCount(items, employees, payRows, from, to, holidays) {
     if (!d || d < from || d > to) return;
     // 定休日（土日・14日15日・正月・5月・夏 など会社の休日）の納骨だけが手当の対象（本人の指示）
     var offDay = !!ktDayKind(d, holidays);
-    ktNokNames(it[C.fPerson]).forEach(function (n) {
+    var names = ktNokNames(it[C.fPerson]);
+    if (!names.length) skipped.push({ date: d, name: '（担当が空）', why: (it._src || '納骨リスト') + 'の ' + kind + ' に担当が入っていない' });
+    names.forEach(function (n) {
       var hit = emps.filter(function (x) {
         return x.key ? x.key === n : (x.full && x.full.indexOf(n) === 0);
       });

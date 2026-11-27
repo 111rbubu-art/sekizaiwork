@@ -149,12 +149,15 @@ function ktLoadAdminExtras() {
     .catch(function (e) { KT.pay = []; KT.payState = 'err'; KT.payErr = e.message || String(e); })
     .then(redraw);
   var C = KT_NOKOTSU;
-  ktFetchAll(C.listId + '/items?$top=999&$expand=fields($select=' +
+  var nokP = ktFetchAll(C.listId + '/items?$top=999&$expand=fields($select=' +
              [C.fPerson, C.fKind, C.fDate].join(',') + ')')
-    .then(function (items) {
-      KT.nok = items.map(function (it) { return it.fields || {}; });
-      KT.nokState = 'ok';
-    })
+    .then(function (items) { return items.map(function (it) { return it.fields || {}; }); });
+  // 工事関連の 工事仕様に付く 納骨（お骨出し）（v0.10.5）。読めなくても 納骨リストの分は出す
+  var kjP = ktFetchAll(C.koujiListId + '/items?$top=999&$expand=fields($select=' + C.koujiSpec + ')')
+    .then(function (items) { return ktNokFromKouji(items.map(function (it) { return it.fields || {}; })); })
+    .catch(function (e) { KT.nokKjErr = e.message || String(e); return []; });
+  Promise.all([nokP, kjP])
+    .then(function (r) { KT.nok = r[0].concat(r[1]); KT.nokState = 'ok'; })
     .catch(function (e) { KT.nok = []; KT.nokState = 'err'; KT.nokErr = e.message || String(e); })
     .then(redraw);
 }
@@ -1131,7 +1134,7 @@ function ktViewAdmin() {
   h += '<p class="muted" style="margin:.3rem 0 0;font-size:.8rem">残業代 ＝ 月給 ÷ 月平均所定労働時間 × 割増率' +
        '（時間外 ' + KT_RATE.overtime + '・60時間超 ' + KT_RATE.overtime60 + '・法定休日 ' + KT_RATE.legalHoliday +
        '・深夜 +' + KT_RATE.nightAdd + '）。金額にカーソルを合わせると内訳が出ます。' +
-       ' ' + ktEsc(KT_NOKOTSU.label) + 'は 納骨リストの 納骨・納骨戒切・お骨だし のうち 定休日の分で、納骨担当が正社員の回数です。</p>';
+       ' ' + ktEsc(KT_NOKOTSU.label) + 'は 納骨リストの 納骨・納骨戒切・骨出し と 工事関連の 納骨（お骨出し）のうち 定休日の分で、担当が正社員の回数です。</p>';
   var ys = ktYearSched(+mr.to.slice(0, 4), KT.holidays, null);
   h += '<p class="muted" style="margin:.2rem 0 0;font-size:.8rem">月平均所定労働時間（' + ys.year + '年）＝ 所定労働日 ' +
        ys.workDays + '日（休日 ' + ys.offDays + '日。うち会社の休日の画面で登録 ' + ys.regDays + '日）× ' +
@@ -1148,6 +1151,10 @@ function ktViewAdmin() {
   }
   if (KT.nokState === 'err') {
     h += '<div class="alert cau">納骨リストが読めません：' + ktEsc(KT.nokErr || '') + '</div>';
+  }
+  if (KT.nokState === 'ok' && KT.nokKjErr) {
+    h += '<div class="alert cau">工事関連（納骨（お骨出し））が読めません：' + ktEsc(KT.nokKjErr) +
+         '。納骨リストの分だけで数えています。</div>';
   }
   if (nokRes && nokRes.skipped.length) {
     // 外注先などは毎月出るので、名前ごとにまとめて小さく出す

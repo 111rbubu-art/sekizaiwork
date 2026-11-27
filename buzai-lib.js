@@ -168,6 +168,35 @@
   // 色の グループ（モデリングの ソリッドの 色＝グループ。セットの 枠 slot.kumi、名前は セットの kname{ 色: 名前 }）
   var KPAL = [['#3b6fd8', '青'], ['#2fa36b', '緑'], ['#8a5cc8', '紫'], ['#e08a2a', '橙'], ['#d94848', '赤'], ['#e6c23a', '黄'], ['#36a7c9', '水色'], ['#c95c9a', '桃'], ['#8b5a2b', '茶'], ['#7a8a99', '灰'], ['#1f3f8a', '紺'], ['#9bbf3a', '黄緑']];
   var KBASE = [{ id:'tower', col:'#3b6fd8', name:'石塔' }, { id:'fence', col:'#2fa36b', name:'外柵' }, { id:'boshi', col:'#8a5cc8', name:'墓誌' }];
-  root.BL = { KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, isKana:isKana, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  // 端末の 保存（localStorage・業務アプリ・彫刻原稿・モデリング・図面で 共有）の 片づけ（2026-11-27 本人「古い 下書きを 自動で 捨てる」）
+  //   案件ごとの 下書き kumitate.state.case:<フォルダ>（＋casefn:・casesig:）は 開くたびに 増え、消す 所が 無かった。
+  //   最近 開いた 10 件と 開いて いる 案件は 残す。それより 古い うち、SP に 保存した 中身と 同じ（casesig が 合う）ものは 捨てる。
+  //   保存して いない ものは 30 日 開かなければ 捨てる（案件の データは SP が 元。PC の 下書きは 黙って 開かない 方針）
+  var LS_KEEP = 10, LS_DAYS = 30, LS_USED = 'kumitate.caseUsed', LS_PRE = ['kumitate.state.case:', 'kumitate.casefn:', 'kumitate.casesig:'];
+  function lsSig(t){ var h = 0; for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return t.length + ':' + h; }
+  function lsJ(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function lsUsed(fp){ if (!fp) return; try { var u = lsJ(LS_USED) || {}; u[fp] = Date.now(); localStorage.setItem(LS_USED, JSON.stringify(u)); } catch (e) {} }
+  function lsTidy(keepFp){ var R = { n:0, kb:0 }; try {
+    var u = lsJ(LS_USED) || {}, now = Date.now(), seen = {}, fps = [], i, k;
+    for (i = 0; i < localStorage.length; i++) { k = localStorage.key(i) || ''; LS_PRE.forEach(function(p){ if (k.indexOf(p) === 0) { var f = k.slice(p.length); if (!seen[f]) { seen[f] = 1; fps.push(f); } } }); }
+    fps.sort(function(a, b){ return (u[b] || 0) - (u[a] || 0); });
+    fps.forEach(function(f, j){ if (f === keepFp || j < LS_KEEP) return;
+      var st = localStorage.getItem(LS_PRE[0] + f), sg = lsJ(LS_PRE[2] + f);
+      var saved = !st || (sg && lsSig(st) === sg), old = u[f] && now - u[f] > LS_DAYS * 864e5;
+      if (!saved && !old) { if (!u[f]) u[f] = now; return; }   // 保存して いない 下書きは 初めて 見た 日から 30 日 待つ
+      LS_PRE.forEach(function(p){ var t = localStorage.getItem(p + f); if (t != null) { R.kb += (p.length + f.length + t.length) * 2 / 1024; localStorage.removeItem(p + f); } });
+      delete u[f]; R.n++; });
+    Object.keys(u).forEach(function(f){ if (!seen[f]) delete u[f]; });
+    localStorage.setItem(LS_USED, JSON.stringify(u));
+  } catch (e) {} R.kb = Math.round(R.kb); return R; }
+  // いまの 使い方（多い 順）と 合計 KB。いっぱいの 知らせに 使う
+  var LS_NAME = [['kumitate.state.case:', 'モデリングの 案件の 下書き'], ['kumitate.state.set:', 'セットを 直す 下書き'], ['kumitate.zumen', '加工図面への 受け渡し'], ['zumen.autosave', '図面の 自動保存'], ['zumen.kmTpl', '加工図面の ひな形'], ['kumitate.lib', '部材マスターの 部材'], ['buzai.setThumbs', 'セットの 絵'], ['chokoku', '彫刻原稿'], ['kumitate.', 'モデリング'], ['zumen.', '図面']];
+  function lsUsage(){ var g = {}, tot = 0; try { for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i) || '', n = (k.length + (localStorage.getItem(k) || '').length) * 2 / 1024; tot += n;
+      var nm = '業務アプリ ほか'; for (var j = 0; j < LS_NAME.length; j++) if (k.indexOf(LS_NAME[j][0]) === 0) { nm = LS_NAME[j][1]; break; } g[nm] = (g[nm] || 0) + n; } } catch (e) {}
+    return { kb:Math.round(tot), list:Object.keys(g).map(function(nm){ return { name:nm, kb:Math.round(g[nm]) }; }).sort(function(a, b){ return b.kb - a.kb; }) }; }
+  // 書いて みて、いっぱいなら 片づけて もう 1 回（書けたら true）
+  function lsTry(k, t, keepFp){ try { localStorage.setItem(k, t); return true; } catch (e) {} lsTidy(keepFp); try { localStorage.setItem(k, t); return true; } catch (e) { return false; } }
+  function lsFullMsg(what){ var u = lsUsage(); return 'この 端末の ブラウザの 保存が いっぱいで、' + what + 'を 覚えられませんでした。SP への 保存は できます。\n\n使って いる 量（合計 ' + u.kb + ' KB）\n' + u.list.slice(0, 5).map(function(x){ return '・' + x.name + '　' + x.kb + ' KB'; }).join('\n'); }
+  root.BL = { lsUsed:lsUsed, lsTidy:lsTidy, lsUsage:lsUsage, lsTry:lsTry, lsFullMsg:lsFullMsg, KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, isKana:isKana, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

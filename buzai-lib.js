@@ -157,8 +157,11 @@
   function mhPut(key, src){ MHC[key] = src; return mhDb().then(function(db){ return new Promise(function(ok){ var t = db.transaction('img', 'readwrite'); t.objectStore('img').put(src, key); t.oncomplete = ok; t.onerror = ok; }); }).catch(function(){}); }
   function mhGet(m){ if (!m || !m.key) return Promise.resolve(''); if (MHC[m.key]) return Promise.resolve(MHC[m.key]);
     return mhDb().then(function(db){ return new Promise(function(ok){ var q = db.transaction('img').objectStore('img').get(m.key); q.onsuccess = function(){ if (q.result) MHC[m.key] = q.result; ok(q.result || ''); }; q.onerror = function(){ ok(''); }; }); }).catch(function(){ return ''; }); }
-  function mhIn(p){ var m = p && p.mihon; if (!m || !m.src) return; m.key = m.key || (p.id + '@' + (m.at || Date.now())); mhPut(m.key, m.src); delete m.src; }
-  function mhOut(d){ if (!d || !d.mihon) return Promise.resolve(d); return mhGet(d.mihon).then(function(src){ if (!src) return d; var e = JSON.parse(JSON.stringify(d)); e.mihon.src = src; return e; }); }
+  // 加工図面の 絵（kzu：図面アプリが 図枠の 中を 描いた 画像・v0.3.38）も 同じ しくみで 持つ
+  var MH_F = ['mihon', 'kzu'];
+  function mhIn(p){ if (!p) return; MH_F.forEach(function(f){ var m = p[f]; if (!m || !m.src) return; m.key = m.key || (p.id + (f === 'kzu' ? '#kz@' : '@') + (m.at || Date.now())); mhPut(m.key, m.src); delete m.src; }); }
+  function mhOut(d){ if (!d || !MH_F.some(function(f){ return d[f]; })) return Promise.resolve(d); var e = JSON.parse(JSON.stringify(d));
+    return Promise.all(MH_F.map(function(f){ return e[f] ? mhGet(e[f]).then(function(src){ if (src) e[f].src = src; }) : null; })).then(function(){ return e; }); }
   function mhNow(m){ return m && m.key ? MHC[m.key] || '' : ''; }
   // セットが SharePoint に ある 中身と 同じか（v0.3.16。本人「基本的に SP に 保存する 様に したい」）
   //   SP から 読んだ／SP に 保存した ときの 中身の 印（__spSig）を 持ち、いまの 中身と ちがえば「この 端末だけ」

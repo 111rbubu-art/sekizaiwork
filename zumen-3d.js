@@ -3,7 +3,7 @@
 import * as THREE from './lib/three-0.160.0/three.module.min.js';
 import { OrbitControls } from './lib/three-0.160.0/OrbitControls.js?v=2';
 import { TessellateModifier } from './lib/three-0.160.0/TessellateModifier.js';
-import { Brush, Evaluator, INTERSECTION, SUBTRACTION } from './lib/three-bvh-csg-0.0.16/index.module.js';
+import { Brush, Evaluator, INTERSECTION, SUBTRACTION, ADDITION } from './lib/three-bvh-csg-0.0.16/index.module.js';
 
 // マウスの 操作を Fusion に そろえる：ホイール＝ズーム（マウスの 所へ）・中ボタン ドラッグ＝移動・Shift＋中ボタン＝回転・中ボタン 2 回＝全体。
 // 左は 押して 選ぶ だけ（ドラッグしても 動かない）。右は 何も しない。指（タッチ）は 前の まま（1 本＝回転・2 本＝ズームと 移動）
@@ -252,6 +252,22 @@ export function partGroup(m, fine, mat, lineMat){
           nn = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], o = [(a[0] + b[0] + c[0]) / 3 - cx, (a[1] + b[1] + c[1]) / 3 - cy, (a[2] + b[2] + c[2]) / 3 - cz];
         (nn[0] * o[0] + nn[1] * o[1] + nn[2] * o[2] < 0 ? [a, c, b] : t).forEach(function(p){ arr.push(p[0], p[1], p[2]); }); });
       var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); g.computeVertexNormals(); g.userData.lean = 1; return g; }
+    // 天端の 四方と 縦の 四辺が 同じ R の 角（花立など）：3 つの 面の 形を 重ねる だけ だと 角が 尖って 斜めの 筋に なる → 角を 球（R）で 丸める（v0.9.113）
+    //   2026-11-28 本人「参考の 図面と 作った 図面で 角の 部分の 形状が 異なる」（花立：天端 四方・縦 四辺 R9。参考図は 角が 球の ように 丸い）
+    if (!BW) res = ballCorners(res);
+    function ballCorners(res){
+      var tO = v.top && v.top.out, fO = v.front.out, sO = v.side && v.side.out; if (!tO || !sO) return res;
+      var near = function(a, b){ return Math.abs(a - b) < 0.3; }, rOf = function(out, ex, ey, sx, sy){   // 外形の 角（ex,ey）の R：端の 線が 角から どれ だけ 手前で 曲がり 始めるか（縦と 横が 同じ ときだけ）
+        var a = Infinity, b = Infinity; out.forEach(function(q){ if (near(q[0], ex)) a = Math.min(a, Math.abs(q[1] - ey)); if (near(q[1], ey)) b = Math.min(b, Math.abs(q[0] - ex)); });
+        return isFinite(a) && isFinite(b) && near(a, b) && a > 0.5 ? a : 0; };
+      [-1, 1].forEach(function(sx){ [0, 1].forEach(function(bk){
+        var rf = rOf(fO, sx * W / 2, H), rs = rOf(sO, bk ? Dd : 0, H), rt = rOf(tO, sx * W / 2, bk ? Dd : 0);
+        if (!(rf > 0) || !near(rf, rs) || !near(rf, rt) || rf * 2 > Math.min(W, Dd, H)) return;
+        var R = rf, cx = sx * (W / 2 - R), cy = H - R, cz = bk ? zf - Dd + R : zf - R, sz = bk ? -1 : 1, e = mg;
+        var box = new THREE.BoxGeometry(R + e, R + e, R + e).translate(cx + sx * (R + e) / 2, cy + (R + e) / 2, cz + sz * (R + e) / 2);
+        var ball = ev.evaluate(brush(new THREE.SphereGeometry(R, 32, 16).translate(cx, cy, cz)), brush(box.clone()), INTERSECTION);
+        res = ev.evaluate(ev.evaluate(res, brush(box), SUBTRACTION), ball, ADDITION); }); });
+      return res; }
     // 上からの 穴は その 場所の 天面から（前の 板の 奥など、天面が 低い 所の 水溜）
     function hAt(out, x){ var h = -Infinity; for (var i = 0; i < out.length; i++) { var a = out[i], b = out[(i + 1) % out.length]; if ((a[0] - x) * (b[0] - x) > 0 || a[0] === b[0]) { if (Math.abs(a[0] - x) < 1e-6) h = Math.max(h, a[1]); continue; } h = Math.max(h, a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0])); } return h; }
     (v.top && v.top.holes || []).forEach(function(h){ var x0 = Infinity, x1 = -Infinity, d0 = Infinity, d1 = -Infinity; h.pts.forEach(function(q){ x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); d0 = Math.min(d0, q[1]); d1 = Math.max(d1, q[1]); });

@@ -106,10 +106,13 @@ export function featureEdges(geo, deg){
   var S = [], soft = [], cosM = Math.cos(1 * Math.PI / 180), RV = {}, RN = {}, WC = {}, lim = sc * 0.08;
   T.forEach(function(tr){ if (tr.thin) return; var L = RV[tr.pl] = RV[tr.pl] || {}; RN[tr.pl] = tr.n; L[tr.v[0]] = L[tr.v[1]] = L[tr.v[2]] = 1; });
   Object.keys(RV).forEach(function(k){ RV[k] = Object.keys(RV[k]).map(Number); });
-  function narrow(R, d){ var n = RN[R], pp = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]], l = Math.hypot(pp[0], pp[1], pp[2]); if (!(l > 1e-9)) return false;
+  function narrow(R, d){ var n = RN[R], pp = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]], l = Math.hypot(pp[0], pp[1], pp[2]); if (!(l > 1e-9)) return Infinity;
     pp = [pp[0] / l, pp[1] / l, pp[2] / l]; var ck2 = R + '#' + pp.map(function(x){ return Math.round(x * 50); }).join(','); if (WC[ck2] !== undefined) return WC[ck2];
     var lo = Infinity, hi = -Infinity; RV[R].forEach(function(vi){ var q = V[vi], t = q[0] * pp[0] + q[1] * pp[1] + q[2] * pp[2]; if (t < lo) lo = t; if (t > hi) hi = t; });
-    return WC[ck2] = hi - lo < lim; }
+    return WC[ck2] = hi - lo; }
+  // 両側とも 細く、幅が 近い（3 倍 未満）ときだけ 曲面どうし（線なし）。R の 1 枚（2.4）と 薄い 板の 側面（36）の ように 幅が 大きく ちがえば
+  // 側面は 平らな 面 → 線を 入れる（v0.9.114 本人「拝石の 側面・モデリングに 面取りが 無い」：高さ 45 の 板は 側面も 8% 未満で 細い 面と 見て いた）
+  function curvePair(A, B, d){ var a = narrow(A, d), b = narrow(B, d); if (!(a < lim && b < lim)) return false; return Math.max(a, b) < 3 * Math.max(Math.min(a, b), 1e-6); }
   // 片側にしか 面が ない 辺（CSG の すき間。となりの 面の 点が 0.4mm ほど ずれて 対に ならない）：両端が 同じ「角度の ちがう 平面」にも 乗って いれば、
   // その 平面との 角（竿の 縦の 角が 消えて いた 2026-11-11）
   var VP = {}; T.forEach(function(tr){ if (tr.thin) return; tr.v.forEach(function(vi){ var o = VP[vi] = VP[vi] || {}; o[tr.pl] = tr.n; }); });
@@ -120,7 +123,7 @@ export function featureEdges(geo, deg){
     for (var i = 0; i < N.length; i++) for (var j = i + 1; j < N.length; j++) { var dd = N[i][0] * N[j][0] + N[i][1] * N[j][1] + N[i][2] * N[j][2]; if (dd < best) { best = dd; bi = i; bj = j; } }
     if (best < cosT) { S.push([e.a, e.b]); return; }
     var A = e.pl[bi], B = e.pl[bj]; if (A === B) return;
-    if (best < cosM) { var d = dir(e.a, e.b); if (!(narrow(A, d) && narrow(B, d))) { S.push([e.a, e.b]); return; } }
+    if (best < cosM) { var d = dir(e.a, e.b); if (!curvePair(A, B, d)) { S.push([e.a, e.b]); return; } }
     var P = V[e.a], Q = V[e.b]; soft.push(P[0], P[1], P[2], Q[0], Q[1], Q[2], N[bi][0], N[bi][1], N[bi][2], N[bj][0], N[bj][1], N[bj][2]); });
   // まっすぐ 続く 小さい 辺は 1 本に つなぐ（図面化の 隠れ線で 短い 切れ端が 落ちて 破線に ならない ように）
   var AT = {}; S.forEach(function(s, i){ (AT[s[0]] = AT[s[0]] || []).push(i); (AT[s[1]] = AT[s[1]] || []).push(i); });

@@ -478,7 +478,7 @@ body.pdlist #pdList{display:block} body.pdlist .pdmain{display:none} body.pdlist
 <script src="buzai-lib.js?v=0.8.131"></script>
 <script src="zumen-km.js?v=0.9.108"></script>
 <script>
-var APP_VER = "v0.9.111";
+var APP_VER = "v0.9.112";
 document.getElementById('ver').textContent = APP_VER; document.getElementById('ver2').textContent = '石の 図面 ' + APP_VER;
 var PI = Math.PI;
 var ZAS = SK_TAB === 'kakou' ? 'zumen.autosave.kakou' : SK_TAB === 'mkakou' ? 'zumen.autosave.mkakou' : 'zumen.autosave';   // v0.9.79 マスターの 加工図面タブも 別の 鍵   // 自動保存の 鍵（枠の 加工図面タブは 図面タブと 分ける）
@@ -5120,6 +5120,7 @@ function pdDrawMode(on){
     UNDO = []; REDO = []; updUndo(); ST.sel.clear(); ST.dsel.clear(); ST.selDim = null; ST.gaps = null; ST.stone = null;
     document.body.classList.add('pddraw'); pdHidePop(); PD.sel = null;
     pvClean(D); pvFix(D);   // 前の 版で 図枠・立体の 絵に 付いた 面の 印を 消す・写した 線の 面の 印を 直す（v0.9.45）
+    var bow0 = pdBowFix();   // 弓形の 部材で 平面図・立体の 絵が 真っすぐの まま 保存されて いたら かき直す（v0.9.112）
     var fill0 = pdFillFaces();   // 正面図など チェックが ある のに 線が 1 本も 無い 面は 出し直す（v0.9.41）
     renderLayers(); resize(); fit(); setTool('select'); changed();
     var sf0 = skSheet(); if (sf0 && sf0.sheet) skSheetLabels(sf0.sheet.n); skSheetUi(); if (!D.ents.some(function(e){ return e.iso; }) || !D.ents.some(function(e){ return e.frame && e.sheet; })) skPrep(false).then(function(){ fit(); pdRevApply(); });   // 立体の 絵の 寸法にも 改訂（v0.9.37）
@@ -5129,6 +5130,7 @@ function pdDrawMode(on){
     if (PD.def.drawing && (PD.def.drawing.migaki || []).length && D.ents.some(function(e){ return e.mg && !e.mgf; }) && D.info && D.info.isoMap) skMigaki();   // 前の 版の ▲に 面の 印を 付ける（同じ 位置に 出し直す）
     if (PD.def.drawing && (PD.def.drawing.migaki || []).length && !D.ents.some(function(e){ return e.mg; })) { if (D.info && D.info.isoMap) { skMigaki(); redraw(); } else skPrep(false); }
     setMsg('部材の 図面です。かき直したら 右の［🧊 図から 部材に 反映］（図に 出した 正面・側面・天面の 線を そのまま 使います）');
+    if (bow0) { skPrep(false).then(function(){ fit(); setMsg('保存された 図の 平面図・立体の 絵が 弓形（R）に なって いなかった ので、部材の 形から かき直しました。［💾 マスター部材に 保存］で 残ります'); }); }
     if (fill0 && fill0.length) setTimeout(function(){ setMsg('保存された 図に ' + fill0.join('・') + ' の 線が 無かった ので、部材の 形から 出し直しました（残って いる 面の 図の 下）。位置は 動かせます'); }, 50);
   } else if (!on && PD.saveMain) {
     PD.def.sketch = skDoc(); pdKeep();
@@ -5716,6 +5718,27 @@ function pdFillFaces(){
   } finally { PD.noSk = keepNoSk; }
   (PD.mod ? Promise.resolve(PD.mod) : import('./zumen-3d.js?v=' + APP_VER).then(function(m){ return PD.mod = m; })).then(function(){ skInner(miss); renderLayers(); changed(); redraw(); }).catch(function(){});
   return names;
+}
+// 弓形（bow）の 部材：保存した 図の 平面図が 四角の まま（bow を 入れる 前の 版で 作った 図など）なら 部材の 形から かき直す（v0.9.112）
+//   本人「モデルは R 形状 なのに 図面は 直線？ R 形状が 正しい」＝洋型 拝石。マスターの 図が 弓形の 前の 四角で 保存され、開いても 3D から かき直さない ので 四角の まま 出て いた
+//   平面図の 外形の 点が 全部 四角の 辺の 上に あれば 古い 図と みる。位置は 前の 平面図に 合わせ、手で 足した 寸法・文字は 残す。立体の 絵・中の 線は skPrep で かき直す
+function pdBowFix(){
+  if (!PD || !PD.saveMain || !PD.m || !PD.def) return false;
+  var c0 = PD.def.components && PD.def.components[0], vv = c0 && c0.shape && c0.shape.views;
+  if (!vv || !vv.bow || !(vv.bow.rise > 0) || !vv.top || !vv.top.out) return false;
+  var ol = D.ents.filter(function(e){ return e.pv === 'top' && e.layer === '部材_外形' && !e.inner && !pvFree(e) && (e.t === 'pl' || e.t === 'line'); }); if (!ol.length) return false;
+  var b = skBox(ol), tol = Math.max(0.5, (b.y1 - b.y0) * 0.005), pts = []; ol.forEach(function(e){ pts = pts.concat(entPts(e)); });
+  var onEdge = function(q){ return Math.abs(q.x - b.x0) < tol || Math.abs(q.x - b.x1) < tol || Math.abs(q.y - b.y0) < tol || Math.abs(q.y - b.y1) < tol; };
+  if (!pts.every(onEdge)) return false;   // もう 弓形（曲がった 点が ある）
+  var cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+  D.ents = D.ents.filter(function(e){ return !(e.pv === 'top' && e.t !== 'text' && !pvFree(e)); });
+  var fl = pdFaceList(); if (fl.indexOf('top') < 0) { fl.push('top'); pdKeep(); }   // 図に ある 面は チェックも
+  var n0 = D.ents.length, d0 = D.dims.length, nk = PD.noSk; PD.noSk = true;
+  try { var big = Math.max(PD.m.W, PD.m.H, PD.m.D), L = pdLayout(big, ['front', 'top']), bb = L.vs.top.bb;
+    pdPutViews(cx - (L.off.top[0] + (bb.x0 + bb.x1) / 2), cy - (L.off.top[1] + (bb.y0 + bb.y1) / 2), ['top']); } finally { PD.noSk = nk; }
+  D.ents = D.ents.filter(function(e, i){ return i < n0 || !(e.t === 'text' && e.lab); });   // 面の 名前は 前の まま
+  D.dims.length = d0;   // 寸法は 前の まま
+  return true;
 }
 // 面の 置き場所（第三角法：平面＝正面の 上・下面＝下・右側面＝右・左側面＝左・背面＝右側面の 右）
 function pdLayout(big, keys){

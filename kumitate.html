@@ -338,10 +338,10 @@ input.kmn{width:110px;text-align:left}
 <script src="buzai-engine.js?v=0.9.62"></script>
 <script src="kumitate-data.js"></script>
 <script src="kumitate-engine.js?v=0.8.120"></script>
-<script src="buzai-lib.js?v=0.9.110"></script>
+<script src="buzai-lib.js?v=0.8.131"></script>
 <script src="zumen-hlr.js?v=0.8.6"></script>
 <script>
-var APP_VER = 'v0.8.130';
+var APP_VER = 'v0.8.131';
 // 部材の データ：見本（kumitate-data.js）か、読んだ 旧シミュレーターの 保存ファイル
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 // いっぱいの ときは 古い 案件の 下書きを 片づけて もう 1 回（v0.8.129）。それでも だめなら 1 回だけ 帯で 知らせる（前は 黙って 失敗）
@@ -366,7 +366,13 @@ function libForce(p){ BL.mhIn(p); var o = LIB[p.id]; if (!o) { LIB[p.id] = p; re
   ['tags', 'status'].forEach(function(k){ if (o[k] != null) p[k] = o[k]; });
   p.version = (o.version || 0) + 1; delete p.thumb; delete p.__sp; LIB[p.id] = p; return true; }
 function libPut(p){ if (LIB_FORCE) return libForce(p); BL.mhIn(p); var o = LIB[p.id]; if (o && (o.version || 0) > (p.version || 0)) return false; if (o && o.thumb && !p.thumb && (o.version || 0) === (p.version || 0)) p.thumb = o.thumb; LIB[p.id] = p; return true; }
-function libSave(){ lsSet('kumitate.lib', LIB); }
+function libSave(){ if (!BL.libWrite(LIB, libKeep(), lsFp()) && !lsSet.told) { lsSet.told = 1; setTimeout(function(){ busy('💻 ' + BL.lsFullMsg('部材マスターの 部材').split('\n')[0], 'ng', 12000); }, 0); } }
+// 端末の 写しから 加工図面を 外さない 部材＝今の 案件で 使って いる 部材（v0.8.131）
+function libKeep(){ var k = {}; try { ((RES && RES.parts) || []).forEach(function(q){ if (q.partId) k[q.partId] = 1; }); } catch (e) {} return k; }
+// 端末の 写しで 加工図面を 外した 部材（__slim）を SharePoint から 読み直す（ids 無しは 全部）。この 画面の 中だけ 元に 戻す（v0.8.131）
+function libHeal(ids){ var w = spHost(); if (!w) return Promise.resolve(0); ids = (ids || Object.keys(LIB)).filter(function(id){ return LIB[id] && LIB[id].__slim; }); var n = 0;
+  return Promise.all(ids.map(function(id){ return w.downloadJsonFromFolderPassFromTekkyo(PART_DIR, id + '.json').then(function(t){ var p = JSON.parse(t), o = LIB[id];
+    if (p && p.schema === 'buzai/1' && o && o.__slim && (p.version || 0) >= (o.version || 0)) { p.__sp = p.version || 0; if (o.thumb && !p.thumb) p.thumb = o.thumb; BL.mhIn(p); LIB[id] = p; n++; } }).catch(function(){}); })).then(function(){ return n; }); }
 // 前の 形の セット（部材を 丸ごと）→ 枠と 参照 ＋ 部材ライブラリ（左右で 同じ 石は 反転で 1 つ）
 // セットの ファイルに 入った 部材（parts_lib）は、この 端末に 無い・古い ときだけ 入れる（同じ 版の 手元の 直しを 消さない。v0.8.22）
 function libFill(p){ var o = LIB[p.id]; if (o && (o.version || 0) >= (p.version || 0)) return false; return libPut(p); }
@@ -385,7 +391,7 @@ var DATA = build();
 window.addEventListener('storage', function(e){
   if (e.key === 'buzai.deleted') { dropDel(); return; }
   if (e.key !== 'kumitate.lib' && e.key !== 'kumitate.sets') return;
-  if (e.key === 'kumitate.lib') { var L = lsGet('kumitate.lib') || {}; Object.keys(L).forEach(function(id){ if (!LIB[id] || (L[id].version || 0) >= (LIB[id].version || 0)) LIB[id] = L[id]; }); dropDel(); }
+  if (e.key === 'kumitate.lib') { var L = lsGet('kumitate.lib') || {}; Object.keys(L).forEach(function(id){ if (BL.libTake(LIB[id], L[id])) LIB[id] = L[id]; }); dropDel(); }   // 加工図面を 外した 写しで 中身を 減らさない（v0.8.131）
   else SETS = lsGet('kumitate.sets') || SETS;
   DATA = build(); if (typeof RES !== 'undefined' && RES) { renderLeft(); run(); }
 });
@@ -890,6 +896,7 @@ function checkSet(j){
 // 部材を 部材ライブラリへ（まだ 送って いない もの・直した もの だけ。版を 1 つ 上げる）
 function spSavePart(w, p){
   if (p.__sp && p.__sp === (p.version || 0)) return Promise.resolve();
+  if (p.__slim) return Promise.reject(new Error('「' + (p.name || p.id) + '」は この 端末に 加工図面が ありません（SharePoint から 読み直して から）'));   // v0.8.131
   var d = JSON.parse(JSON.stringify(p)); Object.keys(d).forEach(function(k){ if (k.indexOf('__') === 0) delete d[k]; });
   d.version = (d.version || 0) + 1; d.savedAt = new Date().toISOString(); var txt;
   return BL.mhOut(d).then(function(d2){ txt = JSON.stringify(d2); return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '.json', PART_DIR); }).then(function(){ return w.uploadJsonToFolderPassFromTekkyo(txt, d.id + '_v' + d.version + '.json', PART_DIR + '/履歴'); })
@@ -3167,7 +3174,7 @@ window.kmMaster = {
   readSet: function(j){ return takeSetFile(j, true); },
   noSet: function(kind){ var vs = KM.variants(DATA, kind); ST.sel[kind] = vs.none ? 'none' : ''; SEL = null; run(true); return true; },
   // 部材を 入れて 支点を 選ぶ（v0.8.11 と 同じ 置き方）。n＝数
-  addPart: function(id, n){ var L = lsGet('kumitate.lib') || {}; if (L[id] && (!LIB[id] || (L[id].version || 0) >= (LIB[id].version || 0))) LIB[id] = L[id];
+  addPart: function(id, n, full){ var L = lsGet('kumitate.lib') || {}; if (BL.libTake(LIB[id], L[id])) LIB[id] = L[id]; if (full && full.id === id && BL.libTake(LIB[id], full)) LIB[id] = JSON.parse(JSON.stringify(full));   // 部材マスターの 手元（加工図面つき）を 先に（v0.8.131）
     if (!LIB[id]) return false; if (PM) pmCancel();
     RECENT = [id].concat(RECENT.filter(function(x){ return x !== id; })).slice(0, 12); lsSet('kumitate.recent', RECENT);
     var fr = addFree(id); if (!fr) return false; startPick(fr.key, 'self', { fresh:true, left:Math.max(0, (n || 1) - 1) }); try { window.focus(); } catch (e) {} return true; }
@@ -3406,7 +3413,7 @@ $('ver').textContent = 'モデリング ' + APP_VER + '（部材は ' + (DATA0 =
 if (ST.sel.tower && !KM.variants(DATA, 'tower')[ST.sel.tower]) ST.sel.tower = KM.newState(DATA).sel.tower || '';
 if (ST.sel.fence && !KM.variants(DATA, 'fence')[ST.sel.fence]) ST.sel.fence = 'none';
 migGl(); RES = calc(); renderLeft(); run();
-spLoadSets(false); if (!spHost()) fixMissing(false);
+spLoadSets(false); if (!spHost()) fixMissing(false); libHeal();   // 加工図面を 外して 覚えた 部材を SP から（v0.8.131）
 caseLoad(); setInterval(function(){ caseMark(); }, 10000);
 import('./kumitate-3d.js?v=0.8.111').then(function(m){
   K3M = m; V3 = m.create($('v'), pick, null, ctxOpen, pickBox);   // ダブルクリック では 何も しない（v0.8.103・誤操作 防止。加工図面は 右クリックの メニューから）

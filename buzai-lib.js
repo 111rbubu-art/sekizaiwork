@@ -196,7 +196,18 @@
     return { kb:Math.round(tot), list:Object.keys(g).map(function(nm){ return { name:nm, kb:Math.round(g[nm]) }; }).sort(function(a, b){ return b.kb - a.kb; }) }; }
   // 書いて みて、いっぱいなら 片づけて もう 1 回（書けたら true）
   function lsTry(k, t, keepFp){ try { localStorage.setItem(k, t); return true; } catch (e) {} lsTidy(keepFp); try { localStorage.setItem(k, t); return true; } catch (e) { return false; } }
+  // 部材マスターの 写し（kumitate.lib）を 端末に 書く（v0.8.131・2026-11-28 本人「SP に 保存されて いるので 必ずしも 端末に ある 必要は ない。
+  //   実行して いる プロジェクトの 編集分 だけ 確保すれば いい」）。前の 片づけ（lsTidy）は 案件の 下書き だけで、部材の 加工図面（sketch・1 つ 100 KB ほど）で
+  //   いっぱいに なって いた。入らない ときは、SP に 保存済みで 今 使って いない 部材の 加工図面を 端末の 写しから 外して（__slim）書く。
+  //   この 端末だけの 直し（__dirty・SP と 版が ちがう）と keep（今の 案件・選んで いる 部材）は 外さない。外した 部材は 開く ときに SP から 読み直す
+  function libSpSaved(p){ return !!p && !p.__dirty && !!p.__sp && p.__sp === (p.version || 0); }
+  function libSlim(L, keep){ var o = {}, n = 0; Object.keys(L || {}).forEach(function(id){ var p = L[id];
+      if (p && p.sketch && !(keep && keep[id]) && libSpSaved(p)) { var q = {}; Object.keys(p).forEach(function(k){ if (k !== 'sketch') q[k] = p[k]; }); q.__slim = 1; o[id] = q; n++; } else o[id] = p; });
+    return { lib:o, n:n }; }
+  function libWrite(L, keep, keepFp){ if (lsTry('kumitate.lib', JSON.stringify(L), keepFp)) return true; var s = libSlim(L, keep); return s.n ? lsTry('kumitate.lib', JSON.stringify(s.lib), keepFp) : false; }
+  // ほかの 画面が 書いた 写し（inc）を 取り込むか：新しい 版、または 同じ 版で 中身（加工図面）を 減らさない とき
+  function libTake(cur, inc){ if (!inc) return false; if (!cur) return true; var a = inc.version || 0, b = cur.version || 0; return a > b || (a === b && !(inc.__slim && !cur.__slim)); }
   function lsFullMsg(what){ var u = lsUsage(); return 'この 端末の ブラウザの 保存が いっぱいで、' + what + 'を 覚えられませんでした。SP への 保存は できます。\n\n使って いる 量（合計 ' + u.kb + ' KB）\n' + u.list.slice(0, 5).map(function(x){ return '・' + x.name + '　' + x.kb + ' KB'; }).join('\n'); }
-  root.BL = { lsUsed:lsUsed, lsTidy:lsTidy, lsUsage:lsUsage, lsTry:lsTry, lsFullMsg:lsFullMsg, KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, isKana:isKana, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
+  root.BL = { lsUsed:lsUsed, lsTidy:lsTidy, lsUsage:lsUsage, lsTry:lsTry, lsFullMsg:lsFullMsg, libSlim:libSlim, libWrite:libWrite, libTake:libTake, libSpSaved:libSpSaved, KPAL:KPAL, KBASE:KBASE, setSig:setSig, setSpMark:setSpMark, setUnsent:setUnsent, BUNRUI:BUNRUI, roleOf:roleOf, groupOf:groupOf, isKisei:isKisei, isKana:isKana, baseName:baseName, mirror:mirror, sameShape:sameShape, shapeGap:shapeGap, tagsOf:tagsOf, isNew:isNew, split:split, resolve:resolve, mhPut:mhPut, mhGet:mhGet, mhIn:mhIn, mhOut:mhOut, mhNow:mhNow };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.BL;
 })(typeof window !== 'undefined' ? window : this);

@@ -11,3 +11,8 @@ if (SKP) {
 }
 // ほかの タブへ（枠の 中なら true。単独なら false を 返すので、呼んだ 側で 今までの window.open を する）
 function skGo(tab, hash){ if (!SKP) return false; try { SKP.go(tab, hash || ''); return true; } catch (e) { return false; } }
+// 加工図面へ 渡す 部材（zumen.part）：枠の 中なら 枠の 窓口にも 置く（v0.1.1・2026-11-28）
+//   本人「マスタータブで 開くと 真っ白」：端末の 保存（localStorage）が いっぱいで zumen.part が 書けず、
+//   前に 保存した ときの 印（__back）つきの 古い zumen.part が 残って いて 図面が 何も 開かなかった。枠の 中は 保存に 頼らず 渡す
+function skPartPut(d){ if (!SKP) return false; try { SKP.zpart = JSON.stringify(d); return true; } catch (e) { return false; } }
+function skPartTake(){ if (!SKP) return null; try { var s = SKP.zpart; SKP.zpart = null; return s ? JSON.parse(s) : null; } catch (e) { return null; } }
